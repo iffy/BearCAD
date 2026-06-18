@@ -65,6 +65,13 @@ sketch, an extrude, a fillet, a boolean, etc. Features are the primary nodes of 
 action DAG (§4). The current geometry of a component is the result of evaluating its
 features in dependency order.
 
+### 2.5 World coordinate system
+
+- The world is **right-handed with Z up**. The **ground plane is XY** (z = 0) and is the
+  default sketching plane when none is chosen. X and Y span the ground; Z is height.
+- Internal canonical length unit is millimetres (§5.3); the ground plane and all geometry
+  are expressed in this convention.
+
 ---
 
 ## 3. Geometry & modeling operations (v1 scope)
@@ -74,7 +81,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 ### 3.1 Sketching (2D)
 - Sketches are created on a datum plane or a planar face.
 - Sketch entities: line, arc, circle, ellipse, spline, point, and construction-geometry
-  variants.
+  variants. Convenience primitives (e.g. **rectangle**, drawn as four constrained lines)
+  may be offered as tools that emit the underlying entities.
 - Sketches are fully constraint-driven (see §6).
 
 ### 3.2 Solid creation from sketches
@@ -353,6 +361,20 @@ tessellation + writers (or dedicated libraries — license-audited per §1).
 ### 11.5 3D interaction
 - Orbit/pan/zoom the 3D rendering; select faces/edges/vertices; manipulate sketches and
   features directly in the viewport.
+- **Default viewport bindings** (all rebindable per §11.3):
+
+  | Input | Action |
+  |---|---|
+  | Right-drag | Orbit the camera |
+  | **Shift + right-drag** | Pan the camera (slide the view target in the view plane) |
+  | Mouse wheel | Zoom (dolly in/out) |
+  | Left-drag (with an active draw tool) | Use the tool, e.g. draw a rectangle on the active plane |
+  | Escape | Cancel the in-progress operation; if none, deactivate the current tool (back to *Select*) |
+
+- **Tooling model:** the viewport has an active **tool** (e.g. *Select*, *Rectangle*).
+  *Select* is the default and only orbits/pans/zooms — geometry is created only when a
+  drawing tool is active, so navigation never creates geometry by accident. Tools are part
+  of the shared action layer (§8) so they appear in the palette and are rebindable.
 
 ---
 
