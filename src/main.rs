@@ -21,12 +21,14 @@ mod view_cube;
 
 use actions::{Action, AppState, CreatingLine, CreatingRect, Pane, RectAxis, Tool};
 use construction::{
-    pick_reference, plane_corners, resolve_pick_target, PlaneDim, PlaneReference,
-    PLANE_DISPLAY_HALF,
+    angle_from_axis_plane_hit, axis_angle_handle, axis_gizmo_hit, axis_normal,
+    axis_offset_handle, draw_axis_plane_gizmo, offset_from_normal_drag, pick_reference,
+    plane_corners, resolve_pick_target, AxisGizmoDrag, AxisGizmoHit, PlaneDim, PlaneReference,
+    AXIS_GIZMO_HANDLE_HIT_RADIUS_PX, PLANE_DISPLAY_HALF,
 };
 use eframe::egui;
 use native_menu::{MenuCommand, NativeMenu};
-use glam::{Quat, Vec3};
+use glam::Vec3;
 use model::{ConstructionPlane, Line, Rect};
 use script::{ScriptRunner, SyntheticInput};
 use std::path::Path;
@@ -615,7 +617,7 @@ fn pointer_over_dim_inputs(pointer: egui::Pos2, layouts: &[DimInputLayout]) -> b
 }
 
 fn format_live_dimension(v: f32) -> String {
-    if v < 0.1 {
+    if v.abs() < 0.1 {
         "0".to_string()
     } else {
         format!("{:.1}", v)
@@ -879,28 +881,92 @@ impl App {
                 let mut commit_click = false;
                 if let Some(cp) = &mut self.state.creating_plane {
                     let scroll = ui.input(|i| i.raw_scroll_delta.y);
-                    if scroll != 0.0 && !cp.user_edited_offset {
-                        let (live_offset, _) = cp.live_dims();
-                        let new_offset = (live_offset + scroll * 0.05).max(0.0);
-                        match &cp.reference {
-                            PlaneReference::Face { origin, normal, .. } => {
-                                cp.last_mouse = *origin + normal.normalize_or_zero() * new_offset;
-                            }
-                            PlaneReference::Axis { origin, direction, .. } => {
-                                let (off, ang) =
-                                    construction::live_axis_dims(*origin, *direction, cp.last_mouse);
-                                let new_off = (off + scroll * 0.05).max(0.0);
-                                let n = (Quat::from_axis_angle(
-                                    direction.normalize_or_zero(),
-                                    ang.to_radians(),
-                                ) * direction.cross(Vec3::Z).normalize_or_zero())
-                                .normalize_or_zero();
-                                cp.last_mouse = *origin + n * new_off;
+                    let primary_down = ui.input(|i| i.pointer.primary_down());
+                    let primary_released = ui.input(|i| i.pointer.primary_released());
+
+                    if let PlaneReference::Axis {
+                        origin,
+                        direction,
+                        ..
+                    } = &cp.reference
+                    {
+                        let origin = *origin;
+                        let direction = *direction;
+
+                        if primary_pressed {
+                            if let Some(hit) = axis_gizmo_hit(
+                                pp,
+                                &project,
+                                origin,
+                                direction,
+                                cp.axis_offset,
+                                cp.axis_angle_deg,
+                            ) {
+                                cp.axis_gizmo_drag = Some(AxisGizmoDrag {
+                                    hit,
+                                    start_offset: cp.axis_offset,
+                                    start_angle_deg: cp.axis_angle_deg,
+                                    start_screen: pp,
+                                });
+                                cp.user_edited_offset = false;
+                                cp.user_edited_angle = false;
                             }
                         }
-                    } else if let Some(gp) = gp {
-                        match &cp.reference {
-                            PlaneReference::Face { origin, normal, .. } => {
+
+                        let gizmo_drag = cp.axis_gizmo_drag;
+                        if let Some(drag) = gizmo_drag {
+                            if primary_down {
+                                match drag.hit {
+                                    AxisGizmoHit::Offset => {
+                                        let normal =
+                                            axis_normal(direction, drag.start_angle_deg);
+                                        cp.axis_offset = offset_from_normal_drag(
+                                            origin,
+                                            normal,
+                                            &project,
+                                            drag.start_offset,
+                                            drag.start_screen,
+                                            pp,
+                                        );
+                                    }
+                                    AxisGizmoHit::Angle => {
+                                        if let Some(hit) = cam.ray_plane_hit(
+                                            pp, viewport, &vp, origin, direction,
+                                        ) {
+                                            cp.axis_angle_deg =
+                                                angle_from_axis_plane_hit(
+                                                    origin, direction, hit,
+                                                );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if primary_released {
+                            cp.axis_gizmo_drag = None;
+                        }
+
+                        if scroll != 0.0
+                            && !cp.user_edited_offset
+                            && cp.axis_gizmo_drag.is_none()
+                        {
+                            cp.axis_offset += scroll * 0.05;
+                        }
+                    } else {
+                        if scroll != 0.0 && !cp.user_edited_offset {
+                            let (live_offset, _) = cp.live_dims();
+                            let new_offset = (live_offset + scroll * 0.05).max(0.0);
+                            if let PlaneReference::Face { origin, normal, .. } =
+                                &cp.reference
+                            {
+                                cp.last_mouse =
+                                    *origin + normal.normalize_or_zero() * new_offset;
+                            }
+                        } else if let Some(gp) = gp {
+                            if let PlaneReference::Face { origin, normal, .. } =
+                                &cp.reference
+                            {
                                 if normal.z.abs() < 0.9 {
                                     cp.last_mouse = *origin
                                         + normal.normalize_or_zero()
@@ -911,9 +977,6 @@ impl App {
                                     cp.last_mouse.x = gp.x;
                                     cp.last_mouse.y = gp.y;
                                 }
-                            }
-                            PlaneReference::Axis { .. } => {
-                                cp.last_mouse = gp;
                             }
                         }
                     }
@@ -927,8 +990,13 @@ impl App {
                     }
 
                     let preview = cp.preview_plane();
-                    let dim_layouts =
-                        plane_dim_layouts(&project, &preview, cp.reference.is_axis());
+                    let dim_layouts = plane_dim_layouts(
+                        &project,
+                        &preview,
+                        &cp.reference,
+                        cp.axis_offset,
+                        cp.axis_angle_deg,
+                    );
                     let over_input = dim_layouts.as_ref().is_some_and(|(offset, angle)| {
                         let mut layouts = vec![*offset];
                         if let Some(angle) = angle {
@@ -936,8 +1004,28 @@ impl App {
                         }
                         pointer_over_dim_inputs(pp, &layouts)
                     });
+                    let over_gizmo = matches!(
+                        &cp.reference,
+                        PlaneReference::Axis {
+                            origin,
+                            direction,
+                            ..
+                        } if axis_gizmo_hit(
+                            pp,
+                            &project,
+                            *origin,
+                            *direction,
+                            cp.axis_offset,
+                            cp.axis_angle_deg,
+                        )
+                        .is_some()
+                    );
 
-                    if should_commit_sketch_on_click(was_creating, primary_pressed, over_input) {
+                    if should_commit_sketch_on_click(
+                        was_creating,
+                        primary_pressed,
+                        over_input || over_gizmo || cp.axis_gizmo_drag.is_some(),
+                    ) {
                         commit_click = true;
                     }
                 }
@@ -977,6 +1065,36 @@ impl App {
         if let Some(cp) = &self.state.creating_plane {
             let preview = cp.preview_plane();
             draw_construction_plane(&painter, &project, &preview, col::PREVIEW, false);
+            if let PlaneReference::Axis {
+                origin,
+                direction,
+                ..
+            } = &cp.reference
+            {
+                let gizmo_hover = response
+                    .hover_pos()
+                    .or(response.interact_pointer_pos())
+                    .and_then(|pp| {
+                        axis_gizmo_hit(
+                            pp,
+                            &project,
+                            *origin,
+                            *direction,
+                            cp.axis_offset,
+                            cp.axis_angle_deg,
+                        )
+                    });
+                draw_axis_plane_gizmo(
+                    &painter,
+                    &project,
+                    *origin,
+                    *direction,
+                    cp.axis_offset,
+                    cp.axis_angle_deg,
+                    col::PREVIEW,
+                    gizmo_hover,
+                );
+            }
         }
 
         if self.state.tool == Tool::ConstructionPlane && self.state.creating_plane.is_none() {
@@ -1114,8 +1232,13 @@ impl App {
 
         if let Some(cp) = &mut self.state.creating_plane {
             let preview = cp.preview_plane();
-            if let Some((offset_layout, angle_layout)) =
-                plane_dim_layouts(&project, &preview, cp.reference.is_axis())
+            if let Some((offset_layout, angle_layout)) = plane_dim_layouts(
+                &project,
+                &preview,
+                &cp.reference,
+                cp.axis_offset,
+                cp.axis_angle_deg,
+            )
             {
                 let ctx = ui.ctx();
                 let id_offset = egui::Id::new("cp_offset");
@@ -1205,9 +1328,18 @@ impl App {
             }
             Tool::ConstructionPlane => {
                 if self.state.creating_plane.is_some() {
-                    "Set offset (wheel or type) • Tab: switch dims on axis • Click/Enter: create plane • Esc: cancel"
+                    if self
+                        .state
+                        .creating_plane
+                        .as_ref()
+                        .is_some_and(|cp| cp.reference.is_axis())
+                    {
+                        "Drag arrow for offset • drag circle handle for angle • type to lock • Tab: switch dims • Click/Enter: commit • Esc: cancel"
+                    } else {
+                        "Set offset (wheel or type) • Click/Enter: create plane • Esc: cancel"
+                    }
                 } else {
-                    "p: plane  •  Click a face, line, or ground • then set offset (and angle for lines) • Wheel: nudge offset"
+                    "p: plane  •  Click a face, line, shape edge, global axis, or ground • then set offset (and angle for lines)"
                 }
             }
         };
@@ -1281,19 +1413,84 @@ fn draw_line_segment(
     }
 }
 
+fn dim_layout_near_screen_point(
+    anchor: egui::Pos2,
+    outward: egui::Vec2,
+    gap_from_anchor: f32,
+) -> DimInputLayout {
+    let dir = if outward.length_sq() > 1e-4 {
+        outward.normalized()
+    } else {
+        egui::vec2(-1.0, -1.0).normalized()
+    };
+    let center_dist = gap_from_anchor + aabb_half_extent_along(dir);
+    let center = anchor + dir * center_dist;
+    layout_at(center - DIM_INPUT_SIZE * 0.5)
+}
+
+fn dim_layout_avoiding_handle(
+    anchor: egui::Pos2,
+    outward: egui::Vec2,
+    handle_size: f32,
+) -> DimInputLayout {
+    let mut gap = AXIS_GIZMO_HANDLE_HIT_RADIUS_PX + 6.0;
+    let obstacle =
+        egui::Rect::from_center_size(anchor, egui::vec2(handle_size, handle_size));
+    for _ in 0..DIM_REPULSION_ITERS {
+        let layout = dim_layout_near_screen_point(anchor, outward, gap);
+        if !layout.rect.intersects(obstacle) {
+            return layout;
+        }
+        gap += 2.0;
+    }
+    dim_layout_near_screen_point(anchor, outward, gap)
+}
+
 fn plane_dim_layouts(
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     plane: &ConstructionPlane,
-    axis_mode: bool,
+    reference: &PlaneReference,
+    axis_offset: f32,
+    axis_angle_deg: f32,
 ) -> Option<(DimInputLayout, Option<DimInputLayout>)> {
-    let center = project(plane.origin)?;
-    let offset_layout = layout_at(center + egui::vec2(-28.0, 16.0));
-    let angle_layout = if axis_mode {
-        Some(layout_at(center + egui::vec2(-28.0, -24.0)))
-    } else {
-        None
-    };
-    Some((offset_layout, angle_layout))
+    match reference {
+        PlaneReference::Face { .. } => {
+            let center = project(plane.origin)?;
+            let offset_layout = layout_at(center + egui::vec2(-28.0, 16.0));
+            Some((offset_layout, None))
+        }
+        PlaneReference::Axis {
+            origin,
+            direction,
+            ..
+        } => {
+            let axis_screen = project(*origin)?;
+            let offset_screen = project(axis_offset_handle(
+                *origin,
+                *direction,
+                axis_offset,
+                axis_angle_deg,
+            ))?;
+            let arrow = offset_screen - axis_screen;
+            let beside_arrow = if arrow.length_sq() > 1.0 {
+                egui::vec2(-arrow.y, arrow.x).normalized()
+            } else {
+                egui::vec2(-1.0, 0.0)
+            };
+            let offset_layout =
+                dim_layout_avoiding_handle(offset_screen, beside_arrow, 20.0);
+
+            let angle_screen = project(axis_angle_handle(
+                *origin,
+                *direction,
+                axis_angle_deg,
+            ))?;
+            let radial = angle_screen - axis_screen;
+            let angle_layout = dim_layout_avoiding_handle(angle_screen, radial, 24.0);
+
+            Some((offset_layout, Some(angle_layout)))
+        }
+    }
 }
 
 fn draw_construction_plane(
@@ -1538,6 +1735,34 @@ mod tests {
         let (bottom_mid, left_mid) = rectangle_anchors(shape);
         let (width, height) = rectangle_dim_layouts(bottom_mid, left_mid);
         assert!(rectangle_labels_clear(width.rect, height.rect));
+    }
+
+    #[test]
+    fn plane_angle_dim_layout_is_near_angle_gizmo_not_offset_tip() {
+        use super::{
+            axis_angle_handle, axis_offset_handle, plane_dim_layouts, PlaneReference,
+        };
+        use crate::construction::plane_from_axis;
+        let reference = PlaneReference::Axis {
+            origin: Vec3::ZERO,
+            direction: Vec3::X,
+            label: "Line".to_string(),
+        };
+        let plane = plane_from_axis(20.0, 45.0, Vec3::ZERO, Vec3::X);
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let layouts = plane_dim_layouts(&project, &plane, &reference, 20.0, 45.0).unwrap();
+        let angle_layout = layouts.1.expect("axis mode should have angle layout");
+        let angle_center = angle_layout.pos + super::DIM_INPUT_SIZE * 0.5;
+        let handle_screen = project(axis_angle_handle(Vec3::ZERO, Vec3::X, 45.0)).unwrap();
+        let offset_screen =
+            project(axis_offset_handle(Vec3::ZERO, Vec3::X, 20.0, 45.0)).unwrap();
+        assert!(
+            (angle_center - handle_screen).length()
+                < (angle_center - offset_screen).length()
+        );
+        let handle_rect =
+            egui::Rect::from_center_size(handle_screen, egui::vec2(24.0, 24.0));
+        assert!(!angle_layout.rect.intersects(handle_rect));
     }
 
     #[test]

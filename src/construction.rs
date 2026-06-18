@@ -24,6 +24,18 @@ pub const FACE_PICK_MARGIN_PX: f32 = 8.0;
 /// Visual highlight for a pickable target under the cursor.
 pub const PICK_HOVER_RGBA: egui::Color32 = egui::Color32::from_rgb(255, 210, 90);
 
+/// Hover accent for axis gizmo drag handles.
+pub const GIZMO_HANDLE_HOVER_RGBA: egui::Color32 = egui::Color32::from_rgb(255, 230, 120);
+
+/// Visible length of the global X/Y/Z axes from the origin (millimetres).
+pub const GLOBAL_AXIS_EXTENT_MM: f32 = 200.0;
+
+/// Radius of the angle gizmo circle around an axis reference (millimetres).
+pub const AXIS_ANGLE_GIZMO_RADIUS_MM: f32 = 25.0;
+
+/// Screen-space hit radius for axis gizmo drag handles (pixels).
+pub const AXIS_GIZMO_HANDLE_HIT_RADIUS_PX: f32 = 14.0;
+
 /// What the user picked as the plane reference on the first click.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlaneReference {
@@ -102,14 +114,7 @@ pub fn plane_from_axis(
     origin: Vec3,
     direction: Vec3,
 ) -> ConstructionPlane {
-    let axis = direction.normalize_or_zero();
-    let mut perp = axis.cross(Vec3::Z);
-    if perp.length_squared() < 1e-6 {
-        perp = axis.cross(Vec3::X);
-    }
-    perp = perp.normalize_or_zero();
-    let normal = Quat::from_axis_angle(axis, angle_deg.to_radians()) * perp;
-    let n = normal.normalize_or_zero();
+    let n = axis_normal(direction, angle_deg);
     let (u, v) = plane_basis(n);
     ConstructionPlane {
         origin: origin + n * offset,
@@ -129,14 +134,17 @@ pub fn resolve_plane(
     user_edited_offset: bool,
     user_edited_angle: bool,
 ) -> ConstructionPlane {
-    let offset = parse_or_live(offset_text, live_offset, user_edited_offset);
     match reference {
-        PlaneReference::Face { origin, normal, .. } => plane_from_face(offset, *origin, *normal),
+        PlaneReference::Face { origin, normal, .. } => {
+            let offset = parse_or_live(offset_text, live_offset, user_edited_offset);
+            plane_from_face(offset, *origin, *normal)
+        }
         PlaneReference::Axis {
             origin,
             direction,
             ..
         } => {
+            let offset = parse_or_live_signed(offset_text, live_offset, user_edited_offset);
             let angle = parse_or_live(angle_text, live_angle_deg, user_edited_angle);
             plane_from_axis(offset, angle, *origin, *direction)
         }
@@ -148,6 +156,14 @@ fn parse_or_live(text: &str, live: f32, user_edited: bool) -> f32 {
         text.trim().parse::<f32>().unwrap_or(live).max(0.0)
     } else {
         live.max(0.0)
+    }
+}
+
+fn parse_or_live_signed(text: &str, live: f32, user_edited: bool) -> f32 {
+    if user_edited {
+        text.trim().parse::<f32>().unwrap_or(live)
+    } else {
+        live
     }
 }
 
@@ -170,34 +186,296 @@ pub fn live_face_offset(origin: Vec3, normal: Vec3, hover: Vec3) -> f32 {
     (hover - origin).dot(n).max(0.0)
 }
 
-/// Live offset (perpendicular distance) and angle (degrees) for an axis reference.
-pub fn live_axis_dims(origin: Vec3, direction: Vec3, hover: Vec3) -> (f32, f32) {
+/// Reference perpendicular to an axis (stable when axis is nearly vertical).
+pub fn axis_reference_perp(direction: Vec3) -> Vec3 {
     let axis = direction.normalize_or_zero();
-    let rel = hover - origin;
-    let along = rel.dot(axis);
-    let radial = rel - axis * along;
-    let offset = radial.length().max(0.0);
     let mut perp = axis.cross(Vec3::Z);
     if perp.length_squared() < 1e-6 {
         perp = axis.cross(Vec3::X);
     }
-    perp = perp.normalize_or_zero();
-    let rotated = Quat::from_axis_angle(axis, 0.0) * perp;
-    let angle_rad = if offset < 1e-4 {
-        0.0
-    } else {
-        let dir = radial.normalize_or_zero();
-        let sin = axis.cross(dir).length();
-        let cos = dir.dot(rotated);
-        sin.atan2(cos)
+    perp.normalize_or_zero()
+}
+
+/// Plane normal for an axis reference at the given angle (degrees around the axis).
+pub fn axis_normal(direction: Vec3, angle_deg: f32) -> Vec3 {
+    let axis = direction.normalize_or_zero();
+    let perp = axis_reference_perp(axis);
+    (Quat::from_axis_angle(axis, angle_deg.to_radians()) * perp).normalize_or_zero()
+}
+
+/// World position of the offset drag handle (plane origin along the normal).
+pub fn axis_offset_handle(origin: Vec3, direction: Vec3, offset: f32, angle_deg: f32) -> Vec3 {
+    origin + axis_normal(direction, angle_deg) * offset
+}
+
+/// World position of the angle drag handle on the gizmo circle.
+pub fn axis_angle_handle(origin: Vec3, direction: Vec3, angle_deg: f32) -> Vec3 {
+    origin + axis_normal(direction, angle_deg) * AXIS_ANGLE_GIZMO_RADIUS_MM
+}
+
+/// Angle (degrees) from a ray hit on the plane perpendicular to the axis through `origin`.
+pub fn angle_from_axis_plane_hit(origin: Vec3, direction: Vec3, hit: Vec3) -> f32 {
+    let axis = direction.normalize_or_zero();
+    let rel = hit - origin;
+    let radial = rel - axis * rel.dot(axis);
+    if radial.length_squared() < 1e-8 {
+        return 0.0;
+    }
+    let dir = radial.normalize_or_zero();
+    let perp = axis_reference_perp(axis);
+    let tangent = axis.cross(perp).normalize_or_zero();
+    let cos = dir.dot(perp);
+    let sin = dir.dot(tangent);
+    sin.atan2(cos).to_degrees().rem_euclid(360.0)
+}
+
+/// Offset (mm) after dragging the normal arrow along its screen projection.
+pub fn offset_from_normal_drag(
+    origin: Vec3,
+    normal: Vec3,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    start_offset: f32,
+    start_screen: egui::Pos2,
+    current_screen: egui::Pos2,
+) -> f32 {
+    let Some(p0) = project(origin) else {
+        return start_offset;
     };
-    (offset, angle_rad.to_degrees().rem_euclid(360.0))
+    let Some(p1) = project(origin + normal) else {
+        return start_offset;
+    };
+    let screen_axis = p1 - p0;
+    let len = screen_axis.length();
+    if len < 1e-3 {
+        return start_offset;
+    }
+    let delta_px = (current_screen - start_screen).dot(screen_axis) / len;
+    start_offset + delta_px / len
+}
+
+/// Which axis gizmo handle is under the cursor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AxisGizmoHit {
+    Offset,
+    Angle,
+}
+
+/// Hit-test axis gizmo handles at a screen position.
+pub fn axis_gizmo_hit(
+    screen: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    origin: Vec3,
+    direction: Vec3,
+    offset: f32,
+    angle_deg: f32,
+) -> Option<AxisGizmoHit> {
+    let r = AXIS_GIZMO_HANDLE_HIT_RADIUS_PX;
+    let offset_tip = axis_offset_handle(origin, direction, offset, angle_deg);
+    if let Some(sp) = project(offset_tip) {
+        if (screen - sp).length() <= r {
+            return Some(AxisGizmoHit::Offset);
+        }
+    }
+    let angle_pos = axis_angle_handle(origin, direction, angle_deg);
+    if let Some(sp) = project(angle_pos) {
+        if (screen - sp).length() <= r {
+            return Some(AxisGizmoHit::Angle);
+        }
+    }
+    None
+}
+
+/// Active drag on an axis gizmo handle.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AxisGizmoDrag {
+    pub hit: AxisGizmoHit,
+    pub start_offset: f32,
+    pub start_angle_deg: f32,
+    pub start_screen: egui::Pos2,
+}
+
+/// World coordinate axis (origin triad).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GlobalAxis {
+    X,
+    Y,
+    Z,
+}
+
+impl GlobalAxis {
+    pub fn direction(self) -> Vec3 {
+        match self {
+            GlobalAxis::X => Vec3::X,
+            GlobalAxis::Y => Vec3::Y,
+            GlobalAxis::Z => Vec3::Z,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            GlobalAxis::X => "X axis",
+            GlobalAxis::Y => "Y axis",
+            GlobalAxis::Z => "Z axis",
+        }
+    }
+
+    pub fn color(self) -> egui::Color32 {
+        match self {
+            GlobalAxis::X => egui::Color32::from_rgb(200, 70, 70),
+            GlobalAxis::Y => egui::Color32::from_rgb(70, 190, 90),
+            GlobalAxis::Z => egui::Color32::from_rgb(80, 140, 230),
+        }
+    }
+}
+
+/// Segment from the origin along a global axis (for picking and highlight).
+pub fn global_axis_segment(axis: GlobalAxis) -> (Vec3, Vec3) {
+    let e = GLOBAL_AXIS_EXTENT_MM;
+    (Vec3::ZERO, axis.direction() * e)
+}
+
+fn draw_gizmo_handle_hover(
+    painter: &egui::Painter,
+    screen: egui::Pos2,
+    accent: egui::Color32,
+) {
+    painter.circle_filled(screen, 9.0, accent.gamma_multiply(0.35));
+    painter.circle_stroke(screen, 9.0, egui::Stroke::new(2.5, accent));
+    painter.circle_stroke(screen, 14.0, egui::Stroke::new(1.5, accent.gamma_multiply(0.75)));
+}
+
+/// Draw offset arrow and angle circle handles for an axis-referenced plane.
+pub fn draw_axis_plane_gizmo(
+    painter: &egui::Painter,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    origin: Vec3,
+    direction: Vec3,
+    offset: f32,
+    angle_deg: f32,
+    color: egui::Color32,
+    hover: Option<AxisGizmoHit>,
+) {
+    let normal = axis_normal(direction, angle_deg);
+    let display_offset = if offset.abs() < 2.0 {
+        if offset == 0.0 {
+            2.0
+        } else {
+            offset.signum() * 2.0
+        }
+    } else {
+        offset
+    };
+    let tip = origin + normal * display_offset;
+
+    let offset_hovered = hover == Some(AxisGizmoHit::Offset);
+    let offset_stroke = if offset_hovered { 4.0 } else { 2.5 };
+    let offset_color = if offset_hovered {
+        GIZMO_HANDLE_HOVER_RGBA
+    } else {
+        color
+    };
+
+    if let (Some(base), Some(end)) = (project(origin), project(tip)) {
+        painter.line_segment([base, end], egui::Stroke::new(offset_stroke, offset_color));
+        let shaft = end - base;
+        if shaft.length_sq() > 1.0 {
+            let dir = shaft.normalized();
+            let perp = egui::vec2(-dir.y, dir.x);
+            let head = 8.0;
+            let wing = 4.0;
+            painter.line_segment(
+                [end, end - dir * head + perp * wing],
+                egui::Stroke::new(offset_stroke, offset_color),
+            );
+            painter.line_segment(
+                [end, end - dir * head - perp * wing],
+                egui::Stroke::new(offset_stroke, offset_color),
+            );
+        }
+        if offset_hovered {
+            draw_gizmo_handle_hover(painter, end, GIZMO_HANDLE_HOVER_RGBA);
+        } else {
+            painter.circle_filled(end, 6.0, color);
+            painter.circle_stroke(end, 6.0, egui::Stroke::new(1.5, color.gamma_multiply(0.5)));
+        }
+    }
+
+    let axis = direction.normalize_or_zero();
+    let perp = axis_reference_perp(axis);
+    let segments = 48;
+    let mut circle_pts = Vec::with_capacity(segments + 1);
+    for i in 0..=segments {
+        let a = i as f32 / segments as f32 * std::f32::consts::TAU;
+        let dir = Quat::from_axis_angle(axis, a) * perp;
+        if let Some(sp) = project(origin + dir * AXIS_ANGLE_GIZMO_RADIUS_MM) {
+            circle_pts.push(sp);
+        }
+    }
+    let angle_hovered = hover == Some(AxisGizmoHit::Angle);
+    let circle_color = if angle_hovered {
+        GIZMO_HANDLE_HOVER_RGBA.gamma_multiply(0.9)
+    } else {
+        color.gamma_multiply(0.85)
+    };
+    if circle_pts.len() >= 2 {
+        painter.add(egui::Shape::line(
+            circle_pts,
+            egui::Stroke::new(if angle_hovered { 2.5 } else { 1.5 }, circle_color),
+        ));
+    }
+
+    let handle = axis_angle_handle(origin, direction, angle_deg);
+    let handle_dir = (handle - origin).normalize_or_zero();
+    let tangent = axis.cross(handle_dir).normalize_or_zero();
+    let angle_color = if angle_hovered {
+        GIZMO_HANDLE_HOVER_RGBA
+    } else {
+        color
+    };
+    if let Some(sp) = project(handle) {
+        if angle_hovered {
+            draw_gizmo_handle_hover(painter, sp, GIZMO_HANDLE_HOVER_RGBA);
+        } else {
+            painter.circle_filled(sp, 6.0, color);
+        }
+        if let (Some(ta), Some(tb)) = (
+            project(handle + tangent * 6.0),
+            project(handle - tangent * 6.0),
+        ) {
+            let t_screen = (ta - tb).normalized();
+            if t_screen.length_sq() > 1e-4 {
+                let arrow = 5.0;
+                let wing = 3.0;
+                for sign in [-1.0f32, 1.0] {
+                    let tip = sp + t_screen * sign * arrow;
+                    let side = egui::vec2(-t_screen.y, t_screen.x) * wing * sign;
+                    painter.line_segment(
+                        [tip, tip - t_screen * sign * arrow + side],
+                        egui::Stroke::new(2.0, angle_color),
+                    );
+                    painter.line_segment(
+                        [tip, tip - t_screen * sign * arrow - side],
+                        egui::Stroke::new(2.0, angle_color),
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Which geometry would be selected at a viewport position.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PickTargetKind {
+    /// A standalone sketch line segment.
     Line(Line),
+    /// One edge of a rectangle (or other 2D shape).
+    ShapeEdge(Line),
+    /// One edge of a construction-plane quad.
+    PlaneEdge {
+        a: Vec3,
+        b: Vec3,
+    },
+    GlobalAxis(GlobalAxis),
     Rect(Rect),
     ConstructionPlane(ConstructionPlane),
     Ground(Vec3),
@@ -238,13 +516,26 @@ pub fn resolve_pick_target(
         }
     };
 
-    if let Some((line, dist)) = nearest_line(screen, project, &doc.lines) {
+    if let Some((kind, a, b, label, dist)) = nearest_pickable_edge(screen, project, doc) {
         consider(PickTarget {
-            kind: PickTargetKind::Line(line),
+            kind,
             reference: PlaneReference::Axis {
-                origin: line_midpoint(line),
-                direction: line_direction(line),
-                label: "Line".to_string(),
+                origin: segment_midpoint(a, b),
+                direction: segment_direction(a, b),
+                label,
+            },
+            distance_px: dist,
+            priority: 0,
+        });
+    }
+
+    if let Some((axis, dist)) = nearest_global_axis(screen, project) {
+        consider(PickTarget {
+            kind: PickTargetKind::GlobalAxis(axis),
+            reference: PlaneReference::Axis {
+                origin: Vec3::ZERO,
+                direction: axis.direction(),
+                label: axis.label().to_string(),
             },
             distance_px: dist,
             priority: 0,
@@ -324,8 +615,16 @@ pub fn draw_pick_highlight(
     color: egui::Color32,
 ) {
     match kind {
-        PickTargetKind::Line(line) => {
+        PickTargetKind::Line(line) | PickTargetKind::ShapeEdge(line) => {
             draw_line_highlight(painter, project, line, color);
+        }
+        PickTargetKind::PlaneEdge { a, b } => {
+            draw_segment_highlight(painter, project, a, b, color);
+        }
+        PickTargetKind::GlobalAxis(axis) => {
+            let (a, b) = global_axis_segment(axis);
+            let axis_color = axis.color().gamma_multiply(1.25);
+            draw_segment_highlight(painter, project, a, b, axis_color);
         }
         PickTargetKind::Rect(rect) => {
             draw_rect_highlight(painter, project, rect, color);
@@ -358,6 +657,16 @@ fn draw_line_highlight(
 ) {
     let a = Vec3::new(line.x0, line.y0, 0.0);
     let b = Vec3::new(line.x1, line.y1, 0.0);
+    draw_segment_highlight(painter, project, a, b, color);
+}
+
+fn draw_segment_highlight(
+    painter: &egui::Painter,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    a: Vec3,
+    b: Vec3,
+    color: egui::Color32,
+) {
     if let (Some(pa), Some(pb)) = (project(a), project(b)) {
         painter.line_segment([pa, pb], egui::Stroke::new(4.0, color));
         for p in [pa, pb] {
@@ -407,16 +716,12 @@ fn project_point_on_plane(point: Vec3, plane: &ConstructionPlane) -> Vec3 {
     point - n * dist
 }
 
-fn line_midpoint(line: Line) -> Vec3 {
-    Vec3::new(
-        (line.x0 + line.x1) * 0.5,
-        (line.y0 + line.y1) * 0.5,
-        0.0,
-    )
+fn segment_midpoint(a: Vec3, b: Vec3) -> Vec3 {
+    (a + b) * 0.5
 }
 
-fn line_direction(line: Line) -> Vec3 {
-    Vec3::new(line.x1 - line.x0, line.y1 - line.y0, 0.0).normalize_or_zero()
+fn segment_direction(a: Vec3, b: Vec3) -> Vec3 {
+    (b - a).normalize_or_zero()
 }
 
 fn rect_center(rect: Rect) -> Vec3 {
@@ -456,31 +761,98 @@ fn dist_point_to_segment_px(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 
     (p - (a + ab * t)).length()
 }
 
-fn nearest_line(
+/// Edges of a rectangle as world-space segment pairs (bottom, right, top, left).
+pub fn rect_edge_segments(rect: Rect) -> [(Vec3, Vec3); 4] {
+    let c = rect_corners_world(rect);
+    [(c[0], c[1]), (c[1], c[2]), (c[2], c[3]), (c[3], c[0])]
+}
+
+/// Edges of a construction-plane quad as world-space segment pairs.
+pub fn construction_plane_edge_segments(plane: &ConstructionPlane) -> [(Vec3, Vec3); 4] {
+    let c = plane_corners(plane, PLANE_DISPLAY_HALF);
+    [(c[0], c[1]), (c[1], c[2]), (c[2], c[3]), (c[3], c[0])]
+}
+
+fn segment_pick_distance(
     screen: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
-    lines: &[Line],
-) -> Option<(Line, f32)> {
-    let mut best: Option<(Line, f32)> = None;
-    for &line in lines {
+    a: Vec3,
+    b: Vec3,
+) -> Option<f32> {
+    let (Some(pa), Some(pb)) = (project(a), project(b)) else {
+        return None;
+    };
+    let seg_dist = dist_point_to_segment_px(screen, pa, pb);
+    let end_a = (screen - pa).length();
+    let end_b = (screen - pb).length();
+    let dist = seg_dist.min(end_a).min(end_b);
+    let threshold = if end_a <= POINT_PICK_RADIUS_PX || end_b <= POINT_PICK_RADIUS_PX {
+        POINT_PICK_RADIUS_PX
+    } else {
+        LINE_PICK_RADIUS_PX
+    };
+    if dist <= threshold {
+        Some(dist)
+    } else {
+        None
+    }
+}
+
+fn nearest_pickable_edge(
+    screen: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &Document,
+) -> Option<(PickTargetKind, Vec3, Vec3, String, f32)> {
+    let mut best: Option<(PickTargetKind, Vec3, Vec3, String, f32)> = None;
+
+    let mut consider = |kind: PickTargetKind, a: Vec3, b: Vec3, label: &str| {
+        let Some(dist) = segment_pick_distance(screen, project, a, b) else {
+            return;
+        };
+        if best.as_ref().is_none_or(|(_, _, _, _, d)| dist < *d) {
+            best = Some((kind, a, b, label.to_string(), dist));
+        }
+    };
+
+    for &line in &doc.lines {
         let a = Vec3::new(line.x0, line.y0, 0.0);
         let b = Vec3::new(line.x1, line.y1, 0.0);
-        let (Some(pa), Some(pb)) = (project(a), project(b)) else {
+        consider(PickTargetKind::Line(line), a, b, "Line");
+    }
+
+    for &rect in &doc.rects {
+        for (a, b) in rect_edge_segments(rect) {
+            let edge_line = Line::from_endpoints(a.x, a.y, b.x, b.y);
+            consider(PickTargetKind::ShapeEdge(edge_line), a, b, "Rectangle edge");
+        }
+    }
+
+    for plane in &doc.construction_planes {
+        for (a, b) in construction_plane_edge_segments(plane) {
+            consider(
+                PickTargetKind::PlaneEdge { a, b },
+                a,
+                b,
+                "Construction plane edge",
+            );
+        }
+    }
+
+    best
+}
+
+fn nearest_global_axis(
+    screen: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+) -> Option<(GlobalAxis, f32)> {
+    let mut best: Option<(GlobalAxis, f32)> = None;
+    for axis in [GlobalAxis::X, GlobalAxis::Y, GlobalAxis::Z] {
+        let (a, b) = global_axis_segment(axis);
+        let Some(dist) = segment_pick_distance(screen, project, a, b) else {
             continue;
         };
-        let seg_dist = dist_point_to_segment_px(screen, pa, pb);
-        let end_a = (screen - pa).length();
-        let end_b = (screen - pb).length();
-        let dist = seg_dist.min(end_a).min(end_b);
-        let threshold = if end_a <= POINT_PICK_RADIUS_PX || end_b <= POINT_PICK_RADIUS_PX {
-            POINT_PICK_RADIUS_PX
-        } else {
-            LINE_PICK_RADIUS_PX
-        };
-        if dist <= threshold {
-            if best.map(|(_, d)| dist < d).unwrap_or(true) {
-                best = Some((line, dist));
-            }
+        if best.map(|(_, d)| dist < d).unwrap_or(true) {
+            best = Some((axis, dist));
         }
     }
     best
@@ -610,6 +982,38 @@ mod tests {
     }
 
     #[test]
+    fn global_x_axis_picked_near_positive_x() {
+        let doc = Document::default();
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let target = resolve_pick_target(
+            Pos2::new(50.0, 2.0),
+            &project,
+            Some(Vec3::new(50.0, 2.0, 0.0)),
+            &doc,
+        )
+        .unwrap();
+        assert!(matches!(target.kind, PickTargetKind::GlobalAxis(GlobalAxis::X)));
+        assert!(matches!(
+            target.reference,
+            PlaneReference::Axis { label, .. } if label == "X axis"
+        ));
+    }
+
+    #[test]
+    fn global_axis_beats_ground_when_near_origin_triad() {
+        let doc = Document::default();
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let target = resolve_pick_target(
+            Pos2::new(3.0, 2.0),
+            &project,
+            Some(Vec3::new(3.0, 2.0, 0.0)),
+            &doc,
+        )
+        .unwrap();
+        assert!(matches!(target.kind, PickTargetKind::GlobalAxis(_)));
+    }
+
+    #[test]
     fn pick_reference_prefers_line_over_ground() {
         let doc = Document {
             lines: vec![Line::from_endpoints(0.0, 0.0, 100.0, 0.0)],
@@ -637,11 +1041,11 @@ mod tests {
     #[test]
     fn line_endpoint_picked_within_point_threshold() {
         let doc = Document {
-            lines: vec![Line::from_endpoints(0.0, 0.0, 100.0, 0.0)],
+            lines: vec![Line::from_endpoints(100.0, 50.0, 200.0, 50.0)],
             ..Default::default()
         };
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
-        let target = resolve_pick_target(Pos2::new(0.0, 9.0), &project, None, &doc);
+        let target = resolve_pick_target(Pos2::new(100.0, 59.0), &project, None, &doc);
         assert!(matches!(
             target.map(|t| t.kind),
             Some(PickTargetKind::Line(_))
@@ -649,7 +1053,7 @@ mod tests {
     }
 
     #[test]
-    fn rect_picked_near_edge_within_margin() {
+    fn rect_edge_picked_for_axis_reference() {
         let doc = Document {
             rects: vec![Rect {
                 x: 10.0,
@@ -660,7 +1064,66 @@ mod tests {
             ..Default::default()
         };
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
-        let target = resolve_pick_target(Pos2::new(8.0, 25.0), &project, None, &doc);
+        let target = resolve_pick_target(Pos2::new(50.0, 8.0), &project, None, &doc).unwrap();
+        assert!(matches!(target.kind, PickTargetKind::ShapeEdge(_)));
+        assert!(matches!(
+            target.reference,
+            PlaneReference::Axis { label, .. } if label == "Rectangle edge"
+        ));
+    }
+
+    #[test]
+    fn rect_edge_beats_face_when_near_boundary() {
+        let doc = Document {
+            rects: vec![Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+            }],
+            ..Default::default()
+        };
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let target = resolve_pick_target(Pos2::new(50.0, 2.0), &project, None, &doc);
+        assert!(matches!(
+            target.map(|t| t.kind),
+            Some(PickTargetKind::ShapeEdge(_))
+        ));
+    }
+
+    #[test]
+    fn standalone_line_beats_rect_edge_when_closer() {
+        let doc = Document {
+            lines: vec![Line::from_endpoints(48.0, 0.0, 52.0, 0.0)],
+            rects: vec![Rect {
+                x: 0.0,
+                y: 10.0,
+                w: 100.0,
+                h: 30.0,
+            }],
+            ..Default::default()
+        };
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let target = resolve_pick_target(Pos2::new(50.0, 1.0), &project, None, &doc);
+        assert!(matches!(
+            target.map(|t| t.kind),
+            Some(PickTargetKind::Line(_))
+        ));
+    }
+
+    #[test]
+    fn rect_face_picked_from_interior() {
+        let doc = Document {
+            rects: vec![Rect {
+                x: 10.0,
+                y: 10.0,
+                w: 40.0,
+                h: 30.0,
+            }],
+            ..Default::default()
+        };
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let target = resolve_pick_target(Pos2::new(30.0, 25.0), &project, None, &doc);
         assert!(matches!(
             target.map(|t| t.kind),
             Some(PickTargetKind::Rect(_))
@@ -668,13 +1131,94 @@ mod tests {
     }
 
     #[test]
+    fn axis_normal_at_zero_angle_is_perpendicular_to_axis() {
+        let normal = axis_normal(Vec3::X, 0.0);
+        assert!(normal.dot(Vec3::X).abs() < 1e-4);
+        assert!(normal.length() > 0.9);
+    }
+
+    #[test]
+    fn offset_from_normal_drag_moves_with_screen_motion() {
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let offset = offset_from_normal_drag(
+            Vec3::ZERO,
+            Vec3::Y,
+            &project,
+            0.0,
+            Pos2::new(0.0, 0.0),
+            Pos2::new(0.0, 10.0),
+        );
+        assert!((offset - 10.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn offset_from_normal_drag_allows_negative_values() {
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let offset = offset_from_normal_drag(
+            Vec3::ZERO,
+            Vec3::Y,
+            &project,
+            5.0,
+            Pos2::new(0.0, 5.0),
+            Pos2::new(0.0, -5.0),
+        );
+        assert!((offset + 5.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn axis_offset_handle_supports_negative_offset() {
+        let tip = axis_offset_handle(Vec3::ZERO, Vec3::Y, -10.0, 0.0);
+        assert!(tip.x < -9.0);
+    }
+
+    #[test]
+    fn signed_axis_offset_resolves_for_negative_text() {
+        let reference = PlaneReference::Axis {
+            origin: Vec3::ZERO,
+            direction: Vec3::Y,
+            label: "Line".to_string(),
+        };
+        let plane = resolve_plane(&reference, "-8", "", 0.0, 0.0, true, false);
+        assert!(plane.origin.x < -7.0);
+    }
+
+    #[test]
+    fn angle_from_axis_plane_hit_round_trips_gizmo_handle() {
+        for deg in [0.0, 45.0, 90.0, 135.0, 180.0] {
+            let hit = axis_angle_handle(Vec3::ZERO, Vec3::Y, deg);
+            let angle = angle_from_axis_plane_hit(Vec3::ZERO, Vec3::Y, hit);
+            let diff = (angle - deg).abs();
+            assert!(
+                diff < 1.0 || (diff - 360.0).abs() < 1.0,
+                "deg={deg} got={angle}"
+            );
+        }
+    }
+
+    #[test]
+    fn axis_gizmo_hit_finds_offset_handle_near_tip() {
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let tip = axis_offset_handle(Vec3::ZERO, Vec3::X, 15.0, 0.0);
+        let screen = project(tip).unwrap();
+        let hit = axis_gizmo_hit(
+            screen,
+            &project,
+            Vec3::ZERO,
+            Vec3::X,
+            15.0,
+            0.0,
+        );
+        assert_eq!(hit, Some(AxisGizmoHit::Offset));
+    }
+
+    #[test]
     fn pick_reference_uses_ground_when_empty() {
         let doc = Document::default();
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
         let reference = pick_reference(
-            Pos2::new(5.0, 5.0),
+            Pos2::new(80.0, 80.0),
             &project,
-            Some(Vec3::new(5.0, 5.0, 0.0)),
+            Some(Vec3::new(80.0, 80.0, 0.0)),
             &doc,
         );
         assert!(matches!(

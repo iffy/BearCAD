@@ -5,7 +5,7 @@
 
 use crate::camera::{Camera, ProjectionMode, StandardView, VIEW_TRANSITION_DURATION};
 use crate::construction::{
-    live_axis_dims, live_face_offset, resolve_plane, PlaneDim, PlaneReference,
+    live_face_offset, resolve_plane, AxisGizmoDrag, PlaneDim, PlaneReference,
 };
 use crate::view_cube::{self, CubeCornerId, CubeEdgeId};
 use crate::model::{ConstructionPlane, Document, Line, Rect, ShapeKind};
@@ -126,9 +126,14 @@ pub struct CreatingConstructionPlane {
     pub angle_text: String,
     pub focused: PlaneDim,
     pub last_mouse: Vec3,
+    /// Live offset for axis references (mm); updated by gizmo drag or wheel.
+    pub axis_offset: f32,
+    /// Live angle for axis references (degrees); updated by gizmo drag.
+    pub axis_angle_deg: f32,
     pub user_edited_offset: bool,
     pub user_edited_angle: bool,
     pub pending_focus: bool,
+    pub axis_gizmo_drag: Option<AxisGizmoDrag>,
 }
 
 impl CreatingConstructionPlane {
@@ -150,11 +155,7 @@ impl CreatingConstructionPlane {
             PlaneReference::Face { origin, normal, .. } => {
                 (live_face_offset(*origin, *normal, self.last_mouse), 0.0)
             }
-            PlaneReference::Axis {
-                origin,
-                direction,
-                ..
-            } => live_axis_dims(*origin, *direction, self.last_mouse),
+            PlaneReference::Axis { .. } => (self.axis_offset, self.axis_angle_deg),
         }
     }
 }
@@ -497,9 +498,12 @@ impl AppState {
                     angle_text: String::new(),
                     focused: PlaneDim::Offset,
                     last_mouse: hover,
+                    axis_offset: 0.0,
+                    axis_angle_deg: 0.0,
                     user_edited_offset: false,
                     user_edited_angle: false,
                     pending_focus: true,
+                    axis_gizmo_drag: None,
                 });
                 self.status = "Set offset • type to lock • Tab cycle dims • click/Enter commit • Esc cancel"
                     .to_string();
@@ -524,16 +528,22 @@ impl AppState {
                 let Some(cp) = &mut self.creating_plane else {
                     return ActionResult::Err("No construction plane in progress".to_string());
                 };
-                cp.offset_text = value;
+                cp.offset_text = value.clone();
                 cp.user_edited_offset = true;
+                if let Ok(v) = value.trim().parse::<f32>() {
+                    cp.axis_offset = v;
+                }
                 ActionResult::Ok
             }
             Action::SetPlaneAngle { value } => {
                 let Some(cp) = &mut self.creating_plane else {
                     return ActionResult::Err("No construction plane in progress".to_string());
                 };
-                cp.angle_text = value;
+                cp.angle_text = value.clone();
                 cp.user_edited_angle = true;
+                if let Ok(v) = value.trim().parse::<f32>() {
+                    cp.axis_angle_deg = v.rem_euclid(360.0);
+                }
                 ActionResult::Ok
             }
             Action::FocusPlaneDim { dim } => {
@@ -684,6 +694,23 @@ mod tests {
             state.doc.shape_order,
             vec![ShapeKind::ConstructionPlane]
         );
+    }
+
+    #[test]
+    fn axis_live_dims_use_gizmo_fields_not_mouse() {
+        let mut state = AppState::default();
+        state.apply(Action::BeginConstructionPlane {
+            reference: PlaneReference::Axis {
+                origin: Vec3::ZERO,
+                direction: Vec3::X,
+                label: "Line".to_string(),
+            },
+        });
+        let cp = state.creating_plane.as_mut().unwrap();
+        cp.axis_offset = 12.0;
+        cp.axis_angle_deg = 45.0;
+        cp.last_mouse = Vec3::new(99.0, 99.0, 0.0);
+        assert_eq!(cp.live_dims(), (12.0, 45.0));
     }
 
     #[test]

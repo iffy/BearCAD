@@ -383,6 +383,40 @@ impl Camera {
         Some(Pos2::new(x, y))
     }
 
+    /// Cast a ray from the screen pixel onto an arbitrary plane and return the hit.
+    pub fn ray_plane_hit(
+        &self,
+        screen: Pos2,
+        viewport: Rect,
+        vp: &Mat4,
+        plane_origin: Vec3,
+        plane_normal: Vec3,
+    ) -> Option<Vec3> {
+        let inv = vp.inverse();
+        let ndc_x = ((screen.x - viewport.min.x) / viewport.width()) * 2.0 - 1.0;
+        let ndc_y = (1.0 - (screen.y - viewport.min.y) / viewport.height()) * 2.0 - 1.0;
+
+        let near = inv * Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
+        let far = inv * Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
+        let near_w = near.truncate() / near.w;
+        let far_w = far.truncate() / far.w;
+        let ray_dir = far_w - near_w;
+        if ray_dir.length_squared() < 1e-12 {
+            return None;
+        }
+        let ray_dir = ray_dir.normalize();
+        let n = plane_normal.normalize_or_zero();
+        let denom = ray_dir.dot(n);
+        if denom.abs() < 1e-6 {
+            return None;
+        }
+        let t = (plane_origin - near_w).dot(n) / denom;
+        if t < 0.0 {
+            return None;
+        }
+        Some(near_w + ray_dir * t)
+    }
+
     /// Cast a ray from the screen pixel onto the ground plane (z = 0) and return
     /// the hit point, or `None` if the ray misses (points at/above the horizon).
     pub fn ground_point(&self, screen: Pos2, viewport: Rect, vp: &Mat4) -> Option<Vec3> {

@@ -428,6 +428,13 @@ explicit exception that lets us drive "mouse/keyboard" flows for testing purpose
   stroke. Lines use a pixel-radius threshold around the segment and its endpoints; faces
   use a margin around their projected edges. Hover resolution and click picking share the
   same resolver so feedback matches what a click would select.
+- **Shape edges:** when a tool accepts a line or axis reference (e.g. construction-plane
+  creation), standalone sketch lines and individual edges of shapes (rectangle sides,
+  construction-plane borders, etc.) are all valid picks. Shape edges take precedence over
+  the shape's face when the cursor is near the edge.
+- **Global axes:** the origin X/Y/Z triad is pickable as an axis reference when creating
+  construction planes. Axis gizmo handles show a hover affordance (bright ring and thicker
+  stroke) so the user can see which handle will be grabbed on click.
 
 ---
 
