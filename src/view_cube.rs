@@ -146,31 +146,41 @@ fn bear_mesh() -> &'static [MeshTriangle] {
     })
 }
 
-fn triangle_visible(normal: Vec3, right: Vec3, up: Vec3, forward: Vec3) -> bool {
-    face_visible_for_normal(normal, right, up, forward)
+fn tri_screen_area(points: [Pos2; 3]) -> f32 {
+    let a = points[1] - points[0];
+    let b = points[2] - points[0];
+    (a.x * b.y - a.y * b.x).abs() * 0.5
+}
+
+fn max_triangle_edge_length(points: [Pos2; 3]) -> f32 {
+    [
+        (points[0] - points[1]).length(),
+        (points[1] - points[2]).length(),
+        (points[2] - points[0]).length(),
+    ]
+    .into_iter()
+    .fold(0.0f32, f32::max)
 }
 
 fn project_bear(cam: &Camera, center: Pos2, scale: f32) -> Vec<ProjectedBearTriangle> {
     let (right, up, forward) = view_cube_basis(cam);
-    let max_r = cube_silhouette_radius(right, up, forward, scale);
 
     let mut triangles = Vec::new();
     for tri in bear_mesh() {
-        if !triangle_visible(tri.normal, right, up, forward) {
+        let view_pts = tri.vertices.map(|v| transform_vertex(v, right, up, forward));
+        let e0 = view_pts[1] - view_pts[0];
+        let e1 = view_pts[2] - view_pts[0];
+        let normal = e0.cross(e1);
+        if normal.z >= 0.0 || normal.length_squared() < 1e-10 {
             continue;
         }
-        let mut depth = 0.0;
-        let mut points = [Pos2::ZERO; 3];
-        for (i, vertex) in tri.vertices.iter().enumerate() {
-            let t = transform_vertex(*vertex, right, up, forward);
-            depth += t.z;
-            points[i] = clamp_point_to_silhouette(
-                project_to_hud(t, center, scale),
-                center,
-                max_r,
-            );
+
+        let points = view_pts.map(|v| project_to_hud(v, center, scale));
+        if tri_screen_area(points) < 0.5 {
+            continue;
         }
-        depth /= 3.0;
+
+        let depth = (view_pts[0].z + view_pts[1].z + view_pts[2].z) / 3.0;
         triangles.push(ProjectedBearTriangle { points, depth });
     }
     triangles.sort_by(|a, b| b.depth.partial_cmp(&a.depth).unwrap_or(std::cmp::Ordering::Equal));
@@ -1152,6 +1162,27 @@ mod tests {
         let center = Pos2::new(120.0, 120.0);
         let triangles = project_bear(&cam, center, 40.0);
         assert!(!triangles.is_empty(), "bear should have visible triangles");
+    }
+
+    #[test]
+    fn bear_projection_has_no_silhouette_spikes() {
+        let center = Pos2::new(120.0, 120.0);
+        let scale = CUBE_SIZE * 0.42;
+        let max_edge = CUBE_SIZE * 0.75;
+        for yaw in [0.0, 0.35, 0.8, 1.4, 2.2, 3.5] {
+            for pitch in [-1.2, -0.5, 0.0, 0.35, 0.6, 1.1] {
+                let mut cam = Camera::default();
+                cam.yaw = yaw;
+                cam.pitch = pitch;
+                for tri in project_bear(&cam, center, scale) {
+                    let edge = max_triangle_edge_length(tri.points);
+                    assert!(
+                        edge < max_edge,
+                        "yaw={yaw} pitch={pitch}: triangle edge {edge} looks like a silhouette spike"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
