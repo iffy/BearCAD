@@ -13,12 +13,14 @@
 mod actions;
 mod camera;
 mod model;
+mod native_menu;
 mod script;
 mod storage;
 mod view_cube;
 
 use actions::{Action, AppState, CreatingLine, CreatingRect, Pane, RectAxis, Tool};
 use eframe::egui;
+use native_menu::{MenuCommand, NativeMenu};
 use glam::Vec3;
 use model::{Line, Rect};
 use script::{ScriptRunner, SyntheticInput};
@@ -27,7 +29,7 @@ use std::path::Path;
 fn main() -> eframe::Result<()> {
     let script_opts = script::parse_args(std::env::args());
 
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([960.0, 640.0])
             .with_title("LE3")
@@ -35,6 +37,13 @@ fn main() -> eframe::Result<()> {
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
+    #[cfg(target_os = "macos")]
+    {
+        use winit::platform::macos::EventLoopBuilderExtMacOS;
+        options.event_loop_builder = Some(Box::new(|builder| {
+            builder.with_default_menu(false);
+        }));
+    }
 
     let script = script_opts
         .script_path
@@ -49,8 +58,18 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "LE3",
         options,
-        Box::new(move |_cc| {
-            Ok(Box::new(App::new(script, script_opts.exit_on_complete)) as Box<dyn eframe::App>)
+        Box::new(move |cc| {
+            let native_menu = NativeMenu::install(cc).map_err(|e| {
+                eframe::Error::AppCreation(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                )))
+            })?;
+            Ok(Box::new(App::new(
+                script,
+                script_opts.exit_on_complete,
+                native_menu,
+            )) as Box<dyn eframe::App>)
         }),
     )
 }
@@ -61,10 +80,15 @@ struct App {
     script: Option<ScriptRunner>,
     exit_on_script_complete: bool,
     last_viewport: Option<egui::Rect>,
+    native_menu: NativeMenu,
 }
 
 impl App {
-    fn new(script: Option<ScriptRunner>, exit_on_script_complete: bool) -> Self {
+    fn new(
+        script: Option<ScriptRunner>,
+        exit_on_script_complete: bool,
+        native_menu: NativeMenu,
+    ) -> Self {
         let status = if script.is_some() {
             "Running script…".to_string()
         } else {
@@ -79,6 +103,7 @@ impl App {
             script,
             exit_on_script_complete,
             last_viewport: None,
+            native_menu,
         }
     }
 
@@ -111,68 +136,32 @@ impl App {
         }
     }
 
-    /// Standard application menu bar (File / Edit / View / Help). Items dispatch
-    /// the same [`Action`] values as the toolbar and scripts, per SPEC §8.
-    fn show_menu_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("menubar").show(ctx, |ui| {
-            egui::menu::bar(ui, |ui| {
-                ui.menu_button("File", |ui| {
-                    if ui.button("New").clicked() {
-                        self.state.apply(Action::NewDocument);
-                        ui.close_menu();
+    /// Handle selections from the native OS menu bar.
+    fn handle_native_menu(&mut self, ctx: &egui::Context) {
+        let events = self.native_menu.drain_events();
+        for event in events {
+            let Some(command) = native_menu::command_for_event(&event, &self.native_menu) else {
+                continue;
+            };
+            match command {
+                MenuCommand::Open => self.open(),
+                MenuCommand::Save => self.save(),
+                MenuCommand::SaveAs => self.save_as(),
+                MenuCommand::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                MenuCommand::About => {
+                    self.state.status =
+                        "LE3 — on-device parametric CAD (prototype)".to_string();
+                }
+                _ => {
+                    if let Some(action) = command.to_action() {
+                        self.state.apply(action);
                     }
-                    if ui.button("Open…").clicked() {
-                        self.open();
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if ui.button("Save").clicked() {
-                        self.save();
-                        ui.close_menu();
-                    }
-                    if ui.button("Save As…").clicked() {
-                        self.save_as();
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if ui.button("Quit").clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                });
+                }
+            }
+        }
 
-                ui.menu_button("Edit", |ui| {
-                    if ui.button("Undo").clicked() {
-                        self.state.apply(Action::UndoLast);
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if ui.button("Clear").clicked() {
-                        self.state.apply(Action::Clear);
-                        ui.close_menu();
-                    }
-                });
-
-                ui.menu_button("View", |ui| {
-                    ui.menu_button("Panes", |ui| {
-                        for &pane in Pane::ALL {
-                            let mut visible = self.state.panes.is_visible(pane);
-                            if ui.checkbox(&mut visible, pane.label()).changed() {
-                                self.state
-                                    .apply(Action::SetPaneVisible { pane, visible });
-                            }
-                        }
-                    });
-                });
-
-                ui.menu_button("Help", |ui| {
-                    if ui.button("About LE3").clicked() {
-                        self.state.status =
-                            "LE3 — on-device parametric CAD (prototype)".to_string();
-                        ui.close_menu();
-                    }
-                });
-            });
-        });
+        self.native_menu
+            .sync_pane_checks(|pane| self.state.panes.is_visible(pane));
     }
 
     fn handle_keyboard(&mut self, ctx: &egui::Context) {
@@ -312,23 +301,10 @@ impl eframe::App for App {
 
         self.handle_keyboard(ctx);
 
-        self.show_menu_bar(ctx);
+        self.handle_native_menu(ctx);
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                if ui.button("New").clicked() {
-                    self.state.apply(Action::NewDocument);
-                }
-                if ui.button("Open…").clicked() {
-                    self.open();
-                }
-                if ui.button("Save").clicked() {
-                    self.save();
-                }
-                if ui.button("Save As…").clicked() {
-                    self.save_as();
-                }
-                ui.separator();
                 ui.selectable_value(&mut self.state.tool, Tool::Select, "Select");
                 ui.selectable_value(&mut self.state.tool, Tool::Rectangle, "Rectangle");
                 ui.selectable_value(&mut self.state.tool, Tool::Line, "Line");
