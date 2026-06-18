@@ -7,11 +7,62 @@
 //! World convention: **Z is up, the ground plane is XY** (z = 0).
 
 use egui::{Pos2, Rect};
-use glam::{Mat4, Vec3, Vec4};
+use glam::{Mat4, Quat, Vec3, Vec4};
+
+/// Named orthographic-style views for the Z-up ground plane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StandardView {
+    Front,
+    Back,
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+impl StandardView {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "front" | "f" => Some(Self::Front),
+            "back" | "b" => Some(Self::Back),
+            "left" | "l" => Some(Self::Left),
+            "right" | "r" => Some(Self::Right),
+            "top" | "t" => Some(Self::Top),
+            "bottom" | "bot" => Some(Self::Bottom),
+            _ => None,
+        }
+    }
+
+    /// Spherical camera parameters that place the eye on this side of `target`.
+    pub fn yaw_pitch(self) -> (f32, f32) {
+        use std::f32::consts::{FRAC_PI_2, PI};
+        match self {
+            Self::Front => (-FRAC_PI_2, 0.0),
+            Self::Back => (FRAC_PI_2, 0.0),
+            Self::Right => (0.0, 0.0),
+            Self::Left => (PI, 0.0),
+            Self::Top => (0.0, PITCH_LIMIT),
+            Self::Bottom => (0.0, -PITCH_LIMIT),
+        }
+    }
+}
+
+/// Default duration for animated view changes (seconds).
+pub const VIEW_TRANSITION_DURATION: f32 = 0.35;
+
+#[derive(Clone, Debug)]
+struct ViewTransition {
+    from_yaw: f32,
+    from_pitch: f32,
+    delta_yaw: f32,
+    to_pitch: f32,
+    elapsed: f32,
+    duration: f32,
+}
 
 /// A look-at orbit camera parameterised in spherical coordinates around a
 /// `target` point.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Camera {
     /// Point the camera orbits and looks at, in world space.
     pub target: Vec3,
@@ -24,6 +75,7 @@ pub struct Camera {
     pub distance: f32,
     /// Vertical field of view, radians.
     pub fov_y: f32,
+    transition: Option<ViewTransition>,
 }
 
 impl Default for Camera {
@@ -34,8 +86,25 @@ impl Default for Camera {
             pitch: 0.6,
             distance: 400.0,
             fov_y: 45f32.to_radians(),
+            transition: None,
         }
     }
+}
+
+fn shortest_yaw_delta(from: f32, to: f32) -> f32 {
+    let mut delta = to - from;
+    while delta > std::f32::consts::PI {
+        delta -= std::f32::consts::TAU;
+    }
+    while delta < -std::f32::consts::PI {
+        delta += std::f32::consts::TAU;
+    }
+    delta
+}
+
+fn smoothstep(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 const PITCH_LIMIT: f32 = 1.54; // ~88°, just shy of the singularity at 90°.
@@ -48,10 +117,130 @@ impl Camera {
         self.target + self.distance * Vec3::new(cp * cy, cp * sy, sp)
     }
 
+    pub fn is_transitioning(&self) -> bool {
+        self.transition.is_some()
+    }
+
+    pub fn cancel_transition(&mut self) {
+        self.transition = None;
+    }
+
+    /// Animate to a standard orthographic view over `duration` seconds.
+    pub fn start_view_transition(&mut self, view: StandardView, duration: f32) {
+        let (yaw, pitch) = view.yaw_pitch();
+        self.start_transition_to_yaw_pitch(yaw, pitch, duration);
+    }
+
+    /// Convert an outward view direction (from `target` toward the eye) to yaw/pitch.
+    pub fn view_direction_to_yaw_pitch(direction: Vec3) -> (f32, f32) {
+        let dir = direction.normalize_or_zero();
+        if dir.length_squared() < 1e-8 {
+            return (0.0, 0.0);
+        }
+        let pitch = dir.z.asin().clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        let yaw = if pitch.cos().abs() < 1e-6 {
+            0.0
+        } else {
+            dir.y.atan2(dir.x)
+        };
+        (yaw, pitch)
+    }
+
+    /// Animate to a view that looks from `direction` (outward from `target`).
+    pub fn start_view_transition_to_direction(&mut self, direction: Vec3, duration: f32) {
+        let (yaw, pitch) = Self::view_direction_to_yaw_pitch(direction);
+        self.start_transition_to_yaw_pitch(yaw, pitch, duration);
+    }
+
+    pub fn start_transition_to_yaw_pitch(&mut self, to_yaw: f32, to_pitch: f32, duration: f32) {
+        let to_pitch = to_pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        self.transition = Some(ViewTransition {
+            from_yaw: self.yaw,
+            from_pitch: self.pitch,
+            delta_yaw: shortest_yaw_delta(self.yaw, to_yaw),
+            to_pitch,
+            elapsed: 0.0,
+            duration: duration.max(0.01),
+        });
+    }
+
+    /// Advance an in-flight view transition. Returns `true` while animating.
+    pub fn tick_transition(&mut self, dt: f32) -> bool {
+        let Some(transition) = self.transition.take() else {
+            return false;
+        };
+        let mut t = transition;
+        t.elapsed += dt;
+        let u = smoothstep((t.elapsed / t.duration).min(1.0));
+        self.yaw = t.from_yaw + t.delta_yaw * u;
+        self.pitch = t.from_pitch + (t.to_pitch - t.from_pitch) * u;
+        if t.elapsed < t.duration {
+            self.transition = Some(t);
+            true
+        } else {
+            self.yaw = t.from_yaw + t.delta_yaw;
+            self.pitch = t.to_pitch;
+            false
+        }
+    }
+
+    const ORBIT_SENSITIVITY: f32 = 0.01;
+
     /// Orbit by a screen-space drag delta (in points).
     pub fn orbit(&mut self, delta: egui::Vec2) {
-        self.yaw -= delta.x * 0.01;
-        self.pitch = (self.pitch + delta.y * 0.01).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        self.cancel_transition();
+        self.yaw -= delta.x * Self::ORBIT_SENSITIVITY;
+        self.pitch = (self.pitch + delta.y * Self::ORBIT_SENSITIVITY)
+            .clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    }
+
+    /// Trackball-style orbit: rotates the eye around `target` using camera-local
+    /// axes so dragging still works at the poles (e.g. top view).
+    pub fn orbit_trackball(&mut self, delta: egui::Vec2) {
+        self.cancel_transition();
+        let sens = Self::ORBIT_SENSITIVITY;
+        let mut offset = self.eye() - self.target;
+
+        if delta.x.abs() > f32::EPSILON {
+            let rot = Quat::from_axis_angle(Vec3::Z, -delta.x * sens);
+            offset = rot * offset;
+        }
+
+        if delta.y.abs() > f32::EPSILON {
+            let axis = self.trackball_pitch_axis(offset);
+            let rot = Quat::from_axis_angle(axis, -delta.y * sens);
+            offset = rot * offset;
+        }
+
+        self.set_offset(offset);
+    }
+
+    /// Horizontal axis for vertical (pitch) trackball rotation. Near the poles
+    /// the eye offset is almost vertical and `offset × Z` is unreliable.
+    fn trackball_pitch_axis(&self, offset: Vec3) -> Vec3 {
+        let horizontal_len_sq = offset.x * offset.x + offset.y * offset.y;
+        if horizontal_len_sq < 0.001 * offset.length_squared() {
+            Vec3::new(self.yaw.cos(), self.yaw.sin(), 0.0)
+        } else {
+            offset.cross(Vec3::Z).normalize()
+        }
+    }
+
+    fn set_offset(&mut self, offset: Vec3) {
+        let len = offset.length();
+        if len < 1e-6 {
+            return;
+        }
+        self.distance = len;
+        let dir = offset / len;
+        let pitch = dir.z.asin().clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        let yaw = if pitch.cos().abs() < 1e-6 {
+            self.yaw
+        } else {
+            dir.y.atan2(dir.x)
+        };
+        self.pitch = pitch;
+        self.yaw = yaw;
     }
 
     /// Pan: slide the look-at `target` (and therefore the eye) in the camera's
@@ -186,6 +375,108 @@ mod tests {
             (screen_before - screen_after).length() < 0.5,
             "pivot should stay under the cursor: before={screen_before:?} after={screen_after:?}"
         );
+    }
+
+    #[test]
+    fn standard_view_orientations() {
+        let mut cam = Camera::default();
+        for (view, expected) in [
+            (StandardView::Right, Vec3::new(1.0, 0.0, 0.0)),
+            (StandardView::Front, Vec3::new(0.0, -1.0, 0.0)),
+            (StandardView::Back, Vec3::new(0.0, 1.0, 0.0)),
+            (StandardView::Left, Vec3::new(-1.0, 0.0, 0.0)),
+        ] {
+            let (yaw, pitch) = view.yaw_pitch();
+            cam.yaw = yaw;
+            cam.pitch = pitch;
+            let offset = (cam.eye() - cam.target).normalize();
+            assert!(
+                (offset - expected).length() < 0.05,
+                "{view:?}: expected {expected:?}, got {offset:?}"
+            );
+        }
+        cam.yaw = 0.0;
+        cam.pitch = PITCH_LIMIT;
+        let top = (cam.eye() - cam.target).normalize();
+        assert!(top.z > 0.95, "top view should look from +Z, got {top:?}");
+        cam.pitch = -PITCH_LIMIT;
+        let bottom = (cam.eye() - cam.target).normalize();
+        assert!(bottom.z < -0.95, "bottom view should look from -Z, got {bottom:?}");
+    }
+
+    #[test]
+    fn view_transition_reaches_target() {
+        let mut cam = Camera::default();
+        cam.start_view_transition(StandardView::Right, 0.5);
+        assert!(cam.is_transitioning());
+        while cam.tick_transition(0.05) {}
+        let (yaw, pitch) = StandardView::Right.yaw_pitch();
+        assert!((cam.yaw - yaw).abs() < 0.01);
+        assert!((cam.pitch - pitch).abs() < 0.01);
+        assert!(!cam.is_transitioning());
+    }
+
+    #[test]
+    fn orbit_cancels_view_transition() {
+        let mut cam = Camera::default();
+        cam.start_view_transition(StandardView::Top, 0.5);
+        cam.orbit(egui::vec2(4.0, 2.0));
+        assert!(!cam.is_transitioning());
+    }
+
+    #[test]
+    fn trackball_from_top_drag_down_tilts_toward_back() {
+        let (yaw, pitch) = StandardView::Top.yaw_pitch();
+        let mut cam = Camera::default();
+        cam.yaw = yaw;
+        cam.pitch = pitch;
+        let before = cam.eye() - cam.target;
+
+        // Pulling down on the cube tilts the top face away (positive screen Y).
+        cam.orbit_trackball(egui::vec2(0.0, 30.0));
+
+        let after = (cam.eye() - cam.target).normalize();
+        assert!(
+            cam.pitch < pitch - 0.05,
+            "pitch should decrease from top view, got {}",
+            cam.pitch
+        );
+        assert!(
+            after.y > 0.05,
+            "eye should move toward +Y (back), got {after:?}; before={before:?}"
+        );
+        assert!(
+            before.z - after.z > 0.02,
+            "eye should descend from the pole, got {after:?}"
+        );
+    }
+
+    #[test]
+    fn trackball_horizontal_drag_changes_yaw_off_pole() {
+        let mut cam = Camera::default();
+        let yaw_before = cam.yaw;
+        cam.orbit_trackball(egui::vec2(25.0, 0.0));
+        assert!(
+            (cam.yaw - yaw_before).abs() > 0.05,
+            "horizontal drag should change yaw away from the poles"
+        );
+    }
+
+    #[test]
+    fn view_direction_to_yaw_pitch_front_top_edge() {
+        let dir = Vec3::new(0.0, -1.0, 1.0).normalize();
+        let (yaw, pitch) = Camera::view_direction_to_yaw_pitch(dir);
+        assert!(pitch > 0.2);
+        // Between front (-π/2) and top (0): x=0, y<0 ⇒ yaw = -π/2.
+        assert!((yaw - (-std::f32::consts::FRAC_PI_2)).abs() < 0.01);
+    }
+
+    #[test]
+    fn trackball_cancels_view_transition() {
+        let mut cam = Camera::default();
+        cam.start_view_transition(StandardView::Top, 0.5);
+        cam.orbit_trackball(egui::vec2(4.0, 2.0));
+        assert!(!cam.is_transitioning());
     }
 
     #[test]

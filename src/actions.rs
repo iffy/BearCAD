@@ -3,7 +3,8 @@
 //! GUI buttons, keyboard shortcuts, and instruction scripts all dispatch the
 //! same [`Action`] values so behaviour stays in sync.
 
-use crate::camera::Camera;
+use crate::camera::{Camera, StandardView, VIEW_TRANSITION_DURATION};
+use crate::view_cube::{self, CubeCornerId, CubeEdgeId};
 use crate::model::{Document, Line, Rect, ShapeKind};
 use eframe::egui;
 use glam::Vec3;
@@ -132,6 +133,9 @@ pub enum Action {
         focal: egui::Pos2,
         viewport: egui::Rect,
     },
+    SetStandardView(StandardView),
+    SetViewEdge(CubeEdgeId),
+    SetViewCorner(CubeCornerId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -355,6 +359,27 @@ impl AppState {
                 viewport,
             } => {
                 self.cam.zoom(scroll, focal, viewport);
+                ActionResult::Ok
+            }
+            Action::SetStandardView(view) => {
+                self.cam.start_view_transition(view, VIEW_TRANSITION_DURATION);
+                self.status = format!("View: {:?}", view);
+                ActionResult::Ok
+            }
+            Action::SetViewEdge(edge) => {
+                self.cam.start_view_transition_to_direction(
+                    view_cube::edge_view_direction(edge),
+                    VIEW_TRANSITION_DURATION,
+                );
+                self.status = format!("View edge: {:?}", edge);
+                ActionResult::Ok
+            }
+            Action::SetViewCorner(corner) => {
+                self.cam.start_view_transition_to_direction(
+                    view_cube::corner_view_direction(corner),
+                    VIEW_TRANSITION_DURATION,
+                );
+                self.status = format!("View corner: {:?}", corner);
                 ActionResult::Ok
             }
         }

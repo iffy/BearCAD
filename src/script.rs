@@ -4,6 +4,9 @@
 //! via synthetic pointer/keyboard events and headless actions.
 
 use crate::actions::{Action, AppState, RectAxis, Tool};
+use crate::camera::StandardView;
+use crate::view_cube::{CubeCornerId, CubeEdgeId};
+
 use eframe::egui::{self, Key, Modifiers, PointerButton};
 use glam::Vec3;
 use std::path::Path;
@@ -26,6 +29,9 @@ pub enum Instruction {
     Orbit { dx: f32, dy: f32 },
     Pan { dx: f32, dy: f32 },
     Zoom { scroll: f32 },
+    View(StandardView),
+    ViewEdge(CubeEdgeId),
+    ViewCorner(CubeCornerId),
 
     // Synthetic input (viewport-local pixel coordinates)
     Move { x: f32, y: f32 },
@@ -86,6 +92,11 @@ impl Instruction {
             Instruction::Orbit { dx, dy } => format!("orbit {dx} {dy}"),
             Instruction::Pan { dx, dy } => format!("pan {dx} {dy}"),
             Instruction::Zoom { scroll } => format!("zoom {scroll}"),
+            Instruction::View(view) => format!("view {}", view_script_name(*view)),
+            Instruction::ViewEdge(edge) => format!("view edge {}", edge_script_name(*edge)),
+            Instruction::ViewCorner(corner) => {
+                format!("view corner {}", corner_script_name(*corner))
+            }
             Instruction::Move { x, y } => format!("move {x} {y}"),
             Instruction::Click { x, y } => format!("click {x} {y}"),
             Instruction::MoveGround { x, y } => format!("move_ground {x} {y}"),
@@ -232,6 +243,28 @@ fn parse_line(line: &str, line_no: usize) -> Result<Instruction, ParseError> {
         "zoom" | "scroll" => {
             let delta = parse_one_float(rest, &err)?;
             Ok(Instruction::Zoom { scroll: delta })
+        }
+
+        "view" => {
+            let mut parts = rest.split_whitespace();
+            let first = parts.next().unwrap_or("");
+            match first {
+                "edge" => {
+                    let name = parts.next().ok_or_else(|| err("view edge requires a name"))?;
+                    CubeEdgeId::from_name(name)
+                        .map(Instruction::ViewEdge)
+                        .ok_or_else(|| err(&format!("unknown cube edge '{name}'")))
+                }
+                "corner" => {
+                    let name = parts.next().ok_or_else(|| err("view corner requires a name"))?;
+                    CubeCornerId::from_name(name)
+                        .map(Instruction::ViewCorner)
+                        .ok_or_else(|| err(&format!("unknown cube corner '{name}'")))
+                }
+                _ => StandardView::from_name(first)
+                    .map(Instruction::View)
+                    .ok_or_else(|| err(&format!("unknown view '{first}'"))),
+            }
         }
 
         "move" | "mousemove" => {
@@ -420,6 +453,47 @@ pub fn parse_key(name: &str) -> Result<Key, String> {
         "8" => Ok(Key::Num8),
         "9" => Ok(Key::Num9),
         _ => Err(format!("unknown key '{name}'")),
+    }
+}
+
+fn view_script_name(view: StandardView) -> &'static str {
+    match view {
+        StandardView::Front => "front",
+        StandardView::Back => "back",
+        StandardView::Left => "left",
+        StandardView::Right => "right",
+        StandardView::Top => "top",
+        StandardView::Bottom => "bottom",
+    }
+}
+
+fn edge_script_name(edge: CubeEdgeId) -> &'static str {
+    match edge {
+        CubeEdgeId::FrontBottom => "front_bottom",
+        CubeEdgeId::RightBottom => "right_bottom",
+        CubeEdgeId::BackBottom => "back_bottom",
+        CubeEdgeId::LeftBottom => "left_bottom",
+        CubeEdgeId::FrontTop => "front_top",
+        CubeEdgeId::RightTop => "right_top",
+        CubeEdgeId::BackTop => "back_top",
+        CubeEdgeId::LeftTop => "left_top",
+        CubeEdgeId::FrontLeft => "front_left",
+        CubeEdgeId::FrontRight => "front_right",
+        CubeEdgeId::BackRight => "back_right",
+        CubeEdgeId::BackLeft => "back_left",
+    }
+}
+
+fn corner_script_name(corner: CubeCornerId) -> &'static str {
+    match corner {
+        CubeCornerId::FrontLeftBottom => "front_left_bottom",
+        CubeCornerId::FrontRightBottom => "front_right_bottom",
+        CubeCornerId::BackRightBottom => "back_right_bottom",
+        CubeCornerId::BackLeftBottom => "back_left_bottom",
+        CubeCornerId::FrontLeftTop => "front_left_top",
+        CubeCornerId::FrontRightTop => "front_right_top",
+        CubeCornerId::BackRightTop => "back_right_top",
+        CubeCornerId::BackLeftTop => "back_left_top",
     }
 }
 
@@ -613,6 +687,7 @@ pub struct ScriptRunner {
     wait_until: Option<Instant>,
     wait_frames_remaining: u32,
     screenshot_pending: Option<String>,
+    waiting_view_transition: bool,
     /// Prevents re-printing an instruction while waiting (e.g. for viewport layout).
     logged_pc: Option<usize>,
     pub verbose: bool,
@@ -629,6 +704,7 @@ impl ScriptRunner {
             wait_until: None,
             wait_frames_remaining: 0,
             screenshot_pending: None,
+            waiting_view_transition: false,
             logged_pc: None,
             verbose: true,
             done: false,
@@ -654,7 +730,10 @@ impl ScriptRunner {
     }
 
     pub fn is_waiting(&self) -> bool {
-        self.wait_until.is_some() || self.wait_frames_remaining > 0 || self.screenshot_pending.is_some()
+        self.wait_until.is_some()
+            || self.wait_frames_remaining > 0
+            || self.screenshot_pending.is_some()
+            || self.waiting_view_transition
     }
 
     /// Advance the script. Returns true if a repaint should be requested.
@@ -685,6 +764,15 @@ impl ScriptRunner {
                 self.logged_pc = None;
             }
             return true;
+        }
+
+        if self.waiting_view_transition {
+            if state.cam.is_transitioning() {
+                return true;
+            }
+            self.waiting_view_transition = false;
+            self.pc += 1;
+            self.logged_pc = None;
         }
 
         if self.screenshot_pending.is_some() {
@@ -827,6 +915,21 @@ impl ScriptRunner {
                     viewport: vp,
                 });
                 StepResult::Continue
+            }
+            Instruction::View(view) => {
+                state.apply(Action::SetStandardView(view));
+                self.waiting_view_transition = true;
+                StepResult::Wait
+            }
+            Instruction::ViewEdge(edge) => {
+                state.apply(Action::SetViewEdge(edge));
+                self.waiting_view_transition = true;
+                StepResult::Wait
+            }
+            Instruction::ViewCorner(corner) => {
+                state.apply(Action::SetViewCorner(corner));
+                self.waiting_view_transition = true;
+                StepResult::Wait
             }
 
             Instruction::Move { x, y } => {
@@ -1099,6 +1202,71 @@ mod tests {
 
         // Frame 4: run clear
         runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
+        assert!(state.doc.rects.is_empty());
+        assert!(runner.done);
+    }
+
+    #[test]
+    fn parses_view_commands() {
+        let ins = parse("view front\nview top\nview right").unwrap();
+        assert_eq!(
+            ins,
+            vec![
+                Instruction::View(StandardView::Front),
+                Instruction::View(StandardView::Top),
+                Instruction::View(StandardView::Right),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_view_edge_and_corner_commands() {
+        let ins = parse("view edge front_top\nview corner frt").unwrap();
+        assert_eq!(
+            ins,
+            vec![
+                Instruction::ViewEdge(CubeEdgeId::FrontTop),
+                Instruction::ViewCorner(CubeCornerId::FrontRightTop),
+            ]
+        );
+    }
+
+    #[test]
+    fn view_command_waits_until_transition_finishes() {
+        let script = "view front\nclear";
+        let mut runner = ScriptRunner::new(parse(script).unwrap());
+        runner.verbose = false;
+        let mut state = AppState::default();
+        state.doc.rects.push(crate::model::Rect {
+            x: 0.,
+            y: 0.,
+            w: 1.,
+            h: 1.,
+        });
+        let mut synthetic = SyntheticInput::default();
+        let ctx = egui::Context::default();
+        let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
+
+        assert!(runner.tick(&mut state, &mut synthetic, Some(vp), &ctx));
+        assert_eq!(runner.pc, 0);
+        assert!(runner.waiting_view_transition);
+        assert!(state.cam.is_transitioning());
+
+        let mut blocked_while_animating = false;
+        for _ in 0..100 {
+            if runner.pc == 0 && state.cam.is_transitioning() {
+                blocked_while_animating = true;
+            }
+            if state.cam.is_transitioning() {
+                state.cam.tick_transition(0.05);
+            }
+            runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
+            if runner.done {
+                break;
+            }
+        }
+
+        assert!(blocked_while_animating, "script should block while the view animates");
         assert!(state.doc.rects.is_empty());
         assert!(runner.done);
     }

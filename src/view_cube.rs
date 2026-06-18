@@ -1,0 +1,1240 @@
+//! View-cube HUD (top-right): oriented cube with labeled faces, drag-to-orbit,
+//! click-to-animate standard views.
+
+use crate::camera::{Camera, StandardView, VIEW_TRANSITION_DURATION};
+use eframe::egui::epaint::TextShape;
+use eframe::egui::{self, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2};
+use egui::emath::Rot2;
+use glam::Vec3;
+
+const CUBE_SIZE: f32 = 96.0;
+const CUBE_MARGIN: f32 = 12.0;
+const HALF: f32 = 0.5;
+const DRAG_CLICK_THRESHOLD: f32 = 4.0;
+const EDGE_HIT_RADIUS: f32 = 6.0;
+const CORNER_HIT_RADIUS: f32 = 7.0;
+const EDGE_STROKE: f32 = 1.5;
+const EDGE_STROKE_HOVER: f32 = 3.5;
+const CORNER_RADIUS: f32 = 3.5;
+const CORNER_RADIUS_HOVER: f32 = 5.5;
+/// Hide faces that are too edge-on to the camera (they flare when orthographically projected).
+const FACE_CULL_DOT: f32 = 0.22;
+/// World-space origin for the X/Y/Z axis triad (front–left–bottom corner).
+const AXIS_ORIGIN: Vec3 = Vec3::new(-HALF, -HALF, -HALF);
+const AXIS_LENGTH: f32 = 1.0;
+const AXIS_STROKE: f32 = 2.0;
+
+#[derive(Clone, Copy)]
+struct AxisDef {
+    label: &'static str,
+    direction: Vec3,
+    color: Color32,
+}
+
+const AXES: [AxisDef; 3] = [
+    AxisDef {
+        label: "X",
+        direction: Vec3::X,
+        color: Color32::from_rgb(220, 80, 80),
+    },
+    AxisDef {
+        label: "Y",
+        direction: Vec3::Y,
+        color: Color32::from_rgb(80, 200, 100),
+    },
+    AxisDef {
+        label: "Z",
+        direction: Vec3::Z,
+        color: Color32::from_rgb(80, 140, 230),
+    },
+];
+
+#[derive(Clone, Copy)]
+struct CubeFace {
+    view: StandardView,
+    label: &'static str,
+    corners: [Vec3; 4],
+    fill: Color32,
+}
+
+const FACES: [CubeFace; 6] = [
+    CubeFace {
+        view: StandardView::Front,
+        label: "FRONT",
+        corners: [
+            Vec3::new(-HALF, -HALF, -HALF),
+            Vec3::new(HALF, -HALF, -HALF),
+            Vec3::new(HALF, -HALF, HALF),
+            Vec3::new(-HALF, -HALF, HALF),
+        ],
+        fill: Color32::from_rgb(58, 64, 78),
+    },
+    CubeFace {
+        view: StandardView::Back,
+        label: "BACK",
+        corners: [
+            Vec3::new(HALF, HALF, -HALF),
+            Vec3::new(-HALF, HALF, -HALF),
+            Vec3::new(-HALF, HALF, HALF),
+            Vec3::new(HALF, HALF, HALF),
+        ],
+        fill: Color32::from_rgb(50, 56, 68),
+    },
+    CubeFace {
+        view: StandardView::Right,
+        label: "RIGHT",
+        corners: [
+            Vec3::new(HALF, -HALF, -HALF),
+            Vec3::new(HALF, HALF, -HALF),
+            Vec3::new(HALF, HALF, HALF),
+            Vec3::new(HALF, -HALF, HALF),
+        ],
+        fill: Color32::from_rgb(64, 70, 84),
+    },
+    CubeFace {
+        view: StandardView::Left,
+        label: "LEFT",
+        corners: [
+            Vec3::new(-HALF, HALF, -HALF),
+            Vec3::new(-HALF, -HALF, -HALF),
+            Vec3::new(-HALF, -HALF, HALF),
+            Vec3::new(-HALF, HALF, HALF),
+        ],
+        fill: Color32::from_rgb(54, 60, 72),
+    },
+    CubeFace {
+        view: StandardView::Top,
+        label: "TOP",
+        corners: [
+            Vec3::new(-HALF, -HALF, HALF),
+            Vec3::new(HALF, -HALF, HALF),
+            Vec3::new(HALF, HALF, HALF),
+            Vec3::new(-HALF, HALF, HALF),
+        ],
+        fill: Color32::from_rgb(72, 78, 92),
+    },
+    CubeFace {
+        view: StandardView::Bottom,
+        label: "BOTTOM",
+        corners: [
+            Vec3::new(-HALF, HALF, -HALF),
+            Vec3::new(HALF, HALF, -HALF),
+            Vec3::new(HALF, -HALF, -HALF),
+            Vec3::new(-HALF, -HALF, -HALF),
+        ],
+        fill: Color32::from_rgb(44, 48, 58),
+    },
+];
+
+struct ProjectedFace {
+    view: StandardView,
+    label: &'static str,
+    points: [Pos2; 4],
+    center: Pos2,
+    /// Average corner depth along the camera forward axis (for painter order).
+    depth: f32,
+    /// How head-on the face is to the view (1 = perpendicular, 0 = edge-on).
+    head_on: f32,
+    area: f32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CubeEdgeId {
+    FrontBottom,
+    RightBottom,
+    BackBottom,
+    LeftBottom,
+    FrontTop,
+    RightTop,
+    BackTop,
+    LeftTop,
+    FrontLeft,
+    FrontRight,
+    BackRight,
+    BackLeft,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CubeCornerId {
+    FrontLeftBottom,
+    FrontRightBottom,
+    BackRightBottom,
+    BackLeftBottom,
+    FrontLeftTop,
+    FrontRightTop,
+    BackRightTop,
+    BackLeftTop,
+}
+
+#[derive(Clone, Copy)]
+struct CubeEdge {
+    id: CubeEdgeId,
+    a: Vec3,
+    b: Vec3,
+    /// Outward normals of the two faces that meet on this edge.
+    normals: [Vec3; 2],
+}
+
+#[derive(Clone, Copy)]
+struct CubeCorner {
+    id: CubeCornerId,
+    pos: Vec3,
+    /// Outward normals of the three faces that meet at this corner.
+    normals: [Vec3; 3],
+}
+
+const EDGES: [CubeEdge; 12] = [
+    CubeEdge {
+        id: CubeEdgeId::FrontBottom,
+        a: Vec3::new(-HALF, -HALF, -HALF),
+        b: Vec3::new(HALF, -HALF, -HALF),
+        normals: [Vec3::NEG_Y, Vec3::NEG_Z],
+    },
+    CubeEdge {
+        id: CubeEdgeId::RightBottom,
+        a: Vec3::new(HALF, -HALF, -HALF),
+        b: Vec3::new(HALF, HALF, -HALF),
+        normals: [Vec3::X, Vec3::NEG_Z],
+    },
+    CubeEdge {
+        id: CubeEdgeId::BackBottom,
+        a: Vec3::new(HALF, HALF, -HALF),
+        b: Vec3::new(-HALF, HALF, -HALF),
+        normals: [Vec3::Y, Vec3::NEG_Z],
+    },
+    CubeEdge {
+        id: CubeEdgeId::LeftBottom,
+        a: Vec3::new(-HALF, HALF, -HALF),
+        b: Vec3::new(-HALF, -HALF, -HALF),
+        normals: [Vec3::NEG_X, Vec3::NEG_Z],
+    },
+    CubeEdge {
+        id: CubeEdgeId::FrontTop,
+        a: Vec3::new(-HALF, -HALF, HALF),
+        b: Vec3::new(HALF, -HALF, HALF),
+        normals: [Vec3::NEG_Y, Vec3::Z],
+    },
+    CubeEdge {
+        id: CubeEdgeId::RightTop,
+        a: Vec3::new(HALF, -HALF, HALF),
+        b: Vec3::new(HALF, HALF, HALF),
+        normals: [Vec3::X, Vec3::Z],
+    },
+    CubeEdge {
+        id: CubeEdgeId::BackTop,
+        a: Vec3::new(HALF, HALF, HALF),
+        b: Vec3::new(-HALF, HALF, HALF),
+        normals: [Vec3::Y, Vec3::Z],
+    },
+    CubeEdge {
+        id: CubeEdgeId::LeftTop,
+        a: Vec3::new(-HALF, HALF, HALF),
+        b: Vec3::new(-HALF, -HALF, HALF),
+        normals: [Vec3::NEG_X, Vec3::Z],
+    },
+    CubeEdge {
+        id: CubeEdgeId::FrontLeft,
+        a: Vec3::new(-HALF, -HALF, -HALF),
+        b: Vec3::new(-HALF, -HALF, HALF),
+        normals: [Vec3::NEG_Y, Vec3::NEG_X],
+    },
+    CubeEdge {
+        id: CubeEdgeId::FrontRight,
+        a: Vec3::new(HALF, -HALF, -HALF),
+        b: Vec3::new(HALF, -HALF, HALF),
+        normals: [Vec3::NEG_Y, Vec3::X],
+    },
+    CubeEdge {
+        id: CubeEdgeId::BackRight,
+        a: Vec3::new(HALF, HALF, -HALF),
+        b: Vec3::new(HALF, HALF, HALF),
+        normals: [Vec3::Y, Vec3::X],
+    },
+    CubeEdge {
+        id: CubeEdgeId::BackLeft,
+        a: Vec3::new(-HALF, HALF, -HALF),
+        b: Vec3::new(-HALF, HALF, HALF),
+        normals: [Vec3::Y, Vec3::NEG_X],
+    },
+];
+
+const CORNERS: [CubeCorner; 8] = [
+    CubeCorner {
+        id: CubeCornerId::FrontLeftBottom,
+        pos: Vec3::new(-HALF, -HALF, -HALF),
+        normals: [Vec3::NEG_Y, Vec3::NEG_X, Vec3::NEG_Z],
+    },
+    CubeCorner {
+        id: CubeCornerId::FrontRightBottom,
+        pos: Vec3::new(HALF, -HALF, -HALF),
+        normals: [Vec3::NEG_Y, Vec3::X, Vec3::NEG_Z],
+    },
+    CubeCorner {
+        id: CubeCornerId::BackRightBottom,
+        pos: Vec3::new(HALF, HALF, -HALF),
+        normals: [Vec3::Y, Vec3::X, Vec3::NEG_Z],
+    },
+    CubeCorner {
+        id: CubeCornerId::BackLeftBottom,
+        pos: Vec3::new(-HALF, HALF, -HALF),
+        normals: [Vec3::Y, Vec3::NEG_X, Vec3::NEG_Z],
+    },
+    CubeCorner {
+        id: CubeCornerId::FrontLeftTop,
+        pos: Vec3::new(-HALF, -HALF, HALF),
+        normals: [Vec3::NEG_Y, Vec3::NEG_X, Vec3::Z],
+    },
+    CubeCorner {
+        id: CubeCornerId::FrontRightTop,
+        pos: Vec3::new(HALF, -HALF, HALF),
+        normals: [Vec3::NEG_Y, Vec3::X, Vec3::Z],
+    },
+    CubeCorner {
+        id: CubeCornerId::BackRightTop,
+        pos: Vec3::new(HALF, HALF, HALF),
+        normals: [Vec3::Y, Vec3::X, Vec3::Z],
+    },
+    CubeCorner {
+        id: CubeCornerId::BackLeftTop,
+        pos: Vec3::new(-HALF, HALF, HALF),
+        normals: [Vec3::Y, Vec3::NEG_X, Vec3::Z],
+    },
+];
+
+fn combine_normals(parts: &[Vec3]) -> Vec3 {
+    let mut sum = Vec3::ZERO;
+    for n in parts {
+        sum += *n;
+    }
+    sum.normalize_or_zero()
+}
+
+pub fn edge_view_direction(id: CubeEdgeId) -> Vec3 {
+    let def = EDGES.iter().find(|e| e.id == id).expect("edge");
+    combine_normals(&def.normals)
+}
+
+pub fn corner_view_direction(id: CubeCornerId) -> Vec3 {
+    let def = CORNERS.iter().find(|c| c.id == id).expect("corner");
+    combine_normals(&def.normals)
+}
+
+impl CubeEdgeId {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "front_bottom" | "frontbottom" | "fb" => Some(Self::FrontBottom),
+            "right_bottom" | "rightbottom" | "rb" => Some(Self::RightBottom),
+            "back_bottom" | "backbottom" | "bb" => Some(Self::BackBottom),
+            "left_bottom" | "leftbottom" | "lb" => Some(Self::LeftBottom),
+            "front_top" | "fronttop" | "ft" => Some(Self::FrontTop),
+            "right_top" | "righttop" | "rt" => Some(Self::RightTop),
+            "back_top" | "backtop" | "bt" => Some(Self::BackTop),
+            "left_top" | "lefttop" | "lt" => Some(Self::LeftTop),
+            "front_left" | "frontleft" | "fl" => Some(Self::FrontLeft),
+            "front_right" | "frontright" | "fr" => Some(Self::FrontRight),
+            "back_right" | "backright" | "br" => Some(Self::BackRight),
+            "back_left" | "backleft" | "bl" => Some(Self::BackLeft),
+            _ => None,
+        }
+    }
+}
+
+impl CubeCornerId {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "front_left_bottom" | "frontleftbottom" | "flb" => Some(Self::FrontLeftBottom),
+            "front_right_bottom" | "frontrightbottom" | "frb" => Some(Self::FrontRightBottom),
+            "back_right_bottom" | "backrightbottom" | "brb" => Some(Self::BackRightBottom),
+            "back_left_bottom" | "backleftbottom" | "blb" => Some(Self::BackLeftBottom),
+            "front_left_top" | "frontlefttop" | "flt" => Some(Self::FrontLeftTop),
+            "front_right_top" | "frontrighttop" | "frt" => Some(Self::FrontRightTop),
+            "back_right_top" | "backrighttop" | "brt" => Some(Self::BackRightTop),
+            "back_left_top" | "backlefttop" | "blt" => Some(Self::BackLeftTop),
+            _ => None,
+        }
+    }
+}
+
+struct ProjectedEdge {
+    id: CubeEdgeId,
+    a: Pos2,
+    b: Pos2,
+    depth: f32,
+}
+
+struct ProjectedCorner {
+    id: CubeCornerId,
+    pos: Pos2,
+    depth: f32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CubePick {
+    Corner(CubeCornerId),
+    Edge(CubeEdgeId),
+    Face(StandardView),
+}
+
+struct ProjectedAxis {
+    label: &'static str,
+    color: Color32,
+    from: Pos2,
+    to: Pos2,
+    depth: f32,
+}
+
+fn view_cube_basis(cam: &Camera) -> (Vec3, Vec3, Vec3) {
+    let forward = (cam.target - cam.eye()).normalize();
+    let mut right = forward.cross(Vec3::Z);
+    if right.length_squared() < 1e-8 {
+        right = Vec3::new(cam.yaw.cos(), cam.yaw.sin(), 0.0);
+    } else {
+        right = right.normalize();
+    }
+    let up = right.cross(forward).normalize();
+    (right, up, forward)
+}
+
+fn transform_vertex(v: Vec3, right: Vec3, up: Vec3, forward: Vec3) -> Vec3 {
+    Vec3::new(v.dot(right), v.dot(up), v.dot(forward))
+}
+
+fn face_normal(corners: [Vec3; 4]) -> Vec3 {
+    let e0 = corners[1] - corners[0];
+    let e1 = corners[3] - corners[0];
+    e0.cross(e1).normalize()
+}
+
+fn project_to_hud(v: Vec3, center: Pos2, scale: f32) -> Pos2 {
+    Pos2::new(center.x + v.x * scale, center.y - v.y * scale)
+}
+
+/// Max screen-space radius of the cube silhouette for the current orientation.
+fn cube_silhouette_radius(right: Vec3, up: Vec3, forward: Vec3, scale: f32) -> f32 {
+    let mut max_r = 0.0f32;
+    for face in &FACES {
+        for corner in &face.corners {
+            let t = transform_vertex(*corner, right, up, forward);
+            let r = (t.x * t.x + t.y * t.y).sqrt() * scale;
+            max_r = max_r.max(r);
+        }
+    }
+    max_r
+}
+
+fn clamp_point_to_silhouette(p: Pos2, center: Pos2, max_r: f32) -> Pos2 {
+    let d = p - center;
+    let len = d.length();
+    if len > max_r {
+        center + d * (max_r / len)
+    } else {
+        p
+    }
+}
+
+fn face_head_on(
+    corners: [Vec3; 4],
+    right: Vec3,
+    up: Vec3,
+    forward: Vec3,
+) -> f32 {
+    let n = face_normal(corners);
+    let n_view = transform_vertex(n, right, up, forward);
+    // 1.0 = face perpendicular to view, 0.0 = edge-on (the case that flares).
+    n_view.z.abs()
+}
+
+fn face_visible_in_view(
+    corners: [Vec3; 4],
+    right: Vec3,
+    up: Vec3,
+    forward: Vec3,
+) -> bool {
+    let n = face_normal(corners);
+    if !face_visible_for_normal(n, right, up, forward) {
+        return false;
+    }
+    let head_on = face_head_on(corners, right, up, forward);
+    if head_on < FACE_CULL_DOT {
+        return false;
+    }
+    let mut min_z = f32::MAX;
+    let mut max_z = f32::MIN;
+    for corner in corners {
+        let t = transform_vertex(corner, right, up, forward);
+        min_z = min_z.min(t.z);
+        max_z = max_z.max(t.z);
+    }
+    // Grazing faces that cross the view plane flare when orthographically projected.
+    if min_z < 0.0 && max_z > 0.0 {
+        return head_on > 0.5;
+    }
+    true
+}
+
+fn point_in_tri(p: Pos2, a: Pos2, b: Pos2, c: Pos2) -> bool {
+    let v0 = c - a;
+    let v1 = b - a;
+    let v2 = p - a;
+    let dot00 = v0.dot(v0);
+    let dot01 = v0.dot(v1);
+    let dot02 = v0.dot(v2);
+    let dot11 = v1.dot(v1);
+    let dot12 = v1.dot(v2);
+    let denom = dot00 * dot11 - dot01 * dot01;
+    if denom.abs() < 1e-8 {
+        return false;
+    }
+    let inv = 1.0 / denom;
+    let u = (dot11 * dot02 - dot01 * dot12) * inv;
+    let v = (dot00 * dot12 - dot01 * dot02) * inv;
+    u >= 0.0 && v >= 0.0 && u + v <= 1.0
+}
+
+fn point_in_quad(p: Pos2, quad: [Pos2; 4]) -> bool {
+    point_in_tri(p, quad[0], quad[1], quad[2]) || point_in_tri(p, quad[0], quad[2], quad[3])
+}
+
+fn project_point(
+    world: Vec3,
+    right: Vec3,
+    up: Vec3,
+    forward: Vec3,
+    center: Pos2,
+    scale: f32,
+) -> (Pos2, f32) {
+    let view = transform_vertex(world, right, up, forward);
+    (project_to_hud(view, center, scale), view.z)
+}
+
+fn project_axes(cam: &Camera, center: Pos2, scale: f32) -> Vec<ProjectedAxis> {
+    let (right, up, forward) = view_cube_basis(cam);
+    let mut axes = Vec::with_capacity(AXES.len());
+    let (origin, origin_depth) =
+        project_point(AXIS_ORIGIN, right, up, forward, center, scale);
+    for axis in &AXES {
+        let end_world = AXIS_ORIGIN + axis.direction * AXIS_LENGTH;
+        let (end, end_depth) = project_point(end_world, right, up, forward, center, scale);
+        axes.push(ProjectedAxis {
+            label: axis.label,
+            color: axis.color,
+            from: origin,
+            to: end,
+            depth: (origin_depth + end_depth) * 0.5,
+        });
+    }
+    axes.sort_by(|a, b| b.depth.partial_cmp(&a.depth).unwrap_or(std::cmp::Ordering::Equal));
+    axes
+}
+
+fn draw_axes(ui: &mut Ui, axes: &[ProjectedAxis]) {
+    let painter = ui.painter();
+    for axis in axes {
+        painter.line_segment(
+            [axis.from, axis.to],
+            Stroke::new(AXIS_STROKE, axis.color),
+        );
+        let galley = ui.fonts(|fonts| {
+            fonts.layout_no_wrap(
+                axis.label.to_owned(),
+                FontId::proportional(9.0),
+                axis.color,
+            )
+        });
+        let tip = axis.to;
+        let dir = (axis.to - axis.from).normalized();
+        let offset = if dir.length_sq() > 1e-6 {
+            dir * 3.0
+        } else {
+            Vec2::ZERO
+        };
+        painter.add(
+            TextShape::new(
+                tip + offset - galley.size() * 0.5,
+                galley,
+                axis.color,
+            )
+            .with_override_text_color(axis.color),
+        );
+    }
+}
+
+fn project_faces(cam: &Camera, center: Pos2, scale: f32) -> Vec<ProjectedFace> {
+    let (right, up, forward) = view_cube_basis(cam);
+    let max_r = cube_silhouette_radius(right, up, forward, scale);
+    let mut faces = Vec::with_capacity(FACES.len());
+    for face in &FACES {
+        let head_on = face_head_on(face.corners, right, up, forward);
+        if !face_visible_in_view(face.corners, right, up, forward) {
+            continue;
+        }
+        let mut depth = 0.0;
+        let mut points = [Pos2::ZERO; 4];
+        for (i, corner) in face.corners.iter().enumerate() {
+            let t = transform_vertex(*corner, right, up, forward);
+            depth += t.z;
+            points[i] = clamp_point_to_silhouette(
+                project_to_hud(t, center, scale),
+                center,
+                max_r,
+            );
+        }
+        depth /= 4.0;
+        let center_pt = Pos2::new(
+            (points[0].x + points[1].x + points[2].x + points[3].x) * 0.25,
+            (points[0].y + points[1].y + points[2].y + points[3].y) * 0.25,
+        );
+        faces.push(ProjectedFace {
+            view: face.view,
+            label: face.label,
+            points,
+            center: center_pt,
+            depth,
+            head_on,
+            area: quad_area(points),
+        });
+    }
+    // Paint farther faces first; nearer faces (smaller depth) win hit tests.
+    faces.sort_by(|a, b| b.depth.partial_cmp(&a.depth).unwrap_or(std::cmp::Ordering::Equal));
+    faces
+}
+
+fn pick_face(faces: &[ProjectedFace], pos: Pos2) -> Option<StandardView> {
+    let mut best: Option<&ProjectedFace> = None;
+    for face in faces.iter().rev() {
+        if point_in_quad(pos, face.points) {
+            best = Some(face);
+            break;
+        }
+    }
+    best.map(|f| f.view)
+}
+
+fn edge_visible(edge: &CubeEdge, right: Vec3, up: Vec3, forward: Vec3) -> bool {
+    face_visible_for_normal(edge.normals[0], right, up, forward)
+        || face_visible_for_normal(edge.normals[1], right, up, forward)
+}
+
+fn face_visible_for_normal(normal: Vec3, right: Vec3, up: Vec3, forward: Vec3) -> bool {
+    let n_view = transform_vertex(normal, right, up, forward);
+    n_view.z < 0.0
+}
+
+fn project_edges(cam: &Camera, center: Pos2, scale: f32) -> Vec<ProjectedEdge> {
+    let (right, up, forward) = view_cube_basis(cam);
+    let max_r = cube_silhouette_radius(right, up, forward, scale);
+    let mut edges = Vec::with_capacity(EDGES.len());
+    for edge in &EDGES {
+        if !edge_visible(edge, right, up, forward) {
+            continue;
+        }
+        let (a, za) = project_point(edge.a, right, up, forward, center, scale);
+        let (b, zb) = project_point(edge.b, right, up, forward, center, scale);
+        let a = clamp_point_to_silhouette(a, center, max_r);
+        let b = clamp_point_to_silhouette(b, center, max_r);
+        edges.push(ProjectedEdge {
+            id: edge.id,
+            a,
+            b,
+            depth: (za + zb) * 0.5,
+        });
+    }
+    edges.sort_by(|a, b| b.depth.partial_cmp(&a.depth).unwrap_or(std::cmp::Ordering::Equal));
+    edges
+}
+
+fn project_corners(cam: &Camera, center: Pos2, scale: f32) -> Vec<ProjectedCorner> {
+    let (right, up, forward) = view_cube_basis(cam);
+    let max_r = cube_silhouette_radius(right, up, forward, scale);
+    let mut corners = Vec::with_capacity(CORNERS.len());
+    for corner in &CORNERS {
+        let outward_visible = corner
+            .normals
+            .iter()
+            .filter(|n| face_visible_for_normal(**n, right, up, forward))
+            .count();
+        if outward_visible < 2 {
+            continue;
+        }
+        let (pos, depth) = project_point(corner.pos, right, up, forward, center, scale);
+        corners.push(ProjectedCorner {
+            id: corner.id,
+            pos: clamp_point_to_silhouette(pos, center, max_r),
+            depth,
+        });
+    }
+    corners.sort_by(|a, b| b.depth.partial_cmp(&a.depth).unwrap_or(std::cmp::Ordering::Equal));
+    corners
+}
+
+fn dist_point_to_segment(p: Pos2, a: Pos2, b: Pos2) -> (f32, f32) {
+    let ab = b - a;
+    let ap = p - a;
+    let len_sq = ab.length_sq();
+    if len_sq < 1e-8 {
+        return (ap.length(), 0.0);
+    }
+    let t = (ap.dot(ab) / len_sq).clamp(0.0, 1.0);
+    let closest = a + ab * t;
+    ((p - closest).length(), t)
+}
+
+fn pick_priority(pick: CubePick) -> u8 {
+    match pick {
+        CubePick::Corner(_) => 0,
+        CubePick::Edge(_) => 1,
+        CubePick::Face(_) => 2,
+    }
+}
+
+fn pick_cube(
+    faces: &[ProjectedFace],
+    edges: &[ProjectedEdge],
+    corners: &[ProjectedCorner],
+    pos: Pos2,
+) -> Option<CubePick> {
+    let mut best: Option<(CubePick, f32, f32)> = None;
+
+    let mut consider = |pick: CubePick, depth: f32, dist: f32| {
+        let better = match best {
+            None => true,
+            Some((bp, bd, bdist)) => {
+                let pp = pick_priority(pick);
+                let bpp = pick_priority(bp);
+                pp < bpp
+                    || (pp == bpp
+                        && (depth < bd - 0.01
+                            || ((depth - bd).abs() < 0.01 && dist < bdist)))
+            }
+        };
+        if better {
+            best = Some((pick, depth, dist));
+        }
+    };
+
+    for corner in corners.iter().rev() {
+        let dist = (pos - corner.pos).length();
+        if dist <= CORNER_HIT_RADIUS {
+            consider(CubePick::Corner(corner.id), corner.depth, dist);
+        }
+    }
+
+    for edge in edges.iter().rev() {
+        let (dist, t) = dist_point_to_segment(pos, edge.a, edge.b);
+        if dist <= EDGE_HIT_RADIUS {
+            consider(CubePick::Edge(edge.id), edge.depth, dist);
+        }
+        let _ = t;
+    }
+
+    if let Some(view) = pick_face(faces, pos) {
+        if let Some(face) = faces.iter().find(|f| f.view == view) {
+            consider(CubePick::Face(view), face.depth, 0.0);
+        }
+    }
+
+    best.map(|(pick, _, _)| pick)
+}
+
+fn apply_cube_pick(cam: &mut Camera, pick: CubePick) {
+    match pick {
+        CubePick::Face(view) => cam.start_view_transition(view, VIEW_TRANSITION_DURATION),
+        CubePick::Edge(id) => cam.start_view_transition_to_direction(
+            edge_view_direction(id),
+            VIEW_TRANSITION_DURATION,
+        ),
+        CubePick::Corner(id) => cam.start_view_transition_to_direction(
+            corner_view_direction(id),
+            VIEW_TRANSITION_DURATION,
+        ),
+    }
+}
+
+fn draw_edges(painter: &egui::Painter, edges: &[ProjectedEdge], hover: Option<CubeEdgeId>) {
+    for edge in edges {
+        let highlighted = hover == Some(edge.id);
+        let stroke = if highlighted {
+            Stroke::new(EDGE_STROKE_HOVER, Color32::from_rgb(255, 220, 120))
+        } else {
+            Stroke::new(EDGE_STROKE, Color32::from_gray(95))
+        };
+        painter.line_segment([edge.a, edge.b], stroke);
+    }
+}
+
+fn draw_corners(painter: &egui::Painter, corners: &[ProjectedCorner], hover: Option<CubeCornerId>) {
+    for corner in corners {
+        let highlighted = hover == Some(corner.id);
+        let radius = if highlighted {
+            CORNER_RADIUS_HOVER
+        } else {
+            CORNER_RADIUS
+        };
+        let color = if highlighted {
+            Color32::from_rgb(255, 220, 120)
+        } else {
+            Color32::from_gray(110)
+        };
+        painter.circle_filled(corner.pos, radius, color);
+        if highlighted {
+            painter.circle_stroke(
+                corner.pos,
+                radius + 1.0,
+                Stroke::new(1.0, Color32::from_gray(220)),
+            );
+        }
+    }
+}
+
+fn quad_area(points: [Pos2; 4]) -> f32 {
+    let a = points[2] - points[0];
+    let b = points[3] - points[1];
+    (a.x * b.y - a.y * b.x).abs() * 0.5
+}
+
+/// Screen-space angle for label text affixed to the face (edge 0→1 is the baseline).
+fn face_label_angle(points: [Pos2; 4]) -> f32 {
+    let baseline = points[1] - points[0];
+    baseline.y.atan2(baseline.x)
+}
+
+fn face_label_font_size(area: f32, label: &str) -> f32 {
+    let side = area.sqrt();
+    let mut size = side * 0.34;
+    if label.len() > 4 {
+        size *= 0.82;
+    }
+    size.clamp(6.0, 10.0)
+}
+
+fn should_draw_face_label(head_on: f32, area: f32) -> bool {
+    head_on > FACE_CULL_DOT && area > 120.0
+}
+
+fn draw_face_label(ui: &mut Ui, face: &ProjectedFace) {
+    if !should_draw_face_label(face.head_on, face.area) {
+        return;
+    }
+    let angle = face_label_angle(face.points);
+    let font_size = face_label_font_size(face.area, face.label);
+    let color = Color32::from_gray(235);
+    let galley = ui.fonts(|fonts| {
+        fonts.layout_no_wrap(
+            face.label.to_owned(),
+            FontId::proportional(font_size),
+            Color32::PLACEHOLDER,
+        )
+    });
+    let half = galley.size() * 0.5;
+    let pos = face.center - Rot2::from_angle(angle) * half;
+    ui.painter().add(
+        TextShape::new(pos, galley, color)
+            .with_angle(angle)
+            .with_override_text_color(color),
+    );
+}
+
+fn cube_rect_in_viewport(viewport: Rect) -> Rect {
+    Rect::from_min_size(
+        Pos2::new(
+            viewport.max.x - CUBE_SIZE - CUBE_MARGIN,
+            viewport.min.y + CUBE_MARGIN,
+        ),
+        Vec2::splat(CUBE_SIZE),
+    )
+}
+
+/// Show the view-cube HUD overlay in the top-right of `viewport`.
+pub fn show_hud(ctx: &egui::Context, cam: &mut Camera, viewport: Rect) {
+    let screen_rect = cube_rect_in_viewport(viewport);
+    egui::Area::new(egui::Id::new("view_cube_hud"))
+        .fixed_pos(screen_rect.min)
+        .order(egui::Order::Foreground)
+        .interactable(true)
+        .constrain(false)
+        .show(ctx, |ui| {
+            show(ui, cam, screen_rect);
+        });
+}
+
+/// Draw and handle input for the view-cube HUD. All geometry uses screen coordinates.
+fn show(ui: &mut Ui, cam: &mut Camera, screen_rect: Rect) {
+    let center = screen_rect.center();
+    let scale = CUBE_SIZE * 0.42;
+
+    let faces = project_faces(cam, center, scale);
+    let edges = project_edges(cam, center, scale);
+    let corners = project_corners(cam, center, scale);
+
+    let response = ui.allocate_rect(screen_rect, Sense::click_and_drag());
+
+    let hover_pick = response
+        .hover_pos()
+        .and_then(|p| pick_cube(&faces, &edges, &corners, p));
+    let hover_edge = match hover_pick {
+        Some(CubePick::Edge(id)) => Some(id),
+        _ => None,
+    };
+    let hover_corner = match hover_pick {
+        Some(CubePick::Corner(id)) => Some(id),
+        _ => None,
+    };
+    let hover_face = match hover_pick {
+        Some(CubePick::Face(view)) => Some(view),
+        _ => None,
+    };
+
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(if hover_pick.is_some() {
+            egui::CursorIcon::PointingHand
+        } else {
+            egui::CursorIcon::Grab
+        });
+    }
+
+    if response.dragged() {
+        cam.orbit_trackball(response.drag_delta());
+    }
+
+    if response.clicked() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            if response.drag_delta().length() < DRAG_CLICK_THRESHOLD {
+                if let Some(pick) = pick_cube(&faces, &edges, &corners, pos) {
+                    apply_cube_pick(cam, pick);
+                }
+            }
+        }
+    }
+
+    let painter = ui.painter();
+    let pad_rect = screen_rect.expand(4.0);
+    painter.rect_filled(pad_rect, 6.0, Color32::from_rgba_unmultiplied(18, 20, 26, 200));
+    painter.rect_stroke(pad_rect, 6.0, Stroke::new(1.0, Color32::from_gray(70)));
+
+    for face in &faces {
+        let hovered = hover_face == Some(face.view);
+        let fill = if hovered {
+            face_fill_hover(face.view)
+        } else {
+            face_fill(face.view)
+        };
+        painter.add(Shape::convex_polygon(
+            face.points.to_vec(),
+            fill,
+            Stroke::new(1.0, Color32::from_gray(120)),
+        ));
+    }
+    draw_edges(painter, &edges, hover_edge);
+    draw_corners(painter, &corners, hover_corner);
+    let axes = project_axes(cam, center, scale);
+    draw_axes(ui, &axes);
+    for face in &faces {
+        draw_face_label(ui, face);
+    }
+}
+
+fn face_fill(view: StandardView) -> Color32 {
+    FACES
+        .iter()
+        .find(|f| f.view == view)
+        .map(|f| f.fill)
+        .unwrap_or(Color32::from_gray(60))
+}
+
+fn face_fill_hover(view: StandardView) -> Color32 {
+    face_fill(view).gamma_multiply(1.35)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cube_rect_is_in_viewport_top_right() {
+        let vp = Rect::from_min_size(Pos2::new(0.0, 40.0), Vec2::new(800.0, 600.0));
+        let cube = cube_rect_in_viewport(vp);
+        assert!(cube.max.x <= vp.max.x);
+        assert!(cube.min.y >= vp.min.y);
+        assert!((cube.width() - CUBE_SIZE).abs() < 0.01);
+    }
+
+    fn cam_at_view(view: StandardView) -> Camera {
+        let (yaw, pitch) = view.yaw_pitch();
+        let mut cam = Camera::default();
+        cam.yaw = yaw;
+        cam.pitch = pitch;
+        cam
+    }
+
+    #[test]
+    fn front_face_visible_from_front_view() {
+        let cam = cam_at_view(StandardView::Front);
+        let center = Pos2::new(100.0, 100.0);
+        let faces = project_faces(&cam, center, 40.0);
+        assert!(faces.iter().any(|f| f.view == StandardView::Front));
+        let front = faces
+            .iter()
+            .find(|f| f.view == StandardView::Front)
+            .expect("front face");
+        assert!(point_in_quad(front.center, front.points));
+    }
+
+    #[test]
+    fn edge_view_direction_averages_adjacent_face_normals() {
+        let dir = edge_view_direction(CubeEdgeId::FrontTop);
+        let expected = Vec3::new(0.0, -1.0, 1.0).normalize();
+        assert!((dir - expected).length() < 0.01);
+    }
+
+    #[test]
+    fn corner_view_direction_averages_three_face_normals() {
+        let dir = corner_view_direction(CubeCornerId::FrontRightTop);
+        let expected = Vec3::new(1.0, -1.0, 1.0).normalize();
+        assert!((dir - expected).length() < 0.01);
+    }
+
+    #[test]
+    fn dist_point_to_segment_finds_perpendicular_foot() {
+        let (dist, t) = dist_point_to_segment(
+            Pos2::new(10.0, 5.0),
+            Pos2::new(0.0, 0.0),
+            Pos2::new(20.0, 0.0),
+        );
+        assert!((dist - 5.0).abs() < 0.01);
+        assert!((t - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn pick_corner_beats_face_at_front_top_right() {
+        // Isometric view exposes ≥2 outward faces at FRT; pure front view culls it.
+        let cam = Camera::default();
+        let center = Pos2::new(120.0, 120.0);
+        let scale = 40.0;
+        let faces = project_faces(&cam, center, scale);
+        let edges = project_edges(&cam, center, scale);
+        let corners = project_corners(&cam, center, scale);
+        let frt = corners
+            .iter()
+            .find(|c| c.id == CubeCornerId::FrontRightTop)
+            .expect("front-right-top corner");
+        let pick = pick_cube(&faces, &edges, &corners, frt.pos).expect("pick");
+        assert_eq!(pick, CubePick::Corner(CubeCornerId::FrontRightTop));
+    }
+
+    #[test]
+    fn pick_face_finds_front_at_center() {
+        let cam = cam_at_view(StandardView::Front);
+        let center = Pos2::new(120.0, 120.0);
+        let faces = project_faces(&cam, center, 40.0);
+        let front = faces
+            .iter()
+            .find(|f| f.view == StandardView::Front)
+            .expect("front");
+        assert_eq!(pick_face(&faces, front.center), Some(StandardView::Front));
+    }
+
+    #[test]
+    fn top_view_cube_drag_down_reveals_back_face() {
+        let mut cam = cam_at_view(StandardView::Top);
+        cam.orbit_trackball(egui::vec2(0.0, 90.0));
+        let center = Pos2::new(120.0, 120.0);
+        let faces = project_faces(&cam, center, 40.0);
+        assert!(
+            faces.iter().any(|f| f.view == StandardView::Back),
+            "pulling the top face down should bring the back face into view"
+        );
+    }
+
+    #[test]
+    fn face_label_angle_follows_face_without_upright_flip() {
+        let horizontal = [
+            Pos2::new(0.0, 0.0),
+            Pos2::new(40.0, 0.0),
+            Pos2::new(40.0, 10.0),
+            Pos2::new(0.0, 10.0),
+        ];
+        assert!(face_label_angle(horizontal).abs() < 0.01);
+
+        // Baseline reversed on screen — text reads backward/upside-down like paint on the cube.
+        let reversed = [
+            Pos2::new(40.0, 10.0),
+            Pos2::new(0.0, 10.0),
+            Pos2::new(0.0, 0.0),
+            Pos2::new(40.0, 0.0),
+        ];
+        let angle = face_label_angle(reversed);
+        assert!(
+            angle.abs() > std::f32::consts::FRAC_PI_2,
+            "label should not be forced upright, got {angle}"
+        );
+    }
+
+    #[test]
+    fn face_label_rotates_when_face_tilts() {
+        let center = Pos2::new(120.0, 120.0);
+        let scale = 40.0;
+        let head_on = project_faces(&cam_at_view(StandardView::Back), center, scale)
+            .into_iter()
+            .find(|f| f.view == StandardView::Back)
+            .expect("back");
+        let tilted = project_faces(&Camera::default(), center, scale)
+            .into_iter()
+            .find(|f| f.view == StandardView::Back)
+            .expect("back");
+        assert!(
+            (face_label_angle(tilted.points) - face_label_angle(head_on.points)).abs() > 0.08,
+            "label should rotate with the face as the view tilts"
+        );
+    }
+
+    #[test]
+    fn face_label_center_lies_on_face_quad() {
+        let cam = cam_at_view(StandardView::Front);
+        let center = Pos2::new(200.0, 120.0);
+        let faces = project_faces(&cam, center, 40.0);
+        let front = faces
+            .iter()
+            .find(|f| f.view == StandardView::Front)
+            .expect("front");
+        assert!(should_draw_face_label(front.head_on, front.area));
+        assert!(point_in_quad(front.center, front.points));
+    }
+
+    #[test]
+    fn projected_faces_stay_inside_hud_rect() {
+        let vp = Rect::from_min_size(Pos2::new(0.0, 40.0), Vec2::new(800.0, 600.0));
+        let screen_rect = cube_rect_in_viewport(vp);
+        let center = screen_rect.center();
+        let faces = project_faces(&Camera::default(), center, CUBE_SIZE * 0.42);
+        let pad = screen_rect.expand(4.0);
+        for face in &faces {
+            for p in face.points {
+                assert!(
+                    pad.contains(p),
+                    "face vertex {p:?} should lie inside HUD pad {pad:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn projected_vertices_stay_within_silhouette_at_many_angles() {
+        let center = Pos2::new(200.0, 120.0);
+        let scale = CUBE_SIZE * 0.42;
+        for yaw in [0.0, 0.35, 0.8, 1.4, 2.2, 3.5] {
+            for pitch in [-1.2, -0.5, 0.0, 0.35, 0.6, 1.1] {
+                let mut cam = Camera::default();
+                cam.yaw = yaw;
+                cam.pitch = pitch;
+                let (right, up, forward) = view_cube_basis(&cam);
+                let max_r = cube_silhouette_radius(right, up, forward, scale);
+                let faces = project_faces(&cam, center, scale);
+                for face in &faces {
+                    for p in face.points {
+                        let r = (p - center).length();
+                        assert!(
+                            r <= max_r + 0.01,
+                            "yaw={yaw} pitch={pitch}: vertex {p:?} outside silhouette radius {max_r}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn default_startup_culls_back_faces() {
+        let cam = Camera::default();
+        let center = Pos2::new(120.0, 120.0);
+        let faces = project_faces(&cam, center, 40.0);
+        let views: Vec<_> = faces.iter().map(|f| f.view).collect();
+        assert_eq!(
+            faces.len(),
+            3,
+            "default camera should show exactly three faces, got {views:?}"
+        );
+        assert!(!views.contains(&StandardView::Front));
+        assert!(!views.contains(&StandardView::Left));
+        assert!(!views.contains(&StandardView::Bottom));
+        let opposing = [
+            (StandardView::Top, StandardView::Bottom),
+            (StandardView::Left, StandardView::Right),
+            (StandardView::Front, StandardView::Back),
+        ];
+        for (a, b) in opposing {
+            assert!(
+                !(views.contains(&a) && views.contains(&b)),
+                "opposing faces {a:?} and {b:?} should not both be visible: {views:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn edge_on_faces_are_culled() {
+        let cam = cam_at_view(StandardView::Top);
+        let center = Pos2::new(120.0, 120.0);
+        let scale = 40.0;
+        let faces = project_faces(&cam, center, scale);
+        let views: Vec<_> = faces.iter().map(|f| f.view).collect();
+        assert!(views.contains(&StandardView::Top));
+        assert!(!views.contains(&StandardView::Right));
+        assert!(!views.contains(&StandardView::Left));
+    }
+
+    #[test]
+    fn axis_origin_is_front_left_bottom_corner() {
+        let corner = AXIS_ORIGIN;
+        assert_eq!(corner.x, -HALF);
+        assert_eq!(corner.y, -HALF);
+        assert_eq!(corner.z, -HALF);
+        assert!(FACES.iter().any(|f| {
+            f.view == StandardView::Front && f.corners.iter().any(|c| (*c - corner).length() < 1e-6)
+        }));
+        assert!(FACES.iter().any(|f| {
+            f.view == StandardView::Left && f.corners.iter().any(|c| (*c - corner).length() < 1e-6)
+        }));
+        assert!(FACES.iter().any(|f| {
+            f.view == StandardView::Bottom
+                && f.corners.iter().any(|c| (*c - corner).length() < 1e-6)
+        }));
+    }
+
+    #[test]
+    fn projected_axes_share_origin_from_front_view() {
+        let cam = cam_at_view(StandardView::Front);
+        let center = Pos2::new(120.0, 120.0);
+        let axes = project_axes(&cam, center, 40.0);
+        assert_eq!(axes.len(), 3);
+        let origin = axes[0].from;
+        for axis in &axes {
+            assert!(
+                (axis.from - origin).length() < 0.01,
+                "{label} axis should start at the shared origin",
+                label = axis.label
+            );
+        }
+    }
+
+    #[test]
+    fn projected_axes_from_front_view_point_right_and_up() {
+        let cam = cam_at_view(StandardView::Front);
+        let center = Pos2::new(120.0, 120.0);
+        let axes = project_axes(&cam, center, 40.0);
+        let x = axes.iter().find(|a| a.label == "X").expect("x axis");
+        let y = axes.iter().find(|a| a.label == "Y").expect("y axis");
+        let z = axes.iter().find(|a| a.label == "Z").expect("z axis");
+        assert!(
+            x.to.x > x.from.x + 4.0,
+            "X should run to the right on screen from the front view"
+        );
+        assert!(
+            z.to.y < z.from.y - 4.0,
+            "Z should run upward on screen from the front view"
+        );
+        assert!(
+            (y.to - y.from).length() < 6.0,
+            "Y should point into the screen and barely move in front view"
+        );
+    }
+
+}

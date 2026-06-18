@@ -15,6 +15,7 @@ mod camera;
 mod model;
 mod script;
 mod storage;
+mod view_cube;
 
 use actions::{Action, AppState, CreatingLine, CreatingRect, RectAxis, Tool};
 use eframe::egui;
@@ -236,6 +237,11 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let dt = ctx.input(|i| i.stable_dt);
+        if self.state.cam.tick_transition(dt) {
+            ctx.request_repaint();
+        }
+
         self.process_screenshots(ctx);
         self.tick_script(ctx);
         self.synthetic.inject(ctx);
@@ -293,6 +299,8 @@ mod col {
     pub const GRID_AXIS: Color32 = Color32::from_gray(90);
     pub const X_AXIS: Color32 = Color32::from_rgb(200, 70, 70);
     pub const Y_AXIS: Color32 = Color32::from_rgb(70, 190, 90);
+    /// Matches the view-cube Z triad (`view_cube::AXES`).
+    pub const Z_AXIS: Color32 = Color32::from_rgb(80, 140, 230);
     pub const RECT_LINE: Color32 = Color32::from_rgb(120, 170, 240);
     pub const LINE_STROKE: Color32 = Color32::from_rgb(180, 140, 240);
     pub const PREVIEW: Color32 = Color32::from_rgb(240, 200, 120);
@@ -658,9 +666,10 @@ impl App {
             }
         }
 
-        let cam = self.state.cam;
+        let cam = self.state.cam.clone();
         let vp = cam.view_proj(viewport);
-        let project = move |w: Vec3| cam.project(w, viewport, &vp);
+        let cam_project = cam.clone();
+        let project = move |w: Vec3| cam_project.project(w, viewport, &vp);
 
         if self.state.tool == Tool::Rectangle {
             let ground = |p: egui::Pos2| cam.ground_point(p, viewport, &vp);
@@ -915,6 +924,8 @@ impl App {
             }
         }
 
+        view_cube::show_hud(ui.ctx(), &mut self.state.cam, viewport);
+
         let hint = match self.state.tool {
             Tool::Select => {
                 "Right-drag: orbit  •  Shift+right-drag: pan  •  Wheel: zoom  •  r: rectangle  •  l: line"
@@ -1049,15 +1060,30 @@ fn draw_ground(painter: &egui::Painter, project: &impl Fn(Vec3) -> Option<egui::
 
     line(Vec3::ZERO, Vec3::new(e, 0.0, 0.0), col::X_AXIS, 2.0);
     line(Vec3::ZERO, Vec3::new(0.0, e, 0.0), col::Y_AXIS, 2.0);
+    line(Vec3::ZERO, Vec3::new(0.0, 0.0, e), col::Z_AXIS, 2.0);
 }
 
 #[cfg(test)]
 mod tests {
     use super::actions::CreatingRect;
     use super::{
-        should_commit_sketch_on_click, should_select_all_rect_value,
+        col, should_commit_sketch_on_click, should_select_all_rect_value, GRID_EXTENT,
     };
+    use egui::Color32;
     use glam::Vec3;
+
+    #[test]
+    fn z_axis_color_matches_view_cube_blue() {
+        assert_eq!(col::Z_AXIS, Color32::from_rgb(80, 140, 230));
+    }
+
+    #[test]
+    fn z_axis_extends_along_positive_z_from_origin() {
+        let end = Vec3::new(0.0, 0.0, GRID_EXTENT);
+        assert!(end.z > 0.0);
+        assert_eq!(end.x, 0.0);
+        assert_eq!(end.y, 0.0);
+    }
 
     #[test]
     fn second_viewport_click_commits_sketch() {
