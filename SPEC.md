@@ -310,6 +310,10 @@ inherently require mouse interaction* (e.g. free dragging in the viewport). The 
 GUI share the same model and the same action set; most CLI subcommands are thin wrappers
 over scripting (§8).
 
+Instruction scripts (§9.3) are the deliberate exception to the "no mouse interaction" rule;
+they exist specifically so that interactive flows can be driven programmatically for testing
+and automation (including screenshot capture of the live UI).
+
 ### 9.1 v1 subcommands
 - `export` — export a `.le3` to `.3mf`, `.stl`, `.obj`, `.amf`, or `.step`/`.stp`.
 - `run` — execute a Lua script headless against a new or existing `.le3`.
@@ -324,6 +328,39 @@ should be added to the shared action layer so they become available headlessly b
 ### 9.2 Export formats (required)
 `.3mf`, `.stl`, `.obj`, `.amf`, `.step`/`.stp`. STEP via OCCT; mesh formats via OCCT
 tessellation + writers (or dedicated libraries — license-audited per §1).
+
+### 9.3 Instruction scripts (for automation & testing)
+
+**Directive:** The app should be fully scriptable. One must be able to run the app with a set of instructions (from a file) and the app must open and run each of the instructions. One must be able to export a screenshot of how the app looks as one of the instructions. This can then be leveraged for testing.
+
+The application must be fully scriptable via a file containing a sequence of instructions.
+
+- Invocation: `le3 <script-file>` or `le3 --script <script-file>` (or equivalent).
+- When a script is provided the app shall open, sequentially execute every instruction in order,
+  and apply the effects exactly as a user would (updating document, tools, camera, in-progress
+  interactions, UI state, etc.).
+- One supported instruction must be screenshot/export of the app's current visual appearance:
+  `screenshot <output-path>` (PNG or other common image format). The captured image must be a
+  faithful rendering of the full window (or primary viewport + overlays) at the moment the
+  instruction is executed, suitable for visual regression testing.
+- Scripts shall support at minimum:
+  - Core actions (new, open, save, clear, tool selection, rectangle creation flow including
+    the click-to-place, mouse-move preview, dimension typing, tab, enter steps, etc.).
+  - Camera/view control.
+  - File I/O and export.
+  - The screenshot instruction above.
+  - Simple sequencing / waits if needed for UI settling or animations.
+- This mechanism exists primarily to enable automated testing. Test scripts can drive the exact
+  interactive flows (e.g. the rectangle tool's click → move → type → enter sequence) and emit
+  screenshots that can be compared against golden images in CI.
+- Execution must be deterministic (fixed random seeds, consistent layout, theme, DPI, camera,
+  font rasterization, etc.) so that screenshots are reproducible.
+- The precise syntax and full instruction vocabulary are **TBD** but must be simple,
+  human-readable, versioned, and documented. The implementation must keep the set of
+  instructions in sync with GUI actions.
+
+The guiding principle in §9 still applies for normal CLI; instruction scripts are the
+explicit exception that lets us drive "mouse/keyboard" flows for testing purposes.
 
 ---
 
