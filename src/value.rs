@@ -35,9 +35,9 @@ pub fn shows_computed_length(text: &str) -> bool {
 /// Format a length in millimetres for display above an expression field.
 pub fn format_length_display(v: f32) -> String {
     if v.abs() < 0.1 {
-        "0".to_string()
+        "0 mm".to_string()
     } else {
-        format!("{:.1}", v)
+        format!("{:.1} mm", v)
     }
 }
 
@@ -314,6 +314,12 @@ mod tests {
         assert!((parse_positive_length_or("0", 9.0) - 9.0).abs() < 1e-4);
         assert!((parse_positive_length_or("-3", 9.0) - 9.0).abs() < 1e-4);
         assert!((parse_positive_length_or("2in", 9.0) - 50.8).abs() < 1e-3);
+    }
+
+    #[test]
+    fn format_length_display_includes_mm_unit() {
+        assert_eq!(format_length_display(0.0), "0 mm");
+        assert_eq!(format_length_display(53.3), "53.3 mm");
     }
 
     #[test]

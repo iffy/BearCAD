@@ -409,8 +409,33 @@ mod col {
 const GRID_EXTENT: f32 = 200.0;
 const GRID_STEP: f32 = 20.0;
 
-/// Screen-space size of a floating dimension input (frame + text field).
-const DIM_INPUT_SIZE: egui::Vec2 = egui::Vec2::new(58.0, 26.0);
+/// Screen-space height of a floating dimension input (frame + text field).
+const DIM_INPUT_HEIGHT: f32 = 26.0;
+/// Horizontal padding inside the dimension input frame (inner margin × 2).
+const DIM_INPUT_FRAME_H_PAD: f32 = 10.0;
+/// Minimum text-edit width (fits short live values like `80.0`).
+const DIM_INPUT_MIN_TEXT_WIDTH: f32 = 48.0;
+/// Approximate monospace glyph width at 13pt (used for layout sizing).
+const DIM_INPUT_CHAR_WIDTH: f32 = 7.8;
+/// Expression fields grow with content up to this many characters.
+const DIM_INPUT_MAX_CHARS: usize = 20;
+
+fn dim_input_text_width(text: &str) -> f32 {
+    let chars = text.chars().count().clamp(1, DIM_INPUT_MAX_CHARS);
+    (chars as f32 * DIM_INPUT_CHAR_WIDTH).max(DIM_INPUT_MIN_TEXT_WIDTH)
+}
+
+fn dim_input_total_width(text: &str) -> f32 {
+    dim_input_text_width(text) + DIM_INPUT_FRAME_H_PAD
+}
+
+fn dim_input_size_for_text(text: &str) -> egui::Vec2 {
+    egui::vec2(dim_input_total_width(text), DIM_INPUT_HEIGHT)
+}
+
+fn dim_input_max_size() -> egui::Vec2 {
+    dim_input_size_for_text(&"m".repeat(DIM_INPUT_MAX_CHARS))
+}
 const DIM_LABEL_GAP: f32 = 8.0;
 const DIM_LABEL_PAD: f32 = 2.0;
 const DIM_REPULSION_ITERS: usize = 16;
@@ -428,14 +453,14 @@ struct DimInputLayout {
     rect: egui::Rect,
 }
 
-fn dim_input_rect_at(top_left: egui::Pos2) -> egui::Rect {
-    egui::Rect::from_min_size(top_left, DIM_INPUT_SIZE)
+fn dim_input_rect_at(top_left: egui::Pos2, size: egui::Vec2) -> egui::Rect {
+    egui::Rect::from_min_size(top_left, size)
 }
 
-fn layout_at(pos: egui::Pos2) -> DimInputLayout {
+fn layout_at(pos: egui::Pos2, size: egui::Vec2) -> DimInputLayout {
     DimInputLayout {
         pos,
-        rect: dim_input_rect_at(pos),
+        rect: dim_input_rect_at(pos, size),
     }
 }
 
@@ -471,8 +496,8 @@ fn resolve_rectangle_dim_positions(
     let mut width_pos = bottom_mid + WIDTH_LABEL_OFFSET;
     let mut height_pos = left_mid + HEIGHT_LABEL_OFFSET;
     for _ in 0..DIM_REPULSION_ITERS {
-        let w_rect = dim_input_rect_at(width_pos);
-        let h_rect = dim_input_rect_at(height_pos);
+        let w_rect = dim_input_rect_at(width_pos, dim_input_max_size());
+        let h_rect = dim_input_rect_at(height_pos, dim_input_max_size());
         let w_push = separation_vector(w_rect, h_rect, DIM_LABEL_PAD);
         let h_push = separation_vector(h_rect, w_rect, DIM_LABEL_PAD);
         if w_push.length_sq() + h_push.length_sq() < 0.25 {
@@ -491,10 +516,12 @@ fn rectangle_labels_clear(width: egui::Rect, height: egui::Rect) -> bool {
 fn rectangle_dim_layouts(
     bottom_mid: egui::Pos2,
     left_mid: egui::Pos2,
+    width_text: &str,
+    height_text: &str,
 ) -> (DimInputLayout, DimInputLayout) {
     let (width_pos, height_pos) = resolve_rectangle_dim_positions(bottom_mid, left_mid);
-    let width = layout_at(width_pos);
-    let height = layout_at(height_pos);
+    let width = layout_at(width_pos, dim_input_size_for_text(width_text));
+    let height = layout_at(height_pos, dim_input_size_for_text(height_text));
     debug_assert!(rectangle_labels_clear(width.rect, height.rect));
     (width, height)
 }
@@ -505,10 +532,17 @@ fn rectangle_dim_layout_from_world(
     y0: f32,
     x1: f32,
     y1: f32,
+    width_text: &str,
+    height_text: &str,
 ) -> Option<(DimInputLayout, DimInputLayout)> {
     let bottom_mid = project(Vec3::new((x0 + x1) * 0.5, y0, 0.0))?;
     let left_mid = project(Vec3::new(x0, (y0 + y1) * 0.5, 0.0))?;
-    Some(rectangle_dim_layouts(bottom_mid, left_mid))
+    Some(rectangle_dim_layouts(
+        bottom_mid,
+        left_mid,
+        width_text,
+        height_text,
+    ))
 }
 
 fn segment_intersects_rect(pa: egui::Pos2, pb: egui::Pos2, rect: egui::Rect) -> bool {
@@ -560,20 +594,25 @@ fn line_perpendicular_unit(pa: egui::Pos2, pb: egui::Pos2) -> egui::Vec2 {
     }
 }
 
-fn aabb_half_extent_along(dir: egui::Vec2) -> f32 {
+fn aabb_half_extent_along(dir: egui::Vec2, size: egui::Vec2) -> f32 {
     if dir.length_sq() < 1e-8 {
         return 0.0;
     }
     let n = dir.normalized();
-    DIM_INPUT_SIZE.x * 0.5 * n.x.abs() + DIM_INPUT_SIZE.y * 0.5 * n.y.abs()
+    size.x * 0.5 * n.x.abs() + size.y * 0.5 * n.y.abs()
 }
 
-fn line_dim_top_left(pa: egui::Pos2, pb: egui::Pos2, gap_from_line: f32) -> egui::Pos2 {
+fn line_dim_top_left(
+    pa: egui::Pos2,
+    pb: egui::Pos2,
+    gap_from_line: f32,
+    size: egui::Vec2,
+) -> egui::Pos2 {
     let mid = pa.lerp(pb, 0.5);
     let perp = line_perpendicular_unit(pa, pb);
-    let center_dist = gap_from_line + aabb_half_extent_along(-perp);
+    let center_dist = gap_from_line + aabb_half_extent_along(-perp, size);
     let center = mid + perp * center_dist;
-    center - DIM_INPUT_SIZE * 0.5
+    center - size * 0.5
 }
 
 #[cfg(test)]
@@ -603,17 +642,18 @@ fn dist_rect_to_segment(rect: egui::Rect, pa: egui::Pos2, pb: egui::Pos2) -> f32
         .fold(f32::MAX, f32::min)
 }
 
-fn line_dim_layout(pa: egui::Pos2, pb: egui::Pos2) -> DimInputLayout {
+fn line_dim_layout(pa: egui::Pos2, pb: egui::Pos2, text: &str) -> DimInputLayout {
+    let size = dim_input_size_for_text(text);
     let mut gap = LINE_LABEL_DISTANCE;
     for _ in 0..DIM_REPULSION_ITERS {
-        let pos = line_dim_top_left(pa, pb, gap);
-        let rect = dim_input_rect_at(pos).expand(DIM_LABEL_GAP);
+        let pos = line_dim_top_left(pa, pb, gap, size);
+        let rect = dim_input_rect_at(pos, size).expand(DIM_LABEL_GAP);
         if !segment_intersects_rect(pa, pb, rect) {
-            return layout_at(pos);
+            return layout_at(pos, size);
         }
         gap += 2.0;
     }
-    layout_at(line_dim_top_left(pa, pb, gap))
+    layout_at(line_dim_top_left(pa, pb, gap, size), size)
 }
 
 fn pointer_over_dim_inputs(pointer: egui::Pos2, layouts: &[DimInputLayout]) -> bool {
@@ -683,10 +723,11 @@ fn show_sketch_dimension_field(
         .rounding(3.0);
 
     let computed = eval_length_mm(text).filter(|_| shows_computed_length(text));
+    let text_width = dim_input_text_width(text);
 
     let output = frame
         .show(ui, |ui| {
-            ui.set_width(48.0);
+            ui.set_width(text_width);
             ui.vertical_centered(|ui| {
                 if let Some(v) = computed {
                     ui.label(
@@ -695,12 +736,12 @@ fn show_sketch_dimension_field(
                             .color(col::DIM_INPUT_TEXT.gamma_multiply(0.65)),
                     );
                 }
-                ui.style_mut().spacing.text_edit_width = 48.0;
+                ui.style_mut().spacing.text_edit_width = text_width;
                 ui.visuals_mut().selection.bg_fill = col::DIM_INPUT_SELECTION;
                 egui::TextEdit::singleline(text)
                     .id(id)
                     .frame(false)
-                    .desired_width(48.0)
+                    .desired_width(text_width)
                     .font(egui::FontId::monospace(13.0))
                     .text_color(if has_focus {
                         col::DIM_INPUT_TEXT_FOCUS
@@ -805,7 +846,15 @@ impl App {
                         let y0 = cr.origin.y.min(cur_end.y);
                         let x1 = cr.origin.x.max(cur_end.x);
                         let y1 = cr.origin.y.max(cur_end.y);
-                        let dim_layouts = rectangle_dim_layout_from_world(&project, x0, y0, x1, y1);
+                        let dim_layouts = rectangle_dim_layout_from_world(
+                            &project,
+                            x0,
+                            y0,
+                            x1,
+                            y1,
+                            &cr.texts[0],
+                            &cr.texts[1],
+                        );
                         let over_input = dim_layouts
                             .as_ref()
                             .is_some_and(|(w, h)| w.rect.contains(pp) || h.rect.contains(pp));
@@ -858,7 +907,7 @@ impl App {
                         let over_input = project(Vec3::new(cl.origin.x, cl.origin.y, 0.0))
                             .zip(project(Vec3::new(end.x, end.y, 0.0)))
                             .is_some_and(|(pa, pb)| {
-                                pointer_over_dim_inputs(pp, &[line_dim_layout(pa, pb)])
+                                pointer_over_dim_inputs(pp, &[line_dim_layout(pa, pb, &cl.text)])
                             });
 
                         if should_commit_sketch_on_click(was_creating, primary_pressed, over_input)
@@ -1166,8 +1215,15 @@ impl App {
             let y0 = cr.origin.y.min(end.y);
             let x1 = cr.origin.x.max(end.x);
             let y1 = cr.origin.y.max(end.y);
-            if let Some((width_layout, height_layout)) =
-                rectangle_dim_layout_from_world(&project, x0, y0, x1, y1)
+            if let Some((width_layout, height_layout)) = rectangle_dim_layout_from_world(
+                &project,
+                x0,
+                y0,
+                x1,
+                y1,
+                &cr.texts[0],
+                &cr.texts[1],
+            )
             {
                 let ctx = ui.ctx();
                 let id_w = egui::Id::new("cr_width");
@@ -1247,7 +1303,7 @@ impl App {
                 project(Vec3::new(cl.origin.x, cl.origin.y, 0.0)),
                 project(Vec3::new(end.x, end.y, 0.0)),
             ) {
-                let layout = line_dim_layout(pa, pb);
+                let layout = line_dim_layout(pa, pb, &cl.text);
                 let ctx = ui.ctx();
                 let id_len = egui::Id::new("cl_length");
 
@@ -1477,9 +1533,10 @@ fn dim_layout_near_screen_point(
     } else {
         egui::vec2(-1.0, -1.0).normalized()
     };
-    let center_dist = gap_from_anchor + aabb_half_extent_along(dir);
+    let size = dim_input_max_size();
+    let center_dist = gap_from_anchor + aabb_half_extent_along(dir, size);
     let center = anchor + dir * center_dist;
-    layout_at(center - DIM_INPUT_SIZE * 0.5)
+    layout_at(center - size * 0.5, size)
 }
 
 fn dim_layout_avoiding_handle(
@@ -1785,7 +1842,7 @@ mod tests {
         };
         let shape = egui::Rect::from_min_max(egui::pos2(50.0, 50.0), egui::pos2(400.0, 400.0));
         let (bottom_mid, left_mid) = rectangle_anchors(shape);
-        let (width, height) = rectangle_dim_layouts(bottom_mid, left_mid);
+        let (width, height) = rectangle_dim_layouts(bottom_mid, left_mid, "10", "10");
         assert_eq!(width.pos, bottom_mid + WIDTH_LABEL_OFFSET);
         assert_eq!(height.pos, left_mid + HEIGHT_LABEL_OFFSET);
     }
@@ -1795,7 +1852,7 @@ mod tests {
         use super::{rectangle_dim_layouts, rectangle_labels_clear};
         let shape = egui::Rect::from_min_max(egui::pos2(100.0, 100.0), egui::pos2(200.0, 160.0));
         let (bottom_mid, left_mid) = rectangle_anchors(shape);
-        let (width, height) = rectangle_dim_layouts(bottom_mid, left_mid);
+        let (width, height) = rectangle_dim_layouts(bottom_mid, left_mid, "10", "10");
         assert!(rectangle_labels_clear(width.rect, height.rect));
     }
 
@@ -1814,7 +1871,7 @@ mod tests {
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
         let layouts = plane_dim_layouts(&project, &plane, &reference, 20.0, 45.0).unwrap();
         let angle_layout = layouts.1.expect("axis mode should have angle layout");
-        let angle_center = angle_layout.pos + super::DIM_INPUT_SIZE * 0.5;
+        let angle_center = angle_layout.pos + super::dim_input_max_size() * 0.5;
         let handle_screen = project(axis_angle_handle(Vec3::ZERO, Vec3::X, 45.0)).unwrap();
         let offset_screen =
             project(axis_offset_handle(Vec3::ZERO, Vec3::X, 20.0, 45.0)).unwrap();
@@ -1836,7 +1893,7 @@ mod tests {
         // Very short preview: preferred width/height labels overlap near the bottom-left corner.
         let shape = egui::Rect::from_min_max(egui::pos2(300.0, 300.0), egui::pos2(340.0, 308.0));
         let (bottom_mid, left_mid) = rectangle_anchors(shape);
-        let (width, height) = rectangle_dim_layouts(bottom_mid, left_mid);
+        let (width, height) = rectangle_dim_layouts(bottom_mid, left_mid, "10", "10");
         assert!(
             width.pos != bottom_mid + WIDTH_LABEL_OFFSET
                 || height.pos != left_mid + HEIGHT_LABEL_OFFSET,
@@ -1846,7 +1903,7 @@ mod tests {
     }
 
     fn line_dim_center(layout: super::DimInputLayout) -> egui::Pos2 {
-        layout.pos + super::DIM_INPUT_SIZE * 0.5
+        layout.pos + layout.rect.size() * 0.5
     }
 
     #[test]
@@ -1856,7 +1913,7 @@ mod tests {
         let pb = egui::pos2(360.0, 220.0);
         let mid = pa.lerp(pb, 0.5);
         let dir = (pb - pa).normalized();
-        let center = line_dim_center(line_dim_layout(pa, pb));
+        let center = line_dim_center(line_dim_layout(pa, pb, "10"));
         let rel = center - mid;
         let along = rel.dot(dir);
         assert!(
@@ -1875,7 +1932,7 @@ mod tests {
             let pb = egui::pos2(300.0, 200.0 + dy);
             let mid = pa.lerp(pb, 0.5);
             let dir = (pb - pa).normalized();
-            let layout = line_dim_layout(pa, pb);
+            let layout = line_dim_layout(pa, pb, "10");
             let center = line_dim_center(layout);
             let along = (center - mid).dot(dir);
             assert!(along.abs() < 1.0, "dy={dy}: along={along}");
@@ -1892,7 +1949,7 @@ mod tests {
         use super::{line_dim_layout, segment_intersects_rect, DIM_LABEL_GAP};
         let pa = egui::pos2(200.0, 200.0);
         let pb = egui::pos2(320.0, 260.0);
-        let layout = line_dim_layout(pa, pb);
+        let layout = line_dim_layout(pa, pb, "10");
         assert!(!segment_intersects_rect(
             pa,
             pb,
@@ -1916,6 +1973,17 @@ mod tests {
         let (a, b) = rect_edge_endpoints(1.0, 2.0, 5.0, 8.0, RectDimEdge::Height);
         assert_eq!(a, Vec3::new(1.0, 2.0, 0.0));
         assert_eq!(b, Vec3::new(1.0, 8.0, 0.0));
+    }
+
+    #[test]
+    fn dim_input_text_width_grows_with_expression_up_to_max_chars() {
+        assert!((super::dim_input_text_width("10") - 48.0).abs() < 1e-4);
+        let expr = "2mm + 1ft";
+        assert!(super::dim_input_text_width(expr) > 48.0);
+        assert!(super::dim_input_text_width(expr) < super::dim_input_max_size().x);
+        let capped = super::dim_input_text_width(&"x".repeat(30));
+        let maxed = super::dim_input_text_width(&"x".repeat(20));
+        assert!((capped - maxed).abs() < 1e-4);
     }
 
     #[test]
