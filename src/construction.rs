@@ -115,8 +115,12 @@ pub fn plane_from_axis(
     origin: Vec3,
     direction: Vec3,
 ) -> ConstructionPlane {
+    let axis = direction.normalize_or_zero();
     let n = axis_normal(direction, angle_deg);
-    let (u, v) = plane_basis(n);
+    // Anchor the in-plane basis to the reference axis so the visible plane does not
+    // flip when `plane_basis` switches its world-aligned hint (the Z/X threshold).
+    let u = axis;
+    let v = axis.cross(n).normalize_or_zero();
     ConstructionPlane {
         origin: origin + n * offset,
         normal: n,
@@ -984,6 +988,45 @@ mod tests {
         let plane = plane_from_axis(5.0, 90.0, Vec3::ZERO, Vec3::X);
         assert!(plane.normal.z.abs() > 0.9);
         assert!((plane.origin.length() - 5.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn axis_plane_basis_stays_continuous_through_full_rotation() {
+        let direction = Vec3::new(1.0, 0.5, 0.2);
+        let axis = direction.normalize();
+        let mut prev_v: Option<Vec3> = None;
+        for deg in (0..=360).step_by(3) {
+            let plane = plane_from_axis(0.0, deg as f32, Vec3::ZERO, direction);
+            assert!(
+                plane.u_axis.dot(axis).abs() > 0.99,
+                "u_axis should follow the reference line at {deg}°"
+            );
+            if let Some(pv) = prev_v {
+                assert!(
+                    pv.dot(plane.v_axis).abs() > 0.99,
+                    "v_axis jumped at {deg}° (dot={})",
+                    pv.dot(plane.v_axis)
+                );
+            }
+            prev_v = Some(plane.v_axis);
+        }
+    }
+
+    #[test]
+    fn axis_plane_basis_avoids_hint_flip_near_z_threshold() {
+        // For an X-axis line, |normal.z| crosses 0.9 near 64° — the old `plane_basis`
+        // hint switch caused a visible discontinuity in this range.
+        let mut prev_v: Option<Vec3> = None;
+        for deg in 55..=75 {
+            let plane = plane_from_axis(0.0, deg as f32, Vec3::ZERO, Vec3::X);
+            if let Some(pv) = prev_v {
+                assert!(
+                    pv.dot(plane.v_axis).abs() > 0.99,
+                    "v_axis flipped at {deg}°"
+                );
+            }
+            prev_v = Some(plane.v_axis);
+        }
     }
 
     #[test]
