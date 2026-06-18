@@ -4,6 +4,7 @@
 //! (and optionally an angle around an axis).
 
 use crate::model::{ConstructionPlane, Document, Line, Rect};
+use crate::value::{eval_length_mm, parse_length_or};
 use eframe::egui;
 use glam::{Quat, Vec3};
 /// Shared stroke/fill colour for all construction geometry.
@@ -153,7 +154,10 @@ pub fn resolve_plane(
 
 fn parse_or_live(text: &str, live: f32, user_edited: bool) -> f32 {
     if user_edited {
-        text.trim().parse::<f32>().unwrap_or(live).max(0.0)
+        eval_length_mm(text)
+            .or_else(|| text.trim().parse::<f32>().ok())
+            .unwrap_or(live)
+            .max(0.0)
     } else {
         live.max(0.0)
     }
@@ -161,7 +165,7 @@ fn parse_or_live(text: &str, live: f32, user_edited: bool) -> f32 {
 
 fn parse_or_live_signed(text: &str, live: f32, user_edited: bool) -> f32 {
     if user_edited {
-        text.trim().parse::<f32>().unwrap_or(live)
+        parse_length_or(text, live)
     } else {
         live
     }
@@ -980,6 +984,17 @@ mod tests {
         let plane = plane_from_axis(5.0, 90.0, Vec3::ZERO, Vec3::X);
         assert!(plane.normal.z.abs() > 0.9);
         assert!((plane.origin.length() - 5.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn typed_offset_evaluates_unit_expression() {
+        let reference = PlaneReference::Face {
+            origin: Vec3::ZERO,
+            normal: Vec3::Z,
+            label: "Ground".to_string(),
+        };
+        let plane = resolve_plane(&reference, "1in + 2mm", "", 3.0, 0.0, true, false);
+        assert!((plane.origin.z - 27.4).abs() < 1e-3);
     }
 
     #[test]

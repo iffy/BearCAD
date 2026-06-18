@@ -245,9 +245,14 @@ fn parse_line(line: &str, line_no: usize) -> Result<Instruction, ParseError> {
         }
 
         "set_dim" | "setdim" => {
-            let mut parts = rest.split_whitespace();
-            let axis_name = parts.next().ok_or_else(|| err("set_dim requires axis and value"))?;
-            let value = parts.next().ok_or_else(|| err("set_dim requires a value"))?;
+            let (axis_name, value) = rest
+                .split_once(|c: char| c.is_whitespace())
+                .ok_or_else(|| err("set_dim requires axis and value"))?;
+            let axis_name = axis_name.trim();
+            let value = value.trim();
+            if value.is_empty() {
+                return Err(err("set_dim requires a value"));
+            }
             match axis_name.to_ascii_lowercase().as_str() {
                 "length" | "len" | "l" => Ok(Instruction::SetLineLength {
                     value: value.to_string(),
@@ -1456,6 +1461,49 @@ mod tests {
                 Instruction::FocusPlaneDim(PlaneDim::Angle),
             ]
         );
+    }
+
+    #[test]
+    fn parses_set_dim_expression_with_spaces() {
+        let ins = parse("set_dim width 2in + 5mm / 2").unwrap();
+        assert_eq!(
+            ins,
+            vec![Instruction::SetDim {
+                axis: RectAxis::Width,
+                value: "2in + 5mm / 2".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn runner_set_dim_expression_evaluates_length() {
+        let script = "tool line\nset_dim length 2in + 5mm / 2";
+        let mut runner = ScriptRunner::new(parse(script).unwrap());
+        runner.verbose = false;
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        state.creating_line = Some(crate::actions::CreatingLine {
+            origin: glam::Vec3::ZERO,
+            text: String::new(),
+            last_mouse: glam::Vec3::new(10.0, 10.0, 0.0),
+            user_edited: false,
+            pending_focus: false,
+        });
+
+        while !runner.done {
+            runner.tick(
+                &mut state,
+                &mut synthetic,
+                None,
+                &egui::Context::default(),
+            );
+        }
+
+        let cl = state.creating_line.as_ref().unwrap();
+        assert_eq!(cl.text, "2in + 5mm / 2");
+        let end = cl.end_point();
+        let len = crate::model::Line::from_endpoints(0.0, 0.0, end.x, end.y).length();
+        assert!((len - 53.3).abs() < 1e-2);
     }
 
     #[test]

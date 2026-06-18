@@ -9,6 +9,7 @@ use crate::construction::{
 };
 use crate::view_cube::{self, CubeCornerId, CubeEdgeId};
 use crate::model::{ConstructionPlane, Document, Line, Rect, ShapeKind};
+use crate::value::parse_positive_length_or;
 use eframe::egui;
 use glam::Vec3;
 
@@ -64,16 +65,8 @@ impl CreatingRect {
     pub fn end_point(&self) -> Vec3 {
         let dx = self.last_mouse.x - self.origin.x;
         let dy = self.last_mouse.y - self.origin.y;
-        let w = if let Ok(v) = self.texts[0].trim().parse::<f32>() {
-            if v > 0.0 { v } else { dx.abs() }
-        } else {
-            dx.abs()
-        };
-        let h = if let Ok(v) = self.texts[1].trim().parse::<f32>() {
-            if v > 0.0 { v } else { dy.abs() }
-        } else {
-            dy.abs()
-        };
+        let w = parse_positive_length_or(&self.texts[0], dx.abs());
+        let h = parse_positive_length_or(&self.texts[1], dy.abs());
         let sx = if dx < 0.0 { -1.0 } else { 1.0 };
         let sy = if dy < 0.0 { -1.0 } else { 1.0 };
         Vec3::new(self.origin.x + sx * w, self.origin.y + sy * h, 0.0)
@@ -101,11 +94,7 @@ impl CreatingLine {
         let dx = self.last_mouse.x - self.origin.x;
         let dy = self.last_mouse.y - self.origin.y;
         let dist = (dx * dx + dy * dy).sqrt();
-        let len = if let Ok(v) = self.text.trim().parse::<f32>() {
-            if v > 0.0 { v } else { dist }
-        } else {
-            dist
-        };
+        let len = parse_positive_length_or(&self.text, dist);
         if dist < 1e-6 {
             return Vec3::new(self.origin.x + len, self.origin.y, 0.0);
         }
@@ -522,7 +511,7 @@ impl AppState {
                 };
                 cp.offset_text = value.clone();
                 cp.user_edited_offset = true;
-                if let Ok(v) = value.trim().parse::<f32>() {
+                if let Some(v) = crate::value::eval_length_mm(&value) {
                     cp.offset_live = v;
                 }
                 ActionResult::Ok
@@ -774,6 +763,53 @@ mod tests {
         assert_eq!(state.doc.lines.len(), 1);
         assert!((state.doc.lines[0].length() - 10.0).abs() < 1e-4);
         assert!(state.creating_line.is_none());
+    }
+
+    #[test]
+    fn rect_end_point_evaluates_unit_expression() {
+        let cr = CreatingRect {
+            origin: Vec3::ZERO,
+            texts: ["2in".to_string(), "5mm / 2".to_string()],
+            focused: 0,
+            last_mouse: Vec3::new(100.0, 100.0, 0.0),
+            user_edited: [true, true],
+            pending_focus: false,
+        };
+        let end = cr.end_point();
+        assert!((end.x - 50.8).abs() < 1e-3);
+        assert!((end.y - 2.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn line_end_point_evaluates_mixed_expression() {
+        let cl = CreatingLine {
+            origin: Vec3::ZERO,
+            text: "2in + 5mm / 2".to_string(),
+            last_mouse: Vec3::new(10.0, 10.0, 0.0),
+            user_edited: true,
+            pending_focus: false,
+        };
+        let end = cl.end_point();
+        let line = Line::from_endpoints(cl.origin.x, cl.origin.y, end.x, end.y);
+        assert!((line.length() - 53.3).abs() < 1e-2);
+    }
+
+    #[test]
+    fn set_plane_offset_evaluates_expression() {
+        let mut state = AppState::default();
+        state.apply(Action::BeginConstructionPlane {
+            reference: PlaneReference::Face {
+                origin: Vec3::ZERO,
+                normal: Vec3::Z,
+                label: "Ground".to_string(),
+            },
+        });
+        state.apply(Action::SetPlaneOffset {
+            value: "1in + 2mm".to_string(),
+        });
+        let cp = state.creating_plane.as_ref().unwrap();
+        assert!((cp.offset_live - 27.4).abs() < 1e-3);
+        assert_eq!(cp.offset_text, "1in + 2mm");
     }
 
     #[test]

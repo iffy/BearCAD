@@ -18,6 +18,7 @@ mod native_menu;
 mod script;
 mod stl;
 mod storage;
+mod value;
 mod view_cube;
 
 use actions::{Action, AppState, CreatingLine, CreatingRect, Pane, RectAxis, Tool};
@@ -34,6 +35,7 @@ use glam::Vec3;
 use model::{ConstructionPlane, Line, Rect};
 use script::{ScriptRunner, SyntheticInput};
 use std::path::Path;
+use value::{eval_length_mm, format_length_display, shows_computed_length};
 
 fn main() -> eframe::Result<()> {
     let script_opts = script::parse_args(std::env::args());
@@ -680,22 +682,37 @@ fn show_sketch_dimension_field(
         .inner_margin(egui::Margin::symmetric(5.0, 3.0))
         .rounding(3.0);
 
-    let output = frame.show(ui, |ui| {
-        ui.style_mut().spacing.text_edit_width = 48.0;
-        ui.visuals_mut().selection.bg_fill = col::DIM_INPUT_SELECTION;
-        egui::TextEdit::singleline(text)
-            .id(id)
-            .frame(false)
-            .desired_width(48.0)
-            .font(egui::FontId::monospace(13.0))
-            .text_color(if has_focus {
-                col::DIM_INPUT_TEXT_FOCUS
-            } else {
-                col::DIM_INPUT_TEXT
+    let computed = eval_length_mm(text).filter(|_| shows_computed_length(text));
+
+    let output = frame
+        .show(ui, |ui| {
+            ui.set_width(48.0);
+            ui.vertical_centered(|ui| {
+                if let Some(v) = computed {
+                    ui.label(
+                        egui::RichText::new(format_length_display(v))
+                            .font(egui::FontId::monospace(11.0))
+                            .color(col::DIM_INPUT_TEXT.gamma_multiply(0.65)),
+                    );
+                }
+                ui.style_mut().spacing.text_edit_width = 48.0;
+                ui.visuals_mut().selection.bg_fill = col::DIM_INPUT_SELECTION;
+                egui::TextEdit::singleline(text)
+                    .id(id)
+                    .frame(false)
+                    .desired_width(48.0)
+                    .font(egui::FontId::monospace(13.0))
+                    .text_color(if has_focus {
+                        col::DIM_INPUT_TEXT_FOCUS
+                    } else {
+                        col::DIM_INPUT_TEXT
+                    })
+                    .margin(egui::vec2(0.0, 0.0))
+                    .show(ui)
             })
-            .margin(egui::vec2(0.0, 0.0))
-            .show(ui)
-    }).inner;
+            .inner
+        })
+        .inner;
     let resp = &output.response;
     if is_focus_target && *pending_focus {
         resp.request_focus();
