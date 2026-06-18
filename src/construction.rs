@@ -136,7 +136,7 @@ pub fn resolve_plane(
 ) -> ConstructionPlane {
     match reference {
         PlaneReference::Face { origin, normal, .. } => {
-            let offset = parse_or_live(offset_text, live_offset, user_edited_offset);
+            let offset = parse_or_live_signed(offset_text, live_offset, user_edited_offset);
             plane_from_face(offset, *origin, *normal)
         }
         PlaneReference::Axis {
@@ -203,9 +203,14 @@ pub fn axis_normal(direction: Vec3, angle_deg: f32) -> Vec3 {
     (Quat::from_axis_angle(axis, angle_deg.to_radians()) * perp).normalize_or_zero()
 }
 
-/// World position of the offset drag handle (plane origin along the normal).
+/// World position of the offset drag handle along a plane normal.
+pub fn offset_handle(origin: Vec3, normal: Vec3, offset: f32) -> Vec3 {
+    origin + normal.normalize_or_zero() * offset
+}
+
+/// World position of the offset drag handle for an axis-referenced plane.
 pub fn axis_offset_handle(origin: Vec3, direction: Vec3, offset: f32, angle_deg: f32) -> Vec3 {
-    origin + axis_normal(direction, angle_deg) * offset
+    offset_handle(origin, axis_normal(direction, angle_deg), offset)
 }
 
 /// World position of the angle drag handle on the gizmo circle.
@@ -260,6 +265,20 @@ pub enum AxisGizmoHit {
     Angle,
 }
 
+/// Hit-test the offset arrow handle at a screen position.
+pub fn offset_gizmo_hit(
+    screen: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    origin: Vec3,
+    normal: Vec3,
+    offset: f32,
+) -> bool {
+    let Some(sp) = project(offset_handle(origin, normal, offset)) else {
+        return false;
+    };
+    (screen - sp).length() <= AXIS_GIZMO_HANDLE_HIT_RADIUS_PX
+}
+
 /// Hit-test axis gizmo handles at a screen position.
 pub fn axis_gizmo_hit(
     screen: egui::Pos2,
@@ -269,16 +288,13 @@ pub fn axis_gizmo_hit(
     offset: f32,
     angle_deg: f32,
 ) -> Option<AxisGizmoHit> {
-    let r = AXIS_GIZMO_HANDLE_HIT_RADIUS_PX;
-    let offset_tip = axis_offset_handle(origin, direction, offset, angle_deg);
-    if let Some(sp) = project(offset_tip) {
-        if (screen - sp).length() <= r {
-            return Some(AxisGizmoHit::Offset);
-        }
+    let normal = axis_normal(direction, angle_deg);
+    if offset_gizmo_hit(screen, project, origin, normal, offset) {
+        return Some(AxisGizmoHit::Offset);
     }
     let angle_pos = axis_angle_handle(origin, direction, angle_deg);
     if let Some(sp) = project(angle_pos) {
-        if (screen - sp).length() <= r {
+        if (screen - sp).length() <= AXIS_GIZMO_HANDLE_HIT_RADIUS_PX {
             return Some(AxisGizmoHit::Angle);
         }
     }
@@ -344,18 +360,17 @@ fn draw_gizmo_handle_hover(
     painter.circle_stroke(screen, 14.0, egui::Stroke::new(1.5, accent.gamma_multiply(0.75)));
 }
 
-/// Draw offset arrow and angle circle handles for an axis-referenced plane.
-pub fn draw_axis_plane_gizmo(
+/// Draw the offset arrow gizmo along a plane normal.
+pub fn draw_offset_gizmo(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     origin: Vec3,
-    direction: Vec3,
+    normal: Vec3,
     offset: f32,
-    angle_deg: f32,
     color: egui::Color32,
-    hover: Option<AxisGizmoHit>,
+    hovered: bool,
 ) {
-    let normal = axis_normal(direction, angle_deg);
+    let n = normal.normalize_or_zero();
     let display_offset = if offset.abs() < 2.0 {
         if offset == 0.0 {
             2.0
@@ -365,11 +380,10 @@ pub fn draw_axis_plane_gizmo(
     } else {
         offset
     };
-    let tip = origin + normal * display_offset;
+    let tip = origin + n * display_offset;
 
-    let offset_hovered = hover == Some(AxisGizmoHit::Offset);
-    let offset_stroke = if offset_hovered { 4.0 } else { 2.5 };
-    let offset_color = if offset_hovered {
+    let offset_stroke = if hovered { 4.0 } else { 2.5 };
+    let offset_color = if hovered {
         GIZMO_HANDLE_HOVER_RGBA
     } else {
         color
@@ -392,13 +406,36 @@ pub fn draw_axis_plane_gizmo(
                 egui::Stroke::new(offset_stroke, offset_color),
             );
         }
-        if offset_hovered {
+        if hovered {
             draw_gizmo_handle_hover(painter, end, GIZMO_HANDLE_HOVER_RGBA);
         } else {
             painter.circle_filled(end, 6.0, color);
             painter.circle_stroke(end, 6.0, egui::Stroke::new(1.5, color.gamma_multiply(0.5)));
         }
     }
+}
+
+/// Draw offset arrow and angle circle handles for an axis-referenced plane.
+pub fn draw_axis_plane_gizmo(
+    painter: &egui::Painter,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    origin: Vec3,
+    direction: Vec3,
+    offset: f32,
+    angle_deg: f32,
+    color: egui::Color32,
+    hover: Option<AxisGizmoHit>,
+) {
+    let normal = axis_normal(direction, angle_deg);
+    draw_offset_gizmo(
+        painter,
+        project,
+        origin,
+        normal,
+        offset,
+        color,
+        hover == Some(AxisGizmoHit::Offset),
+    );
 
     let axis = direction.normalize_or_zero();
     let perp = axis_reference_perp(axis);
@@ -1135,6 +1172,18 @@ mod tests {
         let normal = axis_normal(Vec3::X, 0.0);
         assert!(normal.dot(Vec3::X).abs() < 1e-4);
         assert!(normal.length() > 0.9);
+    }
+
+    #[test]
+    fn offset_gizmo_hit_finds_face_offset_handle() {
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        assert!(offset_gizmo_hit(
+            Pos2::new(0.0, 12.0),
+            &project,
+            Vec3::ZERO,
+            Vec3::Z,
+            12.0,
+        ));
     }
 
     #[test]

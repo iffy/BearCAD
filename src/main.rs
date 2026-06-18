@@ -22,9 +22,10 @@ mod view_cube;
 use actions::{Action, AppState, CreatingLine, CreatingRect, Pane, RectAxis, Tool};
 use construction::{
     angle_from_axis_plane_hit, axis_angle_handle, axis_gizmo_hit, axis_normal,
-    axis_offset_handle, draw_axis_plane_gizmo, offset_from_normal_drag, pick_reference,
-    plane_corners, resolve_pick_target, AxisGizmoDrag, AxisGizmoHit, PlaneDim, PlaneReference,
-    AXIS_GIZMO_HANDLE_HIT_RADIUS_PX, PLANE_DISPLAY_HALF,
+    axis_offset_handle, draw_axis_plane_gizmo, draw_offset_gizmo, offset_from_normal_drag,
+    offset_gizmo_hit, offset_handle, pick_reference, plane_corners, resolve_pick_target,
+    AxisGizmoDrag, AxisGizmoHit, PlaneDim, PlaneReference, AXIS_GIZMO_HANDLE_HIT_RADIUS_PX,
+    PLANE_DISPLAY_HALF,
 };
 use eframe::egui;
 use native_menu::{MenuCommand, NativeMenu};
@@ -884,101 +885,107 @@ impl App {
                     let primary_down = ui.input(|i| i.pointer.primary_down());
                     let primary_released = ui.input(|i| i.pointer.primary_released());
 
-                    if let PlaneReference::Axis {
-                        origin,
-                        direction,
-                        ..
-                    } = &cp.reference
-                    {
-                        let origin = *origin;
-                        let direction = *direction;
-
-                        if primary_pressed {
-                            if let Some(hit) = axis_gizmo_hit(
-                                pp,
-                                &project,
+                    if primary_pressed {
+                        match &cp.reference {
+                            PlaneReference::Axis {
                                 origin,
                                 direction,
-                                cp.axis_offset,
-                                cp.axis_angle_deg,
-                            ) {
-                                cp.axis_gizmo_drag = Some(AxisGizmoDrag {
-                                    hit,
-                                    start_offset: cp.axis_offset,
-                                    start_angle_deg: cp.axis_angle_deg,
-                                    start_screen: pp,
-                                });
-                                cp.user_edited_offset = false;
-                                cp.user_edited_angle = false;
+                                ..
+                            } => {
+                                if let Some(hit) = axis_gizmo_hit(
+                                    pp,
+                                    &project,
+                                    *origin,
+                                    *direction,
+                                    cp.offset_live,
+                                    cp.axis_angle_deg,
+                                ) {
+                                    cp.axis_gizmo_drag = Some(AxisGizmoDrag {
+                                        hit,
+                                        start_offset: cp.offset_live,
+                                        start_angle_deg: cp.axis_angle_deg,
+                                        start_screen: pp,
+                                    });
+                                    cp.user_edited_offset = false;
+                                    cp.user_edited_angle = false;
+                                }
+                            }
+                            PlaneReference::Face { origin, normal, .. } => {
+                                if offset_gizmo_hit(
+                                    pp,
+                                    &project,
+                                    *origin,
+                                    *normal,
+                                    cp.offset_live,
+                                ) {
+                                    cp.axis_gizmo_drag = Some(AxisGizmoDrag {
+                                        hit: AxisGizmoHit::Offset,
+                                        start_offset: cp.offset_live,
+                                        start_angle_deg: 0.0,
+                                        start_screen: pp,
+                                    });
+                                    cp.user_edited_offset = false;
+                                }
                             }
                         }
+                    }
 
-                        let gizmo_drag = cp.axis_gizmo_drag;
-                        if let Some(drag) = gizmo_drag {
-                            if primary_down {
-                                match drag.hit {
-                                    AxisGizmoHit::Offset => {
-                                        let normal =
-                                            axis_normal(direction, drag.start_angle_deg);
-                                        cp.axis_offset = offset_from_normal_drag(
+                    let gizmo_drag = cp.axis_gizmo_drag;
+                    if let Some(drag) = gizmo_drag {
+                        if primary_down {
+                            match drag.hit {
+                                AxisGizmoHit::Offset => {
+                                    let (origin, normal) = match &cp.reference {
+                                        PlaneReference::Face { origin, normal, .. } => {
+                                            (*origin, normal.normalize_or_zero())
+                                        }
+                                        PlaneReference::Axis {
                                             origin,
-                                            normal,
-                                            &project,
-                                            drag.start_offset,
-                                            drag.start_screen,
-                                            pp,
-                                        );
-                                    }
-                                    AxisGizmoHit::Angle => {
+                                            direction,
+                                            ..
+                                        } => (
+                                            *origin,
+                                            axis_normal(*direction, drag.start_angle_deg),
+                                        ),
+                                    };
+                                    cp.offset_live = offset_from_normal_drag(
+                                        origin,
+                                        normal,
+                                        &project,
+                                        drag.start_offset,
+                                        drag.start_screen,
+                                        pp,
+                                    );
+                                }
+                                AxisGizmoHit::Angle => {
+                                    if let PlaneReference::Axis {
+                                        origin,
+                                        direction,
+                                        ..
+                                    } = &cp.reference
+                                    {
                                         if let Some(hit) = cam.ray_plane_hit(
-                                            pp, viewport, &vp, origin, direction,
+                                            pp, viewport, &vp, *origin, *direction,
                                         ) {
-                                            cp.axis_angle_deg =
-                                                angle_from_axis_plane_hit(
-                                                    origin, direction, hit,
-                                                );
+                                            cp.axis_angle_deg = angle_from_axis_plane_hit(
+                                                *origin, *direction, hit,
+                                            );
                                         }
                                     }
                                 }
                             }
                         }
+                    }
 
-                        if primary_released {
-                            cp.axis_gizmo_drag = None;
-                        }
+                    if primary_released {
+                        cp.axis_gizmo_drag = None;
+                    }
 
-                        if scroll != 0.0
-                            && !cp.user_edited_offset
-                            && cp.axis_gizmo_drag.is_none()
-                        {
-                            cp.axis_offset += scroll * 0.05;
-                        }
-                    } else {
-                        if scroll != 0.0 && !cp.user_edited_offset {
-                            let (live_offset, _) = cp.live_dims();
-                            let new_offset = (live_offset + scroll * 0.05).max(0.0);
-                            if let PlaneReference::Face { origin, normal, .. } =
-                                &cp.reference
-                            {
-                                cp.last_mouse =
-                                    *origin + normal.normalize_or_zero() * new_offset;
-                            }
-                        } else if let Some(gp) = gp {
-                            if let PlaneReference::Face { origin, normal, .. } =
-                                &cp.reference
-                            {
-                                if normal.z.abs() < 0.9 {
-                                    cp.last_mouse = *origin
-                                        + normal.normalize_or_zero()
-                                            * construction::live_face_offset(
-                                                *origin, *normal, gp,
-                                            );
-                                } else {
-                                    cp.last_mouse.x = gp.x;
-                                    cp.last_mouse.y = gp.y;
-                                }
-                            }
-                        }
+                    if scroll != 0.0
+                        && !cp.user_edited_offset
+                        && cp.axis_gizmo_drag.is_none()
+                    {
+                        cp.offset_live += scroll * 0.05;
                     }
 
                     if !cp.user_edited_offset {
@@ -994,7 +1001,7 @@ impl App {
                         &project,
                         &preview,
                         &cp.reference,
-                        cp.axis_offset,
+                        cp.offset_live,
                         cp.axis_angle_deg,
                     );
                     let over_input = dim_layouts.as_ref().is_some_and(|(offset, angle)| {
@@ -1004,22 +1011,28 @@ impl App {
                         }
                         pointer_over_dim_inputs(pp, &layouts)
                     });
-                    let over_gizmo = matches!(
-                        &cp.reference,
+                    let over_gizmo = match &cp.reference {
+                        PlaneReference::Face { origin, normal, .. } => offset_gizmo_hit(
+                            pp,
+                            &project,
+                            *origin,
+                            *normal,
+                            cp.offset_live,
+                        ),
                         PlaneReference::Axis {
                             origin,
                             direction,
                             ..
-                        } if axis_gizmo_hit(
+                        } => axis_gizmo_hit(
                             pp,
                             &project,
                             *origin,
                             *direction,
-                            cp.axis_offset,
+                            cp.offset_live,
                             cp.axis_angle_deg,
                         )
-                        .is_some()
-                    );
+                        .is_some(),
+                    };
 
                     if should_commit_sketch_on_click(
                         was_creating,
@@ -1065,35 +1078,58 @@ impl App {
         if let Some(cp) = &self.state.creating_plane {
             let preview = cp.preview_plane();
             draw_construction_plane(&painter, &project, &preview, col::PREVIEW, false);
-            if let PlaneReference::Axis {
-                origin,
-                direction,
-                ..
-            } = &cp.reference
-            {
-                let gizmo_hover = response
-                    .hover_pos()
-                    .or(response.interact_pointer_pos())
-                    .and_then(|pp| {
-                        axis_gizmo_hit(
-                            pp,
-                            &project,
-                            *origin,
-                            *direction,
-                            cp.axis_offset,
-                            cp.axis_angle_deg,
-                        )
-                    });
-                draw_axis_plane_gizmo(
-                    &painter,
-                    &project,
-                    *origin,
-                    *direction,
-                    cp.axis_offset,
-                    cp.axis_angle_deg,
-                    col::PREVIEW,
-                    gizmo_hover,
-                );
+            let gizmo_hover = response
+                .hover_pos()
+                .or(response.interact_pointer_pos())
+                .and_then(|pp| match &cp.reference {
+                    PlaneReference::Face { origin, normal, .. } => {
+                        if offset_gizmo_hit(pp, &project, *origin, *normal, cp.offset_live) {
+                            Some(AxisGizmoHit::Offset)
+                        } else {
+                            None
+                        }
+                    }
+                    PlaneReference::Axis {
+                        origin,
+                        direction,
+                        ..
+                    } => axis_gizmo_hit(
+                        pp,
+                        &project,
+                        *origin,
+                        *direction,
+                        cp.offset_live,
+                        cp.axis_angle_deg,
+                    ),
+                });
+            match &cp.reference {
+                PlaneReference::Face { origin, normal, .. } => {
+                    draw_offset_gizmo(
+                        &painter,
+                        &project,
+                        *origin,
+                        *normal,
+                        cp.offset_live,
+                        col::PREVIEW,
+                        gizmo_hover == Some(AxisGizmoHit::Offset),
+                    );
+                }
+                PlaneReference::Axis {
+                    origin,
+                    direction,
+                    ..
+                } => {
+                    draw_axis_plane_gizmo(
+                        &painter,
+                        &project,
+                        *origin,
+                        *direction,
+                        cp.offset_live,
+                        cp.axis_angle_deg,
+                        col::PREVIEW,
+                        gizmo_hover,
+                    );
+                }
             }
         }
 
@@ -1236,7 +1272,7 @@ impl App {
                 &project,
                 &preview,
                 &cp.reference,
-                cp.axis_offset,
+                cp.offset_live,
                 cp.axis_angle_deg,
             )
             {
@@ -1336,7 +1372,7 @@ impl App {
                     {
                         "Drag arrow for offset • drag circle handle for angle • type to lock • Tab: switch dims • Click/Enter: commit • Esc: cancel"
                     } else {
-                        "Set offset (wheel or type) • Click/Enter: create plane • Esc: cancel"
+                        "Drag arrow for offset • wheel or type to lock • Click/Enter: create plane • Esc: cancel"
                     }
                 } else {
                     "p: plane  •  Click a face, line, shape edge, global axis, or ground • then set offset (and angle for lines)"
@@ -1448,15 +1484,23 @@ fn dim_layout_avoiding_handle(
 
 fn plane_dim_layouts(
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
-    plane: &ConstructionPlane,
+    _plane: &ConstructionPlane,
     reference: &PlaneReference,
-    axis_offset: f32,
+    offset_live: f32,
     axis_angle_deg: f32,
 ) -> Option<(DimInputLayout, Option<DimInputLayout>)> {
     match reference {
-        PlaneReference::Face { .. } => {
-            let center = project(plane.origin)?;
-            let offset_layout = layout_at(center + egui::vec2(-28.0, 16.0));
+        PlaneReference::Face { origin, normal, .. } => {
+            let face_screen = project(*origin)?;
+            let offset_screen = project(offset_handle(*origin, *normal, offset_live))?;
+            let arrow = offset_screen - face_screen;
+            let beside_arrow = if arrow.length_sq() > 1.0 {
+                egui::vec2(-arrow.y, arrow.x).normalized()
+            } else {
+                egui::vec2(-1.0, 0.0)
+            };
+            let offset_layout =
+                dim_layout_avoiding_handle(offset_screen, beside_arrow, 20.0);
             Some((offset_layout, None))
         }
         PlaneReference::Axis {
@@ -1468,7 +1512,7 @@ fn plane_dim_layouts(
             let offset_screen = project(axis_offset_handle(
                 *origin,
                 *direction,
-                axis_offset,
+                offset_live,
                 axis_angle_deg,
             ))?;
             let arrow = offset_screen - axis_screen;

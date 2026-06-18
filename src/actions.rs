@@ -5,7 +5,7 @@
 
 use crate::camera::{Camera, ProjectionMode, StandardView, VIEW_TRANSITION_DURATION};
 use crate::construction::{
-    live_face_offset, resolve_plane, AxisGizmoDrag, PlaneDim, PlaneReference,
+    resolve_plane, AxisGizmoDrag, PlaneDim, PlaneReference,
 };
 use crate::view_cube::{self, CubeCornerId, CubeEdgeId};
 use crate::model::{ConstructionPlane, Document, Line, Rect, ShapeKind};
@@ -126,8 +126,8 @@ pub struct CreatingConstructionPlane {
     pub angle_text: String,
     pub focused: PlaneDim,
     pub last_mouse: Vec3,
-    /// Live offset for axis references (mm); updated by gizmo drag or wheel.
-    pub axis_offset: f32,
+    /// Live offset (mm); updated by gizmo drag or wheel.
+    pub offset_live: f32,
     /// Live angle for axis references (degrees); updated by gizmo drag.
     pub axis_angle_deg: f32,
     pub user_edited_offset: bool,
@@ -152,10 +152,8 @@ impl CreatingConstructionPlane {
 
     pub fn live_dims(&self) -> (f32, f32) {
         match &self.reference {
-            PlaneReference::Face { origin, normal, .. } => {
-                (live_face_offset(*origin, *normal, self.last_mouse), 0.0)
-            }
-            PlaneReference::Axis { .. } => (self.axis_offset, self.axis_angle_deg),
+            PlaneReference::Face { .. } => (self.offset_live, 0.0),
+            PlaneReference::Axis { .. } => (self.offset_live, self.axis_angle_deg),
         }
     }
 }
@@ -498,7 +496,7 @@ impl AppState {
                     angle_text: String::new(),
                     focused: PlaneDim::Offset,
                     last_mouse: hover,
-                    axis_offset: 0.0,
+                    offset_live: 0.0,
                     axis_angle_deg: 0.0,
                     user_edited_offset: false,
                     user_edited_angle: false,
@@ -531,7 +529,7 @@ impl AppState {
                 cp.offset_text = value.clone();
                 cp.user_edited_offset = true;
                 if let Ok(v) = value.trim().parse::<f32>() {
-                    cp.axis_offset = v;
+                    cp.offset_live = v;
                 }
                 ActionResult::Ok
             }
@@ -697,7 +695,7 @@ mod tests {
     }
 
     #[test]
-    fn axis_live_dims_use_gizmo_fields_not_mouse() {
+    fn live_dims_use_offset_live_not_mouse() {
         let mut state = AppState::default();
         state.apply(Action::BeginConstructionPlane {
             reference: PlaneReference::Axis {
@@ -707,7 +705,7 @@ mod tests {
             },
         });
         let cp = state.creating_plane.as_mut().unwrap();
-        cp.axis_offset = 12.0;
+        cp.offset_live = 12.0;
         cp.axis_angle_deg = 45.0;
         cp.last_mouse = Vec3::new(99.0, 99.0, 0.0);
         assert_eq!(cp.live_dims(), (12.0, 45.0));
