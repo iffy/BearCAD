@@ -84,9 +84,18 @@ struct ViewTransition {
     from_pitch: f32,
     delta_yaw: f32,
     to_pitch: f32,
+    from_target: Vec3,
+    to_target: Vec3,
+    from_distance: f32,
+    to_distance: f32,
+    animate_target: bool,
+    animate_distance: bool,
     elapsed: f32,
     duration: f32,
 }
+
+/// Screen-space padding when framing a sketch face in the viewport.
+pub const SKETCH_FRAME_PADDING_PX: f32 = 8.0;
 
 /// A look-at orbit camera parameterised in spherical coordinates around a
 /// `target` point.
@@ -213,9 +222,85 @@ impl Camera {
             from_pitch: self.pitch,
             delta_yaw: shortest_yaw_delta(self.yaw, to_yaw),
             to_pitch,
+            from_target: self.target,
+            to_target: self.target,
+            from_distance: self.distance,
+            to_distance: self.distance,
+            animate_target: false,
+            animate_distance: false,
             elapsed: 0.0,
             duration: duration.max(0.01),
         });
+    }
+
+    /// Animate to a face-normal view, optionally reframing target and zoom.
+    pub fn start_sketch_view_transition(
+        &mut self,
+        target: Vec3,
+        view_direction: Vec3,
+        zoom_distance: Option<f32>,
+        duration: f32,
+    ) {
+        let (yaw, pitch) = Self::view_direction_to_yaw_pitch(view_direction);
+        let to_distance = zoom_distance.unwrap_or(self.distance).clamp(2.0, 50_000.0);
+        self.transition = Some(ViewTransition {
+            from_yaw: self.yaw,
+            from_pitch: self.pitch,
+            delta_yaw: shortest_yaw_delta(self.yaw, yaw),
+            to_pitch: pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT),
+            from_target: self.target,
+            to_target: target,
+            from_distance: self.distance,
+            to_distance,
+            animate_target: true,
+            animate_distance: zoom_distance.is_some(),
+            elapsed: 0.0,
+            duration: duration.max(0.01),
+        });
+    }
+
+    /// Camera distance so `corners` around `center` fit in `viewport` when looking along `view_direction`.
+    pub fn distance_to_fit_corners(
+        &self,
+        center: Vec3,
+        view_direction: Vec3,
+        corners: &[Vec3],
+        padding_px: f32,
+        viewport: Rect,
+    ) -> f32 {
+        let dir = view_direction.normalize_or_zero();
+        if dir.length_squared() < 1e-8 || corners.is_empty() {
+            return self.distance;
+        }
+
+        let aspect = (viewport.width() / viewport.height().max(1.0)).max(0.01);
+        let (yaw, pitch) = Self::view_direction_to_yaw_pitch(dir);
+        let eye_dir = Vec3::new(pitch.cos() * yaw.cos(), pitch.cos() * yaw.sin(), pitch.sin());
+        let forward = -eye_dir.normalize_or_zero();
+        let mut right = forward.cross(Vec3::Z);
+        if right.length_squared() < 1e-8 {
+            right = Vec3::X;
+        }
+        right = right.normalize();
+        let up = right.cross(forward).normalize();
+
+        let mut distance = self.distance.max(10.0);
+        for _ in 0..2 {
+            let half_h = distance * (self.fov_y * 0.5).tan();
+            let pad_world = padding_px * (2.0 * half_h) / viewport.height().max(1.0);
+
+            let mut max_right = pad_world;
+            let mut max_up = pad_world;
+            for corner in corners {
+                let offset = *corner - center;
+                max_right = max_right.max(offset.dot(right).abs());
+                max_up = max_up.max(offset.dot(up).abs());
+            }
+
+            let required_half_h = max_up.max(max_right / aspect);
+            distance = (required_half_h / (self.fov_y * 0.5).tan()).clamp(2.0, 50_000.0);
+        }
+        distance
     }
 
     /// Advance an in-flight view transition. Returns `true` while animating.
@@ -228,12 +313,24 @@ impl Camera {
         let u = smoothstep((t.elapsed / t.duration).min(1.0));
         self.yaw = t.from_yaw + t.delta_yaw * u;
         self.pitch = t.from_pitch + (t.to_pitch - t.from_pitch) * u;
+        if t.animate_target {
+            self.target = t.from_target.lerp(t.to_target, u);
+        }
+        if t.animate_distance {
+            self.distance = t.from_distance + (t.to_distance - t.from_distance) * u;
+        }
         if t.elapsed < t.duration {
             self.transition = Some(t);
             true
         } else {
             self.yaw = t.from_yaw + t.delta_yaw;
             self.pitch = t.to_pitch;
+            if t.animate_target {
+                self.target = t.to_target;
+            }
+            if t.animate_distance {
+                self.distance = t.to_distance;
+            }
             false
         }
     }
@@ -643,6 +740,45 @@ mod tests {
             motion.dot(toward) > 0.0,
             "target should move toward the point under the cursor"
         );
+    }
+
+    #[test]
+    fn sketch_view_transition_animates_target_and_distance() {
+        let mut cam = Camera::default();
+        cam.start_sketch_view_transition(
+            Vec3::new(10.0, 20.0, 0.0),
+            Vec3::Z,
+            Some(120.0),
+            0.5,
+        );
+        while cam.tick_transition(0.05) {}
+        assert!((cam.target.x - 10.0).abs() < 0.01);
+        assert!((cam.target.y - 20.0).abs() < 0.01);
+        assert!((cam.distance - 120.0).abs() < 0.5);
+        let view = (cam.eye() - cam.target).normalize();
+        assert!(view.z > 0.95, "should look along +Z normal, got {view:?}");
+    }
+
+    #[test]
+    fn distance_to_fit_corners_scales_with_bounds() {
+        let cam = Camera::default();
+        let viewport = test_viewport();
+        let center = Vec3::ZERO;
+        let small = [
+            Vec3::new(-10.0, -10.0, 0.0),
+            Vec3::new(10.0, -10.0, 0.0),
+            Vec3::new(10.0, 10.0, 0.0),
+            Vec3::new(-10.0, 10.0, 0.0),
+        ];
+        let large = [
+            Vec3::new(-100.0, -100.0, 0.0),
+            Vec3::new(100.0, -100.0, 0.0),
+            Vec3::new(100.0, 100.0, 0.0),
+            Vec3::new(-100.0, 100.0, 0.0),
+        ];
+        let near = cam.distance_to_fit_corners(center, Vec3::Z, &small, 8.0, viewport);
+        let far = cam.distance_to_fit_corners(center, Vec3::Z, &large, 8.0, viewport);
+        assert!(far > near * 5.0);
     }
 
 }

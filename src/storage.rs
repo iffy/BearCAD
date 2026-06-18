@@ -7,6 +7,7 @@
 //! JSON payload (SPEC §7.3). When real features arrive they slot into the same
 //! `dag_nodes` shape.
 
+use crate::face::default_xy_plane;
 use crate::model::{Document, Line, Rect, ShapeKind};
 use rusqlite::Connection;
 
@@ -146,17 +147,22 @@ pub fn open(path: &str) -> Result<Document> {
         }
     }
 
-    Ok(Document {
+    let mut doc = Document {
         rects,
         lines,
         construction_planes: Vec::new(),
         shape_order,
-    })
+    };
+    if doc.construction_planes.is_empty() {
+        doc.construction_planes.push(default_xy_plane());
+    }
+    Ok(doc)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::FaceId;
 
     #[test]
     fn round_trips_rectangles() {
@@ -167,11 +173,11 @@ mod tests {
 
         let doc = Document {
             rects: vec![
-                Rect { x: 1.0, y: 2.0, w: 3.0, h: 4.0 },
-                Rect { x: 10.0, y: 20.0, w: 30.0, h: 40.0 },
+                Rect::from_local_corners(FaceId::ConstructionPlane(0), 1.0, 2.0, 4.0, 6.0),
+                Rect::from_local_corners(FaceId::ConstructionPlane(0), 10.0, 20.0, 40.0, 60.0),
             ],
             lines: vec![],
-            construction_planes: vec![],
+            construction_planes: vec![default_xy_plane()],
             shape_order: vec![ShapeKind::Rect, ShapeKind::Rect],
         };
 
@@ -196,26 +202,31 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let doc = Document {
-            rects: vec![Rect {
-                x: 0.0,
-                y: 0.0,
-                w: 10.0,
-                h: 10.0,
-            }],
+            rects: vec![Rect::from_local_corners(
+                FaceId::ConstructionPlane(0),
+                0.0,
+                0.0,
+                10.0,
+                10.0,
+            )],
             lines: vec![],
-            construction_planes: vec![crate::model::ConstructionPlane {
-                origin: glam::Vec3::new(0.0, 0.0, 25.0),
-                normal: glam::Vec3::Z,
-                u_axis: glam::Vec3::X,
-                v_axis: glam::Vec3::Y,
-            }],
+            construction_planes: vec![
+                default_xy_plane(),
+                crate::model::ConstructionPlane {
+                    origin: glam::Vec3::new(0.0, 0.0, 25.0),
+                    normal: glam::Vec3::Z,
+                    u_axis: glam::Vec3::X,
+                    v_axis: glam::Vec3::Y,
+                },
+            ],
             shape_order: vec![ShapeKind::Rect, ShapeKind::ConstructionPlane],
         };
 
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();
         assert_eq!(loaded.rects.len(), 1);
-        assert!(loaded.construction_planes.is_empty());
+        assert_eq!(loaded.construction_planes.len(), 1);
+        assert_eq!(loaded.construction_planes[0], default_xy_plane());
         assert_eq!(loaded.shape_order, vec![ShapeKind::Rect]);
 
         std::fs::remove_file(&path).unwrap();
@@ -229,17 +240,18 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let doc = Document {
-            rects: vec![Rect {
-                x: 0.0,
-                y: 0.0,
-                w: 10.0,
-                h: 10.0,
-            }],
+            rects: vec![Rect::from_local_corners(
+                FaceId::ConstructionPlane(0),
+                0.0,
+                0.0,
+                10.0,
+                10.0,
+            )],
             lines: vec![
-                Line::from_endpoints(0.0, 0.0, 5.0, 0.0),
-                Line::from_endpoints(1.0, 1.0, 1.0, 6.0),
+                Line::from_local_endpoints(FaceId::ConstructionPlane(0), 0.0, 0.0, 5.0, 0.0),
+                Line::from_local_endpoints(FaceId::ConstructionPlane(0), 1.0, 1.0, 1.0, 6.0),
             ],
-            construction_planes: vec![],
+            construction_planes: vec![default_xy_plane()],
             shape_order: vec![ShapeKind::Rect, ShapeKind::Line, ShapeKind::Line],
         };
 

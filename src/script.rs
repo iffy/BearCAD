@@ -4,6 +4,7 @@
 //! via synthetic pointer/keyboard events and headless actions.
 
 use crate::actions::{Action, AppState, Pane, RectAxis, Tool};
+use crate::model::FaceId;
 use crate::construction::PlaneDim;
 use crate::camera::{ProjectionMode, StandardView};
 use crate::view_cube::{CubeCornerId, CubeEdgeId};
@@ -23,6 +24,8 @@ pub enum Instruction {
     Clear,
     Undo,
     Tool(Tool),
+    BeginSketch { face: FaceId },
+    ExitSketch,
     SetDim { axis: RectAxis, value: String },
     SetLineLength { value: String },
     SetPlaneOffset { value: String },
@@ -82,6 +85,9 @@ impl Instruction {
             Instruction::Tool(Tool::Rectangle) => "tool rectangle".to_string(),
             Instruction::Tool(Tool::Line) => "tool line".to_string(),
             Instruction::Tool(Tool::ConstructionPlane) => "tool plane".to_string(),
+            Instruction::Tool(Tool::Sketch) => "tool sketch".to_string(),
+            Instruction::BeginSketch { face } => format!("begin_sketch {}", face_script_name(*face)),
+            Instruction::ExitSketch => "exit_sketch".to_string(),
             Instruction::SetDim { axis, value } => {
                 let name = match axis {
                     RectAxis::Width => "width",
@@ -221,10 +227,27 @@ fn parse_line(line: &str, line_no: usize) -> Result<Instruction, ParseError> {
             let name = rest.split_whitespace().next().unwrap_or("");
             Tool::from_name(name).map(Instruction::Tool).ok_or_else(|| {
                 err(&format!(
-                    "unknown tool '{name}' (expected select, rectangle, line, or plane)"
+                    "unknown tool '{name}' (expected select, sketch, rectangle, line, or plane)"
                 ))
             })
         }
+
+        "begin_sketch" | "beginsketch" => {
+            let mut parts = rest.split_whitespace();
+            let kind = parts
+                .next()
+                .ok_or_else(|| err("begin_sketch requires face kind and index"))?;
+            let index = parts
+                .next()
+                .ok_or_else(|| err("begin_sketch requires face index"))?
+                .parse::<usize>()
+                .map_err(|_| err("begin_sketch index must be an integer"))?;
+            let face = FaceId::from_script(kind, index)
+                .ok_or_else(|| err(&format!("unknown face kind '{kind}'")))?;
+            Ok(Instruction::BeginSketch { face })
+        }
+
+        "exit_sketch" | "exitsketch" => Ok(Instruction::ExitSketch),
 
         "pane" => {
             let mut parts = rest.split_whitespace();
@@ -523,6 +546,13 @@ pub fn parse_key(name: &str) -> Result<Key, String> {
         "8" => Ok(Key::Num8),
         "9" => Ok(Key::Num9),
         _ => Err(format!("unknown key '{name}'")),
+    }
+}
+
+fn face_script_name(face: FaceId) -> String {
+    match face {
+        FaceId::Rect(i) => format!("rect {i}"),
+        FaceId::ConstructionPlane(i) => format!("construction_plane {i}"),
     }
 }
 
@@ -954,6 +984,17 @@ impl ScriptRunner {
                 state.apply(Action::SetTool(tool));
                 StepResult::Continue
             }
+            Instruction::BeginSketch { face } => {
+                state.apply(Action::BeginSketch {
+                    face,
+                    viewport: None,
+                });
+                StepResult::Continue
+            }
+            Instruction::ExitSketch => {
+                state.apply(Action::ExitSketch);
+                StepResult::Continue
+            }
             Instruction::SetDim { axis, value } => {
                 let _ = state.apply(Action::SetRectDimension { axis, value });
                 StepResult::Continue
@@ -1279,12 +1320,13 @@ mod tests {
         let mut runner = ScriptRunner::new(parse(script).unwrap());
         runner.verbose = false;
         let mut state = AppState::default();
-        state.doc.rects.push(crate::model::Rect {
-            x: 0.,
-            y: 0.,
-            w: 1.,
-            h: 1.,
-        });
+        state.doc.rects.push(crate::model::Rect::from_local_corners(
+            FaceId::ConstructionPlane(0),
+            0.,
+            0.,
+            1.,
+            1.,
+        ));
         let mut synthetic = SyntheticInput::default();
         let ctx = egui::Context::default();
         let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
@@ -1395,12 +1437,13 @@ mod tests {
         let mut runner = ScriptRunner::new(parse(script).unwrap());
         runner.verbose = false;
         let mut state = AppState::default();
-        state.doc.rects.push(crate::model::Rect {
-            x: 0.,
-            y: 0.,
-            w: 1.,
-            h: 1.,
-        });
+        state.doc.rects.push(crate::model::Rect::from_local_corners(
+            FaceId::ConstructionPlane(0),
+            0.,
+            0.,
+            1.,
+            1.,
+        ));
         let mut synthetic = SyntheticInput::default();
         let ctx = egui::Context::default();
         let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
@@ -1482,6 +1525,10 @@ mod tests {
         runner.verbose = false;
         let mut state = AppState::default();
         let mut synthetic = SyntheticInput::default();
+        state.apply(crate::actions::Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
         state.creating_line = Some(crate::actions::CreatingLine {
             origin: glam::Vec3::ZERO,
             text: String::new(),
@@ -1501,24 +1548,35 @@ mod tests {
 
         let cl = state.creating_line.as_ref().unwrap();
         assert_eq!(cl.text, "2in + 5mm / 2");
-        let end = cl.end_point();
-        let len = crate::model::Line::from_endpoints(0.0, 0.0, end.x, end.y).length();
+        let frame = crate::face::sketch_frame(&state.doc, FaceId::ConstructionPlane(0)).unwrap();
+        let end = cl.end_point(&frame);
+        let (u0, v0) = crate::face::world_to_local(&frame, cl.origin);
+        let (u1, v1) = crate::face::world_to_local(&frame, end);
+        let len = crate::model::Line::from_local_endpoints(
+            FaceId::ConstructionPlane(0),
+            u0,
+            v0,
+            u1,
+            v1,
+        )
+        .length();
         assert!((len - 53.3).abs() < 1e-2);
     }
 
     #[test]
     fn runner_executes_headless_actions() {
-        let script = "new\ntool rectangle\nset_dim width 50\norbit 10 5\nclear";
+        let script = "new\nbegin_sketch construction_plane 0\ntool rectangle\nset_dim width 50\norbit 10 5\nclear";
         let mut runner = ScriptRunner::new(parse(script).unwrap());
         runner.verbose = false;
         let mut state = AppState::default();
         let mut synthetic = SyntheticInput::default();
-        state.doc.rects.push(crate::model::Rect {
-            x: 0.,
-            y: 0.,
-            w: 1.,
-            h: 1.,
-        });
+        state.doc.rects.push(crate::model::Rect::from_local_corners(
+            FaceId::ConstructionPlane(0),
+            0.,
+            0.,
+            1.,
+            1.,
+        ));
 
         while !runner.done {
             runner.tick(&mut state, &mut synthetic, Some(egui::Rect::from_min_size(

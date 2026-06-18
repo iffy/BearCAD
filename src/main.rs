@@ -13,6 +13,7 @@
 mod actions;
 mod camera;
 mod construction;
+mod face;
 mod model;
 mod native_menu;
 mod script;
@@ -21,18 +22,23 @@ mod storage;
 mod value;
 mod view_cube;
 
-use actions::{Action, AppState, CreatingLine, CreatingRect, Pane, RectAxis, Tool};
+use actions::{Action, AppState, CreatingLine, CreatingRect, Pane, RectAxis, SketchSession, Tool};
 use construction::{
     angle_from_axis_plane_hit, axis_angle_handle, axis_gizmo_hit, axis_normal,
-    axis_offset_handle, draw_axis_plane_gizmo, draw_offset_gizmo, offset_from_normal_drag,
-    offset_gizmo_hit, offset_handle, pick_reference, plane_corners, resolve_pick_target,
-    AxisGizmoDrag, AxisGizmoHit, PlaneDim, PlaneReference, AXIS_GIZMO_HANDLE_HIT_RADIUS_PX,
-    PLANE_DISPLAY_HALF,
+    axis_offset_handle, draw_axis_plane_gizmo, draw_offset_gizmo, draw_pick_highlight,
+    offset_from_normal_drag, offset_gizmo_hit, offset_handle, pick_reference, plane_corners,
+    resolve_pick_target, PickTargetKind, AxisGizmoDrag, AxisGizmoHit, PlaneDim, PlaneReference,
+    AXIS_GIZMO_HANDLE_HIT_RADIUS_PX, PLANE_DISPLAY_HALF,
 };
+use face::{
+    face_label, line_world_endpoints, pick_sketch_face, rect_world_corners, sketch_frame,
+    world_to_local,
+};
+use model::{FaceId, Line, Rect};
 use eframe::egui;
 use native_menu::{MenuCommand, NativeMenu};
 use glam::Vec3;
-use model::{ConstructionPlane, Line, Rect};
+use model::ConstructionPlane;
 use script::{ScriptRunner, SyntheticInput};
 use std::path::Path;
 use value::{eval_length_mm, format_length_display, shows_computed_length};
@@ -182,6 +188,16 @@ impl App {
 
         if self.state.creating_rect.is_none()
             && self.state.creating_line.is_none()
+            && self.state.creating_plane.is_none()
+            && ctx.input(|i| i.key_pressed(egui::Key::S))
+        {
+            if self.state.tool != Tool::Sketch {
+                self.state.apply(Action::SetTool(Tool::Sketch));
+            }
+        }
+
+        if self.state.creating_rect.is_none()
+            && self.state.creating_line.is_none()
             && ctx.input(|i| i.key_pressed(egui::Key::R))
         {
             if self.state.tool != Tool::Rectangle {
@@ -209,10 +225,10 @@ impl App {
             }
         }
 
-        if self.state.tool != Tool::Rectangle {
+        if self.state.tool != Tool::Rectangle || self.state.sketch_session.is_none() {
             self.state.creating_rect = None;
         }
-        if self.state.tool != Tool::Line {
+        if self.state.tool != Tool::Line || self.state.sketch_session.is_none() {
             self.state.creating_line = None;
         }
         if self.state.tool != Tool::ConstructionPlane {
@@ -347,13 +363,36 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.state.tool, Tool::Select, "Select");
-                ui.selectable_value(&mut self.state.tool, Tool::Rectangle, "Rectangle");
-                ui.selectable_value(&mut self.state.tool, Tool::Line, "Line");
+                if ui
+                    .selectable_label(self.state.tool == Tool::Sketch, "Sketch")
+                    .clicked()
+                {
+                    self.state.apply(Action::SetTool(Tool::Sketch));
+                }
+                if ui
+                    .selectable_label(self.state.tool == Tool::Rectangle, "Rectangle")
+                    .clicked()
+                {
+                    self.state.apply(Action::SetTool(Tool::Rectangle));
+                }
+                if ui
+                    .selectable_label(self.state.tool == Tool::Line, "Line")
+                    .clicked()
+                {
+                    self.state.apply(Action::SetTool(Tool::Line));
+                }
                 ui.selectable_value(
                     &mut self.state.tool,
                     Tool::ConstructionPlane,
                     "Plane",
                 );
+                if let Some(session) = self.state.sketch_session {
+                    ui.separator();
+                    ui.label(format!(
+                        "Sketch: {}",
+                        face_label(&self.state.doc, session.face)
+                    ));
+                }
                 ui.separator();
                 if ui.button("Clear").clicked() {
                     self.state.apply(Action::Clear);
@@ -404,6 +443,8 @@ mod col {
     pub const DIM_EDGE_HIGHLIGHT: Color32 = DIM_INPUT_BORDER_FOCUS;
     /// All construction geometry (planes, etc.) shares this colour.
     pub const CONSTRUCTION: Color32 = crate::construction::CONSTRUCTION_RGBA;
+    /// Faded appearance for geometry outside the active sketch face.
+    pub const SKETCH_DIMMED: f32 = 0.28;
 }
 
 const GRID_EXTENT: f32 = 200.0;
@@ -524,25 +565,6 @@ fn rectangle_dim_layouts(
     let height = layout_at(height_pos, dim_input_size_for_text(height_text));
     debug_assert!(rectangle_labels_clear(width.rect, height.rect));
     (width, height)
-}
-
-fn rectangle_dim_layout_from_world(
-    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
-    x0: f32,
-    y0: f32,
-    x1: f32,
-    y1: f32,
-    width_text: &str,
-    height_text: &str,
-) -> Option<(DimInputLayout, DimInputLayout)> {
-    let bottom_mid = project(Vec3::new((x0 + x1) * 0.5, y0, 0.0))?;
-    let left_mid = project(Vec3::new(x0, (y0 + y1) * 0.5, 0.0))?;
-    Some(rectangle_dim_layouts(
-        bottom_mid,
-        left_mid,
-        width_text,
-        height_text,
-    ))
 }
 
 fn segment_intersects_rect(pa: egui::Pos2, pb: egui::Pos2, rect: egui::Rect) -> bool {
@@ -780,6 +802,70 @@ fn show_sketch_dimension_field(
     resp.changed()
 }
 
+fn sketch_plane_point(
+    cam: &camera::Camera,
+    viewport: egui::Rect,
+    vp: &glam::Mat4,
+    doc: &model::Document,
+    session: SketchSession,
+    screen: egui::Pos2,
+) -> Option<Vec3> {
+    let frame = sketch_frame(doc, session.face)?;
+    cam.ray_plane_hit(screen, viewport, vp, frame.origin, frame.normal)
+}
+
+fn rectangle_dim_layout_from_corners(
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    corners: [Vec3; 4],
+    width_text: &str,
+    height_text: &str,
+) -> Option<(DimInputLayout, DimInputLayout)> {
+    let bottom_mid = project(corners[0].lerp(corners[1], 0.5))?;
+    let left_mid = project(corners[0].lerp(corners[3], 0.5))?;
+    Some(rectangle_dim_layouts(
+        bottom_mid,
+        left_mid,
+        width_text,
+        height_text,
+    ))
+}
+
+fn rect_highlight_edge(corners: [Vec3; 4], edge: RectDimEdge) -> (Vec3, Vec3) {
+    match edge {
+        RectDimEdge::Width => (corners[0], corners[1]),
+        RectDimEdge::Height => (corners[0], corners[3]),
+    }
+}
+
+fn draw_face_highlight(
+    painter: &egui::Painter,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &model::Document,
+    face: FaceId,
+    color: egui::Color32,
+) {
+    match face {
+        FaceId::ConstructionPlane(i) => {
+            if let Some(plane) = doc.construction_planes.get(i) {
+                draw_pick_highlight(
+                    painter,
+                    project,
+                    doc,
+                    PickTargetKind::ConstructionPlane(*plane),
+                    color,
+                );
+            }
+        }
+        FaceId::Rect(i) => {
+            if let Some(rect) = doc.rects.get(i) {
+                if let Some(corners) = rect_world_corners(doc, rect) {
+                    draw_world_quad(painter, project, corners, color, true);
+                }
+            }
+        }
+    }
+}
+
 impl App {
     fn draw_viewport(&mut self, ui: &mut egui::Ui) {
         let (response, painter) =
@@ -817,12 +903,56 @@ impl App {
         let cam_project = cam.clone();
         let project = move |w: Vec3| cam_project.project(w, viewport, &vp);
 
-        if self.state.tool == Tool::Rectangle {
-            let ground = |p: egui::Pos2| cam.ground_point(p, viewport, &vp);
+        if self.state.tool == Tool::Sketch {
             let pointer_screen = response.hover_pos().or(response.interact_pointer_pos());
-
             if let Some(pp) = pointer_screen {
-                if let Some(gp) = ground(pp) {
+                if ui.input(|i| i.pointer.primary_pressed()) {
+                    if let Some(face) = pick_sketch_face(pp, &project, &self.state.doc) {
+                        self.state.apply(Action::BeginSketch {
+                            face,
+                            viewport: Some(viewport),
+                        });
+                    }
+                } else if let Some(face) = pick_sketch_face(pp, &project, &self.state.doc) {
+                    draw_face_highlight(
+                        &painter,
+                        &project,
+                        &self.state.doc,
+                        face,
+                        construction::PICK_HOVER_RGBA,
+                    );
+                }
+            }
+        }
+
+        if self.state.tool == Tool::Rectangle {
+            let pointer_screen = response.hover_pos().or(response.interact_pointer_pos());
+            if self.state.sketch_session.is_none() {
+                if let Some(pp) = pointer_screen {
+                    if ui.input(|i| i.pointer.primary_pressed()) {
+                        if let Some(face) = pick_sketch_face(pp, &project, &self.state.doc) {
+                            self.state.apply(Action::BeginSketch {
+                                face,
+                                viewport: Some(viewport),
+                            });
+                        }
+                    } else if let Some(face) = pick_sketch_face(pp, &project, &self.state.doc) {
+                        draw_face_highlight(
+                            &painter,
+                            &project,
+                            &self.state.doc,
+                            face,
+                            construction::PICK_HOVER_RGBA,
+                        );
+                    }
+                }
+            } else if let (Some(session), Some(pp)) =
+                (self.state.sketch_session, pointer_screen)
+            {
+                if let Some(gp) =
+                    sketch_plane_point(&cam, viewport, &vp, &self.state.doc, session, pp)
+                {
+                    let frame = sketch_frame(&self.state.doc, session.face).unwrap();
                     let was_creating = self.state.creating_rect.is_some();
                     let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
 
@@ -841,17 +971,14 @@ impl App {
 
                     let mut commit_click = false;
                     if let Some(cr) = &mut self.state.creating_rect {
-                        let cur_end = cr.end_point();
-                        let x0 = cr.origin.x.min(cur_end.x);
-                        let y0 = cr.origin.y.min(cur_end.y);
-                        let x1 = cr.origin.x.max(cur_end.x);
-                        let y1 = cr.origin.y.max(cur_end.y);
-                        let dim_layouts = rectangle_dim_layout_from_world(
+                        let end = cr.end_point(&frame);
+                        let (ou, ov) = world_to_local(&frame, cr.origin);
+                        let (eu, ev) = world_to_local(&frame, end);
+                        let preview = Rect::from_local_corners(session.face, ou, ov, eu, ev);
+                        let corners = rect_world_corners(&self.state.doc, &preview).unwrap();
+                        let dim_layouts = rectangle_dim_layout_from_corners(
                             &project,
-                            x0,
-                            y0,
-                            x1,
-                            y1,
+                            corners,
                             &cr.texts[0],
                             &cr.texts[1],
                         );
@@ -863,13 +990,13 @@ impl App {
                             commit_click = true;
                         } else if !over_input {
                             cr.last_mouse = gp;
-                            let rw = (gp.x - cr.origin.x).abs();
-                            let rh = (gp.y - cr.origin.y).abs();
+                            let (au, av) = world_to_local(&frame, cr.origin);
+                            let (bu, bv) = world_to_local(&frame, gp);
                             if !cr.user_edited[0] {
-                                cr.texts[0] = format_live_dimension(rw);
+                                cr.texts[0] = format_live_dimension((bu - au).abs());
                             }
                             if !cr.user_edited[1] {
-                                cr.texts[1] = format_live_dimension(rh);
+                                cr.texts[1] = format_live_dimension((bv - av).abs());
                             }
                         }
                     }
@@ -881,11 +1008,33 @@ impl App {
         }
 
         if self.state.tool == Tool::Line {
-            let ground = |p: egui::Pos2| cam.ground_point(p, viewport, &vp);
             let pointer_screen = response.hover_pos().or(response.interact_pointer_pos());
-
-            if let Some(pp) = pointer_screen {
-                if let Some(gp) = ground(pp) {
+            if self.state.sketch_session.is_none() {
+                if let Some(pp) = pointer_screen {
+                    if ui.input(|i| i.pointer.primary_pressed()) {
+                        if let Some(face) = pick_sketch_face(pp, &project, &self.state.doc) {
+                            self.state.apply(Action::BeginSketch {
+                                face,
+                                viewport: Some(viewport),
+                            });
+                        }
+                    } else if let Some(face) = pick_sketch_face(pp, &project, &self.state.doc) {
+                        draw_face_highlight(
+                            &painter,
+                            &project,
+                            &self.state.doc,
+                            face,
+                            construction::PICK_HOVER_RGBA,
+                        );
+                    }
+                }
+            } else if let (Some(session), Some(pp)) =
+                (self.state.sketch_session, pointer_screen)
+            {
+                if let Some(gp) =
+                    sketch_plane_point(&cam, viewport, &vp, &self.state.doc, session, pp)
+                {
+                    let frame = sketch_frame(&self.state.doc, session.face).unwrap();
                     let was_creating = self.state.creating_line.is_some();
                     let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
 
@@ -903,12 +1052,12 @@ impl App {
 
                     let mut commit_click = false;
                     if let Some(cl) = &mut self.state.creating_line {
-                        let end = cl.end_point();
-                        let over_input = project(Vec3::new(cl.origin.x, cl.origin.y, 0.0))
-                            .zip(project(Vec3::new(end.x, end.y, 0.0)))
-                            .is_some_and(|(pa, pb)| {
+                        let end = cl.end_point(&frame);
+                        let over_input = project(cl.origin).zip(project(end)).is_some_and(
+                            |(pa, pb)| {
                                 pointer_over_dim_inputs(pp, &[line_dim_layout(pa, pb, &cl.text)])
-                            });
+                            },
+                        );
 
                         if should_commit_sketch_on_click(was_creating, primary_pressed, over_input)
                         {
@@ -916,9 +1065,11 @@ impl App {
                         } else if !over_input {
                             cl.last_mouse = gp;
                             if !cl.user_edited {
-                                let dx = gp.x - cl.origin.x;
-                                let dy = gp.y - cl.origin.y;
-                                cl.text = format_live_dimension((dx * dx + dy * dy).sqrt());
+                                let (au, av) = world_to_local(&frame, cl.origin);
+                                let (bu, bv) = world_to_local(&frame, gp);
+                                let du = bu - au;
+                                let dv = bv - av;
+                                cl.text = format_live_dimension((du * du + dv * dv).sqrt());
                             }
                         }
                     }
@@ -1115,31 +1266,69 @@ impl App {
             }
         }
 
-        draw_ground(&painter, &project, viewport);
+        let sketch_session = self.state.sketch_session;
+        draw_ground(
+            &painter,
+            &project,
+            viewport,
+            sketch_session.is_some(),
+        );
 
-        for r in &self.state.doc.rects {
-            draw_rect(&painter, &project, *r, col::RECT_LINE, true);
+        for (ri, r) in self.state.doc.rects.iter().enumerate() {
+            let dim = sketch_session.is_some_and(|s| !sketch_rect_is_active(s, ri, r.parent));
+            let color = sketch_color(col::RECT_LINE, dim);
+            draw_rect(&painter, &project, &self.state.doc, *r, color, true);
         }
         for line in &self.state.doc.lines {
-            draw_line_segment(&painter, &project, *line, col::LINE_STROKE, 2.0);
+            let dim = sketch_session.is_some_and(|s| line.parent != s.face);
+            let color = sketch_color(col::LINE_STROKE, dim);
+            draw_line_segment(&painter, &project, &self.state.doc, *line, color, 2.0);
         }
-        for plane in &self.state.doc.construction_planes {
-            draw_construction_plane(&painter, &project, plane, col::CONSTRUCTION, true);
+        for (i, plane) in self.state.doc.construction_planes.iter().enumerate() {
+            let active = sketch_session.is_some_and(|s| s.face == FaceId::ConstructionPlane(i));
+            let color = if active {
+                col::DIM_EDGE_HIGHLIGHT
+            } else {
+                sketch_color(col::CONSTRUCTION, sketch_session.is_some())
+            };
+            draw_construction_plane(&painter, &project, plane, color, true);
         }
-        if let Some(cr) = &self.state.creating_rect {
-            let end = cr.end_point();
-            let preview = Rect::from_corners(cr.origin.x, cr.origin.y, end.x, end.y);
-            draw_rect(&painter, &project, preview, col::PREVIEW, false);
-            if let Some(sp) = project(cr.origin) {
-                painter.circle_filled(sp, 3.5, col::PREVIEW);
+        if let Some(session) = sketch_session {
+            if !matches!(session.face, FaceId::ConstructionPlane(_)) {
+                draw_face_highlight(
+                    &painter,
+                    &project,
+                    &self.state.doc,
+                    session.face,
+                    col::DIM_EDGE_HIGHLIGHT,
+                );
             }
         }
-        if let Some(cl) = &self.state.creating_line {
-            let end = cl.end_point();
-            let preview = Line::from_endpoints(cl.origin.x, cl.origin.y, end.x, end.y);
-            draw_line_segment(&painter, &project, preview, col::PREVIEW, 2.0);
-            if let Some(sp) = project(cl.origin) {
-                painter.circle_filled(sp, 3.5, col::PREVIEW);
+        if let (Some(cr), Some(session)) =
+            (&self.state.creating_rect, self.state.sketch_session)
+        {
+            if let Some(frame) = sketch_frame(&self.state.doc, session.face) {
+                let end = cr.end_point(&frame);
+                let (ou, ov) = world_to_local(&frame, cr.origin);
+                let (eu, ev) = world_to_local(&frame, end);
+                let preview = Rect::from_local_corners(session.face, ou, ov, eu, ev);
+                draw_rect(&painter, &project, &self.state.doc, preview, col::PREVIEW, false);
+                if let Some(sp) = project(cr.origin) {
+                    painter.circle_filled(sp, 3.5, col::PREVIEW);
+                }
+            }
+        }
+        if let (Some(cl), Some(session)) =
+            (&self.state.creating_line, self.state.sketch_session)
+        {
+            if let Some(frame) = sketch_frame(&self.state.doc, session.face) {
+                let end = cl.end_point(&frame);
+                if let (Some(pa), Some(pb)) = (project(cl.origin), project(end)) {
+                    painter.line_segment([pa, pb], egui::Stroke::new(2.0, col::PREVIEW));
+                }
+                if let Some(sp) = project(cl.origin) {
+                    painter.circle_filled(sp, 3.5, col::PREVIEW);
+                }
             }
         }
         if let Some(cp) = &self.state.creating_plane {
@@ -1204,27 +1393,26 @@ impl App {
             if let Some(pp) = response.hover_pos().or(response.interact_pointer_pos()) {
                 let gp = cam.ground_point(pp, viewport, &vp);
                 if let Some(target) = resolve_pick_target(pp, &project, gp, &self.state.doc) {
-                    target.draw_highlight(&painter, &project);
+                    target.draw_highlight(&painter, &project, &self.state.doc);
                 }
             }
         }
 
-        if let Some(cr) = &mut self.state.creating_rect {
-            let end = cr.end_point();
-            let x0 = cr.origin.x.min(end.x);
-            let y0 = cr.origin.y.min(end.y);
-            let x1 = cr.origin.x.max(end.x);
-            let y1 = cr.origin.y.max(end.y);
-            if let Some((width_layout, height_layout)) = rectangle_dim_layout_from_world(
+        if let (Some(cr), Some(session)) =
+            (&mut self.state.creating_rect, self.state.sketch_session)
+        {
+            let frame = sketch_frame(&self.state.doc, session.face).unwrap();
+            let end = cr.end_point(&frame);
+            let (ou, ov) = world_to_local(&frame, cr.origin);
+            let (eu, ev) = world_to_local(&frame, end);
+            let preview = Rect::from_local_corners(session.face, ou, ov, eu, ev);
+            let corners = rect_world_corners(&self.state.doc, &preview).unwrap();
+            if let Some((width_layout, height_layout)) = rectangle_dim_layout_from_corners(
                 &project,
-                x0,
-                y0,
-                x1,
-                y1,
+                corners,
                 &cr.texts[0],
                 &cr.texts[1],
-            )
-            {
+            ) {
                 let ctx = ui.ctx();
                 let id_w = egui::Id::new("cr_width");
                 let id_h = egui::Id::new("cr_height");
@@ -1284,7 +1472,7 @@ impl App {
                         }
                     })
                 {
-                    let (a, b) = rect_edge_endpoints(x0, y0, x1, y1, edge);
+                    let (a, b) = rect_highlight_edge(corners, edge);
                     draw_world_segment(
                         &painter,
                         &project,
@@ -1297,12 +1485,12 @@ impl App {
             }
         }
 
-        if let Some(cl) = &mut self.state.creating_line {
-            let end = cl.end_point();
-            if let (Some(pa), Some(pb)) = (
-                project(Vec3::new(cl.origin.x, cl.origin.y, 0.0)),
-                project(Vec3::new(end.x, end.y, 0.0)),
-            ) {
+        if let (Some(cl), Some(session)) =
+            (&mut self.state.creating_line, self.state.sketch_session)
+        {
+            let frame = sketch_frame(&self.state.doc, session.face).unwrap();
+            let end = cl.end_point(&frame);
+            if let (Some(pa), Some(pb)) = (project(cl.origin), project(end)) {
                 let layout = line_dim_layout(pa, pb, &cl.text);
                 let ctx = ui.ctx();
                 let id_len = egui::Id::new("cl_length");
@@ -1328,11 +1516,11 @@ impl App {
                 if !length_focused && cl.pending_focus {
                     ctx.memory_mut(|m| m.request_focus(id_len));
                 } else if length_focused {
-                    let preview = Line::from_endpoints(cl.origin.x, cl.origin.y, end.x, end.y);
-                    draw_line_segment(
+                    draw_world_segment(
                         &painter,
                         &project,
-                        preview,
+                        cl.origin,
+                        end,
                         col::DIM_EDGE_HIGHLIGHT,
                         3.5,
                     );
@@ -1420,11 +1608,20 @@ impl App {
 
         let hint = match self.state.tool {
             Tool::Select => {
-                "Right-drag: orbit  •  Shift+right-drag: pan  •  Wheel: zoom  •  r: rectangle  •  l: line  •  p: plane"
+                if self.state.sketch_session.is_some() {
+                    "Sketch mode — pick rectangle or line tool  •  Esc: exit sketch (cancels in-progress draw first)"
+                } else {
+                    "Right-drag: orbit  •  Shift+right-drag: pan  •  Wheel: zoom  •  s: sketch  •  p: plane"
+                }
+            }
+            Tool::Sketch => {
+                "s: sketch  •  Click a rectangle or construction plane face  •  Esc: cancel"
             }
             Tool::Rectangle => {
                 if self.state.creating_rect.is_some() {
                     "Move mouse (free dim) • Type in focused input to constrain • Tab: switch dims • Click/Enter: create rect • Esc: cancel"
+                } else if self.state.sketch_session.is_none() {
+                    "r: rectangle  •  Click a face to sketch on  •  Right-drag: orbit  •  Shift+right-drag: pan  •  Wheel: zoom"
                 } else {
                     "r: rectangle  •  Left-click to set corner • move to size • Right-drag: orbit  • Shift+right-drag: pan  •  Wheel: zoom"
                 }
@@ -1432,6 +1629,8 @@ impl App {
             Tool::Line => {
                 if self.state.creating_line.is_some() {
                     "Move mouse (free length) • Type in length input to constrain • Click/Enter: create line • Esc: cancel"
+                } else if self.state.sketch_session.is_none() {
+                    "l: line  •  Click a face to sketch on  •  Right-drag: orbit  • Shift+right-drag: pan  •  Wheel: zoom"
                 } else {
                     "l: line  •  Left-click to set start • move to aim • Right-drag: orbit  • Shift+right-drag: pan  •  Wheel: zoom"
                 }
@@ -1480,13 +1679,6 @@ fn rect_dim_edge_for_focus(focused: usize) -> Option<RectDimEdge> {
     }
 }
 
-fn rect_edge_endpoints(x0: f32, y0: f32, x1: f32, y1: f32, edge: RectDimEdge) -> (Vec3, Vec3) {
-    match edge {
-        RectDimEdge::Width => (Vec3::new(x0, y0, 0.0), Vec3::new(x1, y0, 0.0)),
-        RectDimEdge::Height => (Vec3::new(x0, y0, 0.0), Vec3::new(x0, y1, 0.0)),
-    }
-}
-
 fn draw_world_segment(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
@@ -1500,27 +1692,38 @@ fn draw_world_segment(
     }
 }
 
-fn rect_corners(r: Rect) -> [Vec3; 4] {
-    [
-        Vec3::new(r.x, r.y, 0.0),
-        Vec3::new(r.x + r.w, r.y, 0.0),
-        Vec3::new(r.x + r.w, r.y + r.h, 0.0),
-        Vec3::new(r.x, r.y + r.h, 0.0),
-    ]
+fn draw_world_quad(
+    painter: &egui::Painter,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    corners: [Vec3; 4],
+    color: egui::Color32,
+    fill: bool,
+) {
+    let pts: Option<Vec<egui::Pos2>> = corners.iter().map(|&c| project(c)).collect();
+    let Some(pts) = pts else { return };
+    if fill {
+        painter.add(egui::Shape::convex_polygon(
+            pts.clone(),
+            color.gamma_multiply(0.25),
+            egui::Stroke::new(1.5, color),
+        ));
+    } else {
+        painter.add(egui::Shape::closed_line(pts, egui::Stroke::new(1.5, color)));
+    }
 }
 
 fn draw_line_segment(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &model::Document,
     line: Line,
     color: egui::Color32,
     width: f32,
 ) {
-    let a = Vec3::new(line.x0, line.y0, 0.0);
-    let b = Vec3::new(line.x1, line.y1, 0.0);
-    if let (Some(pa), Some(pb)) = (project(a), project(b)) {
-        painter.line_segment([pa, pb], egui::Stroke::new(width, color));
-    }
+    let Some((a, b)) = line_world_endpoints(doc, &line) else {
+        return;
+    };
+    draw_world_segment(painter, project, a, b, color, width);
 }
 
 fn dim_layout_near_screen_point(
@@ -1639,24 +1842,15 @@ fn draw_construction_plane(
 fn draw_rect(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &model::Document,
     r: Rect,
     color: egui::Color32,
     fill: bool,
 ) {
-    let pts: Option<Vec<egui::Pos2>> = rect_corners(r).iter().map(|&c| project(c)).collect();
-    let Some(pts) = pts else { return };
-    if fill {
-        painter.add(egui::Shape::convex_polygon(
-            pts.clone(),
-            color.gamma_multiply(0.25),
-            egui::Stroke::new(1.5, color),
-        ));
-    } else {
-        painter.add(egui::Shape::closed_line(
-            pts,
-            egui::Stroke::new(1.5, color),
-        ));
-    }
+    let Some(corners) = rect_world_corners(doc, &r) else {
+        return;
+    };
+    draw_world_quad(painter, project, corners, color, fill);
 }
 
 /// Liang–Barsky clip of a screen-space segment to an axis-aligned rectangle.
@@ -1710,10 +1904,26 @@ fn draw_clipped_world_segment(
     painter.line_segment([ca, cb], egui::Stroke::new(width, color));
 }
 
+fn sketch_color(color: egui::Color32, dim: bool) -> egui::Color32 {
+    if dim {
+        color.gamma_multiply(col::SKETCH_DIMMED)
+    } else {
+        color
+    }
+}
+
+fn sketch_rect_is_active(session: SketchSession, rect_index: usize, parent: FaceId) -> bool {
+    match session.face {
+        FaceId::Rect(face_index) => rect_index == face_index || parent == session.face,
+        FaceId::ConstructionPlane(_) => parent == session.face,
+    }
+}
+
 fn draw_ground(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     viewport: egui::Rect,
+    dim: bool,
 ) {
     let e = GRID_EXTENT;
     let line = |a: Vec3, b: Vec3, color: egui::Color32, w: f32| {
@@ -1722,19 +1932,35 @@ fn draw_ground(
 
     let mut t = -e;
     while t <= e + 0.001 {
-        let color = if t.abs() < 0.001 {
+        let base = if t.abs() < 0.001 {
             col::GRID_AXIS
         } else {
             col::GRID
         };
+        let color = sketch_color(base, dim);
         line(Vec3::new(-e, t, 0.0), Vec3::new(e, t, 0.0), color, 1.0);
         line(Vec3::new(t, -e, 0.0), Vec3::new(t, e, 0.0), color, 1.0);
         t += GRID_STEP;
     }
 
-    line(Vec3::ZERO, Vec3::new(e, 0.0, 0.0), col::X_AXIS, 2.0);
-    line(Vec3::ZERO, Vec3::new(0.0, e, 0.0), col::Y_AXIS, 2.0);
-    line(Vec3::ZERO, Vec3::new(0.0, 0.0, e), col::Z_AXIS, 2.0);
+    line(
+        Vec3::ZERO,
+        Vec3::new(e, 0.0, 0.0),
+        sketch_color(col::X_AXIS, dim),
+        2.0,
+    );
+    line(
+        Vec3::ZERO,
+        Vec3::new(0.0, e, 0.0),
+        sketch_color(col::Y_AXIS, dim),
+        2.0,
+    );
+    line(
+        Vec3::ZERO,
+        Vec3::new(0.0, 0.0, e),
+        sketch_color(col::Z_AXIS, dim),
+        2.0,
+    );
 }
 
 #[cfg(test)]
@@ -1744,6 +1970,7 @@ mod tests {
         clip_segment_to_rect, col, should_commit_sketch_on_click, should_select_all_rect_value,
         GRID_EXTENT,
     };
+    use crate::face::SketchFrame;
     use eframe::egui::{self, Pos2, Rect, Vec2};
     use egui::Color32;
     use glam::Vec3;
@@ -1959,18 +2186,30 @@ mod tests {
 
     #[test]
     fn width_focus_maps_to_bottom_edge() {
-        use super::{rect_dim_edge_for_focus, rect_edge_endpoints, RectDimEdge};
+        use super::{rect_dim_edge_for_focus, rect_highlight_edge, RectDimEdge};
         assert_eq!(rect_dim_edge_for_focus(0), Some(RectDimEdge::Width));
-        let (a, b) = rect_edge_endpoints(1.0, 2.0, 5.0, 8.0, RectDimEdge::Width);
+        let corners = [
+            Vec3::new(1.0, 2.0, 0.0),
+            Vec3::new(5.0, 2.0, 0.0),
+            Vec3::new(5.0, 8.0, 0.0),
+            Vec3::new(1.0, 8.0, 0.0),
+        ];
+        let (a, b) = rect_highlight_edge(corners, RectDimEdge::Width);
         assert_eq!(a, Vec3::new(1.0, 2.0, 0.0));
         assert_eq!(b, Vec3::new(5.0, 2.0, 0.0));
     }
 
     #[test]
     fn height_focus_maps_to_left_edge() {
-        use super::{rect_dim_edge_for_focus, rect_edge_endpoints, RectDimEdge};
+        use super::{rect_dim_edge_for_focus, rect_highlight_edge, RectDimEdge};
         assert_eq!(rect_dim_edge_for_focus(1), Some(RectDimEdge::Height));
-        let (a, b) = rect_edge_endpoints(1.0, 2.0, 5.0, 8.0, RectDimEdge::Height);
+        let corners = [
+            Vec3::new(1.0, 2.0, 0.0),
+            Vec3::new(5.0, 2.0, 0.0),
+            Vec3::new(5.0, 8.0, 0.0),
+            Vec3::new(1.0, 8.0, 0.0),
+        ];
+        let (a, b) = rect_highlight_edge(corners, RectDimEdge::Height);
         assert_eq!(a, Vec3::new(1.0, 2.0, 0.0));
         assert_eq!(b, Vec3::new(1.0, 8.0, 0.0));
     }
@@ -1996,6 +2235,15 @@ mod tests {
         );
     }
 
+    fn xy_frame() -> SketchFrame {
+        SketchFrame {
+            origin: Vec3::ZERO,
+            u_axis: Vec3::X,
+            v_axis: Vec3::Y,
+            normal: Vec3::Z,
+        }
+    }
+
     fn make_cr(origin: (f32, f32), texts: [&str; 2], mouse: (f32, f32)) -> CreatingRect {
         CreatingRect {
             origin: Vec3::new(origin.0, origin.1, 0.0),
@@ -2010,35 +2258,39 @@ mod tests {
     #[test]
     fn end_point_free_follows_mouse() {
         let cr = make_cr((0., 0.), ["", ""], (10., 4.));
-        let e = cr.end_point();
+        let frame = xy_frame();
+        let e = cr.end_point(&frame);
         assert!((e.x - 10.0).abs() < 1e-4);
         assert!((e.y - 4.0).abs() < 1e-4);
     }
 
     #[test]
     fn end_point_one_constrained() {
+        let frame = xy_frame();
         let cr = make_cr((0., 0.), ["5", ""], (12., 3.));
-        let e = cr.end_point();
+        let e = cr.end_point(&frame);
         assert!((e.x - 5.0).abs() < 1e-4 && (e.y - 3.0).abs() < 1e-4);
 
         let cr2 = make_cr((10., 20.), ["5", ""], (3., 15.));
-        let e2 = cr2.end_point();
+        let e2 = cr2.end_point(&frame);
         assert!((e2.x - 5.0).abs() < 1e-4);
         assert!((e2.y - 15.0).abs() < 1e-4);
     }
 
     #[test]
     fn end_point_both_constrained() {
+        let frame = xy_frame();
         let cr = make_cr((0., 0.), ["3", "7"], (99., -4.));
-        let e = cr.end_point();
+        let e = cr.end_point(&frame);
         assert!((e.x - 3.0).abs() < 1e-4);
         assert!((e.y + 7.0).abs() < 1e-4);
     }
 
     #[test]
     fn end_point_invalid_text_falls_back_to_mouse() {
+        let frame = xy_frame();
         let cr = make_cr((0., 0.), ["abc", "12x"], (8., 9.));
-        let e = cr.end_point();
+        let e = cr.end_point(&frame);
         assert!((e.x - 8.0).abs() < 1e-4);
         assert!((e.y - 9.0).abs() < 1e-4);
     }

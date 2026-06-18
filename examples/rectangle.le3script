@@ -1,7 +1,8 @@
-# Example instruction script — draw a rectangle and save a screenshot.
+# Example instruction script — sketch on the default XY plane, draw a rectangle, screenshot.
 # Run: cargo run -- --script examples/rectangle.le3script --exit
 
 new
+begin_sketch construction_plane 0
 tool rectangle
 
 # Viewport coordinates are relative to the 3D panel (below the toolbar).
@@ -13,6 +14,7 @@ set_dim width 80
 key tab
 set_dim height 50
 key enter
+exit_sketch
 
 wait 100ms
 screenshot rectangle_preview.png

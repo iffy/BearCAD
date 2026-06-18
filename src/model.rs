@@ -5,14 +5,44 @@
 //! and the OCCT kernel come online this will grow, but the persistence boundary
 //! (`storage.rs`) is kept narrow so the file format can evolve underneath it.
 
+use crate::face::default_xy_plane;
 use serde::{Deserialize, Serialize};
 
-/// An axis-aligned rectangle in sketch coordinates (millimetres, per SPEC §5.3).
+/// A sketchable face that lines and rectangles can be drawn on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FaceId {
+    Rect(usize),
+    ConstructionPlane(usize),
+}
+
+impl Default for FaceId {
+    fn default() -> Self {
+        FaceId::ConstructionPlane(0)
+    }
+}
+
+impl FaceId {
+    pub fn from_script(kind: &str, index: usize) -> Option<Self> {
+        match kind.to_ascii_lowercase().as_str() {
+            "rect" | "rectangle" => Some(FaceId::Rect(index)),
+            "plane" | "construction_plane" | "constructionplane" => {
+                Some(FaceId::ConstructionPlane(index))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// An axis-aligned rectangle in face-local coordinates (millimetres, per SPEC §5.3).
 ///
-/// Stored by its origin (`x`, `y`) and signed `w`/`h` extents. We normalise on
-/// creation so width/height are always positive, which keeps hit-testing simple.
+/// Stored by its origin (`x`, `y`) and signed `w`/`h` extents in the local (u, v)
+/// frame of [`FaceId::parent`]. We normalise on creation so width/height are always
+/// positive, which keeps hit-testing simple.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Rect {
+    #[serde(default)]
+    pub parent: FaceId,
     pub x: f32,
     pub y: f32,
     pub w: f32,
@@ -20,20 +50,23 @@ pub struct Rect {
 }
 
 impl Rect {
-    /// Build a normalised rectangle from two opposite corners.
-    pub fn from_corners(x0: f32, y0: f32, x1: f32, y1: f32) -> Self {
+    /// Build a normalised rectangle from two opposite corners in face-local coords.
+    pub fn from_local_corners(parent: FaceId, u0: f32, v0: f32, u1: f32, v1: f32) -> Self {
         Rect {
-            x: x0.min(x1),
-            y: y0.min(y1),
-            w: (x1 - x0).abs(),
-            h: (y1 - y0).abs(),
+            parent,
+            x: u0.min(u1),
+            y: v0.min(v1),
+            w: (u1 - u0).abs(),
+            h: (v1 - v0).abs(),
         }
     }
 }
 
-/// A line segment on the ground plane (millimetres, per SPEC §5.3).
+/// A line segment in face-local coordinates (millimetres, per SPEC §5.3).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Line {
+    #[serde(default)]
+    pub parent: FaceId,
     pub x0: f32,
     pub y0: f32,
     pub x1: f32,
@@ -41,14 +74,26 @@ pub struct Line {
 }
 
 impl Line {
-    pub fn from_endpoints(x0: f32, y0: f32, x1: f32, y1: f32) -> Self {
-        Self { x0, y0, x1, y1 }
+    pub fn from_local_endpoints(
+        parent: FaceId,
+        u0: f32,
+        v0: f32,
+        u1: f32,
+        v1: f32,
+    ) -> Self {
+        Self {
+            parent,
+            x0: u0,
+            y0: v0,
+            x1: u1,
+            y1: v1,
+        }
     }
 
     pub fn length(&self) -> f32 {
-        let dx = self.x1 - self.x0;
-        let dy = self.y1 - self.y0;
-        (dx * dx + dy * dy).sqrt()
+        let du = self.x1 - self.x0;
+        let dv = self.y1 - self.y0;
+        (du * du + dv * dv).sqrt()
     }
 }
 
@@ -69,8 +114,8 @@ pub enum ShapeKind {
     ConstructionPlane,
 }
 
-/// The whole document: rectangles and lines on one sketch, plus in-session construction.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// The whole document: sketch primitives parented to faces, plus construction planes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Document {
     pub rects: Vec<Rect>,
     pub lines: Vec<Line>,
@@ -80,13 +125,31 @@ pub struct Document {
     pub shape_order: Vec<ShapeKind>,
 }
 
+impl Default for Document {
+    fn default() -> Self {
+        Self {
+            rects: Vec::new(),
+            lines: Vec::new(),
+            construction_planes: vec![default_xy_plane()],
+            shape_order: Vec::new(),
+        }
+    }
+}
+
+impl Document {
+    pub fn has_children(&self, face: FaceId) -> bool {
+        self.rects.iter().any(|r| r.parent == face)
+            || self.lines.iter().any(|l| l.parent == face)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn line_length_from_endpoints() {
-        let line = Line::from_endpoints(0.0, 0.0, 3.0, 4.0);
+        let line = Line::from_local_endpoints(FaceId::default(), 0.0, 0.0, 3.0, 4.0);
         assert!((line.length() - 5.0).abs() < 1e-4);
     }
 }

@@ -2,6 +2,7 @@
 # Run: cargo run -- --script examples/line.le3script --exit
 
 new
+begin_sketch construction_plane 0
 tool line
 
 click 480 320
@@ -10,6 +11,7 @@ move 580 360
 wait 2
 set_dim length 80
 key enter
+exit_sketch
 
 wait 100ms
 screenshot line_preview.png

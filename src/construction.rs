@@ -3,6 +3,7 @@
 //! Construction planes are defined by a reference face or axis/line, then an offset
 //! (and optionally an angle around an axis).
 
+use crate::face::{line_world_endpoints, rect_center_world, rect_world_corners};
 use crate::model::{ConstructionPlane, Document, Line, Rect};
 use crate::value::{eval_length_mm, parse_length_or};
 use eframe::egui;
@@ -542,8 +543,9 @@ impl PickTarget {
         &self,
         painter: &egui::Painter,
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        doc: &Document,
     ) {
-        draw_pick_highlight(painter, project, self.kind, PICK_HOVER_RGBA);
+        draw_pick_highlight(painter, project, doc, self.kind, PICK_HOVER_RGBA);
     }
 }
 
@@ -562,7 +564,7 @@ pub fn resolve_pick_target(
         }
     };
 
-    if let Some((kind, a, b, label, dist)) = nearest_pickable_edge(screen, project, doc) {
+    if let Some((kind, a, b, label, dist)) = nearest_sketch_edge(screen, project, doc) {
         consider(PickTarget {
             kind,
             reference: PlaneReference::Axis {
@@ -588,17 +590,35 @@ pub fn resolve_pick_target(
         });
     }
 
-    if let Some((rect, dist)) = nearest_rect(screen, project, &doc.rects) {
-        let origin = ground_point.unwrap_or(rect_center(rect));
+    if let Some((rect, dist)) = nearest_rect(screen, project, doc) {
+        let origin = rect_center_world(doc, &rect)
+            .or_else(|| ground_point)
+            .unwrap_or(rect_center_legacy(rect));
+        let normal = crate::face::sketch_frame(doc, rect.parent)
+            .map(|f| f.normal)
+            .unwrap_or(Vec3::Z);
         consider(PickTarget {
             kind: PickTargetKind::Rect(rect),
             reference: PlaneReference::Face {
-                origin: Vec3::new(origin.x, origin.y, 0.0),
-                normal: Vec3::Z,
+                origin,
+                normal,
                 label: "Rectangle face".to_string(),
             },
             distance_px: dist,
             priority: 1,
+        });
+    }
+
+    if let Some((a, b, dist)) = nearest_construction_plane_edge(screen, project, doc) {
+        consider(PickTarget {
+            kind: PickTargetKind::PlaneEdge { a, b },
+            reference: PlaneReference::Axis {
+                origin: segment_midpoint(a, b),
+                direction: segment_direction(a, b),
+                label: "Construction plane edge".to_string(),
+            },
+            distance_px: dist,
+            priority: 2,
         });
     }
 
@@ -657,12 +677,13 @@ pub fn pick_reference(
 pub fn draw_pick_highlight(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &Document,
     kind: PickTargetKind,
     color: egui::Color32,
 ) {
     match kind {
         PickTargetKind::Line(line) | PickTargetKind::ShapeEdge(line) => {
-            draw_line_highlight(painter, project, line, color);
+            draw_line_highlight(painter, project, doc, line, color);
         }
         PickTargetKind::PlaneEdge { a, b } => {
             draw_segment_highlight(painter, project, a, b, color);
@@ -673,7 +694,7 @@ pub fn draw_pick_highlight(
             draw_segment_highlight(painter, project, a, b, axis_color);
         }
         PickTargetKind::Rect(rect) => {
-            draw_rect_highlight(painter, project, rect, color);
+            draw_rect_highlight(painter, project, doc, rect, color);
         }
         PickTargetKind::ConstructionPlane(plane) => {
             draw_plane_face_highlight(painter, project, &plane, color);
@@ -698,11 +719,13 @@ pub fn draw_pick_highlight(
 fn draw_line_highlight(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &Document,
     line: Line,
     color: egui::Color32,
 ) {
-    let a = Vec3::new(line.x0, line.y0, 0.0);
-    let b = Vec3::new(line.x1, line.y1, 0.0);
+    let Some((a, b)) = line_world_endpoints(doc, &line) else {
+        return;
+    };
     draw_segment_highlight(painter, project, a, b, color);
 }
 
@@ -724,10 +747,11 @@ fn draw_segment_highlight(
 fn draw_rect_highlight(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &Document,
     rect: Rect,
     color: egui::Color32,
 ) {
-    let corners = rect_corners_world(rect);
+    let corners = rect_corners_world(doc, rect);
     let pts: Option<Vec<egui::Pos2>> = corners.iter().map(|&c| project(c)).collect();
     let Some(pts) = pts else { return };
     painter.add(egui::Shape::closed_line(
@@ -770,10 +794,6 @@ fn segment_direction(a: Vec3, b: Vec3) -> Vec3 {
     (b - a).normalize_or_zero()
 }
 
-fn rect_center(rect: Rect) -> Vec3 {
-    Vec3::new(rect.x + rect.w * 0.5, rect.y + rect.h * 0.5, 0.0)
-}
-
 fn point_in_screen_quad(p: egui::Pos2, quad: [egui::Pos2; 4]) -> bool {
     // Split quad into two triangles and test barycentric inclusion.
     point_in_tri(p, quad[0], quad[1], quad[2]) || point_in_tri(p, quad[0], quad[2], quad[3])
@@ -808,8 +828,8 @@ fn dist_point_to_segment_px(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 
 }
 
 /// Edges of a rectangle as world-space segment pairs (bottom, right, top, left).
-pub fn rect_edge_segments(rect: Rect) -> [(Vec3, Vec3); 4] {
-    let c = rect_corners_world(rect);
+pub fn rect_edge_segments(doc: &Document, rect: Rect) -> [(Vec3, Vec3); 4] {
+    let c = rect_corners_world(doc, rect);
     [(c[0], c[1]), (c[1], c[2]), (c[2], c[3]), (c[3], c[0])]
 }
 
@@ -844,7 +864,7 @@ fn segment_pick_distance(
     }
 }
 
-fn nearest_pickable_edge(
+fn nearest_sketch_edge(
     screen: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     doc: &Document,
@@ -861,26 +881,37 @@ fn nearest_pickable_edge(
     };
 
     for &line in &doc.lines {
-        let a = Vec3::new(line.x0, line.y0, 0.0);
-        let b = Vec3::new(line.x1, line.y1, 0.0);
+        let Some((a, b)) = line_world_endpoints(doc, &line) else {
+            continue;
+        };
         consider(PickTargetKind::Line(line), a, b, "Line");
     }
 
     for &rect in &doc.rects {
-        for (a, b) in rect_edge_segments(rect) {
-            let edge_line = Line::from_endpoints(a.x, a.y, b.x, b.y);
+        for (a, b) in rect_edge_segments(doc, rect) {
+            let edge_line = Line::from_local_endpoints(rect.parent, a.x, a.y, b.x, b.y);
             consider(PickTargetKind::ShapeEdge(edge_line), a, b, "Rectangle edge");
         }
     }
 
+    best
+}
+
+fn nearest_construction_plane_edge(
+    screen: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &Document,
+) -> Option<(Vec3, Vec3, f32)> {
+    let mut best: Option<(Vec3, Vec3, f32)> = None;
+
     for plane in &doc.construction_planes {
         for (a, b) in construction_plane_edge_segments(plane) {
-            consider(
-                PickTargetKind::PlaneEdge { a, b },
-                a,
-                b,
-                "Construction plane edge",
-            );
+            let Some(dist) = segment_pick_distance(screen, project, a, b) else {
+                continue;
+            };
+            if best.as_ref().is_none_or(|(_, _, d)| dist < *d) {
+                best = Some((a, b, dist));
+            }
         }
     }
 
@@ -907,11 +938,11 @@ fn nearest_global_axis(
 fn nearest_rect(
     screen: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
-    rects: &[Rect],
+    doc: &Document,
 ) -> Option<(Rect, f32)> {
     let mut best: Option<(Rect, f32)> = None;
-    for &rect in rects {
-        let corners = rect_corners_world(rect);
+    for &rect in &doc.rects {
+        let corners = rect_corners_world(doc, rect);
         let pts: Option<Vec<egui::Pos2>> = corners.iter().map(|&c| project(c)).collect();
         let Some(pts) = pts else { continue };
         let quad = [pts[0], pts[1], pts[2], pts[3]];
@@ -962,13 +993,21 @@ fn dist_point_to_quad_edges(p: egui::Pos2, quad: [egui::Pos2; 4]) -> f32 {
         .fold(f32::MAX, f32::min)
 }
 
-fn rect_corners_world(rect: Rect) -> [Vec3; 4] {
+fn rect_corners_world(doc: &Document, rect: Rect) -> [Vec3; 4] {
+    rect_world_corners(doc, &rect).unwrap_or_else(|| rect_corners_world_legacy(rect))
+}
+
+fn rect_corners_world_legacy(rect: Rect) -> [Vec3; 4] {
     [
         Vec3::new(rect.x, rect.y, 0.0),
         Vec3::new(rect.x + rect.w, rect.y, 0.0),
         Vec3::new(rect.x + rect.w, rect.y + rect.h, 0.0),
         Vec3::new(rect.x, rect.y + rect.h, 0.0),
     ]
+}
+
+fn rect_center_legacy(rect: Rect) -> Vec3 {
+    Vec3::new(rect.x + rect.w * 0.5, rect.y + rect.h * 0.5, 0.0)
 }
 
 #[cfg(test)]
@@ -1112,7 +1151,7 @@ mod tests {
     #[test]
     fn pick_reference_prefers_line_over_ground() {
         let doc = Document {
-            lines: vec![Line::from_endpoints(0.0, 0.0, 100.0, 0.0)],
+            lines: vec![Line::from_local_endpoints(crate::model::FaceId::ConstructionPlane(0),0.0, 0.0, 100.0, 0.0)],
             ..Default::default()
         };
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
@@ -1123,7 +1162,7 @@ mod tests {
     #[test]
     fn line_picked_within_proximity_threshold() {
         let doc = Document {
-            lines: vec![Line::from_endpoints(0.0, 0.0, 100.0, 0.0)],
+            lines: vec![Line::from_local_endpoints(crate::model::FaceId::ConstructionPlane(0),0.0, 0.0, 100.0, 0.0)],
             ..Default::default()
         };
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
@@ -1137,7 +1176,7 @@ mod tests {
     #[test]
     fn line_endpoint_picked_within_point_threshold() {
         let doc = Document {
-            lines: vec![Line::from_endpoints(100.0, 50.0, 200.0, 50.0)],
+            lines: vec![Line::from_local_endpoints(crate::model::FaceId::ConstructionPlane(0),100.0, 50.0, 200.0, 50.0)],
             ..Default::default()
         };
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
@@ -1151,12 +1190,13 @@ mod tests {
     #[test]
     fn rect_edge_picked_for_axis_reference() {
         let doc = Document {
-            rects: vec![Rect {
-                x: 10.0,
-                y: 10.0,
-                w: 40.0,
-                h: 30.0,
-            }],
+            rects: vec![Rect::from_local_corners(
+                crate::model::FaceId::ConstructionPlane(0),
+                10.0,
+                10.0,
+                50.0,
+                40.0,
+            )],
             ..Default::default()
         };
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
@@ -1171,12 +1211,13 @@ mod tests {
     #[test]
     fn rect_edge_beats_face_when_near_boundary() {
         let doc = Document {
-            rects: vec![Rect {
-                x: 0.0,
-                y: 0.0,
-                w: 100.0,
-                h: 100.0,
-            }],
+            rects: vec![Rect::from_local_corners(
+                crate::model::FaceId::ConstructionPlane(0),
+                0.0,
+                0.0,
+                100.0,
+                100.0,
+            )],
             ..Default::default()
         };
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
@@ -1190,13 +1231,14 @@ mod tests {
     #[test]
     fn standalone_line_beats_rect_edge_when_closer() {
         let doc = Document {
-            lines: vec![Line::from_endpoints(48.0, 0.0, 52.0, 0.0)],
-            rects: vec![Rect {
-                x: 0.0,
-                y: 10.0,
-                w: 100.0,
-                h: 30.0,
-            }],
+            lines: vec![Line::from_local_endpoints(crate::model::FaceId::ConstructionPlane(0),48.0, 0.0, 52.0, 0.0)],
+            rects: vec![Rect::from_local_corners(
+                crate::model::FaceId::ConstructionPlane(0),
+                0.0,
+                10.0,
+                100.0,
+                40.0,
+            )],
             ..Default::default()
         };
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
@@ -1210,12 +1252,13 @@ mod tests {
     #[test]
     fn rect_face_picked_from_interior() {
         let doc = Document {
-            rects: vec![Rect {
-                x: 10.0,
-                y: 10.0,
-                w: 40.0,
-                h: 30.0,
-            }],
+            rects: vec![Rect::from_local_corners(
+                crate::model::FaceId::ConstructionPlane(0),
+                10.0,
+                10.0,
+                50.0,
+                40.0,
+            )],
             ..Default::default()
         };
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
