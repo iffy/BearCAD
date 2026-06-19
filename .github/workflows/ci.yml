@@ -31,6 +31,7 @@ jobs:
             libxcb-shape0-dev \
             libxcb-xfixes0-dev \
             libxkbcommon-dev \
+            libxkbcommon-x11-0 \
             libwayland-dev \
             libssl-dev \
             libvulkan-dev \

@@ -1915,18 +1915,68 @@ pub fn save_screenshot(path: &str, image: &egui::ColorImage) -> Result<(), Strin
 }
 
 /// CLI options for script execution.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ScriptOptions {
     pub script_path: Option<String>,
     pub exit_on_complete: bool,
 }
 
-/// Parse command-line arguments for script mode.
+/// Parsed command-line outcome.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CliOutcome {
+    Help,
+    Run(ScriptOptions),
+}
+
+/// Print usage information to stdout.
+pub fn print_usage() {
+    println!(
+        "\
+LE3 — parametric CAD prototype
+
+Usage:
+  le3 [options] [script.le3script]
+
+Options:
+  --script <path>       Run an instruction script
+  --exit, --exit-on-complete
+                        Exit after the script finishes
+  -h, --help            Show this help and exit
+
+Examples:
+  le3
+  le3 --script demo.le3script
+  le3 demo.le3script --exit
+"
+    );
+}
+
+/// Parse command-line arguments.
+pub fn parse_cli(args: impl IntoIterator<Item = impl AsRef<str>>) -> CliOutcome {
+    let args: Vec<String> = args
+        .into_iter()
+        .map(|a| a.as_ref().to_string())
+        .collect();
+    if args
+        .iter()
+        .any(|arg| arg == "--help" || arg == "-h")
+    {
+        return CliOutcome::Help;
+    }
+    CliOutcome::Run(parse_args_from_vec(&args))
+}
+
+/// Parse command-line arguments for script mode (without handling `--help`).
+#[allow(dead_code)] // public API; exercised by unit tests
 pub fn parse_args(args: impl IntoIterator<Item = impl AsRef<str>>) -> ScriptOptions {
     let args: Vec<String> = args
         .into_iter()
         .map(|a| a.as_ref().to_string())
         .collect();
+    parse_args_from_vec(&args)
+}
+
+fn parse_args_from_vec(args: &[String]) -> ScriptOptions {
     let mut opts = ScriptOptions::default();
     let mut i = 0;
     while i < args.len() {
@@ -2021,6 +2071,23 @@ mod tests {
         assert_eq!(parse_key("enter").unwrap(), Key::Enter);
         assert_eq!(parse_key("ESC").unwrap(), Key::Escape);
         assert!(parse_key("notakey").is_err());
+    }
+
+    #[test]
+    fn parse_cli_help_flags() {
+        assert_eq!(parse_cli(["le3", "--help"]), CliOutcome::Help);
+        assert_eq!(parse_cli(["le3", "-h"]), CliOutcome::Help);
+    }
+
+    #[test]
+    fn parse_cli_run_delegates_to_script_options() {
+        assert_eq!(
+            parse_cli(["le3", "--script", "test.le3script", "--exit"]),
+            CliOutcome::Run(ScriptOptions {
+                script_path: Some("test.le3script".to_string()),
+                exit_on_complete: true,
+            })
+        );
     }
 
     #[test]

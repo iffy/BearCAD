@@ -136,7 +136,16 @@ fn native_options() -> eframe::NativeOptions {
 }
 
 fn main() -> eframe::Result<()> {
-    let script_opts = script::parse_args(std::env::args());
+    match script::parse_cli(std::env::args()) {
+        script::CliOutcome::Help => {
+            script::print_usage();
+            return Ok(());
+        }
+        script::CliOutcome::Run(script_opts) => run_app(script_opts),
+    }
+}
+
+fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
     let options = native_options();
 
     let script = script_opts
@@ -168,6 +177,19 @@ fn main() -> eframe::Result<()> {
             )) as Box<dyn eframe::App>)
         }),
     )
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::script;
+
+    #[test]
+    fn help_outcome_is_distinct_from_default_run() {
+        assert_ne!(
+            script::parse_cli(["le3", "--help"]),
+            script::CliOutcome::Run(script::ScriptOptions::default())
+        );
+    }
 }
 
 const DIM_LABEL_DRAG_THRESHOLD_PX: f32 = 4.0;
