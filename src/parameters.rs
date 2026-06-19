@@ -298,14 +298,25 @@ pub fn delete_parameter(doc: &mut Document, index: usize) -> Result<(), String> 
     Ok(())
 }
 
-fn apply_parameter_action(state: &mut AppState, action: Action) {
-    match state.apply(action) {
+fn apply_parameter_action(state: &mut AppState, action: Action) -> ActionResult {
+    let result = state.apply(action);
+    match &result {
         ActionResult::Ok => state.parameters_pane.message = None,
-        ActionResult::Err(e) => state.parameters_pane.message = Some(e),
+        ActionResult::Err(e) => state.parameters_pane.message = Some(e.clone()),
         ActionResult::NeedsDialog => {
             state.parameters_pane.message = Some("Unexpected dialog request".to_string());
         }
     }
+    result
+}
+
+/// Singleline [`TextEdit`] surrenders focus on Enter, so commit must treat `lost_focus` as active.
+pub fn parameter_edit_enter_pressed(
+    enter_pressed: bool,
+    has_focus: bool,
+    lost_focus: bool,
+) -> bool {
+    enter_pressed && (has_focus || lost_focus)
 }
 
 pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
@@ -357,16 +368,22 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                                 response.request_focus();
                                 app.parameters_pane.editing_focus = false;
                             }
-                            if enter && response.has_focus() {
+                            if parameter_edit_enter_pressed(
+                                enter,
+                                response.has_focus(),
+                                response.lost_focus(),
+                            ) {
                                 let draft = app.parameters_pane.draft.clone();
-                                apply_parameter_action(
+                                if apply_parameter_action(
                                     app,
                                     Action::CommitParameterName {
                                         index,
                                         name: draft,
                                     },
-                                );
-                                app.parameters_pane.cancel_edit();
+                                ) == ActionResult::Ok
+                                {
+                                    app.parameters_pane.cancel_edit();
+                                }
                                 ui.input_mut(|i| {
                                     i.consume_key(egui::Modifiers::NONE, Key::Enter);
                                 });
@@ -391,16 +408,22 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                                 response.request_focus();
                                 app.parameters_pane.editing_focus = false;
                             }
-                            if enter && response.has_focus() {
+                            if parameter_edit_enter_pressed(
+                                enter,
+                                response.has_focus(),
+                                response.lost_focus(),
+                            ) {
                                 let draft = app.parameters_pane.draft.clone();
-                                apply_parameter_action(
+                                if apply_parameter_action(
                                     app,
                                     Action::CommitParameterExpression {
                                         index,
                                         expression: draft,
                                     },
-                                );
-                                app.parameters_pane.cancel_edit();
+                                ) == ActionResult::Ok
+                                {
+                                    app.parameters_pane.cancel_edit();
+                                }
                                 ui.input_mut(|i| {
                                     i.consume_key(egui::Modifiers::NONE, Key::Enter);
                                 });
@@ -450,7 +473,11 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                 }
 
                 let mut commit_new = add_clicked;
-                if enter && name_response.has_focus() {
+                if parameter_edit_enter_pressed(
+                    enter,
+                    name_response.has_focus(),
+                    name_response.lost_focus(),
+                ) {
                     if !app.parameters_pane.new_name.trim().is_empty()
                         && app.parameters_pane.new_value.trim().is_empty()
                     {
@@ -459,9 +486,11 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                     } else if new_parameter_row_ready(&app.parameters_pane) {
                         commit_new = true;
                     }
-                } else if enter
-                    && value_response.has_focus()
-                    && new_parameter_row_ready(&app.parameters_pane)
+                } else if parameter_edit_enter_pressed(
+                    enter,
+                    value_response.has_focus(),
+                    value_response.lost_focus(),
+                ) && new_parameter_row_ready(&app.parameters_pane)
                 {
                     commit_new = true;
                 }
@@ -500,6 +529,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions::{Action, ActionResult, AppState};
     use crate::model::{Document, FaceId, ShapeKind};
     use crate::Rect;
 
@@ -596,6 +626,36 @@ mod tests {
             format_parameter_value_display(&doc, "2 * B"),
             "20.0 mm (2 * B)"
         );
+    }
+
+    #[test]
+    fn parameter_edit_enter_pressed_accepts_lost_focus_from_singleline_textedit() {
+        assert!(parameter_edit_enter_pressed(true, false, true));
+        assert!(parameter_edit_enter_pressed(true, true, false));
+        assert!(!parameter_edit_enter_pressed(true, false, false));
+        assert!(!parameter_edit_enter_pressed(false, false, true));
+    }
+
+    #[test]
+    fn commit_parameter_expression_via_action_recomputes_dependent_rectangle() {
+        let mut state = AppState::default();
+        add_parameter(&mut state.doc, "A".to_string(), "5mm".to_string()).unwrap();
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let mut rect = Rect::from_local_corners(sketch, 0.0, 0.0, 5.0, 10.0);
+        rect.width_locked = true;
+        rect.width_expr = Some("A".to_string());
+        state.doc.rects.push(rect);
+        state.doc.shape_order.push(ShapeKind::Rect);
+
+        assert_eq!(
+            state.apply(Action::CommitParameterExpression {
+                index: 0,
+                expression: "12mm".to_string(),
+            }),
+            ActionResult::Ok
+        );
+        assert_eq!(state.doc.parameters[0].expression, "12mm");
+        assert!((state.doc.rects[0].w - 12.0).abs() < 1e-3);
     }
 
     #[test]

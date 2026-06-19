@@ -237,45 +237,49 @@ impl App {
             return;
         }
 
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.state.apply(Action::CancelOperation);
-        }
-
-        if self.state.creating_rect.is_none()
-            && self.state.creating_line.is_none()
-            && self.state.creating_plane.is_none()
-            && ctx.input(|i| i.key_pressed(egui::Key::S))
-        {
-            if self.state.tool != Tool::Sketch {
-                self.state.apply(Action::SetTool(Tool::Sketch));
+        // While any text field has focus, leave unmodified keys to the input (e.g. "bar" must not
+        // switch tools on "r"). Modifier shortcuts (Cmd/Ctrl+P, etc.) use the OS menu layer.
+        if !keyboard_shortcuts_suppressed(ctx) {
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.state.apply(Action::CancelOperation);
             }
-        }
 
-        if self.state.creating_rect.is_none()
-            && self.state.creating_line.is_none()
-            && ctx.input(|i| i.key_pressed(egui::Key::R))
-        {
-            if self.state.tool != Tool::Rectangle {
-                self.state.apply(Action::SetTool(Tool::Rectangle));
+            if self.state.creating_rect.is_none()
+                && self.state.creating_line.is_none()
+                && self.state.creating_plane.is_none()
+                && ctx.input(|i| i.key_pressed(egui::Key::S))
+            {
+                if self.state.tool != Tool::Sketch {
+                    self.state.apply(Action::SetTool(Tool::Sketch));
+                }
             }
-        }
 
-        if self.state.creating_rect.is_none()
-            && self.state.creating_line.is_none()
-            && ctx.input(|i| i.key_pressed(egui::Key::L))
-        {
-            if self.state.tool != Tool::Line {
-                self.state.apply(Action::SetTool(Tool::Line));
+            if self.state.creating_rect.is_none()
+                && self.state.creating_line.is_none()
+                && ctx.input(|i| i.key_pressed(egui::Key::R))
+            {
+                if self.state.tool != Tool::Rectangle {
+                    self.state.apply(Action::SetTool(Tool::Rectangle));
+                }
             }
-        }
 
-        if self.state.creating_rect.is_none()
-            && self.state.creating_line.is_none()
-            && self.state.creating_plane.is_none()
-            && ctx.input(|i| i.key_pressed(egui::Key::P))
-        {
-            if self.state.tool != Tool::ConstructionPlane {
-                self.state.apply(Action::SetTool(Tool::ConstructionPlane));
+            if self.state.creating_rect.is_none()
+                && self.state.creating_line.is_none()
+                && ctx.input(|i| i.key_pressed(egui::Key::L))
+            {
+                if self.state.tool != Tool::Line {
+                    self.state.apply(Action::SetTool(Tool::Line));
+                }
+            }
+
+            if self.state.creating_rect.is_none()
+                && self.state.creating_line.is_none()
+                && self.state.creating_plane.is_none()
+                && ctx.input(|i| i.key_pressed(egui::Key::P))
+            {
+                if self.state.tool != Tool::ConstructionPlane {
+                    self.state.apply(Action::SetTool(Tool::ConstructionPlane));
+                }
             }
         }
 
@@ -490,6 +494,12 @@ impl eframe::App for App {
                 self.draw_viewport(ui);
             });
     }
+}
+
+/// Suppress unmodified keyboard shortcuts while a [`egui::TextEdit`] (or other focused text input)
+/// is active.
+fn keyboard_shortcuts_suppressed(ctx: &egui::Context) -> bool {
+    ctx.wants_keyboard_input()
 }
 
 fn next_rect_focus_axis(focused: usize) -> RectAxis {
@@ -2876,6 +2886,15 @@ mod tests {
             pb,
             layout.rect.expand(DIM_LABEL_GAP)
         ));
+    }
+
+    #[test]
+    fn keyboard_shortcuts_suppressed_while_text_input_focused() {
+        use super::keyboard_shortcuts_suppressed;
+        let ctx = egui::Context::default();
+        assert!(!keyboard_shortcuts_suppressed(&ctx));
+        ctx.memory_mut(|mem| mem.request_focus(egui::Id::new("test_text_input")));
+        assert!(keyboard_shortcuts_suppressed(&ctx));
     }
 
     #[test]
