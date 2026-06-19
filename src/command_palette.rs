@@ -254,13 +254,13 @@ const PANE_COMMANDS: &[(Pane, PaletteCommand, PaletteCommand)] = &[
         Pane::Hierarchy,
         PaletteCommand::new(
             PaletteCommandId::ShowPaneHierarchy,
-            "Show Tree Pane",
-            "show tree pane hierarchy dag browser",
+            "Show Elements Pane",
+            "show elements pane hierarchy tree dag browser",
         ),
         PaletteCommand::new(
             PaletteCommandId::HidePaneHierarchy,
-            "Hide Tree Pane",
-            "hide tree pane hierarchy dag browser",
+            "Hide Elements Pane",
+            "hide elements pane hierarchy tree dag browser",
         ),
     ),
     (

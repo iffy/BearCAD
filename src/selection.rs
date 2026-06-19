@@ -1,9 +1,9 @@
-//! Scene element selection from the tree pane and viewport.
+//! Scene element selection from the elements pane and viewport.
 
 use crate::hierarchy::SceneElement;
 use std::collections::HashSet;
 
-/// Objects selected in the tree pane.
+/// Objects selected in the elements pane.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SceneSelection {
     elements: HashSet<SceneElement>,
@@ -14,24 +14,12 @@ impl SceneSelection {
         self.elements.is_empty()
     }
 
-    pub fn len(&self) -> usize {
-        self.elements.len()
-    }
-
     pub fn is_selected(&self, element: SceneElement) -> bool {
         self.elements.contains(&element)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = SceneElement> + '_ {
         self.elements.iter().copied()
-    }
-
-    pub fn single(&self) -> Option<SceneElement> {
-        if self.elements.len() == 1 {
-            self.elements.iter().copied().next()
-        } else {
-            None
-        }
     }
 
     pub fn clear(&mut self) {
@@ -45,7 +33,7 @@ impl SceneSelection {
     }
 }
 
-/// Click a tree row: deselect when already selected; replace selection unless additive.
+/// Click an elements row: deselect when already selected; replace selection unless additive.
 pub fn click_scene_selection(
     selection: &mut SceneSelection,
     element: SceneElement,
@@ -65,13 +53,27 @@ pub fn click_scene_selection(
 mod tests {
     use super::*;
 
+    fn selection_count(selection: &SceneSelection) -> usize {
+        selection.iter().count()
+    }
+
+    fn selection_single(selection: &SceneSelection) -> Option<SceneElement> {
+        let mut iter = selection.iter();
+        let first = iter.next()?;
+        if iter.next().is_none() {
+            Some(first)
+        } else {
+            None
+        }
+    }
+
     #[test]
     fn click_replaces_selection_without_modifier() {
         let mut sel = SceneSelection::default();
         click_scene_selection(&mut sel, SceneElement::Rect(0), false);
-        assert_eq!(sel.single(), Some(SceneElement::Rect(0)));
+        assert_eq!(selection_single(&sel), Some(SceneElement::Rect(0)));
         click_scene_selection(&mut sel, SceneElement::Line(1), false);
-        assert_eq!(sel.single(), Some(SceneElement::Line(1)));
+        assert_eq!(selection_single(&sel), Some(SceneElement::Line(1)));
     }
 
     #[test]
@@ -87,7 +89,7 @@ mod tests {
         let mut sel = SceneSelection::default();
         click_scene_selection(&mut sel, SceneElement::Rect(0), false);
         click_scene_selection(&mut sel, SceneElement::Line(1), true);
-        assert_eq!(sel.len(), 2);
+        assert_eq!(selection_count(&sel), 2);
         assert!(sel.is_selected(SceneElement::Rect(0)));
         assert!(sel.is_selected(SceneElement::Line(1)));
     }
@@ -101,7 +103,7 @@ mod tests {
             SceneElement::RectEdge(0, crate::model::RectEdge::Top),
             true,
         );
-        assert_eq!(sel.len(), 2);
+        assert_eq!(selection_count(&sel), 2);
         assert!(sel.has_rect_edge_selected(0));
     }
 
@@ -111,6 +113,6 @@ mod tests {
         click_scene_selection(&mut sel, SceneElement::Rect(0), false);
         click_scene_selection(&mut sel, SceneElement::Line(1), true);
         click_scene_selection(&mut sel, SceneElement::Rect(0), true);
-        assert_eq!(sel.single(), Some(SceneElement::Line(1)));
+        assert_eq!(selection_single(&sel), Some(SceneElement::Line(1)));
     }
 }

@@ -1,16 +1,16 @@
-//! Scene tree pane: construction planes, sketches, and sketch geometry.
+//! Elements pane: construction planes, sketches, and sketch geometry.
 
 /// Side-panel title shown in the UI.
-pub const PANE_TITLE: &str = "Tree";
+pub const PANE_TITLE: &str = "Elements";
 
 use crate::actions::SketchSession;
-use crate::model::{ConstructionPlaneParent, Document, FaceId, RectEdge, SketchId};
+use crate::model::{ConstructionPlaneParent, Document, FaceId, RectEdge, ShapeKind, SketchId};
 use crate::selection::SceneSelection;
-use eframe::egui;
-use std::collections::HashSet;
+use eframe::egui::{self, Color32, RichText};
+use std::collections::{HashMap, HashSet};
 
-/// A node in the scene hierarchy tree.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A node in the scene hierarchy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum HierarchyNode {
     ConstructionPlane(usize),
     Sketch(SketchId),
@@ -102,11 +102,59 @@ fn face_element(face: FaceId) -> SceneElement {
     }
 }
 
-/// A hierarchy entry with optional children for tree display.
+/// A hierarchy entry with optional children (used to derive parent links).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HierarchyEntry {
     pub node: HierarchyNode,
     pub children: Vec<HierarchyEntry>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct CreationRanks {
+    sketches: HashMap<SketchId, usize>,
+    rects: HashMap<usize, usize>,
+    lines: HashMap<usize, usize>,
+    planes: HashMap<usize, usize>,
+}
+
+fn build_creation_ranks(doc: &Document) -> CreationRanks {
+    let mut ranks = CreationRanks::default();
+    ranks.planes.insert(0, 0);
+    let mut sketch_n = 0usize;
+    let mut rect_n = 0usize;
+    let mut line_n = 0usize;
+    let mut plane_n = 1usize;
+    for (rank, kind) in doc.shape_order.iter().enumerate() {
+        match kind {
+            ShapeKind::Sketch => {
+                ranks.sketches.insert(sketch_n, rank);
+                sketch_n += 1;
+            }
+            ShapeKind::Rect => {
+                ranks.rects.insert(rect_n, rank);
+                rect_n += 1;
+            }
+            ShapeKind::Line => {
+                ranks.lines.insert(line_n, rank);
+                line_n += 1;
+            }
+            ShapeKind::ConstructionPlane => {
+                ranks.planes.insert(plane_n, rank);
+                plane_n += 1;
+            }
+            ShapeKind::Parameter => {}
+        }
+    }
+    ranks
+}
+
+fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
+    match node {
+        HierarchyNode::ConstructionPlane(i) => *ranks.planes.get(&i).unwrap_or(&i),
+        HierarchyNode::Sketch(i) => *ranks.sketches.get(&i).unwrap_or(&i),
+        HierarchyNode::Rect(i) => *ranks.rects.get(&i).unwrap_or(&i),
+        HierarchyNode::Line(i) => *ranks.lines.get(&i).unwrap_or(&i),
+    }
 }
 
 /// Build the hierarchy tree for the current view context.
@@ -127,6 +175,207 @@ pub fn build_hierarchy(
         });
     }
     roots
+}
+
+/// Flat element list: parents always above descendants; newer elements after older ones when possible.
+pub fn build_element_list(
+    doc: &Document,
+    sketch_session: Option<SketchSession>,
+) -> Vec<HierarchyNode> {
+    let tree = build_hierarchy(doc, sketch_session);
+    let ranks = build_creation_ranks(doc);
+    let mut nodes = Vec::new();
+    let mut parent_of = HashMap::new();
+    for entry in &tree {
+        collect_with_parents(entry, None, &mut nodes, &mut parent_of);
+    }
+    topological_flat_sort(nodes, parent_of, |node| creation_rank(&ranks, node))
+}
+
+fn collect_with_parents(
+    entry: &HierarchyEntry,
+    parent: Option<HierarchyNode>,
+    nodes: &mut Vec<HierarchyNode>,
+    parent_of: &mut HashMap<HierarchyNode, HierarchyNode>,
+) {
+    if let Some(parent) = parent {
+        parent_of.insert(entry.node, parent);
+    }
+    nodes.push(entry.node);
+    for child in &entry.children {
+        collect_with_parents(child, Some(entry.node), nodes, parent_of);
+    }
+}
+
+fn topological_flat_sort(
+    nodes: Vec<HierarchyNode>,
+    parent_of: HashMap<HierarchyNode, HierarchyNode>,
+    rank: impl Fn(HierarchyNode) -> usize,
+) -> Vec<HierarchyNode> {
+    let mut remaining: HashSet<HierarchyNode> = nodes.into_iter().collect();
+    let mut result = Vec::new();
+    while !remaining.is_empty() {
+        let mut ready: Vec<HierarchyNode> = remaining
+            .iter()
+            .filter(|node| {
+                parent_of
+                    .get(node)
+                    .map(|parent| !remaining.contains(parent))
+                    .unwrap_or(true)
+            })
+            .copied()
+            .collect();
+        ready.sort_by_key(|node| rank(*node));
+        for node in ready {
+            remaining.remove(&node);
+            result.push(node);
+        }
+    }
+    result
+}
+
+fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement> {
+    match element {
+        SceneElement::ConstructionPlane(index) => doc.construction_planes.get(index).and_then(
+            |plane| match plane.parent {
+                ConstructionPlaneParent::Root => None,
+                ConstructionPlaneParent::Sketch(sketch) => Some(SceneElement::Sketch(sketch)),
+            },
+        ),
+        SceneElement::Sketch(sketch) => doc
+            .sketch_face(sketch)
+            .map(face_element),
+        SceneElement::Rect(index) => doc
+            .rects
+            .get(index)
+            .map(|rect| SceneElement::Sketch(rect.sketch)),
+        SceneElement::Line(index) => doc
+            .lines
+            .get(index)
+            .map(|line| SceneElement::Sketch(line.sketch)),
+        SceneElement::RectEdge(index, _) => Some(SceneElement::Rect(index)),
+    }
+}
+
+fn collect_ancestors(doc: &Document, element: SceneElement, out: &mut HashSet<SceneElement>) {
+    let mut current = element;
+    while let Some(parent) = parent_element(doc, current) {
+        out.insert(parent);
+        current = parent;
+    }
+}
+
+fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<SceneElement>) {
+    match element {
+        SceneElement::ConstructionPlane(index) => {
+            let face = FaceId::ConstructionPlane(index);
+            for sketch in doc.sketches_on_face(face) {
+                out.insert(SceneElement::Sketch(sketch));
+                collect_descendants(doc, SceneElement::Sketch(sketch), out);
+            }
+        }
+        SceneElement::Sketch(sketch) => {
+            for (ri, rect) in doc.rects.iter().enumerate() {
+                if rect.sketch == sketch {
+                    out.insert(SceneElement::Rect(ri));
+                    collect_descendants(doc, SceneElement::Rect(ri), out);
+                }
+            }
+            for (li, line) in doc.lines.iter().enumerate() {
+                if line.sketch == sketch {
+                    out.insert(SceneElement::Line(li));
+                }
+            }
+            for (pi, plane) in doc.construction_planes.iter().enumerate() {
+                if matches!(plane.parent, ConstructionPlaneParent::Sketch(s) if s == sketch) {
+                    out.insert(SceneElement::ConstructionPlane(pi));
+                    collect_descendants(doc, SceneElement::ConstructionPlane(pi), out);
+                }
+            }
+        }
+        SceneElement::Rect(index) => {
+            for sketch in doc.sketches_on_face(FaceId::Rect(index)) {
+                out.insert(SceneElement::Sketch(sketch));
+                collect_descendants(doc, SceneElement::Sketch(sketch), out);
+            }
+        }
+        SceneElement::Line(_) | SceneElement::RectEdge(_, _) => {}
+    }
+}
+
+fn selection_anchor(element: SceneElement) -> SceneElement {
+    match element {
+        SceneElement::RectEdge(index, _) => SceneElement::Rect(index),
+        other => other,
+    }
+}
+
+/// Selected elements plus their ancestors and descendants.
+pub fn selection_context_elements(
+    doc: &Document,
+    selection: &SceneSelection,
+) -> HashSet<SceneElement> {
+    let mut context = HashSet::new();
+    for element in selection.iter() {
+        let anchor = selection_anchor(element);
+        context.insert(anchor);
+        collect_ancestors(doc, anchor, &mut context);
+        collect_descendants(doc, anchor, &mut context);
+    }
+    context
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RowStyle {
+    Selected,
+    InContext,
+    Normal,
+    Faint,
+}
+
+fn row_is_selected(element: SceneElement, selection: &SceneSelection) -> bool {
+    selection.is_selected(element)
+        || matches!(element, SceneElement::Rect(index) if selection.has_rect_edge_selected(index))
+}
+
+/// Only dim the list when a selected element is actually shown in it.
+fn selection_styles_visible_list(elements: &[HierarchyNode], selection: &SceneSelection) -> bool {
+    if selection.is_empty() {
+        return false;
+    }
+    let list_elements: HashSet<SceneElement> = elements
+        .iter()
+        .map(|node| scene_element_for_node(*node))
+        .collect();
+    selection.iter().any(|element| {
+        let anchor = selection_anchor(element);
+        list_elements.contains(&anchor)
+    })
+}
+
+fn row_style(
+    element: SceneElement,
+    selection: &SceneSelection,
+    context: &HashSet<SceneElement>,
+    style_selection: bool,
+) -> RowStyle {
+    if !style_selection {
+        return RowStyle::Normal;
+    }
+    if row_is_selected(element, selection) {
+        RowStyle::Selected
+    } else if context.contains(&element) {
+        RowStyle::InContext
+    } else {
+        RowStyle::Faint
+    }
+}
+
+fn styled_label(label: &str, style: RowStyle) -> RichText {
+    match style {
+        RowStyle::Selected | RowStyle::InContext | RowStyle::Normal => RichText::new(label),
+        RowStyle::Faint => RichText::new(label).color(Color32::from_gray(120)),
+    }
 }
 
 fn build_face_sketches(
@@ -228,7 +477,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> SceneElement {
     SceneElement::from(node)
 }
 
-/// Draw the scene tree in a side panel.
+/// Draw the elements list in a side panel.
 pub fn show_pane(
     ui: &mut egui::Ui,
     doc: &Document,
@@ -243,43 +492,47 @@ pub fn show_pane(
     ui.heading(PANE_TITLE);
     ui.separator();
 
+    let context = selection_context_elements(doc, selection);
+    let elements = build_element_list(doc, sketch_session);
+    let style_selection = selection_styles_visible_list(&elements, selection);
+
     egui::ScrollArea::vertical().show(ui, |ui| {
-        let tree = build_hierarchy(doc, sketch_session);
-        for entry in tree {
-            show_entry(
+        for node in elements {
+            show_row(
                 ui,
                 doc,
-                &entry,
+                node,
                 visibility,
                 selection,
+                &context,
+                style_selection,
                 on_edit_sketch,
                 on_edit_plane,
                 on_toggle_visibility,
                 on_click_element,
-                0,
             );
         }
     });
 }
 
-fn show_entry(
+fn show_row(
     ui: &mut egui::Ui,
     doc: &Document,
-    entry: &HierarchyEntry,
+    node: HierarchyNode,
     visibility: &mut ElementVisibility,
     selection: &SceneSelection,
+    context: &HashSet<SceneElement>,
+    style_selection: bool,
     on_edit_sketch: &mut impl FnMut(SketchId),
     on_edit_plane: &mut impl FnMut(usize),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
-    depth: usize,
 ) {
-    let element = scene_element_for_node(entry.node);
+    let element = scene_element_for_node(node);
     let visible = visibility.effective_visible(doc, element);
-    let indent = depth as f32 * 14.0;
+    let style = row_style(element, selection, context, style_selection);
 
     ui.horizontal(|ui| {
-        ui.add_space(indent);
         let eye = if visible { "👁" } else { "◌" };
         if ui
             .button(eye)
@@ -290,11 +543,12 @@ fn show_entry(
             on_toggle_visibility(element, next);
         }
 
-        let label = node_label(doc, entry.node);
-        let selected = selection.is_selected(element)
-            || matches!(element, SceneElement::Rect(index) if selection.has_rect_edge_selected(index));
-        let response = ui.selectable_label(selected, label);
-        match entry.node {
+        let label = node_label(doc, node);
+        let response = ui.selectable_label(
+            style == RowStyle::Selected,
+            styled_label(&label, style),
+        );
+        match node {
             HierarchyNode::Sketch(sketch) => {
                 if response.double_clicked() {
                     on_edit_sketch(sketch);
@@ -329,21 +583,6 @@ fn show_entry(
             }
         }
     });
-
-    for child in &entry.children {
-        show_entry(
-            ui,
-            doc,
-            child,
-            visibility,
-            selection,
-            on_edit_sketch,
-            on_edit_plane,
-            on_toggle_visibility,
-            on_click_element,
-            depth + 1,
-        );
-    }
 }
 
 #[cfg(test)]
@@ -365,61 +604,64 @@ mod tests {
     }
 
     #[test]
-    fn main_view_shows_planes_and_sketches_only() {
+    fn main_view_lists_planes_and_sketches_only() {
         let doc = doc_with_plane_sketches();
-        let tree = build_hierarchy(&doc, None);
-        assert_eq!(tree.len(), 1);
-        let plane = &tree[0];
-        assert_eq!(plane.node, HierarchyNode::ConstructionPlane(0));
-        assert_eq!(plane.children.len(), 2);
-        assert!(plane
-            .children
-            .iter()
-            .all(|c| matches!(c.node, HierarchyNode::Sketch(_))));
-        assert!(plane.children[0].children.is_empty());
-        assert!(plane.children[1].children.is_empty());
+        let list = build_element_list(&doc, None);
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0], HierarchyNode::ConstructionPlane(0));
+        assert_eq!(list[1], HierarchyNode::Sketch(0));
+        assert_eq!(list[2], HierarchyNode::Sketch(1));
     }
 
     #[test]
-    fn sketch_view_shows_geometry_of_active_sketch() {
+    fn sketch_view_lists_geometry_of_active_sketch() {
         let doc = doc_with_plane_sketches();
-        let tree = build_hierarchy(&doc, Some(SketchSession { sketch: 0 }));
-        let sketch0 = &tree[0].children[0];
-        assert_eq!(sketch0.node, HierarchyNode::Sketch(0));
-        assert_eq!(sketch0.children.len(), 1);
-        assert_eq!(sketch0.children[0].node, HierarchyNode::Rect(0));
+        let list = build_element_list(&doc, Some(SketchSession { sketch: 0 }));
+        assert_eq!(
+            list,
+            vec![
+                HierarchyNode::ConstructionPlane(0),
+                HierarchyNode::Sketch(0),
+                HierarchyNode::Sketch(1),
+                HierarchyNode::Rect(0),
+            ]
+        );
 
-        let sketch1 = &tree[0].children[1];
-        assert!(sketch1.children.is_empty());
-
-        let tree = build_hierarchy(&doc, Some(SketchSession { sketch: 1 }));
-        let sketch1 = &tree[0].children[1];
-        assert_eq!(sketch1.children.len(), 1);
-        assert_eq!(sketch1.children[0].node, HierarchyNode::Line(0));
+        let list = build_element_list(&doc, Some(SketchSession { sketch: 1 }));
+        assert_eq!(
+            list,
+            vec![
+                HierarchyNode::ConstructionPlane(0),
+                HierarchyNode::Sketch(0),
+                HierarchyNode::Sketch(1),
+                HierarchyNode::Line(0),
+            ]
+        );
     }
 
     #[test]
-    fn nested_sketches_on_rect_face_appear_under_parent_sketch() {
+    fn nested_sketches_on_rect_face_follow_parent_order() {
         let mut doc = Document::default();
         let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
         doc.rects
             .push(Rect::from_local_corners(s0, 0.0, 0.0, 20.0, 20.0));
         let s1 = doc.add_sketch(FaceId::Rect(0));
-        let _ = s1;
 
-        let tree = build_hierarchy(&doc, None);
-        let sketch0 = &tree[0].children[0];
-        assert_eq!(sketch0.children.len(), 1);
-        assert_eq!(sketch0.children[0].node, HierarchyNode::Rect(0));
-        assert_eq!(sketch0.children[0].children.len(), 1);
+        let list = build_element_list(&doc, None);
         assert_eq!(
-            sketch0.children[0].children[0].node,
-            HierarchyNode::Sketch(1)
+            list,
+            vec![
+                HierarchyNode::ConstructionPlane(0),
+                HierarchyNode::Sketch(0),
+                HierarchyNode::Rect(0),
+                HierarchyNode::Sketch(1),
+            ]
         );
+        let _ = s1;
     }
 
     #[test]
-    fn plane_from_sketch_geometry_nests_under_sketch() {
+    fn plane_from_sketch_geometry_lists_under_sketch() {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         doc.lines
@@ -437,15 +679,156 @@ mod tests {
             ConstructionPlaneParent::Sketch(sketch),
         );
         doc.construction_planes.push(derived);
+        doc.shape_order.push(ShapeKind::ConstructionPlane);
 
-        let tree = build_hierarchy(&doc, None);
-        assert_eq!(tree.len(), 1);
-        let sketch_entry = &tree[0].children[0];
-        assert_eq!(sketch_entry.node, HierarchyNode::Sketch(0));
-        assert_eq!(sketch_entry.children.len(), 1);
+        let list = build_element_list(&doc, None);
         assert_eq!(
-            sketch_entry.children[0].node,
-            HierarchyNode::ConstructionPlane(1)
+            list,
+            vec![
+                HierarchyNode::ConstructionPlane(0),
+                HierarchyNode::Sketch(0),
+                HierarchyNode::ConstructionPlane(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn creation_order_can_place_siblings_between_parent_and_child() {
+        let mut doc = Document::default();
+        let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.rects
+            .push(Rect::from_local_corners(s0, 0.0, 0.0, 10.0, 10.0));
+        doc.shape_order.push(ShapeKind::Rect);
+        let s1 = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let _ = s1;
+
+        let list = build_element_list(&doc, Some(SketchSession { sketch: 0 }));
+        let plane = list.iter().position(|n| *n == HierarchyNode::ConstructionPlane(0)).unwrap();
+        let sketch0 = list.iter().position(|n| *n == HierarchyNode::Sketch(0)).unwrap();
+        let sketch1 = list.iter().position(|n| *n == HierarchyNode::Sketch(1)).unwrap();
+        let rect0 = list.iter().position(|n| *n == HierarchyNode::Rect(0)).unwrap();
+        assert!(plane < sketch0);
+        assert!(sketch0 < rect0);
+        assert!(sketch0 < sketch1);
+        assert!(sketch1 < rect0);
+    }
+
+    #[test]
+    fn selection_context_includes_selected_ancestors_and_descendants() {
+        let mut doc = Document::default();
+        let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.rects
+            .push(Rect::from_local_corners(s0, 0.0, 0.0, 10.0, 10.0));
+        let _s1 = doc.add_sketch(FaceId::Rect(0));
+        doc.add_sketch(FaceId::ConstructionPlane(0));
+
+        let mut selection = SceneSelection::default();
+        crate::selection::click_scene_selection(
+            &mut selection,
+            SceneElement::Rect(0),
+            false,
+        );
+        let context = selection_context_elements(&doc, &selection);
+        assert!(context.contains(&SceneElement::Rect(0)));
+        assert!(context.contains(&SceneElement::Sketch(0)));
+        assert!(context.contains(&SceneElement::ConstructionPlane(0)));
+        assert!(context.contains(&SceneElement::Sketch(1)));
+        assert!(!context.contains(&SceneElement::Sketch(2)));
+    }
+
+    #[test]
+    fn row_style_faints_unrelated_rows_when_selection_active() {
+        let mut doc = Document::default();
+        let _s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.add_sketch(FaceId::ConstructionPlane(0));
+        let mut selection = SceneSelection::default();
+        crate::selection::click_scene_selection(
+            &mut selection,
+            SceneElement::Sketch(0),
+            false,
+        );
+        let context = selection_context_elements(&doc, &selection);
+        let list = build_element_list(&doc, None);
+        let style_selection = selection_styles_visible_list(&list, &selection);
+        assert!(style_selection);
+        assert_eq!(
+            row_style(
+                SceneElement::Sketch(0),
+                &selection,
+                &context,
+                style_selection
+            ),
+            RowStyle::Selected
+        );
+        assert_eq!(
+            row_style(
+                SceneElement::ConstructionPlane(0),
+                &selection,
+                &context,
+                style_selection
+            ),
+            RowStyle::InContext
+        );
+        assert_eq!(
+            row_style(
+                SceneElement::Sketch(1),
+                &selection,
+                &context,
+                style_selection
+            ),
+            RowStyle::Faint
+        );
+    }
+
+    #[test]
+    fn hidden_selection_does_not_faint_visible_rows() {
+        let doc = doc_with_plane_sketches();
+        let mut selection = SceneSelection::default();
+        crate::selection::click_scene_selection(
+            &mut selection,
+            SceneElement::Rect(0),
+            false,
+        );
+        let list = build_element_list(&doc, None);
+        let context = selection_context_elements(&doc, &selection);
+        assert!(!selection_styles_visible_list(&list, &selection));
+        assert_eq!(
+            row_style(
+                SceneElement::ConstructionPlane(0),
+                &selection,
+                &context,
+                false
+            ),
+            RowStyle::Normal
+        );
+    }
+
+    #[test]
+    fn new_child_plane_is_normal_when_selection_is_off_list() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.construction_planes.push(plane_from_definition(
+            &default_xy_plane().definition,
+            ConstructionPlaneParent::Sketch(sketch),
+        ));
+        doc.shape_order.push(ShapeKind::ConstructionPlane);
+        let mut selection = SceneSelection::default();
+        crate::selection::click_scene_selection(
+            &mut selection,
+            SceneElement::Rect(99),
+            false,
+        );
+        let list = build_element_list(&doc, None);
+        let context = selection_context_elements(&doc, &selection);
+        assert!(!selection_styles_visible_list(&list, &selection));
+        assert_eq!(
+            row_style(
+                SceneElement::ConstructionPlane(1),
+                &selection,
+                &context,
+                false
+            ),
+            RowStyle::Normal
         );
     }
 
@@ -481,7 +864,7 @@ mod tests {
     }
 
     #[test]
-    fn pane_title_is_tree() {
-        assert_eq!(PANE_TITLE, "Tree");
+    fn pane_title_is_elements() {
+        assert_eq!(PANE_TITLE, "Elements");
     }
 }

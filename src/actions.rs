@@ -319,7 +319,7 @@ impl Pane {
     pub fn label(self) -> &'static str {
         match self {
             Pane::ViewCube => "Orientation Cube",
-            Pane::Hierarchy => "Tree",
+            Pane::Hierarchy => "Elements",
             Pane::Parameters => "Parameters",
             Pane::Context => "Context",
         }
@@ -1190,6 +1190,13 @@ impl AppState {
                     let plane = plane_from_definition(&definition, cp.parent);
                     self.doc.construction_planes.push(plane);
                     self.doc.shape_order.push(ShapeKind::ConstructionPlane);
+                    let index = self.doc.construction_planes.len() - 1;
+                    self.scene_selection.clear();
+                    click_scene_selection(
+                        &mut self.scene_selection,
+                        SceneElement::ConstructionPlane(index),
+                        false,
+                    );
                     self.status = format!(
                         "Added construction plane ({live_offset:.1} mm from {})",
                         cp.reference.label()
@@ -1736,6 +1743,38 @@ mod tests {
         state.apply(Action::CommitConstructionPlane);
         assert_eq!(state.doc.construction_planes.len(), 2);
         assert!((state.doc.construction_planes[1].origin.z - 20.0).abs() < 1e-3);
+        assert!(state
+            .scene_selection
+            .is_selected(SceneElement::ConstructionPlane(1)));
+    }
+
+    #[test]
+    fn commit_construction_plane_replaces_stale_selection() {
+        let mut state = AppState::default();
+        state.apply(Action::BeginConstructionPlane {
+            reference: PlaneReference::Face {
+                origin: Vec3::ZERO,
+                normal: glam::Vec3::Z,
+                label: "Ground".to_string(),
+            },
+            parent: ConstructionPlaneParent::Root,
+        });
+        state.scene_selection.clear();
+        click_scene_selection(
+            &mut state.scene_selection,
+            SceneElement::ConstructionPlane(0),
+            false,
+        );
+        let mut cp = state.creating_plane.take().unwrap();
+        cp.offset_live = 12.0;
+        state.creating_plane = Some(cp);
+        state.apply(Action::CommitConstructionPlane);
+        assert!(!state
+            .scene_selection
+            .is_selected(SceneElement::ConstructionPlane(0)));
+        assert!(state
+            .scene_selection
+            .is_selected(SceneElement::ConstructionPlane(1)));
     }
 
     #[test]
@@ -2395,7 +2434,7 @@ mod tests {
     fn tree_pane_visible_by_default() {
         let state = AppState::default();
         assert!(state.panes.is_visible(Pane::Hierarchy));
-        assert_eq!(Pane::Hierarchy.label(), "Tree");
+        assert_eq!(Pane::Hierarchy.label(), "Elements");
     }
 
     #[test]

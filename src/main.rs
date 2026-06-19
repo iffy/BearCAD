@@ -2674,6 +2674,9 @@ fn draw_scene_selection_highlights(
     doc: &model::Document,
     selection: &crate::selection::SceneSelection,
 ) {
+    if selection.is_empty() {
+        return;
+    }
     let color = col::DIM_EDGE_HIGHLIGHT;
     for element in selection.iter() {
         match element {
