@@ -55,6 +55,18 @@ pub struct Rect {
     pub y: f32,
     pub w: f32,
     pub h: f32,
+    /// Width was explicitly typed by the user (show dimension in sketch edit mode).
+    #[serde(default)]
+    pub width_locked: bool,
+    /// Height was explicitly typed by the user (show dimension in sketch edit mode).
+    #[serde(default)]
+    pub height_locked: bool,
+    /// User-placed offset from the measured edge to the width dimension line (px).
+    #[serde(default)]
+    pub width_dim_offset: Option<f32>,
+    /// User-placed offset from the measured edge to the height dimension line (px).
+    #[serde(default)]
+    pub height_dim_offset: Option<f32>,
 }
 
 impl Rect {
@@ -66,6 +78,10 @@ impl Rect {
             y: v0.min(v1),
             w: (u1 - u0).abs(),
             h: (v1 - v0).abs(),
+            width_locked: false,
+            height_locked: false,
+            width_dim_offset: None,
+            height_dim_offset: None,
         }
     }
 }
@@ -78,6 +94,12 @@ pub struct Line {
     pub y0: f32,
     pub x1: f32,
     pub y1: f32,
+    /// Length was explicitly typed by the user (show dimension in sketch edit mode).
+    #[serde(default)]
+    pub length_locked: bool,
+    /// User-placed offset from the measured segment to the length dimension line (px).
+    #[serde(default)]
+    pub length_dim_offset: Option<f32>,
 }
 
 impl Line {
@@ -94,6 +116,8 @@ impl Line {
             y0: v0,
             x1: u1,
             y1: v1,
+            length_locked: false,
+            length_dim_offset: None,
         }
     }
 

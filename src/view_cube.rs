@@ -1013,6 +1013,16 @@ fn view_preset_toggle_rect(pad_rect: Rect) -> Rect {
     )
 }
 
+fn view_home_toggle_rect(pad_rect: Rect) -> Rect {
+    Rect::from_min_size(
+        Pos2::new(
+            pad_rect.max.x - PRESET_TOGGLE_SIZE - PRESET_TOGGLE_MARGIN,
+            pad_rect.max.y - PRESET_TOGGLE_SIZE - PRESET_TOGGLE_MARGIN,
+        ),
+        Vec2::splat(PRESET_TOGGLE_SIZE),
+    )
+}
+
 fn projection_toggle_icon_rect(button: Rect) -> Rect {
     button.shrink(PRESET_TOGGLE_ICON_PAD)
 }
@@ -1059,6 +1069,68 @@ fn paint_natural_icon(painter: &Painter, rect: Rect, color: Color32) {
     paint_icon_segments(painter, &segments, color);
 }
 
+fn paint_home_icon(painter: &Painter, rect: Rect, color: Color32) {
+    let p = |u: f32, v: f32| icon_point(rect, u, v);
+    let stroke = Stroke::new(PRESET_TOGGLE_ICON_STROKE, color);
+    let peak = p(0.5, 0.18);
+    let eave_l = p(0.22, 0.42);
+    let eave_r = p(0.78, 0.42);
+    let base_l = p(0.30, 0.82);
+    let base_r = p(0.70, 0.82);
+    let door_top = p(0.46, 0.58);
+    let door_bl = p(0.46, 0.82);
+    let door_br = p(0.54, 0.82);
+    painter.line_segment([eave_l, peak], stroke);
+    painter.line_segment([peak, eave_r], stroke);
+    painter.line_segment([eave_l, base_l], stroke);
+    painter.line_segment([eave_r, base_r], stroke);
+    painter.line_segment([base_l, base_r], stroke);
+    painter.line_segment([door_top, door_bl], stroke);
+    painter.line_segment([door_bl, door_br], stroke);
+    painter.line_segment([door_br, door_top], stroke);
+}
+
+fn paint_icon_toggle_button(ui: &Ui, rect: Rect, hovered: bool, pressed: bool) {
+    let fill = if pressed {
+        Color32::from_gray(42)
+    } else if hovered {
+        Color32::from_gray(34)
+    } else {
+        Color32::from_rgba_unmultiplied(26, 28, 34, 220)
+    };
+    ui.painter().rect_filled(rect, 4.0, fill);
+    ui.painter().rect_stroke(
+        rect,
+        4.0,
+        Stroke::new(1.0, Color32::from_gray(if hovered { 110 } else { 72 })),
+    );
+}
+
+fn show_icon_toggle_button(
+    ui: &mut Ui,
+    rect: Rect,
+    hover_hint: &str,
+    paint_icon: impl FnOnce(&Painter, Rect, Color32),
+    on_click: impl FnOnce(),
+) {
+    let response = ui.allocate_rect(rect, Sense::click());
+    let hovered = response.hovered();
+    let clicked = response.clicked();
+    let pressed = response.is_pointer_button_down_on();
+
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        response.on_hover_text(hover_hint);
+    }
+
+    paint_icon_toggle_button(ui, rect, hovered, pressed);
+    paint_icon(ui.painter(), rect, Color32::from_gray(210));
+
+    if clicked {
+        on_click();
+    }
+}
+
 fn paint_projection_mode_icon(painter: &Painter, button: Rect, mode: ProjectionMode) {
     let color = Color32::from_gray(210);
     let icon_rect = projection_toggle_icon_rect(button);
@@ -1072,38 +1144,41 @@ fn show_projection_mode_toggle(ui: &mut Ui, cam: &mut Camera, pad_rect: Rect) {
     let rect = view_preset_toggle_rect(pad_rect);
     let active = cam.projection_mode();
     let target = active.opposite();
+    let hint = match target {
+        ProjectionMode::Orthographic => "Orthographic projection",
+        ProjectionMode::Natural => "Natural (perspective) projection",
+    };
+    show_icon_toggle_button(ui, rect, hint, |painter, button, color| {
+        paint_projection_mode_icon(painter, button, target);
+        let _ = color;
+    }, || {
+        cam.set_projection_mode(target);
+    });
+}
+
+fn show_home_button(ui: &mut Ui, cam: &mut Camera, pad_rect: Rect) {
+    let rect = view_home_toggle_rect(pad_rect);
     let response = ui.allocate_rect(rect, Sense::click());
     let hovered = response.hovered();
-    let clicked = response.clicked();
     let pressed = response.is_pointer_button_down_on();
 
     if hovered {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        let hint = match target {
-            ProjectionMode::Orthographic => "Orthographic projection",
-            ProjectionMode::Natural => "Natural (perspective) projection",
-        };
-        response.on_hover_text(hint);
+        response.clone().on_hover_text("Home view");
     }
 
-    let fill = if pressed {
-        Color32::from_gray(42)
-    } else if hovered {
-        Color32::from_gray(34)
-    } else {
-        Color32::from_rgba_unmultiplied(26, 28, 34, 220)
-    };
-    ui.painter()
-        .rect_filled(rect, 4.0, fill);
-    ui.painter().rect_stroke(
-        rect,
-        4.0,
-        Stroke::new(1.0, Color32::from_gray(if hovered { 110 } else { 72 })),
-    );
-    paint_projection_mode_icon(ui.painter(), rect, target);
+    paint_icon_toggle_button(ui, rect, hovered, pressed);
+    paint_home_icon(ui.painter(), rect, Color32::from_gray(210));
 
-    if clicked {
-        cam.set_projection_mode(target);
+    response.context_menu(|ui| {
+        if ui.button("Set current view as home").clicked() {
+            cam.set_home_from_current();
+            ui.close_menu();
+        }
+    });
+
+    if response.clicked() {
+        cam.start_home_transition(VIEW_TRANSITION_DURATION);
     }
 }
 
@@ -1204,6 +1279,7 @@ fn show(ui: &mut Ui, cam: &mut Camera, screen_rect: Rect) {
         draw_hovered_corner(painter, &corners, id);
     }
     show_projection_mode_toggle(ui, cam, pad_rect);
+    show_home_button(ui, cam, pad_rect);
 }
 
 #[cfg(test)]
@@ -1518,6 +1594,35 @@ mod tests {
         assert!(pad_rect.contains(toggle.center()));
         assert!(toggle.max.x < screen_rect.center().x);
         assert!(toggle.max.y > screen_rect.center().y);
+    }
+
+    #[test]
+    fn home_button_sits_in_hud_bottom_right() {
+        let vp = Rect::from_min_size(Pos2::new(0.0, 40.0), Vec2::new(800.0, 600.0));
+        let screen_rect = cube_rect_in_viewport(vp);
+        let pad_rect = screen_rect.expand(4.0);
+        let home = view_home_toggle_rect(pad_rect);
+        assert!(pad_rect.contains(home.center()));
+        assert!(home.min.x > screen_rect.center().x);
+        assert!(home.max.y > screen_rect.center().y);
+    }
+
+    #[test]
+    fn home_icon_fits_inside_button() {
+        let button = Rect::from_min_size(Pos2::ZERO, Vec2::splat(PRESET_TOGGLE_SIZE));
+        let icon = projection_toggle_icon_rect(button);
+        let stroke_pad = PRESET_TOGGLE_ICON_STROKE * 0.5 + 0.5;
+        let bounds = button.shrink(stroke_pad);
+        let p = |u: f32, v: f32| icon_point(icon, u, v);
+        for corner in [
+            p(0.22, 0.18),
+            p(0.78, 0.18),
+            p(0.30, 0.82),
+            p(0.70, 0.82),
+            p(0.54, 0.58),
+        ] {
+            assert!(bounds.contains(corner), "point {corner:?} outside {bounds:?}");
+        }
     }
 
     #[test]

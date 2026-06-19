@@ -187,6 +187,66 @@ mod tests {
     }
 
     #[test]
+    fn round_trips_rectangle_dimension_label_offsets() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("le3_rect_dim_offset_test.le3");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document {
+            sketches: Vec::new(),
+            rects: Vec::new(),
+            lines: vec![],
+            construction_planes: vec![default_xy_plane()],
+            shape_order: Vec::new(),
+        };
+        let sketch = plane_sketch(&mut doc);
+        let mut rect = Rect::from_local_corners(sketch, 0.0, 0.0, 50.8, 5.0);
+        rect.width_locked = true;
+        rect.height_locked = true;
+        rect.width_dim_offset = Some(42.0);
+        rect.height_dim_offset = Some(36.0);
+        doc.rects.push(rect);
+        doc.shape_order.push(ShapeKind::Rect);
+
+        save(&path, &doc).unwrap();
+        let loaded = open(&path).unwrap();
+        assert_eq!(loaded.rects[0].width_dim_offset, Some(42.0));
+        assert_eq!(loaded.rects[0].height_dim_offset, Some(36.0));
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn round_trips_rectangle_dimension_locks() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("le3_rect_locks_test.le3");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document {
+            sketches: Vec::new(),
+            rects: Vec::new(),
+            lines: vec![],
+            construction_planes: vec![default_xy_plane()],
+            shape_order: Vec::new(),
+        };
+        let sketch = plane_sketch(&mut doc);
+        let mut rect = Rect::from_local_corners(sketch, 0.0, 0.0, 50.8, 5.0);
+        rect.width_locked = true;
+        rect.height_locked = false;
+        doc.rects.push(rect);
+        doc.shape_order.push(ShapeKind::Rect);
+
+        save(&path, &doc).unwrap();
+        let loaded = open(&path).unwrap();
+        assert!(loaded.rects[0].width_locked);
+        assert!(!loaded.rects[0].height_locked);
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
     fn round_trips_rectangles() {
         let dir = std::env::temp_dir();
         let path = dir.join("le3_roundtrip_test.le3");

@@ -82,17 +82,142 @@ pub fn local_to_world(frame: &SketchFrame, u: f32, v: f32) -> Vec3 {
     frame.origin + frame.u_axis * u + frame.v_axis * v
 }
 
-/// Camera up vector so the sketch plane's v-axis points up on screen and u-axis points right.
-pub fn sketch_view_up(view_direction: Vec3, frame: &SketchFrame) -> Vec3 {
+fn camera_up_from_look_at_hint(look_forward: Vec3, up_hint: Vec3) -> Vec3 {
+    let mut right = look_forward.cross(up_hint);
+    if right.length_squared() < 1e-8 {
+        return up_hint.normalize_or_zero();
+    }
+    right = right.normalize();
+    right.cross(look_forward).normalize_or_zero()
+}
+
+fn axis_screen_vec(axis: Vec3, look_forward: Vec3, up_hint: Vec3) -> glam::Vec2 {
+    let right = look_forward.cross(up_hint).normalize_or_zero();
+    if right.length_squared() < 1e-8 {
+        return glam::Vec2::ZERO;
+    }
+    let up = right.cross(look_forward).normalize_or_zero();
+    glam::Vec2::new(axis.dot(right), -axis.dot(up))
+}
+
+fn axis_screen_preserve_weight(screen: glam::Vec2) -> f32 {
+    let len = screen.length();
+    if len < 1e-6 {
+        0.0
+    } else if screen.x > 0.0 {
+        // Already pointing right on screen — keep it there.
+        screen.x / len
+    } else if screen.y < 0.0 {
+        // Already pointing up on screen (egui y-down).
+        screen.y.abs() / len
+    } else {
+        0.0
+    }
+}
+
+fn axes_match_sketch_convention(u_screen: glam::Vec2, v_screen: glam::Vec2) -> bool {
+    let u_right = u_screen.x > 0.0 && u_screen.x.abs() >= u_screen.y.abs();
+    let v_up = v_screen.y < 0.0 && v_screen.y.abs() >= v_screen.x.abs();
+    u_right && v_up
+}
+
+fn axis_is_screen_horizontal(screen: glam::Vec2) -> bool {
+    screen.x.abs() > screen.y.abs()
+}
+
+fn sketch_view_up_score(
+    u_screen_before: glam::Vec2,
+    v_screen_before: glam::Vec2,
+    u_screen_after: glam::Vec2,
+    v_screen_after: glam::Vec2,
+) -> f32 {
+    let use_minimal_roll =
+        axis_is_screen_horizontal(u_screen_before) && axis_is_screen_horizontal(v_screen_before);
+    if use_minimal_roll {
+        let delta_u = u_screen_after - u_screen_before;
+        let delta_v = v_screen_after - v_screen_before;
+        let u_preserve = axis_screen_preserve_weight(u_screen_before);
+        let v_preserve = axis_screen_preserve_weight(v_screen_before);
+        let mut score = (1.0 + 3.0 * u_preserve) * delta_u.length_squared()
+            + (1.0 + 3.0 * v_preserve) * delta_v.length_squared()
+            - 2.0 * u_preserve * u_screen_after.dot(u_screen_before)
+            - 2.0 * v_preserve * v_screen_after.dot(v_screen_before);
+        if !axes_match_sketch_convention(u_screen_after, v_screen_after) {
+            score += 0.2;
+        }
+        score
+    } else if axes_match_sketch_convention(u_screen_after, v_screen_after) {
+        0.0
+    } else {
+        1.0
+    }
+}
+
+/// Camera up hint that places the sketch plane's u/v axes on the screen axes with the
+/// smallest roll change from the current view.
+pub fn sketch_view_up(
+    view_direction: Vec3,
+    frame: &SketchFrame,
+    current_look_forward: Vec3,
+    current_up_hint: Vec3,
+) -> Vec3 {
     // `view_direction` points from the face toward the eye; `look_at_rh` uses the opposite.
-    let look_forward = (-view_direction).normalize_or_zero();
-    let mut up = frame.v_axis.normalize_or_zero();
-    if up.length_squared() < 1e-8 {
+    let target_look = (-view_direction).normalize_or_zero();
+    let current_look = current_look_forward.normalize_or_zero();
+    let current_up_hint = current_up_hint.normalize_or_zero();
+    let u = frame.u_axis.normalize_or_zero();
+    let v = frame.v_axis.normalize_or_zero();
+    if u.length_squared() < 1e-8 || v.length_squared() < 1e-8 {
         return Vec3::Z;
     }
-    // Match `Mat4::look_at_rh`: right = cross(look_forward, up_hint).
-    let right = look_forward.cross(up).normalize_or_zero();
-    if right.dot(frame.u_axis) < 0.0 {
+
+    let u_screen_before = axis_screen_vec(u, current_look, current_up_hint);
+    let v_screen_before = axis_screen_vec(v, current_look, current_up_hint);
+    let mut best_hint = v;
+    let mut best_score = f32::MAX;
+
+    for hint in [u, -u, v, -v] {
+        let right = target_look.cross(hint).normalize_or_zero();
+        if right.length_squared() < 1e-8 {
+            continue;
+        }
+
+        let cam_up = camera_up_from_look_at_hint(target_look, hint);
+        let u_h = u.dot(right).abs();
+        let u_v = u.dot(cam_up).abs();
+        let v_h = v.dot(right).abs();
+        let v_v = v.dot(cam_up).abs();
+        const AXIS_EPS: f32 = 0.05;
+        let u_axis_aligned = (u_h > AXIS_EPS) ^ (u_v > AXIS_EPS);
+        let v_axis_aligned = (v_h > AXIS_EPS) ^ (v_v > AXIS_EPS);
+        if !u_axis_aligned || !v_axis_aligned || u_h + u_v < 0.9 || v_h + v_v < 0.9 {
+            continue;
+        }
+        if (u_h > AXIS_EPS) == (v_h > AXIS_EPS) {
+            continue;
+        }
+
+        let u_screen_after = axis_screen_vec(u, target_look, hint);
+        let v_screen_after = axis_screen_vec(v, target_look, hint);
+        let score = sketch_view_up_score(
+            u_screen_before,
+            v_screen_before,
+            u_screen_after,
+            v_screen_after,
+        );
+        if score < best_score {
+            best_score = score;
+            best_hint = hint;
+        }
+    }
+
+    if best_score < f32::MAX {
+        return best_hint;
+    }
+
+    let mut up = v;
+    let right = target_look.cross(up).normalize_or_zero();
+    if right.dot(u) < 0.0 {
         up = -up;
     }
     up
@@ -474,6 +599,71 @@ mod tests {
     }
 
     #[test]
+    fn sketch_view_up_from_isometric_prefers_green_right_red_down() {
+        use crate::camera::Camera;
+
+        let cam = Camera::default();
+        let frame = SketchFrame {
+            origin: Vec3::ZERO,
+            u_axis: Vec3::X,
+            v_axis: Vec3::Y,
+            normal: Vec3::Z,
+        };
+        let view_dir = cam.visible_face_view_direction(Vec3::ZERO, Vec3::Z);
+        let current_look = (Vec3::ZERO - cam.eye()).normalize_or_zero();
+        let current_up = cam.view_up_hint();
+        let target_look = (-view_dir).normalize_or_zero();
+        let u = frame.u_axis;
+        let v = frame.v_axis;
+        let u0 = axis_screen_vec(u, current_look, current_up);
+        let v0 = axis_screen_vec(v, current_look, current_up);
+
+        let score_neg_x = {
+            let h = -Vec3::X;
+            sketch_view_up_score(
+                u0,
+                v0,
+                axis_screen_vec(u, target_look, h),
+                axis_screen_vec(v, target_look, h),
+            )
+        };
+        let score_neg_y = {
+            let h = -Vec3::Y;
+            sketch_view_up_score(
+                u0,
+                v0,
+                axis_screen_vec(u, target_look, h),
+                axis_screen_vec(v, target_look, h),
+            )
+        };
+        assert!(
+            score_neg_x <= score_neg_y + 1e-4,
+            "±X hint should beat ±Y: score_neg_x={score_neg_x} score_neg_y={score_neg_y}"
+        );
+
+        let hint = sketch_view_up(view_dir, &frame, current_look, current_up);
+        assert!(
+            hint.dot(Vec3::X).abs() > 0.9,
+            "isometric entry should pick ±X up hint to preserve green right, got {hint:?}"
+        );
+    }
+
+    #[test]
+    fn sketch_view_up_prefers_minimal_roll_flip() {
+        let frame = SketchFrame {
+            origin: Vec3::ZERO,
+            u_axis: Vec3::X,
+            v_axis: Vec3::Y,
+            normal: Vec3::Z,
+        };
+        let hint = sketch_view_up(Vec3::Z, &frame, -Vec3::Z, Vec3::Y);
+        assert!(
+            hint.dot(Vec3::Y) > 0.0,
+            "already aligned with +Y should keep +Y hint, got {hint:?}"
+        );
+    }
+
+    #[test]
     fn sketch_view_up_aligns_plane_axes_with_screen() {
         use crate::camera::Camera;
         use crate::construction::{
@@ -502,7 +692,14 @@ mod tests {
         cam.distance = 200.0;
         let view_direction =
             cam.visible_face_view_direction(frame.origin, frame.normal);
-        cam.set_view_up(Some(sketch_view_up(view_direction, &frame)));
+        let look_forward = (cam.target - cam.eye()).normalize_or_zero();
+        let hint = sketch_view_up(
+            view_direction,
+            &frame,
+            look_forward,
+            cam.view_up_hint(),
+        );
+        cam.set_view_up(Some(hint));
         let (yaw, pitch) = Camera::view_direction_to_yaw_pitch(view_direction);
         cam.yaw = yaw;
         cam.pitch = pitch;

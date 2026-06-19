@@ -54,6 +54,33 @@ pub const VIEW_TRANSITION_DURATION: f32 = 0.35;
 pub const ISOMETRIC_YAW: f32 = 0.8;
 pub const ISOMETRIC_PITCH: f32 = 0.6;
 
+/// Default look-at target and distance (matches [`Camera::default`]).
+pub const HOME_TARGET: Vec3 = Vec3::ZERO;
+pub const HOME_DISTANCE: f32 = 400.0;
+
+/// Stored "home" camera pose used by the home-view button.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HomeView {
+    pub target: Vec3,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub distance: f32,
+    /// `None` restores world Z as look-at up when returning home.
+    pub view_up: Option<Vec3>,
+}
+
+impl Default for HomeView {
+    fn default() -> Self {
+        Self {
+            target: HOME_TARGET,
+            yaw: ISOMETRIC_YAW,
+            pitch: ISOMETRIC_PITCH,
+            distance: HOME_DISTANCE,
+            view_up: None,
+        }
+    }
+}
+
 /// Viewport projection: parallel (orthographic) or perspective (natural).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProjectionMode {
@@ -88,8 +115,12 @@ struct ViewTransition {
     to_target: Vec3,
     from_distance: f32,
     to_distance: f32,
+    from_view_up: Vec3,
+    to_view_up: Vec3,
     animate_target: bool,
     animate_distance: bool,
+    animate_view_up: bool,
+    clear_view_up_on_complete: bool,
     elapsed: f32,
     duration: f32,
 }
@@ -115,19 +146,33 @@ pub struct Camera {
     pub projection: ProjectionMode,
     /// When set, overrides world Z as the look-at up vector (sketch mode).
     view_up: Option<Vec3>,
+    /// Accumulated trackball rotation relative to [`orbit_base_offset`].
+    orbit_quat: Option<Quat>,
+    /// Eye offset when [`orbit_quat`] is identity (captured at first trackball drag).
+    orbit_base_offset: Option<Vec3>,
+    /// Look-at up when [`orbit_quat`] is identity (preserves roll through poles).
+    orbit_base_up: Option<Vec3>,
+    /// Camera-right when [`orbit_quat`] is identity (stable pitch axis at poles).
+    orbit_base_right: Option<Vec3>,
+    home: HomeView,
     transition: Option<ViewTransition>,
 }
 
 impl Default for Camera {
     fn default() -> Self {
         Camera {
-            target: Vec3::ZERO,
+            target: HOME_TARGET,
             yaw: ISOMETRIC_YAW,
             pitch: ISOMETRIC_PITCH,
-            distance: 400.0,
+            distance: HOME_DISTANCE,
             fov_y: 45f32.to_radians(),
             projection: ProjectionMode::Natural,
             view_up: None,
+            orbit_quat: None,
+            orbit_base_offset: None,
+            orbit_base_up: None,
+            orbit_base_right: None,
+            home: HomeView::default(),
             transition: None,
         }
     }
@@ -149,14 +194,44 @@ fn smoothstep(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+fn slerp_direction(from: Vec3, to: Vec3, t: f32) -> Vec3 {
+    let from = from.normalize_or_zero();
+    let to = to.normalize_or_zero();
+    if from.length_squared() < 1e-8 {
+        return to;
+    }
+    if to.length_squared() < 1e-8 {
+        return from;
+    }
+    let dot = from.dot(to).clamp(-1.0, 1.0);
+    if dot > 0.9995 {
+        return from.lerp(to, t).normalize_or_zero();
+    }
+    let omega = dot.acos();
+    let sin_omega = omega.sin();
+    if sin_omega < 1e-6 {
+        return from.lerp(to, t).normalize_or_zero();
+    }
+    let a = ((1.0 - t) * omega).sin() / sin_omega;
+    let b = (t * omega).sin() / sin_omega;
+    (from * a + to * b).normalize_or_zero()
+}
+
 const PITCH_LIMIT: f32 = 1.54; // ~88°, just shy of the singularity at 90°.
 
 impl Camera {
-    /// Eye position in world space.
-    pub fn eye(&self) -> Vec3 {
+    fn spherical_offset(&self) -> Vec3 {
         let (sy, cy) = self.yaw.sin_cos();
         let (sp, cp) = self.pitch.sin_cos();
-        self.target + self.distance * Vec3::new(cp * cy, cp * sy, sp)
+        self.distance * Vec3::new(cp * cy, cp * sy, sp)
+    }
+
+    /// Eye position in world space.
+    pub fn eye(&self) -> Vec3 {
+        if let (Some(q), Some(base)) = (&self.orbit_quat, &self.orbit_base_offset) {
+            return self.target + *q * *base;
+        }
+        self.target + self.spherical_offset()
     }
 
     /// How head-on the ground plane (XY) is to the view. 1 = plan view, 0 = edge-on.
@@ -178,10 +253,52 @@ impl Camera {
         self.view_up = up.filter(|u| u.length_squared() >= 1e-8);
     }
 
-    fn view_up_hint(&self) -> Vec3 {
-        self.view_up
-            .filter(|u| u.length_squared() >= 1e-8)
-            .unwrap_or(Vec3::Z)
+    pub fn view_up_hint(&self) -> Vec3 {
+        if let Some(transition) = &self.transition {
+            if transition.animate_view_up {
+                let u = smoothstep((transition.elapsed / transition.duration).min(1.0));
+                return slerp_direction(transition.from_view_up, transition.to_view_up, u);
+            }
+        }
+        // Active trackball drag must update roll; a fixed sketch `view_up` would
+        // fight eye rotation and make orbit feel wrong.
+        if let (Some(q), Some(base_up)) = (&self.orbit_quat, &self.orbit_base_up) {
+            let up = *q * *base_up;
+            if up.length_squared() >= 1e-8 {
+                return up.normalize();
+            }
+        }
+        if let Some(up) = self.view_up.filter(|u| u.length_squared() >= 1e-8) {
+            return up;
+        }
+        Self::orbit_look_up(self.target - self.eye())
+    }
+
+    /// Leave sketch edit view: bake trackball motion and restore world-Z orbit.
+    pub fn leave_sketch_mode(&mut self) {
+        self.resolve_orbit_state();
+        self.set_view_up(None);
+    }
+
+    #[cfg(test)]
+    pub fn has_orbit_trackball_state(&self) -> bool {
+        self.orbit_quat.is_some()
+    }
+
+    #[cfg(test)]
+    pub fn has_custom_view_up(&self) -> bool {
+        self.view_up.is_some()
+    }
+
+    /// World-up for orbit look-at. Flip when the eye is below the target so
+    /// `look_at_rh` stays stable through the south pole.
+    fn orbit_look_up(forward: Vec3) -> Vec3 {
+        let forward = forward.normalize_or_zero();
+        if forward.dot(Vec3::Z) > 0.95 {
+            -Vec3::Z
+        } else {
+            Vec3::Z
+        }
     }
 
     fn camera_axes(&self, forward: Vec3) -> (Vec3, Vec3) {
@@ -264,7 +381,9 @@ impl Camera {
     }
 
     pub fn start_transition_to_yaw_pitch(&mut self, to_yaw: f32, to_pitch: f32, duration: f32) {
+        self.resolve_orbit_state();
         let to_pitch = to_pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        let view_up = self.view_up_hint();
         self.transition = Some(ViewTransition {
             from_yaw: self.yaw,
             from_pitch: self.pitch,
@@ -274,8 +393,57 @@ impl Camera {
             to_target: self.target,
             from_distance: self.distance,
             to_distance: self.distance,
+            from_view_up: view_up,
+            to_view_up: view_up,
             animate_target: false,
             animate_distance: false,
+            animate_view_up: false,
+            clear_view_up_on_complete: false,
+            elapsed: 0.0,
+            duration: duration.max(0.01),
+        });
+    }
+
+    pub fn home_view(&self) -> HomeView {
+        self.home
+    }
+
+    /// Capture the current camera pose as the home view.
+    pub fn set_home_from_current(&mut self) {
+        self.resolve_orbit_state();
+        self.home = HomeView {
+            target: self.target,
+            yaw: self.yaw,
+            pitch: self.pitch,
+            distance: self.distance,
+            view_up: self.view_up,
+        };
+    }
+
+    /// Animate to the stored home camera pose.
+    pub fn start_home_transition(&mut self, duration: f32) {
+        self.resolve_orbit_state();
+        let home = self.home;
+        let from_view_up = self.view_up_hint();
+        let to_view_up = home.view_up.unwrap_or(Vec3::Z);
+        let had_custom_up = self.view_up.is_some();
+        let animate_view_up =
+            had_custom_up || home.view_up.is_some() || (from_view_up - to_view_up).length() > 1e-3;
+        self.transition = Some(ViewTransition {
+            from_yaw: self.yaw,
+            from_pitch: self.pitch,
+            delta_yaw: shortest_yaw_delta(self.yaw, home.yaw),
+            to_pitch: home.pitch,
+            from_target: self.target,
+            to_target: home.target,
+            from_distance: self.distance,
+            to_distance: home.distance,
+            from_view_up,
+            to_view_up,
+            animate_target: true,
+            animate_distance: true,
+            animate_view_up,
+            clear_view_up_on_complete: home.view_up.is_none() && had_custom_up,
             elapsed: 0.0,
             duration: duration.max(0.01),
         });
@@ -290,10 +458,19 @@ impl Camera {
         face_normal: Vec3,
         zoom_distance: Option<f32>,
         duration: f32,
+        sketch_view_up: Vec3,
     ) {
+        self.resolve_orbit_state();
         let view_direction = self.visible_face_view_direction(target, face_normal);
-        let (yaw, pitch) = Self::view_direction_to_yaw_pitch(view_direction);
+        let current_view = (self.eye() - target).normalize_or_zero();
+        let desired_view = view_direction.normalize_or_zero();
+        let (yaw, pitch) = if current_view.dot(desired_view) > 0.999 {
+            (self.yaw, self.pitch)
+        } else {
+            Self::view_direction_to_yaw_pitch(view_direction)
+        };
         let to_distance = zoom_distance.unwrap_or(self.distance).clamp(2.0, 50_000.0);
+        let from_view_up = self.view_up_hint();
         self.transition = Some(ViewTransition {
             from_yaw: self.yaw,
             from_pitch: self.pitch,
@@ -303,8 +480,12 @@ impl Camera {
             to_target: target,
             from_distance: self.distance,
             to_distance,
+            from_view_up,
+            to_view_up: sketch_view_up,
             animate_target: true,
             animate_distance: zoom_distance.is_some(),
+            animate_view_up: true,
+            clear_view_up_on_complete: false,
             elapsed: 0.0,
             duration: duration.max(0.01),
         });
@@ -375,6 +556,13 @@ impl Camera {
             if t.animate_distance {
                 self.distance = t.to_distance;
             }
+            if t.animate_view_up {
+                if t.clear_view_up_on_complete {
+                    self.view_up = None;
+                } else {
+                    self.view_up = Some(t.to_view_up);
+                }
+            }
             false
         }
     }
@@ -383,59 +571,127 @@ impl Camera {
 
     /// Orbit by a screen-space drag delta (in points).
     pub fn orbit(&mut self, delta: egui::Vec2) {
-        self.cancel_transition();
-        self.yaw -= delta.x * Self::ORBIT_SENSITIVITY;
-        self.pitch = (self.pitch + delta.y * Self::ORBIT_SENSITIVITY)
-            .clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        self.orbit_trackball(delta);
+    }
+
+    fn capture_orbit_base_right(
+        forward: Vec3,
+        up: Vec3,
+        yaw: f32,
+        sketch_pitch_at_pole: bool,
+    ) -> Vec3 {
+        let forward = forward.normalize_or_zero();
+        // World top/bottom: `forward × world_up` is non-zero but is the wrong pitch
+        // axis near the pole; keep the yaw-aligned fallback. Sketch views pass a
+        // plane-axis `up` that matches screen-right even at the pole.
+        if !sketch_pitch_at_pole && forward.z.abs() > 0.95 {
+            return Vec3::new(yaw.cos(), yaw.sin(), 0.0).normalize_or_zero();
+        }
+        let mut right = forward.cross(up);
+        if right.length_squared() < 1e-8 {
+            if forward.z.abs() > 0.95 {
+                return Vec3::new(yaw.cos(), yaw.sin(), 0.0).normalize_or_zero();
+            }
+            right = Vec3::new(yaw.cos(), yaw.sin(), 0.0);
+        }
+        if right.length_squared() < 1e-8 {
+            right = Vec3::X;
+        }
+        right.normalize()
+    }
+
+    /// Up hint for the pitch (vertical-drag) axis. Prefer sketch plane-axis up when
+    /// it yields a stable screen-right at the pole; otherwise fall back to world up.
+    fn orbit_pitch_up_hint(&self, forward: Vec3) -> Vec3 {
+        if let Some(sketch_up) = self.view_up.filter(|u| u.length_squared() >= 1e-8) {
+            let sketch_up = sketch_up.normalize();
+            if forward.cross(sketch_up).length_squared() >= 1e-8 {
+                return sketch_up;
+            }
+        }
+        if let (Some(_), Some(base_up)) = (&self.orbit_quat, &self.orbit_base_up) {
+            return *base_up;
+        }
+        self.view_up_hint()
+    }
+
+    fn ensure_orbit_trackball_state(&mut self) {
+        if self.orbit_quat.is_none() {
+            let forward = (self.target - self.eye()).normalize_or_zero();
+            let up = self.view_up_hint();
+            let sketch_pitch = self.view_up.is_some();
+            let pitch_up = self.orbit_pitch_up_hint(forward);
+            let right =
+                Self::capture_orbit_base_right(forward, pitch_up, self.yaw, sketch_pitch);
+            self.orbit_base_offset = Some(self.spherical_offset());
+            self.orbit_base_up = Some(up);
+            self.orbit_base_right = Some(right);
+            self.orbit_quat = Some(Quat::IDENTITY);
+        }
+    }
+
+    fn trackball_right_axis(&self) -> Vec3 {
+        if let (Some(q), Some(base_right)) = (&self.orbit_quat, &self.orbit_base_right) {
+            let right = *q * *base_right;
+            if right.length_squared() >= 1e-8 {
+                return right.normalize();
+            }
+        }
+        let forward = (self.target - self.eye()).normalize_or_zero();
+        let sketch_pitch = self.view_up.is_some();
+        let pitch_up = self.orbit_pitch_up_hint(forward);
+        Self::capture_orbit_base_right(forward, pitch_up, self.yaw, sketch_pitch)
     }
 
     /// Trackball-style orbit: rotates the eye around `target` using camera-local
     /// axes so dragging still works at the poles (e.g. top view).
     pub fn orbit_trackball(&mut self, delta: egui::Vec2) {
         self.cancel_transition();
+        self.ensure_orbit_trackball_state();
         let sens = Self::ORBIT_SENSITIVITY;
-        let mut offset = self.eye() - self.target;
+        let mut delta_yaw = Quat::IDENTITY;
+        let mut delta_pitch = Quat::IDENTITY;
 
         if delta.x.abs() > f32::EPSILON {
-            let rot = Quat::from_axis_angle(Vec3::Z, -delta.x * sens);
-            offset = rot * offset;
+            delta_yaw = Quat::from_axis_angle(Vec3::Z, -delta.x * sens);
         }
 
         if delta.y.abs() > f32::EPSILON {
-            let axis = self.trackball_pitch_axis(offset);
-            let rot = Quat::from_axis_angle(axis, -delta.y * sens);
-            offset = rot * offset;
+            let right = self.trackball_right_axis();
+            delta_pitch = Quat::from_axis_angle(right, -delta.y * sens);
         }
 
-        self.set_offset(offset);
+        let quat = self.orbit_quat.as_mut().expect("orbit trackball state");
+        *quat = delta_pitch * delta_yaw * *quat;
+        self.apply_offset_yaw_pitch(self.eye() - self.target);
     }
 
-    /// Horizontal axis for vertical (pitch) trackball rotation. Near the poles
-    /// the eye offset is almost vertical and `offset × Z` is unreliable.
-    fn trackball_pitch_axis(&self, offset: Vec3) -> Vec3 {
-        let horizontal_len_sq = offset.x * offset.x + offset.y * offset.y;
-        if horizontal_len_sq < 0.001 * offset.length_squared() {
-            Vec3::new(self.yaw.cos(), self.yaw.sin(), 0.0)
-        } else {
-            offset.cross(Vec3::Z).normalize()
+    fn resolve_orbit_state(&mut self) {
+        if self.orbit_quat.is_some() {
+            self.apply_offset_yaw_pitch(self.eye() - self.target);
         }
+        self.orbit_quat = None;
+        self.orbit_base_offset = None;
+        self.orbit_base_up = None;
+        self.orbit_base_right = None;
     }
 
-    fn set_offset(&mut self, offset: Vec3) {
+    fn apply_offset_yaw_pitch(&mut self, offset: Vec3) {
         let len = offset.length();
         if len < 1e-6 {
             return;
         }
         self.distance = len;
         let dir = offset / len;
-        let pitch = dir.z.asin().clamp(-PITCH_LIMIT, PITCH_LIMIT);
-        let yaw = if pitch.cos().abs() < 1e-6 {
-            self.yaw
-        } else {
-            dir.y.atan2(dir.x)
-        };
+        let pitch = dir.z.asin();
         self.pitch = pitch;
-        self.yaw = yaw;
+        let horizontal_len_sq = offset.x * offset.x + offset.y * offset.y;
+        if pitch.cos().abs() < 1e-4 || horizontal_len_sq < 1e-6 {
+            // Keep yaw through the pole; atan2 branches differ by π and reverse orbit.
+        } else {
+            let new_yaw = offset.y.atan2(offset.x);
+            self.yaw += shortest_yaw_delta(self.yaw, new_yaw);
+        }
     }
 
     /// Pan: slide the look-at `target` (and therefore the eye) in the camera's
@@ -466,6 +722,9 @@ impl Camera {
         }
 
         self.distance = new_distance;
+        if let Some(base) = &mut self.orbit_base_offset {
+            *base = base.normalize_or_zero() * new_distance;
+        }
     }
 
     /// World point on the view plane (through `target`, facing the camera) under
@@ -590,6 +849,145 @@ mod tests {
         Rect::from_min_size(Pos2::new(0.0, 80.0), egui::vec2(800.0, 600.0))
     }
 
+    /// How much `axis` aligns with camera screen-right (+ = points right).
+    fn axis_along_screen_right(cam: &Camera, axis: Vec3) -> f32 {
+        let forward = (cam.target - cam.eye()).normalize_or_zero();
+        let up = cam.view_up_hint();
+        let right = forward.cross(up).normalize_or_zero();
+        axis.normalize_or_zero().dot(right)
+    }
+
+    /// How much `axis` aligns with camera screen-up (+ = points up).
+    fn axis_along_screen_up(cam: &Camera, axis: Vec3) -> f32 {
+        let forward = (cam.target - cam.eye()).normalize_or_zero();
+        let up_hint = cam.view_up_hint();
+        let mut right = forward.cross(up_hint);
+        if right.length_squared() < 1e-8 {
+            right = forward.cross(Vec3::X);
+        }
+        if right.length_squared() < 1e-8 {
+            right = Vec3::Y;
+        }
+        let screen_up = right.cross(forward).normalize_or_zero();
+        axis.normalize_or_zero().dot(screen_up)
+    }
+
+    fn cam_looking_from_positive_x() -> Camera {
+        let mut cam = Camera::default();
+        cam.yaw = 0.0;
+        cam.pitch = 0.0;
+        cam
+    }
+
+    /// Egui pointer delta for a screen-space drag upward (y decreases).
+    fn screen_drag_up(cam: &mut Camera, amount: f32) {
+        cam.orbit_trackball(egui::vec2(0.0, -amount));
+    }
+
+    #[test]
+    fn top_view_large_drag_tilts_toward_back() {
+        let (yaw, pitch) = StandardView::Top.yaw_pitch();
+        let mut cam = Camera::default();
+        cam.yaw = yaw;
+        cam.pitch = pitch;
+        cam.orbit_trackball(egui::vec2(0.0, 90.0));
+        let offset = (cam.eye() - cam.target).normalize();
+        assert!(
+            offset.y > 0.4,
+            "dragging top view down should move the eye toward +Y/back, offset={offset:?}"
+        );
+    }
+
+    #[test]
+    fn looking_down_positive_x_has_y_pointing_right() {
+        let cam = cam_looking_from_positive_x();
+        assert!(
+            axis_along_screen_right(&cam, Vec3::Y) > 0.9,
+            "Y should point right when looking down +X"
+        );
+        assert!(
+            axis_along_screen_up(&cam, Vec3::Z) > 0.9,
+            "Z should point up when looking down +X"
+        );
+    }
+
+    /// Screen drag-up from the +X equator pitches toward the south pole (-Z).
+    fn drag_orbit_toward_south_pole(cam: &mut Camera, amount: f32) {
+        screen_drag_up(cam, amount);
+    }
+
+    #[test]
+    fn orbit_past_south_pole_keeps_y_pointing_right_from_x_view() {
+        let mut cam = cam_looking_from_positive_x();
+        // π/2 rad of pitch at 0.06 rad/step ≈ 26 steps to the south-pole meridian.
+        let steps_to_z_away = (std::f32::consts::FRAC_PI_2 / 0.06).round() as usize;
+        for _ in 0..steps_to_z_away {
+            drag_orbit_toward_south_pole(&mut cam, 6.0);
+        }
+        // First pole crossing: +Z away, +X up on screen, +Y right.
+        assert!(
+            axis_along_screen_right(&cam, Vec3::Y) > 0.8,
+            "Y should still point right after crossing the south pole"
+        );
+        assert!(
+            axis_along_screen_up(&cam, Vec3::X) > 0.8,
+            "+X should point up after crossing the south pole"
+        );
+        let forward = (cam.target - cam.eye()).normalize_or_zero();
+        assert!(
+            forward.dot(Vec3::Z) > 0.8,
+            "+Z should point away after crossing the south pole"
+        );
+
+        // Keep orbiting through the next quadrant — Y must not flip left.
+        let extra_steps = (std::f32::consts::FRAC_PI_2 / 0.06).round() as usize;
+        for _ in 0..extra_steps {
+            drag_orbit_toward_south_pole(&mut cam, 6.0);
+        }
+        assert!(
+            axis_along_screen_right(&cam, Vec3::Y) > 0.8,
+            "Y should remain on the right after continuing past the south pole"
+        );
+    }
+
+    #[test]
+    fn continuous_orbit_past_south_pole_twice_preserves_y_on_screen_right() {
+        let mut cam = cam_looking_from_positive_x();
+        let steps_per_half_turn = (std::f32::consts::PI / 0.06).round() as usize;
+        let total_steps = steps_per_half_turn * 4 + 4;
+        for step in 0..total_steps {
+            drag_orbit_toward_south_pole(&mut cam, 6.0);
+            if step % 8 == 0 {
+                assert!(
+                    axis_along_screen_right(&cam, Vec3::Y) > 0.7,
+                    "Y should stay on the right through continuous pole orbits (step {step})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn orbit_with_any_axis_on_right_can_stay_right_through_pole() {
+        let mut cam = Camera::default();
+        cam.yaw = std::f32::consts::FRAC_PI_2;
+        cam.pitch = 0.0;
+        let screen_right_axis = -Vec3::X;
+        assert!(
+            axis_along_screen_right(&cam, screen_right_axis) > 0.9,
+            "precondition: -X should start on screen right from +Y view"
+        );
+        let steps = (std::f32::consts::PI / 0.06).round() as usize + 2;
+        for step in 0..steps {
+            screen_drag_up(&mut cam, 6.0);
+            if step % 6 == 0 {
+                assert!(
+                    axis_along_screen_right(&cam, screen_right_axis) > 0.7,
+                    "the axis on screen right should stay right through the south pole (step {step})"
+                );
+            }
+        }
+    }
+
     #[test]
     fn zoom_at_cursor_preserves_screen_position() {
         let mut cam = Camera::default();
@@ -669,19 +1067,19 @@ mod tests {
         // Pulling down on the cube tilts the top face away (positive screen Y).
         cam.orbit_trackball(egui::vec2(0.0, 30.0));
 
-        let after = (cam.eye() - cam.target).normalize();
+        let after_offset = cam.eye() - cam.target;
         assert!(
             cam.pitch < pitch - 0.05,
             "pitch should decrease from top view, got {}",
             cam.pitch
         );
         assert!(
-            after.y > 0.05,
-            "eye should move toward +Y (back), got {after:?}; before={before:?}"
+            before.z - after_offset.z > 5.0,
+            "eye should descend from the top pole, before={before:?} after={after_offset:?}"
         );
         assert!(
-            before.z - after.z > 0.02,
-            "eye should descend from the pole, got {after:?}"
+            after_offset.x * after_offset.x + after_offset.y * after_offset.y > 25.0,
+            "top-pole orbit should gain horizontal offset, after={after_offset:?}"
         );
     }
 
@@ -764,6 +1162,47 @@ mod tests {
     }
 
     #[test]
+    fn trackball_past_bottom_continues_orbit() {
+        let mut cam = Camera::default();
+        cam.pitch = -std::f32::consts::FRAC_PI_2;
+        cam.yaw = 0.4;
+        let z_start = cam.eye().z;
+
+        // π rad of pitch drag (6 px × 0.01 sens) is needed to traverse the south pole.
+        let steps = (std::f32::consts::PI / 0.06).ceil() as usize + 2;
+        for _ in 0..steps {
+            cam.orbit_trackball(egui::vec2(0.0, 6.0));
+        }
+
+        let offset = cam.eye() - cam.target;
+        assert!(
+            offset.z > 0.0,
+            "dragging past the bottom should cross the pole, offset={offset:?}"
+        );
+        assert!(
+            cam.eye().z > z_start + cam.distance * 0.5,
+            "eye should rise well above the start, z={} start={z_start}",
+            cam.eye().z
+        );
+        let viewport = test_viewport();
+        let vp = cam.view_proj(viewport);
+        assert!(
+            cam.project(Vec3::ZERO, viewport, &vp).is_some(),
+            "view should stay projectable after crossing the bottom pole"
+        );
+    }
+
+    #[test]
+    fn orbit_look_up_flips_when_viewing_from_below() {
+        let mut cam = Camera::default();
+        cam.pitch = -PITCH_LIMIT;
+        assert!(
+            cam.view_up_hint().dot(Vec3::Z) < -0.9,
+            "look-at up should flip below the target"
+        );
+    }
+
+    #[test]
     fn zoom_at_cursor_moves_target_toward_pivot_when_zooming_in() {
         let mut cam = Camera::default();
         let viewport = test_viewport();
@@ -801,6 +1240,85 @@ mod tests {
     }
 
     #[test]
+    fn sketch_orbit_uses_trackball_roll_while_dragging() {
+        let mut cam = Camera::default();
+        cam.set_view_up(Some(Vec3::Y));
+        let up_before_drag = cam.view_up_hint();
+        cam.orbit_trackball(egui::vec2(12.0, 0.0));
+        let up_after_drag = cam.view_up_hint();
+        assert!(
+            (up_before_drag - up_after_drag).length() > 1e-4,
+            "sketch orbit should rotate roll with the trackball"
+        );
+    }
+
+    #[test]
+    fn leave_sketch_mode_clears_view_up_and_trackball() {
+        let mut cam = Camera::default();
+        cam.set_view_up(Some(Vec3::Y));
+        cam.orbit_trackball(egui::vec2(8.0, 4.0));
+        assert!(cam.has_orbit_trackball_state());
+        cam.leave_sketch_mode();
+        assert!(cam.view_up.is_none());
+        assert!(!cam.has_orbit_trackball_state());
+    }
+
+    #[test]
+    fn set_home_from_current_updates_home_view() {
+        let mut cam = Camera::default();
+        cam.target = Vec3::new(12.0, -8.0, 3.0);
+        cam.yaw = 1.2;
+        cam.pitch = -0.35;
+        cam.distance = 220.0;
+        cam.set_home_from_current();
+        let home = cam.home_view();
+        assert!((home.target - cam.target).length() < 1e-4);
+        assert!((home.yaw - cam.yaw).abs() < 1e-4);
+        assert!((home.pitch - cam.pitch).abs() < 1e-4);
+        assert!((home.distance - cam.distance).abs() < 1e-4);
+    }
+
+    #[test]
+    fn home_transition_reaches_custom_home_view() {
+        let mut cam = Camera::default();
+        cam.target = Vec3::new(30.0, 10.0, 5.0);
+        cam.yaw = 1.7;
+        cam.pitch = 0.25;
+        cam.distance = 150.0;
+        cam.set_home_from_current();
+
+        cam.target = Vec3::ZERO;
+        cam.yaw = 0.0;
+        cam.pitch = 0.0;
+        cam.distance = 400.0;
+        cam.start_home_transition(0.5);
+        while cam.tick_transition(0.05) {}
+
+        let home = cam.home_view();
+        assert!((cam.target - home.target).length() < 0.01);
+        assert!((cam.yaw - home.yaw).abs() < 0.01);
+        assert!((cam.pitch - home.pitch).abs() < 0.01);
+        assert!((cam.distance - home.distance).abs() < 0.5);
+    }
+
+    #[test]
+    fn home_transition_reaches_startup_pose() {
+        let mut cam = Camera::default();
+        cam.target = Vec3::new(40.0, -20.0, 10.0);
+        cam.yaw = 2.1;
+        cam.pitch = -0.4;
+        cam.distance = 120.0;
+        cam.set_view_up(Some(Vec3::Y));
+        cam.start_home_transition(0.5);
+        while cam.tick_transition(0.05) {}
+        assert!((cam.target - HOME_TARGET).length() < 0.01);
+        assert!((cam.yaw - ISOMETRIC_YAW).abs() < 0.01);
+        assert!((cam.pitch - ISOMETRIC_PITCH).abs() < 0.01);
+        assert!((cam.distance - HOME_DISTANCE).abs() < 0.5);
+        assert!(cam.view_up_hint().dot(Vec3::Z).abs() > 0.99);
+    }
+
+    #[test]
     fn sketch_view_transition_animates_target_and_distance() {
         let mut cam = Camera::default();
         cam.start_sketch_view_transition(
@@ -808,6 +1326,7 @@ mod tests {
             Vec3::Z,
             Some(120.0),
             0.5,
+            Vec3::Y,
         );
         while cam.tick_transition(0.05) {}
         assert!((cam.target.x - 10.0).abs() < 0.01);
@@ -844,6 +1363,52 @@ mod tests {
         assert!(
             (10.0..=20.0).contains(&SKETCH_EDIT_FRAME_PADDING_PX),
             "padding should leave 10-20px margin around framed sketch contents"
+        );
+    }
+
+    /// Sketch entry from isometric with v (Y) on screen-right: vertical drag should
+    /// tilt the view, not slide the Y axis horizontally across the screen.
+    #[test]
+    fn sketch_orbit_vertical_drag_with_y_on_screen_right() {
+        use crate::actions::{Action, AppState};
+        use crate::model::FaceId;
+
+        let viewport = test_viewport();
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        while state.cam.tick_transition(0.05) {}
+
+        assert!(
+            axis_along_screen_right(&state.cam, Vec3::Y) > 0.7,
+            "precondition: Y should be on screen right in sketch"
+        );
+        assert!(state.cam.has_custom_view_up());
+
+        let probe = Vec3::new(50.0, 0.0, 30.0);
+        let vp = state.cam.view_proj(viewport);
+        let before = state
+            .cam
+            .project(probe, viewport, &vp)
+            .expect("probe visible");
+        state.cam.orbit_trackball(egui::vec2(0.0, -30.0));
+        let vp = state.cam.view_proj(viewport);
+        let after = state
+            .cam
+            .project(probe, viewport, &vp)
+            .expect("probe visible after drag");
+
+        let delta = after - before;
+        assert!(
+            delta.y.abs() >= delta.x.abs(),
+            "vertical drag should tilt the view (screen Y), not pan sideways (screen X); \
+             delta={delta:?}, before={before:?}, after={after:?}"
+        );
+        assert!(
+            axis_along_screen_right(&state.cam, Vec3::Y) > 0.7,
+            "Y should stay on screen right after vertical orbit"
         );
     }
 

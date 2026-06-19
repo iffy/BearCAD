@@ -13,6 +13,7 @@
 mod actions;
 mod camera;
 mod construction;
+mod dimensions;
 mod face;
 mod hierarchy;
 mod model;
@@ -24,7 +25,10 @@ mod theme;
 mod value;
 mod view_cube;
 
-use actions::{Action, AppState, CreatingLine, CreatingRect, Pane, RectAxis, SketchSession, Tool};
+use actions::{
+    Action, AppState, CreatingLine, CreatingRect, DimLabelTarget, Pane, RectAxis, SketchSession,
+    Tool,
+};
 use hierarchy::SceneElement;
 use construction::{
     angle_from_axis_plane_hit, axis_angle_handle, axis_gizmo_hit, axis_normal,
@@ -32,6 +36,12 @@ use construction::{
     offset_from_normal_drag, offset_gizmo_hit, offset_handle, parent_from_pick_target,
     plane_corners, preview_plane_edit_dependents, resolve_pick_target, AxisGizmoDrag,
     AxisGizmoHit, PlaneDim, PlaneReference, AXIS_GIZMO_HANDLE_HIT_RADIUS_PX, PLANE_DISPLAY_HALF,
+};
+use dimensions::{
+    draw_linear_dimension, effective_dim_offset, planar_dimension_label_layout,
+    linear_dimension_world_geom, outward_perpendicular_uv, pixels_to_world_distance,
+    preferred_outward_uv, project_linear_dimension_geom, uv_dir_to_world, EXTENSION_OVERSHOOT,
+    LABEL_OUTSET,
 };
 use face::{
     line_world_endpoints, pick_sketch_face, rect_world_corners, sketch_frame,
@@ -96,6 +106,25 @@ fn main() -> eframe::Result<()> {
     )
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DimLabelDrag {
+    target: DimLabelTarget,
+    outward: egui::Vec2,
+    start_offset: f32,
+    start_screen: egui::Pos2,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CommittedDimLayout {
+    target: DimLabelTarget,
+    geom: dimensions::LinearDimensionGeom,
+    world_geom: dimensions::LinearDimensionWorldGeom,
+    label: String,
+    label_rect: egui::Rect,
+    outward: egui::Vec2,
+    offset: f32,
+}
+
 struct App {
     state: AppState,
     synthetic: SyntheticInput,
@@ -103,6 +132,7 @@ struct App {
     exit_on_script_complete: bool,
     last_viewport: Option<egui::Rect>,
     native_menu: NativeMenu,
+    dim_label_drag: Option<DimLabelDrag>,
 }
 
 impl App {
@@ -126,6 +156,7 @@ impl App {
             exit_on_script_complete,
             last_viewport: None,
             native_menu,
+            dim_label_drag: None,
         }
     }
 
@@ -487,6 +518,8 @@ mod col {
     pub const DIM_INPUT_SELECTION: Color32 = Color32::from_rgba_premultiplied(36, 26, 12, 36);
     /// Highlight for the dimension edge/segment tied to the focused input.
     pub const DIM_EDGE_HIGHLIGHT: Color32 = DIM_INPUT_BORDER_FOCUS;
+    /// Committed sketch dimension lines and labels in edit mode.
+    pub const DIM_ANNOTATION: Color32 = Color32::from_rgb(180, 188, 204);
     /// All construction geometry (planes, etc.) shares this colour.
     pub const CONSTRUCTION: Color32 = crate::construction::CONSTRUCTION_RGBA;
     /// Faded appearance for geometry outside the active sketch face.
@@ -884,6 +917,212 @@ fn rect_highlight_edge(corners: [Vec3; 4], edge: RectDimEdge) -> (Vec3, Vec3) {
     }
 }
 
+fn push_committed_dim_layout(
+    layouts: &mut Vec<CommittedDimLayout>,
+    painter: &egui::Painter,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    frame: &face::SketchFrame,
+    target: DimLabelTarget,
+    a: Vec3,
+    b: Vec3,
+    outward_uv: (f32, f32),
+    pixel_offset: f32,
+    label: String,
+) {
+    let color = col::DIM_ANNOTATION;
+    let outward_world = uv_dir_to_world(frame.u_axis, frame.v_axis, outward_uv.0, outward_uv.1);
+    if outward_world.length_squared() < 1e-8 {
+        return;
+    }
+    let anchor = a.lerp(b, 0.5);
+    let offset_world = pixels_to_world_distance(&project, anchor, outward_world, pixel_offset);
+    let overshoot_world =
+        pixels_to_world_distance(&project, anchor, outward_world, EXTENSION_OVERSHOOT);
+    let label_outset_world =
+        pixels_to_world_distance(&project, anchor, outward_world, LABEL_OUTSET);
+    let world_geom = linear_dimension_world_geom(
+        a,
+        b,
+        outward_world,
+        offset_world,
+        overshoot_world,
+        label_outset_world,
+    );
+    let Some(geom) = project_linear_dimension_geom(&world_geom, &project) else {
+        return;
+    };
+    let label_rect =
+        planar_dimension_label_layout(painter, &world_geom, &geom, &label, color, &project);
+    layouts.push(CommittedDimLayout {
+        target,
+        geom,
+        world_geom,
+        label,
+        label_rect,
+        outward: geom.outward,
+        offset: pixel_offset,
+    });
+}
+
+fn build_committed_dim_layouts(
+    painter: &egui::Painter,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &model::Document,
+    session: SketchSession,
+) -> Vec<CommittedDimLayout> {
+    let Some(frame) = sketch_geometry_frame(doc, session.sketch) else {
+        return Vec::new();
+    };
+    let mut layouts = Vec::new();
+    for (index, rect) in doc
+        .rects
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.sketch == session.sketch)
+    {
+        let Some(corners) = rect_world_corners(doc, rect) else {
+            continue;
+        };
+        let interior = corners.iter().fold(Vec3::ZERO, |acc, c| acc + *c) / 4.0;
+        let (iu, iv) = world_to_local(&frame, interior);
+        if rect.width_locked {
+            let (a, b) = rect_highlight_edge(corners, RectDimEdge::Width);
+            let (ua, va) = world_to_local(&frame, a);
+            let (ub, vb) = world_to_local(&frame, b);
+            let outward_uv = outward_perpendicular_uv(ua, va, ub, vb, iu, iv);
+            push_committed_dim_layout(
+                &mut layouts,
+                painter,
+                &project,
+                &frame,
+                DimLabelTarget::RectWidth { index },
+                a,
+                b,
+                outward_uv,
+                effective_dim_offset(rect.width_dim_offset),
+                format_length_display(rect.w),
+            );
+        }
+        if rect.height_locked {
+            let (a, b) = rect_highlight_edge(corners, RectDimEdge::Height);
+            let (ua, va) = world_to_local(&frame, a);
+            let (ub, vb) = world_to_local(&frame, b);
+            let outward_uv = outward_perpendicular_uv(ua, va, ub, vb, iu, iv);
+            push_committed_dim_layout(
+                &mut layouts,
+                painter,
+                &project,
+                &frame,
+                DimLabelTarget::RectHeight { index },
+                a,
+                b,
+                outward_uv,
+                effective_dim_offset(rect.height_dim_offset),
+                format_length_display(rect.h),
+            );
+        }
+    }
+    for (index, line) in doc
+        .lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.sketch == session.sketch && l.length_locked)
+    {
+        let Some((a, b)) = line_world_endpoints(doc, line) else {
+            continue;
+        };
+        let (ua, va) = world_to_local(&frame, a);
+        let (ub, vb) = world_to_local(&frame, b);
+        let outward_uv = preferred_outward_uv(ua, va, ub, vb);
+        push_committed_dim_layout(
+            &mut layouts,
+            painter,
+            &project,
+            &frame,
+            DimLabelTarget::LineLength { index },
+            a,
+            b,
+            outward_uv,
+            effective_dim_offset(line.length_dim_offset),
+            format_length_display(line.length()),
+        );
+    }
+    layouts
+}
+
+fn draw_committed_dim_layouts<Project>(
+    painter: &egui::Painter,
+    layouts: &[CommittedDimLayout],
+    project: &Project,
+) where
+    Project: Fn(Vec3) -> Option<egui::Pos2>,
+{
+    let color = col::DIM_ANNOTATION;
+    for layout in layouts {
+        draw_linear_dimension(
+            painter,
+            &layout.geom,
+            &layout.label,
+            color,
+            Some((&layout.world_geom, project)),
+        );
+    }
+}
+
+fn pointer_over_committed_dim_label(
+    layouts: &[CommittedDimLayout],
+    pointer: egui::Pos2,
+) -> bool {
+    layouts.iter().any(|l| l.label_rect.contains(pointer))
+}
+
+fn handle_committed_dim_label_drag(
+    ui: &egui::Ui,
+    layouts: &[CommittedDimLayout],
+    drag: &mut Option<DimLabelDrag>,
+    state: &mut AppState,
+) -> bool {
+    let pointer = ui.input(|i| i.pointer.hover_pos());
+    let primary_down = ui.input(|i| i.pointer.primary_down());
+    let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+    let primary_released = ui.input(|i| i.pointer.primary_released());
+
+    if let Some(active) = drag.as_ref() {
+        if primary_released {
+            *drag = None;
+            return true;
+        }
+        if primary_down {
+            if let Some(pos) = pointer {
+                let delta = (pos - active.start_screen).dot(active.outward);
+                let offset = effective_dim_offset(Some(active.start_offset + delta));
+                state.apply(Action::SetDimLabelOffset {
+                    target: active.target,
+                    offset,
+                });
+            }
+            return true;
+        }
+        *drag = None;
+    }
+
+    if primary_pressed {
+        if let Some(pos) = pointer {
+            if let Some(hit) = layouts.iter().rev().find(|h| h.label_rect.contains(pos)) {
+                *drag = Some(DimLabelDrag {
+                    target: hit.target,
+                    outward: hit.outward,
+                    start_offset: hit.offset,
+                    start_screen: pos,
+                });
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 fn draw_face_highlight(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
@@ -945,8 +1184,28 @@ impl App {
         let cam_project = cam.clone();
         let project = move |w: Vec3| cam_project.project(w, viewport, &vp);
 
+        let sketch_session = self.state.sketch_session;
+        let committed_dim_layouts = sketch_session.map(|session| {
+            build_committed_dim_layouts(&painter, &project, &self.state.doc, session)
+        });
+        let pointer_screen = response.hover_pos().or(response.interact_pointer_pos());
+        let over_committed_dim_label = pointer_screen.is_some_and(|pp| {
+            committed_dim_layouts
+                .as_ref()
+                .is_some_and(|layouts| pointer_over_committed_dim_label(layouts, pp))
+        }) || self.dim_label_drag.is_some();
+        if handle_committed_dim_label_drag(
+            ui,
+            committed_dim_layouts.as_deref().unwrap_or(&[]),
+            &mut self.dim_label_drag,
+            &mut self.state,
+        ) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        } else if over_committed_dim_label {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
+
         if self.state.tool == Tool::Sketch {
-            let pointer_screen = response.hover_pos().or(response.interact_pointer_pos());
             if let Some(pp) = pointer_screen {
                 if ui.input(|i| i.pointer.primary_pressed()) {
                     if let Some(face) = pick_sketch_face(pp, &project, &self.state.doc) {
@@ -968,7 +1227,6 @@ impl App {
         }
 
         if self.state.tool == Tool::Rectangle {
-            let pointer_screen = response.hover_pos().or(response.interact_pointer_pos());
             if self.state.sketch_session.is_none() {
                 if let Some(pp) = pointer_screen {
                     if ui.input(|i| i.pointer.primary_pressed()) {
@@ -998,7 +1256,7 @@ impl App {
                     let was_creating = self.state.creating_rect.is_some();
                     let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
 
-                    if !was_creating && primary_pressed {
+                    if !was_creating && primary_pressed && !over_committed_dim_label {
                         self.state.creating_rect = Some(CreatingRect {
                             origin: gp,
                             texts: ["".to_string(), "".to_string()],
@@ -1028,9 +1286,13 @@ impl App {
                             .as_ref()
                             .is_some_and(|(w, h)| w.rect.contains(pp) || h.rect.contains(pp));
 
-                        if should_commit_sketch_on_click(was_creating, primary_pressed, over_input) {
+                        if should_commit_sketch_on_click(
+                            was_creating,
+                            primary_pressed,
+                            over_input || over_committed_dim_label,
+                        ) {
                             commit_click = true;
-                        } else if !over_input {
+                        } else if !over_input && !over_committed_dim_label {
                             cr.last_mouse = gp;
                             let (au, av) = world_to_local(&frame, cr.origin);
                             let (bu, bv) = world_to_local(&frame, gp);
@@ -1050,7 +1312,6 @@ impl App {
         }
 
         if self.state.tool == Tool::Line {
-            let pointer_screen = response.hover_pos().or(response.interact_pointer_pos());
             if self.state.sketch_session.is_none() {
                 if let Some(pp) = pointer_screen {
                     if ui.input(|i| i.pointer.primary_pressed()) {
@@ -1080,7 +1341,7 @@ impl App {
                     let was_creating = self.state.creating_line.is_some();
                     let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
 
-                    if !was_creating && primary_pressed {
+                    if !was_creating && primary_pressed && !over_committed_dim_label {
                         self.state.creating_line = Some(CreatingLine {
                             origin: gp,
                             text: String::new(),
@@ -1101,10 +1362,13 @@ impl App {
                             },
                         );
 
-                        if should_commit_sketch_on_click(was_creating, primary_pressed, over_input)
-                        {
+                        if should_commit_sketch_on_click(
+                            was_creating,
+                            primary_pressed,
+                            over_input || over_committed_dim_label,
+                        ) {
                             commit_click = true;
-                        } else if !over_input {
+                        } else if !over_input && !over_committed_dim_label {
                             cl.last_mouse = gp;
                             if !cl.user_edited {
                                 let (au, av) = world_to_local(&frame, cl.origin);
@@ -1312,7 +1576,6 @@ impl App {
             }
         }
 
-        let sketch_session = self.state.sketch_session;
         draw_ground(
             &painter,
             &project,
@@ -1366,6 +1629,11 @@ impl App {
                     );
                 }
             }
+            if let Some(layouts) = &committed_dim_layouts {
+                draw_committed_dim_layouts(&painter, layouts, &project);
+            }
+        } else {
+            self.dim_label_drag = None;
         }
         if let (Some(cr), Some(session)) =
             (&self.state.creating_rect, self.state.sketch_session)

@@ -203,6 +203,10 @@ pub enum Action {
     CommitLine,
     SetLineLength { value: String },
     FocusLineLength,
+    SetDimLabelOffset {
+        target: DimLabelTarget,
+        offset: f32,
+    },
     BeginConstructionPlane {
         reference: PlaneReference,
         parent: ConstructionPlaneParent,
@@ -238,6 +242,8 @@ pub enum Action {
     SetStandardView(StandardView),
     SetViewEdge(CubeEdgeId),
     SetViewCorner(CubeCornerId),
+    ViewHome,
+    SetHomeView,
     SetProjectionMode(ProjectionMode),
     ToggleProjectionMode,
     SetPaneVisible { pane: Pane, visible: bool },
@@ -317,6 +323,62 @@ impl PaneVisibility {
         let next = !self.is_visible(pane);
         self.set(pane, next);
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DimLabelAxis {
+    Width,
+    Height,
+    Length,
+}
+
+impl DimLabelAxis {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "width" | "w" => Some(Self::Width),
+            "height" | "h" => Some(Self::Height),
+            "length" | "len" | "l" => Some(Self::Length),
+            _ => None,
+        }
+    }
+}
+
+pub fn dim_label_target_in_sketch(
+    doc: &Document,
+    sketch: SketchId,
+    axis: DimLabelAxis,
+) -> Option<DimLabelTarget> {
+    match axis {
+        DimLabelAxis::Width => doc
+            .rects
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, r)| r.sketch == sketch && r.width_locked)
+            .map(|(index, _)| DimLabelTarget::RectWidth { index }),
+        DimLabelAxis::Height => doc
+            .rects
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, r)| r.sketch == sketch && r.height_locked)
+            .map(|(index, _)| DimLabelTarget::RectHeight { index }),
+        DimLabelAxis::Length => doc
+            .lines
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, l)| l.sketch == sketch && l.length_locked)
+            .map(|(index, _)| DimLabelTarget::LineLength { index }),
+    }
+}
+
+/// A committed sketch dimension label the user can reposition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DimLabelTarget {
+    RectWidth { index: usize },
+    RectHeight { index: usize },
+    LineLength { index: usize },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -467,9 +529,7 @@ impl AppState {
                         } else {
                             self.doc.sketches.pop();
                             if self.sketch_session == Some(SketchSession { sketch: idx }) {
-                                self.sketch_session = None;
-                                self.cam.set_view_up(None);
-                                self.tool = Tool::Select;
+                                self.exit_sketch_session();
                             }
                             self.status = "Undid last sketch".to_string();
                         }
@@ -499,9 +559,7 @@ impl AppState {
                                 if self.sketch_session.is_some_and(|s| {
                                     self.doc.sketch_face(s.sketch) == Some(face)
                                 }) {
-                                    self.sketch_session = None;
-                                    self.cam.set_view_up(None);
-                                    self.tool = Tool::Select;
+                                    self.exit_sketch_session();
                                 }
                                 self.status = "Undid last construction plane".to_string();
                             }
@@ -541,11 +599,16 @@ impl AppState {
                     || self.creating_plane.take().is_some()
                 {
                     self.status = "Cancelled".to_string();
-                } else if self.sketch_session.take().is_some() {
-                    self.creating_rect = None;
-                    self.creating_line = None;
-                    self.tool = Tool::Select;
-                    self.status = "Exited sketch".to_string();
+                } else if self.sketch_session.is_some() {
+                    if self.tool == Tool::Select {
+                        self.exit_sketch_session();
+                        self.status = "Exited sketch".to_string();
+                    } else {
+                        self.creating_rect = None;
+                        self.creating_line = None;
+                        self.tool = Tool::Select;
+                        self.status = "Select tool".to_string();
+                    }
                 } else if self.tool != Tool::Select {
                     self.tool = Tool::Select;
                     self.status = "Select tool".to_string();
@@ -566,12 +629,10 @@ impl AppState {
                 self.enter_sketch(sketch, viewport, Some(SKETCH_EDIT_FRAME_PADDING_PX))
             }
             Action::ExitSketch => {
-                if self.sketch_session.take().is_none() {
+                if self.sketch_session.is_none() {
                     return ActionResult::Err("Not in sketch mode".to_string());
                 }
-                self.creating_rect = None;
-                self.creating_line = None;
-                self.tool = Tool::Select;
+                self.exit_sketch_session();
                 self.status = "Sketch saved".to_string();
                 ActionResult::Ok
             }
@@ -588,7 +649,9 @@ impl AppState {
                 let (ou, ov) = world_to_local(&frame, cr.origin);
                 let end = cr.end_point(&frame);
                 let (eu, ev) = world_to_local(&frame, end);
-                let rect = Rect::from_local_corners(session.sketch, ou, ov, eu, ev);
+                let mut rect = Rect::from_local_corners(session.sketch, ou, ov, eu, ev);
+                rect.width_locked = cr.user_edited[0];
+                rect.height_locked = cr.user_edited[1];
                 if rect.w > 0.5 && rect.h > 0.5 {
                     self.doc.rects.push(rect);
                     self.doc.shape_order.push(ShapeKind::Rect);
@@ -630,7 +693,8 @@ impl AppState {
                 let (u0, v0) = world_to_local(&frame, cl.origin);
                 let end = cl.end_point(&frame);
                 let (u1, v1) = world_to_local(&frame, end);
-                let line = Line::from_local_endpoints(session.sketch, u0, v0, u1, v1);
+                let mut line = Line::from_local_endpoints(session.sketch, u0, v0, u1, v1);
+                line.length_locked = cl.user_edited;
                 if line.length() > 0.5 {
                     let len = line.length();
                     self.doc.lines.push(line);
@@ -649,6 +713,39 @@ impl AppState {
                 };
                 cl.text = value;
                 cl.user_edited = true;
+                ActionResult::Ok
+            }
+            Action::SetDimLabelOffset { target, offset } => {
+                let offset = crate::dimensions::effective_dim_offset(Some(offset));
+                match target {
+                    DimLabelTarget::RectWidth { index } => {
+                        let Some(rect) = self.doc.rects.get_mut(index) else {
+                            return ActionResult::Err(format!("Rectangle {index} not found"));
+                        };
+                        if !rect.width_locked {
+                            return ActionResult::Err("Rectangle width is not dimensioned".to_string());
+                        }
+                        rect.width_dim_offset = Some(offset);
+                    }
+                    DimLabelTarget::RectHeight { index } => {
+                        let Some(rect) = self.doc.rects.get_mut(index) else {
+                            return ActionResult::Err(format!("Rectangle {index} not found"));
+                        };
+                        if !rect.height_locked {
+                            return ActionResult::Err("Rectangle height is not dimensioned".to_string());
+                        }
+                        rect.height_dim_offset = Some(offset);
+                    }
+                    DimLabelTarget::LineLength { index } => {
+                        let Some(line) = self.doc.lines.get_mut(index) else {
+                            return ActionResult::Err(format!("Line {index} not found"));
+                        };
+                        if !line.length_locked {
+                            return ActionResult::Err("Line length is not dimensioned".to_string());
+                        }
+                        line.length_dim_offset = Some(offset);
+                    }
+                }
                 ActionResult::Ok
             }
             Action::FocusLineLength => {
@@ -817,6 +914,16 @@ impl AppState {
                 self.status = format!("View corner: {:?}", corner);
                 ActionResult::Ok
             }
+            Action::ViewHome => {
+                self.cam.start_home_transition(VIEW_TRANSITION_DURATION);
+                self.status = "View: home".to_string();
+                ActionResult::Ok
+            }
+            Action::SetHomeView => {
+                self.cam.set_home_from_current();
+                self.status = "Home view set".to_string();
+                ActionResult::Ok
+            }
             Action::SetProjectionMode(mode) => {
                 self.cam.set_projection_mode(mode);
                 self.status = format!("Projection: {:?}", mode);
@@ -858,6 +965,14 @@ impl AppState {
         }
     }
 
+    fn exit_sketch_session(&mut self) {
+        self.sketch_session = None;
+        self.creating_rect = None;
+        self.creating_line = None;
+        self.cam.leave_sketch_mode();
+        self.tool = Tool::Select;
+    }
+
     fn enter_sketch(
         &mut self,
         sketch: SketchId,
@@ -871,8 +986,13 @@ impl AppState {
                 frame_target.target,
                 frame_target.face_normal,
             );
-            self.cam
-                .set_view_up(Some(sketch_view_up(view_direction, &frame)));
+            let current_look = (frame_target.target - self.cam.eye()).normalize_or_zero();
+            let sketch_up = sketch_view_up(
+                view_direction,
+                &frame,
+                current_look,
+                self.cam.view_up_hint(),
+            );
             let zoom_distance = frame_target.zoom.and_then(|bounds| {
                 let frame = sketch_frame(&self.doc, face)?;
                 let vp = viewport?;
@@ -891,6 +1011,7 @@ impl AppState {
                 frame_target.face_normal,
                 zoom_distance,
                 VIEW_TRANSITION_DURATION,
+                sketch_up,
             );
         }
         self.sketch_session = Some(SketchSession { sketch });
@@ -940,6 +1061,50 @@ mod tests {
             v_axis: Vec3::Y,
             normal: Vec3::Z,
         }
+    }
+
+    /// Dominant screen direction of a world axis from the origin (egui y-down).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum ScreenAxisDir {
+        Left,
+        Right,
+        Up,
+        Down,
+    }
+
+    fn axis_screen_dir(
+        cam: &crate::camera::Camera,
+        viewport: egui::Rect,
+        world_axis: Vec3,
+    ) -> Option<ScreenAxisDir> {
+        let vp = cam.view_proj(viewport);
+        let o = cam.project(Vec3::ZERO, viewport, &vp)?;
+        let p = cam.project(world_axis * 100.0, viewport, &vp)?;
+        let d = p - o;
+        if d.length() < 1.0 {
+            return None;
+        }
+        if d.x.abs() >= d.y.abs() {
+            Some(if d.x > 0.0 {
+                ScreenAxisDir::Right
+            } else {
+                ScreenAxisDir::Left
+            })
+        } else if d.y > 0.0 {
+            Some(ScreenAxisDir::Down)
+        } else {
+            Some(ScreenAxisDir::Up)
+        }
+    }
+
+    fn axis_layout(
+        cam: &crate::camera::Camera,
+        viewport: egui::Rect,
+    ) -> Option<(ScreenAxisDir, ScreenAxisDir)> {
+        Some((
+            axis_screen_dir(cam, viewport, Vec3::X)?,
+            axis_screen_dir(cam, viewport, Vec3::Y)?,
+        ))
     }
 
     fn begin_default_sketch(state: &mut AppState) -> SketchId {
@@ -1122,8 +1287,79 @@ mod tests {
         assert_eq!(state.doc.rects.len(), 1);
         assert!((state.doc.rects[0].w - 10.0).abs() < 1e-4);
         assert!((state.doc.rects[0].h - 5.0).abs() < 1e-4);
+        assert!(state.doc.rects[0].width_locked);
+        assert!(state.doc.rects[0].height_locked);
         assert_eq!(state.doc.rects[0].sketch, sketch);
         assert!(state.creating_rect.is_none());
+    }
+
+    #[test]
+    fn commit_rectangle_without_typed_dims_leaves_locks_clear() {
+        let mut state = AppState::default();
+        begin_default_sketch(&mut state);
+        state.creating_rect = Some(CreatingRect {
+            origin: Vec3::new(0.0, 0.0, 0.0),
+            texts: ["".to_string(), "".to_string()],
+            focused: 0,
+            last_mouse: Vec3::new(10.0, 5.0, 0.0),
+            user_edited: [false, false],
+            pending_focus: false,
+        });
+        state.apply(Action::CommitRectangle);
+        let rect = &state.doc.rects[0];
+        assert!(!rect.width_locked);
+        assert!(!rect.height_locked);
+    }
+
+    #[test]
+    fn commit_rectangle_expression_stores_geometry_not_expression_text() {
+        let mut state = AppState::default();
+        begin_default_sketch(&mut state);
+        state.creating_rect = Some(CreatingRect {
+            origin: Vec3::ZERO,
+            texts: ["2in".to_string(), "5mm".to_string()],
+            focused: 0,
+            last_mouse: Vec3::new(100.0, 100.0, 0.0),
+            user_edited: [true, true],
+            pending_focus: false,
+        });
+        state.apply(Action::CommitRectangle);
+        let rect = &state.doc.rects[0];
+        assert!((rect.w - 50.8).abs() < 1e-2);
+        assert!((rect.h - 5.0).abs() < 1e-4);
+        assert!(rect.width_locked);
+    }
+
+    #[test]
+    fn set_dim_label_offset_persists_on_rectangle() {
+        let mut state = AppState::default();
+        begin_default_sketch(&mut state);
+        state.creating_rect = Some(CreatingRect {
+            origin: Vec3::ZERO,
+            texts: ["10".to_string(), "5".to_string()],
+            focused: 0,
+            last_mouse: Vec3::new(10.0, 5.0, 0.0),
+            user_edited: [true, true],
+            pending_focus: false,
+        });
+        state.apply(Action::CommitRectangle);
+        state.apply(Action::SetDimLabelOffset {
+            target: DimLabelTarget::RectWidth { index: 0 },
+            offset: 55.0,
+        });
+        assert_eq!(state.doc.rects[0].width_dim_offset, Some(55.0));
+    }
+
+    #[test]
+    fn dim_label_target_in_sketch_finds_locked_width() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        let mut rect = Rect::from_local_corners(sketch, 0.0, 0.0, 10.0, 5.0);
+        rect.width_locked = true;
+        state.doc.rects.push(rect);
+        state.doc.shape_order.push(ShapeKind::Rect);
+        let target = dim_label_target_in_sketch(&state.doc, sketch, DimLabelAxis::Width);
+        assert_eq!(target, Some(DimLabelTarget::RectWidth { index: 0 }));
     }
 
     #[test]
@@ -1140,6 +1376,7 @@ mod tests {
         state.apply(Action::CommitLine);
         assert_eq!(state.doc.lines.len(), 1);
         assert!((state.doc.lines[0].length() - 10.0).abs() < 1e-4);
+        assert!(state.doc.lines[0].length_locked);
         assert!(state.creating_line.is_none());
     }
 
@@ -1228,6 +1465,84 @@ mod tests {
     }
 
     #[test]
+    fn escape_after_commit_rectangle_switches_to_select_not_exit_sketch() {
+        let mut state = AppState::default();
+        begin_default_sketch(&mut state);
+        state.apply(Action::SetTool(Tool::Rectangle));
+        state.creating_rect = Some(CreatingRect {
+            origin: Vec3::ZERO,
+            texts: ["10".to_string(), "5".to_string()],
+            focused: 0,
+            last_mouse: Vec3::new(10.0, 5.0, 0.0),
+            user_edited: [true, true],
+            pending_focus: false,
+        });
+        state.apply(Action::CommitRectangle);
+        assert_eq!(state.tool, Tool::Rectangle);
+        assert!(state.sketch_session.is_some());
+
+        state.apply(Action::CancelOperation);
+
+        assert!(state.sketch_session.is_some());
+        assert_eq!(state.tool, Tool::Select);
+        assert_eq!(state.doc.rects.len(), 1);
+    }
+
+    #[test]
+    fn escape_on_line_tool_in_sketch_switches_to_select() {
+        let mut state = AppState::default();
+        begin_default_sketch(&mut state);
+        state.apply(Action::SetTool(Tool::Line));
+        state.apply(Action::CancelOperation);
+        assert!(state.sketch_session.is_some());
+        assert_eq!(state.tool, Tool::Select);
+    }
+
+    #[test]
+    fn escape_on_select_tool_in_sketch_exits_sketch() {
+        let mut state = AppState::default();
+        begin_default_sketch(&mut state);
+        assert_eq!(state.tool, Tool::Select);
+        state.apply(Action::CancelOperation);
+        assert!(state.sketch_session.is_none());
+        assert_eq!(state.tool, Tool::Select);
+    }
+
+    #[test]
+    fn escape_while_drawing_rectangle_cancels_without_exiting_sketch() {
+        let mut state = AppState::default();
+        begin_default_sketch(&mut state);
+        state.apply(Action::SetTool(Tool::Rectangle));
+        state.creating_rect = Some(CreatingRect {
+            origin: Vec3::ZERO,
+            texts: ["".to_string(), "".to_string()],
+            focused: 0,
+            last_mouse: Vec3::new(10.0, 5.0, 0.0),
+            user_edited: [false, false],
+            pending_focus: false,
+        });
+        state.apply(Action::CancelOperation);
+        assert!(state.sketch_session.is_some());
+        assert_eq!(state.tool, Tool::Rectangle);
+        assert!(state.creating_rect.is_none());
+    }
+
+    #[test]
+    fn exit_sketch_restores_world_orbit_mode() {
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        while state.cam.tick_transition(0.05) {}
+        state.cam.orbit_trackball(egui::vec2(10.0, 6.0));
+        state.apply(Action::ExitSketch);
+        assert!(state.sketch_session.is_none());
+        assert!(!state.cam.has_custom_view_up());
+        assert!(!state.cam.has_orbit_trackball_state());
+    }
+
+    #[test]
     fn exit_sketch_clears_session() {
         let mut state = AppState::default();
         begin_default_sketch(&mut state);
@@ -1270,8 +1585,89 @@ mod tests {
     }
 
     #[test]
-    fn begin_sketch_aligns_camera_up_with_plane_v_axis() {
+    fn begin_sketch_keeps_yaw_pitch_when_already_face_on() {
+        use crate::camera::StandardView;
+
         let mut state = AppState::default();
+        let (yaw, pitch) = StandardView::Top.yaw_pitch();
+        state.cam.yaw = yaw;
+        state.cam.pitch = pitch;
+        state.cam.set_view_up(Some(Vec3::Y));
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        while state.cam.tick_transition(0.05) {}
+        assert!((state.cam.yaw - yaw).abs() < 0.02);
+        assert!((state.cam.pitch - pitch).abs() < 0.02);
+    }
+
+    #[test]
+    fn begin_sketch_from_isometric_uses_minimal_axis_rotation() {
+        let viewport =
+            egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        let mut state = AppState::default();
+        let start = axis_layout(&state.cam, viewport).expect("startup axes visible");
+        assert_eq!(
+            start,
+            (ScreenAxisDir::Left, ScreenAxisDir::Right),
+            "isometric startup should show red left and green right"
+        );
+
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        while state.cam.tick_transition(0.05) {}
+
+        let end = axis_layout(&state.cam, viewport).expect("sketch axes visible");
+        let minimal = [
+            (ScreenAxisDir::Down, ScreenAxisDir::Right),
+            (ScreenAxisDir::Right, ScreenAxisDir::Down),
+        ];
+        assert!(
+            minimal.contains(&end),
+            "sketch entry should use minimal roll: start={start:?} end={end:?}, expected one of {minimal:?}"
+        );
+        assert_ne!(
+            end,
+            (ScreenAxisDir::Right, ScreenAxisDir::Up),
+            "should not over-rotate to red right + green up"
+        );
+
+        let frame = sketch_frame(&state.doc, FaceId::ConstructionPlane(0)).unwrap();
+        let vp = state.cam.view_proj(viewport);
+        let base = state.cam.project(frame.origin, viewport, &vp).unwrap();
+        let u = state
+            .cam
+            .project(frame.origin + frame.u_axis * 10.0, viewport, &vp)
+            .unwrap();
+        let v = state
+            .cam
+            .project(frame.origin + frame.v_axis * 10.0, viewport, &vp)
+            .unwrap();
+        match end {
+            (ScreenAxisDir::Down, ScreenAxisDir::Right) => {
+                assert!(u.y > base.y + 5.0, "u should point down on screen");
+                assert!(v.x > base.x + 5.0, "v should point right on screen");
+            }
+            (ScreenAxisDir::Right, ScreenAxisDir::Down) => {
+                assert!(u.x > base.x + 5.0, "u should point right on screen");
+                assert!(v.y > base.y + 5.0, "v should point down on screen");
+            }
+            other => panic!("unexpected end layout {other:?}"),
+        }
+    }
+
+    #[test]
+    fn begin_sketch_from_top_view_aligns_v_axis_up() {
+        use crate::camera::StandardView;
+
+        let mut state = AppState::default();
+        let (yaw, pitch) = StandardView::Top.yaw_pitch();
+        state.cam.yaw = yaw;
+        state.cam.pitch = pitch;
+        state.cam.set_view_up(Some(Vec3::Y));
         state.apply(Action::BeginSketch {
             face: FaceId::ConstructionPlane(0),
             viewport: None,
@@ -1433,6 +1829,20 @@ mod tests {
             visible: false,
         });
         assert!(!state.panes.is_visible(Pane::ViewCube));
+    }
+
+    #[test]
+    fn set_home_view_action_stores_current_camera_pose() {
+        let mut state = AppState::default();
+        state.cam.target = Vec3::new(5.0, -3.0, 2.0);
+        state.cam.yaw = 0.9;
+        state.cam.pitch = 0.4;
+        state.cam.distance = 180.0;
+        state.apply(Action::SetHomeView);
+        let home = state.cam.home_view();
+        assert!((home.target.x - 5.0).abs() < 1e-4);
+        assert!((home.yaw - 0.9).abs() < 1e-4);
+        assert_eq!(state.status, "Home view set");
     }
 
     #[test]

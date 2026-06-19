@@ -3,7 +3,9 @@
 //! Scripts are human-readable, one instruction per line. They drive the live UI
 //! via synthetic pointer/keyboard events and headless actions.
 
-use crate::actions::{Action, AppState, Pane, RectAxis, Tool};
+use crate::actions::{
+    dim_label_target_in_sketch, Action, AppState, DimLabelAxis, Pane, RectAxis, Tool,
+};
 use crate::hierarchy::SceneElement;
 use crate::model::{FaceId, SketchId};
 use crate::construction::PlaneDim;
@@ -33,6 +35,7 @@ pub enum Instruction {
         visible: Option<bool>,
     },
     SetDim { axis: RectAxis, value: String },
+    SetDimLabelOffset { axis: DimLabelAxis, offset: f32 },
     SetLineLength { value: String },
     BeginEditConstructionPlane { index: usize },
     CommitConstructionPlane,
@@ -47,6 +50,8 @@ pub enum Instruction {
     View(StandardView),
     ViewEdge(CubeEdgeId),
     ViewCorner(CubeCornerId),
+    ViewHome,
+    SetHomeView,
     ProjectionMode(ProjectionMode),
     ToggleProjectionMode,
     /// Show/hide a UI pane. `None` toggles.
@@ -114,6 +119,14 @@ impl Instruction {
                 format!("set_dim {name} {value}")
             }
             Instruction::SetLineLength { value } => format!("set_dim length {value}"),
+            Instruction::SetDimLabelOffset { axis, offset } => {
+                let name = match axis {
+                    DimLabelAxis::Width => "width",
+                    DimLabelAxis::Height => "height",
+                    DimLabelAxis::Length => "length",
+                };
+                format!("set_dim_label_offset {name} {offset}")
+            }
             Instruction::BeginEditConstructionPlane { index } => format!("edit_plane {index}"),
             Instruction::CommitConstructionPlane => "commit_plane".to_string(),
             Instruction::SetPlaneOffset { value } => format!("set_dim offset {value}"),
@@ -136,6 +149,8 @@ impl Instruction {
             Instruction::ViewCorner(corner) => {
                 format!("view corner {}", corner_script_name(*corner))
             }
+            Instruction::ViewHome => "view_home".to_string(),
+            Instruction::SetHomeView => "set_home_view".to_string(),
             Instruction::ProjectionMode(mode) => {
                 format!("view {}", projection_mode_script_name(*mode))
             }
@@ -337,6 +352,19 @@ fn parse_line(line: &str, line_no: usize) -> Result<Instruction, ParseError> {
             Ok(Instruction::SetPane { pane, visible })
         }
 
+        "set_dim_label_offset" | "setdimlabeloffset" | "dim_label_offset" => {
+            let (axis_name, value) = rest
+                .split_once(|c: char| c.is_whitespace())
+                .ok_or_else(|| err("set_dim_label_offset requires axis and offset"))?;
+            let axis = DimLabelAxis::from_name(axis_name.trim())
+                .ok_or_else(|| err(&format!("unknown axis '{}'", axis_name.trim())))?;
+            let offset = value
+                .trim()
+                .parse::<f32>()
+                .map_err(|_| err("set_dim_label_offset offset must be a number"))?;
+            Ok(Instruction::SetDimLabelOffset { axis, offset })
+        }
+
         "set_dim" | "setdim" => {
             let (axis_name, value) = rest
                 .split_once(|c: char| c.is_whitespace())
@@ -429,6 +457,10 @@ fn parse_line(line: &str, line_no: usize) -> Result<Instruction, ParseError> {
         "toggle_projection" | "projection_toggle" | "toggle_view" | "view_toggle" => {
             Ok(Instruction::ToggleProjectionMode)
         }
+
+        "view_home" | "home" | "camera_home" => Ok(Instruction::ViewHome),
+
+        "set_home_view" | "sethomeview" | "set_home" => Ok(Instruction::SetHomeView),
 
         "move" | "mousemove" => {
             let (x, y) = parse_two_floats(rest, &err)?;
@@ -1104,6 +1136,16 @@ impl ScriptRunner {
                 let _ = state.apply(Action::SetRectDimension { axis, value });
                 StepResult::Continue
             }
+            Instruction::SetDimLabelOffset { axis, offset } => {
+                if let Some(session) = state.sketch_session {
+                    if let Some(target) =
+                        dim_label_target_in_sketch(&state.doc, session.sketch, axis)
+                    {
+                        let _ = state.apply(Action::SetDimLabelOffset { target, offset });
+                    }
+                }
+                StepResult::Continue
+            }
             Instruction::SetLineLength { value } => {
                 let _ = state.apply(Action::SetLineLength { value });
                 StepResult::Continue
@@ -1173,6 +1215,15 @@ impl ScriptRunner {
                 state.apply(Action::SetViewCorner(corner));
                 self.waiting_view_transition = true;
                 StepResult::Wait
+            }
+            Instruction::ViewHome => {
+                state.apply(Action::ViewHome);
+                self.waiting_view_transition = true;
+                StepResult::Wait
+            }
+            Instruction::SetHomeView => {
+                state.apply(Action::SetHomeView);
+                StepResult::Continue
             }
             Instruction::ProjectionMode(mode) => {
                 state.apply(Action::SetProjectionMode(mode));
@@ -1477,6 +1528,28 @@ mod tests {
     }
 
     #[test]
+    fn parses_set_home_view_command() {
+        let ins = parse("set_home_view\nset_home").unwrap();
+        assert_eq!(
+            ins,
+            vec![Instruction::SetHomeView, Instruction::SetHomeView]
+        );
+    }
+
+    #[test]
+    fn parses_view_home_command() {
+        let ins = parse("view_home\nhome\ncamera_home").unwrap();
+        assert_eq!(
+            ins,
+            vec![
+                Instruction::ViewHome,
+                Instruction::ViewHome,
+                Instruction::ViewHome,
+            ]
+        );
+    }
+
+    #[test]
     fn parses_projection_mode_commands() {
         let ins = parse("view orthographic\nview natural\ntoggle_projection").unwrap();
         assert_eq!(
@@ -1662,6 +1735,47 @@ mod tests {
     }
 
     #[test]
+    fn parses_set_dim_label_offset() {
+        let ins = parse("set_dim_label_offset width 48").unwrap();
+        assert_eq!(
+            ins,
+            vec![Instruction::SetDimLabelOffset {
+                axis: DimLabelAxis::Width,
+                offset: 48.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn script_set_dim_label_offset_updates_rectangle() {
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        state.apply(crate::actions::Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        state.creating_rect = Some(crate::actions::CreatingRect {
+            origin: glam::Vec3::ZERO,
+            texts: ["10".to_string(), "5".to_string()],
+            last_mouse: glam::Vec3::new(10.0, 5.0, 0.0),
+            focused: 0,
+            user_edited: [true, true],
+            pending_focus: false,
+        });
+        state.apply(crate::actions::Action::CommitRectangle);
+        let mut runner = ScriptRunner::new(parse("set_dim_label_offset width 60").unwrap());
+        while !runner.done {
+            runner.tick(
+                &mut state,
+                &mut synthetic,
+                None,
+                &egui::Context::default(),
+            );
+        }
+        assert_eq!(state.doc.rects[0].width_dim_offset, Some(60.0));
+    }
+
+    #[test]
     fn parses_set_dim_expression_with_spaces() {
         let ins = parse("set_dim width 2in + 5mm / 2").unwrap();
         assert_eq!(
@@ -1671,6 +1785,46 @@ mod tests {
                 value: "2in + 5mm / 2".to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn script_set_dim_commit_displays_computed_mm_not_expression() {
+        use crate::value::format_length_display;
+
+        let script = "tool rectangle\nset_dim width 2in\nset_dim height 5mm";
+        let mut runner = ScriptRunner::new(parse(script).unwrap());
+        runner.verbose = false;
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        state.apply(crate::actions::Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        state.creating_rect = Some(crate::actions::CreatingRect {
+            origin: glam::Vec3::ZERO,
+            texts: [String::new(), String::new()],
+            last_mouse: glam::Vec3::new(100.0, 100.0, 0.0),
+            focused: 0,
+            user_edited: [false, false],
+            pending_focus: false,
+        });
+
+        while !runner.done {
+            runner.tick(
+                &mut state,
+                &mut synthetic,
+                None,
+                &egui::Context::default(),
+            );
+        }
+
+        state.apply(crate::actions::Action::CommitRectangle);
+        let rect = &state.doc.rects[0];
+        assert!(rect.width_locked);
+        assert!(rect.height_locked);
+        assert!((rect.w - 50.8).abs() < 1e-2);
+        assert_eq!(format_length_display(rect.w), "50.8 mm");
+        assert_eq!(format_length_display(rect.h), "5.0 mm");
     }
 
     #[test]
