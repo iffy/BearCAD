@@ -71,6 +71,27 @@ pub fn substitute_parameter_name(expression: &str, old: &str, new: &str) -> Stri
     out
 }
 
+/// Whether `expression` contains a whole identifier referencing a document parameter.
+pub fn expression_references_document_parameter(doc: &Document, expression: &str) -> bool {
+    let mut i = 0;
+    while i < expression.len() {
+        if let Some((ident, len)) = identifier_at(expression, i) {
+            if doc.parameters.iter().any(|p| p.name == ident) {
+                return true;
+            }
+            i += len;
+        } else {
+            let step = expression[i..]
+                .chars()
+                .next()
+                .map(|c| c.len_utf8())
+                .unwrap_or(1);
+            i += step;
+        }
+    }
+    false
+}
+
 fn identifier_at(text: &str, start: usize) -> Option<(&str, usize)> {
     let rest = &text[start..];
     let mut chars = rest.chars();

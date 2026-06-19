@@ -232,7 +232,7 @@ impl App {
         self.state.command_palette.close_palette();
     }
 
-    fn handle_keyboard(&mut self, ctx: &egui::Context) {
+    fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
         if self.state.command_palette.open {
             return;
         }
@@ -262,7 +262,6 @@ impl App {
 
         if self.state.creating_rect.is_none()
             && self.state.creating_line.is_none()
-            && self.state.creating_plane.is_none()
             && ctx.input(|i| i.key_pressed(egui::Key::L))
         {
             if self.state.tool != Tool::Line {
@@ -288,61 +287,6 @@ impl App {
         }
         if self.state.tool != Tool::ConstructionPlane {
             self.state.creating_plane = None;
-        }
-
-        let creating = self.state.creating_rect.is_some()
-            || self.state.creating_line.is_some()
-            || self.state.creating_plane.is_some();
-        let editing_committed_dim = self.state.editing_committed_dim.is_some();
-        let (enter_pressed, tab_pressed) = if creating || editing_committed_dim {
-            (
-                ctx.input(|i| i.key_pressed(egui::Key::Enter)),
-                ctx.input(|i| i.key_pressed(egui::Key::Tab)),
-            )
-        } else {
-            (false, false)
-        };
-
-        if enter_pressed {
-            ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-        }
-        if tab_pressed {
-            ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
-        }
-
-        if let Some(cr) = &mut self.state.creating_rect {
-            if tab_pressed {
-                let new_focused = 1 - cr.focused;
-                let axis = if new_focused == 0 {
-                    RectAxis::Width
-                } else {
-                    RectAxis::Height
-                };
-                self.state.apply(Action::FocusRectDimension { axis });
-            }
-            if enter_pressed {
-                self.state.apply(Action::CommitRectangle);
-            }
-        }
-        if self.state.creating_line.is_some() && enter_pressed {
-            self.state.apply(Action::CommitLine);
-        }
-        if editing_committed_dim && enter_pressed {
-            self.state.apply(Action::CommitCommittedDim);
-        }
-
-        if let Some(cp) = &mut self.state.creating_plane {
-            if tab_pressed && cp.reference.is_axis() {
-                let next = if cp.focused == PlaneDim::Offset {
-                    PlaneDim::Angle
-                } else {
-                    PlaneDim::Offset
-                };
-                self.state.apply(Action::FocusPlaneDim { dim: next });
-            }
-            if enter_pressed {
-                self.state.apply(Action::CommitConstructionPlane);
-            }
         }
     }
 
@@ -417,7 +361,7 @@ impl eframe::App for App {
         self.tick_script(ctx);
         self.synthetic.inject(ctx);
 
-        self.handle_keyboard(ctx);
+        self.handle_keyboard_shortcuts(ctx);
 
         self.handle_native_menu(ctx);
 
@@ -531,22 +475,13 @@ impl eframe::App for App {
         }
 
         if self.state.panes.is_visible(Pane::Parameters) {
-            let mut pending_parameter_actions: Vec<Action> = Vec::new();
             egui::SidePanel::right("parameters")
                 .resizable(true)
                 .default_width(240.0)
                 .frame(theme::panel_frame())
                 .show(ctx, |ui| {
-                    parameters::show_pane(
-                        ui,
-                        &self.state.doc,
-                        &mut self.state.parameters_pane,
-                        &mut |action| pending_parameter_actions.push(action),
-                    );
+                    parameters::show_pane(ui, &mut self.state);
                 });
-            for action in pending_parameter_actions {
-                self.state.apply(action);
-            }
         }
 
         egui::CentralPanel::default()
@@ -554,6 +489,22 @@ impl eframe::App for App {
             .show(ctx, |ui| {
                 self.draw_viewport(ui);
             });
+    }
+}
+
+fn next_rect_focus_axis(focused: usize) -> RectAxis {
+    if focused == 0 {
+        RectAxis::Height
+    } else {
+        RectAxis::Width
+    }
+}
+
+fn next_plane_focus_dim(focused: PlaneDim) -> PlaneDim {
+    if focused == PlaneDim::Offset {
+        PlaneDim::Angle
+    } else {
+        PlaneDim::Offset
     }
 }
 
@@ -857,6 +808,29 @@ fn should_select_all_rect_value(
         || (is_focus_target && has_focus && !user_edited)
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct SketchDimFieldResult {
+    changed: bool,
+    enter_commit: bool,
+}
+
+fn sketch_dimension_enter_pressed(ui: &egui::Ui) -> bool {
+    ui.input(|i| i.key_pressed(egui::Key::Enter))
+}
+
+fn consume_sketch_dimension_enter(ui: &mut egui::Ui) {
+    ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+}
+
+/// Commit when Enter was pressed on a focused dim field, or when Enter is pressed with no dim focused.
+fn should_commit_sketch_on_enter(
+    field_enter_commit: bool,
+    dim_field_focused: bool,
+    enter_pressed: bool,
+) -> bool {
+    field_enter_commit || (enter_pressed && !dim_field_focused)
+}
+
 /// Show a sketch dimension field; selects all text when it gains focus so typing replaces the value.
 fn show_sketch_dimension_field(
     ui: &mut egui::Ui,
@@ -867,7 +841,7 @@ fn show_sketch_dimension_field(
     is_focus_target: bool,
     pending_focus: &mut bool,
     user_edited: bool,
-) -> bool {
+) -> SketchDimFieldResult {
     let has_focus = ctx.memory(|m| m.focused()) == Some(id);
     let frame = egui::Frame::default()
         .fill(if has_focus {
@@ -942,7 +916,14 @@ fn show_sketch_dimension_field(
     if is_focus_target && resp.has_focus() {
         *pending_focus = false;
     }
-    resp.changed()
+    let enter_commit = sketch_dimension_enter_pressed(ui) && resp.has_focus();
+    if enter_commit {
+        consume_sketch_dimension_enter(ui);
+    }
+    SketchDimFieldResult {
+        changed: resp.changed(),
+        enter_commit,
+    }
 }
 
 fn sketch_plane_point(
@@ -1255,7 +1236,78 @@ fn draw_face_highlight(
 }
 
 impl App {
+    /// Tab for in-progress sketch dimensions. Consumes Tab so focus cannot escape to the toolbar
+    /// while creating geometry. Enter is handled after dim TextEdits render (see draw_viewport).
+    fn handle_in_progress_object_keyboard(&mut self, ui: &mut egui::Ui) {
+        if self.state.command_palette.open {
+            return;
+        }
+        if parameters::parameter_field_focused(ui.ctx(), &self.state.doc) {
+            return;
+        }
+
+        let tab_pressed = ui.input(|i| i.key_pressed(egui::Key::Tab));
+
+        if self.state.creating_rect.is_some() {
+            if tab_pressed {
+                ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
+                let focused = self
+                    .state
+                    .creating_rect
+                    .as_ref()
+                    .map(|cr| cr.focused)
+                    .unwrap_or(0);
+                self.state
+                    .apply(Action::FocusRectDimension {
+                        axis: next_rect_focus_axis(focused),
+                    });
+            }
+            return;
+        }
+
+        if self.state.creating_line.is_some() {
+            if tab_pressed {
+                ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
+                if let Some(cl) = &mut self.state.creating_line {
+                    cl.pending_focus = true;
+                }
+            }
+            return;
+        }
+
+        if self.state.creating_plane.is_some() {
+            if tab_pressed {
+                ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
+                if self
+                    .state
+                    .creating_plane
+                    .as_ref()
+                    .is_some_and(|cp| cp.reference.is_axis())
+                {
+                    let focused = self
+                        .state
+                        .creating_plane
+                        .as_ref()
+                        .map(|cp| cp.focused)
+                        .unwrap_or(PlaneDim::Offset);
+                    self.state.apply(Action::FocusPlaneDim {
+                        dim: next_plane_focus_dim(focused),
+                    });
+                } else if let Some(cp) = &mut self.state.creating_plane {
+                    cp.pending_focus = true;
+                }
+            }
+            return;
+        }
+
+        if self.state.editing_committed_dim.is_some() && tab_pressed {
+            ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
+        }
+    }
+
     fn draw_viewport(&mut self, ui: &mut egui::Ui) {
+        self.handle_in_progress_object_keyboard(ui);
+
         let (response, painter) =
             ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
         let viewport = response.rect;
@@ -1741,6 +1793,7 @@ impl App {
                     );
                 }
             }
+            let mut commit_committed_dim = false;
             if let (Some(layouts), Some(view)) = (&committed_dim_layouts, planar_label_view) {
                 draw_committed_dim_layouts(&painter, layouts, &view, &project);
                 if let Some(edit) = &mut self.state.editing_committed_dim {
@@ -1749,11 +1802,12 @@ impl App {
                         let id = egui::Id::new(("committed_dim", format!("{:?}", edit.target)));
                         let input_layout =
                             dim_input_layout_centered_on(layout.label_rect, &edit.text);
+                        let mut commit_dim = false;
                         egui::Area::new(egui::Id::new(("committed_dim_area", format!("{:?}", edit.target))))
                             .fixed_pos(input_layout.pos)
                             .order(egui::Order::Foreground)
                             .show(ctx, |ui| {
-                                if show_sketch_dimension_field(
+                                let result = show_sketch_dimension_field(
                                     ui,
                                     ctx,
                                     id,
@@ -1762,10 +1816,20 @@ impl App {
                                     true,
                                     &mut edit.pending_focus,
                                     true,
-                                ) {}
+                                );
+                                commit_dim = result.enter_commit;
                             });
+                        let dim_focused = ctx.memory(|m| m.focused()) == Some(id);
                         if edit.pending_focus {
                             ctx.memory_mut(|m| m.request_focus(id));
+                        }
+                        commit_committed_dim = should_commit_sketch_on_enter(
+                            commit_dim,
+                            dim_focused,
+                            sketch_dimension_enter_pressed(ui),
+                        );
+                        if commit_committed_dim && !commit_dim {
+                            consume_sketch_dimension_enter(ui);
                         }
                         match edit.target {
                             DimLabelTarget::RectWidth { index }
@@ -1814,6 +1878,9 @@ impl App {
                         }
                     }
                 }
+            }
+            if commit_committed_dim {
+                self.state.apply(Action::CommitCommittedDim);
             }
         } else {
             self.dim_label_drag = None;
@@ -1953,11 +2020,12 @@ impl App {
                 let id_w = egui::Id::new("cr_width");
                 let id_h = egui::Id::new("cr_height");
 
+                let mut commit_rect = false;
                 egui::Area::new(egui::Id::new("cr_width_area"))
                     .fixed_pos(width_layout.pos)
                     .order(egui::Order::Foreground)
                     .show(ctx, |ui| {
-                        if show_sketch_dimension_field(
+                        let result = show_sketch_dimension_field(
                             ui,
                             ctx,
                             id_w,
@@ -1966,8 +2034,12 @@ impl App {
                             cr.focused == 0,
                             &mut cr.pending_focus,
                             cr.user_edited[0],
-                        ) {
+                        );
+                        if result.changed {
                             cr.user_edited[0] = true;
+                        }
+                        if result.enter_commit {
+                            commit_rect = true;
                         }
                     });
 
@@ -1975,7 +2047,7 @@ impl App {
                     .fixed_pos(height_layout.pos)
                     .order(egui::Order::Foreground)
                     .show(ctx, |ui| {
-                        if show_sketch_dimension_field(
+                        let result = show_sketch_dimension_field(
                             ui,
                             ctx,
                             id_h,
@@ -1984,8 +2056,12 @@ impl App {
                             cr.focused == 1,
                             &mut cr.pending_focus,
                             cr.user_edited[1],
-                        ) {
+                        );
+                        if result.changed {
                             cr.user_edited[1] = true;
+                        }
+                        if result.enter_commit {
+                            commit_rect = true;
                         }
                     });
 
@@ -1997,6 +2073,19 @@ impl App {
                 } else if cr.pending_focus {
                     let target_id = if cr.focused == 0 { id_w } else { id_h };
                     ctx.memory_mut(|m| m.request_focus(target_id));
+                }
+
+                let dim_field_focused =
+                    current == Some(id_w) || current == Some(id_h);
+                if should_commit_sketch_on_enter(
+                    commit_rect,
+                    dim_field_focused,
+                    sketch_dimension_enter_pressed(ui),
+                ) {
+                    if !commit_rect {
+                        consume_sketch_dimension_enter(ui);
+                    }
+                    self.state.apply(Action::CommitRectangle);
                 }
 
                 if let Some(edge) = current
@@ -2030,30 +2119,50 @@ impl App {
             let end = cl.end_point(&frame, &self.state.doc);
             if let (Some(pa), Some(pb)) = (project(cl.origin), project(end)) {
                 let layout = line_dim_layout(pa, pb, &cl.text);
-                let ctx = ui.ctx();
                 let id_len = egui::Id::new("cl_length");
 
-                egui::Area::new(egui::Id::new("cl_length_area"))
-                    .fixed_pos(layout.pos)
-                    .order(egui::Order::Foreground)
-                    .show(ctx, |ui| {
-                        if show_sketch_dimension_field(
-                            ui,
-                            ctx,
-                            id_len,
-                            &mut cl.text,
-                            &self.state.doc,
-                            true,
-                            &mut cl.pending_focus,
-                            cl.user_edited,
-                        ) {
-                            cl.user_edited = true;
-                        }
-                    });
+                let mut commit_line = false;
+                {
+                    let ctx = ui.ctx();
+                    egui::Area::new(egui::Id::new("cl_length_area"))
+                        .fixed_pos(layout.pos)
+                        .order(egui::Order::Foreground)
+                        .show(ctx, |ui| {
+                            let result = show_sketch_dimension_field(
+                                ui,
+                                ctx,
+                                id_len,
+                                &mut cl.text,
+                                &self.state.doc,
+                                true,
+                                &mut cl.pending_focus,
+                                cl.user_edited,
+                            );
+                            if result.changed {
+                                cl.user_edited = true;
+                            }
+                            commit_line = result.enter_commit;
+                        });
+                }
 
-                let length_focused = ctx.memory(|m| m.focused()) == Some(id_len);
-                if !length_focused && cl.pending_focus {
-                    ctx.memory_mut(|m| m.request_focus(id_len));
+                let length_focused = {
+                    let ctx = ui.ctx();
+                    let focused = ctx.memory(|m| m.focused()) == Some(id_len);
+                    if !focused && cl.pending_focus {
+                        ctx.memory_mut(|m| m.request_focus(id_len));
+                    }
+                    focused
+                };
+                let commit_line_now = should_commit_sketch_on_enter(
+                    commit_line,
+                    length_focused,
+                    sketch_dimension_enter_pressed(ui),
+                );
+                if commit_line_now {
+                    if !commit_line {
+                        consume_sketch_dimension_enter(ui);
+                    }
+                    self.state.apply(Action::CommitLine);
                 } else if length_focused {
                     draw_world_segment(
                         &painter,
@@ -2081,11 +2190,12 @@ impl App {
                 let id_offset = egui::Id::new("cp_offset");
                 let id_angle = egui::Id::new("cp_angle");
 
+                let mut commit_plane = false;
                 egui::Area::new(egui::Id::new("cp_offset_area"))
                     .fixed_pos(offset_layout.pos)
                     .order(egui::Order::Foreground)
                     .show(ctx, |ui| {
-                        if show_sketch_dimension_field(
+                        let result = show_sketch_dimension_field(
                             ui,
                             ctx,
                             id_offset,
@@ -2094,8 +2204,12 @@ impl App {
                             cp.focused == PlaneDim::Offset,
                             &mut cp.pending_focus,
                             cp.user_edited_offset,
-                        ) {
+                        );
+                        if result.changed {
                             cp.user_edited_offset = true;
+                        }
+                        if result.enter_commit {
+                            commit_plane = true;
                         }
                     });
 
@@ -2104,7 +2218,7 @@ impl App {
                         .fixed_pos(angle_layout.pos)
                         .order(egui::Order::Foreground)
                         .show(ctx, |ui| {
-                            if show_sketch_dimension_field(
+                            let result = show_sketch_dimension_field(
                                 ui,
                                 ctx,
                                 id_angle,
@@ -2113,8 +2227,12 @@ impl App {
                                 cp.focused == PlaneDim::Angle,
                                 &mut cp.pending_focus,
                                 cp.user_edited_angle,
-                            ) {
+                            );
+                            if result.changed {
                                 cp.user_edited_angle = true;
+                            }
+                            if result.enter_commit {
+                                commit_plane = true;
                             }
                         });
                 }
@@ -2131,6 +2249,19 @@ impl App {
                         id_angle
                     };
                     ctx.memory_mut(|m| m.request_focus(target_id));
+                }
+
+                let dim_field_focused =
+                    current == Some(id_offset) || current == Some(id_angle);
+                if should_commit_sketch_on_enter(
+                    commit_plane,
+                    dim_field_focused,
+                    sketch_dimension_enter_pressed(ui),
+                ) {
+                    if !commit_plane {
+                        consume_sketch_dimension_enter(ui);
+                    }
+                    self.state.apply(Action::CommitConstructionPlane);
                 }
 
                 draw_construction_plane(
@@ -2745,6 +2876,29 @@ mod tests {
             pb,
             layout.rect.expand(DIM_LABEL_GAP)
         ));
+    }
+
+    #[test]
+    fn should_commit_sketch_on_enter_focused_field_or_unfocused_viewport() {
+        use super::should_commit_sketch_on_enter;
+        assert!(should_commit_sketch_on_enter(true, true, false));
+        assert!(should_commit_sketch_on_enter(false, false, true));
+        assert!(!should_commit_sketch_on_enter(false, true, true));
+        assert!(!should_commit_sketch_on_enter(false, false, false));
+    }
+
+    #[test]
+    fn next_rect_focus_axis_toggles_width_and_height() {
+        use super::{next_rect_focus_axis, RectAxis};
+        assert_eq!(next_rect_focus_axis(0), RectAxis::Height);
+        assert_eq!(next_rect_focus_axis(1), RectAxis::Width);
+    }
+
+    #[test]
+    fn next_plane_focus_dim_toggles_offset_and_angle() {
+        use super::{next_plane_focus_dim, PlaneDim};
+        assert_eq!(next_plane_focus_dim(PlaneDim::Offset), PlaneDim::Angle);
+        assert_eq!(next_plane_focus_dim(PlaneDim::Angle), PlaneDim::Offset);
     }
 
     #[test]
