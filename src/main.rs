@@ -39,6 +39,7 @@ mod lua_script;
 mod script;
 mod selection;
 mod shortcuts;
+mod sketch_solver;
 mod stl;
 mod storage;
 mod theme;
@@ -47,10 +48,9 @@ mod vertex_drag;
 mod view_cube;
 
 use actions::{
-    constraint_is_angle, constraint_is_circle_diameter, Action, AppState, CreatingCircle,
-    CreatingConstructionPlane,
-    CreatingLine, CreatingRect, DimEditTarget, DimLabelTarget, Pane, RectAxis, SketchSession,
-    Tool,
+    angle_gizmo_constraint_for_edit, constraint_is_angle, constraint_is_circle_diameter, Action,
+    AppState, CreatingCircle, CreatingConstructionPlane, CreatingLine, CreatingRect,
+    DimEditTarget, DimLabelTarget, Pane, RectAxis, SketchSession, Tool,
 };
 use constraint_viewport::{
     build_constraint_icon_hits, draw_constraint_connectors, draw_constraint_icons,
@@ -502,12 +502,12 @@ impl App {
 
             if self.state.tool == Tool::Constraint {
                 for (key, egui_key) in [
-                    ('a', egui::Key::A),
-                    ('e', egui::Key::E),
-                    ('i', egui::Key::I),
-                    ('m', egui::Key::M),
-                    ('v', egui::Key::V),
-                    ('h', egui::Key::H),
+                    ('1', egui::Key::Num1),
+                    ('2', egui::Key::Num2),
+                    ('3', egui::Key::Num3),
+                    ('4', egui::Key::Num4),
+                    ('5', egui::Key::Num5),
+                    ('6', egui::Key::Num6),
                 ] {
                     if ctx.input(|i| i.key_pressed(egui_key)) {
                         self.state.apply(Action::ApplyConstraintShortcut(key));
@@ -2098,6 +2098,7 @@ fn draw_committed_dim_layouts<Project>(
     label_view: &PlanarLabelView,
     project: &Project,
     health: &document_health::DocumentHealth,
+    angle_gizmo_constraint: Option<DimLabelTarget>,
     hovered_angle_gizmo: Option<DimLabelTarget>,
 ) where
     Project: Fn(Vec3) -> Option<egui::Pos2>,
@@ -2111,7 +2112,8 @@ fn draw_committed_dim_layouts<Project>(
         if let (Some(arc_geom), Some(display)) =
             (&layout.arc_geom, layout.angle_display.as_ref())
         {
-            let gizmo_hovered = hovered_angle_gizmo == Some(layout.target);
+            let show_gizmo = angle_gizmo_constraint == Some(layout.target);
+            let gizmo_hovered = show_gizmo && hovered_angle_gizmo == Some(layout.target);
             draw_angle_constraint_annotation(
                 painter,
                 project,
@@ -2121,6 +2123,7 @@ fn draw_committed_dim_layouts<Project>(
                 &layout.label,
                 color,
                 layout.angle_radius_world,
+                show_gizmo,
                 gizmo_hovered,
             );
         } else {
@@ -2139,12 +2142,66 @@ fn angle_gizmo_hit_target(
     layouts: &[CommittedDimLayout],
     pointer: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    angle_gizmo_constraint: Option<DimLabelTarget>,
 ) -> Option<DimLabelTarget> {
+    let active = angle_gizmo_constraint?;
     layouts.iter().rev().find_map(|layout| {
+        if layout.target != active {
+            return None;
+        }
         let display = layout.angle_display.as_ref()?;
         let handle = angle_gizmo_handle_world(display, layout.angle_radius_world);
         angle_gizmo_handle_hit(pointer, project, handle).then_some(layout.target)
     })
+}
+
+fn draw_angle_dim_for_lines<Project>(
+    painter: &egui::Painter,
+    project: &Project,
+    frame: &face::SketchFrame,
+    doc: &model::Document,
+    line_a: model::ConstraintLine,
+    line_b: model::ConstraintLine,
+    dim_offset: Option<f32>,
+    label: &str,
+    show_gizmo: bool,
+    gizmo_hovered: bool,
+) where
+    Project: Fn(Vec3) -> Option<egui::Pos2>,
+{
+    let Some(display) = angle_constraint_display(doc, line_a, line_b) else {
+        return;
+    };
+    let pixel_offset = effective_arc_dim_offset(dim_offset);
+    let radius_world =
+        pixels_to_world_distance(&project, display.center, display.dir_a, pixel_offset);
+    let label_outset_world =
+        pixels_to_world_distance(&project, display.center, display.dir_a, LABEL_OUTSET);
+    let Some(world_geom) = arc_dimension_world_geom(
+        display.center,
+        display.dir_a,
+        display.dir_b,
+        frame.normal,
+        radius_world,
+        label_outset_world,
+    ) else {
+        return;
+    };
+    let Some(arc_geom) = project_arc_dimension_geom(&world_geom, &project) else {
+        return;
+    };
+    draw_angle_constraint_annotation(
+        painter,
+        project,
+        &display,
+        frame.normal,
+        &arc_geom,
+        label,
+        col::DIM_ANNOTATION,
+        radius_world,
+        show_gizmo,
+        gizmo_hovered,
+    );
 }
 
 fn pointer_over_committed_dim_label(
@@ -2346,8 +2403,9 @@ fn handle_angle_gizmo_drag(
     viewport: egui::Rect,
     vp: &glam::Mat4,
     cam: &camera::Camera,
+    angle_gizmo_constraint: DimLabelTarget,
 ) -> bool {
-    if !state.can_edit_sketch_dimensions() || state.editing_committed_dim.is_some() {
+    if !state.can_edit_sketch_dimensions() || state.editing_committed_dim.is_none() {
         return false;
     }
     let pointer = ui.input(|i| i.pointer.hover_pos());
@@ -2392,7 +2450,9 @@ fn handle_angle_gizmo_drag(
     if primary_pressed {
         if let Some(pos) = pointer {
             let project = |w: glam::Vec3| cam.project(w, viewport, vp);
-            if let Some(target) = angle_gizmo_hit_target(layouts, pos, &project) {
+            if let Some(target) =
+                angle_gizmo_hit_target(layouts, pos, &project, Some(angle_gizmo_constraint))
+            {
                 if document_health::require_constraint_editable(
                     &state.document_health,
                     &state.doc,
@@ -2661,6 +2721,13 @@ impl App {
             || response.dragged_by(egui::PointerButton::Secondary);
         let pointer_screen = viewport_pointer_pos(&response, viewport_owns_pointer);
         let layouts_slice = committed_dim_layouts.as_deref().unwrap_or(&[]);
+        let angle_gizmo_constraint = angle_gizmo_constraint_for_edit(
+            self.state.editing_committed_dim.as_ref(),
+            &self.state.doc,
+        );
+        if angle_gizmo_constraint.is_none() {
+            self.angle_gizmo_drag = None;
+        }
         let angle_dim_constraints: HashSet<usize> = layouts_slice
             .iter()
             .filter(|layout| layout.arc_geom.is_some())
@@ -2686,7 +2753,9 @@ impl App {
             self.angle_gizmo_drag = None;
         }
         let mut angle_gizmo_dragging = false;
-        if let Some(session) = sketch_session {
+        if let (Some(session), Some(active_gizmo)) =
+            (sketch_session, angle_gizmo_constraint)
+        {
             angle_gizmo_dragging = handle_angle_gizmo_drag(
                 ui,
                 layouts_slice,
@@ -2696,6 +2765,7 @@ impl App {
                 viewport,
                 &vp,
                 &cam,
+                active_gizmo,
             );
         }
         if angle_gizmo_dragging {
@@ -2725,7 +2795,14 @@ impl App {
             set_viewport_cursor(ui.ctx(), &response, false, egui::CursorIcon::PointingHand);
         } else if let Some(pp) = pointer_screen {
             let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
-            if angle_gizmo_hit_target(layouts_slice, pp, &project).is_some() {
+            if angle_gizmo_hit_target(
+                layouts_slice,
+                pp,
+                &project,
+                angle_gizmo_constraint,
+            )
+            .is_some()
+            {
                 set_viewport_cursor(ui.ctx(), &response, false, egui::CursorIcon::Grab);
             }
         }
@@ -3531,9 +3608,16 @@ impl App {
         if sketch_session.is_some() {
             let mut commit_committed_dim = false;
             if let (Some(layouts), Some(view)) = (&committed_dim_layouts, planar_label_view) {
-                let hovered_angle_gizmo = pointer_screen.and_then(|pp| {
-                    angle_gizmo_hit_target(layouts, pp, &project)
-                }).or(self.angle_gizmo_drag.map(|d| d.constraint_id));
+                let hovered_angle_gizmo = pointer_screen
+                    .and_then(|pp| {
+                        angle_gizmo_hit_target(
+                            layouts,
+                            pp,
+                            &project,
+                            angle_gizmo_constraint,
+                        )
+                    })
+                    .or(self.angle_gizmo_drag.map(|d| d.constraint_id));
                 if !gpu_drawn {
                     draw_committed_dim_layouts(
                         &painter,
@@ -3541,6 +3625,7 @@ impl App {
                         &view,
                         &project,
                         &self.state.document_health,
+                        angle_gizmo_constraint,
                         hovered_angle_gizmo,
                     );
                 } else {
@@ -3556,11 +3641,13 @@ impl App {
                             &view,
                             &project,
                             &self.state.document_health,
+                            angle_gizmo_constraint,
                             hovered_angle_gizmo,
                         );
                     }
                 }
                 if let Some(edit) = &mut self.state.editing_committed_dim {
+                    let is_angle = edit.target.is_angle(&self.state.doc);
                     let constraint_id = match &edit.target {
                         DimEditTarget::Constraint(id) => Some(*id),
                         DimEditTarget::New(_) => None,
@@ -3603,7 +3690,6 @@ impl App {
                         let mut commit_dim = false;
                         let mut dim_field_result = SketchDimFieldResult::default();
                         let doc = &mut self.state.doc;
-                        let is_angle = edit.target.is_angle(doc);
                         egui::Area::new(egui::Id::new((
                             "committed_dim_area",
                             format!("{:?}", edit.target),
@@ -3650,6 +3736,31 @@ impl App {
                                 col::DIM_EDGE_HIGHLIGHT,
                                 3.5,
                             );
+                        }
+                    }
+                    if is_angle && matches!(&edit.target, DimEditTarget::New(_)) {
+                        if let Some(frame) = sketch_session
+                            .and_then(|s| sketch_geometry_frame(&self.state.doc, s.sketch))
+                        {
+                            if let Some(model::DimensionTarget::Angle {
+                                line_a,
+                                line_b,
+                                rotation_sign: _,
+                            }) = edit.target.dimension_target(&self.state.doc)
+                            {
+                                draw_angle_dim_for_lines(
+                                    &painter,
+                                    &project,
+                                    &frame,
+                                    &self.state.doc,
+                                    line_a,
+                                    line_b,
+                                    None,
+                                    &edit.text,
+                                    true,
+                                    false,
+                                );
+                            }
                         }
                     }
                 }

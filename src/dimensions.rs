@@ -904,6 +904,7 @@ pub fn draw_angle_constraint_annotation<Project>(
     label: &str,
     color: Color32,
     radius_world: f32,
+    show_gizmo: bool,
     gizmo_hovered: bool,
 ) -> Rect
 where
@@ -929,17 +930,19 @@ where
             LINE_WIDTH,
         );
     }
-    draw_sketch_angle_gizmo(
-        painter,
-        project,
-        display.center,
-        display.dir_a,
-        plane_normal,
-        radius_world,
-        display.dir_b,
-        color,
-        gizmo_hovered,
-    );
+    if show_gizmo {
+        draw_sketch_angle_gizmo(
+            painter,
+            project,
+            display.center,
+            display.dir_a,
+            plane_normal,
+            radius_world,
+            display.dir_b,
+            color,
+            gizmo_hovered,
+        );
+    }
     draw_arc_dimension(painter, arc_geom, label, color)
 }
 

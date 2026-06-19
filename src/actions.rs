@@ -404,7 +404,7 @@ pub enum Action {
     FocusElementName,
     /// Apply a geometric constraint type to the current selection (constraint tool).
     AddGeometricConstraint(crate::geometric_constraints::GeometricConstraintType),
-    /// Apply the enabled constraint matching a fixed shortcut key (A/E/I/M/V/H).
+    /// Apply the enabled constraint matching a fixed shortcut key (1–6).
     ApplyConstraintShortcut(char),
     /// Move a sketch vertex to local `(u, v)` while satisfying constraints.
     DragVertex {
@@ -671,6 +671,21 @@ impl DimEditTarget {
             self.dimension_target(doc),
             Some(DimensionTarget::Angle { .. })
         )
+    }
+}
+
+/// Committed angle constraint whose gizmo should be visible while its text field is open.
+pub fn angle_gizmo_constraint_for_edit(
+    edit: Option<&EditingCommittedDim>,
+    doc: &Document,
+) -> Option<ConstraintId> {
+    let edit = edit?;
+    if !edit.target.is_angle(doc) {
+        return None;
+    }
+    match edit.target {
+        DimEditTarget::Constraint(id) => Some(id),
+        DimEditTarget::New(_) => None,
     }
 }
 
@@ -2785,7 +2800,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_constraint_shortcut_a_adds_parallel() {
+    fn apply_constraint_shortcut_1_adds_parallel() {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
         state.tool = Tool::Constraint;
@@ -2805,7 +2820,7 @@ mod tests {
             element: SceneElement::Line(1),
             additive: true,
         });
-        state.apply(Action::ApplyConstraintShortcut('a'));
+        state.apply(Action::ApplyConstraintShortcut('1'));
         assert_eq!(state.doc.constraints.len(), 1);
         assert!(matches!(
             state.doc.constraints[0].kind,
@@ -3121,6 +3136,54 @@ mod tests {
         assert_eq!(
             state.editing_committed_dim.as_ref().unwrap().target,
             DimEditTarget::New(DimensionTarget::Distance(DistanceTarget::RectHeight(0)))
+        );
+    }
+
+    #[test]
+    fn angle_gizmo_constraint_only_while_editing_committed_angle() {
+        use crate::model::{ConstraintLine, DimensionTarget};
+
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state.doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0));
+        state.doc.shape_order.push(ShapeKind::Line);
+        state.doc.shape_order.push(ShapeKind::Line);
+        crate::constraints::add_angle_constraint(
+            &mut state.doc,
+            sketch,
+            ConstraintLine::Line(0),
+            ConstraintLine::Line(1),
+            "90deg".to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            angle_gizmo_constraint_for_edit(state.editing_committed_dim.as_ref(), &state.doc),
+            None
+        );
+        state.editing_committed_dim = Some(EditingCommittedDim {
+            target: DimEditTarget::Constraint(0),
+            text: "90deg".to_string(),
+            pending_focus: true,
+        });
+        assert_eq!(
+            angle_gizmo_constraint_for_edit(state.editing_committed_dim.as_ref(), &state.doc),
+            Some(0)
+        );
+        state.editing_committed_dim = Some(EditingCommittedDim {
+            target: DimEditTarget::New(DimensionTarget::Angle {
+                line_a: ConstraintLine::Line(0),
+                line_b: ConstraintLine::Line(1),
+                rotation_sign: 1,
+            }),
+            text: "45deg".to_string(),
+            pending_focus: true,
+        });
+        assert_eq!(
+            angle_gizmo_constraint_for_edit(state.editing_committed_dim.as_ref(), &state.doc),
+            None
         );
     }
 

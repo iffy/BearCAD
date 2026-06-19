@@ -45,23 +45,23 @@ impl GeometricConstraintType {
     /// Fixed context-pane shortcut (shown left of the constraint button).
     pub fn shortcut_label(self) -> &'static str {
         match self {
-            Self::Parallel => "A",
-            Self::Perpendicular => "E",
-            Self::Coincident => "I",
-            Self::Midpoint => "M",
-            Self::Vertical => "V",
-            Self::Horizontal => "H",
+            Self::Parallel => "1",
+            Self::Perpendicular => "2",
+            Self::Coincident => "3",
+            Self::Midpoint => "4",
+            Self::Vertical => "5",
+            Self::Horizontal => "6",
         }
     }
 
     pub fn from_shortcut_key(key: char) -> Option<Self> {
-        match key.to_ascii_lowercase() {
-            'a' => Some(Self::Parallel),
-            'e' => Some(Self::Perpendicular),
-            'i' => Some(Self::Coincident),
-            'm' => Some(Self::Midpoint),
-            'v' => Some(Self::Vertical),
-            'h' => Some(Self::Horizontal),
+        match key {
+            '1' => Some(Self::Parallel),
+            '2' => Some(Self::Perpendicular),
+            '3' => Some(Self::Coincident),
+            '4' => Some(Self::Midpoint),
+            '5' => Some(Self::Vertical),
+            '6' => Some(Self::Horizontal),
             _ => None,
         }
     }
@@ -559,29 +559,100 @@ pub fn apply_geometric_constraints_with_pins(
     const MAX_PASSES: usize = 8;
     for _ in 0..MAX_PASSES {
         for kind in &orientation {
-            let _ = apply_constraint_kind(doc, *kind);
+            let _ = apply_constraint_kind(doc, *kind, pins);
             restore_constraint_pins(doc, pins)?;
         }
         for kind in &midpoint {
-            let _ = apply_constraint_kind(doc, *kind);
+            let _ = apply_constraint_kind(doc, *kind, pins);
             restore_constraint_pins(doc, pins)?;
         }
         for kind in &coincident {
-            let _ = apply_constraint_kind(doc, *kind);
+            let _ = apply_constraint_kind(doc, *kind, pins);
             restore_constraint_pins(doc, pins)?;
         }
     }
     Ok(())
 }
 
-fn apply_constraint_kind(doc: &mut Document, kind: ConstraintKind) -> Result<(), String> {
+fn is_point_pinned(point: ConstraintPoint, pins: &[(ConstraintPoint, (f32, f32))]) -> bool {
+    pins.iter().any(|(pinned, _)| *pinned == point)
+}
+
+fn constraint_line_endpoints(line: ConstraintLine) -> (ConstraintPoint, ConstraintPoint) {
+    match line {
+        ConstraintLine::Line(index) => (
+            ConstraintPoint::LineEndpoint {
+                line: index,
+                end: LineEnd::Start,
+            },
+            ConstraintPoint::LineEndpoint {
+                line: index,
+                end: LineEnd::End,
+            },
+        ),
+        ConstraintLine::RectEdge { rect, edge } => {
+            let (c0, c1) = edge.corner_indices();
+            (
+                ConstraintPoint::RectCorner { rect, corner: c0 },
+                ConstraintPoint::RectCorner { rect, corner: c1 },
+            )
+        }
+    }
+}
+
+/// Reorient a line to direction `(dir_u, dir_v)` while keeping drag-pinned endpoints fixed.
+fn orient_line_with_pins(
+    doc: &mut Document,
+    movable: ConstraintLine,
+    dir_u: f32,
+    dir_v: f32,
+    pins: &[(ConstraintPoint, (f32, f32))],
+) -> Result<(), String> {
+    let ((bx0, by0), (bx1, by1)) = line_uv_endpoints(doc, movable)?;
+    let bdu = bx1 - bx0;
+    let bdv = by1 - by0;
+    let blen = (bdu * bdu + bdv * bdv).sqrt();
+    if blen < 1e-6 {
+        return Err("Constrained line has zero length".to_string());
+    }
+    let len = (dir_u * dir_u + dir_v * dir_v).sqrt();
+    if len < 1e-6 {
+        return Err("Direction has zero length".to_string());
+    }
+    let du = dir_u / len;
+    let dv = dir_v / len;
+    let (start, end) = constraint_line_endpoints(movable);
+    let start_pinned = is_point_pinned(start, pins);
+    let end_pinned = is_point_pinned(end, pins);
+    if end_pinned && !start_pinned {
+        set_line_uv_endpoints(
+            doc,
+            movable,
+            (bx1 - du * blen, by1 - dv * blen),
+            (bx1, by1),
+        )
+    } else {
+        set_line_uv_endpoints(
+            doc,
+            movable,
+            (bx0, by0),
+            (bx0 + du * blen, by0 + dv * blen),
+        )
+    }
+}
+
+fn apply_constraint_kind(
+    doc: &mut Document,
+    kind: ConstraintKind,
+    pins: &[(ConstraintPoint, (f32, f32))],
+) -> Result<(), String> {
     match kind {
         ConstraintKind::Distance { .. } => Ok(()),
-        ConstraintKind::Horizontal { line } => apply_horizontal(doc, line),
-        ConstraintKind::Vertical { line } => apply_vertical(doc, line),
-        ConstraintKind::Parallel { line_a, line_b } => apply_parallel(doc, line_a, line_b),
+        ConstraintKind::Horizontal { line } => apply_horizontal(doc, line, pins),
+        ConstraintKind::Vertical { line } => apply_vertical(doc, line, pins),
+        ConstraintKind::Parallel { line_a, line_b } => apply_parallel(doc, line_a, line_b, pins),
         ConstraintKind::Perpendicular { line_a, line_b } => {
-            apply_perpendicular(doc, line_a, line_b)
+            apply_perpendicular(doc, line_a, line_b, pins)
         }
         ConstraintKind::Coincident { a, b } => apply_coincident(doc, a, b),
         ConstraintKind::Midpoint { point, line } => apply_midpoint(doc, point, line),
@@ -589,69 +660,62 @@ fn apply_constraint_kind(doc: &mut Document, kind: ConstraintKind) -> Result<(),
     }
 }
 
-fn apply_horizontal(doc: &mut Document, line: ConstraintLine) -> Result<(), String> {
-    let ((x0, y0), (x1, _y1)) = line_uv_endpoints(doc, line)?;
-    set_line_uv_endpoints(doc, line, (x0, y0), (x1, y0))
+fn apply_horizontal(
+    doc: &mut Document,
+    line: ConstraintLine,
+    pins: &[(ConstraintPoint, (f32, f32))],
+) -> Result<(), String> {
+    let ((x0, y0), (x1, y1)) = line_uv_endpoints(doc, line)?;
+    let (start, end) = constraint_line_endpoints(line);
+    if is_point_pinned(end, pins) && !is_point_pinned(start, pins) {
+        set_line_uv_endpoints(doc, line, (x0, y1), (x1, y1))
+    } else {
+        set_line_uv_endpoints(doc, line, (x0, y0), (x1, y0))
+    }
 }
 
-fn apply_vertical(doc: &mut Document, line: ConstraintLine) -> Result<(), String> {
-    let ((x0, y0), (_x1, y1)) = line_uv_endpoints(doc, line)?;
-    set_line_uv_endpoints(doc, line, (x0, y0), (x0, y1))
+fn apply_vertical(
+    doc: &mut Document,
+    line: ConstraintLine,
+    pins: &[(ConstraintPoint, (f32, f32))],
+) -> Result<(), String> {
+    let ((x0, y0), (x1, y1)) = line_uv_endpoints(doc, line)?;
+    let (start, end) = constraint_line_endpoints(line);
+    if is_point_pinned(end, pins) && !is_point_pinned(start, pins) {
+        set_line_uv_endpoints(doc, line, (x1, y0), (x1, y1))
+    } else {
+        set_line_uv_endpoints(doc, line, (x0, y0), (x0, y1))
+    }
 }
 
-fn apply_parallel(doc: &mut Document, line_a: ConstraintLine, line_b: ConstraintLine) -> Result<(), String> {
+fn apply_parallel(
+    doc: &mut Document,
+    line_a: ConstraintLine,
+    line_b: ConstraintLine,
+    pins: &[(ConstraintPoint, (f32, f32))],
+) -> Result<(), String> {
     let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
     let ((ax0, ay0), (ax1, ay1)) = line_uv_endpoints(doc, reference)?;
-    let ((bx0, by0), (bx1, by1)) = line_uv_endpoints(doc, movable)?;
     let du = ax1 - ax0;
     let dv = ay1 - ay0;
-    let len = (du * du + dv * dv).sqrt();
-    if len < 1e-6 {
-        return Err("Reference line has zero length".to_string());
-    }
-    let bdu = bx1 - bx0;
-    let bdv = by1 - by0;
-    let blen = (bdu * bdu + bdv * bdv).sqrt();
-    if blen < 1e-6 {
-        return Err("Constrained line has zero length".to_string());
-    }
-    let scale = blen / len;
-    set_line_uv_endpoints(
-        doc,
-        movable,
-        (bx0, by0),
-        (bx0 + du * scale, by0 + dv * scale),
-    )
+    orient_line_with_pins(doc, movable, du, dv, pins)
 }
 
 fn apply_perpendicular(
     doc: &mut Document,
     line_a: ConstraintLine,
     line_b: ConstraintLine,
+    pins: &[(ConstraintPoint, (f32, f32))],
 ) -> Result<(), String> {
     let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
     let ((ax0, ay0), (ax1, ay1)) = line_uv_endpoints(doc, reference)?;
-    let ((bx0, by0), (bx1, by1)) = line_uv_endpoints(doc, movable)?;
     let du = ax1 - ax0;
     let dv = ay1 - ay0;
     let len = (du * du + dv * dv).sqrt();
     if len < 1e-6 {
         return Err("Reference line has zero length".to_string());
     }
-    let perp_u = -dv / len;
-    let perp_v = du / len;
-    let bdu = bx1 - bx0;
-    let bdv = by1 - by0;
-    let blen = (bdu * bdu + bdv * bdv).sqrt();
-    if blen < 1e-6 {
-        return Err("Constrained line has zero length".to_string());
-    }
-    set_line_uv_endpoints(
-        doc,
-        movable,
-        (bx0, by0),
-        (bx0 + perp_u * blen, by0 + perp_v * blen),
-    )
+    orient_line_with_pins(doc, movable, -dv, du, pins)
 }
 
 /// Prefer moving sketch lines over rectangle edges when one side of the pair is fixed.
@@ -1024,13 +1088,13 @@ mod tests {
 
     #[test]
     fn constraint_shortcut_keys_are_fixed_per_type() {
-        assert_eq!(GeometricConstraintType::Parallel.shortcut_label(), "A");
+        assert_eq!(GeometricConstraintType::Parallel.shortcut_label(), "1");
         assert_eq!(
-            GeometricConstraintType::from_shortcut_key('a'),
+            GeometricConstraintType::from_shortcut_key('1'),
             Some(GeometricConstraintType::Parallel)
         );
         assert_eq!(
-            GeometricConstraintType::from_shortcut_key('H'),
+            GeometricConstraintType::from_shortcut_key('6'),
             Some(GeometricConstraintType::Horizontal)
         );
         assert!(GeometricConstraintType::from_shortcut_key('q').is_none());
@@ -1054,11 +1118,11 @@ mod tests {
         assert!(by_kind[&GeometricConstraintType::Vertical].enabled);
         assert!(by_kind[&GeometricConstraintType::Horizontal].enabled);
         assert_eq!(
-            enabled_constraint_for_key(&rows, 'v'),
+            enabled_constraint_for_key(&rows, '5'),
             Some(GeometricConstraintType::Vertical)
         );
         assert_eq!(
-            enabled_constraint_for_key(&rows, 'h'),
+            enabled_constraint_for_key(&rows, '6'),
             Some(GeometricConstraintType::Horizontal)
         );
         assert_eq!(sole_enabled_constraint_type(&rows), None);
@@ -1085,13 +1149,13 @@ mod tests {
         assert_eq!(rows[0].kind, GeometricConstraintType::Coincident);
         assert!(rows[0].enabled);
         assert_eq!(
-            enabled_constraint_for_key(&rows, 'i'),
+            enabled_constraint_for_key(&rows, '3'),
             Some(GeometricConstraintType::Coincident)
         );
         assert_eq!(rows[1].kind, GeometricConstraintType::Midpoint);
         assert!(rows[1].enabled);
         assert_eq!(
-            enabled_constraint_for_key(&rows, 'm'),
+            enabled_constraint_for_key(&rows, '4'),
             Some(GeometricConstraintType::Midpoint)
         );
         assert_eq!(sole_enabled_constraint_type(&rows), None);
@@ -1122,7 +1186,7 @@ mod tests {
         assert_eq!(rows[0].kind, GeometricConstraintType::Coincident);
         assert_eq!(sole_enabled_constraint_type(&rows), Some(GeometricConstraintType::Coincident));
         assert_eq!(
-            enabled_constraint_for_key(&rows, 'i'),
+            enabled_constraint_for_key(&rows, '3'),
             Some(GeometricConstraintType::Coincident)
         );
         let _ = doc;

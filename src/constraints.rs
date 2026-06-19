@@ -829,6 +829,21 @@ pub fn solve_document_constraints(doc: &mut Document) -> Result<(), String> {
     solve_document_constraints_with_pins(doc, &[])
 }
 
+fn distance_target_moves_pinned_point(
+    target: DistanceTarget,
+    pins: &[(ConstraintPoint, (f32, f32))],
+) -> bool {
+    if pins.is_empty() {
+        return false;
+    }
+    let pinned = |point: ConstraintPoint| pins.iter().any(|(p, _)| *p == point);
+    match target {
+        DistanceTarget::PointLineDistance { point, .. }
+        | DistanceTarget::PointPointDistance { mover: point, .. } => pinned(point),
+        _ => false,
+    }
+}
+
 /// Apply all constraints while keeping pinned sketch points fixed (used during vertex/line drag).
 pub fn solve_document_constraints_with_pins(
     doc: &mut Document,
@@ -844,6 +859,9 @@ pub fn solve_document_constraints_with_pins(
         }
         if let ConstraintKind::Distance { target } = constraint.kind {
             if !crate::document_lifecycle::distance_target_alive(doc, target) {
+                continue;
+            }
+            if distance_target_moves_pinned_point(target, pins) {
                 continue;
             }
             let Some(value) = eval_length_mm_in_doc(&constraint.expression, doc) else {
@@ -1405,16 +1423,6 @@ pub fn angle_constraint_display(
     })
 }
 
-/// World-space center and unit directions for an angle dimension arc.
-pub fn angle_constraint_display_dirs(
-    doc: &Document,
-    line_a: ConstraintLine,
-    line_b: ConstraintLine,
-) -> Option<(glam::Vec3, glam::Vec3, glam::Vec3)> {
-    angle_constraint_display(doc, line_a, line_b)
-        .map(|display| (display.center, display.dir_a, display.dir_b))
-}
-
 /// Angle (radians, 0..π) from a sketch-plane hit relative to the reference direction.
 pub fn angle_rad_from_sketch_hit(
     display: &AngleConstraintDisplay,
@@ -1917,32 +1925,6 @@ mod tests {
         let (mu, mv) = point_uv(&doc, mover).unwrap();
         assert!((mu - 6.0).abs() < 0.2, "mu={mu}");
         assert!((mv - 8.0).abs() < 0.2, "mv={mv}");
-    }
-
-    #[test]
-    fn angle_constraint_display_dirs_matches_display() {
-        use crate::model::ConstraintLine;
-
-        let (mut doc, sketch) = sketch_doc();
-        doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 10.0));
-        let display = angle_constraint_display(
-            &doc,
-            ConstraintLine::Line(0),
-            ConstraintLine::Line(1),
-        )
-        .unwrap();
-        let (center, dir_a, dir_b) = angle_constraint_display_dirs(
-            &doc,
-            ConstraintLine::Line(0),
-            ConstraintLine::Line(1),
-        )
-        .unwrap();
-        assert!((center - display.center).length() < 1e-3);
-        assert!((dir_a - display.dir_a).length() < 1e-3);
-        assert!((dir_b - display.dir_b).length() < 1e-3);
     }
 
     #[test]

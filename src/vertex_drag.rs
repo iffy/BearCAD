@@ -417,7 +417,7 @@ fn project_endpoint_with_length(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constraints::add_distance_constraint;
+    use crate::constraints::{add_distance_constraint, solve_document_constraints};
     use crate::model::RectEdge;
     use crate::geometric_constraints::{
         add_geometric_constraint_from_selection, line_direction_uv, GeometricConstraintType,
@@ -853,6 +853,105 @@ mod tests {
         };
         assert!(can_drag_point(&doc, sketch, point));
         assert!(can_drag_line(&doc, sketch, ConstraintLine::Line(1)));
+    }
+
+    fn setup_rect_parallel_perpendicular_point_line_distance(
+        doc: &mut Document,
+        sketch: SketchId,
+    ) -> Result<(ConstraintPoint, ConstraintLine, ConstraintLine), String> {
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0));
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 20.0, 10.0, 70.0, 40.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 30.0, 55.0, 30.0, 85.0));
+        doc.shape_order.push(crate::model::ShapeKind::Line);
+        doc.shape_order.push(crate::model::ShapeKind::Rect);
+        doc.shape_order.push(crate::model::ShapeKind::Line);
+
+        let line_a = ConstraintLine::Line(0);
+        let line_b = ConstraintLine::Line(1);
+        let rect_top = ConstraintLine::RectEdge {
+            rect: 0,
+            edge: RectEdge::Top,
+        };
+
+        let mut sel = SceneSelection::default();
+        click_scene_selection(&mut sel, SceneElement::RectEdge(0, RectEdge::Top), false);
+        click_scene_selection(&mut sel, SceneElement::Line(0), true);
+        add_geometric_constraint_from_selection(
+            doc,
+            sketch,
+            GeometricConstraintType::Parallel,
+            &sel,
+        )?;
+
+        let mut sel = SceneSelection::default();
+        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        click_scene_selection(&mut sel, SceneElement::Line(1), true);
+        add_geometric_constraint_from_selection(
+            doc,
+            sketch,
+            GeometricConstraintType::Perpendicular,
+            &sel,
+        )?;
+
+        let distance_point = ConstraintPoint::LineEndpoint {
+            line: 1,
+            end: LineEnd::Start,
+        };
+        add_distance_constraint(
+            doc,
+            sketch,
+            DistanceTarget::PointLineDistance {
+                point: distance_point,
+                line: rect_top,
+                side: 1,
+            },
+            "50mm".to_string(),
+        )?;
+        solve_document_constraints(doc)?;
+
+        Ok((distance_point, line_a, line_b))
+    }
+
+    fn assert_lines_perpendicular(doc: &Document, line_a: ConstraintLine, line_b: ConstraintLine) {
+        let (adu, adv) = line_direction_uv(doc, line_a).unwrap();
+        let (bdu, bdv) = line_direction_uv(doc, line_b).unwrap();
+        let dot = (adu * bdu + adv * bdv).clamp(-1.0, 1.0);
+        assert!(dot.abs() < 0.01, "lines should stay perpendicular, dot={dot}");
+    }
+
+    #[test]
+    fn drag_vertex_preserves_perpendicular_with_rect_point_line_distance() {
+        let (mut doc, sketch) = sketch_doc();
+        let (_distance_point, line_a, line_b) =
+            setup_rect_parallel_perpendicular_point_line_distance(&mut doc, sketch).unwrap();
+
+        drag_point(
+            &mut doc,
+            sketch,
+            ConstraintPoint::LineEndpoint {
+                line: 1,
+                end: LineEnd::End,
+            },
+            45.0,
+            100.0,
+        )
+        .unwrap();
+
+        assert_lines_perpendicular(&doc, line_a, line_b);
+    }
+
+    #[test]
+    fn drag_distance_vertex_preserves_perpendicular_with_rect_point_line_distance() {
+        let (mut doc, sketch) = sketch_doc();
+        let (distance_point, line_a, line_b) =
+            setup_rect_parallel_perpendicular_point_line_distance(&mut doc, sketch).unwrap();
+
+        drag_point(&mut doc, sketch, distance_point, 55.0, 95.0).unwrap();
+
+        assert_lines_perpendicular(&doc, line_a, line_b);
     }
 
     #[test]

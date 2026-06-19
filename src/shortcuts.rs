@@ -142,7 +142,7 @@ pub fn action_row(ui: &mut Ui, selected: bool, label: &str, shortcut: Option<Sho
     .inner
 }
 
-/// Fixed letter shortcut for a geometric constraint row.
+/// Fixed number shortcut for a geometric constraint row.
 pub fn geometric_constraint_shortcut(
     kind: crate::geometric_constraints::GeometricConstraintType,
 ) -> ShortcutHint {
@@ -211,19 +211,19 @@ mod tests {
     }
 
     #[test]
-    fn geometric_constraint_shortcut_maps_letters() {
+    fn geometric_constraint_shortcut_maps_numbers() {
         use crate::geometric_constraints::GeometricConstraintType;
         assert_eq!(
             format_shortcut(geometric_constraint_shortcut(
                 GeometricConstraintType::Parallel
             )),
-            "A"
+            "1"
         );
         assert_eq!(
             format_shortcut(geometric_constraint_shortcut(
                 GeometricConstraintType::Horizontal
             )),
-            "H"
+            "6"
         );
     }
 
