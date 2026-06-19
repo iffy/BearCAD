@@ -32,12 +32,12 @@ pub const GRID_STEP: f32 = 20.0;
 pub const SKETCH_DIMMED: f32 = 0.50;
 pub const CIRCLE_SEGMENTS: usize = 96;
 
-/// Fill opacity for substantial sketch faces (matches pre-GPU painter, slightly stronger).
-pub const SOLID_FILL_OPACITY: f32 = 0.38;
-/// Fill opacity for construction geometry.
-pub const CONSTRUCTION_FILL_OPACITY: f32 = 0.28;
-/// Construction planes sit behind sketch shapes along the face normal.
-pub const PLANE_FILL_DEPTH_BIAS: f32 = 0.0;
+/// Fill opacity for substantial sketch faces (matches CPU `draw_world_quad`).
+pub const SOLID_FILL_OPACITY: f32 = 0.25;
+/// Fill opacity for construction geometry (matches CPU `draw_construction_plane`).
+pub const CONSTRUCTION_FILL_OPACITY: f32 = 0.18;
+/// Lift plane fills slightly toward the camera so they win over the ground grid.
+pub const PLANE_FILL_DEPTH_BIAS: f32 = 0.02;
 /// Base depth lift for sketch shape fills toward the camera.
 pub const SHAPE_FILL_DEPTH_BIAS_BASE: f32 = 0.04;
 /// Per-shape increment so coplanar overlaps resolve stably (higher index wins).
@@ -426,6 +426,11 @@ impl<'a> SceneMesh<'a> {
         self.scene.indices.extend_from_slice(&[base, base + 1, base + 2]);
     }
 
+    fn push_quad_fill(&mut self, fill_corners: [Vec3; 4], fill: Color32) {
+        self.push_triangle(fill_corners[0], fill_corners[1], fill_corners[2], fill);
+        self.push_triangle(fill_corners[0], fill_corners[2], fill_corners[3], fill);
+    }
+
     fn push_quad(
         &mut self,
         corners: [Vec3; 4],
@@ -438,8 +443,7 @@ impl<'a> SceneMesh<'a> {
         viewport: UiRect,
         view_proj: &Mat4,
     ) {
-        self.push_triangle(fill_corners[0], fill_corners[1], fill_corners[2], fill);
-        self.push_triangle(fill_corners[0], fill_corners[2], fill_corners[3], fill);
+        self.push_quad_fill(fill_corners, fill);
         for (a, b) in [
             (corners[0], corners[1]),
             (corners[1], corners[2]),
@@ -603,17 +607,7 @@ impl<'a> SceneMesh<'a> {
                 view_proj,
             );
         } else if has_solid_edge && rect.has_mixed_edge_construction() {
-            self.push_quad(
-                corners,
-                fill_corners,
-                fill_color(solid, SOLID_FILL_OPACITY),
-                solid,
-                1.5,
-                false,
-                cam,
-                viewport,
-                view_proj,
-            );
+            self.push_quad_fill(fill_corners, fill_color(solid, SOLID_FILL_OPACITY));
             for (edge_index, (a, b)) in rect_edge_segments(doc, rect).into_iter().enumerate() {
                 let edge = RectEdge::from_index(edge_index);
                 if rect.edge_construction(edge) {
@@ -1894,7 +1888,7 @@ pub fn line_screen_quad(
 mod tests {
     use super::*;
     use crate::actions::AppState;
-    use crate::model::FaceId;
+    use crate::model::{FaceId, RectEdge};
     use egui::Rect as UiRect;
 
     fn test_viewport() -> UiRect {
@@ -2103,6 +2097,84 @@ mod tests {
         assert_eq!(scene.clear_color[0], color32_to_gpu(Color32::from_gray(28))[0]);
     }
 
+    fn count_opaque_stroke_vertices(scene: &ViewportScene, stroke: Color32) -> usize {
+        let gpu = color32_to_gpu(stroke);
+        scene
+            .vertices
+            .iter()
+            .filter(|v| {
+                v.color[3] > 0.99
+                    && (v.color[0] - gpu[0]).abs() < 0.02
+                    && (v.color[1] - gpu[1]).abs() < 0.02
+                    && (v.color[2] - gpu[2]).abs() < 0.02
+            })
+            .count()
+    }
+
+    fn build_scene_for_doc(state: &AppState) -> ViewportScene {
+        let cam = state.cam.clone();
+        ViewportScene::build(&ViewportSceneInput {
+            doc: &state.doc,
+            cam: &cam,
+            viewport: test_viewport(),
+            palette: ViewportPalette::default(),
+            sketch_session: None,
+            selection: &state.scene_selection,
+            element_visibility: &state.element_visibility,
+            preview_rect: None,
+            preview_line: None,
+            preview_circle: None,
+            plane_preview: None,
+            active_sketch_face: None,
+            dimension_labels: &[],
+            dim_label_view: None,
+            dim_annotation_color: Color32::WHITE,
+            plane_gizmo: None,
+            hover_highlight: None,
+            hover_color: Color32::WHITE,
+        })
+    }
+
+    fn commit_test_rectangle(state: &mut AppState) {
+        state.apply(crate::actions::Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        state.creating_rect = Some(crate::actions::CreatingRect {
+            origin: glam::Vec3::ZERO,
+            texts: ["10".into(), "5".into()],
+            focused: 0,
+            last_mouse: glam::Vec3::new(10.0, 5.0, 0.0),
+            user_edited: [true, true],
+            pending_focus: false,
+            construction: false,
+        });
+        state.apply(crate::actions::Action::CommitRectangle);
+    }
+
+    #[test]
+    fn mixed_construction_rect_skips_solid_stroke_on_construction_edges() {
+        let mut all_solid = AppState::default();
+        commit_test_rectangle(&mut all_solid);
+        let solid_scene = build_scene_for_doc(&all_solid);
+        let solid_strokes =
+            count_opaque_stroke_vertices(&solid_scene, ViewportPalette::default().rect_line);
+
+        let mut mixed = AppState::default();
+        commit_test_rectangle(&mut mixed);
+        mixed.doc.rects[0].set_edge_construction(RectEdge::Bottom, true);
+        assert!(mixed.doc.rects[0].has_mixed_edge_construction());
+        let mixed_scene = build_scene_for_doc(&mixed);
+        let mixed_strokes =
+            count_opaque_stroke_vertices(&mixed_scene, ViewportPalette::default().rect_line);
+
+        assert_eq!(solid_strokes, 16, "all-solid rect draws four 4-vertex line quads");
+        assert_eq!(
+            mixed_strokes, 12,
+            "mixed rect should draw solid strokes only on non-construction edges"
+        );
+    }
+
     #[test]
     fn rectangle_adds_fill_and_edge_triangles() {
         let mut state = AppState::default();
@@ -2201,12 +2273,11 @@ mod tests {
     }
 
     #[test]
-    fn solid_fill_is_more_opaque_than_old_double_dim() {
+    fn solid_fill_matches_cpu_opacity() {
         let base = Color32::from_rgb(120, 170, 240);
-        let old_gpu = base.gamma_multiply(0.25).gamma_multiply(0.22);
-        let new_fill = fill_color(base, SOLID_FILL_OPACITY);
-        assert!(new_fill.a() > old_gpu.a());
-        assert!(new_fill.a() >= 90);
+        let cpu_fill = base.gamma_multiply(0.25);
+        let gpu_fill = fill_color(base, SOLID_FILL_OPACITY);
+        assert_eq!(gpu_fill, cpu_fill);
     }
 
     #[test]

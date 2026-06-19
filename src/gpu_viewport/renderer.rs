@@ -82,7 +82,9 @@ fn multisample_state(sample_count: u32) -> wgpu::MultisampleState {
     wgpu::MultisampleState {
         count: sample_count,
         mask: !0,
-        alpha_to_coverage_enabled: sample_count > 1,
+        // MSAA resolve still anti-aliases opaque line quads; alpha-to-coverage
+        // thins semi-transparent face fills to near-invisibility on dark backgrounds.
+        alpha_to_coverage_enabled: false,
     }
 }
 
@@ -797,10 +799,10 @@ mod tests {
     }
 
     #[test]
-    fn multisample_state_enables_alpha_to_coverage_with_msaa() {
+    fn multisample_state_keeps_alpha_to_coverage_off_for_transparent_fills() {
         let msaa = multisample_state(4);
         assert_eq!(msaa.count, 4);
-        assert!(msaa.alpha_to_coverage_enabled);
+        assert!(!msaa.alpha_to_coverage_enabled);
         let single = multisample_state(1);
         assert_eq!(single.count, 1);
         assert!(!single.alpha_to_coverage_enabled);
