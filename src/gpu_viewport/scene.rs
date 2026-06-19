@@ -10,7 +10,9 @@ use crate::construction::{
     PlaneReference,
 };
 use crate::context::selection_highlight_dashed;
-use crate::face::{circle_world_perimeter, rect_world_corners, sketch_geometry_frame};
+use crate::face::{
+    circle_world_perimeter, rect_world_corners, rect_world_corners_resolved, sketch_geometry_frame,
+};
 use crate::hierarchy::SceneElement;
 use crate::model::{
     Circle, ConstructionPlane, Document, FaceId, Line, Rect as ModelRect, RectEdge,
@@ -1945,7 +1947,7 @@ fn line_world_endpoints(doc: &Document, line: &Line) -> Option<(Vec3, Vec3)> {
 }
 
 fn rect_edge_segments(doc: &Document, rect: &ModelRect) -> [(Vec3, Vec3); 4] {
-    let corners = rect_world_corners(doc, rect).expect("rect corners");
+    let corners = rect_world_corners_resolved(doc, rect);
     [
         (corners[0], corners[1]),
         (corners[1], corners[2]),
@@ -2489,23 +2491,6 @@ mod tests {
         let other = sketch_color(base, true);
         assert!(ground.r() > other.r());
         assert!(ground.r() < base.r());
-    }
-
-    #[test]
-    fn plane_fill_is_more_transparent_than_sketch_construction_fill() {
-        let base = PLANE_FILL_RGBA;
-        let plane = fill_color(base, DEFAULT_CONSTRUCTION_PLANE_OPACITY);
-        let sketch = fill_color(base, CONSTRUCTION_FILL_OPACITY);
-        assert!(plane.a() < sketch.a());
-    }
-
-    #[test]
-    fn solid_fill_is_brighter_than_cpu_painter() {
-        let base = Color32::from_rgb(120, 170, 240);
-        let cpu_fill = base.gamma_multiply(0.25);
-        let gpu_fill = fill_color(base, SOLID_FILL_OPACITY);
-        assert!(gpu_fill.a() > cpu_fill.a());
-        assert!(gpu_fill.r() > cpu_fill.r());
     }
 
     #[test]

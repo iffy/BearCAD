@@ -1914,10 +1914,11 @@ pub fn save_screenshot(path: &str, image: &egui::ColorImage) -> Result<(), Strin
         .map_err(|e| format!("failed to save screenshot to {path}: {e}"))
 }
 
-/// CLI options for script execution.
+/// CLI launch options.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ScriptOptions {
     pub script_path: Option<String>,
+    pub document_path: Option<String>,
     pub exit_on_complete: bool,
 }
 
@@ -1940,11 +1941,13 @@ Usage:
 Options:
   --script <path>       Run an instruction script
   --exit, --exit-on-complete
-                        Exit after the script finishes
+                        Exit after startup, or after the script finishes
   -h, --help            Show this help and exit
 
 Examples:
   le3
+  le3 --exit
+  le3 drawing.le3 --exit
   le3 --script demo.le3script
   le3 demo.le3script --exit
 "
@@ -1990,12 +1993,18 @@ fn parse_args_from_vec(args: &[String]) -> ScriptOptions {
             "--exit" | "--exit-on-complete" => {
                 opts.exit_on_complete = true;
             }
-            arg if !arg.starts_with('-') && opts.script_path.is_none() => {
-                if arg.ends_with(".le3script")
-                    || arg.ends_with(".script")
-                    || Path::new(arg).extension().is_some_and(|e| e == "le3script")
+            arg if !arg.starts_with('-') => {
+                if opts.script_path.is_none()
+                    && (arg.ends_with(".le3script")
+                        || arg.ends_with(".script")
+                        || Path::new(arg).extension().is_some_and(|e| e == "le3script"))
                 {
                     opts.script_path = Some(arg.to_string());
+                } else if opts.document_path.is_none()
+                    && (arg.ends_with(".le3")
+                        || Path::new(arg).extension().is_some_and(|e| e == "le3"))
+                {
+                    opts.document_path = Some(arg.to_string());
                 }
             }
             _ => {}
@@ -2085,6 +2094,7 @@ mod tests {
             parse_cli(["le3", "--script", "test.le3script", "--exit"]),
             CliOutcome::Run(ScriptOptions {
                 script_path: Some("test.le3script".to_string()),
+                document_path: None,
                 exit_on_complete: true,
             })
         );
@@ -2101,6 +2111,22 @@ mod tests {
     fn parse_args_finds_positional_script() {
         let opts = parse_args(["le3", "demo.le3script"]);
         assert_eq!(opts.script_path.as_deref(), Some("demo.le3script"));
+    }
+
+    #[test]
+    fn parse_args_finds_positional_document_and_exit() {
+        let opts = parse_args(["le3", "/tmp/test.le3", "--exit"]);
+        assert_eq!(opts.document_path.as_deref(), Some("/tmp/test.le3"));
+        assert!(opts.exit_on_complete);
+        assert!(opts.script_path.is_none());
+    }
+
+    #[test]
+    fn parse_args_exit_without_paths_exits_after_startup() {
+        let opts = parse_args(["le3", "--exit"]);
+        assert!(opts.exit_on_complete);
+        assert!(opts.script_path.is_none());
+        assert!(opts.document_path.is_none());
     }
 
     #[test]

@@ -6,6 +6,8 @@
 //!
 //! Fully scriptable via instruction files (SPEC §9.3):
 //!   le3 --script demo.le3script
+//!   le3 --exit
+//!   le3 drawing.le3 --exit
 //!   le3 demo.le3script --exit
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -173,6 +175,7 @@ fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
             Ok(Box::new(App::new(
                 cc,
                 script,
+                script_opts.document_path,
                 script_opts.exit_on_complete,
                 native_menu,
             )) as Box<dyn eframe::App>)
@@ -219,6 +222,8 @@ struct App {
     synthetic: SyntheticInput,
     script: Option<ScriptRunner>,
     exit_on_script_complete: bool,
+    exit_after_startup: bool,
+    exit_after_startup_sent: bool,
     last_viewport: Option<egui::Rect>,
     native_menu: NativeMenu,
     dim_label_drag: Option<DimLabelDrag>,
@@ -231,6 +236,7 @@ impl App {
     fn new(
         cc: &eframe::CreationContext<'_>,
         script: Option<ScriptRunner>,
+        document_path: Option<String>,
         exit_on_script_complete: bool,
         native_menu: NativeMenu,
     ) -> Self {
@@ -239,14 +245,24 @@ impl App {
         } else {
             String::new()
         };
+        let mut state = AppState {
+            status,
+            ..AppState::default()
+        };
+        if let Some(path) = document_path {
+            match state.apply(Action::Open { path }) {
+                actions::ActionResult::Err(message) => state.status = message,
+                _ => {}
+            }
+        }
+        let exit_after_startup = exit_on_script_complete && script.is_none();
         Self {
-            state: AppState {
-                status,
-                ..AppState::default()
-            },
+            state,
             synthetic: SyntheticInput::default(),
             script,
             exit_on_script_complete,
+            exit_after_startup,
+            exit_after_startup_sent: false,
             last_viewport: None,
             native_menu,
             dim_label_drag: None,
@@ -443,6 +459,17 @@ impl App {
         }
     }
 
+    fn tick_exit_after_startup(&mut self, ctx: &egui::Context) {
+        if !self.exit_after_startup || self.exit_after_startup_sent {
+            return;
+        }
+        if self.launch_maximize_frames_remaining > 0 {
+            return;
+        }
+        self.exit_after_startup_sent = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
     fn tick_script(&mut self, ctx: &egui::Context) {
         let needs_repaint = if let Some(runner) = &mut self.script {
             if runner.done {
@@ -491,6 +518,7 @@ impl eframe::App for App {
 
         self.process_screenshots(ctx);
         self.tick_script(ctx);
+        self.tick_exit_after_startup(ctx);
         self.synthetic.inject(ctx);
 
         self.handle_keyboard_shortcuts(ctx);
