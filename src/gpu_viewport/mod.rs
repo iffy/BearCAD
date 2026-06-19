@@ -6,7 +6,10 @@ mod scene;
 
 pub use dim_labels::{build_planar_label_mesh, ViewportDimLabel};
 pub use renderer::paint_viewport;
-pub use scene::{ViewportPalette, ViewportScene, ViewportSceneInput, GRID_EXTENT, GRID_STEP};
+pub use scene::{
+    ViewportHoverHighlight, ViewportPalette, ViewportPlaneGizmo, ViewportPlanePreview,
+    ViewportScene, ViewportSceneInput, GRID_EXTENT, GRID_STEP, SKETCH_DIMMED,
+};
 
 use eframe::CreationContext;
 use eframe::egui_wgpu;

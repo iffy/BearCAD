@@ -563,6 +563,19 @@ pub fn axis_normal(direction: Vec3, angle_deg: f32) -> Vec3 {
     (Quat::from_axis_angle(axis, angle_deg.to_radians()) * perp).normalize_or_zero()
 }
 
+/// Minimum visual offset for the gizmo arrow when the live offset is near zero.
+pub fn gizmo_display_offset(offset: f32) -> f32 {
+    if offset.abs() < 2.0 {
+        if offset == 0.0 {
+            2.0
+        } else {
+            offset.signum() * 2.0
+        }
+    } else {
+        offset
+    }
+}
+
 /// World position of the offset drag handle along a plane normal.
 pub fn offset_handle(origin: Vec3, normal: Vec3, offset: f32) -> Vec3 {
     origin + normal.normalize_or_zero() * offset
@@ -731,16 +744,7 @@ pub fn draw_offset_gizmo(
     hovered: bool,
 ) {
     let n = normal.normalize_or_zero();
-    let display_offset = if offset.abs() < 2.0 {
-        if offset == 0.0 {
-            2.0
-        } else {
-            offset.signum() * 2.0
-        }
-    } else {
-        offset
-    };
-    let tip = origin + n * display_offset;
+    let tip = origin + n * gizmo_display_offset(offset);
 
     let offset_stroke = if hovered { 4.0 } else { 2.5 };
     let offset_color = if hovered {
@@ -1795,6 +1799,14 @@ mod tests {
         let normal = axis_normal(Vec3::X, 0.0);
         assert!(normal.dot(Vec3::X).abs() < 1e-4);
         assert!(normal.length() > 0.9);
+    }
+
+    #[test]
+    fn gizmo_display_offset_never_collapses_to_zero() {
+        assert!((gizmo_display_offset(0.0) - 2.0).abs() < 1e-4);
+        assert!((gizmo_display_offset(0.5) - 2.0).abs() < 1e-4);
+        assert!((gizmo_display_offset(-0.5) + 2.0).abs() < 1e-4);
+        assert!((gizmo_display_offset(12.0) - 12.0).abs() < 1e-4);
     }
 
     #[test]

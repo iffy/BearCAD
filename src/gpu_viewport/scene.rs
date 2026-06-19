@@ -3,8 +3,11 @@
 use crate::actions::SketchSession;
 use crate::camera::Camera;
 use crate::construction::{
-    plane_corners, CONSTRUCTION_DASH_GAP_PX, CONSTRUCTION_DASH_LENGTH_PX, CONSTRUCTION_RGBA,
-    PLANE_DISPLAY_HALF,
+    axis_angle_handle, axis_normal, axis_reference_perp, gizmo_display_offset, global_axis_segment,
+    plane_corners, AxisGizmoHit, AXIS_ANGLE_GIZMO_RADIUS_MM, CONSTRUCTION_DASH_GAP_PX,
+    CONSTRUCTION_DASH_LENGTH_PX, CONSTRUCTION_RGBA, FACE_HOVER_FILL_MULTIPLIER,
+    GIZMO_HANDLE_HOVER_RGBA, PLANE_DISPLAY_HALF, PickTargetKind, PlaneEditDependentPreview,
+    PlaneReference,
 };
 use crate::context::selection_highlight_dashed;
 use crate::face::{circle_world_perimeter, rect_world_corners, sketch_geometry_frame};
@@ -21,11 +24,12 @@ use crate::gpu_viewport::dim_labels::ViewportDimLabel;
 use crate::selection::SceneSelection;
 use eframe::egui::Color32;
 use egui::Rect as UiRect;
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Quat, Vec3};
 
 pub const GRID_EXTENT: f32 = 200.0;
 pub const GRID_STEP: f32 = 20.0;
-pub const SKETCH_DIMMED: f32 = 0.28;
+/// Brightness multiplier for geometry outside the active sketch (grid, other sketches, planes).
+pub const SKETCH_DIMMED: f32 = 0.50;
 pub const CIRCLE_SEGMENTS: usize = 96;
 
 /// Fill opacity for substantial sketch faces (matches pre-GPU painter, slightly stronger).
@@ -40,6 +44,20 @@ pub const SHAPE_FILL_DEPTH_BIAS_BASE: f32 = 0.04;
 pub const SHAPE_FILL_DEPTH_BIAS_STEP: f32 = 0.008;
 /// In-progress previews render above committed geometry.
 pub const PREVIEW_FILL_DEPTH_BIAS: f32 = 0.2;
+
+const GIZMO_OFFSET_STROKE_PX: f32 = 2.5;
+const GIZMO_OFFSET_STROKE_HOVER_PX: f32 = 4.0;
+const GIZMO_ARROW_HEAD_PX: f32 = 8.0;
+const GIZMO_ARROW_WING_PX: f32 = 4.0;
+const GIZMO_HANDLE_RADIUS_PX: f32 = 6.0;
+const GIZMO_HOVER_INNER_RADIUS_PX: f32 = 9.0;
+const GIZMO_HOVER_OUTER_RADIUS_PX: f32 = 14.0;
+const GIZMO_ANGLE_CIRCLE_SEGMENTS: usize = 48;
+const GIZMO_ANGLE_STROKE_PX: f32 = 1.5;
+const GIZMO_ANGLE_STROKE_HOVER_PX: f32 = 2.5;
+const GIZMO_ANGLE_ARROW_PX: f32 = 5.0;
+const GIZMO_ANGLE_WING_PX: f32 = 3.0;
+const GIZMO_HANDLE_RING_STROKE_PX: f32 = 1.5;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
@@ -93,6 +111,32 @@ impl Default for ViewportPalette {
     }
 }
 
+/// Hover highlight while picking a sketch face or construction-plane reference.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ViewportHoverHighlight {
+    SketchFace(FaceId),
+    PickTarget(PickTargetKind),
+}
+
+/// Prospective construction plane while creating or editing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ViewportPlanePreview {
+    pub plane: ConstructionPlane,
+    pub dependents: Option<PlaneEditDependentPreview>,
+    /// Extra outline while offset/angle dimension inputs are visible.
+    pub dim_outline: bool,
+}
+
+/// Construction-plane offset/angle gizmo while creating or editing a plane.
+#[derive(Clone, Debug)]
+pub struct ViewportPlaneGizmo {
+    pub reference: PlaneReference,
+    pub offset: f32,
+    pub angle_deg: f32,
+    pub color: Color32,
+    pub hover: Option<AxisGizmoHit>,
+}
+
 #[derive(Clone, Debug)]
 pub struct ViewportSceneInput<'a> {
     pub doc: &'a Document,
@@ -105,11 +149,14 @@ pub struct ViewportSceneInput<'a> {
     pub preview_rect: Option<ModelRect>,
     pub preview_line: Option<Line>,
     pub preview_circle: Option<Circle>,
-    pub preview_plane: Option<ConstructionPlane>,
+    pub plane_preview: Option<ViewportPlanePreview>,
     pub active_sketch_face: Option<FaceId>,
     pub dimension_labels: &'a [ViewportDimLabel],
     pub dim_label_view: Option<PlanarLabelView>,
     pub dim_annotation_color: Color32,
+    pub plane_gizmo: Option<ViewportPlaneGizmo>,
+    pub hover_highlight: Option<ViewportHoverHighlight>,
+    pub hover_color: Color32,
 }
 
 impl ViewportScene {
@@ -298,11 +345,27 @@ impl ViewportScene {
                 PREVIEW_FILL_DEPTH_BIAS,
             );
         }
-        if let Some(plane) = input.preview_plane.as_ref() {
-            mesh.push_plane(
-                plane,
-                0,
+        if let Some(preview) = input.plane_preview.as_ref() {
+            mesh.push_plane_creation_preview(
+                preview,
                 input.palette.preview,
+                input.palette.dim_edge_highlight,
+                input.cam,
+                input.viewport,
+                &vp,
+            );
+        }
+
+        if let Some(gizmo) = input.plane_gizmo.as_ref() {
+            let project = |w: Vec3| input.cam.project(w, input.viewport, &vp);
+            mesh.push_plane_gizmo(gizmo, input.cam, input.viewport, &vp, &project);
+        }
+
+        if let Some(hover) = input.hover_highlight.as_ref() {
+            mesh.push_hover_highlight(
+                input.doc,
+                hover,
+                input.hover_color,
                 input.cam,
                 input.viewport,
                 &vp,
@@ -636,6 +699,80 @@ impl<'a> SceneMesh<'a> {
         }
     }
 
+    fn push_plane_outline(
+        &mut self,
+        plane: &ConstructionPlane,
+        color: Color32,
+        stroke_width: f32,
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+    ) {
+        let corners = plane_corners(plane, PLANE_DISPLAY_HALF);
+        self.push_quad_outline(corners, color, stroke_width, cam, viewport, view_proj);
+    }
+
+    fn push_quad_outline(
+        &mut self,
+        corners: [Vec3; 4],
+        color: Color32,
+        stroke_width: f32,
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+    ) {
+        for (a, b) in [
+            (corners[0], corners[1]),
+            (corners[1], corners[2]),
+            (corners[2], corners[3]),
+            (corners[3], corners[0]),
+        ] {
+            self.push_line_segment(a, b, color, stroke_width, cam, viewport, view_proj);
+        }
+    }
+
+    fn push_plane_creation_preview(
+        &mut self,
+        preview: &ViewportPlanePreview,
+        preview_color: Color32,
+        dim_edge_color: Color32,
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+    ) {
+        const PREVIEW_STROKE: f32 = 2.0;
+        self.push_plane_outline(
+            &preview.plane,
+            preview_color,
+            PREVIEW_STROKE,
+            cam,
+            viewport,
+            view_proj,
+        );
+        if preview.dim_outline {
+            self.push_plane_outline(
+                &preview.plane,
+                dim_edge_color,
+                PREVIEW_STROKE,
+                cam,
+                viewport,
+                view_proj,
+            );
+        }
+        let Some(dependents) = preview.dependents.as_ref() else {
+            return;
+        };
+        for (_, plane) in &dependents.planes {
+            self.push_plane_outline(plane, preview_color, PREVIEW_STROKE, cam, viewport, view_proj);
+        }
+        for corners in &dependents.rects {
+            self.push_quad_outline(*corners, preview_color, PREVIEW_STROKE, cam, viewport, view_proj);
+        }
+        for &(a, b) in &dependents.lines {
+            self.push_line_segment(a, b, preview_color, PREVIEW_STROKE, cam, viewport, view_proj);
+        }
+    }
+
     fn push_plane(
         &mut self,
         plane: &ConstructionPlane,
@@ -761,11 +898,21 @@ impl<'a> SceneMesh<'a> {
     }
 
     fn push_face_highlight(&mut self, doc: &Document, face: FaceId, color: Color32) {
+        self.push_sketch_face_hover(doc, face, color, 0.12);
+    }
+
+    fn push_sketch_face_hover(
+        &mut self,
+        doc: &Document,
+        face: FaceId,
+        color: Color32,
+        fill_multiplier: f32,
+    ) {
+        let fill = color.gamma_multiply(fill_multiplier);
         match face {
             FaceId::Rect(index) => {
                 if let Some(rect) = doc.rects.get(index) {
                     if let Some(corners) = rect_world_corners(doc, rect) {
-                        let fill = color.gamma_multiply(0.12);
                         self.push_triangle(corners[0], corners[1], corners[2], fill);
                         self.push_triangle(corners[0], corners[2], corners[3], fill);
                     }
@@ -779,7 +926,6 @@ impl<'a> SceneMesh<'a> {
                         let frame =
                             sketch_geometry_frame(doc, circle.sketch).expect("circle frame");
                         let center = crate::face::local_to_world(&frame, circle.cx, circle.cy);
-                        let fill = color.gamma_multiply(0.12);
                         for window in perimeter.windows(2) {
                             self.push_triangle(center, window[0], window[1], fill);
                         }
@@ -789,13 +935,259 @@ impl<'a> SceneMesh<'a> {
             FaceId::ConstructionPlane(index) => {
                 if let Some(plane) = doc.construction_planes.get(index) {
                     let corners = plane_corners(plane, PLANE_DISPLAY_HALF);
-                    let fill = color.gamma_multiply(0.12);
                     self.push_triangle(corners[0], corners[1], corners[2], fill);
                     self.push_triangle(corners[0], corners[2], corners[3], fill);
                 }
             }
         }
     }
+
+    fn push_hover_highlight(
+        &mut self,
+        doc: &Document,
+        hover: &ViewportHoverHighlight,
+        color: Color32,
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+    ) {
+        let project = |w: Vec3| cam.project(w, viewport, view_proj);
+        match hover {
+            ViewportHoverHighlight::SketchFace(face) => {
+                self.push_sketch_face_hover(doc, *face, color, FACE_HOVER_FILL_MULTIPLIER);
+                self.push_sketch_face_hover_border(
+                    doc,
+                    *face,
+                    color,
+                    2.0,
+                    cam,
+                    viewport,
+                    view_proj,
+                );
+            }
+            ViewportHoverHighlight::PickTarget(kind) => {
+                self.push_pick_target_highlight(
+                    doc,
+                    kind,
+                    color,
+                    cam,
+                    viewport,
+                    view_proj,
+                    &project,
+                );
+            }
+        }
+    }
+
+    fn push_sketch_face_hover_border(
+        &mut self,
+        doc: &Document,
+        face: FaceId,
+        color: Color32,
+        width: f32,
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+    ) {
+        match face {
+            FaceId::Rect(index) => {
+                if let Some(rect) = doc.rects.get(index) {
+                    if let Some(corners) = rect_world_corners(doc, rect) {
+                        for (a, b) in [
+                            (corners[0], corners[1]),
+                            (corners[1], corners[2]),
+                            (corners[2], corners[3]),
+                            (corners[3], corners[0]),
+                        ] {
+                            self.push_line_segment(a, b, color, width, cam, viewport, view_proj);
+                        }
+                    }
+                }
+            }
+            FaceId::Circle(index) => {
+                if let Some(circle) = doc.circles.get(index) {
+                    if let Some(perimeter) =
+                        circle_world_perimeter(doc, circle, CIRCLE_SEGMENTS)
+                    {
+                        for window in perimeter.windows(2) {
+                            self.push_line_segment(
+                                window[0],
+                                window[1],
+                                color,
+                                width,
+                                cam,
+                                viewport,
+                                view_proj,
+                            );
+                        }
+                    }
+                }
+            }
+            FaceId::ConstructionPlane(index) => {
+                if let Some(plane) = doc.construction_planes.get(index) {
+                    let corners = plane_corners(plane, PLANE_DISPLAY_HALF);
+                    for (a, b) in [
+                        (corners[0], corners[1]),
+                        (corners[1], corners[2]),
+                        (corners[2], corners[3]),
+                        (corners[3], corners[0]),
+                    ] {
+                        self.push_line_segment(a, b, color, width, cam, viewport, view_proj);
+                    }
+                }
+            }
+        }
+    }
+
+    fn push_pick_target_highlight(
+        &mut self,
+        doc: &Document,
+        kind: &PickTargetKind,
+        color: Color32,
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    ) {
+        match kind {
+            PickTargetKind::Line(index) => {
+                if let Some(line) = doc.lines.get(*index) {
+                    if let Some((a, b)) = line_world_endpoints(doc, line) {
+                        self.push_segment_hover(a, b, color, cam, viewport, view_proj, project);
+                    }
+                }
+            }
+            PickTargetKind::Circle(index) => {
+                if let Some(circle) = doc.circles.get(*index) {
+                    self.push_segment_hover_ring(doc, circle, color, cam, viewport, view_proj);
+                }
+            }
+            PickTargetKind::ShapeEdge { a, b, .. } | PickTargetKind::PlaneEdge { a, b } => {
+                self.push_segment_hover(*a, *b, color, cam, viewport, view_proj, project);
+            }
+            PickTargetKind::GlobalAxis(axis) => {
+                let (a, b) = global_axis_segment(*axis);
+                let axis_color = axis.color().gamma_multiply(1.25);
+                self.push_segment_hover(a, b, axis_color, cam, viewport, view_proj, project);
+            }
+            PickTargetKind::Rect(rect) => {
+                if let Some(corners) = rect_world_corners(doc, rect) {
+                    for (a, b) in [
+                        (corners[0], corners[1]),
+                        (corners[1], corners[2]),
+                        (corners[2], corners[3]),
+                        (corners[3], corners[0]),
+                    ] {
+                        self.push_line_segment(a, b, color, 3.0, cam, viewport, view_proj);
+                    }
+                    for corner in corners {
+                        push_screen_disc(
+                            self,
+                            corner,
+                            4.0,
+                            color,
+                            cam,
+                            viewport,
+                            view_proj,
+                            project,
+                        );
+                    }
+                }
+            }
+            PickTargetKind::ConstructionPlane(index) => {
+                self.push_sketch_face_hover(
+                    doc,
+                    FaceId::ConstructionPlane(*index),
+                    color,
+                    FACE_HOVER_FILL_MULTIPLIER,
+                );
+                self.push_sketch_face_hover_border(
+                    doc,
+                    FaceId::ConstructionPlane(*index),
+                    color,
+                    2.0,
+                    cam,
+                    viewport,
+                    view_proj,
+                );
+            }
+            PickTargetKind::Ground(p) => {
+                push_ground_hover_marker(self, *p, color, cam, viewport, view_proj, project);
+            }
+        }
+    }
+
+    fn push_segment_hover(
+        &mut self,
+        a: Vec3,
+        b: Vec3,
+        color: Color32,
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    ) {
+        self.push_line_segment(a, b, color, 4.0, cam, viewport, view_proj);
+        for p in [a, b] {
+            push_screen_disc(self, p, 5.0, color, cam, viewport, view_proj, project);
+        }
+    }
+
+    fn push_segment_hover_ring(
+        &mut self,
+        doc: &Document,
+        circle: &Circle,
+        color: Color32,
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+    ) {
+        if let Some(perimeter) = circle_world_perimeter(doc, circle, CIRCLE_SEGMENTS) {
+            for window in perimeter.windows(2) {
+                self.push_line_segment(
+                    window[0],
+                    window[1],
+                    color,
+                    3.0,
+                    cam,
+                    viewport,
+                    view_proj,
+                );
+            }
+        }
+    }
+}
+
+fn push_ground_hover_marker(
+    mesh: &mut SceneMesh<'_>,
+    point: Vec3,
+    color: Color32,
+    cam: &Camera,
+    viewport: UiRect,
+    view_proj: &Mat4,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+) {
+    push_screen_ring(mesh, point, 8.0, color, 2.0, cam, viewport, view_proj, project);
+    let (tangent, bitangent) = camera_disc_basis(point, cam);
+    let arm = pixels_to_world_distance(project, point, tangent, 6.0);
+    mesh.push_line_segment(
+        point - tangent * arm,
+        point + tangent * arm,
+        color,
+        2.0,
+        cam,
+        viewport,
+        view_proj,
+    );
+    mesh.push_line_segment(
+        point - bitangent * arm,
+        point + bitangent * arm,
+        color,
+        2.0,
+        cam,
+        viewport,
+        view_proj,
+    );
 }
 
 pub fn fill_color(base: Color32, opacity: f32) -> Color32 {
@@ -945,6 +1337,383 @@ fn push_arrowhead_world(
         viewport,
         view_proj,
     );
+}
+
+impl<'a> SceneMesh<'a> {
+    fn push_plane_gizmo(
+        &mut self,
+        gizmo: &ViewportPlaneGizmo,
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    ) {
+        match &gizmo.reference {
+            PlaneReference::Face { origin, normal, .. } => self.push_offset_gizmo(
+                *origin,
+                *normal,
+                gizmo.offset,
+                gizmo.color,
+                gizmo.hover == Some(AxisGizmoHit::Offset),
+                cam,
+                viewport,
+                view_proj,
+                project,
+            ),
+            PlaneReference::Axis {
+                origin,
+                direction,
+                ..
+            } => self.push_axis_plane_gizmo(
+                *origin,
+                *direction,
+                gizmo.offset,
+                gizmo.angle_deg,
+                gizmo.color,
+                gizmo.hover,
+                cam,
+                viewport,
+                view_proj,
+                project,
+            ),
+        }
+    }
+
+    fn push_offset_gizmo(
+        &mut self,
+        origin: Vec3,
+        normal: Vec3,
+        offset: f32,
+        color: Color32,
+        hovered: bool,
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    ) {
+        let n = normal.normalize_or_zero();
+        let tip = origin + n * gizmo_display_offset(offset);
+        let stroke = if hovered {
+            GIZMO_OFFSET_STROKE_HOVER_PX
+        } else {
+            GIZMO_OFFSET_STROKE_PX
+        };
+        let stroke_color = if hovered {
+            GIZMO_HANDLE_HOVER_RGBA
+        } else {
+            color
+        };
+        if project(origin).is_some() && project(tip).is_some() {
+            self.push_line_segment(origin, tip, stroke_color, stroke, cam, viewport, view_proj);
+            push_gizmo_arrowhead(
+                self,
+                tip,
+                n,
+                GIZMO_ARROW_HEAD_PX,
+                GIZMO_ARROW_WING_PX,
+                stroke,
+                stroke_color,
+                cam,
+                viewport,
+                view_proj,
+                project,
+            );
+        }
+        if hovered {
+            push_gizmo_handle_hover(self, tip, GIZMO_HANDLE_HOVER_RGBA, cam, viewport, view_proj, project);
+        } else {
+            push_gizmo_handle(self, tip, color, cam, viewport, view_proj, project);
+        }
+    }
+
+    fn push_axis_plane_gizmo(
+        &mut self,
+        origin: Vec3,
+        direction: Vec3,
+        offset: f32,
+        angle_deg: f32,
+        color: Color32,
+        hover: Option<AxisGizmoHit>,
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    ) {
+        let normal = axis_normal(direction, angle_deg);
+        self.push_offset_gizmo(
+            origin,
+            normal,
+            offset,
+            color,
+            hover == Some(AxisGizmoHit::Offset),
+            cam,
+            viewport,
+            view_proj,
+            project,
+        );
+
+        let axis = direction.normalize_or_zero();
+        let perp = axis_reference_perp(axis);
+        let angle_hovered = hover == Some(AxisGizmoHit::Angle);
+        let circle_color = if angle_hovered {
+            GIZMO_HANDLE_HOVER_RGBA.gamma_multiply(0.9)
+        } else {
+            color.gamma_multiply(0.85)
+        };
+        let circle_stroke = if angle_hovered {
+            GIZMO_ANGLE_STROKE_HOVER_PX
+        } else {
+            GIZMO_ANGLE_STROKE_PX
+        };
+        let mut prev: Option<Vec3> = None;
+        for i in 0..=GIZMO_ANGLE_CIRCLE_SEGMENTS {
+            let a = i as f32 / GIZMO_ANGLE_CIRCLE_SEGMENTS as f32 * std::f32::consts::TAU;
+            let dir = Quat::from_axis_angle(axis, a) * perp;
+            let pt = origin + dir * AXIS_ANGLE_GIZMO_RADIUS_MM;
+            if let Some(p0) = prev {
+                self.push_line_segment(p0, pt, circle_color, circle_stroke, cam, viewport, view_proj);
+            }
+            prev = Some(pt);
+        }
+
+        let handle = axis_angle_handle(origin, direction, angle_deg);
+        let handle_dir = (handle - origin).normalize_or_zero();
+        let tangent = axis.cross(handle_dir).normalize_or_zero();
+        let angle_color = if angle_hovered {
+            GIZMO_HANDLE_HOVER_RGBA
+        } else {
+            color
+        };
+        if angle_hovered {
+            push_gizmo_handle_hover(
+                self,
+                handle,
+                GIZMO_HANDLE_HOVER_RGBA,
+                cam,
+                viewport,
+                view_proj,
+                project,
+            );
+        } else {
+            push_gizmo_handle(self, handle, color, cam, viewport, view_proj, project);
+        }
+        let tangent_len = pixels_to_world_distance(project, handle, tangent, GIZMO_ANGLE_ARROW_PX);
+        if tangent_len > 1e-6 {
+            for sign in [-1.0f32, 1.0] {
+                let along = tangent * sign;
+                let tip = handle + along * tangent_len;
+                push_gizmo_arrowhead(
+                    self,
+                    tip,
+                    along,
+                    GIZMO_ANGLE_ARROW_PX,
+                    GIZMO_ANGLE_WING_PX,
+                    2.0,
+                    angle_color,
+                    cam,
+                    viewport,
+                    view_proj,
+                    project,
+                );
+            }
+        }
+    }
+}
+
+fn push_gizmo_arrowhead(
+    mesh: &mut SceneMesh<'_>,
+    tip: Vec3,
+    along_world: Vec3,
+    head_px: f32,
+    wing_px: f32,
+    stroke_px: f32,
+    color: Color32,
+    cam: &Camera,
+    viewport: UiRect,
+    view_proj: &Mat4,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+) {
+    let along = along_world.normalize_or_zero();
+    if along.length_squared() < 1e-8 {
+        return;
+    }
+    let eye = cam.eye();
+    let to_cam = (eye - tip).normalize_or_zero();
+    let mut side = along.cross(to_cam);
+    if side.length_squared() < 1e-8 {
+        side = along.cross(cam.view_up_hint());
+    }
+    if side.length_squared() < 1e-8 {
+        return;
+    }
+    side = side.normalize();
+    let arrow_len = pixels_to_world_distance(project, tip, along, head_px);
+    let arrow_wing = pixels_to_world_distance(project, tip, side, wing_px);
+    let base = tip - along * arrow_len;
+    mesh.push_line_segment(
+        tip,
+        base + side * arrow_wing,
+        color,
+        stroke_px,
+        cam,
+        viewport,
+        view_proj,
+    );
+    mesh.push_line_segment(
+        tip,
+        base - side * arrow_wing,
+        color,
+        stroke_px,
+        cam,
+        viewport,
+        view_proj,
+    );
+}
+
+fn push_gizmo_handle(
+    mesh: &mut SceneMesh<'_>,
+    center: Vec3,
+    color: Color32,
+    cam: &Camera,
+    viewport: UiRect,
+    view_proj: &Mat4,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+) {
+    push_screen_disc(
+        mesh,
+        center,
+        GIZMO_HANDLE_RADIUS_PX,
+        color,
+        cam,
+        viewport,
+        view_proj,
+        project,
+    );
+    push_screen_ring(
+        mesh,
+        center,
+        GIZMO_HANDLE_RADIUS_PX,
+        color.gamma_multiply(0.5),
+        GIZMO_HANDLE_RING_STROKE_PX,
+        cam,
+        viewport,
+        view_proj,
+        project,
+    );
+}
+
+fn push_gizmo_handle_hover(
+    mesh: &mut SceneMesh<'_>,
+    center: Vec3,
+    accent: Color32,
+    cam: &Camera,
+    viewport: UiRect,
+    view_proj: &Mat4,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+) {
+    push_screen_disc(
+        mesh,
+        center,
+        GIZMO_HOVER_INNER_RADIUS_PX,
+        accent.gamma_multiply(0.35),
+        cam,
+        viewport,
+        view_proj,
+        project,
+    );
+    push_screen_ring(
+        mesh,
+        center,
+        GIZMO_HOVER_INNER_RADIUS_PX,
+        accent,
+        2.5,
+        cam,
+        viewport,
+        view_proj,
+        project,
+    );
+    push_screen_ring(
+        mesh,
+        center,
+        GIZMO_HOVER_OUTER_RADIUS_PX,
+        accent.gamma_multiply(0.75),
+        1.5,
+        cam,
+        viewport,
+        view_proj,
+        project,
+    );
+}
+
+fn push_screen_disc(
+    mesh: &mut SceneMesh<'_>,
+    center: Vec3,
+    radius_px: f32,
+    color: Color32,
+    cam: &Camera,
+    _viewport: UiRect,
+    _view_proj: &Mat4,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+) {
+    let (tangent, bitangent) = camera_disc_basis(center, cam);
+    let radius = pixels_to_world_distance(project, center, tangent, radius_px);
+    if radius < 1e-6 {
+        return;
+    }
+    const SEGMENTS: usize = 16;
+    let base = mesh.scene.vertices.len() as u32;
+    mesh.push_vertex(center, color);
+    for i in 0..SEGMENTS {
+        let a = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+        let p = center + tangent * a.cos() * radius + bitangent * a.sin() * radius;
+        mesh.push_vertex(p, color);
+    }
+    for i in 0..SEGMENTS {
+        let next = (i + 1) % SEGMENTS;
+        mesh.scene
+            .indices
+            .extend_from_slice(&[base, base + 1 + i as u32, base + 1 + next as u32]);
+    }
+}
+
+fn push_screen_ring(
+    mesh: &mut SceneMesh<'_>,
+    center: Vec3,
+    radius_px: f32,
+    color: Color32,
+    stroke_px: f32,
+    cam: &Camera,
+    viewport: UiRect,
+    view_proj: &Mat4,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+) {
+    let (tangent, bitangent) = camera_disc_basis(center, cam);
+    let radius = pixels_to_world_distance(project, center, tangent, radius_px);
+    if radius < 1e-6 {
+        return;
+    }
+    const SEGMENTS: usize = 24;
+    let mut prev: Option<Vec3> = None;
+    for i in 0..=SEGMENTS {
+        let a = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+        let p = center + tangent * a.cos() * radius + bitangent * a.sin() * radius;
+        if let Some(p0) = prev {
+            mesh.push_line_segment(p0, p, color, stroke_px, cam, viewport, view_proj);
+        }
+        prev = Some(p);
+    }
+}
+
+fn camera_disc_basis(center: Vec3, cam: &Camera) -> (Vec3, Vec3) {
+    let eye = cam.eye();
+    let to_cam = (eye - center).normalize_or_zero();
+    let mut tangent = to_cam.cross(Vec3::Z);
+    if tangent.length_squared() < 1e-8 {
+        tangent = to_cam.cross(Vec3::X);
+    }
+    tangent = tangent.normalize_or_zero();
+    let bitangent = to_cam.cross(tangent).normalize_or_zero();
+    (tangent, bitangent)
 }
 
 fn sketch_color(color: Color32, dim: bool) -> Color32 {
@@ -1133,6 +1902,179 @@ mod tests {
     }
 
     #[test]
+    fn plane_creation_preview_adds_outline_geometry() {
+        let state = AppState::default();
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let base = ViewportScene::build(&ViewportSceneInput {
+            doc: &state.doc,
+            cam: &cam,
+            viewport,
+            palette: ViewportPalette::default(),
+            sketch_session: None,
+            selection: &state.scene_selection,
+            element_visibility: &state.element_visibility,
+            preview_rect: None,
+            preview_line: None,
+            preview_circle: None,
+            plane_preview: None,
+            active_sketch_face: None,
+            dimension_labels: &[],
+            dim_label_view: None,
+            dim_annotation_color: Color32::WHITE,
+            plane_gizmo: None,
+            hover_highlight: None,
+            hover_color: Color32::WHITE,
+        });
+        let preview_plane = state.doc.construction_planes[0].clone();
+        let with_preview = ViewportScene::build(&ViewportSceneInput {
+            doc: &state.doc,
+            cam: &cam,
+            viewport,
+            palette: ViewportPalette::default(),
+            sketch_session: None,
+            selection: &state.scene_selection,
+            element_visibility: &state.element_visibility,
+            preview_rect: None,
+            preview_line: None,
+            preview_circle: None,
+            plane_preview: Some(ViewportPlanePreview {
+                plane: preview_plane,
+                dependents: None,
+                dim_outline: false,
+            }),
+            active_sketch_face: None,
+            dimension_labels: &[],
+            dim_label_view: None,
+            dim_annotation_color: Color32::WHITE,
+            plane_gizmo: None,
+            hover_highlight: None,
+            hover_color: Color32::WHITE,
+        });
+        assert!(
+            with_preview.indices.len() > base.indices.len(),
+            "plane creation preview should add outline triangles"
+        );
+    }
+
+    #[test]
+    fn hover_highlight_adds_mesh_geometry() {
+        let state = AppState::default();
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let base = ViewportScene::build(&ViewportSceneInput {
+            doc: &state.doc,
+            cam: &cam,
+            viewport,
+            palette: ViewportPalette::default(),
+            sketch_session: None,
+            selection: &state.scene_selection,
+            element_visibility: &state.element_visibility,
+            preview_rect: None,
+            preview_line: None,
+            preview_circle: None,
+            plane_preview: None,
+            active_sketch_face: None,
+            dimension_labels: &[],
+            dim_label_view: None,
+            dim_annotation_color: Color32::WHITE,
+            plane_gizmo: None,
+            hover_highlight: None,
+            hover_color: crate::construction::PICK_HOVER_RGBA,
+        });
+        let with_hover = ViewportScene::build(&ViewportSceneInput {
+            doc: &state.doc,
+            cam: &cam,
+            viewport,
+            palette: ViewportPalette::default(),
+            sketch_session: None,
+            selection: &state.scene_selection,
+            element_visibility: &state.element_visibility,
+            preview_rect: None,
+            preview_line: None,
+            preview_circle: None,
+            plane_preview: None,
+            active_sketch_face: None,
+            dimension_labels: &[],
+            dim_label_view: None,
+            dim_annotation_color: Color32::WHITE,
+            plane_gizmo: None,
+            hover_highlight: Some(ViewportHoverHighlight::SketchFace(
+                FaceId::ConstructionPlane(0),
+            )),
+            hover_color: crate::construction::PICK_HOVER_RGBA,
+        });
+        assert!(
+            with_hover.indices.len() > base.indices.len(),
+            "hover highlight should add triangles on top of the base scene"
+        );
+    }
+
+    #[test]
+    fn plane_gizmo_adds_mesh_geometry() {
+        use crate::construction::PlaneReference;
+
+        let state = AppState::default();
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let base = ViewportScene::build(&ViewportSceneInput {
+            doc: &state.doc,
+            cam: &cam,
+            viewport,
+            palette: ViewportPalette::default(),
+            sketch_session: None,
+            selection: &state.scene_selection,
+            element_visibility: &state.element_visibility,
+            preview_rect: None,
+            preview_line: None,
+            preview_circle: None,
+            plane_preview: None,
+            active_sketch_face: None,
+            dimension_labels: &[],
+            dim_label_view: None,
+            dim_annotation_color: Color32::WHITE,
+            plane_gizmo: None,
+            hover_highlight: None,
+            hover_color: Color32::WHITE,
+        });
+        let gizmo = ViewportPlaneGizmo {
+            reference: PlaneReference::Face {
+                origin: Vec3::ZERO,
+                normal: Vec3::Z,
+                label: "XY".into(),
+            },
+            offset: 12.0,
+            angle_deg: 0.0,
+            color: Color32::from_rgb(240, 200, 120),
+            hover: None,
+        };
+        let with_gizmo = ViewportScene::build(&ViewportSceneInput {
+            doc: &state.doc,
+            cam: &cam,
+            viewport,
+            palette: ViewportPalette::default(),
+            sketch_session: None,
+            selection: &state.scene_selection,
+            element_visibility: &state.element_visibility,
+            preview_rect: None,
+            preview_line: None,
+            preview_circle: None,
+            plane_preview: None,
+            active_sketch_face: None,
+            dimension_labels: &[],
+            dim_label_view: None,
+            dim_annotation_color: Color32::WHITE,
+            plane_gizmo: Some(gizmo),
+            hover_highlight: None,
+            hover_color: Color32::WHITE,
+        });
+        assert!(
+            with_gizmo.indices.len() > base.indices.len(),
+            "plane gizmo should add triangles to the viewport scene"
+        );
+    }
+
+    #[test]
     fn scene_always_includes_ground_grid_and_clear_color() {
         let state = AppState::default();
         let cam = state.cam.clone();
@@ -1147,11 +2089,14 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
-            preview_plane: None,
+            plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: None,
             dim_annotation_color: Color32::WHITE,
+            plane_gizmo: None,
+            hover_highlight: None,
+            hover_color: Color32::WHITE,
         });
         assert!(!scene.vertices.is_empty());
         assert!(!scene.indices.is_empty());
@@ -1187,11 +2132,14 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
-            preview_plane: None,
+            plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: None,
             dim_annotation_color: Color32::WHITE,
+            plane_gizmo: None,
+            hover_highlight: None,
+            hover_color: Color32::WHITE,
         });
         assert!(scene.vertices.len() >= 8);
         assert!(scene.indices.len() >= 18);
@@ -1225,13 +2173,31 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
-            preview_plane: None,
+            plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: None,
             dim_annotation_color: Color32::WHITE,
+            plane_gizmo: None,
+            hover_highlight: None,
+            hover_color: Color32::WHITE,
         });
         assert!(scene.indices.len() > CIRCLE_SEGMENTS);
+    }
+
+    #[test]
+    fn sketch_dimmed_geometry_stays_readable() {
+        let base = Color32::from_rgb(120, 170, 240);
+        let dimmed = sketch_color(base, true);
+        let legacy = base.gamma_multiply(0.28);
+        assert!(
+            dimmed.r() > legacy.r(),
+            "outside-sketch geometry should be brighter than the old 0.28 multiplier"
+        );
+        assert!(
+            dimmed.r() < base.r(),
+            "outside-sketch geometry should still be de-emphasized"
+        );
     }
 
     #[test]
@@ -1333,11 +2299,14 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
-            preview_plane: None,
+            plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: Some(view),
             dim_annotation_color: Color32::WHITE,
+            plane_gizmo: None,
+            hover_highlight: None,
+            hover_color: Color32::WHITE,
         })
         .vertices
         .len();
@@ -1352,11 +2321,14 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
-            preview_plane: None,
+            plane_preview: None,
             active_sketch_face: None,
             dimension_labels: std::slice::from_ref(&dim_label),
             dim_label_view: Some(view),
             dim_annotation_color: Color32::WHITE,
+            plane_gizmo: None,
+            hover_highlight: None,
+            hover_color: Color32::WHITE,
         });
         assert!(!scene.text_vertices.is_empty());
         assert!(!scene.text_indices.is_empty());
@@ -1439,11 +2411,14 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
-            preview_plane: None,
+            plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: None,
             dim_annotation_color: Color32::WHITE,
+            plane_gizmo: None,
+            hover_highlight: None,
+            hover_color: Color32::WHITE,
         })
         .indices
         .len();
@@ -1458,11 +2433,14 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
-            preview_plane: None,
+            plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: None,
             dim_annotation_color: Color32::WHITE,
+            plane_gizmo: None,
+            hover_highlight: None,
+            hover_color: Color32::WHITE,
         });
         let solid_scene = ViewportScene::build(&ViewportSceneInput {
             doc: &solid_doc,
@@ -1475,11 +2453,14 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
-            preview_plane: None,
+            plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: None,
             dim_annotation_color: Color32::WHITE,
+            plane_gizmo: None,
+            hover_highlight: None,
+            hover_color: Color32::WHITE,
         });
         let dashed_line_indices = dashed_scene.indices.len().saturating_sub(grid_indices);
         let solid_line_indices = solid_scene.indices.len().saturating_sub(grid_indices);
