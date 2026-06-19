@@ -1,7 +1,7 @@
 //! Sketch faces and parent/child dependencies between faces and sketch entities.
 
 use crate::model::{
-    ConstructionPlane, ConstructionPlaneParent, Document, FaceId, Line, PlaneAnchor,
+    Circle, ConstructionPlane, ConstructionPlaneParent, Document, FaceId, Line, PlaneAnchor,
     PlaneDefinition, Rect, SketchId,
 };
 use glam::Vec3;
@@ -58,6 +58,18 @@ pub fn sketch_frame(doc: &Document, face: FaceId) -> Option<SketchFrame> {
             let face = doc.sketch_face(rect.sketch)?;
             let parent = sketch_frame(doc, face)?;
             let origin = local_to_world(&parent, rect.x, rect.y);
+            Some(SketchFrame {
+                origin,
+                u_axis: parent.u_axis,
+                v_axis: parent.v_axis,
+                normal: parent.normal,
+            })
+        }
+        FaceId::Circle(i) => {
+            let circle = doc.circles.get(i)?;
+            let face = doc.sketch_face(circle.sketch)?;
+            let parent = sketch_frame(doc, face)?;
+            let origin = local_to_world(&parent, circle.cx, circle.cy);
             Some(SketchFrame {
                 origin,
                 u_axis: parent.u_axis,
@@ -251,6 +263,36 @@ pub fn rect_center_world(doc: &Document, rect: &Rect) -> Option<Vec3> {
     ))
 }
 
+pub fn circle_world_center(doc: &Document, circle: &Circle) -> Option<Vec3> {
+    let frame = sketch_geometry_frame(doc, circle.sketch)?;
+    Some(local_to_world(&frame, circle.cx, circle.cy))
+}
+
+/// Rim-to-rim diameter segment through the circle center.
+pub fn circle_world_diameter_endpoints(doc: &Document, circle: &Circle) -> Option<(Vec3, Vec3)> {
+    let frame = sketch_geometry_frame(doc, circle.sketch)?;
+    let du = circle.diameter_dim_angle.cos() * circle.r;
+    let dv = circle.diameter_dim_angle.sin() * circle.r;
+    Some((
+        local_to_world(&frame, circle.cx - du, circle.cy - dv),
+        local_to_world(&frame, circle.cx + du, circle.cy + dv),
+    ))
+}
+
+/// Sampled world-space points around a circle perimeter (closed loop).
+pub fn circle_world_perimeter(doc: &Document, circle: &Circle, segments: usize) -> Option<Vec<Vec3>> {
+    let frame = sketch_geometry_frame(doc, circle.sketch)?;
+    let segments = segments.max(8);
+    let mut pts = Vec::with_capacity(segments + 1);
+    for i in 0..=segments {
+        let t = i as f32 / segments as f32 * std::f32::consts::TAU;
+        let u = circle.cx + circle.r * t.cos();
+        let v = circle.cy + circle.r * t.sin();
+        pts.push(local_to_world(&frame, u, v));
+    }
+    Some(pts)
+}
+
 /// Axis-aligned bounds in a face's local (u, v) coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SketchZoomBounds {
@@ -319,27 +361,37 @@ impl SketchZoomBounds {
     }
 }
 
+fn extend_sketch_bounds(bounds: &mut Option<SketchZoomBounds>, u0: f32, v0: f32, u1: f32, v1: f32) {
+    let next = SketchZoomBounds::from_uv_rect(u0, v0, u1, v1);
+    *bounds = Some(match bounds.take() {
+        Some(existing) => SketchZoomBounds::union(existing, next),
+        None => next,
+    });
+}
+
+/// Axis-aligned zoom bounds for all geometry in a sketch (rects, lines, and circles).
 fn sketch_local_bounds(doc: &Document, sketch: SketchId) -> Option<SketchZoomBounds> {
-    let mut bounds: Option<SketchZoomBounds> = None;
+    let mut bounds = None;
     for rect in &doc.rects {
-        if rect.sketch != sketch {
-            continue;
+        if rect.sketch == sketch {
+            extend_sketch_bounds(&mut bounds, rect.x, rect.y, rect.x + rect.w, rect.y + rect.h);
         }
-        let next = SketchZoomBounds::from_uv_rect(rect.x, rect.y, rect.x + rect.w, rect.y + rect.h);
-        bounds = Some(match bounds {
-            Some(b) => SketchZoomBounds::union(b, next),
-            None => next,
-        });
     }
     for line in &doc.lines {
-        if line.sketch != sketch {
-            continue;
+        if line.sketch == sketch {
+            extend_sketch_bounds(&mut bounds, line.x0, line.y0, line.x1, line.y1);
         }
-        let next = SketchZoomBounds::from_uv_rect(line.x0, line.y0, line.x1, line.y1);
-        bounds = Some(match bounds {
-            Some(b) => SketchZoomBounds::union(b, next),
-            None => next,
-        });
+    }
+    for circle in &doc.circles {
+        if circle.sketch == sketch {
+            extend_sketch_bounds(
+                &mut bounds,
+                circle.cx - circle.r,
+                circle.cy - circle.r,
+                circle.cx + circle.r,
+                circle.cy + circle.r,
+            );
+        }
     }
     bounds
 }
@@ -385,6 +437,24 @@ pub fn sketch_camera_target(doc: &Document, sketch: SketchId) -> Option<SketchCa
                 zoom: Some(zoom),
             })
         }
+        FaceId::Circle(i) => {
+            let circle = doc.circles.get(i)?;
+            let mut zoom = SketchZoomBounds::from_uv_rect(
+                circle.cx - circle.r,
+                circle.cy - circle.r,
+                circle.cx + circle.r,
+                circle.cy + circle.r,
+            );
+            if let Some(children) = sketch_local_bounds(doc, sketch) {
+                zoom = SketchZoomBounds::union(zoom, children);
+            }
+            let target = local_to_world(&frame, zoom.center_u, zoom.center_v);
+            Some(SketchCameraTarget {
+                target,
+                face_normal,
+                zoom: Some(zoom),
+            })
+        }
     }
 }
 
@@ -400,10 +470,38 @@ pub fn face_label(_doc: &Document, face: FaceId) -> String {
     match face {
         FaceId::ConstructionPlane(i) => format!("Construction plane {i}"),
         FaceId::Rect(i) => format!("Rectangle face {i}"),
+        FaceId::Circle(i) => format!("Circle face {i}"),
     }
 }
 
-/// Pick a sketchable face (rectangle or construction plane) under the cursor.
+fn consider_face_pick(
+    best: &mut Option<(FaceId, f32)>,
+    face: FaceId,
+    dist: f32,
+) {
+    if dist <= crate::construction::FACE_PICK_MARGIN_PX
+        && best.as_ref().is_none_or(|(_, d)| dist < *d)
+    {
+        *best = Some((face, dist));
+    }
+}
+
+fn quad_face_pick_distance(
+    screen: eframe::egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<eframe::egui::Pos2>,
+    corners: [Vec3; 4],
+) -> Option<f32> {
+    let pts: Option<Vec<eframe::egui::Pos2>> = corners.iter().map(|&c| project(c)).collect();
+    let pts = pts?;
+    let quad = [pts[0], pts[1], pts[2], pts[3]];
+    Some(if point_in_screen_quad(screen, quad) {
+        0.0
+    } else {
+        dist_point_to_quad_edges(screen, quad)
+    })
+}
+
+/// Pick a sketchable face (rectangle, circle, or construction plane) under the cursor.
 pub fn pick_sketch_face(
     screen: eframe::egui::Pos2,
     project: &impl Fn(Vec3) -> Option<eframe::egui::Pos2>,
@@ -411,35 +509,47 @@ pub fn pick_sketch_face(
 ) -> Option<FaceId> {
     let mut best: Option<(FaceId, f32)> = None;
 
-    let mut consider = |face: FaceId, corners: [Vec3; 4]| {
-        let pts: Option<Vec<eframe::egui::Pos2>> =
-            corners.iter().map(|&c| project(c)).collect();
-        let Some(pts) = pts else { return };
-        let quad = [pts[0], pts[1], pts[2], pts[3]];
-        let dist = if point_in_screen_quad(screen, quad) {
-            0.0
-        } else {
-            dist_point_to_quad_edges(screen, quad)
-        };
-        if dist <= crate::construction::FACE_PICK_MARGIN_PX {
-            if best.as_ref().is_none_or(|(_, d)| dist < *d) {
-                best = Some((face, dist));
+    for (i, rect) in doc.rects.iter().enumerate().rev() {
+        if let Some(corners) = rect_world_corners(doc, rect) {
+            if let Some(dist) = quad_face_pick_distance(screen, project, corners) {
+                consider_face_pick(&mut best, FaceId::Rect(i), dist);
             }
         }
-    };
+    }
+
+    for (i, circle) in doc.circles.iter().enumerate().rev() {
+        if let Some(dist) = circle_face_pick_distance(screen, doc, circle, project) {
+            consider_face_pick(&mut best, FaceId::Circle(i), dist);
+        }
+    }
 
     for (i, plane) in doc.construction_planes.iter().enumerate().rev() {
         let corners = crate::construction::plane_corners(plane, crate::construction::PLANE_DISPLAY_HALF);
-        consider(FaceId::ConstructionPlane(i), corners);
-    }
-
-    for (i, rect) in doc.rects.iter().enumerate().rev() {
-        if let Some(corners) = rect_world_corners(doc, rect) {
-            consider(FaceId::Rect(i), corners);
+        if let Some(dist) = quad_face_pick_distance(screen, project, corners) {
+            consider_face_pick(&mut best, FaceId::ConstructionPlane(i), dist);
         }
     }
 
     best.map(|(face, _)| face)
+}
+
+fn circle_face_pick_distance(
+    screen: eframe::egui::Pos2,
+    doc: &Document,
+    circle: &Circle,
+    project: &impl Fn(Vec3) -> Option<eframe::egui::Pos2>,
+) -> Option<f32> {
+    let center = circle_world_center(doc, circle)?;
+    let frame = sketch_geometry_frame(doc, circle.sketch)?;
+    let rim = local_to_world(&frame, circle.cx + circle.r, circle.cy);
+    let center_sp = project(center)?;
+    let rim_sp = project(rim)?;
+    let radius = (rim_sp - center_sp).length();
+    if radius < 1e-3 {
+        return None;
+    }
+    let d = (screen - center_sp).length();
+    Some(if d <= radius { 0.0 } else { d - radius })
 }
 
 fn point_in_screen_quad(p: eframe::egui::Pos2, quad: [eframe::egui::Pos2; 4]) -> bool {
@@ -535,6 +645,56 @@ mod tests {
     }
 
     #[test]
+    fn circle_face_frame_origin_is_center() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.circles
+            .push(Circle::from_local_center_radius(sketch, 5.0, 7.0, 10.0, 0.0));
+        let frame = sketch_frame(&doc, FaceId::Circle(0)).unwrap();
+        assert!((frame.origin.x - 5.0).abs() < 1e-4);
+        assert!((frame.origin.y - 7.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn child_sketch_on_circle_face_uses_center_origin() {
+        let mut doc = Document::default();
+        let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.circles
+            .push(Circle::from_local_center_radius(s0, 10.0, 10.0, 5.0, 0.0));
+        let s1 = doc.add_sketch(FaceId::Circle(0));
+        let frame = sketch_geometry_frame(&doc, s1).unwrap();
+        let p = local_to_world(&frame, 2.0, 3.0);
+        assert!((p.x - 12.0).abs() < 1e-4);
+        assert!((p.y - 13.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn pick_sketch_face_finds_circle_interior() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.circles
+            .push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 20.0, 0.0));
+        let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.y));
+        let face = pick_sketch_face(eframe::egui::pos2(5.0, 0.0), &project, &doc);
+        assert_eq!(face, Some(FaceId::Circle(0)));
+    }
+
+    #[test]
+    fn sketch_camera_circle_face_includes_face_and_children() {
+        let mut doc = Document::default();
+        let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.circles
+            .push(Circle::from_local_center_radius(s0, 0.0, 0.0, 20.0, 0.0));
+        let s1 = doc.add_sketch(FaceId::Circle(0));
+        doc.lines
+            .push(Line::from_local_endpoints(s1, -5.0, -5.0, 5.0, 5.0));
+        let target = sketch_camera_target(&doc, s1).unwrap();
+        let zoom = target.zoom.unwrap();
+        assert!(zoom.half_u >= 5.0);
+        assert!(zoom.half_v >= 5.0);
+    }
+
+    #[test]
     fn has_children_detects_dependents() {
         let mut doc = Document::default();
         assert!(!doc.has_children(FaceId::ConstructionPlane(0)));
@@ -553,6 +713,34 @@ mod tests {
         assert!(target.zoom.is_none());
         assert!(target.target.length_squared() < 1e-8);
         assert!((target.face_normal.z - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn sketch_camera_plane_includes_circles_lines_and_all_rects() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 20.0, 20.0));
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 70.0, 0.0, 90.0, 20.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 30.0, 5.0, 50.0, 15.0));
+        doc.circles
+            .push(Circle::from_local_center_radius(sketch, 40.0, 50.0, 15.0, 0.0));
+        let zoom = sketch_camera_target(&doc, sketch)
+            .unwrap()
+            .zoom
+            .expect("mixed sketch should request zoom");
+        assert!(
+            zoom.half_u >= 44.0,
+            "zoom should span both rectangles and the circle, got half_u={}",
+            zoom.half_u
+        );
+        assert!(
+            zoom.half_v >= 32.0,
+            "zoom should include circle vertical extent, got half_v={}",
+            zoom.half_v
+        );
     }
 
     #[test]

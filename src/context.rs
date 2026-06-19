@@ -15,6 +15,7 @@ pub struct ContextInput<'a> {
     pub selection: &'a SceneSelection,
     pub draw_rect_construction: Option<bool>,
     pub draw_line_construction: Option<bool>,
+    pub draw_circle_construction: Option<bool>,
 }
 
 /// Tri-state value for a property shared by multiple targets.
@@ -72,6 +73,15 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             }),
         };
     }
+    if let Some(construction) = input.draw_circle_construction {
+        return ContextPaneContent {
+            name,
+            construction: Some(ConstructionControl {
+                value: tri_state_from_bool(construction),
+                target_count: 1,
+            }),
+        };
+    }
 
     let targets = construction_targets_from_selection(input.selection);
     ContextPaneContent {
@@ -105,7 +115,9 @@ pub fn construction_targets_from_selection(selection: &SceneSelection) -> Vec<Sc
     let mut targets = Vec::new();
     for element in selection.iter() {
         match element {
-            SceneElement::Line(_) | SceneElement::RectEdge(_, _) => targets.push(element),
+            SceneElement::Line(_)
+            | SceneElement::Circle(_)
+            | SceneElement::RectEdge(_, _) => targets.push(element),
             SceneElement::Rect(index) => {
                 for edge_index in 0..4 {
                     targets.push(SceneElement::RectEdge(
@@ -125,7 +137,8 @@ pub fn construction_targets_from_selection(selection: &SceneSelection) -> Vec<Sc
 fn scene_element_sort_key(element: SceneElement) -> (u8, usize, u8) {
     match element {
         SceneElement::Line(i) => (0, i, 0),
-        SceneElement::RectEdge(i, edge) => (1, i, edge.index() as u8),
+        SceneElement::Circle(i) => (1, i, 0),
+        SceneElement::RectEdge(i, edge) => (2, i, edge.index() as u8),
         _ => (2, 0, 0),
     }
 }
@@ -137,8 +150,14 @@ pub fn edge_construction_for_element(doc: &Document, element: SceneElement) -> O
             .get(index)
             .map(|rect| rect.edge_construction(edge)),
         SceneElement::Line(index) => doc.lines.get(index).map(|line| line.construction),
+        SceneElement::Circle(index) => doc.circles.get(index).map(|circle| circle.construction),
         _ => None,
     }
+}
+
+/// Whether a selected line, edge, or curve uses dashed (construction) highlighting.
+pub fn selection_highlight_dashed(doc: &Document, element: SceneElement) -> Option<bool> {
+    edge_construction_for_element(doc, element)
 }
 
 pub fn construction_tri_state(doc: &Document, targets: &[SceneElement]) -> TriState {
@@ -196,7 +215,15 @@ pub fn set_edge_construction(
             line.construction = construction;
             Ok(())
         }
-        _ => Err("Only lines and rectangle edges support construction mode".to_string()),
+        SceneElement::Circle(index) => {
+            let circle = doc
+                .circles
+                .get_mut(index)
+                .ok_or_else(|| format!("Circle {index} not found"))?;
+            circle.construction = construction;
+            Ok(())
+        }
+        _ => Err("Only lines, circles, and rectangle edges support construction mode".to_string()),
     }
 }
 
@@ -312,7 +339,7 @@ pub fn show_pane(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Document, FaceId, Line, Rect};
+    use crate::model::{Circle, Document, FaceId, Line, Rect};
     use crate::selection::click_scene_selection;
 
     fn input<'a>(doc: &'a Document, selection: &'a SceneSelection) -> ContextInput<'a> {
@@ -321,6 +348,7 @@ mod tests {
             selection,
             draw_rect_construction: None,
             draw_line_construction: None,
+            draw_circle_construction: None,
         }
     }
 
@@ -387,6 +415,7 @@ mod tests {
             selection: &SceneSelection::default(),
             draw_rect_construction: Some(true),
             draw_line_construction: None,
+            draw_circle_construction: None,
         });
         assert_eq!(
             content,
@@ -429,6 +458,7 @@ mod tests {
             selection: &SceneSelection::default(),
             draw_rect_construction: Some(false),
             draw_line_construction: None,
+            draw_circle_construction: None,
         });
         assert_eq!(
             content.construction.unwrap().value,
@@ -448,6 +478,7 @@ mod tests {
             selection: &sel,
             draw_rect_construction: Some(true),
             draw_line_construction: None,
+            draw_circle_construction: None,
         });
         assert_eq!(
             content,
@@ -461,6 +492,37 @@ mod tests {
                 }),
             }
         );
+    }
+
+    #[test]
+    fn selection_highlight_dashed_for_construction_primitives() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 5.0, 0.0));
+        doc.lines[0].construction = true;
+        doc.circles
+            .push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
+        doc.circles[0].construction = true;
+        doc.rects.push(Rect::from_local_corners(sketch, 0.0, 0.0, 10.0, 5.0));
+        doc.rects[0].set_edge_construction(RectEdge::Bottom, true);
+
+        assert_eq!(
+            selection_highlight_dashed(&doc, SceneElement::Line(0)),
+            Some(true)
+        );
+        assert_eq!(
+            selection_highlight_dashed(&doc, SceneElement::Circle(0)),
+            Some(true)
+        );
+        assert_eq!(
+            selection_highlight_dashed(&doc, SceneElement::RectEdge(0, RectEdge::Bottom)),
+            Some(true)
+        );
+        assert_eq!(
+            selection_highlight_dashed(&doc, SceneElement::RectEdge(0, RectEdge::Top)),
+            Some(false)
+        );
+        assert_eq!(selection_highlight_dashed(&doc, SceneElement::Rect(0)), None);
     }
 
     #[test]

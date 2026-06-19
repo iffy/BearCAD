@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum FaceId {
     Rect(usize),
+    Circle(usize),
     ConstructionPlane(usize),
 }
 
@@ -26,6 +27,7 @@ impl FaceId {
     pub fn from_script(kind: &str, index: usize) -> Option<Self> {
         match kind.to_ascii_lowercase().as_str() {
             "rect" | "rectangle" => Some(FaceId::Rect(index)),
+            "circle" => Some(FaceId::Circle(index)),
             "plane" | "construction_plane" | "constructionplane" => {
                 Some(FaceId::ConstructionPlane(index))
             }
@@ -288,6 +290,60 @@ impl Line {
     }
 }
 
+/// A circle in face-local coordinates (millimetres, per SPEC §5.3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Circle {
+    pub sketch: SketchId,
+    pub cx: f32,
+    pub cy: f32,
+    pub r: f32,
+    /// Diameter was explicitly typed by the user (show dimension in sketch edit mode).
+    #[serde(default)]
+    pub diameter_locked: bool,
+    /// User-placed outward offset of the diameter label from the dimension line (px).
+    #[serde(default)]
+    pub diameter_dim_offset: Option<f32>,
+    /// Expression text when [`diameter_locked`] is set.
+    #[serde(default)]
+    pub diameter_expr: Option<String>,
+    /// Angle (radians) of the diameter dimension line in local (u, v) coords.
+    #[serde(default)]
+    pub diameter_dim_angle: f32,
+    /// Reference geometry (dashed, construction color); not solid model geometry.
+    #[serde(default)]
+    pub construction: bool,
+    /// User-visible label in the Elements pane; empty uses the default.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Circle {
+    pub fn from_local_center_radius(
+        sketch: SketchId,
+        cx: f32,
+        cy: f32,
+        r: f32,
+        diameter_dim_angle: f32,
+    ) -> Self {
+        Self {
+            sketch,
+            cx,
+            cy,
+            r,
+            diameter_locked: false,
+            diameter_dim_offset: None,
+            diameter_expr: None,
+            diameter_dim_angle,
+            construction: false,
+            name: None,
+        }
+    }
+
+    pub fn diameter(&self) -> f32 {
+        self.r * 2.0
+    }
+}
+
 /// Reference geometry a construction plane was built from (for later editing).
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlaneAnchor {
@@ -347,6 +403,7 @@ pub enum DistanceTarget {
     LineLength(usize),
     RectWidth(usize),
     RectHeight(usize),
+    CircleDiameter(usize),
 }
 
 /// Kind of sketch constraint.
@@ -376,6 +433,7 @@ pub enum ShapeKind {
     Sketch,
     Rect,
     Line,
+    Circle,
     Parameter,
     Constraint,
     ConstructionPlane,
@@ -388,6 +446,7 @@ pub struct Document {
     pub sketches: Vec<Sketch>,
     pub rects: Vec<Rect>,
     pub lines: Vec<Line>,
+    pub circles: Vec<Circle>,
     pub constraints: Vec<Constraint>,
     /// Construction planes live in the document but are not written to `.le3`.
     #[serde(skip)]
@@ -402,6 +461,7 @@ impl Default for Document {
             sketches: Vec::new(),
             rects: Vec::new(),
             lines: Vec::new(),
+            circles: Vec::new(),
             constraints: Vec::new(),
             construction_planes: vec![default_xy_plane()],
             shape_order: Vec::new(),
@@ -424,6 +484,7 @@ impl Document {
     pub fn sketch_has_geometry(&self, sketch: SketchId) -> bool {
         self.rects.iter().any(|r| r.sketch == sketch)
             || self.lines.iter().any(|l| l.sketch == sketch)
+            || self.circles.iter().any(|c| c.sketch == sketch)
     }
 
     pub fn has_children(&self, face: FaceId) -> bool {
@@ -451,6 +512,11 @@ mod tests {
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         let line = Line::from_local_endpoints(sketch, 0.0, 0.0, 3.0, 4.0);
         assert!((line.length() - 5.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn face_id_from_script_parses_circle() {
+        assert_eq!(FaceId::from_script("circle", 2), Some(FaceId::Circle(2)));
     }
 
     #[test]
@@ -509,5 +575,13 @@ mod tests {
         assert!(!doc.sketch_has_geometry(sketch));
         doc.rects.push(Rect::from_local_corners(sketch, 0.0, 0.0, 1.0, 1.0));
         assert!(doc.sketch_has_geometry(sketch));
+    }
+
+    #[test]
+    fn circle_diameter_is_twice_radius() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let circle = Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0);
+        assert!((circle.diameter() - 10.0).abs() < 1e-4);
     }
 }

@@ -24,6 +24,8 @@ image = "0.25"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.muda]
 version = "0.19"
 default-features = false
+# Linux/BSD need the gtk backend compiled in; macOS/Windows ignore this feature.
+features = ["gtk"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.raw-window-handle]
 version = "0.6"

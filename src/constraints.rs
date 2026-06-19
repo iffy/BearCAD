@@ -5,7 +5,7 @@
 //! first-class document element and evaluated when parameters or expressions change.
 
 use crate::model::{Constraint, ConstraintKind, DistanceTarget, Document, RectEdge, SketchId};
-use crate::value::{eval_length_mm_in_doc, format_length_display};
+use crate::value::{eval_length_mm_in_doc, format_diameter_display, format_length_display};
 
 /// Index into [`Document::constraints`].
 pub type ConstraintId = usize;
@@ -86,6 +86,7 @@ pub fn constraint_evaluated_length(doc: &Document, index: ConstraintId) -> Optio
         DistanceTarget::LineLength(i) => doc.lines.get(i).map(|l| l.length()),
         DistanceTarget::RectWidth(i) => doc.rects.get(i).map(|r| r.w),
         DistanceTarget::RectHeight(i) => doc.rects.get(i).map(|r| r.h),
+        DistanceTarget::CircleDiameter(i) => doc.circles.get(i).map(|c| c.diameter()),
     })
 }
 
@@ -93,9 +94,16 @@ pub fn constraint_label(doc: &Document, index: ConstraintId) -> String {
     let Some(constraint) = doc.constraints.get(index) else {
         return format!("Constraint {index}");
     };
-    let value = constraint_evaluated_length(doc, index)
-        .map(format_length_display)
-        .unwrap_or_else(|| "?".to_string());
+    let value = match constraint.kind {
+        ConstraintKind::Distance {
+            target: DistanceTarget::CircleDiameter(_),
+        } => constraint_evaluated_length(doc, index)
+            .map(format_diameter_display)
+            .unwrap_or_else(|| "?".to_string()),
+        ConstraintKind::Distance { .. } => constraint_evaluated_length(doc, index)
+            .map(format_length_display)
+            .unwrap_or_else(|| "?".to_string()),
+    };
     let target_label = match constraint.kind {
         ConstraintKind::Distance { target } => distance_target_label(target),
     };
@@ -107,6 +115,7 @@ fn distance_target_label(target: DistanceTarget) -> String {
         DistanceTarget::LineLength(i) => format!("Line {i} length"),
         DistanceTarget::RectWidth(i) => format!("Rectangle {i} width"),
         DistanceTarget::RectHeight(i) => format!("Rectangle {i} height"),
+        DistanceTarget::CircleDiameter(i) => format!("Circle {i} diameter"),
     }
 }
 
@@ -144,6 +153,10 @@ pub fn distance_target_from_scene_element(
                 RectEdge::Left | RectEdge::Right => Some(DistanceTarget::RectHeight(rect_index)),
             }
         }
+        SceneElement::Circle(index) => {
+            let circle = doc.circles.get(index)?;
+            (circle.sketch == sketch).then_some(DistanceTarget::CircleDiameter(index))
+        }
         _ => None,
     }
 }
@@ -169,6 +182,10 @@ pub fn distance_target_from_pick(
                 RectEdge::Left | RectEdge::Right => Some(DistanceTarget::RectHeight(*rect_index)),
             }
         }
+        crate::construction::PickTargetKind::Circle(index) => {
+            let circle = doc.circles.get(*index)?;
+            (circle.sketch == sketch).then_some(DistanceTarget::CircleDiameter(*index))
+        }
         _ => None,
     }
 }
@@ -179,6 +196,7 @@ pub fn default_distance_expression(doc: &Document, target: DistanceTarget) -> St
         DistanceTarget::LineLength(i) => doc.lines.get(i).map(|l| l.length()),
         DistanceTarget::RectWidth(i) => doc.rects.get(i).map(|r| r.w),
         DistanceTarget::RectHeight(i) => doc.rects.get(i).map(|r| r.h),
+        DistanceTarget::CircleDiameter(i) => doc.circles.get(i).map(|c| c.diameter()),
     };
     length
         .map(format_length_display)
@@ -203,6 +221,15 @@ fn validate_distance_target(doc: &Document, sketch: SketchId, target: DistanceTa
                 .ok_or_else(|| format!("Rectangle {i} not found"))?;
             if rect.sketch != sketch {
                 return Err(format!("Rectangle {i} is not in sketch {sketch}"));
+            }
+        }
+        DistanceTarget::CircleDiameter(i) => {
+            let circle = doc
+                .circles
+                .get(i)
+                .ok_or_else(|| format!("Circle {i} not found"))?;
+            if circle.sketch != sketch {
+                return Err(format!("Circle {i} is not in sketch {sketch}"));
             }
         }
     }
@@ -240,6 +267,10 @@ fn clear_legacy_dimension_locks(doc: &mut Document) {
         line.length_locked = false;
         line.length_expr = None;
     }
+    for circle in &mut doc.circles {
+        circle.diameter_locked = false;
+        circle.diameter_expr = None;
+    }
 }
 
 fn sync_legacy_dimension_flags(
@@ -276,6 +307,15 @@ fn sync_legacy_dimension_flags(
                 }
             }
         }
+        DistanceTarget::CircleDiameter(i) => {
+            if let Some(circle) = doc.circles.get_mut(i) {
+                circle.diameter_locked = true;
+                circle.diameter_expr = Some(expression.to_string());
+                if dim_offset.is_some() {
+                    circle.diameter_dim_offset = dim_offset;
+                }
+            }
+        }
     }
 }
 
@@ -297,6 +337,13 @@ fn apply_distance_constraint(doc: &mut Document, target: DistanceTarget, value: 
         }
         DistanceTarget::LineLength(i) => {
             apply_line_length(doc, i, value)?;
+        }
+        DistanceTarget::CircleDiameter(i) => {
+            let circle = doc
+                .circles
+                .get_mut(i)
+                .ok_or_else(|| format!("Circle {i} not found"))?;
+            circle.r = value / 2.0;
         }
     }
     Ok(())
@@ -370,6 +417,22 @@ pub fn migrate_legacy_dimensions(doc: &mut Document) {
             }
         }
     }
+    for (i, circle) in doc.circles.iter().enumerate() {
+        if circle.diameter_locked {
+            let expr = circle
+                .diameter_expr
+                .clone()
+                .unwrap_or_else(|| format_length_display(circle.diameter()));
+            if find_distance_constraint(doc, DistanceTarget::CircleDiameter(i)).is_none() {
+                pending.push((
+                    circle.sketch,
+                    DistanceTarget::CircleDiameter(i),
+                    expr,
+                    circle.diameter_dim_offset,
+                ));
+            }
+        }
+    }
     for (sketch, target, expr, dim_offset) in pending {
         let _ = add_distance_constraint_internal(doc, sketch, target, expr, dim_offset);
     }
@@ -409,11 +472,15 @@ pub fn distance_target_segment_endpoints(
             let edge = match target {
                 DistanceTarget::RectWidth(_) => RectEdge::Bottom,
                 DistanceTarget::RectHeight(_) => RectEdge::Left,
-                DistanceTarget::LineLength(_) => unreachable!(),
+                DistanceTarget::LineLength(_) | DistanceTarget::CircleDiameter(_) => unreachable!(),
             };
             let segments = crate::construction::rect_edge_segments(doc, rect);
             let (a, b) = segments[edge.index()];
             Some((a, b))
+        }
+        DistanceTarget::CircleDiameter(i) => {
+            let circle = doc.circles.get(i)?;
+            crate::face::circle_world_diameter_endpoints(doc, circle)
         }
     }
 }
@@ -441,7 +508,7 @@ pub fn propagate_parameter_rename_to_constraints(doc: &mut Document, old: &str, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Document, FaceId, Line, Rect, ShapeKind};
+    use crate::model::{Circle, Document, FaceId, Line, Rect, ShapeKind};
 
     fn sketch_doc() -> (Document, SketchId) {
         let mut doc = Document::default();
@@ -581,6 +648,41 @@ mod tests {
             Some(DistanceTarget::LineLength(0))
         );
         assert_eq!(distance_target_from_pick(&doc, sketch + 1, &kind), None);
+    }
+
+    #[test]
+    fn add_distance_constraint_for_circle_diameter() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.circles
+            .push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.shape_order.push(ShapeKind::Circle);
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::CircleDiameter(0),
+            "30mm".to_string(),
+        )
+        .unwrap();
+        assert!((doc.circles[0].r - 15.0).abs() < 1e-3);
+        assert!((doc.circles[0].diameter() - 30.0).abs() < 1e-3);
+        assert!(doc.circles[0].diameter_locked);
+    }
+
+    #[test]
+    fn circle_constraint_label_uses_diameter_prefix() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.circles
+            .push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::CircleDiameter(0),
+            "10mm".to_string(),
+        )
+        .unwrap();
+        let label = constraint_label(&doc, 0);
+        assert!(label.contains("Ø10.0 mm"));
+        assert!(label.contains("Circle 0 diameter"));
     }
 
     #[test]

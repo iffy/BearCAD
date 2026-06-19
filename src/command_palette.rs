@@ -21,11 +21,13 @@ pub enum PaletteCommandId {
     ToolSketch,
     ToolRectangle,
     ToolLine,
+    ToolCircle,
     ToolDimension,
     ToolPlane,
     ExitSketch,
     CommitRectangle,
     CommitLine,
+    CommitCircle,
     CommitPlane,
     CancelOperation,
     ViewFront,
@@ -87,6 +89,7 @@ impl PaletteCommand {
                 PaletteOutcome::Action(Action::SetTool(Tool::Rectangle))
             }
             PaletteCommandId::ToolLine => PaletteOutcome::Action(Action::SetTool(Tool::Line)),
+            PaletteCommandId::ToolCircle => PaletteOutcome::Action(Action::SetTool(Tool::Circle)),
             PaletteCommandId::ToolDimension => {
                 PaletteOutcome::Action(Action::SetTool(Tool::Dimension))
             }
@@ -96,6 +99,7 @@ impl PaletteCommand {
             PaletteCommandId::ExitSketch => PaletteOutcome::Action(Action::ExitSketch),
             PaletteCommandId::CommitRectangle => PaletteOutcome::Action(Action::CommitRectangle),
             PaletteCommandId::CommitLine => PaletteOutcome::Action(Action::CommitLine),
+            PaletteCommandId::CommitCircle => PaletteOutcome::Action(Action::CommitCircle),
             PaletteCommandId::CommitPlane => {
                 PaletteOutcome::Action(Action::CommitConstructionPlane)
             }
@@ -231,6 +235,16 @@ pub fn commands_for_state(state: &AppState) -> Vec<PaletteCommand> {
             ),
         );
     }
+    if state.creating_circle.is_some() {
+        push(
+            &mut out,
+            PaletteCommand::new(
+                PaletteCommandId::CommitCircle,
+                "Commit Circle",
+                "commit circle enter finish",
+            ),
+        );
+    }
     if state.creating_plane.is_some() {
         push(
             &mut out,
@@ -339,6 +353,11 @@ const BASE_COMMANDS: &[PaletteCommand] = &[
         "rectangle tool rect draw",
     ),
     PaletteCommand::new(PaletteCommandId::ToolLine, "Line Tool", "line tool draw segment"),
+    PaletteCommand::new(
+        PaletteCommandId::ToolCircle,
+        "Circle Tool",
+        "circle tool draw diameter",
+    ),
     PaletteCommand::new(
         PaletteCommandId::ToolDimension,
         "Dimension Tool",

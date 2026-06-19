@@ -31,7 +31,7 @@ use crate::constraints::{
     set_constraint_expression, ConstraintId,
 };
 use crate::model::{
-    ConstructionPlane, DistanceTarget, Document, FaceId, Line, Rect, RectEdge, ShapeKind,
+    Circle, ConstructionPlane, DistanceTarget, Document, FaceId, Line, Rect, RectEdge, ShapeKind,
 };
 use crate::face::SketchFrame;
 use crate::parameters::{
@@ -54,6 +54,9 @@ pub enum Tool {
     /// Click to fix first endpoint; move mouse for direction and length;
     /// on-screen length input allows typing a constraint; Enter commits.
     Line,
+    /// Click to fix center; move mouse for radius; on-screen diameter input allows
+    /// typing a constraint; Enter commits.
+    Circle,
     /// Click a face or axis/line, then set offset (and angle for axes); Enter commits.
     ConstructionPlane,
     /// Pick a face to enter sketch mode; line/rectangle tools draw on that face.
@@ -68,6 +71,7 @@ impl Tool {
             "select" => Some(Tool::Select),
             "rectangle" | "rect" => Some(Tool::Rectangle),
             "line" => Some(Tool::Line),
+            "circle" => Some(Tool::Circle),
             "plane" | "construction_plane" | "constructionplane" | "construction plane" => {
                 Some(Tool::ConstructionPlane)
             }
@@ -78,7 +82,7 @@ impl Tool {
     }
 
     pub fn is_sketch_edit_tool(self) -> bool {
-        matches!(self, Tool::Rectangle | Tool::Line | Tool::Dimension)
+        matches!(self, Tool::Rectangle | Tool::Line | Tool::Circle | Tool::Dimension)
     }
 }
 
@@ -139,6 +143,62 @@ pub struct CreatingLine {
     pub pending_focus: bool,
     /// Committed line is construction geometry when true.
     pub construction: bool,
+}
+
+/// State for the in-progress (pre-Enter) circle creation.
+#[derive(Clone, Debug)]
+pub struct CreatingCircle {
+    /// Fixed center in ground coords.
+    pub origin: Vec3,
+    /// Text content of the diameter input.
+    pub text: String,
+    /// Current mouse projected ground point (drives free radius + direction).
+    pub last_mouse: Vec3,
+    /// Tracks whether user has typed into the diameter field.
+    pub user_edited: bool,
+    /// When true, the diameter input should claim keyboard focus.
+    pub pending_focus: bool,
+    /// Committed circle is construction geometry when true.
+    pub construction: bool,
+}
+
+impl CreatingCircle {
+    pub fn radius(&self, frame: &SketchFrame, doc: &Document) -> f32 {
+        let (cu, cv) = world_to_local(frame, self.origin);
+        let (mu, mv) = world_to_local(frame, self.last_mouse);
+        let du = mu - cu;
+        let dv = mv - cv;
+        let dist = (du * du + dv * dv).sqrt();
+        if self.user_edited {
+            parse_positive_length_or_in_doc(&self.text, doc, dist * 2.0) / 2.0
+        } else {
+            dist
+        }
+    }
+
+    pub fn diameter_dim_angle(&self, frame: &SketchFrame) -> f32 {
+        let (cu, cv) = world_to_local(frame, self.origin);
+        let (mu, mv) = world_to_local(frame, self.last_mouse);
+        let du = mu - cu;
+        let dv = mv - cv;
+        if du * du + dv * dv < 1e-12 {
+            0.0
+        } else {
+            dv.atan2(du)
+        }
+    }
+
+    /// Point on the circle rim in world space, respecting any locked diameter.
+    pub fn rim_point(&self, frame: &SketchFrame, doc: &Document) -> Vec3 {
+        let r = self.radius(frame, doc);
+        let angle = self.diameter_dim_angle(frame);
+        let (cu, cv) = world_to_local(frame, self.origin);
+        crate::face::local_to_world(
+            frame,
+            cu + angle.cos() * r,
+            cv + angle.sin() * r,
+        )
+    }
 }
 
 impl CreatingLine {
@@ -239,6 +299,9 @@ pub enum Action {
     CommitLine,
     SetLineLength { value: String },
     FocusLineLength,
+    CommitCircle,
+    SetCircleDiameter { value: String },
+    FocusCircleDiameter,
     SetDimLabelOffset {
         target: DimLabelTarget,
         offset: f32,
@@ -492,6 +555,17 @@ pub fn constraint_is_line_length(doc: &Document, target: DimLabelTarget) -> bool
     })
 }
 
+pub fn constraint_is_circle_diameter(doc: &Document, target: DimLabelTarget) -> bool {
+    doc.constraints.get(target).is_some_and(|c| {
+        matches!(
+            c.kind,
+            crate::model::ConstraintKind::Distance {
+                target: DistanceTarget::CircleDiameter(_)
+            }
+        )
+    })
+}
+
 /// In-progress edit of a sketch dimension (Select or Dimension tool).
 #[derive(Clone, Debug, PartialEq)]
 pub enum DimEditTarget {
@@ -604,7 +678,8 @@ pub struct AppState {
     pub cam: Camera,
     pub creating_rect: Option<CreatingRect>,
     pub creating_line: Option<CreatingLine>,
-    /// Shared construction draw mode for rectangle and line tools.
+    pub creating_circle: Option<CreatingCircle>,
+    /// Shared construction draw mode for rectangle, line, and circle tools.
     pub draw_construction: bool,
     pub creating_plane: Option<CreatingConstructionPlane>,
     pub panes: PaneVisibility,
@@ -627,6 +702,7 @@ impl Default for AppState {
             cam: Camera::default(),
             creating_rect: None,
             creating_line: None,
+            creating_circle: None,
             draw_construction: false,
             creating_plane: None,
             panes: PaneVisibility::default(),
@@ -661,6 +737,7 @@ fn distance_target_status_label(target: DistanceTarget) -> String {
         DistanceTarget::LineLength(i) => format!("line {i}"),
         DistanceTarget::RectWidth(i) => format!("rectangle {i} width"),
         DistanceTarget::RectHeight(i) => format!("rectangle {i} height"),
+        DistanceTarget::CircleDiameter(i) => format!("circle {i} diameter"),
     }
 }
 
@@ -670,6 +747,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::Sketch(i) => format!("Sketch {i}"),
         SceneElement::Rect(i) => format!("Rectangle {i}"),
         SceneElement::Line(i) => format!("Line {i}"),
+        SceneElement::Circle(i) => format!("Circle {i}"),
         SceneElement::RectEdge(i, edge) => {
             format!("Rectangle {i} {} edge", edge.script_name())
         }
@@ -692,6 +770,7 @@ impl AppState {
         self.sketch_session.is_some()
             && self.creating_rect.is_none()
             && self.creating_line.is_none()
+            && self.creating_circle.is_none()
     }
 
     /// Start editing a dimension on the sole selected segment, if applicable.
@@ -756,6 +835,19 @@ impl AppState {
         )
     }
 
+    /// Active or pending construction draw mode while the circle tool is selected.
+    pub fn circle_draw_construction_mode(&self) -> Option<bool> {
+        if self.tool != Tool::Circle {
+            return None;
+        }
+        Some(
+            self.creating_circle
+                .as_ref()
+                .map(|cc| cc.construction)
+                .unwrap_or(self.draw_construction),
+        )
+    }
+
     pub fn apply(&mut self, action: Action) -> ActionResult {
         match action {
             Action::NewDocument => {
@@ -765,6 +857,7 @@ impl AppState {
                 self.cam.set_view_up(None);
                 self.creating_rect = None;
                 self.creating_line = None;
+                self.creating_circle = None;
                 self.creating_plane = None;
                 self.element_visibility = ElementVisibility::default();
                 self.scene_selection.clear();
@@ -808,6 +901,7 @@ impl AppState {
                 self.cam.set_view_up(None);
                 self.creating_rect = None;
                 self.creating_line = None;
+                self.creating_circle = None;
                 self.element_visibility = ElementVisibility::default();
                 self.status = "Cleared".to_string();
                 ActionResult::Ok
@@ -836,6 +930,10 @@ impl AppState {
                     Some(ShapeKind::Line) => {
                         self.doc.lines.pop();
                         self.status = "Undid last line".to_string();
+                    }
+                    Some(ShapeKind::Circle) => {
+                        self.doc.circles.pop();
+                        self.status = "Undid last circle".to_string();
                     }
                     Some(ShapeKind::Constraint) => {
                         self.doc.constraints.pop();
@@ -880,6 +978,9 @@ impl AppState {
                 if self.creating_line.is_some() && tool != Tool::Line {
                     self.creating_line = None;
                 }
+                if self.creating_circle.is_some() && tool != Tool::Circle {
+                    self.creating_circle = None;
+                }
                 if self.creating_plane.is_some() && tool != Tool::ConstructionPlane {
                     self.creating_plane = None;
                 }
@@ -896,6 +997,8 @@ impl AppState {
                     Tool::Rectangle => "Rectangle tool — click a face".to_string(),
                     Tool::Line if self.sketch_session.is_some() => "Line tool".to_string(),
                     Tool::Line => "Line tool — click a face".to_string(),
+                    Tool::Circle if self.sketch_session.is_some() => "Circle tool".to_string(),
+                    Tool::Circle => "Circle tool — click a face".to_string(),
                     Tool::Dimension if self.sketch_session.is_some() => {
                         "Dimension tool — click a segment".to_string()
                     }
@@ -912,6 +1015,7 @@ impl AppState {
                     self.status = "Cancelled".to_string();
                 } else if self.creating_rect.take().is_some()
                     || self.creating_line.take().is_some()
+                    || self.creating_circle.take().is_some()
                     || self.creating_plane.take().is_some()
                 {
                     self.status = "Cancelled".to_string();
@@ -922,6 +1026,7 @@ impl AppState {
                     } else {
                         self.creating_rect = None;
                         self.creating_line = None;
+                        self.creating_circle = None;
                         self.tool = Tool::Select;
                         self.status = "Select tool".to_string();
                     }
@@ -1128,7 +1233,11 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::SetDimLabelOffset { target, offset } => {
-                let offset = crate::dimensions::effective_dim_offset(Some(offset));
+                let offset = if constraint_is_circle_diameter(&self.doc, target) {
+                    crate::dimensions::effective_circle_diameter_label_offset(Some(offset))
+                } else {
+                    crate::dimensions::effective_dim_offset(Some(offset))
+                };
                 match set_constraint_dim_offset(&mut self.doc, target, offset) {
                     Ok(()) => ActionResult::Ok,
                     Err(e) => {
@@ -1153,6 +1262,90 @@ impl AppState {
                     return ActionResult::Err("No line in progress".to_string());
                 };
                 cl.pending_focus = true;
+                ActionResult::Ok
+            }
+            Action::CommitCircle => {
+                let Some(session) = self.sketch_session else {
+                    return ActionResult::Err("Not in sketch mode".to_string());
+                };
+                let Some(frame) = sketch_geometry_frame(&self.doc, session.sketch) else {
+                    return ActionResult::Err("Sketch no longer exists".to_string());
+                };
+                let Some(cc) = self.creating_circle.take() else {
+                    return ActionResult::Err("No circle in progress".to_string());
+                };
+                let (cu, cv) = world_to_local(&frame, cc.origin);
+                let r = cc.radius(&frame, &self.doc);
+                let angle = cc.diameter_dim_angle(&frame);
+                let mut circle =
+                    Circle::from_local_center_radius(session.sketch, cu, cv, r, angle);
+                circle.construction = cc.construction;
+                if circle.r > 0.25 {
+                    self.doc.circles.push(circle);
+                    self.doc.shape_order.push(ShapeKind::Circle);
+                    let circle_index = self.doc.circles.len() - 1;
+                    if cc.user_edited {
+                        if let Err(e) = add_distance_constraint(
+                            &mut self.doc,
+                            session.sketch,
+                            DistanceTarget::CircleDiameter(circle_index),
+                            cc.text.clone(),
+                        ) {
+                            self.doc.circles.pop();
+                            self.doc.shape_order.pop();
+                            self.creating_circle = Some(cc);
+                            self.status = e.clone();
+                            return ActionResult::Err(e);
+                        }
+                    }
+                    let diameter = self.doc.circles.last().unwrap().diameter();
+                    self.status = format!("Added circle (Ø{diameter:.1} mm)");
+                    ActionResult::Ok
+                } else {
+                    self.creating_circle = Some(cc);
+                    self.status = "Circle too small".to_string();
+                    ActionResult::Err("Circle too small".to_string())
+                }
+            }
+            Action::SetCircleDiameter { value } => {
+                if let Some(edit) = &mut self.editing_committed_dim {
+                    let matches = match &edit.target {
+                        DimEditTarget::Constraint(id) => {
+                            constraint_is_circle_diameter(&self.doc, *id)
+                        }
+                        DimEditTarget::New(DistanceTarget::CircleDiameter(_)) => true,
+                        DimEditTarget::New(_) => false,
+                    };
+                    if matches {
+                        edit.text = value;
+                        return ActionResult::Ok;
+                    }
+                }
+                let Some(cc) = &mut self.creating_circle else {
+                    return ActionResult::Err("No circle in progress".to_string());
+                };
+                cc.text = value;
+                cc.user_edited = true;
+                ActionResult::Ok
+            }
+            Action::FocusCircleDiameter => {
+                if let Some(edit) = &mut self.editing_committed_dim {
+                    let matches = match &edit.target {
+                        DimEditTarget::Constraint(id) => {
+                            constraint_is_circle_diameter(&self.doc, *id)
+                        }
+                        DimEditTarget::New(DistanceTarget::CircleDiameter(_)) => true,
+                        DimEditTarget::New(_) => false,
+                    };
+                    if matches {
+                        edit.pending_focus = true;
+                        return ActionResult::Ok;
+                    }
+                }
+                let Some(cc) = &mut self.creating_circle else {
+                    return ActionResult::Err("No circle in progress".to_string());
+                };
+                cc.pending_focus = true;
                 ActionResult::Ok
             }
             Action::BeginEditCommittedDim { target } => {
@@ -1510,6 +1703,12 @@ impl AppState {
                     self.status = draw_mode_status("Line", construction);
                     return ActionResult::Ok;
                 }
+                if let Some(cc) = &mut self.creating_circle {
+                    cc.construction = construction;
+                    self.draw_construction = construction;
+                    self.status = draw_mode_status("Circle", construction);
+                    return ActionResult::Ok;
+                }
                 if self.tool == Tool::Rectangle {
                     self.draw_construction = construction;
                     self.status = draw_mode_status("Rectangle", construction);
@@ -1518,6 +1717,11 @@ impl AppState {
                 if self.tool == Tool::Line {
                     self.draw_construction = construction;
                     self.status = draw_mode_status("Line", construction);
+                    return ActionResult::Ok;
+                }
+                if self.tool == Tool::Circle {
+                    self.draw_construction = construction;
+                    self.status = draw_mode_status("Circle", construction);
                     return ActionResult::Ok;
                 }
                 let targets = construction_targets_from_selection(&self.scene_selection);
@@ -1550,6 +1754,12 @@ impl AppState {
                     self.status = draw_mode_status("Line", cl.construction);
                     return ActionResult::Ok;
                 }
+                if let Some(cc) = &mut self.creating_circle {
+                    cc.construction = !cc.construction;
+                    self.draw_construction = cc.construction;
+                    self.status = draw_mode_status("Circle", cc.construction);
+                    return ActionResult::Ok;
+                }
                 if self.tool == Tool::Rectangle {
                     self.draw_construction = !self.draw_construction;
                     self.status = draw_mode_status("Rectangle", self.draw_construction);
@@ -1558,6 +1768,11 @@ impl AppState {
                 if self.tool == Tool::Line {
                     self.draw_construction = !self.draw_construction;
                     self.status = draw_mode_status("Line", self.draw_construction);
+                    return ActionResult::Ok;
+                }
+                if self.tool == Tool::Circle {
+                    self.draw_construction = !self.draw_construction;
+                    self.status = draw_mode_status("Circle", self.draw_construction);
                     return ActionResult::Ok;
                 }
                 let targets = construction_targets_from_selection(&self.scene_selection);
@@ -2231,6 +2446,26 @@ mod tests {
     }
 
     #[test]
+    fn commit_circle_adds_to_document_with_diameter_constraint() {
+        let mut state = AppState::default();
+        begin_default_sketch(&mut state);
+        state.creating_circle = Some(CreatingCircle {
+            origin: Vec3::ZERO,
+            text: "20".to_string(),
+            last_mouse: Vec3::new(10.0, 0.0, 0.0),
+            user_edited: true,
+            pending_focus: false,
+            construction: false,
+        });
+        state.apply(Action::CommitCircle);
+        assert_eq!(state.doc.circles.len(), 1);
+        assert!((state.doc.circles[0].diameter() - 20.0).abs() < 1e-4);
+        assert_eq!(state.doc.constraints.len(), 1);
+        assert!(state.doc.circles[0].diameter_locked);
+        assert!(state.creating_circle.is_none());
+    }
+
+    #[test]
     fn dimension_tool_begins_edit_when_line_selected() {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
@@ -2653,6 +2888,50 @@ mod tests {
     }
 
     #[test]
+    fn open_sketch_zooms_to_include_circles_beyond_rectangles() {
+        let mut state = AppState::default();
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        state
+            .doc
+            .rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 20.0, 20.0));
+        state.doc.circles.push(Circle::from_local_center_radius(
+            sketch, 80.0, 0.0, 20.0, 0.0,
+        ));
+        let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(800.0, 600.0));
+
+        state.apply(Action::OpenSketch {
+            sketch,
+            viewport: Some(viewport),
+        });
+        while state.cam.tick_transition(0.05) {}
+
+        let frame = sketch_frame(&state.doc, FaceId::ConstructionPlane(0)).unwrap();
+        let bounds = sketch_camera_target(&state.doc, sketch)
+            .unwrap()
+            .zoom
+            .expect("rectangles and circles should produce zoom bounds");
+        assert!(
+            bounds.half_u >= 50.0,
+            "camera bounds should include distant circles, got half_u={}",
+            bounds.half_u
+        );
+        let corners = bounds.world_corners(&frame);
+        let view = (state.cam.eye() - state.cam.target).normalize();
+        let fitted = state.cam.distance_to_fit_corners(
+            state.cam.target,
+            view,
+            &corners,
+            SKETCH_EDIT_FRAME_PADDING_PX,
+            viewport,
+        );
+        assert!(
+            (state.cam.distance - fitted).abs() < 1.0,
+            "open sketch should frame all sketch geometry"
+        );
+    }
+
+    #[test]
     fn begin_sketch_creates_new_sketch_each_time() {
         let mut state = AppState::default();
         begin_default_sketch(&mut state);
@@ -2667,6 +2946,27 @@ mod tests {
             state.doc.sketches[1].face,
             FaceId::ConstructionPlane(0)
         );
+    }
+
+    #[test]
+    fn begin_sketch_on_circle_face_hosts_child_sketch() {
+        let mut state = AppState::default();
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        state.doc.circles.push(Circle::from_local_center_radius(
+            sketch, 0.0, 0.0, 20.0, 0.0,
+        ));
+        state.doc.shape_order.push(ShapeKind::Circle);
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        assert!(matches!(
+            state.apply(Action::BeginSketch {
+                face: FaceId::Circle(0),
+                viewport: Some(viewport),
+            }),
+            ActionResult::Ok
+        ));
+        assert_eq!(state.doc.sketches.len(), 2);
+        assert_eq!(state.doc.sketches[1].face, FaceId::Circle(0));
+        assert!(state.sketch_session.is_some());
     }
 
     #[test]

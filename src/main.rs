@@ -34,8 +34,8 @@ mod value;
 mod view_cube;
 
 use actions::{
-    Action, AppState, CreatingLine, CreatingRect, DimEditTarget, DimLabelTarget, Pane, RectAxis,
-    SketchSession, Tool,
+    constraint_is_circle_diameter, Action, AppState, CreatingCircle, CreatingLine, CreatingRect,
+    DimEditTarget, DimLabelTarget, Pane, RectAxis, SketchSession, Tool,
 };
 use constraints::{
     constraint_evaluated_length, constraint_segment_endpoints, distance_target_from_pick,
@@ -45,24 +45,28 @@ use command_palette::{commands_for_state, filter_commands, show_palette, Palette
 use hierarchy::SceneElement;
 use construction::{
     angle_from_axis_plane_hit, axis_angle_handle, axis_gizmo_hit, axis_normal,
-    axis_offset_handle, draw_axis_plane_gizmo, draw_offset_gizmo, draw_quad_face_highlight,
+    axis_offset_handle, draw_axis_plane_gizmo, draw_circle_face_highlight, draw_offset_gizmo,
+    draw_quad_face_highlight,
     offset_from_normal_drag, offset_gizmo_hit, offset_handle, parent_from_pick_target,
     plane_corners, preview_plane_edit_dependents, rect_edge_segments, resolve_pick_target,
     scene_element_from_pick, AxisGizmoDrag,
     AxisGizmoHit, PlaneDim, PlaneReference, AXIS_GIZMO_HANDLE_HIT_RADIUS_PX, PLANE_DISPLAY_HALF,
 };
 use dimensions::{
-    draw_linear_dimension, effective_dim_offset, planar_dimension_label_layout, PlanarLabelView,
-    linear_dimension_world_geom, outward_perpendicular_uv, pixels_to_world_distance,
-    preferred_outward_uv, project_linear_dimension_geom, uv_dir_to_world, EXTENSION_OVERSHOOT,
+    circle_diameter_dimension_world_geom, circle_diameter_label_outward_px,
+    draw_linear_dimension, effective_circle_diameter_label_offset, effective_dim_offset,
+    planar_dimension_label_layout, PlanarLabelView, linear_dimension_world_geom,
+    outward_perpendicular_uv, pixels_to_world_distance, preferred_outward_uv,
+    project_linear_dimension_geom, uv_dir_to_world, EXTENSION_OVERSHOOT, LABEL_FONT_SIZE,
     LABEL_OUTSET,
 };
 use face::{
+    circle_world_diameter_endpoints, circle_world_perimeter,
     line_world_endpoints, pick_sketch_face, rect_world_corners, sketch_frame,
     sketch_geometry_frame, sketch_label, world_to_local,
 };
 use model::SketchId;
-use model::{ConstraintKind, DistanceTarget, FaceId, Line, Rect, RectEdge};
+use model::{Circle, ConstraintKind, DistanceTarget, FaceId, Line, Rect, RectEdge};
 use eframe::egui;
 use native_menu::{MenuCommand, NativeMenu};
 use glam::Vec3;
@@ -73,7 +77,10 @@ use expression_input::{
     length_expression_field_errors, show_expression_error_tooltips_above, INVALID_BG,
     INVALID_BORDER, INVALID_TEXT,
 };
-use value::{computed_length_in_doc, format_length_display, shows_computed_length_in_doc};
+use value::{
+    computed_length_in_doc, format_diameter_display, format_length_display,
+    shows_computed_length_in_doc,
+};
 
 /// macOS maximize must run after eframe shows the window (post-first-paint).
 fn uses_deferred_launch_maximize() -> bool {
@@ -328,6 +335,17 @@ impl App {
 
             if self.state.creating_rect.is_none()
                 && self.state.creating_line.is_none()
+                && self.state.creating_circle.is_none()
+                && ctx.input(|i| i.key_pressed(egui::Key::C))
+            {
+                if self.state.tool != Tool::Circle {
+                    self.state.apply(Action::SetTool(Tool::Circle));
+                }
+            }
+
+            if self.state.creating_rect.is_none()
+                && self.state.creating_line.is_none()
+                && self.state.creating_circle.is_none()
                 && self.state.creating_plane.is_none()
                 && ctx.input(|i| i.key_pressed(egui::Key::P))
             {
@@ -338,6 +356,7 @@ impl App {
 
             if self.state.creating_rect.is_none()
                 && self.state.creating_line.is_none()
+                && self.state.creating_circle.is_none()
                 && self.state.creating_plane.is_none()
                 && ctx.input(|i| i.key_pressed(egui::Key::D))
             {
@@ -358,6 +377,9 @@ impl App {
         }
         if self.state.tool != Tool::Line || self.state.sketch_session.is_none() {
             self.state.creating_line = None;
+        }
+        if self.state.tool != Tool::Circle || self.state.sketch_session.is_none() {
+            self.state.creating_circle = None;
         }
         if self.state.tool != Tool::ConstructionPlane {
             self.state.creating_plane = None;
@@ -490,6 +512,18 @@ impl eframe::App for App {
                 }
                 if ui
                     .selectable_label(
+                        self.state.tool == Tool::Circle,
+                        shortcuts::compact_label(
+                            "Circle",
+                            shortcuts::tool_shortcut(Tool::Circle),
+                        ),
+                    )
+                    .clicked()
+                {
+                    self.state.apply(Action::SetTool(Tool::Circle));
+                }
+                if ui
+                    .selectable_label(
                         self.state.tool == Tool::Dimension,
                         shortcuts::compact_label(
                             "Dimension",
@@ -617,6 +651,7 @@ impl eframe::App for App {
                 selection: &self.state.scene_selection,
                 draw_rect_construction: self.state.rect_draw_construction_mode(),
                 draw_line_construction: self.state.line_draw_construction_mode(),
+                draw_circle_construction: self.state.circle_draw_construction_mode(),
             };
             let content = context::context_pane_content(&context_input);
             context::sync_name_draft(&mut self.state.context_pane, &self.state.doc, &content);
@@ -1155,6 +1190,73 @@ fn rect_highlight_edge(corners: [Vec3; 4], edge: RectDimEdge) -> (Vec3, Vec3) {
     }
 }
 
+fn push_circle_diameter_dim_layout(
+    layouts: &mut Vec<CommittedDimLayout>,
+    painter: &egui::Painter,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    label_view: &PlanarLabelView,
+    frame: &face::SketchFrame,
+    circle: &Circle,
+    target: DimLabelTarget,
+    a: Vec3,
+    b: Vec3,
+    stored_label_offset: Option<f32>,
+    label: String,
+) {
+    let color = col::DIM_ANNOTATION;
+    let (ua, va) = world_to_local(frame, a);
+    let (ub, vb) = world_to_local(frame, b);
+    let outward_uv = outward_perpendicular_uv(ua, va, ub, vb, circle.cx, circle.cy);
+    let outward_world = uv_dir_to_world(frame.u_axis, frame.v_axis, outward_uv.0, outward_uv.1);
+    if outward_world.length_squared() < 1e-8 {
+        return;
+    }
+    let galley = painter.layout_no_wrap(
+        label.clone(),
+        egui::FontId::proportional(LABEL_FONT_SIZE),
+        color,
+    );
+    let galley_size = galley.size();
+    let diameter_px = project(a)
+        .zip(project(b))
+        .map(|(pa, pb)| (pb - pa).length())
+        .unwrap_or(0.0);
+    let label_outward_px = circle_diameter_label_outward_px(
+        diameter_px,
+        galley_size.x,
+        galley_size.y,
+        stored_label_offset,
+    );
+    let world_geom = circle_diameter_dimension_world_geom(
+        a,
+        b,
+        outward_world,
+        label_outward_px,
+        galley_size.y,
+        &project,
+    );
+    let Some(geom) = project_linear_dimension_geom(&world_geom, &project) else {
+        return;
+    };
+    let label_rect = planar_dimension_label_layout(
+        painter,
+        &world_geom,
+        label_view,
+        &label,
+        color,
+        &project,
+    );
+    layouts.push(CommittedDimLayout {
+        target,
+        geom,
+        world_geom,
+        label,
+        label_rect,
+        outward: geom.outward,
+        offset: label_outward_px,
+    });
+}
+
 fn push_committed_dim_layout(
     layouts: &mut Vec<CommittedDimLayout>,
     painter: &egui::Painter,
@@ -1227,6 +1329,9 @@ fn build_committed_dim_layouts(
         .filter(|(_, c)| c.sketch == session.sketch)
     {
         let ConstraintKind::Distance { target } = constraint.kind;
+        if matches!(target, DistanceTarget::CircleDiameter(_)) {
+            continue;
+        }
         let Some((a, b)) = constraint_segment_endpoints(doc, index) else {
             continue;
         };
@@ -1249,6 +1354,7 @@ fn build_committed_dim_layouts(
                 let (ub, vb) = world_to_local(&frame, b);
                 outward_perpendicular_uv(ua, va, ub, vb, iu, iv)
             }
+            DistanceTarget::CircleDiameter(_) => unreachable!("handled above"),
         };
         let label = constraint_evaluated_length(doc, index)
             .map(format_length_display)
@@ -1264,6 +1370,41 @@ fn build_committed_dim_layouts(
             b,
             outward_uv,
             effective_dim_offset(constraint.dim_offset),
+            label,
+        );
+    }
+    for (index, constraint) in doc
+        .constraints
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.sketch == session.sketch)
+    {
+        let ConstraintKind::Distance {
+            target: DistanceTarget::CircleDiameter(i),
+        } = constraint.kind
+        else {
+            continue;
+        };
+        let Some(circle) = doc.circles.get(i) else {
+            continue;
+        };
+        let Some((a, b)) = constraint_segment_endpoints(doc, index) else {
+            continue;
+        };
+        let label = constraint_evaluated_length(doc, index)
+            .map(format_diameter_display)
+            .unwrap_or_else(|| "?".to_string());
+        push_circle_diameter_dim_layout(
+            &mut layouts,
+            painter,
+            &project,
+            label_view,
+            &frame,
+            circle,
+            index,
+            a,
+            b,
+            constraint.dim_offset,
             label,
         );
     }
@@ -1351,7 +1492,11 @@ fn handle_committed_dim_label_drag(
                 let moved = (pos - active.anchor_screen).length();
                 if moved >= DIM_LABEL_DRAG_THRESHOLD_PX {
                     let delta = (pos - active.anchor_screen).dot(active.outward);
-                    let offset = effective_dim_offset(Some(active.start_offset + delta));
+                    let offset = if constraint_is_circle_diameter(&state.doc, active.target) {
+                        effective_circle_diameter_label_offset(Some(active.start_offset + delta))
+                    } else {
+                        effective_dim_offset(Some(active.start_offset + delta))
+                    };
                     state.apply(Action::SetDimLabelOffset {
                         target: active.target,
                         offset,
@@ -1402,6 +1547,11 @@ fn draw_face_highlight(
                 if let Some(corners) = rect_world_corners(doc, rect) {
                     draw_quad_face_highlight(painter, project, corners, color);
                 }
+            }
+        }
+        FaceId::Circle(i) => {
+            if let Some(circle) = doc.circles.get(i) {
+                draw_circle_face_highlight(painter, project, doc, circle, color);
             }
         }
     }
@@ -1673,6 +1823,79 @@ impl App {
                     }
                     if commit_click {
                         self.state.apply(Action::CommitRectangle);
+                    }
+                }
+            }
+        }
+
+        if self.state.tool == Tool::Circle {
+            if self.state.sketch_session.is_none() {
+                if let Some(pp) = pointer_screen {
+                    if ui.input(|i| i.pointer.primary_pressed()) {
+                        if let Some(face) = pick_sketch_face(pp, &project, &self.state.doc) {
+                            self.state.apply(Action::BeginSketch {
+                                face,
+                                viewport: Some(viewport),
+                            });
+                        }
+                    } else if let Some(face) = pick_sketch_face(pp, &project, &self.state.doc) {
+                        draw_face_highlight(
+                            &painter,
+                            &project,
+                            &self.state.doc,
+                            face,
+                            construction::PICK_HOVER_RGBA,
+                        );
+                    }
+                }
+            } else if let (Some(session), Some(pp)) =
+                (self.state.sketch_session, pointer_screen)
+            {
+                if let Some(gp) =
+                    sketch_plane_point(&cam, viewport, &vp, &self.state.doc, session, pp)
+                {
+                    let frame = sketch_geometry_frame(&self.state.doc, session.sketch).unwrap();
+                    let was_creating = self.state.creating_circle.is_some();
+                    let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+
+                    if !was_creating && primary_pressed && !over_committed_dim_label {
+                        self.state.creating_circle = Some(CreatingCircle {
+                            origin: gp,
+                            text: String::new(),
+                            last_mouse: gp,
+                            user_edited: false,
+                            pending_focus: true,
+                            construction: self.state.draw_construction,
+                        });
+                        self.state.status = "Move mouse • type to lock diameter • click/Enter commit • Esc cancel"
+                            .to_string();
+                    }
+
+                    let mut commit_click = false;
+                    if let Some(cc) = &mut self.state.creating_circle {
+                        let rim = cc.rim_point(&frame, &self.state.doc);
+                        let over_input = project(cc.origin).zip(project(rim)).is_some_and(
+                            |(pa, pb)| {
+                                pointer_over_dim_inputs(pp, &[line_dim_layout(pa, pb, &cc.text)])
+                            },
+                        );
+
+                        if should_commit_sketch_on_click(
+                            was_creating,
+                            primary_pressed,
+                            over_input || over_committed_dim_label,
+                        ) {
+                            commit_click = true;
+                        } else if !over_input && !over_committed_dim_label {
+                            cc.last_mouse = gp;
+                            if !cc.user_edited {
+                                let radius = cc.radius(&frame, &self.state.doc);
+                                cc.text = format_live_dimension(radius * 2.0);
+                            }
+                        }
+                    }
+                    if commit_click {
+                        self.state.apply(Action::CommitCircle);
                     }
                 }
             }
@@ -2019,6 +2242,14 @@ impl App {
                 draw_line_segment(&painter, &project, doc, line, color, 2.0);
             }
         }
+        for (ci, circle) in doc.circles.iter().enumerate() {
+            if !visibility.effective_visible(doc, SceneElement::Circle(ci)) {
+                continue;
+            }
+            let dim = sketch_session
+                .is_some_and(|s| !sketch_circle_is_active(doc, s, ci, circle.sketch));
+            draw_circle_edges(&painter, &project, doc, circle, dim);
+        }
         for (i, plane) in doc.construction_planes.iter().enumerate() {
             if !visibility.effective_visible(doc, SceneElement::ConstructionPlane(i)) {
                 continue;
@@ -2189,6 +2420,43 @@ impl App {
                     col::PREVIEW
                 };
                 if let Some(sp) = project(cl.origin) {
+                    painter.circle_filled(sp, 3.5, anchor_color);
+                }
+            }
+        }
+        if let (Some(cc), Some(session)) =
+            (&self.state.creating_circle, self.state.sketch_session)
+        {
+            if let Some(frame) = sketch_geometry_frame(&self.state.doc, session.sketch) {
+                let (cu, cv) = world_to_local(&frame, cc.origin);
+                let r = cc.radius(&frame, &self.state.doc);
+                let angle = cc.diameter_dim_angle(&frame);
+                let preview = Circle::from_local_center_radius(
+                    session.sketch,
+                    cu,
+                    cv,
+                    r,
+                    angle,
+                );
+                if cc.construction {
+                    draw_circle_edges(&painter, &project, &self.state.doc, &preview, false);
+                } else {
+                    draw_circle(
+                        &painter,
+                        &project,
+                        &self.state.doc,
+                        &preview,
+                        col::PREVIEW,
+                        false,
+                        1.5,
+                    );
+                }
+                let anchor_color = if cc.construction {
+                    col::CONSTRUCTION
+                } else {
+                    col::PREVIEW
+                };
+                if let Some(sp) = project(cc.origin) {
                     painter.circle_filled(sp, 3.5, anchor_color);
                 }
             }
@@ -2456,6 +2724,79 @@ impl App {
             }
         }
 
+        if let (Some(cc), Some(session)) =
+            (&mut self.state.creating_circle, self.state.sketch_session)
+        {
+            let frame = sketch_geometry_frame(&self.state.doc, session.sketch).unwrap();
+            let (cu, cv) = world_to_local(&frame, cc.origin);
+            let preview = Circle::from_local_center_radius(
+                session.sketch,
+                cu,
+                cv,
+                cc.radius(&frame, &self.state.doc),
+                cc.diameter_dim_angle(&frame),
+            );
+            if let Some((a, b)) = circle_world_diameter_endpoints(&self.state.doc, &preview) {
+                if let (Some(pa), Some(pb)) = (project(a), project(b)) {
+                    let layout = line_dim_layout(pa, pb, &cc.text);
+                    let id_diam = egui::Id::new("cc_diameter");
+
+                    let mut commit_circle = false;
+                    {
+                        let ctx = ui.ctx();
+                        egui::Area::new(egui::Id::new("cc_diameter_area"))
+                            .fixed_pos(layout.pos)
+                            .order(egui::Order::Foreground)
+                            .show(ctx, |ui| {
+                                let result = show_sketch_dimension_field(
+                                    ui,
+                                    ctx,
+                                    id_diam,
+                                    &mut cc.text,
+                                    &self.state.doc,
+                                    true,
+                                    &mut cc.pending_focus,
+                                    cc.user_edited,
+                                );
+                                if result.changed {
+                                    cc.user_edited = true;
+                                }
+                                commit_circle = result.enter_commit;
+                            });
+                    }
+
+                    let diameter_focused = {
+                        let ctx = ui.ctx();
+                        let focused = ctx.memory(|m| m.focused()) == Some(id_diam);
+                        if !focused && cc.pending_focus {
+                            ctx.memory_mut(|m| m.request_focus(id_diam));
+                        }
+                        focused
+                    };
+                    let commit_circle_now = should_commit_sketch_on_enter(
+                        commit_circle,
+                        diameter_focused,
+                        sketch_dimension_enter_pressed(ui),
+                    );
+                    if commit_circle_now {
+                        if !commit_circle {
+                            consume_sketch_dimension_enter(ui);
+                        }
+                        self.state.apply(Action::CommitCircle);
+                    } else if diameter_focused {
+                        draw_world_segment(
+                            &painter,
+                            &project,
+                            a,
+                            b,
+                            col::DIM_EDGE_HIGHLIGHT,
+                            3.5,
+                        );
+                    }
+                }
+            }
+        }
+
         if let Some(cp) = &mut self.state.creating_plane {
             let preview = cp.preview_plane();
             if let Some((offset_layout, angle_layout)) = plane_dim_layouts(
@@ -2597,6 +2938,15 @@ impl App {
                     "l: line  •  Left-click to set start • move to aim • Right-drag: orbit  • Shift+right-drag: pan  •  Wheel: zoom"
                 }
             }
+            Tool::Circle => {
+                if self.state.creating_circle.is_some() {
+                    "Move mouse (free diameter) • Type in diameter input to constrain • Click/Enter: create circle • Esc: cancel"
+                } else if self.state.sketch_session.is_none() {
+                    "c: circle  •  Click a face to sketch on  •  Right-drag: orbit  • Shift+right-drag: pan  •  Wheel: zoom"
+                } else {
+                    "c: circle  •  Left-click to set center • move to size • Right-drag: orbit  • Shift+right-drag: pan  •  Wheel: zoom"
+                }
+            }
             Tool::Dimension => {
                 if self.state.editing_committed_dim.is_some() {
                     "Edit dimension • Enter to commit • Esc to cancel"
@@ -2734,6 +3084,83 @@ fn draw_construction_line_segment(
     draw_world_segment_dashed(painter, project, a, b, color, width);
 }
 
+fn circle_screen_perimeter(
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &model::Document,
+    circle: &Circle,
+) -> Option<Vec<egui::Pos2>> {
+    let pts = circle_world_perimeter(doc, circle, 64)?;
+    pts.iter().map(|p| project(*p)).collect()
+}
+
+fn draw_circle(
+    painter: &egui::Painter,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &model::Document,
+    circle: &Circle,
+    color: egui::Color32,
+    fill: bool,
+    width: f32,
+) {
+    let Some(screen_pts) = circle_screen_perimeter(project, doc, circle) else {
+        return;
+    };
+    if screen_pts.len() < 2 {
+        return;
+    }
+    if fill {
+        painter.add(egui::Shape::convex_polygon(
+            screen_pts.clone(),
+            color.gamma_multiply(0.25),
+            egui::Stroke::new(width, color),
+        ));
+    } else {
+        painter.add(egui::Shape::closed_line(
+            screen_pts,
+            egui::Stroke::new(width, color),
+        ));
+    }
+}
+
+fn draw_construction_circle(
+    painter: &egui::Painter,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &model::Document,
+    circle: &Circle,
+    color: egui::Color32,
+    width: f32,
+) {
+    let Some(pts) = circle_world_perimeter(doc, circle, 64) else {
+        return;
+    };
+    for window in pts.windows(2) {
+        draw_world_segment_dashed(painter, project, window[0], window[1], color, width);
+    }
+}
+
+fn draw_circle_edges(
+    painter: &egui::Painter,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &model::Document,
+    circle: &Circle,
+    dim: bool,
+) {
+    let solid_color = sketch_color(col::RECT_LINE, dim);
+    let construction_color = sketch_color(col::CONSTRUCTION, dim);
+    if circle.construction {
+        if let Some(screen_pts) = circle_screen_perimeter(project, doc, circle) {
+            painter.add(egui::Shape::convex_polygon(
+                screen_pts,
+                construction_color.gamma_multiply(0.18),
+                egui::Stroke::NONE,
+            ));
+        }
+        draw_construction_circle(painter, project, doc, circle, construction_color, 1.5);
+    } else {
+        draw_circle(painter, project, doc, circle, solid_color, true, 1.5);
+    }
+}
+
 fn draw_rect_edges(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
@@ -2791,24 +3218,50 @@ fn draw_scene_selection_highlights(
         return;
     }
     let color = col::DIM_EDGE_HIGHLIGHT;
+    let width = 3.0;
     for element in selection.iter() {
+        let dashed = context::selection_highlight_dashed(doc, element);
         match element {
             SceneElement::Line(index) => {
                 if let Some(line) = doc.lines.get(index) {
-                    draw_line_segment(painter, project, doc, line, color, 3.0);
+                    if dashed == Some(true) {
+                        draw_construction_line_segment(painter, project, doc, line, color, width);
+                    } else {
+                        draw_line_segment(painter, project, doc, line, color, width);
+                    }
                 }
             }
             SceneElement::RectEdge(index, edge) => {
                 if let Some(rect) = doc.rects.get(index) {
                     let segments = rect_edge_segments(doc, rect);
                     let (a, b) = segments[edge.index()];
-                    draw_world_segment(painter, project, a, b, color, 3.0);
+                    if dashed == Some(true) {
+                        draw_world_segment_dashed(painter, project, a, b, color, width);
+                    } else {
+                        draw_world_segment(painter, project, a, b, color, width);
+                    }
                 }
             }
             SceneElement::Rect(index) => {
                 if let Some(rect) = doc.rects.get(index) {
-                    for (a, b) in rect_edge_segments(doc, rect) {
-                        draw_world_segment(painter, project, a, b, color, 3.0);
+                    for (edge_index, (a, b)) in
+                        rect_edge_segments(doc, rect).into_iter().enumerate()
+                    {
+                        let edge = RectEdge::from_index(edge_index);
+                        if rect.edge_construction(edge) {
+                            draw_world_segment_dashed(painter, project, a, b, color, width);
+                        } else {
+                            draw_world_segment(painter, project, a, b, color, width);
+                        }
+                    }
+                }
+            }
+            SceneElement::Circle(index) => {
+                if let Some(circle) = doc.circles.get(index) {
+                    if dashed == Some(true) {
+                        draw_construction_circle(painter, project, doc, circle, color, width);
+                    } else {
+                        draw_circle(painter, project, doc, circle, color, false, width);
                     }
                 }
             }
@@ -3052,6 +3505,21 @@ fn sketch_rect_is_active(
     false
 }
 
+fn sketch_circle_is_active(
+    doc: &model::Document,
+    session: SketchSession,
+    circle_index: usize,
+    circle_sketch: SketchId,
+) -> bool {
+    if circle_sketch == session.sketch {
+        return true;
+    }
+    if let Some(FaceId::Circle(face_index)) = doc.sketch_face(session.sketch) {
+        return circle_index == face_index;
+    }
+    false
+}
+
 fn draw_ground(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
@@ -3109,6 +3577,12 @@ mod tests {
     use eframe::egui::{self, Pos2, Rect, Vec2};
     use egui::Color32;
     use glam::Vec3;
+
+    #[test]
+    fn circles_use_rectangle_stroke_color() {
+        assert_ne!(col::RECT_LINE, col::LINE_STROKE);
+        assert_eq!(col::RECT_LINE, Color32::from_rgb(120, 170, 240));
+    }
 
     #[test]
     fn launch_maximize_strategy_matches_platform() {

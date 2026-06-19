@@ -66,12 +66,14 @@ pub enum Instruction {
         expression: String,
     },
     SetLineLength { value: String },
+    SetCircleDiameter { value: String },
     BeginEditConstructionPlane { index: usize },
     CommitConstructionPlane,
     SetPlaneOffset { value: String },
     SetPlaneAngle { value: String },
     FocusDim(RectAxis),
     FocusLineLength,
+    FocusCircleDiameter,
     FocusPlaneDim(PlaneDim),
     Orbit { dx: f32, dy: f32 },
     Pan { dx: f32, dy: f32 },
@@ -134,6 +136,7 @@ impl Instruction {
             Instruction::Tool(Tool::Select) => "tool select".to_string(),
             Instruction::Tool(Tool::Rectangle) => "tool rectangle".to_string(),
             Instruction::Tool(Tool::Line) => "tool line".to_string(),
+            Instruction::Tool(Tool::Circle) => "tool circle".to_string(),
             Instruction::Tool(Tool::ConstructionPlane) => "tool plane".to_string(),
             Instruction::Tool(Tool::Sketch) => "tool sketch".to_string(),
             Instruction::Tool(Tool::Dimension) => "tool dimension".to_string(),
@@ -194,6 +197,7 @@ impl Instruction {
                 format!("set_dim {name} {value}")
             }
             Instruction::SetLineLength { value } => format!("set_dim length {value}"),
+            Instruction::SetCircleDiameter { value } => format!("set_dim diameter {value}"),
             Instruction::SetDimLabelOffset { axis, offset } => {
                 let name = match axis {
                     DimLabelAxis::Width => "width",
@@ -216,6 +220,7 @@ impl Instruction {
                     DistanceTarget::LineLength(i) => format!("line {i}"),
                     DistanceTarget::RectWidth(i) => format!("rect {i} width"),
                     DistanceTarget::RectHeight(i) => format!("rect {i} height"),
+                    DistanceTarget::CircleDiameter(i) => format!("circle {i}"),
                 };
                 format!("add_constraint {target_name} {expression}")
             }
@@ -231,6 +236,7 @@ impl Instruction {
                 format!("focus_dim {name}")
             }
             Instruction::FocusLineLength => "focus_dim length".to_string(),
+            Instruction::FocusCircleDiameter => "focus_dim diameter".to_string(),
             Instruction::FocusPlaneDim(PlaneDim::Offset) => "focus_dim offset".to_string(),
             Instruction::FocusPlaneDim(PlaneDim::Angle) => "focus_dim angle".to_string(),
             Instruction::Orbit { dx, dy } => format!("orbit {dx} {dy}"),
@@ -373,7 +379,7 @@ fn parse_line(line: &str, line_no: usize) -> Result<Instruction, ParseError> {
             let name = rest.split_whitespace().next().unwrap_or("");
             Tool::from_name(name).map(Instruction::Tool).ok_or_else(|| {
                 err(&format!(
-                    "unknown tool '{name}' (expected select, sketch, rectangle, line, dimension, or plane)"
+                    "unknown tool '{name}' (expected select, sketch, rectangle, line, circle, dimension, or plane)"
                 ))
             })
         }
@@ -390,6 +396,7 @@ fn parse_line(line: &str, line_no: usize) -> Result<Instruction, ParseError> {
                 .map_err(|_| err("add_constraint index must be an integer"))?;
             let target = match kind.to_ascii_lowercase().as_str() {
                 "line" | "segment" => DistanceTarget::LineLength(index),
+                "circle" => DistanceTarget::CircleDiameter(index),
                 "rect" | "rectangle" => {
                     let dim = parts
                         .next()
@@ -411,7 +418,7 @@ fn parse_line(line: &str, line_no: usize) -> Result<Instruction, ParseError> {
                 }
                 other => {
                     return Err(err(&format!(
-                        "unknown constraint target '{other}' (expected line or rect)"
+                        "unknown constraint target '{other}' (expected line, circle, or rect)"
                     )));
                 }
             };
@@ -704,6 +711,9 @@ fn parse_line(line: &str, line_no: usize) -> Result<Instruction, ParseError> {
                 "length" | "len" | "l" => Ok(Instruction::SetLineLength {
                     value: value.to_string(),
                 }),
+                "diameter" | "diam" | "d" => Ok(Instruction::SetCircleDiameter {
+                    value: value.to_string(),
+                }),
                 _ if PlaneDim::from_name(axis_name).is_some() => {
                     match PlaneDim::from_name(axis_name).unwrap() {
                         PlaneDim::Offset => Ok(Instruction::SetPlaneOffset {
@@ -729,6 +739,7 @@ fn parse_line(line: &str, line_no: usize) -> Result<Instruction, ParseError> {
             let axis_name = rest.split_whitespace().next().unwrap_or("");
             match axis_name.to_ascii_lowercase().as_str() {
                 "length" | "len" | "l" => Ok(Instruction::FocusLineLength),
+                "diameter" | "diam" | "d" => Ok(Instruction::FocusCircleDiameter),
                 _ if PlaneDim::from_name(axis_name).is_some() => {
                     Ok(Instruction::FocusPlaneDim(PlaneDim::from_name(axis_name).unwrap()))
                 }
@@ -980,6 +991,7 @@ pub fn parse_key(name: &str) -> Result<Key, String> {
 fn face_script_name(face: FaceId) -> String {
     match face {
         FaceId::Rect(i) => format!("rect {i}"),
+        FaceId::Circle(i) => format!("circle {i}"),
         FaceId::ConstructionPlane(i) => format!("construction_plane {i}"),
     }
 }
@@ -1014,6 +1026,11 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
         },
         SceneElement::Line(i) => ElementScriptTokens {
             kind: "line",
+            index: i,
+            edge: None,
+        },
+        SceneElement::Circle(i) => ElementScriptTokens {
+            kind: "circle",
             index: i,
             edge: None,
         },
@@ -1115,6 +1132,7 @@ fn scene_element_from_script(kind: &str, index: usize) -> Option<SceneElement> {
         "sketch" => Some(SceneElement::Sketch(index)),
         "rect" | "rectangle" => Some(SceneElement::Rect(index)),
         "line" => Some(SceneElement::Line(index)),
+        "circle" => Some(SceneElement::Circle(index)),
         "constraint" => Some(SceneElement::Constraint(index)),
         _ => None,
     }
@@ -1647,6 +1665,10 @@ impl ScriptRunner {
                 let _ = state.apply(Action::SetLineLength { value });
                 StepResult::Continue
             }
+            Instruction::SetCircleDiameter { value } => {
+                let _ = state.apply(Action::SetCircleDiameter { value });
+                StepResult::Continue
+            }
             Instruction::BeginEditConstructionPlane { index } => {
                 state.apply(Action::BeginEditConstructionPlane { index });
                 StepResult::Continue
@@ -1669,6 +1691,10 @@ impl ScriptRunner {
             }
             Instruction::FocusLineLength => {
                 let _ = state.apply(Action::FocusLineLength);
+                StepResult::Continue
+            }
+            Instruction::FocusCircleDiameter => {
+                let _ = state.apply(Action::FocusCircleDiameter);
                 StepResult::Continue
             }
             Instruction::FocusPlaneDim(dim) => {
@@ -2506,6 +2532,37 @@ mod tests {
                     value: "25".to_string()
                 },
                 Instruction::FocusLineLength,
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_begin_sketch_on_circle_face() {
+        let ins = parse("begin_sketch circle 0").unwrap();
+        assert_eq!(
+            ins,
+            vec![Instruction::BeginSketch {
+                face: FaceId::Circle(0),
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_circle_tool_and_diameter_dim() {
+        let ins = parse("tool circle\nset_dim diameter 40\nfocus_dim diameter\nadd_constraint circle 0 40mm")
+            .unwrap();
+        assert_eq!(
+            ins,
+            vec![
+                Instruction::Tool(Tool::Circle),
+                Instruction::SetCircleDiameter {
+                    value: "40".to_string()
+                },
+                Instruction::FocusCircleDiameter,
+                Instruction::AddDistanceConstraint {
+                    target: DistanceTarget::CircleDiameter(0),
+                    expression: "40mm".to_string(),
+                },
             ]
         );
     }

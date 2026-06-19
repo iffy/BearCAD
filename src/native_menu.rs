@@ -350,7 +350,8 @@ fn attach_to_platform(menu: &Menu, cc: &CreationContext<'_>) -> Result<(), muda:
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (menu, cc);
-        Err(muda::Error::UnsupportedPlatform)
+        // Native menu bar is macOS/Windows only; egui toolbar/palette cover Linux.
+        Ok(())
     }
 }
 

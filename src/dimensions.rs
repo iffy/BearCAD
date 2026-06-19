@@ -70,6 +70,66 @@ pub fn effective_dim_offset(stored: Option<f32>) -> f32 {
         .clamp(MIN_DIM_OFFSET, MAX_DIM_OFFSET)
 }
 
+/// Label offset for circle diameter dimensions (0 = just above the dimension line).
+pub fn effective_circle_diameter_label_offset(stored: Option<f32>) -> f32 {
+    stored.unwrap_or(0.0).clamp(0.0, MAX_DIM_OFFSET)
+}
+
+pub const CIRCLE_DIAM_LABEL_MARGIN: f32 = 4.0;
+
+/// Outward label offset in screen pixels for a circle diameter dimension.
+pub fn circle_diameter_label_outward_px(
+    diameter_px: f32,
+    label_width_px: f32,
+    label_height_px: f32,
+    stored_offset_px: Option<f32>,
+) -> f32 {
+    let available = (diameter_px - 2.0 * ARROW_LENGTH - CIRCLE_DIAM_LABEL_MARGIN).max(0.0);
+    let fits = label_width_px <= available;
+    let auto_outside = diameter_px * 0.5 + LABEL_OUTSET + label_height_px * 0.5;
+    match stored_offset_px {
+        Some(v) => v.clamp(0.0, MAX_DIM_OFFSET),
+        None if fits => 0.0,
+        None => auto_outside,
+    }
+}
+
+/// Rim-to-rim diameter dimension line through the circle center.
+pub fn circle_diameter_dimension_world_geom<Project>(
+    pa: Vec3,
+    pb: Vec3,
+    outward_world: Vec3,
+    label_outward_px: f32,
+    _label_height_px: f32,
+    project: &Project,
+) -> LinearDimensionWorldGeom
+where
+    Project: Fn(Vec3) -> Option<Pos2>,
+{
+    let outward = outward_world.normalize_or_zero();
+    let along = (pb - pa).normalize_or_zero();
+    let mid = pa.lerp(pb, 0.5);
+    let label_center = if label_outward_px <= 1e-3 {
+        // On the dimension line; planar label anchor shifts outward by half height.
+        mid
+    } else {
+        let label_outward_world =
+            pixels_to_world_distance(project, mid, outward, label_outward_px);
+        mid + outward * label_outward_world
+    };
+    LinearDimensionWorldGeom {
+        ext_a_near: pa,
+        ext_a_far: pa,
+        ext_b_near: pb,
+        ext_b_far: pb,
+        dim_a: pa,
+        dim_b: pb,
+        label_center,
+        along_world: along,
+        outward_world: outward,
+    }
+}
+
 /// Perpendicular on the side opposite `interior` (extension lines point away from the shape).
 #[cfg(test)]
 pub fn outward_perpendicular(pa: Pos2, pb: Pos2, interior: Pos2) -> Vec2 {
@@ -648,6 +708,58 @@ mod tests {
         assert_eq!(effective_dim_offset(None), OFFSET);
         assert_eq!(effective_dim_offset(Some(2.0)), MIN_DIM_OFFSET);
         assert_eq!(effective_dim_offset(Some(500.0)), MAX_DIM_OFFSET);
+    }
+
+    #[test]
+    fn effective_circle_diameter_label_offset_allows_zero() {
+        assert_eq!(effective_circle_diameter_label_offset(None), 0.0);
+        assert_eq!(effective_circle_diameter_label_offset(Some(0.0)), 0.0);
+        assert_eq!(effective_circle_diameter_label_offset(Some(500.0)), MAX_DIM_OFFSET);
+    }
+
+    #[test]
+    fn circle_diameter_label_stays_on_line_when_it_fits() {
+        assert_eq!(
+            circle_diameter_label_outward_px(200.0, 40.0, 14.0, None),
+            0.0
+        );
+    }
+
+    #[test]
+    fn circle_diameter_label_moves_outside_when_too_small() {
+        let outward = circle_diameter_label_outward_px(30.0, 56.0, 14.0, None);
+        assert!(outward > 15.0, "label should clear the circle, got {outward}");
+    }
+
+    #[test]
+    fn circle_diameter_dim_line_passes_through_rim_points() {
+        let pa = Vec3::new(-50.0, 0.0, 0.0);
+        let pb = Vec3::new(50.0, 0.0, 0.0);
+        let outward = Vec3::Y;
+        let project = |p: Vec3| Some(Pos2::new(p.x, p.y));
+        let geom = circle_diameter_dimension_world_geom(pa, pb, outward, 0.0, 14.0, &project);
+        assert!((geom.dim_a - pa).length() < 1e-4);
+        assert!((geom.dim_b - pb).length() < 1e-4);
+        assert!((geom.ext_a_far - geom.ext_a_near).length() < 1e-4);
+        assert!((geom.ext_b_far - geom.ext_b_near).length() < 1e-4);
+    }
+
+    #[test]
+    fn circle_diameter_label_sits_above_dimension_line_when_inside() {
+        let pa = Vec3::new(-100.0, 0.0, 0.0);
+        let pb = Vec3::new(100.0, 0.0, 0.0);
+        let outward = Vec3::Y;
+        let project = |p: Vec3| Some(Pos2::new(p.x, p.y));
+        let label_height = 14.0;
+        let geom =
+            circle_diameter_dimension_world_geom(pa, pb, outward, 0.0, label_height, &project);
+        let mid = pa.lerp(pb, 0.5);
+        assert!((geom.label_center - mid).length() < 1e-3);
+        let anchor = geom.label_center + outward * (label_height * 0.5);
+        assert!(
+            anchor.y > mid.y + 1e-3,
+            "label anchor should sit above the dimension line"
+        );
     }
 
     #[test]

@@ -12,6 +12,7 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::Sketch(_)
         | SceneElement::Rect(_)
         | SceneElement::Line(_)
+        | SceneElement::Circle(_)
         | SceneElement::Constraint(_) => Some(element),
     }
 }
@@ -29,6 +30,7 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         SceneElement::Sketch(index) => doc.sketches.get(index)?.name.as_deref(),
         SceneElement::Rect(index) => doc.rects.get(index)?.name.as_deref(),
         SceneElement::Line(index) => doc.lines.get(index)?.name.as_deref(),
+        SceneElement::Circle(index) => doc.circles.get(index)?.name.as_deref(),
         SceneElement::Constraint(index) => doc.constraints.get(index)?.name.as_deref(),
         SceneElement::RectEdge(_, _) => None,
     }?;
@@ -78,6 +80,13 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 .ok_or_else(|| format!("line {index} not found"))?;
             line.name = stored;
         }
+        SceneElement::Circle(index) => {
+            let circle = doc
+                .circles
+                .get_mut(index)
+                .ok_or_else(|| format!("circle {index} not found"))?;
+            circle.name = stored;
+        }
         SceneElement::Constraint(index) => {
             let constraint = doc
                 .constraints
@@ -109,6 +118,10 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
         HierarchyNode::Line(i) => {
             let len = doc.lines[i].length();
             format!("Line {i} ({len:.1} mm)")
+        }
+        HierarchyNode::Circle(i) => {
+            let diameter = doc.circles[i].diameter();
+            format!("Circle {i} (Ø{diameter:.1} mm)")
         }
         HierarchyNode::Constraint(i) => constraint_label(doc, i),
     }

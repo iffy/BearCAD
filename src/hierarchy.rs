@@ -17,6 +17,7 @@ pub enum HierarchyNode {
     Sketch(SketchId),
     Rect(usize),
     Line(usize),
+    Circle(usize),
     Constraint(usize),
 }
 
@@ -27,6 +28,7 @@ pub enum SceneElement {
     Sketch(SketchId),
     Rect(usize),
     Line(usize),
+    Circle(usize),
     RectEdge(usize, RectEdge),
     Constraint(usize),
 }
@@ -38,6 +40,7 @@ impl From<HierarchyNode> for SceneElement {
             HierarchyNode::Sketch(i) => SceneElement::Sketch(i),
             HierarchyNode::Rect(i) => SceneElement::Rect(i),
             HierarchyNode::Line(i) => SceneElement::Line(i),
+            HierarchyNode::Circle(i) => SceneElement::Circle(i),
             HierarchyNode::Constraint(i) => SceneElement::Constraint(i),
         }
     }
@@ -92,6 +95,9 @@ impl ElementVisibility {
             SceneElement::Line(index) => doc.lines.get(index).is_some_and(|line| {
                 self.effective_visible(doc, SceneElement::Sketch(line.sketch))
             }),
+            SceneElement::Circle(index) => doc.circles.get(index).is_some_and(|circle| {
+                self.effective_visible(doc, SceneElement::Sketch(circle.sketch))
+            }),
             SceneElement::RectEdge(index, _) => doc.rects.get(index).is_some_and(|rect| {
                 self.effective_visible(doc, SceneElement::Sketch(rect.sketch))
             }),
@@ -106,6 +112,7 @@ fn face_element(face: FaceId) -> SceneElement {
     match face {
         FaceId::ConstructionPlane(i) => SceneElement::ConstructionPlane(i),
         FaceId::Rect(i) => SceneElement::Rect(i),
+        FaceId::Circle(i) => SceneElement::Circle(i),
     }
 }
 
@@ -121,6 +128,7 @@ struct CreationRanks {
     sketches: HashMap<SketchId, usize>,
     rects: HashMap<usize, usize>,
     lines: HashMap<usize, usize>,
+    circles: HashMap<usize, usize>,
     constraints: HashMap<usize, usize>,
     planes: HashMap<usize, usize>,
 }
@@ -131,6 +139,7 @@ fn build_creation_ranks(doc: &Document) -> CreationRanks {
     let mut sketch_n = 0usize;
     let mut rect_n = 0usize;
     let mut line_n = 0usize;
+    let mut circle_n = 0usize;
     let mut constraint_n = 0usize;
     let mut plane_n = 1usize;
     for (rank, kind) in doc.shape_order.iter().enumerate() {
@@ -146,6 +155,10 @@ fn build_creation_ranks(doc: &Document) -> CreationRanks {
             ShapeKind::Line => {
                 ranks.lines.insert(line_n, rank);
                 line_n += 1;
+            }
+            ShapeKind::Circle => {
+                ranks.circles.insert(circle_n, rank);
+                circle_n += 1;
             }
             ShapeKind::Constraint => {
                 ranks.constraints.insert(constraint_n, rank);
@@ -167,6 +180,7 @@ fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
         HierarchyNode::Sketch(i) => *ranks.sketches.get(&i).unwrap_or(&i),
         HierarchyNode::Rect(i) => *ranks.rects.get(&i).unwrap_or(&i),
         HierarchyNode::Line(i) => *ranks.lines.get(&i).unwrap_or(&i),
+        HierarchyNode::Circle(i) => *ranks.circles.get(&i).unwrap_or(&i),
         HierarchyNode::Constraint(i) => *ranks.constraints.get(&i).unwrap_or(&i),
     }
 }
@@ -267,6 +281,10 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
             .lines
             .get(index)
             .map(|line| SceneElement::Sketch(line.sketch)),
+        SceneElement::Circle(index) => doc
+            .circles
+            .get(index)
+            .map(|circle| SceneElement::Sketch(circle.sketch)),
         SceneElement::RectEdge(index, _) => Some(SceneElement::Rect(index)),
         SceneElement::Constraint(index) => doc
             .constraints
@@ -304,6 +322,11 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                     out.insert(SceneElement::Line(li));
                 }
             }
+            for (ci, circle) in doc.circles.iter().enumerate() {
+                if circle.sketch == sketch {
+                    out.insert(SceneElement::Circle(ci));
+                }
+            }
             for (ci, constraint) in doc.constraints.iter().enumerate() {
                 if constraint.sketch == sketch {
                     out.insert(SceneElement::Constraint(ci));
@@ -318,6 +341,12 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         }
         SceneElement::Rect(index) => {
             for sketch in doc.sketches_on_face(FaceId::Rect(index)) {
+                out.insert(SceneElement::Sketch(sketch));
+                collect_descendants(doc, SceneElement::Sketch(sketch), out);
+            }
+        }
+        SceneElement::Circle(index) => {
+            for sketch in doc.sketches_on_face(FaceId::Circle(index)) {
                 out.insert(SceneElement::Sketch(sketch));
                 collect_descendants(doc, SceneElement::Sketch(sketch), out);
             }
@@ -490,6 +519,15 @@ fn build_sketch_entry(
                 });
             }
         }
+        for (ci, circle) in doc.circles.iter().enumerate() {
+            if circle.sketch == sketch {
+                let nested = build_face_sketches(doc, FaceId::Circle(ci), sketch_session);
+                children.push(HierarchyEntry {
+                    node: HierarchyNode::Circle(ci),
+                    children: nested,
+                });
+            }
+        }
         for (ci, constraint) in doc.constraints.iter().enumerate() {
             if constraint.sketch == sketch {
                 children.push(HierarchyEntry {
@@ -505,6 +543,17 @@ fn build_sketch_entry(
                 if !nested.is_empty() {
                     children.push(HierarchyEntry {
                         node: HierarchyNode::Rect(ri),
+                        children: nested,
+                    });
+                }
+            }
+        }
+        for (ci, circle) in doc.circles.iter().enumerate() {
+            if circle.sketch == sketch {
+                let nested = build_face_sketches(doc, FaceId::Circle(ci), sketch_session);
+                if !nested.is_empty() {
+                    children.push(HierarchyEntry {
+                        node: HierarchyNode::Circle(ci),
                         children: nested,
                     });
                 }
@@ -630,7 +679,10 @@ fn show_row(
                     }
                 });
             }
-            HierarchyNode::Rect(_) | HierarchyNode::Line(_) | HierarchyNode::Constraint(_) => {
+            HierarchyNode::Rect(_)
+            | HierarchyNode::Line(_)
+            | HierarchyNode::Circle(_)
+            | HierarchyNode::Constraint(_) => {
                 if response.clicked() {
                     let additive = ui.input(|i| i.modifiers.command);
                     on_click_element(element, additive);
@@ -741,6 +793,27 @@ mod tests {
         let list = build_element_list(&doc, Some(SketchSession { sketch }));
         assert!(list.contains(&HierarchyNode::Constraint(0)));
         assert!(!build_element_list(&doc, None).contains(&HierarchyNode::Constraint(0)));
+    }
+
+    #[test]
+    fn nested_sketches_on_circle_face_follow_parent_order() {
+        let mut doc = Document::default();
+        let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.circles
+            .push(crate::model::Circle::from_local_center_radius(s0, 0.0, 0.0, 20.0, 0.0));
+        let s1 = doc.add_sketch(FaceId::Circle(0));
+
+        let list = build_element_list(&doc, None);
+        assert_eq!(
+            list,
+            vec![
+                HierarchyNode::ConstructionPlane(0),
+                HierarchyNode::Sketch(0),
+                HierarchyNode::Circle(0),
+                HierarchyNode::Sketch(1),
+            ]
+        );
+        let _ = s1;
     }
 
     #[test]

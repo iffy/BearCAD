@@ -187,6 +187,11 @@ pub fn descendant_plane_indices(doc: &Document, root_plane: usize) -> Vec<usize>
                     faces.push(FaceId::Rect(ri));
                 }
             }
+            for (ci, circle) in doc.circles.iter().enumerate() {
+                if circle.sketch == sketch {
+                    faces.push(FaceId::Circle(ci));
+                }
+            }
         }
     }
 
@@ -213,6 +218,11 @@ pub fn descendant_faces(doc: &Document, root_plane: usize) -> Vec<FaceId> {
             for (ri, rect) in doc.rects.iter().enumerate() {
                 if rect.sketch == sketch {
                     faces.push(FaceId::Rect(ri));
+                }
+            }
+            for (ci, circle) in doc.circles.iter().enumerate() {
+                if circle.sketch == sketch {
+                    faces.push(FaceId::Circle(ci));
                 }
             }
         }
@@ -442,6 +452,7 @@ pub fn plane_from_axis(
 pub fn sketch_from_pick_target(doc: &Document, kind: PickTargetKind) -> Option<SketchId> {
     match kind {
         PickTargetKind::Line(index) => doc.lines.get(index).map(|line| line.sketch),
+        PickTargetKind::Circle(index) => doc.circles.get(index).map(|circle| circle.sketch),
         PickTargetKind::ShapeEdge { rect_index, .. } => {
             doc.rects.get(rect_index).map(|rect| rect.sketch)
         }
@@ -850,6 +861,8 @@ pub fn draw_axis_plane_gizmo(
 pub enum PickTargetKind {
     /// A standalone sketch line segment.
     Line(usize),
+    /// A sketch circle (picked on its perimeter).
+    Circle(usize),
     /// One edge of a rectangle (or other 2D shape).
     ShapeEdge {
         rect_index: usize,
@@ -1011,6 +1024,7 @@ impl PickTarget {
 pub fn scene_element_from_pick(kind: &PickTargetKind) -> Option<SceneElement> {
     match kind {
         PickTargetKind::Line(index) => Some(SceneElement::Line(*index)),
+        PickTargetKind::Circle(index) => Some(SceneElement::Circle(*index)),
         PickTargetKind::ShapeEdge {
             rect_index,
             edge,
@@ -1032,6 +1046,11 @@ pub fn draw_pick_highlight(
         PickTargetKind::Line(index) => {
             if let Some(line) = doc.lines.get(index) {
                 draw_line_highlight(painter, project, doc, line, color);
+            }
+        }
+        PickTargetKind::Circle(index) => {
+            if let Some(circle) = doc.circles.get(index) {
+                draw_circle_highlight(painter, project, doc, circle, color);
             }
         }
         PickTargetKind::ShapeEdge { a, b, .. } => {
@@ -1117,6 +1136,26 @@ fn draw_rect_highlight(
             painter.circle_filled(sp, 4.0, color);
         }
     }
+}
+
+/// Highlight a sketchable circle face with a filled overlay and border.
+pub fn draw_circle_face_highlight(
+    painter: &egui::Painter,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &Document,
+    circle: &crate::model::Circle,
+    color: egui::Color32,
+) {
+    let Some(pts_world) = crate::face::circle_world_perimeter(doc, circle, 48) else {
+        return;
+    };
+    let pts: Option<Vec<egui::Pos2>> = pts_world.iter().map(|p| project(*p)).collect();
+    let Some(pts) = pts else { return };
+    painter.add(egui::Shape::convex_polygon(
+        pts,
+        color.gamma_multiply(FACE_HOVER_FILL_MULTIPLIER),
+        egui::Stroke::new(2.0, color),
+    ));
 }
 
 /// Highlight a sketchable face quad with a filled overlay and border.
@@ -1268,7 +1307,42 @@ fn nearest_sketch_edge(
         }
     }
 
+    for (ci, circle) in doc.circles.iter().enumerate() {
+        let Some(pts) = crate::face::circle_world_perimeter(doc, circle, 32) else {
+            continue;
+        };
+        for window in pts.windows(2) {
+            consider(
+                PickTargetKind::Circle(ci),
+                window[0],
+                window[1],
+                "Circle",
+            );
+        }
+    }
+
     best
+}
+
+fn draw_circle_highlight(
+    painter: &egui::Painter,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &Document,
+    circle: &crate::model::Circle,
+    color: egui::Color32,
+) {
+    let Some(pts) = crate::face::circle_world_perimeter(doc, circle, 48) else {
+        return;
+    };
+    let screen_pts: Option<Vec<egui::Pos2>> = pts.iter().map(|p| project(*p)).collect();
+    if let Some(screen_pts) = screen_pts {
+        if screen_pts.len() >= 2 {
+            painter.add(egui::Shape::closed_line(
+                screen_pts,
+                egui::Stroke::new(3.0, color),
+            ));
+        }
+    }
 }
 
 fn nearest_construction_plane_edge(

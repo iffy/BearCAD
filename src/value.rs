@@ -239,6 +239,15 @@ pub fn format_length_display(v: f32) -> String {
     }
 }
 
+/// Format a circle diameter for dimension labels (architectural naught prefix).
+pub fn format_diameter_display(v: f32) -> String {
+    if v.abs() < 0.1 {
+        "Ø0 mm".to_string()
+    } else {
+        format!("Ø{:.1} mm", v)
+    }
+}
+
 /// Parse a length expression, falling back when empty/invalid.
 pub fn parse_length_or(text: &str, fallback: f32) -> f32 {
     eval_length_mm(text).unwrap_or(fallback)
@@ -553,6 +562,12 @@ mod tests {
         assert!((parse_positive_length_or_in_doc("0", &doc, 9.0) - 9.0).abs() < 1e-4);
         assert!((parse_positive_length_or_in_doc("-3", &doc, 9.0) - 9.0).abs() < 1e-4);
         assert!((parse_positive_length_or_in_doc("2in", &doc, 9.0) - 50.8).abs() < 1e-3);
+    }
+
+    #[test]
+    fn format_diameter_display_uses_naught_prefix() {
+        assert_eq!(format_diameter_display(0.0), "Ø0 mm");
+        assert_eq!(format_diameter_display(53.3), "Ø53.3 mm");
     }
 
     #[test]

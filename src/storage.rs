@@ -9,7 +9,7 @@
 
 use crate::face::default_xy_plane;
 use crate::constraints::{migrate_legacy_dimensions, solve_document_constraints};
-use crate::model::{Constraint, Document, Line, Parameter, Rect, ShapeKind, Sketch};
+use crate::model::{Circle, Constraint, Document, Line, Parameter, Rect, ShapeKind, Sketch};
 use crate::parameters::validate_document_parameters_no_cycles;
 use rusqlite::Connection;
 
@@ -65,7 +65,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     .map_err(|e| e.to_string())?;
 
     tx.execute(
-        "DELETE FROM dag_nodes WHERE kind IN ('sketch', 'rectangle', 'line', 'parameter', 'constraint')",
+        "DELETE FROM dag_nodes WHERE kind IN ('sketch', 'rectangle', 'line', 'circle', 'parameter', 'constraint')",
         [],
     )
     .map_err(|e| e.to_string())?;
@@ -73,6 +73,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     let mut sketch_i = 0usize;
     let mut rect_i = 0usize;
     let mut line_i = 0usize;
+    let mut circle_i = 0usize;
     let mut constraint_i = 0usize;
     let mut param_i = 0usize;
     for (id, kind) in doc.shape_order.iter().enumerate() {
@@ -119,6 +120,20 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
                 .map_err(|e| e.to_string())?;
                 line_i += 1;
             }
+            ShapeKind::Circle => {
+                let circle = doc
+                    .circles
+                    .get(circle_i)
+                    .ok_or_else(|| "shape_order out of sync with circles".to_string())?;
+                let payload = serde_json::to_string(circle).map_err(|e| e.to_string())?;
+                tx.execute(
+                    "INSERT INTO dag_nodes (id, component_id, kind, payload)
+                     VALUES (?1, 0, 'circle', ?2)",
+                    rusqlite::params![id as i64, payload],
+                )
+                .map_err(|e| e.to_string())?;
+                circle_i += 1;
+            }
             ShapeKind::Parameter => {
                 let param = doc
                     .parameters
@@ -162,7 +177,7 @@ pub fn open(path: &str) -> Result<Document> {
     let mut stmt = conn
         .prepare(
             "SELECT kind, payload FROM dag_nodes
-             WHERE kind IN ('sketch', 'rectangle', 'line', 'parameter', 'constraint')
+             WHERE kind IN ('sketch', 'rectangle', 'line', 'circle', 'parameter', 'constraint')
              ORDER BY id",
         )
         .map_err(|e| e.to_string())?;
@@ -175,6 +190,7 @@ pub fn open(path: &str) -> Result<Document> {
     let mut sketches = Vec::new();
     let mut rects = Vec::new();
     let mut lines = Vec::new();
+    let mut circles = Vec::new();
     let mut constraints = Vec::new();
     let mut shape_order = Vec::new();
     for row in rows {
@@ -194,6 +210,11 @@ pub fn open(path: &str) -> Result<Document> {
                 let line: Line = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
                 lines.push(line);
                 shape_order.push(ShapeKind::Line);
+            }
+            "circle" => {
+                let circle: Circle = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+                circles.push(circle);
+                shape_order.push(ShapeKind::Circle);
             }
             "parameter" => {
                 let param: Parameter = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
@@ -215,6 +236,7 @@ pub fn open(path: &str) -> Result<Document> {
         sketches,
         rects,
         lines,
+        circles,
         constraints,
         construction_planes: Vec::new(),
         shape_order,
@@ -230,7 +252,7 @@ pub fn open(path: &str) -> Result<Document> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{FaceId, RectEdge};
+    use crate::model::{Circle, FaceId, RectEdge};
 
     fn plane_sketch(doc: &mut Document) -> usize {
         doc.add_sketch(FaceId::ConstructionPlane(0))
@@ -248,6 +270,7 @@ mod tests {
             sketches: Vec::new(),
             rects: Vec::new(),
             lines: vec![],
+            circles: Vec::new(),
             constraints: Vec::new(),
             construction_planes: vec![default_xy_plane()],
             shape_order: Vec::new(),
@@ -281,6 +304,7 @@ mod tests {
             sketches: Vec::new(),
             rects: Vec::new(),
             lines: vec![],
+            circles: Vec::new(),
             constraints: Vec::new(),
             construction_planes: vec![default_xy_plane()],
             shape_order: Vec::new(),
@@ -312,6 +336,7 @@ mod tests {
             sketches: Vec::new(),
             rects: Vec::new(),
             lines: vec![],
+            circles: Vec::new(),
             constraints: Vec::new(),
             construction_planes: vec![default_xy_plane()],
             shape_order: Vec::new(),
@@ -369,6 +394,7 @@ mod tests {
             sketches: Vec::new(),
             rects: Vec::new(),
             lines: vec![],
+            circles: Vec::new(),
             constraints: Vec::new(),
             construction_planes: vec![
                 default_xy_plane(),
@@ -415,6 +441,7 @@ mod tests {
             sketches: Vec::new(),
             rects: Vec::new(),
             lines: Vec::new(),
+            circles: Vec::new(),
             constraints: Vec::new(),
             construction_planes: vec![default_xy_plane()],
             shape_order: Vec::new(),
@@ -435,6 +462,29 @@ mod tests {
         assert_eq!(loaded.rects, doc.rects);
         assert_eq!(loaded.lines, doc.lines);
         assert_eq!(loaded.shape_order, doc.shape_order);
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn round_trips_circles() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("le3_circle_roundtrip_test.le3");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let mut circle = Circle::from_local_center_radius(sketch, 5.0, 5.0, 10.0, 0.5);
+        circle.diameter_dim_offset = Some(18.0);
+        circle.diameter_dim_angle = 1.2;
+        circle.construction = true;
+        doc.circles.push(circle);
+        doc.shape_order.push(ShapeKind::Circle);
+
+        save(&path, &doc).unwrap();
+        let loaded = open(&path).unwrap();
+        assert_eq!(loaded.circles, doc.circles);
 
         std::fs::remove_file(&path).unwrap();
     }
