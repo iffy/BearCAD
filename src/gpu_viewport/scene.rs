@@ -34,10 +34,10 @@ pub const SKETCH_DIMMED: f32 = 0.50;
 pub const SKETCH_GROUND_DIMMED: f32 = 0.82;
 pub const CIRCLE_SEGMENTS: usize = 96;
 
-/// Fill opacity for substantial sketch faces (brighter than CPU painter for wgpu alpha blend).
-pub const SOLID_FILL_OPACITY: f32 = 0.45;
+/// Fill opacity for substantial sketch faces (matches the CPU painter).
+pub const SOLID_FILL_OPACITY: f32 = 0.25;
 /// Fill opacity for all-construction sketch shapes (rectangles, circles).
-pub const CONSTRUCTION_FILL_OPACITY: f32 = 0.42;
+pub const CONSTRUCTION_FILL_OPACITY: f32 = 0.18;
 /// Default semi-transparent fill for construction planes.
 pub const DEFAULT_CONSTRUCTION_PLANE_OPACITY: f32 = 0.30;
 /// Lift plane fills slightly toward the camera so they win over the ground grid.
