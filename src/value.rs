@@ -37,8 +37,26 @@ fn eval_length_mm_inner(text: &str, params: &[(&str, &str)], visiting: &mut Vec<
     }
 }
 
+/// Whether `name` matches a known length or angle unit suffix (case-insensitive).
+pub fn parameter_name_conflicts_with_unit(name: &str) -> bool {
+    let lower: String = name
+        .chars()
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    LENGTH_UNIT_SUFFIXES
+        .iter()
+        .chain(ANGLE_UNIT_SUFFIXES.iter())
+        .any(|unit| lower == *unit)
+}
+
 /// Whether `name` is a valid parameter identifier.
 pub fn is_valid_parameter_name(name: &str) -> bool {
+    if name.chars().any(|c| c.is_whitespace()) {
+        return false;
+    }
+    if parameter_name_conflicts_with_unit(name) {
+        return false;
+    }
     let mut chars = name.chars();
     match chars.next() {
         Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
@@ -72,9 +90,28 @@ pub fn substitute_parameter_name(expression: &str, old: &str, new: &str) -> Stri
 }
 
 const LENGTH_UNIT_SUFFIXES: &[&str] = &["mm", "cm", "ft", "in", "m"];
+const ANGLE_UNIT_SUFFIXES: &[&str] = &["deg", "rad"];
+
+fn is_unit_suffix_at(expression: &str, unit_start: usize, ident: &str) -> bool {
+    is_length_unit_suffix_at(expression, unit_start, ident)
+        || is_angle_unit_suffix_at(expression, unit_start, ident)
+}
 
 fn is_length_unit_suffix_at(expression: &str, unit_start: usize, ident: &str) -> bool {
-    if !LENGTH_UNIT_SUFFIXES.contains(&ident) {
+    unit_suffix_follows_quantity(expression, unit_start, ident, LENGTH_UNIT_SUFFIXES)
+}
+
+fn is_angle_unit_suffix_at(expression: &str, unit_start: usize, ident: &str) -> bool {
+    unit_suffix_follows_quantity(expression, unit_start, ident, ANGLE_UNIT_SUFFIXES)
+}
+
+fn unit_suffix_follows_quantity(
+    expression: &str,
+    unit_start: usize,
+    ident: &str,
+    units: &[&str],
+) -> bool {
+    if !units.contains(&ident) {
         return false;
     }
     let before = expression[..unit_start].trim_end();
@@ -90,7 +127,7 @@ pub fn identifiers_in_expression(expression: &str) -> Vec<String> {
     let mut i = 0;
     while i < expression.len() {
         if let Some((ident, len)) = identifier_at(expression, i) {
-            if !is_length_unit_suffix_at(expression, i, ident)
+            if !is_unit_suffix_at(expression, i, ident)
                 && !names.iter().any(|n| n == ident)
             {
                 names.push(ident.to_string());
@@ -271,7 +308,7 @@ pub fn eval_angle_rad(text: &str) -> Option<f32> {
     eval_angle_rad_with_params(text, &[])
 }
 
-/// Evaluate an angle expression using document parameters (length-valued parameters).
+/// Evaluate an angle expression using document parameters.
 pub fn eval_angle_rad_in_doc(text: &str, doc: &Document) -> Option<f32> {
     let params: Vec<(&str, &str)> = doc
         .parameters
@@ -281,9 +318,31 @@ pub fn eval_angle_rad_in_doc(text: &str, doc: &Document) -> Option<f32> {
     eval_angle_rad_with_params(text, &params)
 }
 
-fn eval_angle_rad_with_params(text: &str, params: &[(&str, &str)]) -> Option<f32> {
+pub fn eval_angle_rad_with_params(text: &str, params: &[(&str, &str)]) -> Option<f32> {
     let mut visiting = Vec::new();
     eval_angle_rad_inner(text.trim(), params, &mut visiting)
+}
+
+/// Evaluated parameter value in canonical internal units.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EvaluatedParameter {
+    LengthMm(f32),
+    AngleRad(f32),
+}
+
+/// Evaluate a parameter expression to a length or angle value.
+pub fn eval_parameter_in_doc(text: &str, doc: &Document) -> Option<EvaluatedParameter> {
+    eval_length_mm_in_doc(text, doc)
+        .map(EvaluatedParameter::LengthMm)
+        .or_else(|| {
+            eval_angle_rad_in_doc(text, doc).map(EvaluatedParameter::AngleRad)
+        })
+}
+
+/// Whether a parameter expression parses as a length or angle value.
+pub fn valid_parameter_expression_with_params(text: &str, params: &[(&str, &str)]) -> bool {
+    eval_length_mm_with_params(text, params).is_some()
+        || eval_angle_rad_with_params(text, params).is_some()
 }
 
 fn eval_angle_rad_inner(text: &str, params: &[(&str, &str)], visiting: &mut Vec<String>) -> Option<f32> {
@@ -345,13 +404,12 @@ pub fn shows_computed_angle_in_doc(text: &str, doc: &Document) -> bool {
     computed_angle_in_doc(t, doc).is_some()
 }
 
-fn has_angle_unit_suffix(text: &str) -> bool {
-    const UNITS: &[&str] = &["deg", "rad"];
+pub fn has_angle_unit_suffix(text: &str) -> bool {
     let lower: String = text
         .chars()
         .map(|c| c.to_ascii_lowercase())
         .collect();
-    UNITS.iter().any(|unit| {
+    ANGLE_UNIT_SUFFIXES.iter().any(|unit| {
         lower.ends_with(unit)
             && lower
                 .strip_suffix(unit)
@@ -745,9 +803,9 @@ impl<'a> AngleParser<'a> {
             .map(|(_, expr)| *expr)
             .ok_or(())?;
         self.visiting.push(name);
-        let value = eval_length_mm_inner(expression, params, self.visiting).ok_or(())?;
+        let value = eval_angle_rad_inner(expression, params, self.visiting).ok_or(())?;
         self.visiting.pop();
-        Ok(value.to_radians())
+        Ok(value)
     }
 
     fn parse_quantity(&mut self) -> Result<f32, ()> {
@@ -915,6 +973,7 @@ mod tests {
             name: "A".to_string(),
             expression: "10mm".to_string(),
             deleted: false,
+            source: None,
         });
         assert!(shows_computed_length_in_doc("A", &doc));
         assert_eq!(computed_length_in_doc("A", &doc), Some(10.0));
@@ -947,7 +1006,44 @@ mod tests {
     fn identifiers_in_expression_ignores_unit_suffixes() {
         assert!(identifiers_in_expression("10mm").is_empty());
         assert!(identifiers_in_expression("2in + 5mm").is_empty());
+        assert!(identifiers_in_expression("45deg").is_empty());
+        assert!(identifiers_in_expression("1.57rad + 5deg").is_empty());
         assert_eq!(identifiers_in_expression("A + 2in"), vec!["A".to_string()]);
+    }
+
+    #[test]
+    fn eval_angle_with_angle_parameter_references() {
+        let params = [("corner", "45deg"), ("total", "corner + 5deg")];
+        let v = eval_angle_rad_with_params("total", &params).unwrap();
+        assert!((v.to_degrees() - 50.0).abs() < 1e-3, "got {}", v.to_degrees());
+    }
+
+    #[test]
+    fn eval_parameter_in_doc_accepts_length_or_angle() {
+        let mut doc = Document::default();
+        doc.parameters.push(crate::model::Parameter {
+            name: "width".to_string(),
+            expression: "10mm".to_string(),
+            deleted: false,
+            source: None,
+        });
+        doc.parameters.push(crate::model::Parameter {
+            name: "corner".to_string(),
+            expression: "45deg".to_string(),
+            deleted: false,
+            source: None,
+        });
+        assert_eq!(
+            eval_parameter_in_doc("width", &doc),
+            Some(EvaluatedParameter::LengthMm(10.0))
+        );
+        let angle = eval_parameter_in_doc("corner", &doc).unwrap();
+        match angle {
+            EvaluatedParameter::AngleRad(v) => {
+                assert!((v.to_degrees() - 45.0).abs() < 1e-3);
+            }
+            _ => panic!("expected angle parameter"),
+        }
     }
 
     #[test]
@@ -972,5 +1068,27 @@ mod tests {
         assert!(is_valid_parameter_name("width_1"));
         assert!(!is_valid_parameter_name("1width"));
         assert!(!is_valid_parameter_name(""));
+        assert!(!is_valid_parameter_name("my width"));
+        assert!(!is_valid_parameter_name("width "));
+    }
+
+    #[test]
+    fn parameter_name_conflicts_with_known_units() {
+        for unit in ["mm", "cm", "m", "ft", "in", "deg", "rad"] {
+            assert!(parameter_name_conflicts_with_unit(unit));
+            let upper = unit.to_ascii_uppercase();
+            assert!(
+                parameter_name_conflicts_with_unit(&upper),
+                "expected conflict for {upper}"
+            );
+            let mixed = format!("{}{}", &unit[..1].to_ascii_uppercase(), &unit[1..]);
+            assert!(
+                parameter_name_conflicts_with_unit(&mixed),
+                "expected conflict for {mixed}"
+            );
+            assert!(!is_valid_parameter_name(unit));
+        }
+        assert!(!parameter_name_conflicts_with_unit("width"));
+        assert!(is_valid_parameter_name("width"));
     }
 }

@@ -1,20 +1,20 @@
--- Example — draw a line and save a screenshot.
+-- Example Lua script — draw a line on the default sketch plane, screenshot.
 -- Run: cargo run -- --script examples/line.lua --exit
 
-paramcad.new()
-paramcad.begin_sketch("construction_plane", 0)
-paramcad.tool("line")
+le3.new()
+le3.begin_sketch("construction_plane", 0)
+le3.tool("line")
 
-paramcad.click(480, 320)
-paramcad.wait(2)
-paramcad.move(580, 360)
-paramcad.wait(2)
-paramcad.set_dim("length", "80")
-paramcad.key("enter")
-paramcad.exit_sketch()
+le3.click(480, 320)
+le3.wait(2)
+le3.move(580, 360)
+le3.wait(2)
+le3.set_dim("length", "80")
+le3.key("enter")
+le3.exit_sketch()
 
-paramcad.set_name(paramcad.element("line", 0), "Guide line")
-assert(paramcad.find("Guide line") ~= nil)
+le3.set_name(le3.element("line", 0), "Guide line")
+assert(le3.find("Guide line") ~= nil)
 
-paramcad.wait_ms(100)
-paramcad.screenshot("line_preview.png")
+le3.wait_ms(100)
+le3.screenshot("line_preview.png")

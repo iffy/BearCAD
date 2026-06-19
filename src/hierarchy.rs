@@ -4,7 +4,9 @@
 pub const PANE_TITLE: &str = "Elements";
 
 use crate::actions::SketchSession;
-use crate::icons::{icon_button, icon_for_visibility};
+use crate::icons::{
+    icon_button, icon_for_constraint_kind, icon_for_visibility, sized_texture, IconId,
+};
 use crate::document_health::{DocumentHealth, HealthStatus};
 use crate::document_lifecycle::{element_alive, sketch_alive};
 use crate::model::{
@@ -417,15 +419,19 @@ fn distance_target_touches_element(target: DistanceTarget, element: SceneElement
             SceneElement::RectEdge(i, RectEdge::Left | RectEdge::Right),
         ) => r == i,
         (DistanceTarget::CircleDiameter(c), SceneElement::Circle(i)) => c == i,
-        (DistanceTarget::LineLineDistance { line_a, line_b }, element) => {
+        (DistanceTarget::LineLineDistance {
+            line_a,
+            line_b,
+            side: _,
+        }, element) => {
             constraint_line_touches_element(line_a, element)
                 || constraint_line_touches_element(line_b, element)
         }
-        (DistanceTarget::PointPointDistance { a, b }, element) => {
-            constraint_point_touches_element(a, element)
-                || constraint_point_touches_element(b, element)
+        (DistanceTarget::PointPointDistance { anchor, mover, .. }, element) => {
+            constraint_point_touches_element(anchor, element)
+                || constraint_point_touches_element(mover, element)
         }
-        (DistanceTarget::PointLineDistance { point, line }, element) => {
+        (DistanceTarget::PointLineDistance { point, line, .. }, element) => {
             constraint_point_touches_element(point, element)
                 || constraint_line_touches_element(line, element)
         }
@@ -489,7 +495,11 @@ fn constraint_kind_touches_element(kind: ConstraintKind, element: SceneElement) 
         ConstraintKind::Horizontal { line } | ConstraintKind::Vertical { line } => {
             constraint_line_touches_element(line, element)
         }
-        ConstraintKind::Angle { line_a, line_b } => {
+        ConstraintKind::Angle {
+            line_a,
+            line_b,
+            rotation_sign: _,
+        } => {
             constraint_line_touches_element(line_a, element)
                 || constraint_line_touches_element(line_b, element)
         }
@@ -610,6 +620,31 @@ fn styled_label(label: &str, style: RowStyle) -> RichText {
         RowStyle::Invalid => RichText::new(label).color(INVALID_TEXT),
         RowStyle::Unstable => RichText::new(label).color(UNSTABLE_TEXT),
         RowStyle::Faint => RichText::new(label).color(Color32::from_gray(120)),
+    }
+}
+
+fn icon_tint_for_row_style(style: RowStyle) -> Color32 {
+    match style {
+        RowStyle::Selected | RowStyle::InContext | RowStyle::Normal => Color32::WHITE,
+        RowStyle::RelatedConstraint => RELATED_CONSTRAINT_TEXT,
+        RowStyle::Invalid => INVALID_TEXT,
+        RowStyle::Unstable => UNSTABLE_TEXT,
+        RowStyle::Faint => Color32::from_gray(120),
+    }
+}
+
+fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> IconId {
+    match node {
+        HierarchyNode::ConstructionPlane(_) => IconId::Plane,
+        HierarchyNode::Sketch(_) => IconId::Sketch,
+        HierarchyNode::Rect(_) => IconId::Rectangle,
+        HierarchyNode::Line(_) => IconId::Line,
+        HierarchyNode::Circle(_) => IconId::Circle,
+        HierarchyNode::Constraint(index) => doc
+            .constraints
+            .get(index)
+            .map(|constraint| icon_for_constraint_kind(constraint.kind))
+            .unwrap_or(IconId::Constraint),
     }
 }
 
@@ -846,6 +881,11 @@ fn show_row(
             on_toggle_visibility(element, next);
         }
 
+        let icon = icon_for_hierarchy_node(doc, node);
+        ui.add(
+            egui::Image::new(sized_texture(ui.ctx(), icon)).tint(icon_tint_for_row_style(style)),
+        );
+
         let label = node_label(doc, node);
         let response = ui.selectable_label(
             style == RowStyle::Selected,
@@ -913,6 +953,48 @@ mod tests {
         doc.lines
             .push(Line::from_local_endpoints(s1, 0.0, 0.0, 5.0, 0.0));
         doc
+    }
+
+    #[test]
+    fn hierarchy_node_icons_match_element_types() {
+        use crate::model::{Constraint, ConstraintKind, ConstraintLine, ShapeKind};
+
+        let mut doc = doc_with_plane_sketches();
+        let sketch = 1;
+        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 1.0, 5.0, 1.0));
+        doc.shape_order.push(ShapeKind::Line);
+        doc.constraints.push(Constraint {
+            sketch,
+            kind: ConstraintKind::Parallel {
+                line_a: ConstraintLine::Line(0),
+                line_b: ConstraintLine::Line(1),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+
+        assert_eq!(
+            icon_for_hierarchy_node(&doc, HierarchyNode::ConstructionPlane(0)),
+            IconId::Plane
+        );
+        assert_eq!(
+            icon_for_hierarchy_node(&doc, HierarchyNode::Sketch(0)),
+            IconId::Sketch
+        );
+        assert_eq!(
+            icon_for_hierarchy_node(&doc, HierarchyNode::Rect(0)),
+            IconId::Rectangle
+        );
+        assert_eq!(
+            icon_for_hierarchy_node(&doc, HierarchyNode::Line(0)),
+            IconId::Line
+        );
+        assert_eq!(
+            icon_for_hierarchy_node(&doc, HierarchyNode::Constraint(0)),
+            IconId::Parallel
+        );
     }
 
     #[test]

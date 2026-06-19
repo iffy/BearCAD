@@ -8,7 +8,7 @@
 //! Siblings, child sketches, and other hierarchy descendants stay healthy unless they
 //! meet one of the rules above. Tombstoned (`deleted`) entities are hidden separately.
 
-use crate::constraints::{find_dimension_constraint, find_distance_constraint};
+use crate::constraints::find_dimension_constraint;
 use crate::document_lifecycle::{
     constraint_entity_alive, constraint_line_alive, constraint_point_alive, distance_target_alive,
     element_alive,
@@ -17,10 +17,11 @@ use crate::hierarchy::SceneElement;
 use crate::selection::SceneSelection;
 use crate::model::{
     ConstraintEntity, ConstraintKind, ConstraintLine, ConstraintPoint, DimensionTarget,
-    DistanceTarget, Document,
+    DistanceTarget, Document, ParameterSource,
 };
 use crate::value::{
-    eval_angle_rad_in_doc, eval_length_mm_in_doc, parameter_names_referenced_in_expression,
+    eval_angle_rad_in_doc, eval_length_mm_in_doc, eval_parameter_in_doc,
+    parameter_names_referenced_in_expression, EvaluatedParameter,
 };
 use eframe::egui::Color32;
 use std::collections::HashMap;
@@ -84,6 +85,7 @@ pub enum ElementSnapshot {
     Parameter {
         expression: String,
         evaluated_mm: Option<f32>,
+        evaluated_angle_rad: Option<f32>,
     },
 }
 
@@ -162,7 +164,7 @@ fn scene_element_for_distance_target(target: DistanceTarget) -> SceneElement {
         }
         DistanceTarget::CircleDiameter(index) => SceneElement::Circle(index),
         DistanceTarget::LineLineDistance { line_a, .. } => scene_element_for_line(line_a),
-        DistanceTarget::PointPointDistance { a, .. } => scene_element_for_point(a),
+        DistanceTarget::PointPointDistance { anchor, .. } => scene_element_for_point(anchor),
         DistanceTarget::PointLineDistance { point, .. } => scene_element_for_point(point),
     }
 }
@@ -201,18 +203,6 @@ pub fn require_dimension_target_editable(
     Ok(())
 }
 
-pub fn require_distance_target_editable(
-    health: &DocumentHealth,
-    doc: &Document,
-    target: DistanceTarget,
-) -> Result<(), String> {
-    require_element_editable(health, scene_element_for_distance_target(target))?;
-    if let Some(index) = find_distance_constraint(doc, target) {
-        require_element_editable(health, SceneElement::Constraint(index))?;
-    }
-    Ok(())
-}
-
 pub fn require_constraint_editable(
     health: &DocumentHealth,
     doc: &Document,
@@ -226,7 +216,11 @@ pub fn require_constraint_editable(
         ConstraintKind::Distance { target } => {
             require_element_editable(health, scene_element_for_distance_target(target))?;
         }
-        ConstraintKind::Angle { line_a, line_b } => {
+        ConstraintKind::Angle {
+            line_a,
+            line_b,
+            rotation_sign: _,
+        } => {
             require_element_editable(health, scene_element_for_line(line_a))?;
             require_element_editable(health, scene_element_for_line(line_b))?;
         }
@@ -425,7 +419,11 @@ fn mark_invalid_constraints_and_unstable_geometry(doc: &Document, health: &mut D
                     );
                 }
             }
-            ConstraintKind::Angle { line_a, line_b } => {
+            ConstraintKind::Angle {
+            line_a,
+            line_b,
+            rotation_sign: _,
+        } => {
                 let a_alive = constraint_line_alive(doc, line_a);
                 let b_alive = constraint_line_alive(doc, line_b);
                 if !a_alive || !b_alive {
@@ -476,7 +474,18 @@ fn mark_invalid_parameters(doc: &Document, health: &mut DocumentHealth) {
         if param.deleted {
             continue;
         }
-        if eval_length_mm_in_doc(&param.expression, doc).is_none() {
+        if let Some(ParameterSource::LineLength(line_index)) = param.source {
+            if !crate::document_lifecycle::line_alive(doc, line_index) {
+                set_parameter_invalid(
+                    health,
+                    doc,
+                    index,
+                    "Source line was deleted".to_string(),
+                );
+                continue;
+            }
+        }
+        if eval_parameter_in_doc(&param.expression, doc).is_none() {
             set_parameter_invalid(
                 health,
                 doc,
@@ -556,7 +565,14 @@ fn set_parameter_invalid(
                 index,
                 ElementSnapshot::Parameter {
                     expression: param.expression.clone(),
-                    evaluated_mm: eval_length_mm_in_doc(&param.expression, doc),
+                    evaluated_mm: match eval_parameter_in_doc(&param.expression, doc) {
+                        Some(EvaluatedParameter::LengthMm(v)) => Some(v),
+                        _ => None,
+                    },
+                    evaluated_angle_rad: match eval_parameter_in_doc(&param.expression, doc) {
+                        Some(EvaluatedParameter::AngleRad(v)) => Some(v),
+                        _ => None,
+                    },
                 },
             );
         }
@@ -666,6 +682,7 @@ mod tests {
             name: "width".to_string(),
             expression: "1mm / 0".to_string(),
             deleted: false,
+            source: None,
         });
         let health = recompute_document_health(&doc);
         assert_eq!(health.parameter_status(0), HealthStatus::Invalid);

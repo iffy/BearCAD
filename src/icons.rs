@@ -1,6 +1,7 @@
 //! Toolbar and pane icons rasterized from bundled SVG assets.
 
 use crate::geometric_constraints::GeometricConstraintType;
+use crate::model::ConstraintKind;
 use eframe::egui::{
     self, Color32, ColorImage, Context, Id, Painter, Rect, TextureHandle, TextureOptions, Ui,
     WidgetText,
@@ -133,6 +134,19 @@ pub fn icon_for_constraint(kind: GeometricConstraintType) -> IconId {
         GeometricConstraintType::Midpoint => IconId::Midpoint,
         GeometricConstraintType::Vertical => IconId::Vertical,
         GeometricConstraintType::Horizontal => IconId::Horizontal,
+    }
+}
+
+pub fn icon_for_constraint_kind(kind: ConstraintKind) -> IconId {
+    match kind {
+        ConstraintKind::Distance { .. } => IconId::Dimension,
+        ConstraintKind::Parallel { .. } => IconId::Parallel,
+        ConstraintKind::Perpendicular { .. } => IconId::Perpendicular,
+        ConstraintKind::Coincident { .. } => IconId::Coincident,
+        ConstraintKind::Midpoint { .. } => IconId::Midpoint,
+        ConstraintKind::Horizontal { .. } => IconId::Horizontal,
+        ConstraintKind::Vertical { .. } => IconId::Vertical,
+        ConstraintKind::Angle { .. } => IconId::Constraint,
     }
 }
 
@@ -288,6 +302,48 @@ mod tests {
         assert_eq!(
             icon_for_constraint(GeometricConstraintType::Horizontal),
             IconId::Horizontal
+        );
+    }
+
+    #[test]
+    fn stored_constraint_kinds_map_to_expected_icons() {
+        use crate::model::{
+            ConstraintEntity, ConstraintLine, ConstraintPoint, DistanceTarget, LineEnd,
+        };
+
+        assert_eq!(
+            icon_for_constraint_kind(ConstraintKind::Distance {
+                target: DistanceTarget::LineLength(0),
+            }),
+            IconId::Dimension
+        );
+        assert_eq!(
+            icon_for_constraint_kind(ConstraintKind::Parallel {
+                line_a: ConstraintLine::Line(0),
+                line_b: ConstraintLine::Line(1),
+            }),
+            IconId::Parallel
+        );
+        assert_eq!(
+            icon_for_constraint_kind(ConstraintKind::Angle {
+                line_a: ConstraintLine::Line(0),
+                line_b: ConstraintLine::Line(1),
+                rotation_sign: 1,
+            }),
+            IconId::Constraint
+        );
+        assert_eq!(
+            icon_for_constraint_kind(ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                    line: 0,
+                    end: LineEnd::Start,
+                }),
+                b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                    line: 1,
+                    end: LineEnd::End,
+                }),
+            }),
+            IconId::Coincident
         );
     }
 }

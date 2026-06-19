@@ -70,6 +70,12 @@ pub fn effective_dim_offset(stored: Option<f32>) -> f32 {
         .clamp(MIN_DIM_OFFSET, MAX_DIM_OFFSET)
 }
 
+pub fn effective_arc_dim_offset(stored: Option<f32>) -> f32 {
+    stored
+        .unwrap_or(ARC_RADIUS)
+        .clamp(MIN_DIM_OFFSET, MAX_DIM_OFFSET)
+}
+
 /// Label offset for circle diameter dimensions (0 = just above the dimension line).
 pub fn effective_circle_diameter_label_offset(stored: Option<f32>) -> f32 {
     stored.unwrap_or(0.0).clamp(0.0, MAX_DIM_OFFSET)
@@ -725,14 +731,13 @@ pub fn draw_arc_dimension(
         return Rect::NOTHING;
     }
     let start_angle = start_vec.y.atan2(start_vec.x);
-    let mut end_angle = end_vec.y.atan2(end_vec.x);
+    let end_angle = end_vec.y.atan2(end_vec.x);
     let mut sweep = end_angle - start_angle;
     while sweep <= 0.0 {
         sweep += std::f32::consts::TAU;
     }
     while sweep > std::f32::consts::PI {
         sweep -= std::f32::consts::TAU;
-        end_angle = start_angle + sweep;
     }
     let segments = ((sweep / std::f32::consts::PI).abs() * 24.0).ceil().max(4.0) as usize;
     let mut prev = geom.start;
@@ -759,6 +764,187 @@ pub fn draw_arc_dimension(
             .with_override_text_color(color),
     );
     Rect::from_center_size(geom.label_center, galley_size).expand(LABEL_HIT_PAD)
+}
+
+pub fn angle_gizmo_handle_world(
+    display: &crate::constraints::AngleConstraintDisplay,
+    radius_world: f32,
+) -> Vec3 {
+    display.center + display.dir_b * radius_world
+}
+
+pub fn angle_gizmo_handle_hit(
+    screen: Pos2,
+    project: &impl Fn(Vec3) -> Option<Pos2>,
+    handle: Vec3,
+) -> bool {
+    let Some(sp) = project(handle) else {
+        return false;
+    };
+    (screen - sp).length() <= crate::construction::AXIS_GIZMO_HANDLE_HIT_RADIUS_PX
+}
+
+fn draw_world_segment_dashed<Project>(
+    painter: &Painter,
+    project: &Project,
+    a: Vec3,
+    b: Vec3,
+    color: Color32,
+    width: f32,
+) where
+    Project: Fn(Vec3) -> Option<Pos2>,
+{
+    if let (Some(pa), Some(pb)) = (project(a), project(b)) {
+        painter.add(Shape::dashed_line(
+            &[pa, pb],
+            Stroke::new(width, color),
+            crate::construction::CONSTRUCTION_DASH_LENGTH_PX,
+            crate::construction::CONSTRUCTION_DASH_GAP_PX,
+        ));
+    }
+}
+
+pub fn draw_sketch_angle_gizmo<Project>(
+    painter: &Painter,
+    project: &Project,
+    center: Vec3,
+    dir_a: Vec3,
+    plane_normal: Vec3,
+    radius_world: f32,
+    handle_dir: Vec3,
+    color: Color32,
+    handle_hovered: bool,
+) where
+    Project: Fn(Vec3) -> Option<Pos2>,
+{
+    let dir_a = dir_a.normalize_or_zero();
+    let plane_n = plane_normal.normalize_or_zero();
+    let mut tangent = plane_n.cross(dir_a);
+    if tangent.length_squared() < 1e-8 {
+        tangent = plane_n.cross(handle_dir);
+    }
+    tangent = tangent.normalize_or_zero();
+    if tangent.length_squared() < 1e-8 {
+        return;
+    }
+    let segments = 48;
+    let circle_color = if handle_hovered {
+        crate::construction::GIZMO_HANDLE_HOVER_RGBA.gamma_multiply(0.9)
+    } else {
+        color.gamma_multiply(0.85)
+    };
+    let stroke_width = if handle_hovered { 2.5 } else { 1.5 };
+    let mut prev: Option<Pos2> = None;
+    for i in 0..=segments {
+        let a = i as f32 / segments as f32 * std::f32::consts::TAU;
+        let pt = center + dir_a * a.cos() * radius_world + tangent * a.sin() * radius_world;
+        if let Some(sp) = project(pt) {
+            if let Some(p0) = prev {
+                painter.line_segment([p0, sp], Stroke::new(stroke_width, circle_color));
+            }
+            prev = Some(sp);
+        } else {
+            prev = None;
+        }
+    }
+
+    let handle = center + handle_dir.normalize_or_zero() * radius_world;
+    let handle_color = if handle_hovered {
+        crate::construction::GIZMO_HANDLE_HOVER_RGBA
+    } else {
+        color
+    };
+    let Some(sp) = project(handle) else {
+        return;
+    };
+    if handle_hovered {
+        painter.circle_filled(sp, 10.0, handle_color.gamma_multiply(0.35));
+        painter.circle_stroke(sp, 10.0, Stroke::new(2.0, handle_color));
+    } else {
+        painter.circle_filled(sp, 6.0, color);
+    }
+    let handle_dir_n = handle_dir.normalize_or_zero();
+    let tangent_w = plane_n.cross(handle_dir_n).normalize_or_zero();
+    if tangent_w.length_squared() > 1e-8 {
+        let tangent_len = pixels_to_world_distance(project, handle, tangent_w, 6.0);
+        if tangent_len > 1e-6 {
+            for sign in [-1.0f32, 1.0] {
+                let along = tangent_w * sign;
+                let tip = handle + along * tangent_len;
+                if let (Some(ta), Some(tb)) = (project(tip), project(handle - along * tangent_len)) {
+                    let t_screen = (ta - tb).normalized();
+                    if t_screen.length_sq() > 1e-4 {
+                        let arrow = 5.0;
+                        let wing = 3.0;
+                        for dir_sign in [-1.0f32, 1.0] {
+                            let tip2 = sp + t_screen * dir_sign * arrow;
+                            let side = Vec2::new(-t_screen.y, t_screen.x) * wing * dir_sign;
+                            painter.line_segment(
+                                [tip2, tip2 - t_screen * dir_sign * arrow + side],
+                                Stroke::new(2.0, handle_color),
+                            );
+                            painter.line_segment(
+                                [tip2, tip2 - t_screen * dir_sign * arrow - side],
+                                Stroke::new(2.0, handle_color),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn draw_angle_constraint_annotation<Project>(
+    painter: &Painter,
+    project: &Project,
+    display: &crate::constraints::AngleConstraintDisplay,
+    plane_normal: Vec3,
+    arc_geom: &ArcDimensionGeom,
+    label: &str,
+    color: Color32,
+    radius_world: f32,
+    gizmo_hovered: bool,
+) -> Rect
+where
+    Project: Fn(Vec3) -> Option<Pos2>,
+{
+    if display.extend_a {
+        draw_world_segment_dashed(
+            painter,
+            project,
+            display.leg_a_root,
+            display.center,
+            color,
+            LINE_WIDTH,
+        );
+    }
+    if display.extend_b {
+        draw_world_segment_dashed(
+            painter,
+            project,
+            display.leg_b_root,
+            display.center,
+            color,
+            LINE_WIDTH,
+        );
+    }
+    draw_sketch_angle_gizmo(
+        painter,
+        project,
+        display.center,
+        display.dir_a,
+        plane_normal,
+        radius_world,
+        display.dir_b,
+        color,
+        gizmo_hovered,
+    );
+    draw_arc_dimension(painter, arc_geom, label, color)
+}
+
+pub fn arc_label_outward_screen(arc_geom: &ArcDimensionGeom) -> Vec2 {
+    (arc_geom.label_center - arc_geom.center).normalized()
 }
 
 pub fn draw_linear_dimension<Project>(
@@ -899,6 +1085,11 @@ mod tests {
         assert_eq!(effective_dim_offset(None), OFFSET);
         assert_eq!(effective_dim_offset(Some(2.0)), MIN_DIM_OFFSET);
         assert_eq!(effective_dim_offset(Some(500.0)), MAX_DIM_OFFSET);
+    }
+
+    #[test]
+    fn effective_arc_dim_offset_defaults_to_arc_radius() {
+        assert_eq!(effective_arc_dim_offset(None), ARC_RADIUS);
     }
 
     #[test]

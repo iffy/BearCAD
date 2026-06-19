@@ -39,13 +39,23 @@ impl FaceId {
 /// Index into [`Document::sketches`].
 pub type SketchId = usize;
 
-/// A named length parameter (expression stored verbatim, evaluated on demand).
+/// Geometry that drives a read-only parameter value.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParameterSource {
+    LineLength(usize),
+}
+
+/// A named length or angle parameter (expression stored verbatim, evaluated on demand).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Parameter {
     pub name: String,
     pub expression: String,
     #[serde(default)]
     pub deleted: bool,
+    /// When set, [`expression`] is synced from geometry and the value is read-only.
+    #[serde(default)]
+    pub source: Option<ParameterSource>,
 }
 
 /// A 2D sketch hosted on a face. A single face may host multiple independent sketches.
@@ -450,41 +460,62 @@ pub enum ConstraintLine {
     RectEdge { rect: usize, edge: RectEdge },
 }
 
+/// +1 or -1 disambiguation for constraints with two valid solutions.
+pub type ConstraintSign = i8;
+
+pub fn default_constraint_sign() -> ConstraintSign {
+    1
+}
+
 /// Geometry a distance constraint applies to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DistanceTarget {
     LineLength(usize),
     RectWidth(usize),
     RectHeight(usize),
     CircleDiameter(usize),
+    /// Spacing between parallel lines. `side` is the sign of the movable line's
+    /// perpendicular offset from the reference line (+1 = positive perpendicular side).
     LineLineDistance {
         line_a: ConstraintLine,
         line_b: ConstraintLine,
+        #[serde(default = "default_constraint_sign")]
+        side: ConstraintSign,
     },
+    /// Distance between two points. `anchor` stays fixed; `mover` is placed
+    /// `dir_u`/`dir_v` away from the anchor.
     PointPointDistance {
-        a: ConstraintPoint,
-        b: ConstraintPoint,
+        anchor: ConstraintPoint,
+        mover: ConstraintPoint,
+        dir_u: f32,
+        dir_v: f32,
     },
+    /// Perpendicular distance from a point to a line. `side` is the sign of the
+    /// point's offset from the line (+1 = positive perpendicular side).
     PointLineDistance {
         point: ConstraintPoint,
         line: ConstraintLine,
+        #[serde(default = "default_constraint_sign")]
+        side: ConstraintSign,
     },
 }
 
 /// Target for the dimension tool (distance or angle).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DimensionTarget {
     Distance(DistanceTarget),
     Angle {
         line_a: ConstraintLine,
         line_b: ConstraintLine,
+        #[serde(default = "default_constraint_sign")]
+        rotation_sign: ConstraintSign,
     },
 }
 
 /// Kind of sketch constraint.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConstraintKind {
     Distance { target: DistanceTarget },
@@ -509,6 +540,9 @@ pub enum ConstraintKind {
     Angle {
         line_a: ConstraintLine,
         line_b: ConstraintLine,
+        /// +1: movable line rotates counterclockwise from reference; -1: clockwise.
+        #[serde(default = "default_constraint_sign")]
+        rotation_sign: ConstraintSign,
     },
 }
 

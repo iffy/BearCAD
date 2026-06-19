@@ -17,6 +17,7 @@ mod camera;
 mod command_log;
 mod command_palette;
 mod constraints;
+mod constraint_viewport;
 mod geometric_constraints;
 mod context;
 mod construction;
@@ -46,14 +47,20 @@ mod vertex_drag;
 mod view_cube;
 
 use actions::{
-    constraint_is_circle_diameter, Action, AppState, CreatingCircle, CreatingConstructionPlane,
+    constraint_is_angle, constraint_is_circle_diameter, Action, AppState, CreatingCircle,
+    CreatingConstructionPlane,
     CreatingLine, CreatingRect, DimEditTarget, DimLabelTarget, Pane, RectAxis, SketchSession,
     Tool,
+};
+use constraint_viewport::{
+    build_constraint_icon_hits, draw_constraint_connectors, draw_constraint_icons,
+    pointer_over_constraint_icon, viewport_constraints_for_selection,
 };
 use constraints::{
     constraint_evaluated_length, constraint_segment_endpoints, distance_target_from_pick,
     distance_target_segment_endpoints,
 };
+use std::collections::HashSet;
 use command_palette::{commands_for_state, filter_commands, show_palette, PaletteOutcome};
 use hierarchy::SceneElement;
 use selection::additive_click_modifiers;
@@ -69,13 +76,18 @@ use construction::{
 };
 use document_health::{health_tint_color, DocumentHealth, HealthStatus};
 use document_lifecycle::{circle_alive, constraint_alive, line_alive, rect_alive};
-use constraints::{angle_constraint_display_dirs, constraint_evaluated_angle};
+use constraints::{
+    angle_constraint_display, angle_rad_from_sketch_hit, constraint_evaluated_angle,
+    AngleConstraintDisplay,
+};
 use dimensions::{
-    arc_dimension_world_geom, circle_diameter_dimension_world_geom, circle_diameter_label_outward_px,
-    draw_arc_dimension, draw_linear_dimension, effective_circle_diameter_label_offset,
-    effective_dim_offset, planar_dimension_label_layout, PlanarLabelView, linear_dimension_world_geom,
+    angle_gizmo_handle_hit, angle_gizmo_handle_world, arc_dimension_world_geom,
+    circle_diameter_dimension_world_geom, circle_diameter_label_outward_px,
+    draw_angle_constraint_annotation, draw_linear_dimension, effective_circle_diameter_label_offset,
+    effective_arc_dim_offset, effective_dim_offset, planar_dimension_label_layout, PlanarLabelView,
+    linear_dimension_world_geom,
     outward_perpendicular_uv, pixels_to_world_distance, preferred_outward_uv,
-    project_arc_dimension_geom, project_linear_dimension_geom, uv_dir_to_world, ARC_RADIUS,
+    project_arc_dimension_geom, project_linear_dimension_geom, uv_dir_to_world,
     EXTENSION_OVERSHOOT, LABEL_FONT_SIZE, LABEL_OUTSET,
 };
 use face::{
@@ -94,6 +106,7 @@ use model::ConstructionPlane;
 use script::{ScriptRunner, SyntheticInput};
 use std::path::Path;
 use expression_input::{
+    expression_autocomplete_handle_keys, expression_autocomplete_show_dropdown,
     length_expression_field_errors, show_expression_error_tooltips_above, INVALID_BG,
     INVALID_BORDER, INVALID_TEXT,
 };
@@ -221,6 +234,11 @@ struct DimLabelDrag {
     anchor_screen: egui::Pos2,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AngleGizmoDrag {
+    constraint_id: DimLabelTarget,
+}
+
 struct VertexDrag {
     point: ConstraintPoint,
 }
@@ -231,6 +249,8 @@ struct CommittedDimLayout {
     geom: dimensions::LinearDimensionGeom,
     world_geom: dimensions::LinearDimensionWorldGeom,
     arc_geom: Option<dimensions::ArcDimensionGeom>,
+    angle_display: Option<AngleConstraintDisplay>,
+    angle_radius_world: f32,
     label: String,
     label_rect: egui::Rect,
     outward: egui::Vec2,
@@ -248,6 +268,7 @@ struct App {
     last_viewport: Option<egui::Rect>,
     native_menu: NativeMenu,
     dim_label_drag: Option<DimLabelDrag>,
+    angle_gizmo_drag: Option<AngleGizmoDrag>,
     vertex_drag: Option<VertexDrag>,
     launch_maximize_frames_remaining: u8,
     gpu_viewport: bool,
@@ -293,6 +314,7 @@ impl App {
             last_viewport: None,
             native_menu,
             dim_label_drag: None,
+            angle_gizmo_drag: None,
             vertex_drag: None,
             launch_maximize_frames_remaining: initial_launch_maximize_frames(),
             gpu_viewport: gpu_viewport::install(cc),
@@ -479,19 +501,16 @@ impl App {
             }
 
             if self.state.tool == Tool::Constraint {
-                for (index, key) in [
-                    (1u8, egui::Key::Num1),
-                    (2, egui::Key::Num2),
-                    (3, egui::Key::Num3),
-                    (4, egui::Key::Num4),
-                    (5, egui::Key::Num5),
-                    (6, egui::Key::Num6),
-                    (7, egui::Key::Num7),
-                    (8, egui::Key::Num8),
-                    (9, egui::Key::Num9),
+                for (key, egui_key) in [
+                    ('a', egui::Key::A),
+                    ('e', egui::Key::E),
+                    ('i', egui::Key::I),
+                    ('m', egui::Key::M),
+                    ('v', egui::Key::V),
+                    ('h', egui::Key::H),
                 ] {
-                    if ctx.input(|i| i.key_pressed(key)) {
-                        self.state.apply(Action::ApplyConstraintShortcut(index));
+                    if ctx.input(|i| i.key_pressed(egui_key)) {
+                        self.state.apply(Action::ApplyConstraintShortcut(key));
                     }
                 }
             }
@@ -827,6 +846,7 @@ impl eframe::App for App {
             egui::SidePanel::right("context")
                 .resizable(true)
                 .default_width(200.0)
+                .max_width(280.0)
                 .frame(theme::panel_frame())
                 .show(ctx, |ui| {
                     context::show_pane(
@@ -947,6 +967,7 @@ fn build_gpu_dimension_labels(
 ) -> Vec<gpu_viewport::ViewportDimLabel> {
     layouts
         .iter()
+        .filter(|layout| layout.arc_geom.is_none())
         .map(|layout| {
             let color = document_health::constraint_annotation_color(
                 health,
@@ -973,9 +994,45 @@ fn build_gpu_dimension_labels(
                 color,
                 text_vertices,
                 text_indices,
+                draw_dimension_lines: layout.arc_geom.is_none(),
             }
         })
         .collect()
+}
+
+const SIDE_PANEL_IDS: &[&str] = &["tree", "parameters", "context"];
+
+/// True while the pointer is on a side-panel resize grip (don't override its cursor).
+fn side_panel_resize_active(ctx: &egui::Context) -> bool {
+    SIDE_PANEL_IDS.iter().any(|id| {
+        ctx.read_response(egui::Id::new(*id).with("__resize"))
+            .is_some_and(|r| r.dragged() || r.hovered())
+    })
+}
+
+/// Set a viewport cursor only when the viewport owns the pointer this frame.
+fn set_viewport_cursor(
+    ctx: &egui::Context,
+    response: &egui::Response,
+    viewport_owns_pointer: bool,
+    icon: egui::CursorIcon,
+) {
+    if side_panel_resize_active(ctx) {
+        return;
+    }
+    if viewport_owns_pointer || response.hovered() {
+        ctx.set_cursor_icon(icon);
+    }
+}
+
+/// Pointer in viewport coordinates for hit-testing and drags.
+fn viewport_pointer_pos(
+    response: &egui::Response,
+    viewport_owns_pointer: bool,
+) -> Option<egui::Pos2> {
+    response
+        .hover_pos()
+        .or(viewport_owns_pointer.then_some(response.interact_pointer_pos()).flatten())
 }
 
 /// True while orbiting/panning or dragging sketch geometry — pick hover is distracting then.
@@ -985,6 +1042,7 @@ fn suppress_viewport_pick_hover(
     vertex_drag_active: bool,
     line_drag_active: bool,
     dim_label_drag_active: bool,
+    angle_gizmo_drag_active: bool,
     plane_gizmo_drag_active: bool,
 ) -> bool {
     ui.input(|i| i.pointer.secondary_down())
@@ -992,6 +1050,7 @@ fn suppress_viewport_pick_hover(
         || vertex_drag_active
         || line_drag_active
         || dim_label_drag_active
+        || angle_gizmo_drag_active
         || plane_gizmo_drag_active
 }
 
@@ -1084,6 +1143,7 @@ fn build_viewport_scene_input<'a>(
     hover_highlight: Option<gpu_viewport::ViewportHoverHighlight>,
     dimension_labels: &'a [gpu_viewport::ViewportDimLabel],
     dim_label_view: Option<PlanarLabelView>,
+    constraint_graphics: Option<&'a [constraint_viewport::ConstraintViewportGraphic]>,
 ) -> gpu_viewport::ViewportSceneInput<'a> {
     let preview_rect = creating_rect.and_then(|cr| {
         let session = sketch_session?;
@@ -1177,6 +1237,8 @@ fn build_viewport_scene_input<'a>(
         hover_highlight,
         hover_color: construction::PICK_HOVER_RGBA,
         document_health,
+        constraint_graphics,
+        constraint_connector_color: Some(col::DIM_EDGE_HIGHLIGHT),
     }
 }
 /// Expression fields grow with content up to this many characters.
@@ -1437,10 +1499,13 @@ fn should_select_all_rect_value(
         || (is_focus_target && has_focus && !user_edited)
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct SketchDimFieldResult {
     changed: bool,
     enter_commit: bool,
+    lost_focus: bool,
+    inline_parameter_added: Option<String>,
+    inline_parameter_error: Option<String>,
 }
 
 fn sketch_dimension_enter_pressed(ui: &egui::Ui) -> bool {
@@ -1477,13 +1542,16 @@ fn show_sketch_dimension_field(
     ctx: &egui::Context,
     id: egui::Id,
     text: &mut String,
-    doc: &model::Document,
+    doc: &mut model::Document,
     is_focus_target: bool,
     pending_focus: &mut bool,
     user_edited: bool,
     angle: bool,
 ) -> SketchDimFieldResult {
     let has_focus = ctx.memory(|m| m.focused()) == Some(id);
+    if has_focus {
+        expression_autocomplete_handle_keys(ui, ctx, id, text, doc, &[]);
+    }
     let field_errors = if angle {
         angle_expression_field_errors(text, doc)
     } else {
@@ -1565,8 +1633,28 @@ fn show_sketch_dimension_field(
         })
         .inner
     });
-    show_expression_error_tooltips_above(ui, &frame_output.response, &field_errors);
     let output = frame_output.inner;
+    if output.response.has_focus() {
+        let cursor = output
+            .state
+            .cursor
+            .char_range()
+            .map(|range| range.primary.index)
+            .unwrap_or_else(|| text.chars().count());
+        if expression_autocomplete_show_dropdown(
+            ui,
+            ctx,
+            &output.response,
+            id,
+            text,
+            doc,
+            &[],
+            cursor,
+        ) {
+            output.state.clone().store(ctx, id);
+        }
+    }
+    show_expression_error_tooltips_above(ui, &frame_output.response, &field_errors);
     let resp = &output.response;
     if is_focus_target && *pending_focus {
         resp.request_focus();
@@ -1594,9 +1682,31 @@ fn show_sketch_dimension_field(
     if enter_commit {
         consume_sketch_dimension_enter(ui);
     }
+    let lost_focus = resp.lost_focus();
+    let mut inline_parameter_added = None;
+    let mut inline_parameter_error = None;
+    if enter_commit || lost_focus {
+        match crate::parameters::try_commit_inline_parameter_definition(doc, text) {
+            Ok(Some(name)) => inline_parameter_added = Some(name),
+            Ok(None) => {}
+            Err(error) => inline_parameter_error = Some(error),
+        }
+    }
     SketchDimFieldResult {
         changed: resp.changed(),
         enter_commit,
+        lost_focus,
+        inline_parameter_added,
+        inline_parameter_error,
+    }
+}
+
+fn apply_dimension_field_feedback(state: &mut AppState, result: &SketchDimFieldResult) {
+    if let Some(name) = &result.inline_parameter_added {
+        state.refresh_document_health();
+        state.status = format!("Added parameter {name}");
+    } else if let Some(error) = &result.inline_parameter_error {
+        state.status = error.clone();
     }
 }
 
@@ -1697,6 +1807,8 @@ fn push_circle_diameter_dim_layout(
         geom,
         world_geom,
         arc_geom: None,
+        angle_display: None,
+        angle_radius_world: 0.0,
         label,
         label_rect,
         outward: geom.outward,
@@ -1713,13 +1825,18 @@ fn push_arc_dim_layout(
     target: DimLabelTarget,
     line_a: model::ConstraintLine,
     line_b: model::ConstraintLine,
+    dim_offset: Option<f32>,
     label: String,
 ) {
-    let Some((center, dir_a, dir_b)) = angle_constraint_display_dirs(doc, line_a, line_b) else {
+    let Some(display) = angle_constraint_display(doc, line_a, line_b) else {
         return;
     };
+    let center = display.center;
+    let dir_a = display.dir_a;
+    let dir_b = display.dir_b;
     let plane_normal = frame.normal;
-    let radius_world = pixels_to_world_distance(&project, center, dir_a, ARC_RADIUS);
+    let pixel_offset = effective_arc_dim_offset(dim_offset);
+    let radius_world = pixels_to_world_distance(&project, center, dir_a, pixel_offset);
     let label_outset_world = pixels_to_world_distance(&project, center, dir_a, LABEL_OUTSET);
     let Some(world_geom) = arc_dimension_world_geom(
         center,
@@ -1744,6 +1861,7 @@ fn push_arc_dim_layout(
         egui::Rect::from_center_size(arc_geom.label_center, galley.size())
             .expand(dimensions::LABEL_HIT_PAD)
     };
+    let outward = dimensions::arc_label_outward_screen(&arc_geom);
     layouts.push(CommittedDimLayout {
         target,
         geom: dimensions::LinearDimensionGeom {
@@ -1755,7 +1873,7 @@ fn push_arc_dim_layout(
             dim_b: arc_geom.end,
             label_center: arc_geom.label_center,
             along: (arc_geom.end - arc_geom.start).normalized(),
-            outward: egui::Vec2::ZERO,
+            outward,
         },
         world_geom: dimensions::LinearDimensionWorldGeom {
             ext_a_near: center,
@@ -1769,10 +1887,12 @@ fn push_arc_dim_layout(
             outward_world: plane_normal,
         },
         arc_geom: Some(arc_geom),
+        angle_display: Some(display),
+        angle_radius_world: radius_world,
         label,
         label_rect,
-        outward: egui::Vec2::ZERO,
-        offset: 0.0,
+        outward,
+        offset: pixel_offset,
     });
 }
 
@@ -1824,6 +1944,8 @@ fn push_committed_dim_layout(
         geom,
         world_geom,
         arc_geom: None,
+        angle_display: None,
+        angle_radius_world: 0.0,
         label,
         label_rect,
         outward: geom.outward,
@@ -1943,7 +2065,12 @@ fn build_committed_dim_layouts(
         .enumerate()
         .filter(|(_, c)| c.sketch == session.sketch)
     {
-        let ConstraintKind::Angle { line_a, line_b } = constraint.kind else {
+        let ConstraintKind::Angle {
+            line_a,
+            line_b,
+            rotation_sign: _,
+        } = constraint.kind
+        else {
             continue;
         };
         let label = constraint_evaluated_angle(doc, index)
@@ -1958,6 +2085,7 @@ fn build_committed_dim_layouts(
             index,
             line_a,
             line_b,
+            constraint.dim_offset,
             label,
         );
     }
@@ -1970,6 +2098,7 @@ fn draw_committed_dim_layouts<Project>(
     label_view: &PlanarLabelView,
     project: &Project,
     health: &document_health::DocumentHealth,
+    hovered_angle_gizmo: Option<DimLabelTarget>,
 ) where
     Project: Fn(Vec3) -> Option<egui::Pos2>,
 {
@@ -1979,8 +2108,21 @@ fn draw_committed_dim_layouts<Project>(
             layout.target,
             col::DIM_ANNOTATION,
         );
-        if let Some(arc_geom) = &layout.arc_geom {
-            draw_arc_dimension(painter, arc_geom, &layout.label, color);
+        if let (Some(arc_geom), Some(display)) =
+            (&layout.arc_geom, layout.angle_display.as_ref())
+        {
+            let gizmo_hovered = hovered_angle_gizmo == Some(layout.target);
+            draw_angle_constraint_annotation(
+                painter,
+                project,
+                display,
+                layout.world_geom.outward_world,
+                arc_geom,
+                &layout.label,
+                color,
+                layout.angle_radius_world,
+                gizmo_hovered,
+            );
         } else {
             draw_linear_dimension(
                 painter,
@@ -1991,6 +2133,18 @@ fn draw_committed_dim_layouts<Project>(
             );
         }
     }
+}
+
+fn angle_gizmo_hit_target(
+    layouts: &[CommittedDimLayout],
+    pointer: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+) -> Option<DimLabelTarget> {
+    layouts.iter().rev().find_map(|layout| {
+        let display = layout.angle_display.as_ref()?;
+        let handle = angle_gizmo_handle_world(display, layout.angle_radius_world);
+        angle_gizmo_handle_hit(pointer, project, handle).then_some(layout.target)
+    })
 }
 
 fn pointer_over_committed_dim_label(
@@ -2183,6 +2337,82 @@ fn handle_line_drag(
     false
 }
 
+fn handle_angle_gizmo_drag(
+    ui: &egui::Ui,
+    layouts: &[CommittedDimLayout],
+    drag: &mut Option<AngleGizmoDrag>,
+    state: &mut AppState,
+    session: SketchSession,
+    viewport: egui::Rect,
+    vp: &glam::Mat4,
+    cam: &camera::Camera,
+) -> bool {
+    if !state.can_edit_sketch_dimensions() || state.editing_committed_dim.is_some() {
+        return false;
+    }
+    let pointer = ui.input(|i| i.pointer.hover_pos());
+    let primary_down = ui.input(|i| i.pointer.primary_down());
+    let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+    let primary_released = ui.input(|i| i.pointer.primary_released());
+    let Some(frame) = sketch_geometry_frame(&state.doc, session.sketch) else {
+        return false;
+    };
+
+    if let Some(active) = drag.as_ref() {
+        if primary_released {
+            *drag = None;
+            return false;
+        }
+        if primary_down {
+            if let Some(pp) = pointer {
+                if let Some(layout) =
+                    layouts.iter().find(|l| l.target == active.constraint_id)
+                {
+                    if let Some(display) = layout.angle_display {
+                        if let Some(hit) = cam.ray_plane_hit(
+                            pp, viewport, vp, display.center, frame.normal,
+                        ) {
+                            if let Some(angle_rad) =
+                                angle_rad_from_sketch_hit(&display, frame.normal, hit)
+                            {
+                                let _ = state.apply(Action::SetConstraintAngleValue {
+                                    constraint_id: active.constraint_id,
+                                    angle_rad,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+        *drag = None;
+    }
+
+    if primary_pressed {
+        if let Some(pos) = pointer {
+            let project = |w: glam::Vec3| cam.project(w, viewport, vp);
+            if let Some(target) = angle_gizmo_hit_target(layouts, pos, &project) {
+                if document_health::require_constraint_editable(
+                    &state.document_health,
+                    &state.doc,
+                    target,
+                )
+                .is_err()
+                {
+                    return false;
+                }
+                *drag = Some(AngleGizmoDrag {
+                    constraint_id: target,
+                });
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 fn handle_committed_dim_label_drag(
     ui: &egui::Ui,
     layouts: &[CommittedDimLayout],
@@ -2212,6 +2442,8 @@ fn handle_committed_dim_label_drag(
                     let delta = (pos - active.anchor_screen).dot(active.outward);
                     let offset = if constraint_is_circle_diameter(&state.doc, active.target) {
                         effective_circle_diameter_label_offset(Some(active.start_offset + delta))
+                    } else if constraint_is_angle(&state.doc, active.target) {
+                        effective_arc_dim_offset(Some(active.start_offset + delta))
                     } else {
                         effective_dim_offset(Some(active.start_offset + delta))
                     };
@@ -2366,6 +2598,7 @@ impl App {
         let viewport = response.rect;
         self.last_viewport = Some(viewport);
         self.state.apply_pending_sketch_reframe(viewport);
+        let mut inline_parameter_field_results = Vec::<SketchDimFieldResult>::new();
 
         // Apply scripted right-drag as direct camera motion.
         self.synthetic.apply_pending_drag(viewport, |delta, modifiers, h| {
@@ -2421,24 +2654,80 @@ impl App {
         let committed_dim_layouts = sketch_session.zip(planar_label_view).map(|(session, view)| {
             build_committed_dim_layouts(&painter, &project, &view, &self.state.doc, session)
         });
-        let pointer_screen = response.hover_pos().or(response.interact_pointer_pos());
+        let viewport_owns_pointer = self.vertex_drag.is_some()
+            || self.state.line_drag_session.is_some()
+            || self.dim_label_drag.is_some()
+            || self.angle_gizmo_drag.is_some()
+            || response.dragged_by(egui::PointerButton::Secondary);
+        let pointer_screen = viewport_pointer_pos(&response, viewport_owns_pointer);
         let layouts_slice = committed_dim_layouts.as_deref().unwrap_or(&[]);
+        let angle_dim_constraints: HashSet<usize> = layouts_slice
+            .iter()
+            .filter(|layout| layout.arc_geom.is_some())
+            .map(|layout| layout.target)
+            .collect();
+        let constraint_graphics = viewport_constraints_for_selection(
+            &self.state.doc,
+            &self.state.element_visibility,
+            &self.state.scene_selection,
+            &angle_dim_constraints,
+        );
+        let constraint_icon_hits =
+            build_constraint_icon_hits(&project, &constraint_graphics);
+        let over_constraint_icon = pointer_screen.is_some_and(|pp| {
+            pointer_over_constraint_icon(&constraint_icon_hits, pp).is_some()
+        });
         let over_committed_dim_label = self.state.can_edit_sketch_dimensions()
             && (pointer_screen.is_some_and(|pp| {
                 pointer_over_committed_dim_label(layouts_slice, pp)
             }) || self.dim_label_drag.is_some());
         if handle_committed_dim_label_double_click(ui, layouts_slice, &mut self.state) {
             self.dim_label_drag = None;
+            self.angle_gizmo_drag = None;
         }
-        if handle_committed_dim_label_drag(
+        let mut angle_gizmo_dragging = false;
+        if let Some(session) = sketch_session {
+            angle_gizmo_dragging = handle_angle_gizmo_drag(
+                ui,
+                layouts_slice,
+                &mut self.angle_gizmo_drag,
+                &mut self.state,
+                session,
+                viewport,
+                &vp,
+                &cam,
+            );
+        }
+        if angle_gizmo_dragging {
+            self.dim_label_drag = None;
+            set_viewport_cursor(
+                ui.ctx(),
+                &response,
+                true,
+                egui::CursorIcon::Grabbing,
+            );
+        } else if handle_committed_dim_label_drag(
             ui,
             layouts_slice,
             &mut self.dim_label_drag,
             &mut self.state,
         ) {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            self.angle_gizmo_drag = None;
+            set_viewport_cursor(
+                ui.ctx(),
+                &response,
+                true,
+                egui::CursorIcon::Grabbing,
+            );
         } else if over_committed_dim_label {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+            set_viewport_cursor(ui.ctx(), &response, false, egui::CursorIcon::Grab);
+        } else if over_constraint_icon {
+            set_viewport_cursor(ui.ctx(), &response, false, egui::CursorIcon::PointingHand);
+        } else if let Some(pp) = pointer_screen {
+            let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
+            if angle_gizmo_hit_target(layouts_slice, pp, &project).is_some() {
+                set_viewport_cursor(ui.ctx(), &response, false, egui::CursorIcon::Grab);
+            }
         }
 
         let mut vertex_dragging = false;
@@ -2447,6 +2736,8 @@ impl App {
             && self.state.editing_committed_dim.is_none()
             && !over_committed_dim_label
             && self.dim_label_drag.is_none()
+            && !angle_gizmo_dragging
+            && self.angle_gizmo_drag.is_none()
         {
             if let Some(session) = sketch_session {
                 line_dragging = handle_line_drag(
@@ -2473,7 +2764,12 @@ impl App {
                     );
                 }
                 if vertex_dragging || line_dragging || self.state.line_drag_session.is_some() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                    set_viewport_cursor(
+                        ui.ctx(),
+                        &response,
+                        true,
+                        egui::CursorIcon::Grabbing,
+                    );
                 } else if let Some(pp) = pointer_screen {
                     if nearest_sketch_line_in_sketch(
                         pp,
@@ -2483,7 +2779,7 @@ impl App {
                     )
                     .is_some()
                     {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                        set_viewport_cursor(ui.ctx(), &response, false, egui::CursorIcon::Grab);
                     }
                 }
             }
@@ -2495,6 +2791,7 @@ impl App {
             self.vertex_drag.is_some(),
             self.state.line_drag_session.is_some(),
             self.dim_label_drag.is_some(),
+            self.angle_gizmo_drag.is_some(),
             self.state
                 .creating_plane
                 .as_ref()
@@ -2505,6 +2802,7 @@ impl App {
             && self.state.editing_committed_dim.is_none()
             && !over_committed_dim_label
             && self.dim_label_drag.is_none()
+            && self.angle_gizmo_drag.is_none()
             && !vertex_dragging
             && !line_dragging
             && self.vertex_drag.is_none()
@@ -2513,16 +2811,24 @@ impl App {
             if let Some(pp) = pointer_screen {
                 let gp = cam.ground_point(pp, viewport, &vp);
                 if ui.input(|i| i.pointer.primary_pressed()) {
-                    if let Some(target) = resolve_pick_target(pp, &project, gp, &self.state.doc) {
+                    let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+                    if let Some(index) =
+                        pointer_over_constraint_icon(&constraint_icon_hits, pp)
+                    {
+                        self.state.apply(Action::ClickSceneElement {
+                            element: SceneElement::Constraint(index),
+                            additive,
+                        });
+                    } else if let Some(target) =
+                        resolve_pick_target(pp, &project, gp, &self.state.doc)
+                    {
                         if let Some(element) = scene_element_from_pick(&target.kind) {
-                            let additive =
-                                ui.input(|i| additive_click_modifiers(&i.modifiers));
                             self.state
                                 .apply(Action::ClickSceneElement { element, additive });
-                        } else if !ui.input(|i| additive_click_modifiers(&i.modifiers)) {
+                        } else if !additive {
                             self.state.apply(Action::ClearSceneSelection);
                         }
-                    } else if !ui.input(|i| additive_click_modifiers(&i.modifiers)) {
+                    } else if !additive {
                         self.state.apply(Action::ClearSceneSelection);
                     }
                 } else if !self.gpu_viewport && !suppress_hover_highlight {
@@ -2845,7 +3151,6 @@ impl App {
 
         if self.state.tool == Tool::ConstructionPlane {
             let ground = |p: egui::Pos2| cam.ground_point(p, viewport, &vp);
-            let pointer_screen = response.hover_pos().or(response.interact_pointer_pos());
 
             if let Some(pp) = pointer_screen {
                 let gp = ground(pp);
@@ -3101,6 +3406,7 @@ impl App {
             hover_highlight,
             &gpu_dim_labels,
             planar_label_view,
+            Some(&constraint_graphics),
         );
         let scene = gpu_viewport::ViewportScene::build(&scene_input);
         let gpu_drawn =
@@ -3196,9 +3502,38 @@ impl App {
             }
         }
 
+        if !constraint_graphics.is_empty() {
+            if !gpu_drawn {
+                draw_constraint_connectors(
+                    &painter,
+                    &project,
+                    &self.state.document_health,
+                    &self.state.scene_selection,
+                    &constraint_graphics,
+                    col::DIM_EDGE_HIGHLIGHT,
+                );
+            }
+            draw_constraint_icons(
+                &painter,
+                ui.ctx(),
+                &project,
+                &self.state.document_health,
+                &self.state.scene_selection,
+                &constraint_graphics,
+                pointer_screen.and_then(|pp| {
+                    pointer_over_constraint_icon(&constraint_icon_hits, pp)
+                }),
+                col::DIM_ANNOTATION,
+                col::DIM_EDGE_HIGHLIGHT,
+            );
+        }
+
         if sketch_session.is_some() {
             let mut commit_committed_dim = false;
             if let (Some(layouts), Some(view)) = (&committed_dim_layouts, planar_label_view) {
+                let hovered_angle_gizmo = pointer_screen.and_then(|pp| {
+                    angle_gizmo_hit_target(layouts, pp, &project)
+                }).or(self.angle_gizmo_drag.map(|d| d.constraint_id));
                 if !gpu_drawn {
                     draw_committed_dim_layouts(
                         &painter,
@@ -3206,7 +3541,24 @@ impl App {
                         &view,
                         &project,
                         &self.state.document_health,
+                        hovered_angle_gizmo,
                     );
+                } else {
+                    let arc_layouts: Vec<_> = layouts
+                        .iter()
+                        .filter(|layout| layout.arc_geom.is_some())
+                        .cloned()
+                        .collect();
+                    if !arc_layouts.is_empty() {
+                        draw_committed_dim_layouts(
+                            &painter,
+                            &arc_layouts,
+                            &view,
+                            &project,
+                            &self.state.document_health,
+                            hovered_angle_gizmo,
+                        );
+                    }
                 }
                 if let Some(edit) = &mut self.state.editing_committed_dim {
                     let constraint_id = match &edit.target {
@@ -3228,12 +3580,15 @@ impl App {
                                 })
                             },
                         )
-                    } else if let Some(model::DimensionTarget::Angle { line_a, line_b }) =
-                        edit.target.dimension_target(&self.state.doc)
+                    } else if let Some(model::DimensionTarget::Angle {
+                        line_a,
+                        line_b,
+                        rotation_sign: _,
+                    }) = edit.target.dimension_target(&self.state.doc)
                     {
-                        angle_constraint_display_dirs(&self.state.doc, line_a, line_b).and_then(
-                            |(center, _dir_a, _dir_b)| {
-                                project(center).map(|pc| dim_input_layout_centered_on(
+                        angle_constraint_display(&self.state.doc, line_a, line_b).and_then(
+                            |display| {
+                                project(display.center).map(|pc| dim_input_layout_centered_on(
                                     egui::Rect::from_center_size(pc, dim_input_size_for_text(&edit.text)),
                                     &edit.text,
                                 ))
@@ -3246,6 +3601,9 @@ impl App {
                         let ctx = ui.ctx();
                         let id = egui::Id::new(("committed_dim", format!("{:?}", edit.target)));
                         let mut commit_dim = false;
+                        let mut dim_field_result = SketchDimFieldResult::default();
+                        let doc = &mut self.state.doc;
+                        let is_angle = edit.target.is_angle(doc);
                         egui::Area::new(egui::Id::new((
                             "committed_dim_area",
                             format!("{:?}", edit.target),
@@ -3253,19 +3611,20 @@ impl App {
                         .fixed_pos(input_layout.pos)
                         .order(egui::Order::Foreground)
                         .show(ctx, |ui| {
-                            let result = show_sketch_dimension_field(
+                            dim_field_result = show_sketch_dimension_field(
                                 ui,
                                 ctx,
                                 id,
                                 &mut edit.text,
-                                &self.state.doc,
+                                doc,
                                 true,
                                 &mut edit.pending_focus,
                                 true,
-                                edit.target.is_angle(&self.state.doc),
+                                is_angle,
                             );
-                            commit_dim = result.enter_commit;
+                            commit_dim = dim_field_result.enter_commit;
                         });
+                        inline_parameter_field_results.push(dim_field_result);
                         let dim_focused = ctx.memory(|m| m.focused()) == Some(id);
                         if edit.pending_focus {
                             ctx.memory_mut(|m| m.request_focus(id));
@@ -3509,51 +3868,57 @@ impl App {
                 let id_h = egui::Id::new("cr_height");
 
                 let mut commit_rect = false;
+                let mut width_field_result = SketchDimFieldResult::default();
+                let mut height_field_result = SketchDimFieldResult::default();
+                let doc = &mut self.state.doc;
                 egui::Area::new(egui::Id::new("cr_width_area"))
                     .fixed_pos(width_layout.pos)
                     .order(egui::Order::Foreground)
                     .show(ctx, |ui| {
-                        let result = show_sketch_dimension_field(
+                        width_field_result = show_sketch_dimension_field(
                             ui,
                             ctx,
                             id_w,
                             &mut cr.texts[0],
-                            &self.state.doc,
+                            doc,
                             cr.focused == 0,
                             &mut cr.pending_focus,
                             cr.user_edited[0],
                             false,
                         );
-                        if result.changed {
+                        if width_field_result.changed {
                             cr.user_edited[0] = true;
                         }
-                        if result.enter_commit {
+                        if width_field_result.enter_commit {
                             commit_rect = true;
                         }
                     });
+                inline_parameter_field_results.push(width_field_result);
 
+                let doc = &mut self.state.doc;
                 egui::Area::new(egui::Id::new("cr_height_area"))
                     .fixed_pos(height_layout.pos)
                     .order(egui::Order::Foreground)
                     .show(ctx, |ui| {
-                        let result = show_sketch_dimension_field(
+                        height_field_result = show_sketch_dimension_field(
                             ui,
                             ctx,
                             id_h,
                             &mut cr.texts[1],
-                            &self.state.doc,
+                            doc,
                             cr.focused == 1,
                             &mut cr.pending_focus,
                             cr.user_edited[1],
                             false,
                         );
-                        if result.changed {
+                        if height_field_result.changed {
                             cr.user_edited[1] = true;
                         }
-                        if result.enter_commit {
+                        if height_field_result.enter_commit {
                             commit_rect = true;
                         }
                     });
+                inline_parameter_field_results.push(height_field_result);
 
                 let current = ctx.memory(|m| m.focused());
                 if current == Some(id_w) {
@@ -3612,29 +3977,32 @@ impl App {
                 let id_len = egui::Id::new("cl_length");
 
                 let mut commit_line = false;
+                let mut line_field_result = SketchDimFieldResult::default();
                 {
                     let ctx = ui.ctx();
+                    let doc = &mut self.state.doc;
                     egui::Area::new(egui::Id::new("cl_length_area"))
                         .fixed_pos(layout.pos)
                         .order(egui::Order::Foreground)
                         .show(ctx, |ui| {
-                            let result = show_sketch_dimension_field(
+                            line_field_result = show_sketch_dimension_field(
                                 ui,
                                 ctx,
                                 id_len,
                                 &mut cl.text,
-                                &self.state.doc,
+                                doc,
                                 true,
                                 &mut cl.pending_focus,
                                 cl.user_edited,
                                 false,
                             );
-                            if result.changed {
+                            if line_field_result.changed {
                                 cl.user_edited = true;
                             }
-                            commit_line = result.enter_commit;
+                            commit_line = line_field_result.enter_commit;
                         });
                 }
+                inline_parameter_field_results.push(line_field_result);
 
                 let length_focused = {
                     let ctx = ui.ctx();
@@ -3685,29 +4053,32 @@ impl App {
                     let id_diam = egui::Id::new("cc_diameter");
 
                     let mut commit_circle = false;
+                    let mut circle_field_result = SketchDimFieldResult::default();
                     {
                         let ctx = ui.ctx();
+                        let doc = &mut self.state.doc;
                         egui::Area::new(egui::Id::new("cc_diameter_area"))
                             .fixed_pos(layout.pos)
                             .order(egui::Order::Foreground)
                             .show(ctx, |ui| {
-                                let result = show_sketch_dimension_field(
+                                circle_field_result = show_sketch_dimension_field(
                                     ui,
                                     ctx,
                                     id_diam,
                                     &mut cc.text,
-                                    &self.state.doc,
+                                    doc,
                                     true,
                                     &mut cc.pending_focus,
                                     cc.user_edited,
                                     false,
                                 );
-                                if result.changed {
+                                if circle_field_result.changed {
                                     cc.user_edited = true;
                                 }
-                                commit_circle = result.enter_commit;
+                                commit_circle = circle_field_result.enter_commit;
                             });
                     }
+                    inline_parameter_field_results.push(circle_field_result);
 
                     let diameter_focused = {
                         let ctx = ui.ctx();
@@ -3756,52 +4127,58 @@ impl App {
                 let id_angle = egui::Id::new("cp_angle");
 
                 let mut commit_plane = false;
+                let mut offset_field_result = SketchDimFieldResult::default();
+                let doc = &mut self.state.doc;
                 egui::Area::new(egui::Id::new("cp_offset_area"))
                     .fixed_pos(offset_layout.pos)
                     .order(egui::Order::Foreground)
                     .show(ctx, |ui| {
-                        let result = show_sketch_dimension_field(
+                        offset_field_result = show_sketch_dimension_field(
                             ui,
                             ctx,
                             id_offset,
                             &mut cp.offset_text,
-                            &self.state.doc,
+                            doc,
                             cp.focused == PlaneDim::Offset,
                             &mut cp.pending_focus,
                             cp.user_edited_offset,
                             false,
                         );
-                        if result.changed {
+                        if offset_field_result.changed {
                             cp.user_edited_offset = true;
                         }
-                        if result.enter_commit {
+                        if offset_field_result.enter_commit {
                             commit_plane = true;
                         }
                     });
+                inline_parameter_field_results.push(offset_field_result);
 
                 if let Some(angle_layout) = angle_layout {
+                    let doc = &mut self.state.doc;
+                    let mut angle_field_result = SketchDimFieldResult::default();
                     egui::Area::new(egui::Id::new("cp_angle_area"))
                         .fixed_pos(angle_layout.pos)
                         .order(egui::Order::Foreground)
                         .show(ctx, |ui| {
-                            let result = show_sketch_dimension_field(
+                            angle_field_result = show_sketch_dimension_field(
                                 ui,
                                 ctx,
                                 id_angle,
                                 &mut cp.angle_text,
-                                &self.state.doc,
+                                doc,
                                 cp.focused == PlaneDim::Angle,
                                 &mut cp.pending_focus,
                                 cp.user_edited_angle,
                                 true,
                             );
-                            if result.changed {
+                            if angle_field_result.changed {
                                 cp.user_edited_angle = true;
                             }
-                            if result.enter_commit {
+                            if angle_field_result.enter_commit {
                                 commit_plane = true;
                             }
                         });
+                    inline_parameter_field_results.push(angle_field_result);
                 }
 
                 let current = ctx.memory(|m| m.focused());
@@ -3849,6 +4226,22 @@ impl App {
             shift_held,
         ) {
             draw_orbit_pivot_indicator(&painter, &project, cam.target);
+        }
+
+        if matches!(self.state.tool, Tool::Select | Tool::Constraint) {
+            let mut create_parameter_from_line = None;
+            crate::parameters::show_computed_line_length_context_menu(
+                &response,
+                &self.state.doc,
+                &self.state.scene_selection,
+                &mut |line_index| create_parameter_from_line = Some(line_index),
+            );
+            if let Some(line_index) = create_parameter_from_line {
+                self.state.apply(Action::CreateParameterFromLineLength {
+                    line_index,
+                    name: None,
+                });
+            }
         }
 
         if self.state.panes.is_visible(Pane::ViewCube) {
@@ -3911,7 +4304,7 @@ impl App {
                 if self.state.sketch_session.is_none() {
                     "c: constraint  •  Open a sketch to add geometric constraints"
                 } else {
-                    "c: constraint  •  Shift+click or ⌘/Ctrl+click multi-select • 1–9 apply constraint • context pane shows options"
+                    "c: constraint  •  Shift+click or ⌘/Ctrl+click multi-select • A/E/I/M/V/H apply constraint • context pane shows options"
                 }
             }
             Tool::Dimension => {
@@ -3959,6 +4352,10 @@ impl App {
             egui::FontId::proportional(13.0),
             egui::Color32::from_gray(150),
         );
+
+        for result in inline_parameter_field_results {
+            apply_dimension_field_feedback(&mut self.state, &result);
+        }
     }
 }
 
@@ -4580,9 +4977,9 @@ mod tests {
     use super::actions::CreatingRect;
     use super::{
         clip_segment_to_rect, col, initial_launch_maximize_frames, native_options,
-        should_commit_sketch_on_click, should_select_all_rect_value, tick_launch_maximize,
-        uses_deferred_launch_maximize, MACOS_LAUNCH_MAXIMIZE_DELAY_FRAMES, GRID_EXTENT,
-        ORBIT_PIVOT_GROUND_RADIUS, ORBIT_PIVOT_RADIUS,
+        should_commit_sketch_on_click, should_select_all_rect_value, side_panel_resize_active,
+        tick_launch_maximize, uses_deferred_launch_maximize, MACOS_LAUNCH_MAXIMIZE_DELAY_FRAMES,
+        GRID_EXTENT, ORBIT_PIVOT_GROUND_RADIUS, ORBIT_PIVOT_RADIUS,
     };
     use crate::face::SketchFrame;
     use eframe::egui::{self, Pos2, Rect, Vec2};
@@ -5016,5 +5413,12 @@ mod tests {
         let e = cr.end_point(&frame, &doc);
         assert!((e.x - 8.0).abs() < 1e-4);
         assert!((e.y - 9.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn side_panel_resize_inactive_without_resize_drag() {
+        egui::__run_test_ctx(|ctx| {
+            assert!(!side_panel_resize_active(ctx));
+        });
     }
 }

@@ -131,55 +131,28 @@ fn shortcut_rich_text(hint: ShortcutHint) -> RichText {
 /// Row with primary label on the left and shortcut right-aligned (palette-style).
 pub fn action_row(ui: &mut Ui, selected: bool, label: &str, shortcut: Option<ShortcutHint>) -> egui::Response {
     ui.horizontal(|ui| {
-        let row_w = ui.available_width();
         let response = ui.selectable_label(selected, label);
         if let Some(hint) = shortcut {
-            let shortcut_w = (row_w - response.rect.width()).max(0.0);
-            ui.allocate_ui_with_layout(
-                egui::vec2(shortcut_w, response.rect.height()),
-                Layout::right_to_left(Align::Center),
-                |ui| {
-                    ui.label(shortcut_rich_text(hint));
-                },
-            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(shortcut_rich_text(hint));
+            });
         }
         response
     })
     .inner
 }
 
-/// 1–9 constraint-tool shortcut shown in the context pane.
-pub fn constraint_number_hint(index: u8) -> ShortcutHint {
-    ShortcutHint::plain(match index {
-        1 => "1",
-        2 => "2",
-        3 => "3",
-        4 => "4",
-        5 => "5",
-        6 => "6",
-        7 => "7",
-        8 => "8",
-        9 => "9",
-        _ => "?",
-    })
+/// Fixed letter shortcut for a geometric constraint row.
+pub fn geometric_constraint_shortcut(
+    kind: crate::geometric_constraints::GeometricConstraintType,
+) -> ShortcutHint {
+    ShortcutHint::plain(kind.shortcut_label())
 }
 
-/// Shortcut key right-aligned in a row (palette / constraint-pane style).
-pub fn show_right_aligned_shortcut(
-    ui: &mut Ui,
-    row_width: f32,
-    used_width: f32,
-    item_height: f32,
-    hint: ShortcutHint,
-) {
-    let shortcut_w = (row_width - used_width).max(0.0);
-    ui.allocate_ui_with_layout(
-        egui::vec2(shortcut_w, item_height),
-        Layout::right_to_left(Align::Center),
-        |ui| {
-            ui.label(shortcut_rich_text(hint));
-        },
-    );
+/// Shortcut key shown to the left of a constraint button.
+pub fn show_constraint_shortcut_left(ui: &mut Ui, hint: ShortcutHint, enabled: bool) {
+    let text = shortcut_rich_text(hint);
+    ui.label(if enabled { text } else { text.weak() });
 }
 
 /// Checkbox with shortcut shown to the right of the label.
@@ -238,13 +211,23 @@ mod tests {
     }
 
     #[test]
-    fn constraint_number_hint_maps_digits() {
+    fn geometric_constraint_shortcut_maps_letters() {
+        use crate::geometric_constraints::GeometricConstraintType;
         assert_eq!(
-            format_shortcut(constraint_number_hint(3)),
-            "3"
+            format_shortcut(geometric_constraint_shortcut(
+                GeometricConstraintType::Parallel
+            )),
+            "A"
+        );
+        assert_eq!(
+            format_shortcut(geometric_constraint_shortcut(
+                GeometricConstraintType::Horizontal
+            )),
+            "H"
         );
     }
 
+    #[test]
     fn compact_label_includes_shortcut() {
         assert_eq!(
             compact_label("Sketch", tool_shortcut(Tool::Sketch)),

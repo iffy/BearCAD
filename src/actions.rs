@@ -45,7 +45,9 @@ use crate::model::{
 use crate::vertex_drag;
 use crate::face::SketchFrame;
 use crate::parameters::{
-    add_parameter, delete_parameter, recompute_document_geometry, set_parameter_expression,
+    add_computed_parameter_from_line_length, add_parameter, delete_parameter,
+    recompute_document_geometry, require_parameter_value_editable, set_parameter_expression,
+    try_commit_inline_parameter_definition,
     set_parameter_name, ParametersPaneState,
 };
 use crate::value::parse_positive_length_or_in_doc;
@@ -322,6 +324,10 @@ pub enum Action {
         target: DimLabelTarget,
         offset: f32,
     },
+    SetConstraintAngleValue {
+        constraint_id: ConstraintId,
+        angle_rad: f32,
+    },
     BeginEditCommittedDim { target: DimLabelTarget },
     BeginDimensionEdit { target: DimensionTarget },
     CommitCommittedDim,
@@ -367,6 +373,8 @@ pub enum Action {
     SetPaneVisible { pane: Pane, visible: bool },
     TogglePane(Pane),
     AddParameter { name: String, expression: String },
+    /// Create a read-only parameter synced to an unconstrained line's length.
+    CreateParameterFromLineLength { line_index: usize, name: Option<String> },
     CommitParameterName { index: usize, name: String },
     CommitParameterExpression { index: usize, expression: String },
     DeleteParameter { index: usize },
@@ -396,8 +404,8 @@ pub enum Action {
     FocusElementName,
     /// Apply a geometric constraint type to the current selection (constraint tool).
     AddGeometricConstraint(crate::geometric_constraints::GeometricConstraintType),
-    /// Apply the Nth enabled constraint shortcut (1–9) in the context pane.
-    ApplyConstraintShortcut(u8),
+    /// Apply the enabled constraint matching a fixed shortcut key (A/E/I/M/V/H).
+    ApplyConstraintShortcut(char),
     /// Move a sketch vertex to local `(u, v)` while satisfying constraints.
     DragVertex {
         point: ConstraintPoint,
@@ -456,7 +464,7 @@ impl Pane {
     pub fn from_name(name: &str) -> Option<Self> {
         match name.to_ascii_lowercase().as_str() {
             "view_cube" | "viewcube" | "cube" | "hud" => Some(Pane::ViewCube),
-            "hierarchy" | "tree" | "dag" => Some(Pane::Hierarchy),
+            "hierarchy" | "tree" | "dag" | "elements" => Some(Pane::Hierarchy),
             "parameters" | "params" | "param" => Some(Pane::Parameters),
             "context" | "properties" | "props" => Some(Pane::Context),
             _ => None,
@@ -604,6 +612,12 @@ pub fn constraint_is_circle_diameter(doc: &Document, target: DimLabelTarget) -> 
     })
 }
 
+pub fn constraint_is_angle(doc: &Document, target: DimLabelTarget) -> bool {
+    doc.constraints.get(target).is_some_and(|c| {
+        matches!(c.kind, crate::model::ConstraintKind::Angle { .. })
+    })
+}
+
 pub fn dim_label_axis_for_target(doc: &Document, target: DimLabelTarget) -> Option<DimLabelAxis> {
     if constraint_matches_rect_axis(doc, target, RectAxis::Width) {
         Some(DimLabelAxis::Width)
@@ -631,9 +645,15 @@ impl DimEditTarget {
                 crate::model::ConstraintKind::Distance { target } => {
                     Some(DimensionTarget::Distance(target))
                 }
-                crate::model::ConstraintKind::Angle { line_a, line_b } => {
-                    Some(DimensionTarget::Angle { line_a, line_b })
-                }
+                crate::model::ConstraintKind::Angle {
+                    line_a,
+                    line_b,
+                    rotation_sign,
+                } => Some(DimensionTarget::Angle {
+                    line_a,
+                    line_b,
+                    rotation_sign,
+                }),
                 _ => None,
             }),
         }
@@ -1204,9 +1224,20 @@ impl AppState {
                 let Some(frame) = sketch_geometry_frame(&self.doc, session.sketch) else {
                     return ActionResult::Err("Sketch no longer exists".to_string());
                 };
-                let Some(cr) = self.creating_rect.take() else {
+                let Some(mut cr) = self.creating_rect.take() else {
                     return ActionResult::Err("No rectangle in progress".to_string());
                 };
+                for i in 0..2 {
+                    if cr.user_edited[i] {
+                        if let Err(e) =
+                            try_commit_inline_parameter_definition(&mut self.doc, &mut cr.texts[i])
+                        {
+                            self.creating_rect = Some(cr);
+                            self.status = e.clone();
+                            return ActionResult::Err(e);
+                        }
+                    }
+                }
                 let (ou, ov) = world_to_local(&frame, cr.origin);
                 let end = cr.end_point(&frame, &self.doc);
                 let (eu, ev) = world_to_local(&frame, end);
@@ -1320,9 +1351,18 @@ impl AppState {
                 let Some(frame) = sketch_geometry_frame(&self.doc, session.sketch) else {
                     return ActionResult::Err("Sketch no longer exists".to_string());
                 };
-                let Some(cl) = self.creating_line.take() else {
+                let Some(mut cl) = self.creating_line.take() else {
                     return ActionResult::Err("No line in progress".to_string());
                 };
+                if cl.user_edited {
+                    if let Err(e) =
+                        try_commit_inline_parameter_definition(&mut self.doc, &mut cl.text)
+                    {
+                        self.creating_line = Some(cl);
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                }
                 let (u0, v0) = world_to_local(&frame, cl.origin);
                 let end = cl.end_point(&frame, &self.doc);
                 let (u1, v1) = world_to_local(&frame, end);
@@ -1384,10 +1424,34 @@ impl AppState {
                 }
                 let offset = if constraint_is_circle_diameter(&self.doc, target) {
                     crate::dimensions::effective_circle_diameter_label_offset(Some(offset))
+                } else if constraint_is_angle(&self.doc, target) {
+                    crate::dimensions::effective_arc_dim_offset(Some(offset))
                 } else {
                     crate::dimensions::effective_dim_offset(Some(offset))
                 };
                 match set_constraint_dim_offset(&mut self.doc, target, offset) {
+                    Ok(()) => ActionResult::Ok,
+                    Err(e) => {
+                        self.status = e.clone();
+                        ActionResult::Err(e)
+                    }
+                }
+            }
+            Action::SetConstraintAngleValue {
+                constraint_id,
+                angle_rad,
+            } => {
+                if let Err(e) =
+                    require_constraint_editable(&self.document_health, &self.doc, constraint_id)
+                {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                match crate::constraints::set_constraint_angle_value(
+                    &mut self.doc,
+                    constraint_id,
+                    angle_rad,
+                ) {
                     Ok(()) => ActionResult::Ok,
                     Err(e) => {
                         self.status = e.clone();
@@ -1422,9 +1486,18 @@ impl AppState {
                 let Some(frame) = sketch_geometry_frame(&self.doc, session.sketch) else {
                     return ActionResult::Err("Sketch no longer exists".to_string());
                 };
-                let Some(cc) = self.creating_circle.take() else {
+                let Some(mut cc) = self.creating_circle.take() else {
                     return ActionResult::Err("No circle in progress".to_string());
                 };
+                if cc.user_edited {
+                    if let Err(e) =
+                        try_commit_inline_parameter_definition(&mut self.doc, &mut cc.text)
+                    {
+                        self.creating_circle = Some(cc);
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                }
                 let (cu, cv) = world_to_local(&frame, cc.origin);
                 let r = cc.radius(&frame, &self.doc);
                 let angle = cc.diameter_dim_angle(&frame);
@@ -1555,7 +1628,12 @@ impl AppState {
                     return ActionResult::Err(e);
                 }
                 let target = edit.target.clone();
-                let text = edit.text.clone();
+                let mut text = edit.text.clone();
+                if let Err(e) = try_commit_inline_parameter_definition(&mut self.doc, &mut text) {
+                    self.editing_committed_dim = Some(edit);
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
                 match apply_committed_dim_expression(
                     &mut self.doc,
                     session.sketch,
@@ -1627,9 +1705,27 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::CommitConstructionPlane => {
-                let Some(cp) = self.creating_plane.take() else {
+                let Some(mut cp) = self.creating_plane.take() else {
                     return ActionResult::Err("No construction plane in progress".to_string());
                 };
+                if cp.user_edited_offset {
+                    if let Err(e) =
+                        try_commit_inline_parameter_definition(&mut self.doc, &mut cp.offset_text)
+                    {
+                        self.creating_plane = Some(cp);
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                }
+                if cp.user_edited_angle {
+                    if let Err(e) =
+                        try_commit_inline_parameter_definition(&mut self.doc, &mut cp.angle_text)
+                    {
+                        self.creating_plane = Some(cp);
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                }
                 let definition = cp.resolved_definition();
                 let live_offset = definition.offset_mm;
                 if let Some(index) = cp.edit_index {
@@ -1772,6 +1868,21 @@ impl AppState {
                     }
                 }
             }
+            Action::CreateParameterFromLineLength { line_index, name } => {
+                match add_computed_parameter_from_line_length(&mut self.doc, line_index, name.clone())
+                {
+                    Ok(index) => {
+                        let param_name = self.doc.parameters[index].name.clone();
+                        self.refresh_document_health();
+                        self.status = format!("Added parameter {param_name} from line length");
+                        ActionResult::Ok
+                    }
+                    Err(e) => {
+                        self.status = e.clone();
+                        ActionResult::Err(e)
+                    }
+                }
+            }
             Action::CommitParameterName { index, name } => {
                 if let Err(e) = require_parameter_editable(&self.document_health, index) {
                     self.status = e.clone();
@@ -1793,6 +1904,12 @@ impl AppState {
                 if let Err(e) = require_parameter_editable(&self.document_health, index) {
                     self.status = e.clone();
                     return ActionResult::Err(e);
+                }
+                if let Some(param) = self.doc.parameters.get(index) {
+                    if let Err(e) = require_parameter_value_editable(param) {
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
                 }
                 match set_parameter_expression(&mut self.doc, index, expression.clone()) {
                     Ok(()) => {
@@ -1898,6 +2015,9 @@ impl AppState {
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
+                if !vertex_drag::can_drag_point(&self.doc, sketch, point) {
+                    return ActionResult::Err("Vertex is fully constrained".to_string());
+                }
                 match vertex_drag::drag_point(&mut self.doc, sketch, point, u, v) {
                     Ok(()) => ActionResult::Ok,
                     Err(e) => ActionResult::Err(e),
@@ -1915,6 +2035,9 @@ impl AppState {
                 if let Err(e) = require_element_editable(&self.document_health, element) {
                     self.status = e.clone();
                     return ActionResult::Err(e);
+                }
+                if !vertex_drag::can_drag_line(&self.doc, sketch, target) {
+                    return ActionResult::Err("Line is fully constrained".to_string());
                 }
                 match vertex_drag::begin_line_drag_session(
                     &self.doc,
@@ -2156,12 +2279,15 @@ impl AppState {
                     Err(e) => ActionResult::Err(e),
                 }
             }
-            Action::ApplyConstraintShortcut(index) => {
+            Action::ApplyConstraintShortcut(key) => {
                 let rows = crate::geometric_constraints::constraint_pane_rows(&self.scene_selection);
                 let Some(kind) =
-                    crate::geometric_constraints::enabled_constraint_type(&rows, index)
+                    crate::geometric_constraints::enabled_constraint_for_key(&rows, key)
                 else {
-                    return ActionResult::Err(format!("Constraint shortcut {index} is not active"));
+                    return ActionResult::Err(format!(
+                        "Constraint shortcut '{}' is not active",
+                        key.to_ascii_uppercase()
+                    ));
                 };
                 self.apply(Action::AddGeometricConstraint(kind))
             }
@@ -2615,6 +2741,103 @@ mod tests {
     }
 
     #[test]
+    fn commit_rectangle_with_inline_parameter_definition() {
+        let mut state = AppState::default();
+        begin_default_sketch(&mut state);
+        state.creating_rect = Some(CreatingRect {
+            origin: Vec3::ZERO,
+            texts: ["width=10mm".to_string(), "5".to_string()],
+            focused: 0,
+            last_mouse: Vec3::new(100.0, 5.0, 0.0),
+            user_edited: [true, true],
+            pending_focus: false,
+            construction: false,
+        });
+        state.apply(Action::CommitRectangle);
+        assert_eq!(state.doc.parameters.len(), 1);
+        assert_eq!(state.doc.parameters[0].name, "width");
+        assert_eq!(state.doc.rects[0].width_expr.as_deref(), Some("width"));
+        assert!((state.doc.rects[0].w - 10.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn create_parameter_from_line_length_action() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state.doc.lines.push(crate::model::Line::from_local_endpoints(
+            sketch, 0.0, 0.0, 15.0, 0.0,
+        ));
+        state.doc.shape_order.push(crate::model::ShapeKind::Line);
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Line(0),
+            additive: false,
+        });
+        state.apply(Action::CreateParameterFromLineLength {
+            line_index: 0,
+            name: None,
+        });
+        assert_eq!(state.doc.parameters.len(), 1);
+        assert_eq!(state.doc.parameters[0].name, "line0_length");
+        assert_eq!(state.doc.parameters[0].expression, "15.0 mm");
+        assert!(crate::parameters::parameter_value_is_readonly(
+            &state.doc.parameters[0]
+        ));
+    }
+
+    #[test]
+    fn apply_constraint_shortcut_a_adds_parallel() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state.tool = Tool::Constraint;
+        state.doc.lines.push(crate::model::Line::from_local_endpoints(
+            sketch, 0.0, 0.0, 10.0, 0.0,
+        ));
+        state.doc.lines.push(crate::model::Line::from_local_endpoints(
+            sketch, 0.0, 5.0, 2.0, 8.0,
+        ));
+        state.doc.shape_order.push(crate::model::ShapeKind::Line);
+        state.doc.shape_order.push(crate::model::ShapeKind::Line);
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Line(0),
+            additive: false,
+        });
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Line(1),
+            additive: true,
+        });
+        state.apply(Action::ApplyConstraintShortcut('a'));
+        assert_eq!(state.doc.constraints.len(), 1);
+        assert!(matches!(
+            state.doc.constraints[0].kind,
+            crate::model::ConstraintKind::Parallel { .. }
+        ));
+    }
+
+    #[test]
+    fn inline_parameter_survives_rectangle_deletion() {
+        let mut state = AppState::default();
+        begin_default_sketch(&mut state);
+        state.creating_rect = Some(CreatingRect {
+            origin: Vec3::ZERO,
+            texts: ["width=10mm".to_string(), "5".to_string()],
+            focused: 0,
+            last_mouse: Vec3::new(100.0, 5.0, 0.0),
+            user_edited: [true, true],
+            pending_focus: false,
+            construction: false,
+        });
+        state.apply(Action::CommitRectangle);
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Rect(0),
+            additive: false,
+        });
+        state.apply(Action::DeleteSelection);
+        assert_eq!(state.doc.parameters.len(), 1);
+        assert_eq!(state.doc.parameters[0].name, "width");
+        assert!(state.doc.rects[0].deleted);
+    }
+
+    #[test]
     fn commit_rectangle_with_parameter_reference() {
         let mut state = AppState::default();
         add_parameter(&mut state.doc, "A".to_string(), "10mm".to_string()).unwrap();
@@ -2927,10 +3150,12 @@ mod tests {
             DimEditTarget::New(DimensionTarget::Angle {
                 line_a: ConstraintLine::Line(0),
                 line_b: ConstraintLine::Line(1),
+                rotation_sign: 1,
             })
         );
     }
 
+    #[test]
     fn dimension_tool_adds_distance_constraint_to_line() {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
@@ -3642,6 +3867,7 @@ mod tests {
             name: "bad".to_string(),
             expression: "1mm / 0".to_string(),
             deleted: false,
+            source: None,
         });
         state.doc.shape_order.push(ShapeKind::Parameter);
         state.refresh_document_health();

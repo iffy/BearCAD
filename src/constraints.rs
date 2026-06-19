@@ -5,13 +5,13 @@
 //! first-class document element and evaluated when parameters or expressions change.
 
 use crate::geometric_constraints::{
-    line_direction_uv, line_uv_endpoints, lines_are_parallel, parallel_reference_and_movable,
-    point_uv, selected_constraint_refs, set_line_uv_endpoints, set_point_uv, translate_line,
-    ConstraintRef,
+    apply_geometric_constraints_with_pins, line_direction_uv, line_uv_endpoints, lines_are_parallel,
+    parallel_reference_and_movable, point_uv, restore_constraint_pins, selected_constraint_refs,
+    set_line_uv_endpoints, set_point_uv, translate_line, ConstraintRef,
 };
 use crate::model::{
-    Constraint, ConstraintKind, ConstraintLine, ConstraintPoint, DimensionTarget, DistanceTarget,
-    Document, RectEdge, SketchId,
+    default_constraint_sign, Constraint, ConstraintKind, ConstraintLine, ConstraintPoint,
+    DimensionTarget, DistanceTarget, Document, RectEdge, SketchId,
 };
 use crate::value::{
     eval_angle_rad_in_doc, eval_length_mm_in_doc, format_angle_display, format_diameter_display,
@@ -20,6 +20,132 @@ use crate::value::{
 
 /// Index into [`Document::constraints`].
 pub type ConstraintId = usize;
+
+fn constraint_sign_from_scalar(sign: f32) -> crate::model::ConstraintSign {
+    if sign >= 0.0 { 1 } else { -1 }
+}
+
+/// Fill in disambiguation fields from the current sketch geometry.
+pub fn finalize_distance_target(doc: &Document, target: DistanceTarget) -> Result<DistanceTarget, String> {
+    match target {
+        DistanceTarget::LineLength(_)
+        | DistanceTarget::RectWidth(_)
+        | DistanceTarget::RectHeight(_)
+        | DistanceTarget::CircleDiameter(_) => Ok(target),
+        DistanceTarget::LineLineDistance { line_a, line_b, .. } => {
+            let (line_a, line_b) = normalize_line_pair(line_a, line_b);
+            Ok(DistanceTarget::LineLineDistance {
+                line_a,
+                line_b,
+                side: capture_line_line_side(doc, line_a, line_b)?,
+            })
+        }
+        DistanceTarget::PointPointDistance { anchor, mover, .. } => {
+            Ok(capture_point_point_distance(doc, anchor, mover)?)
+        }
+        DistanceTarget::PointLineDistance { point, line, .. } => Ok(DistanceTarget::PointLineDistance {
+            point,
+            line,
+            side: capture_point_line_side(doc, point, line)?,
+        }),
+    }
+}
+
+fn capture_line_line_side(
+    doc: &Document,
+    line_a: ConstraintLine,
+    line_b: ConstraintLine,
+) -> Result<crate::model::ConstraintSign, String> {
+    let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
+    let ((ax0, ay0), (ax1, ay1)) = line_uv_endpoints(doc, reference)?;
+    let ((bx0, by0), (bx1, by1)) = line_uv_endpoints(doc, movable)?;
+    let du = ax1 - ax0;
+    let dv = ay1 - ay0;
+    let len = (du * du + dv * dv).sqrt();
+    if len < 1e-6 {
+        return Err("Reference line has zero length".to_string());
+    }
+    let perp_u = -dv / len;
+    let perp_v = du / len;
+    let amu = (ax0 + ax1) * 0.5;
+    let amv = (ay0 + ay1) * 0.5;
+    let bmu = (bx0 + bx1) * 0.5;
+    let bmv = (by0 + by1) * 0.5;
+    let signed = (bmu - amu) * perp_u + (bmv - amv) * perp_v;
+    Ok(constraint_sign_from_scalar(if signed.abs() < 1e-6 {
+        1.0
+    } else {
+        signed
+    }))
+}
+
+fn capture_point_line_side(
+    doc: &Document,
+    point: ConstraintPoint,
+    line: ConstraintLine,
+) -> Result<crate::model::ConstraintSign, String> {
+    let (pu, pv) = point_uv(doc, point)?;
+    let ((x0, y0), (x1, y1)) = line_uv_endpoints(doc, line)?;
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1e-6 {
+        return Err("Line has zero length".to_string());
+    }
+    let perp_u = -dy / len;
+    let perp_v = dx / len;
+    let signed = (pu - x0) * perp_u + (pv - y0) * perp_v;
+    Ok(constraint_sign_from_scalar(if signed.abs() < 1e-6 {
+        1.0
+    } else {
+        signed
+    }))
+}
+
+fn capture_point_point_distance(
+    doc: &Document,
+    anchor: ConstraintPoint,
+    mover: ConstraintPoint,
+) -> Result<DistanceTarget, String> {
+    use crate::geometric_constraints::coincident_mover_and_anchor;
+    let (resolved_mover, resolved_anchor) = coincident_mover_and_anchor(anchor, mover);
+    let (au, av) = point_uv(doc, resolved_anchor)?;
+    let (mu, mv) = point_uv(doc, resolved_mover)?;
+    let du = mu - au;
+    let dv = mv - av;
+    let len = (du * du + dv * dv).sqrt();
+    let (dir_u, dir_v) = if len < 1e-6 {
+        (1.0, 0.0)
+    } else {
+        (du / len, dv / len)
+    };
+    Ok(DistanceTarget::PointPointDistance {
+        anchor: resolved_anchor,
+        mover: resolved_mover,
+        dir_u,
+        dir_v,
+    })
+}
+
+pub fn capture_angle_rotation_sign(
+    doc: &Document,
+    line_a: ConstraintLine,
+    line_b: ConstraintLine,
+) -> Result<crate::model::ConstraintSign, String> {
+    let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
+    let (rdu, rdv) = line_direction_uv(doc, reference).ok_or_else(|| {
+        "Reference line has zero length".to_string()
+    })?;
+    let ((mx0, my0), (mx1, my1)) = line_uv_endpoints(doc, movable)?;
+    let mdu = mx1 - mx0;
+    let mdv = my1 - my0;
+    let cross = rdu * mdv - rdv * mdu;
+    Ok(constraint_sign_from_scalar(if cross.abs() < 1e-6 {
+        1.0
+    } else {
+        cross
+    }))
+}
 
 /// Add a distance constraint; returns the new constraint index.
 pub fn add_distance_constraint(
@@ -32,6 +158,7 @@ pub fn add_distance_constraint(
     if expression.is_empty() {
         return Err("Constraint expression cannot be empty".to_string());
     }
+    let target = finalize_distance_target(doc, target)?;
     validate_distance_target(doc, sketch, target)?;
     if let Some(index) = find_distance_constraint(doc, target) {
         return Err(format!("Constraint already exists for {target:?} (index {index})"));
@@ -121,6 +248,7 @@ pub fn find_angle_constraint(
             ConstraintKind::Angle {
                 line_a: a,
                 line_b: b,
+                ..
             } if a == line_a && b == line_b
         )
     })
@@ -129,7 +257,11 @@ pub fn find_angle_constraint(
 pub fn find_dimension_constraint(doc: &Document, target: DimensionTarget) -> Option<ConstraintId> {
     match target {
         DimensionTarget::Distance(distance) => find_distance_constraint(doc, distance),
-        DimensionTarget::Angle { line_a, line_b } => find_angle_constraint(doc, line_a, line_b),
+        DimensionTarget::Angle {
+            line_a,
+            line_b,
+            rotation_sign: _,
+        } => find_angle_constraint(doc, line_a, line_b),
     }
 }
 
@@ -148,7 +280,12 @@ pub fn constraint_evaluated_length(doc: &Document, index: ConstraintId) -> Optio
 
 pub fn constraint_evaluated_angle(doc: &Document, index: ConstraintId) -> Option<f32> {
     let constraint = doc.constraints.get(index)?;
-    let ConstraintKind::Angle { line_a, line_b } = constraint.kind else {
+    let ConstraintKind::Angle {
+        line_a,
+        line_b,
+        rotation_sign: _,
+    } = constraint.kind
+    else {
         return None;
     };
     eval_angle_rad_in_doc(&constraint.expression, doc)
@@ -161,15 +298,15 @@ fn measured_distance(doc: &Document, target: DistanceTarget) -> Option<f32> {
         DistanceTarget::RectWidth(i) => doc.rects.get(i).map(|r| r.w),
         DistanceTarget::RectHeight(i) => doc.rects.get(i).map(|r| r.h),
         DistanceTarget::CircleDiameter(i) => doc.circles.get(i).map(|c| c.diameter()),
-        DistanceTarget::LineLineDistance { line_a, line_b } => {
+        DistanceTarget::LineLineDistance { line_a, line_b, .. } => {
             measured_line_line_distance(doc, line_a, line_b)
         }
-        DistanceTarget::PointPointDistance { a, b } => {
-            let (au, av) = point_uv(doc, a).ok()?;
-            let (bu, bv) = point_uv(doc, b).ok()?;
-            Some(((bu - au).hypot(bv - av)).abs())
+        DistanceTarget::PointPointDistance { anchor, mover, .. } => {
+            let (au, av) = point_uv(doc, anchor).ok()?;
+            let (mu, mv) = point_uv(doc, mover).ok()?;
+            Some(((mu - au).hypot(mv - av)).abs())
         }
-        DistanceTarget::PointLineDistance { point, line } => {
+        DistanceTarget::PointLineDistance { point, line, .. } => {
             measured_point_line_distance(doc, point, line)
         }
     }
@@ -294,31 +431,19 @@ pub fn normalize_line_pair(a: ConstraintLine, b: ConstraintLine) -> (ConstraintL
     }
 }
 
-fn point_sort_key(point: ConstraintPoint) -> (u8, usize, u8, u8) {
-    match point {
-        ConstraintPoint::LineEndpoint { line, end } => (0, line, end as u8, 0),
-        ConstraintPoint::RectCorner { rect, corner } => (1, rect, corner, 0),
-        ConstraintPoint::CircleCenter(circle) => (2, circle, 0, 0),
-    }
-}
-
-fn normalize_point_pair(a: ConstraintPoint, b: ConstraintPoint) -> (ConstraintPoint, ConstraintPoint) {
-    if point_sort_key(a) <= point_sort_key(b) {
-        (a, b)
-    } else {
-        (b, a)
-    }
-}
-
 pub fn normalize_distance_target(target: DistanceTarget) -> DistanceTarget {
     match target {
-        DistanceTarget::LineLineDistance { line_a, line_b } => {
+        DistanceTarget::LineLineDistance {
+            line_a,
+            line_b,
+            side,
+        } => {
             let (line_a, line_b) = normalize_line_pair(line_a, line_b);
-            DistanceTarget::LineLineDistance { line_a, line_b }
-        }
-        DistanceTarget::PointPointDistance { a, b } => {
-            let (a, b) = normalize_point_pair(a, b);
-            DistanceTarget::PointPointDistance { a, b }
+            DistanceTarget::LineLineDistance {
+                line_a,
+                line_b,
+                side,
+            }
         }
         other => other,
     }
@@ -370,24 +495,36 @@ fn resolve_two_selection_dimension(
             Some(DimensionTarget::Distance(DistanceTarget::LineLineDistance {
                 line_a,
                 line_b,
+                side: default_constraint_sign(),
             }))
         } else {
-            Some(DimensionTarget::Angle { line_a, line_b })
+            Some(DimensionTarget::Angle {
+                line_a,
+                line_b,
+                rotation_sign: default_constraint_sign(),
+            })
         }
     } else if points.len() == 2 {
         validate_point_in_sketch(doc, sketch, points[0]).ok()?;
         validate_point_in_sketch(doc, sketch, points[1]).ok()?;
-        let (a, b) = normalize_point_pair(points[0], points[1]);
-        Some(DimensionTarget::Distance(DistanceTarget::PointPointDistance {
-            a,
-            b,
-        }))
+        finalize_distance_target(
+            doc,
+            DistanceTarget::PointPointDistance {
+                anchor: points[0],
+                mover: points[1],
+                dir_u: 1.0,
+                dir_v: 0.0,
+            },
+        )
+        .ok()
+        .map(DimensionTarget::Distance)
     } else if points.len() == 1 && lines.len() == 1 {
         validate_point_in_sketch(doc, sketch, points[0]).ok()?;
         validate_line_in_sketch(doc, sketch, lines[0]).ok()?;
         Some(DimensionTarget::Distance(DistanceTarget::PointLineDistance {
             point: points[0],
             line: lines[0],
+            side: default_constraint_sign(),
         }))
     } else {
         None
@@ -541,9 +678,11 @@ pub fn default_angle_expression(doc: &Document, line_a: ConstraintLine, line_b: 
 pub fn default_dimension_expression(doc: &Document, target: DimensionTarget) -> String {
     match target {
         DimensionTarget::Distance(distance) => default_distance_expression(doc, distance),
-        DimensionTarget::Angle { line_a, line_b } => {
-            default_angle_expression(doc, line_a, line_b)
-        }
+        DimensionTarget::Angle {
+            line_a,
+            line_b,
+            rotation_sign: _,
+        } => default_angle_expression(doc, line_a, line_b),
     }
 }
 
@@ -571,7 +710,12 @@ pub fn add_angle_constraint(
     if let Some(index) = find_angle_constraint(doc, line_a, line_b) {
         return Err(format!("Angle constraint already exists (index {index})"));
     }
-    let kind = ConstraintKind::Angle { line_a, line_b };
+    let rotation_sign = capture_angle_rotation_sign(doc, line_a, line_b)?;
+    let kind = ConstraintKind::Angle {
+        line_a,
+        line_b,
+        rotation_sign,
+    };
     validate_constraint_expression(doc, kind, &expression)?;
     let id = doc.constraints.len();
     doc.constraints.push(Constraint {
@@ -603,7 +747,11 @@ pub fn apply_dimension_expression(
                 Ok(())
             }
         }
-        DimensionTarget::Angle { line_a, line_b } => {
+        DimensionTarget::Angle {
+            line_a,
+            line_b,
+            rotation_sign: _,
+        } => {
             if let Some(id) = find_angle_constraint(doc, line_a, line_b) {
                 set_constraint_expression(doc, id, expression.to_string())
             } else {
@@ -647,7 +795,11 @@ pub fn validate_distance_target(
                 return Err(format!("Circle {i} is not in sketch {sketch}"));
             }
         }
-        DistanceTarget::LineLineDistance { line_a, line_b } => {
+        DistanceTarget::LineLineDistance {
+            line_a,
+            line_b,
+            side: _,
+        } => {
             validate_line_in_sketch(doc, sketch, line_a)?;
             validate_line_in_sketch(doc, sketch, line_b)?;
             if line_a == line_b {
@@ -657,14 +809,14 @@ pub fn validate_distance_target(
                 return Err("Line spacing requires parallel lines".to_string());
             }
         }
-        DistanceTarget::PointPointDistance { a, b } => {
-            validate_point_in_sketch(doc, sketch, a)?;
-            validate_point_in_sketch(doc, sketch, b)?;
-            if a == b {
+        DistanceTarget::PointPointDistance { anchor, mover, .. } => {
+            validate_point_in_sketch(doc, sketch, anchor)?;
+            validate_point_in_sketch(doc, sketch, mover)?;
+            if anchor == mover {
                 return Err("Point distance requires two different points".to_string());
             }
         }
-        DistanceTarget::PointLineDistance { point, line } => {
+        DistanceTarget::PointLineDistance { point, line, .. } => {
             validate_point_in_sketch(doc, sketch, point)?;
             validate_line_in_sketch(doc, sketch, line)?;
         }
@@ -674,7 +826,17 @@ pub fn validate_distance_target(
 
 /// Apply all distance constraints to sketch geometry.
 pub fn solve_document_constraints(doc: &mut Document) -> Result<(), String> {
-    clear_legacy_dimension_locks(doc);
+    solve_document_constraints_with_pins(doc, &[])
+}
+
+/// Apply all constraints while keeping pinned sketch points fixed (used during vertex/line drag).
+pub fn solve_document_constraints_with_pins(
+    doc: &mut Document,
+    pins: &[(ConstraintPoint, (f32, f32))],
+) -> Result<(), String> {
+    if pins.is_empty() {
+        clear_legacy_dimension_locks(doc);
+    }
     for i in 0..doc.constraints.len() {
         let constraint = doc.constraints[i].clone();
         if constraint.deleted {
@@ -693,10 +855,14 @@ pub fn solve_document_constraints(doc: &mut Document) -> Result<(), String> {
             if apply_distance_constraint(doc, target, value).is_err() {
                 continue;
             }
-            sync_legacy_dimension_flags(doc, target, &constraint.expression, constraint.dim_offset);
+            restore_constraint_pins(doc, pins)?;
+            if pins.is_empty() {
+                sync_legacy_dimension_flags(doc, target, &constraint.expression, constraint.dim_offset);
+            }
         } else if let ConstraintKind::Angle {
             line_a,
             line_b,
+            rotation_sign,
         } = constraint.kind
         {
             if !crate::document_lifecycle::constraint_kind_applicable(doc, constraint.kind) {
@@ -708,10 +874,13 @@ pub fn solve_document_constraints(doc: &mut Document) -> Result<(), String> {
             if value <= 0.0 || value >= std::f32::consts::PI {
                 continue;
             }
-            let _ = apply_angle_constraint(doc, line_a, line_b, value);
+            let _ = apply_angle_constraint(doc, line_a, line_b, rotation_sign, value);
+            restore_constraint_pins(doc, pins)?;
         }
     }
-    crate::geometric_constraints::apply_geometric_constraints(doc)
+    let result = apply_geometric_constraints_with_pins(doc, pins);
+    crate::parameters::sync_computed_parameters(doc);
+    result
 }
 
 fn clear_legacy_dimension_locks(doc: &mut Document) {
@@ -806,15 +975,22 @@ fn apply_distance_constraint(doc: &mut Document, target: DistanceTarget, value: 
                 .ok_or_else(|| format!("Circle {i} not found"))?;
             circle.r = value / 2.0;
         }
-        DistanceTarget::LineLineDistance { line_a, line_b } => {
-            apply_line_line_distance(doc, line_a, line_b, value)?;
-        }
-        DistanceTarget::PointPointDistance { a, b } => {
-            apply_point_point_distance(doc, a, b, value)?;
-        }
-        DistanceTarget::PointLineDistance { point, line } => {
-            apply_point_line_distance(doc, point, line, value)?;
-        }
+        DistanceTarget::LineLineDistance {
+            line_a,
+            line_b,
+            side,
+        } => apply_line_line_distance(doc, line_a, line_b, side, value)?,
+        DistanceTarget::PointPointDistance {
+            anchor,
+            mover,
+            dir_u,
+            dir_v,
+        } => apply_point_point_distance(doc, anchor, mover, dir_u, dir_v, value)?,
+        DistanceTarget::PointLineDistance {
+            point,
+            line,
+            side,
+        } => apply_point_line_distance(doc, point, line, side, value)?,
     }
     Ok(())
 }
@@ -823,6 +999,7 @@ fn apply_line_line_distance(
     doc: &mut Document,
     line_a: ConstraintLine,
     line_b: ConstraintLine,
+    side: crate::model::ConstraintSign,
     value: f32,
 ) -> Result<(), String> {
     let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
@@ -840,38 +1017,29 @@ fn apply_line_line_distance(
     let amv = (ay0 + ay1) * 0.5;
     let bmu = (bx0 + bx1) * 0.5;
     let bmv = (by0 + by1) * 0.5;
-    let signed = (bmu - amu) * perp_u + (bmv - amv) * perp_v;
-    let sign = if signed >= 0.0 { 1.0 } else { -1.0 };
-    let delta = value - signed.abs();
-    translate_line(doc, movable, perp_u * delta * sign, perp_v * delta * sign)
+    let current_signed = (bmu - amu) * perp_u + (bmv - amv) * perp_v;
+    let target_signed = side as f32 * value;
+    let delta = target_signed - current_signed;
+    translate_line(doc, movable, perp_u * delta, perp_v * delta)
 }
 
 fn apply_point_point_distance(
     doc: &mut Document,
-    a: ConstraintPoint,
-    b: ConstraintPoint,
+    anchor: ConstraintPoint,
+    mover: ConstraintPoint,
+    dir_u: f32,
+    dir_v: f32,
     value: f32,
 ) -> Result<(), String> {
-    use crate::geometric_constraints::coincident_mover_and_anchor;
-    let (mover, anchor) = coincident_mover_and_anchor(a, b);
     let (au, av) = point_uv(doc, anchor)?;
-    let (mu, mv) = point_uv(doc, mover)?;
-    let du = mu - au;
-    let dv = mv - av;
-    let dist = (du * du + dv * dv).sqrt();
-    let (nu, nv) = if dist < 1e-6 {
-        (au + value, av)
-    } else {
-        let scale = value / dist;
-        (au + du * scale, av + dv * scale)
-    };
-    set_point_uv(doc, mover, nu, nv)
+    set_point_uv(doc, mover, au + dir_u * value, av + dir_v * value)
 }
 
 fn apply_point_line_distance(
     doc: &mut Document,
     point: ConstraintPoint,
     line: ConstraintLine,
+    side: crate::model::ConstraintSign,
     value: f32,
 ) -> Result<(), String> {
     let (pu, pv) = point_uv(doc, point)?;
@@ -884,16 +1052,17 @@ fn apply_point_line_distance(
     }
     let perp_u = -dy / len;
     let perp_v = dx / len;
-    let signed = (pu - x0) * perp_u + (pv - y0) * perp_v;
-    let sign = if signed >= 0.0 { 1.0 } else { -1.0 };
-    let delta = value - signed.abs();
-    set_point_uv(doc, point, pu + perp_u * delta * sign, pv + perp_v * delta * sign)
+    let current_signed = (pu - x0) * perp_u + (pv - y0) * perp_v;
+    let target_signed = side as f32 * value;
+    let delta = target_signed - current_signed;
+    set_point_uv(doc, point, pu + perp_u * delta, pv + perp_v * delta)
 }
 
 fn apply_angle_constraint(
     doc: &mut Document,
     line_a: ConstraintLine,
     line_b: ConstraintLine,
+    rotation_sign: crate::model::ConstraintSign,
     value: f32,
 ) -> Result<(), String> {
     let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
@@ -908,9 +1077,7 @@ fn apply_angle_constraint(
         return Err("Constrained line has zero length".to_string());
     }
     let r_angle = rdv.atan2(rdu);
-    let cross = rdu * mdv - rdv * mdu;
-    let sign = if cross >= 0.0 { 1.0 } else { -1.0 };
-    let new_angle = r_angle + sign * value;
+    let new_angle = r_angle + rotation_sign as f32 * value;
     set_line_uv_endpoints(
         doc,
         movable,
@@ -1078,10 +1245,15 @@ fn distance_target_segment_endpoints_inner(
             let circle = doc.circles.get(i)?;
             crate::face::circle_world_diameter_endpoints(doc, circle)
         }
-        DistanceTarget::LineLineDistance { line_a, line_b } => {
+        DistanceTarget::LineLineDistance {
+            line_a,
+            line_b,
+            side,
+        } => {
             let sketch = line_sketch(doc, line_a)?;
-            let ((ax0, ay0), (ax1, ay1)) = line_uv_endpoints(doc, line_a).ok()?;
-            let ((bx0, by0), (bx1, by1)) = line_uv_endpoints(doc, line_b).ok()?;
+            let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
+            let ((ax0, ay0), (ax1, ay1)) = line_uv_endpoints(doc, reference).ok()?;
+            let ((bx0, by0), (bx1, by1)) = line_uv_endpoints(doc, movable).ok()?;
             let du = ax1 - ax0;
             let dv = ay1 - ay0;
             let len = (du * du + dv * dv).sqrt();
@@ -1094,27 +1266,27 @@ fn distance_target_segment_endpoints_inner(
             let amv = (ay0 + ay1) * 0.5;
             let bmu = (bx0 + bx1) * 0.5;
             let bmv = (by0 + by1) * 0.5;
-            let signed = (bmu - amu) * perp_u + (bmv - amv) * perp_v;
-            let sign = if signed >= 0.0 { 1.0 } else { -1.0 };
+            let current_signed = (bmu - amu) * perp_u + (bmv - amv) * perp_v;
             let a = local_to_world_for_target(doc, amu, amv, sketch)?;
             let b = local_to_world_for_target(
                 doc,
-                amu + perp_u * signed.abs() * sign,
-                amv + perp_v * signed.abs() * sign,
+                amu + perp_u * current_signed,
+                amv + perp_v * current_signed,
                 sketch,
             )?;
+            let _ = side;
             Some((a, b))
         }
-        DistanceTarget::PointPointDistance { a, b } => {
-            let sketch = point_sketch(doc, a)?;
-            let (au, av) = point_uv(doc, a).ok()?;
-            let (bu, bv) = point_uv(doc, b).ok()?;
+        DistanceTarget::PointPointDistance { anchor, mover, .. } => {
+            let sketch = point_sketch(doc, anchor)?;
+            let (au, av) = point_uv(doc, anchor).ok()?;
+            let (mu, mv) = point_uv(doc, mover).ok()?;
             Some((
                 local_to_world_for_target(doc, au, av, sketch)?,
-                local_to_world_for_target(doc, bu, bv, sketch)?,
+                local_to_world_for_target(doc, mu, mv, sketch)?,
             ))
         }
-        DistanceTarget::PointLineDistance { point, line } => {
+        DistanceTarget::PointLineDistance { point, line, .. } => {
             let sketch = point_sketch(doc, point)?;
             let (pu, pv) = point_uv(doc, point).ok()?;
             let ((x0, y0), (x1, y1)) = line_uv_endpoints(doc, line).ok()?;
@@ -1144,24 +1316,134 @@ fn line_sketch(doc: &Document, line: ConstraintLine) -> Option<SketchId> {
     }
 }
 
+/// World-space geometry for rendering and interacting with an angle constraint.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AngleConstraintDisplay {
+    pub center: glam::Vec3,
+    /// Unit direction along the reference line from the intersection.
+    pub dir_a: glam::Vec3,
+    /// Unit direction along the movable line from the intersection.
+    pub dir_b: glam::Vec3,
+    /// Root of the reference leg on (or nearest to) the reference segment.
+    pub leg_a_root: glam::Vec3,
+    /// Root of the movable leg on (or nearest to) the movable segment.
+    pub leg_b_root: glam::Vec3,
+    pub extend_a: bool,
+    pub extend_b: bool,
+}
+
+struct LineAngleLeg {
+    dir: glam::Vec3,
+    root: glam::Vec3,
+    extend: bool,
+}
+
+fn line_angle_leg(
+    frame: &crate::face::SketchFrame,
+    a0: (f32, f32),
+    a1: (f32, f32),
+    center_uv: (f32, f32),
+) -> Option<LineAngleLeg> {
+    let du = a1.0 - a0.0;
+    let dv = a1.1 - a0.1;
+    let len = (du * du + dv * dv).sqrt();
+    if len < 1e-6 {
+        return None;
+    }
+    let dir_u = du / len;
+    let dir_v = dv / len;
+    let ca_u = center_uv.0 - a0.0;
+    let ca_v = center_uv.1 - a0.1;
+    let t = ca_u * dir_u + ca_v * dir_v;
+    let da = (a0.0 - center_uv.0).hypot(a0.1 - center_uv.1);
+    let db = (a1.0 - center_uv.0).hypot(a1.1 - center_uv.1);
+    let sign = if da >= db { 1.0 } else { -1.0 };
+    let ray_u = dir_u * sign;
+    let ray_v = dir_v * sign;
+    let dir = crate::dimensions::uv_dir_to_world(frame.u_axis, frame.v_axis, ray_u, ray_v);
+    if dir.length_squared() < 1e-8 {
+        return None;
+    }
+    let extend = t < -1e-3 || t > len + 1e-3;
+    let root_uv = if t < 0.0 {
+        a0
+    } else if t > len {
+        a1
+    } else {
+        center_uv
+    };
+    let root = crate::face::local_to_world(frame, root_uv.0, root_uv.1);
+    Some(LineAngleLeg {
+        dir: dir.normalize(),
+        root,
+        extend,
+    })
+}
+
+pub fn angle_constraint_display(
+    doc: &Document,
+    line_a: ConstraintLine,
+    line_b: ConstraintLine,
+) -> Option<AngleConstraintDisplay> {
+    let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
+    let sketch = line_sketch(doc, reference)?;
+    let ((ax0, ay0), (ax1, ay1)) = line_uv_endpoints(doc, reference).ok()?;
+    let ((bx0, by0), (bx1, by1)) = line_uv_endpoints(doc, movable).ok()?;
+    let (cu, cv) = line_intersection_uv((ax0, ay0), (ax1, ay1), (bx0, by0), (bx1, by1))?;
+    let frame = crate::face::sketch_geometry_frame(doc, sketch)?;
+    let center = crate::face::local_to_world(&frame, cu, cv);
+    let leg_a = line_angle_leg(&frame, (ax0, ay0), (ax1, ay1), (cu, cv))?;
+    let leg_b = line_angle_leg(&frame, (bx0, by0), (bx1, by1), (cu, cv))?;
+    Some(AngleConstraintDisplay {
+        center,
+        dir_a: leg_a.dir,
+        dir_b: leg_b.dir,
+        leg_a_root: leg_a.root,
+        leg_b_root: leg_b.root,
+        extend_a: leg_a.extend,
+        extend_b: leg_b.extend,
+    })
+}
+
 /// World-space center and unit directions for an angle dimension arc.
 pub fn angle_constraint_display_dirs(
     doc: &Document,
     line_a: ConstraintLine,
     line_b: ConstraintLine,
 ) -> Option<(glam::Vec3, glam::Vec3, glam::Vec3)> {
-    let sketch = line_sketch(doc, line_a)?;
-    let ((ax0, ay0), (ax1, ay1)) = line_uv_endpoints(doc, line_a).ok()?;
-    let ((bx0, by0), (bx1, by1)) = line_uv_endpoints(doc, line_b).ok()?;
-    let (cu, cv) = line_intersection_uv((ax0, ay0), (ax1, ay1), (bx0, by0), (bx1, by1))?;
-    let frame = crate::face::sketch_geometry_frame(doc, sketch)?;
-    let center = crate::face::local_to_world(&frame, cu, cv);
-    let dir_a = crate::face::local_to_world(&frame, ax1, ay1) - center;
-    let dir_b = crate::face::local_to_world(&frame, bx1, by1) - center;
-    if dir_a.length_squared() < 1e-8 || dir_b.length_squared() < 1e-8 {
+    angle_constraint_display(doc, line_a, line_b)
+        .map(|display| (display.center, display.dir_a, display.dir_b))
+}
+
+/// Angle (radians, 0..π) from a sketch-plane hit relative to the reference direction.
+pub fn angle_rad_from_sketch_hit(
+    display: &AngleConstraintDisplay,
+    plane_normal: glam::Vec3,
+    hit: glam::Vec3,
+) -> Option<f32> {
+    let radial = hit - display.center;
+    if radial.length_squared() < 1e-8 {
         return None;
     }
-    Some((center, dir_a.normalize(), dir_b.normalize()))
+    let radial_n = radial.normalize();
+    let cross = display.dir_a.cross(radial_n);
+    let sin = cross.dot(plane_normal.normalize_or_zero());
+    let cos = display.dir_a.dot(radial_n).clamp(-1.0, 1.0);
+    let angle = sin.atan2(cos).abs();
+    if angle <= 1e-6 || angle >= std::f32::consts::PI - 1e-6 {
+        return None;
+    }
+    Some(angle)
+}
+
+/// Update an angle constraint value from a gizmo drag (expression + solve).
+pub fn set_constraint_angle_value(
+    doc: &mut Document,
+    index: ConstraintId,
+    angle_rad: f32,
+) -> Result<(), String> {
+    let angle_rad = angle_rad.clamp(1e-4, std::f32::consts::PI - 1e-4);
+    set_constraint_expression(doc, index, crate::value::format_angle_display(angle_rad))
 }
 
 fn line_intersection_uv(
@@ -1402,6 +1684,7 @@ mod tests {
             Some(DimensionTarget::Distance(DistanceTarget::LineLineDistance {
                 line_a: ConstraintLine::Line(0),
                 line_b: ConstraintLine::Line(1),
+                side: 1,
             }))
         );
     }
@@ -1428,6 +1711,7 @@ mod tests {
             Some(DimensionTarget::Angle {
                 line_a: ConstraintLine::Line(0),
                 line_b: ConstraintLine::Line(1),
+                rotation_sign: 1,
             })
         );
     }
@@ -1477,6 +1761,7 @@ mod tests {
             DistanceTarget::LineLineDistance {
                 line_a: ConstraintLine::Line(0),
                 line_b: ConstraintLine::Line(1),
+                side: 1,
             },
             "5mm".to_string(),
         )
@@ -1488,6 +1773,246 @@ mod tests {
         )
         .unwrap();
         assert!((dist - 5.0).abs() < 0.2, "dist={dist}");
+        let ConstraintKind::Distance {
+            target:
+                DistanceTarget::LineLineDistance {
+                    side, ..
+                },
+        } = doc.constraints[0].kind
+        else {
+            panic!("expected line spacing constraint");
+        };
+        assert_eq!(side, 1);
+        assert!((doc.lines[1].y0 - 5.0).abs() < 0.2);
+        set_constraint_expression(&mut doc, 0, "12mm".to_string()).unwrap();
+        assert!((doc.lines[1].y0 - 12.0).abs() < 0.2, "y0={}", doc.lines[1].y0);
+    }
+
+    #[test]
+    fn line_line_distance_keeps_negative_side() {
+        use crate::model::ConstraintLine;
+
+        let (mut doc, sketch) = sketch_doc();
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, -8.0, 10.0, -8.0));
+        doc.shape_order.push(ShapeKind::Line);
+        doc.shape_order.push(ShapeKind::Line);
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::LineLineDistance {
+                line_a: ConstraintLine::Line(0),
+                line_b: ConstraintLine::Line(1),
+                side: 1,
+            },
+            "5mm".to_string(),
+        )
+        .unwrap();
+        let ConstraintKind::Distance {
+            target:
+                DistanceTarget::LineLineDistance {
+                    side, ..
+                },
+        } = doc.constraints[0].kind
+        else {
+            panic!("expected line spacing constraint");
+        };
+        assert_eq!(side, -1);
+        assert!(doc.lines[1].y0 < -0.5, "y0={}", doc.lines[1].y0);
+        set_constraint_expression(&mut doc, 0, "3mm".to_string()).unwrap();
+        assert!(
+            doc.lines[1].y0 < -0.5 && (doc.lines[1].y0 + 3.0).abs() < 0.2,
+            "y0={}",
+            doc.lines[1].y0
+        );
+    }
+
+    #[test]
+    fn point_line_distance_keeps_negative_side() {
+        use crate::model::{ConstraintLine, ConstraintPoint, LineEnd};
+
+        let (mut doc, sketch) = sketch_doc();
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 5.0, -4.0, 6.0, -4.0));
+        doc.shape_order.push(ShapeKind::Line);
+        doc.shape_order.push(ShapeKind::Line);
+        let point = ConstraintPoint::LineEndpoint {
+            line: 1,
+            end: LineEnd::Start,
+        };
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::PointLineDistance {
+                point,
+                line: ConstraintLine::Line(0),
+                side: 1,
+            },
+            "3mm".to_string(),
+        )
+        .unwrap();
+        let ConstraintKind::Distance {
+            target:
+                DistanceTarget::PointLineDistance {
+                    side, ..
+                },
+        } = doc.constraints[0].kind
+        else {
+            panic!("expected point-line distance constraint");
+        };
+        assert_eq!(side, -1);
+        let (_pu, pv) = point_uv(&doc, point).unwrap();
+        assert!(pv < -0.5, "pv={pv}");
+        assert!((pv + 3.0).abs() < 0.2, "pv={pv}");
+    }
+
+    #[test]
+    fn point_point_distance_preserves_direction() {
+        use crate::model::{ConstraintPoint, LineEnd};
+
+        let (mut doc, sketch) = sketch_doc();
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 0.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 3.0, 4.0, 4.0, 4.0));
+        doc.shape_order.push(ShapeKind::Line);
+        doc.shape_order.push(ShapeKind::Line);
+        let anchor = ConstraintPoint::LineEndpoint {
+            line: 0,
+            end: LineEnd::Start,
+        };
+        let mover = ConstraintPoint::LineEndpoint {
+            line: 1,
+            end: LineEnd::Start,
+        };
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::PointPointDistance {
+                anchor,
+                mover,
+                dir_u: 1.0,
+                dir_v: 0.0,
+            },
+            "10mm".to_string(),
+        )
+        .unwrap();
+        let ConstraintKind::Distance {
+            target:
+                DistanceTarget::PointPointDistance {
+                    dir_u,
+                    dir_v,
+                    ..
+                },
+        } = doc.constraints[0].kind
+        else {
+            panic!("expected point-point distance constraint");
+        };
+        assert!((dir_u - 0.6).abs() < 0.01, "dir_u={dir_u}");
+        assert!((dir_v - 0.8).abs() < 0.01, "dir_v={dir_v}");
+        let (mu, mv) = point_uv(&doc, mover).unwrap();
+        assert!((mu - 6.0).abs() < 0.2, "mu={mu}");
+        assert!((mv - 8.0).abs() < 0.2, "mv={mv}");
+    }
+
+    #[test]
+    fn angle_constraint_display_dirs_matches_display() {
+        use crate::model::ConstraintLine;
+
+        let (mut doc, sketch) = sketch_doc();
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 10.0));
+        let display = angle_constraint_display(
+            &doc,
+            ConstraintLine::Line(0),
+            ConstraintLine::Line(1),
+        )
+        .unwrap();
+        let (center, dir_a, dir_b) = angle_constraint_display_dirs(
+            &doc,
+            ConstraintLine::Line(0),
+            ConstraintLine::Line(1),
+        )
+        .unwrap();
+        assert!((center - display.center).length() < 1e-3);
+        assert!((dir_a - display.dir_a).length() < 1e-3);
+        assert!((dir_b - display.dir_b).length() < 1e-3);
+    }
+
+    #[test]
+    fn angle_display_extends_segment_when_intersection_is_off_line() {
+        use crate::model::ConstraintLine;
+
+        let (mut doc, sketch) = sketch_doc();
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 5.0, 10.0, 5.0, 20.0));
+        let display = angle_constraint_display(
+            &doc,
+            ConstraintLine::Line(0),
+            ConstraintLine::Line(1),
+        )
+        .unwrap();
+        assert!(!display.extend_a);
+        assert!(display.extend_b);
+    }
+
+    #[test]
+    fn angle_rad_from_sketch_hit_returns_acute_angle() {
+        use crate::model::ConstraintLine;
+
+        let (doc, sketch) = sketch_doc();
+        let mut doc = doc;
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 10.0));
+        let display = angle_constraint_display(
+            &doc,
+            ConstraintLine::Line(0),
+            ConstraintLine::Line(1),
+        )
+        .unwrap();
+        let frame = crate::face::sketch_geometry_frame(&doc, sketch).unwrap();
+        let hit = display.center + display.dir_b * 5.0;
+        let angle = angle_rad_from_sketch_hit(&display, frame.normal, hit).unwrap();
+        assert!((angle.to_degrees() - 45.0).abs() < 1.0, "angle={}", angle.to_degrees());
+    }
+
+    #[test]
+    fn angle_constraint_keeps_clockwise_rotation_sign() {
+        use crate::model::ConstraintLine;
+
+        let (mut doc, sketch) = sketch_doc();
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, -10.0));
+        doc.shape_order.push(ShapeKind::Line);
+        doc.shape_order.push(ShapeKind::Line);
+        add_angle_constraint(
+            &mut doc,
+            sketch,
+            ConstraintLine::Line(0),
+            ConstraintLine::Line(1),
+            "45".to_string(),
+        )
+        .unwrap();
+        let ConstraintKind::Angle {
+            rotation_sign, ..
+        } = doc.constraints[0].kind
+        else {
+            panic!("expected angle constraint");
+        };
+        assert_eq!(rotation_sign, -1);
+        assert!(doc.lines[1].y1 < -5.0, "y1={}", doc.lines[1].y1);
     }
 
     #[test]

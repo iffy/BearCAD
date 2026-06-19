@@ -1,15 +1,19 @@
-//! Document parameters: named length expressions that drive sketch dimensions.
+//! Document parameters: named length or angle expressions that drive sketch dimensions.
 
 use crate::actions::{Action, ActionResult, AppState};
-use crate::constraints::{propagate_parameter_rename_to_constraints, solve_document_constraints};
+use crate::constraints::{
+    find_distance_constraint, propagate_parameter_rename_to_constraints, solve_document_constraints,
+};
 use crate::icons::{icon_button, IconId};
 use crate::document_health::HealthStatus;
-use crate::model::{Document, Parameter};
+use crate::model::{DistanceTarget, Document, Parameter, ParameterSource};
 use crate::value::{
-    eval_length_mm_in_doc, eval_length_mm_with_params, expression_references_document_parameter,
-    format_length_display, format_unknown_variable_error, is_valid_parameter_name,
+    eval_parameter_in_doc, expression_references_document_parameter,
+    format_angle_display, format_length_display, format_unknown_variable_error,
+    has_angle_unit_suffix, is_valid_parameter_name, parameter_name_conflicts_with_unit,
     parameter_names_referenced_in_expression, substitute_parameter_name,
-    unknown_variables_in_parameter_expression,
+    unknown_variables_in_parameter_expression, valid_parameter_expression_with_params,
+    EvaluatedParameter,
 };
 use eframe::egui::{self, Color32, Id, Key, RichText};
 
@@ -49,7 +53,22 @@ pub fn parameter_value_is_expression(doc: &Document, expression: &str) -> bool {
     if expr.chars().skip(1).any(|c| c == '-') {
         return true;
     }
-    expression_references_document_parameter(doc, expr)
+    has_angle_unit_suffix(expr) || expression_references_document_parameter(doc, expr)
+}
+
+/// Evaluated value label for parameter autocomplete rows.
+pub fn format_parameter_autocomplete_value(doc: &Document, index: usize) -> String {
+    let Some(param) = doc.parameters.get(index) else {
+        return String::new();
+    };
+    if param.deleted {
+        return String::new();
+    }
+    match eval_parameter_in_doc(&param.expression, doc) {
+        Some(EvaluatedParameter::LengthMm(v)) => format_length_display(v),
+        Some(EvaluatedParameter::AngleRad(v)) => format_angle_display(v),
+        None => param.expression.clone(),
+    }
 }
 
 /// Value-column label for a stored parameter expression.
@@ -58,8 +77,13 @@ pub fn format_parameter_value_display(doc: &Document, expression: &str) -> Strin
     if !parameter_value_is_expression(doc, expr) {
         return expr.to_string();
     }
-    match eval_length_mm_in_doc(expr, doc) {
-        Some(v) => format!("{} ({expr})", format_length_display(v)),
+    match eval_parameter_in_doc(expr, doc) {
+        Some(EvaluatedParameter::LengthMm(v)) => {
+            format!("{} ({expr})", format_length_display(v))
+        }
+        Some(EvaluatedParameter::AngleRad(v)) => {
+            format!("{} ({expr})", format_angle_display(v))
+        }
         None => expr.to_string(),
     }
 }
@@ -153,6 +177,143 @@ pub fn duplicate_parameter_name(doc: &Document, name: &str, except: Option<usize
     parameter_index_by_name(doc, name).is_some_and(|i| except != Some(i))
 }
 
+fn unique_parameter_name(doc: &Document, base: &str) -> String {
+    if !duplicate_parameter_name(doc, base, None) {
+        return base.to_string();
+    }
+    for suffix in 2..1000 {
+        let candidate = format!("{base}{suffix}");
+        if !duplicate_parameter_name(doc, &candidate, None) {
+            return candidate;
+        }
+    }
+    format!("{base}_{}", doc.parameters.len())
+}
+
+/// Whether a line may drive a computed length parameter (alive, no length constraint).
+pub fn line_eligible_for_computed_length_parameter(doc: &Document, line_index: usize) -> bool {
+    crate::document_lifecycle::line_alive(doc, line_index)
+        && find_distance_constraint(doc, DistanceTarget::LineLength(line_index)).is_none()
+}
+
+pub fn computed_parameter_index_for_line(doc: &Document, line_index: usize) -> Option<usize> {
+    doc.parameters.iter().position(|param| {
+        !param.deleted
+            && matches!(
+                param.source,
+                Some(ParameterSource::LineLength(index)) if index == line_index
+            )
+    })
+}
+
+pub fn parameter_value_is_readonly(param: &Parameter) -> bool {
+    param.source.is_some()
+}
+
+pub fn parameter_source_description(doc: &Document, param: &Parameter) -> Option<String> {
+    match param.source.as_ref()? {
+        ParameterSource::LineLength(index) => {
+            if crate::document_lifecycle::line_alive(doc, *index) {
+                Some(format!("Driven by line {index} length"))
+            } else {
+                Some(format!("Driven by line {index} length (deleted)"))
+            }
+        }
+    }
+}
+
+pub fn default_computed_parameter_name_for_line(doc: &Document, line_index: usize) -> String {
+    unique_parameter_name(doc, &format!("line{line_index}_length"))
+}
+
+/// Update read-only parameter expressions from their geometry sources.
+pub fn sync_computed_parameters(doc: &mut Document) {
+    for param in &mut doc.parameters {
+        if param.deleted {
+            continue;
+        }
+        if let Some(ParameterSource::LineLength(index)) = param.source {
+            if let Some(line) = doc.lines.get(index) {
+                if !line.deleted {
+                    param.expression = format_length_display(line.length());
+                }
+            }
+        }
+    }
+}
+
+pub fn require_parameter_value_editable(param: &Parameter) -> Result<(), String> {
+    if parameter_value_is_readonly(param) {
+        Err("Parameter value is read-only".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+pub fn add_computed_parameter_from_line_length(
+    doc: &mut Document,
+    line_index: usize,
+    name: Option<String>,
+) -> Result<usize, String> {
+    if !crate::document_lifecycle::line_alive(doc, line_index) {
+        return Err(format!("Line {line_index} not found"));
+    }
+    if find_distance_constraint(doc, DistanceTarget::LineLength(line_index)).is_some() {
+        return Err("Line length is constrained".to_string());
+    }
+    if computed_parameter_index_for_line(doc, line_index).is_some() {
+        return Err("A parameter already tracks this line's length".to_string());
+    }
+    let name = name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| default_computed_parameter_name_for_line(doc, line_index));
+    validate_new_parameter_name(doc, &name, None)?;
+    let length = doc.lines[line_index].length();
+    let index = doc.parameters.len();
+    doc.parameters.push(Parameter {
+        name,
+        expression: format_length_display(length),
+        deleted: false,
+        source: Some(ParameterSource::LineLength(line_index)),
+    });
+    doc.shape_order.push(crate::model::ShapeKind::Parameter);
+    recompute_document_geometry(doc)?;
+    Ok(index)
+}
+
+/// Selected unconstrained line that can drive a computed length parameter.
+pub fn line_for_computed_parameter_context_menu(
+    doc: &Document,
+    selection: &crate::selection::SceneSelection,
+) -> Option<usize> {
+    let element = selection.single()?;
+    let crate::hierarchy::SceneElement::Line(index) = element else {
+        return None;
+    };
+    if computed_parameter_index_for_line(doc, index).is_some() {
+        return None;
+    }
+    line_eligible_for_computed_length_parameter(doc, index).then_some(index)
+}
+
+pub fn show_computed_line_length_context_menu(
+    response: &egui::Response,
+    doc: &Document,
+    selection: &crate::selection::SceneSelection,
+    on_create: &mut impl FnMut(usize),
+) {
+    let Some(line_index) = line_for_computed_parameter_context_menu(doc, selection) else {
+        return;
+    };
+    response.context_menu(|ui| {
+        if ui.button("Create parameter from length").clicked() {
+            on_create(line_index);
+            ui.close_menu();
+        }
+    });
+}
+
 /// Rename `old` to `new` in every expression that references it.
 pub fn propagate_parameter_rename(doc: &mut Document, old: &str, new: &str) {
     if old == new {
@@ -191,6 +352,12 @@ pub fn validate_new_parameter_name(doc: &Document, name: &str, except: Option<us
     let name = name.trim();
     if name.is_empty() {
         return Err("Parameter name is required".to_string());
+    }
+    if name.chars().any(|c| c.is_whitespace()) {
+        return Err("Parameter name cannot contain spaces".to_string());
+    }
+    if parameter_name_conflicts_with_unit(name) {
+        return Err(format!("Parameter name '{name}' conflicts with a known unit"));
     }
     if !is_valid_parameter_name(name) {
         return Err(format!(
@@ -334,9 +501,38 @@ pub fn validate_parameter_expression_for(
         .iter()
         .map(|(name, expr)| (name.as_str(), expr.as_str()))
         .collect();
-    eval_length_mm_with_params(expression, &params)
-        .ok_or_else(|| format!("Invalid expression '{expression}'"))?;
+    if !valid_parameter_expression_with_params(expression, &params) {
+        return Err(format!("Invalid expression '{expression}'"));
+    }
     Ok(())
+}
+
+/// Parse `name=value` inline parameter definition syntax from a dimension field.
+pub fn parse_inline_parameter_definition(text: &str) -> Option<(String, String)> {
+    let text = text.trim();
+    let (name, value) = text.split_once('=')?;
+    let name = name.trim();
+    let value = value.trim();
+    if name.is_empty() || value.is_empty() {
+        return None;
+    }
+    if !is_valid_parameter_name(name) {
+        return None;
+    }
+    Some((name.to_string(), value.to_string()))
+}
+
+/// If `text` is `name=value`, create the parameter and replace `text` with `name`.
+pub fn try_commit_inline_parameter_definition(
+    doc: &mut Document,
+    text: &mut String,
+) -> Result<Option<String>, String> {
+    let Some((name, value)) = parse_inline_parameter_definition(text) else {
+        return Ok(None);
+    };
+    add_parameter(doc, name.clone(), value)?;
+    *text = name.clone();
+    Ok(Some(name))
 }
 
 pub fn add_parameter(doc: &mut Document, name: String, expression: String) -> Result<usize, String> {
@@ -349,6 +545,7 @@ pub fn add_parameter(doc: &mut Document, name: String, expression: String) -> Re
         name,
         expression,
         deleted: false,
+        source: None,
     });
     doc.shape_order.push(crate::model::ShapeKind::Parameter);
     recompute_document_geometry(doc)?;
@@ -378,10 +575,12 @@ pub fn set_parameter_expression(
     expression: String,
 ) -> Result<(), String> {
     let expression = expression.trim().to_string();
-    if doc.parameters.get(index).is_none() {
-        return Err(format!("Parameter {index} not found"));
-    }
-    let param_name = doc.parameters[index].name.clone();
+    let param = doc
+        .parameters
+        .get(index)
+        .ok_or_else(|| format!("Parameter {index} not found"))?;
+    require_parameter_value_editable(param)?;
+    let param_name = param.name.clone();
     validate_parameter_expression_for(doc, &param_name, &expression, Some(index))?;
     doc.parameters[index].expression = expression;
     recompute_document_geometry(doc)
@@ -445,13 +644,15 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                     if !crate::document_lifecycle::parameter_alive(&app.doc, index) {
                         continue;
                     }
-                    let (param_name, param_expression, param_display, param_status) = {
+                    let (param_name, param_expression, param_display, param_status, value_readonly, source_description) = {
                         let param = &app.doc.parameters[index];
                         (
                             param.name.clone(),
                             param.expression.clone(),
                             format_parameter_value_display(&app.doc, &param.expression),
                             app.document_health.parameter_status(index),
+                            parameter_value_is_readonly(param),
+                            parameter_source_description(&app.doc, param),
                         )
                     };
                     let param_frozen = param_status.is_frozen();
@@ -463,6 +664,13 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                                 app.parameters_pane.cancel_edit();
                             }
                             _ => {}
+                        }
+                    } else if value_readonly {
+                        if matches!(
+                            app.parameters_pane.editing,
+                            Some(ParameterEditCell::Value(i)) if i == index
+                        ) {
+                            app.parameters_pane.cancel_edit();
                         }
                     }
                     let editing_name = matches!(
@@ -481,6 +689,11 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                                     .id(param_name_id(index))
                                     .desired_width(f32::INFINITY),
                             );
+                            if response.changed() {
+                                app.parameters_pane
+                                    .draft
+                                    .retain(|c| !c.is_whitespace());
+                            }
                             if app.parameters_pane.editing_focus {
                                 response.request_focus();
                                 app.parameters_pane.editing_focus = false;
@@ -534,6 +747,8 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                                 param_value_id(index),
                                 "",
                                 &value_errors,
+                                &app.doc,
+                                &[param_name.as_str()],
                             );
                             if app.parameters_pane.editing_focus {
                                 response.request_focus();
@@ -566,6 +781,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                             )
                             .clicked()
                             && !param_frozen
+                            && !value_readonly
                         {
                             app.parameters_pane.begin_edit(
                                 ParameterEditCell::Value(index),
@@ -573,7 +789,13 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                             );
                         }
                     });
-                    if param_frozen {
+                    if let Some(reason) = source_description {
+                        ui.label(
+                            RichText::new(reason)
+                                .color(egui::Color32::from_gray(140))
+                                .size(11.0),
+                        );
+                    } else if param_frozen {
                         let reason = app
                             .document_health
                             .parameter_reason(index)
@@ -599,6 +821,11 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                         .hint_text("name")
                         .desired_width(f32::INFINITY),
                 );
+                if name_response.changed() {
+                    app.parameters_pane
+                        .new_name
+                        .retain(|c| !c.is_whitespace());
+                }
                 if app.parameters_pane.focus_new_name {
                     name_response.request_focus();
                     app.parameters_pane.focus_new_name = false;
@@ -614,12 +841,20 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                     &app.doc,
                     new_param_context.as_ref(),
                 );
+                let new_name = app.parameters_pane.new_name.trim();
+                let exclude_new: Vec<&str> = if new_name.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![new_name]
+                };
                 let value_response = show_length_expression_text_edit(
                     ui,
                     &mut app.parameters_pane.new_value,
                     Id::new(NEW_VALUE_ID),
                     "value",
                     &new_value_errors,
+                    &app.doc,
+                    &exclude_new,
                 );
                 if app.parameters_pane.focus_new_value {
                     value_response.request_focus();
@@ -680,7 +915,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
     } else if app.doc.parameters.is_empty() {
         ui.add_space(4.0);
         ui.label(
-            egui::RichText::new("Type name and value (e.g. A and 10mm), then press Enter or +")
+            egui::RichText::new("Type name and value (e.g. A and 10mm or 45deg), then press Enter or +")
                 .color(egui::Color32::from_gray(140))
                 .size(12.0),
         );
@@ -692,7 +927,9 @@ mod tests {
     use super::*;
     use crate::actions::{Action, ActionResult, AppState};
     use crate::constraints::add_distance_constraint;
-    use crate::model::{DistanceTarget, Document, FaceId, ShapeKind};
+    use crate::document_lifecycle::tombstone_element;
+    use crate::hierarchy::SceneElement;
+    use crate::model::{DistanceTarget, Document, FaceId, Line, ShapeKind};
     use crate::Rect;
 
     fn doc_with_param_a() -> Document {
@@ -776,6 +1013,53 @@ mod tests {
     fn rejects_invalid_parameter_name() {
         let mut doc = Document::default();
         assert!(add_parameter(&mut doc, "1bad".to_string(), "5mm".to_string()).is_err());
+    }
+
+    #[test]
+    fn parse_inline_parameter_definition_accepts_name_value() {
+        assert_eq!(
+            parse_inline_parameter_definition("width=5"),
+            Some(("width".to_string(), "5".to_string()))
+        );
+        assert_eq!(
+            parse_inline_parameter_definition(" corner = 45deg "),
+            Some(("corner".to_string(), "45deg".to_string()))
+        );
+        assert!(parse_inline_parameter_definition("10mm").is_none());
+        assert!(parse_inline_parameter_definition("1bad=5").is_none());
+        assert!(parse_inline_parameter_definition("width=").is_none());
+    }
+
+    #[test]
+    fn try_commit_inline_parameter_definition_creates_parameter() {
+        let mut doc = Document::default();
+        let mut text = "width=10mm".to_string();
+        let name = try_commit_inline_parameter_definition(&mut doc, &mut text).unwrap();
+        assert_eq!(name.as_deref(), Some("width"));
+        assert_eq!(text, "width");
+        assert_eq!(doc.parameters[0].name, "width");
+        assert_eq!(doc.parameters[0].expression, "10mm");
+    }
+
+    #[test]
+    fn rejects_parameter_names_with_spaces() {
+        let mut doc = Document::default();
+        let err = add_parameter(&mut doc, "my width".to_string(), "10mm".to_string()).unwrap_err();
+        assert_eq!(err, "Parameter name cannot contain spaces");
+    }
+
+    #[test]
+    fn rejects_parameter_names_that_match_units() {
+        let mut doc = Document::default();
+        for unit in ["deg", "mm", "rad", "in"] {
+            let err = add_parameter(&mut doc, unit.to_string(), "1".to_string()).unwrap_err();
+            assert!(
+                err.contains("conflicts with a known unit"),
+                "unit={unit} err={err}"
+            );
+        }
+        let err = add_parameter(&mut doc, "Deg".to_string(), "45deg".to_string()).unwrap_err();
+        assert!(err.contains("conflicts with a known unit"));
     }
 
     #[test]
@@ -923,6 +1207,74 @@ mod tests {
     }
 
     #[test]
+    fn add_angle_parameter_with_degrees() {
+        let mut doc = Document::default();
+        add_parameter(&mut doc, "corner".to_string(), "16.7deg".to_string()).unwrap();
+        assert_eq!(doc.parameters[0].expression, "16.7deg");
+        match eval_parameter_in_doc("corner", &doc).unwrap() {
+            EvaluatedParameter::AngleRad(v) => {
+                assert!((v.to_degrees() - 16.7).abs() < 1e-3);
+            }
+            _ => panic!("expected angle parameter"),
+        }
+    }
+
+    #[test]
+    fn add_angle_parameter_with_radians() {
+        let mut doc = Document::default();
+        add_parameter(&mut doc, "slope".to_string(), "1.5708rad".to_string()).unwrap();
+        match eval_parameter_in_doc("slope", &doc).unwrap() {
+            EvaluatedParameter::AngleRad(v) => {
+                assert!((v - 1.5708).abs() < 1e-3);
+            }
+            _ => panic!("expected angle parameter"),
+        }
+    }
+
+    #[test]
+    fn angle_parameter_chain_evaluates() {
+        let mut doc = Document::default();
+        add_parameter(&mut doc, "base".to_string(), "30deg".to_string()).unwrap();
+        add_parameter(&mut doc, "offset".to_string(), "base + 5deg".to_string()).unwrap();
+        match eval_parameter_in_doc("offset", &doc).unwrap() {
+            EvaluatedParameter::AngleRad(v) => {
+                assert!((v.to_degrees() - 35.0).abs() < 1e-3);
+            }
+            _ => panic!("expected angle parameter"),
+        }
+        assert_eq!(
+            format_parameter_value_display(&doc, &doc.parameters[1].expression),
+            "35.0 deg (base + 5deg)"
+        );
+    }
+
+    #[test]
+    fn angle_parameter_drives_angle_constraint() {
+        use crate::constraints::add_angle_constraint;
+        use crate::model::{ConstraintLine, Line, ShapeKind};
+
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        add_parameter(&mut doc, "corner".to_string(), "16.7deg".to_string()).unwrap();
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 100.0));
+        doc.shape_order.push(ShapeKind::Line);
+        doc.shape_order.push(ShapeKind::Line);
+        add_angle_constraint(
+            &mut doc,
+            sketch,
+            ConstraintLine::Line(0),
+            ConstraintLine::Line(1),
+            "corner".to_string(),
+        )
+        .unwrap();
+        let angle = crate::value::eval_angle_rad_in_doc("corner", &doc).unwrap();
+        assert!((angle.to_degrees() - 16.7).abs() < 1e-2);
+    }
+
+    #[test]
     fn commit_new_parameter_supports_multiple_adds_in_sequence() {
         let mut state = AppState::default();
         state.parameters_pane.new_name = "A".to_string();
@@ -933,5 +1285,76 @@ mod tests {
         commit_new_parameter(&mut state).unwrap();
         assert_eq!(state.doc.parameters.len(), 2);
         assert_eq!(state.doc.parameters[1].expression, "A + 5mm");
+    }
+
+    fn doc_with_unconstrained_line(length: f32) -> (Document, usize) {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, length, 0.0));
+        doc.shape_order.push(ShapeKind::Line);
+        (doc, 0)
+    }
+
+    #[test]
+    fn add_computed_parameter_from_line_length_creates_readonly_parameter() {
+        let (mut doc, line_index) = doc_with_unconstrained_line(12.5);
+        let index =
+            add_computed_parameter_from_line_length(&mut doc, line_index, None).unwrap();
+        let param = &doc.parameters[index];
+        assert_eq!(param.name, "line0_length");
+        assert_eq!(param.expression, "12.5 mm");
+        assert!(parameter_value_is_readonly(param));
+        assert!(matches!(
+            param.source,
+            Some(ParameterSource::LineLength(0))
+        ));
+    }
+
+    #[test]
+    fn computed_parameter_updates_when_line_length_changes() {
+        let (mut doc, line_index) = doc_with_unconstrained_line(10.0);
+        add_computed_parameter_from_line_length(&mut doc, line_index, None).unwrap();
+        doc.lines[0].x1 = 25.0;
+        recompute_document_geometry(&mut doc).unwrap();
+        assert_eq!(doc.parameters[0].expression, "25.0 mm");
+    }
+
+    #[test]
+    fn computed_parameter_rejects_constrained_line() {
+        let (mut doc, line_index) = doc_with_unconstrained_line(10.0);
+        let sketch = doc.lines[0].sketch;
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::LineLength(line_index),
+            "10mm".to_string(),
+        )
+        .unwrap();
+        let err = add_computed_parameter_from_line_length(&mut doc, line_index, None).unwrap_err();
+        assert_eq!(err, "Line length is constrained");
+    }
+
+    #[test]
+    fn computed_parameter_survives_line_deletion() {
+        let (mut doc, line_index) = doc_with_unconstrained_line(10.0);
+        add_computed_parameter_from_line_length(&mut doc, line_index, None).unwrap();
+        tombstone_element(&mut doc, SceneElement::Line(line_index));
+        assert_eq!(doc.parameters.len(), 1);
+        assert_eq!(doc.parameters[0].expression, "10.0 mm");
+        let health = crate::document_health::recompute_document_health(&doc);
+        assert_eq!(
+            health.parameter_status(0),
+            crate::document_health::HealthStatus::Invalid
+        );
+    }
+
+    #[test]
+    fn set_parameter_expression_rejects_readonly_computed_parameter() {
+        let (mut doc, line_index) = doc_with_unconstrained_line(10.0);
+        let index =
+            add_computed_parameter_from_line_length(&mut doc, line_index, None).unwrap();
+        let err = set_parameter_expression(&mut doc, index, "20mm".to_string()).unwrap_err();
+        assert_eq!(err, "Parameter value is read-only");
     }
 }

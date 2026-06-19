@@ -1,14 +1,14 @@
 //! Drag sketch vertices and line segments in the viewport while satisfying active constraints.
 
-use crate::constraints::{constraint_evaluated_length, find_distance_constraint};
-use crate::construction::point_sketch;
-use crate::geometric_constraints::{
-    apply_geometric_constraints, point_uv, set_point_uv, translate_line,
+use crate::constraints::{
+    constraint_evaluated_length, find_distance_constraint, solve_document_constraints_with_pins,
 };
+use crate::construction::point_sketch;
+use crate::geometric_constraints::{line_uv_endpoints, point_uv, set_point_uv, translate_line};
 use crate::hierarchy::SceneElement;
 use crate::model::{
     ConstraintEntity, ConstraintKind, ConstraintLine, ConstraintPoint, DistanceTarget, Document,
-    LineEnd, RectEdge, SketchId,
+    LineEnd, SketchId,
 };
 use std::collections::HashMap;
 
@@ -60,6 +60,74 @@ pub fn line_drag_seed_points(line: ConstraintLine) -> [ConstraintPoint; 2] {
     }
 }
 
+/// Whether a sketch vertex may be dragged (fully constrained vertices are blocked).
+pub fn can_drag_point(doc: &Document, sketch: SketchId, point: ConstraintPoint) -> bool {
+    if !point_in_sketch(doc, point, sketch) {
+        return false;
+    }
+    if let ConstraintPoint::LineEndpoint { line, .. } = point {
+        return !line_vertex_drag_blocked(doc, line);
+    }
+    true
+}
+
+/// Whether a sketch line may be translated by dragging (fully constrained lines are blocked).
+pub fn can_drag_line(doc: &Document, sketch: SketchId, target: ConstraintLine) -> bool {
+    match target {
+        ConstraintLine::Line(line) => {
+            point_in_sketch(doc, line_drag_seed_points(target)[0], sketch)
+                && !line_vertex_drag_blocked(doc, line)
+        }
+        ConstraintLine::RectEdge { rect, .. } => doc
+            .rects
+            .get(rect)
+            .is_some_and(|rect_entity| rect_entity.sketch == sketch),
+    }
+}
+
+fn line_vertex_drag_blocked(doc: &Document, line_index: usize) -> bool {
+    let line = ConstraintLine::Line(line_index);
+    let has_length =
+        find_distance_constraint(doc, DistanceTarget::LineLength(line_index)).is_some();
+    if !has_length {
+        return false;
+    }
+    let has_orientation = doc.constraints.iter().any(|constraint| {
+        if constraint.deleted {
+            return false;
+        }
+        match constraint.kind {
+            ConstraintKind::Horizontal { line: constrained } => constrained == line,
+            ConstraintKind::Vertical { line: constrained } => constrained == line,
+            ConstraintKind::Parallel {
+                line_a,
+                line_b,
+            } => line_a == line || line_b == line,
+            ConstraintKind::Angle {
+                line_a,
+                line_b,
+                ..
+            } => line_a == line || line_b == line,
+            _ => false,
+        }
+    });
+    let has_spacing = doc.constraints.iter().any(|constraint| {
+        if constraint.deleted {
+            return false;
+        }
+        match constraint.kind {
+            ConstraintKind::Distance {
+                target: DistanceTarget::LineLineDistance { line_a, line_b, .. },
+            } => line_a == line || line_b == line,
+            ConstraintKind::Distance {
+                target: DistanceTarget::PointLineDistance { line: constrained, .. },
+            } => constrained == line,
+            _ => false,
+        }
+    });
+    has_length && has_orientation && has_spacing
+}
+
 pub fn begin_line_drag_session(
     doc: &Document,
     sketch: SketchId,
@@ -101,7 +169,13 @@ pub fn drag_line(
             set_point_uv(doc, *point, iu + du, iv + dv)?;
         }
     }
-    apply_geometric_constraints(doc)
+    let pins: Vec<(ConstraintPoint, (f32, f32))> = session
+        .initial_positions
+        .iter()
+        .filter(|(point, _)| point_in_sketch(doc, **point, sketch))
+        .map(|(point, (iu, iv))| (*point, (iu + du, iv + dv)))
+        .collect();
+    solve_document_constraints_with_pins(doc, &pins)
 }
 
 fn validate_line_drag_target(
@@ -173,13 +247,52 @@ pub fn drag_point(
         return Err("Point is not in the active sketch".to_string());
     }
 
+    let (u, v) = project_drag_uv(doc, dragged, u, v)?;
     let group = coincident_group(doc, sketch, dragged);
     for point in &group {
         set_point_uv(doc, *point, u, v)?;
     }
 
     apply_length_constraints_for_drag(doc, dragged, u, v, &group)?;
-    apply_geometric_constraints(doc)
+    let pins: Vec<(ConstraintPoint, (f32, f32))> = group.iter().map(|point| (*point, (u, v))).collect();
+    solve_document_constraints_with_pins(doc, &pins)
+}
+
+fn project_drag_uv(
+    doc: &Document,
+    dragged: ConstraintPoint,
+    u: f32,
+    v: f32,
+) -> Result<(f32, f32), String> {
+    let ConstraintPoint::LineEndpoint { line: line_index, end } = dragged else {
+        return Ok((u, v));
+    };
+    let line = ConstraintLine::Line(line_index);
+    let mut projected_u = u;
+    let mut projected_v = v;
+    for constraint in &doc.constraints {
+        if constraint.deleted {
+            continue;
+        }
+        match constraint.kind {
+            ConstraintKind::Horizontal { line: constrained } if constrained == line => {
+                let ((_x0, y0), (_x1, y1)) = line_uv_endpoints(doc, line)?;
+                projected_v = match end {
+                    LineEnd::Start => y1,
+                    LineEnd::End => y0,
+                };
+            }
+            ConstraintKind::Vertical { line: constrained } if constrained == line => {
+                let ((x0, _y0), (x1, _y1)) = line_uv_endpoints(doc, line)?;
+                projected_u = match end {
+                    LineEnd::Start => x1,
+                    LineEnd::End => x0,
+                };
+            }
+            _ => {}
+        }
+    }
+    Ok((projected_u, projected_v))
 }
 
 fn coincident_group(doc: &Document, sketch: SketchId, seed: ConstraintPoint) -> Vec<ConstraintPoint> {
@@ -305,11 +418,12 @@ fn project_endpoint_with_length(
 mod tests {
     use super::*;
     use crate::constraints::add_distance_constraint;
+    use crate::model::RectEdge;
     use crate::geometric_constraints::{
-        add_geometric_constraint_from_selection, GeometricConstraintType,
+        add_geometric_constraint_from_selection, line_direction_uv, GeometricConstraintType,
     };
     use crate::hierarchy::SceneElement;
-    use crate::model::{Document, FaceId, Line, Rect};
+    use crate::model::{ConstraintLine, Document, FaceId, Line, Rect};
     use crate::selection::{click_scene_selection, SceneSelection};
 
     const EPS: f32 = 1e-2;
@@ -582,6 +696,163 @@ mod tests {
         assert!((doc.lines[0].y1 - 4.0).abs() < EPS);
         assert!((doc.lines[1].x0 - 13.0).abs() < EPS);
         assert!((doc.lines[1].y0 - 4.0).abs() < EPS);
+    }
+
+    fn measured_angle_between_lines(
+        doc: &Document,
+        line_a: ConstraintLine,
+        line_b: ConstraintLine,
+    ) -> Option<f32> {
+        let (adu, adv) = line_direction_uv(doc, line_a)?;
+        let (bdu, bdv) = line_direction_uv(doc, line_b)?;
+        let dot = (adu * bdu + adv * bdv).clamp(-1.0, 1.0);
+        Some(dot.acos())
+    }
+
+    fn measured_line_line_distance(
+        doc: &Document,
+        line_a: ConstraintLine,
+        line_b: ConstraintLine,
+    ) -> Option<f32> {
+        use crate::geometric_constraints::line_uv_endpoints;
+        let ((ax0, ay0), (ax1, ay1)) = line_uv_endpoints(doc, line_a).ok()?;
+        let ((bx0, by0), (bx1, by1)) = line_uv_endpoints(doc, line_b).ok()?;
+        let du = ax1 - ax0;
+        let dv = ay1 - ay0;
+        let len = (du * du + dv * dv).sqrt();
+        if len < 1e-6 {
+            return None;
+        }
+        let perp_u = -dv / len;
+        let perp_v = du / len;
+        let amu = (ax0 + ax1) * 0.5;
+        let amv = (ay0 + ay1) * 0.5;
+        let bmu = (bx0 + bx1) * 0.5;
+        let bmv = (by0 + by1) * 0.5;
+        Some(((bmu - amu) * perp_u + (bmv - amv) * perp_v).abs())
+    }
+
+    fn setup_angle_parallel_spacing_lines(
+        doc: &mut Document,
+        sketch: SketchId,
+    ) -> Result<(), String> {
+        use crate::constraints::{add_angle_constraint, add_distance_constraint};
+
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 10.0, 5.0, 50.0, 18.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 10.0, 30.0, 50.0, 43.0));
+        doc.shape_order.push(crate::model::ShapeKind::Line);
+        doc.shape_order.push(crate::model::ShapeKind::Line);
+        doc.shape_order.push(crate::model::ShapeKind::Line);
+
+        add_angle_constraint(
+            doc,
+            sketch,
+            ConstraintLine::Line(0),
+            ConstraintLine::Line(1),
+            "16.7".to_string(),
+        )?;
+        let mut sel = SceneSelection::default();
+        click_scene_selection(&mut sel, SceneElement::Line(1), false);
+        click_scene_selection(&mut sel, SceneElement::Line(2), true);
+        add_geometric_constraint_from_selection(
+            doc,
+            sketch,
+            GeometricConstraintType::Parallel,
+            &sel,
+        )?;
+        add_distance_constraint(
+            doc,
+            sketch,
+            DistanceTarget::LineLineDistance {
+                line_a: ConstraintLine::Line(1),
+                line_b: ConstraintLine::Line(2),
+                side: 1,
+            },
+            "15mm".to_string(),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn drag_vertex_preserves_angle_and_line_spacing() {
+        let (mut doc, sketch) = sketch_doc();
+        setup_angle_parallel_spacing_lines(&mut doc, sketch).unwrap();
+
+        drag_point(
+            &mut doc,
+            sketch,
+            ConstraintPoint::LineEndpoint {
+                line: 1,
+                end: LineEnd::Start,
+            },
+            25.0,
+            12.0,
+        )
+        .unwrap();
+
+        let angle = measured_angle_between_lines(
+            &doc,
+            ConstraintLine::Line(0),
+            ConstraintLine::Line(1),
+        )
+        .unwrap();
+        assert!(
+            (angle.to_degrees() - 16.7).abs() < 1.0,
+            "angle={}",
+            angle.to_degrees()
+        );
+
+        let spacing = measured_line_line_distance(
+            &doc,
+            ConstraintLine::Line(1),
+            ConstraintLine::Line(2),
+        )
+        .unwrap();
+        assert!((spacing - 15.0).abs() < 0.5, "spacing={spacing}");
+
+        let (bdu, bdv) = line_direction_uv(&doc, ConstraintLine::Line(1)).unwrap();
+        let (cdu, cdv) = line_direction_uv(&doc, ConstraintLine::Line(2)).unwrap();
+        let parallel_dot = (bdu * cdu + bdv * cdv).clamp(-1.0, 1.0);
+        assert!((parallel_dot - 1.0).abs() < 0.01, "parallel_dot={parallel_dot}");
+    }
+
+    #[test]
+    fn fully_constrained_line_vertex_drag_is_blocked() {
+        use crate::constraints::add_distance_constraint;
+
+        let (mut doc, sketch) = sketch_doc();
+        setup_angle_parallel_spacing_lines(&mut doc, sketch).unwrap();
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::LineLength(1),
+            "40mm".to_string(),
+        )
+        .unwrap();
+
+        let point = ConstraintPoint::LineEndpoint {
+            line: 1,
+            end: LineEnd::Start,
+        };
+        assert!(!can_drag_point(&doc, sketch, point));
+        assert!(!can_drag_line(&doc, sketch, ConstraintLine::Line(1)));
+    }
+
+    #[test]
+    fn partially_constrained_line_vertex_drag_is_allowed() {
+        let (mut doc, sketch) = sketch_doc();
+        setup_angle_parallel_spacing_lines(&mut doc, sketch).unwrap();
+
+        let point = ConstraintPoint::LineEndpoint {
+            line: 1,
+            end: LineEnd::Start,
+        };
+        assert!(can_drag_point(&doc, sketch, point));
+        assert!(can_drag_line(&doc, sketch, ConstraintLine::Line(1)));
     }
 
     #[test]

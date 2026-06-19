@@ -33,6 +33,7 @@ pub struct ViewportDimLabel {
     pub color: Color32,
     pub text_vertices: Vec<GpuTextVertex>,
     pub text_indices: Vec<u32>,
+    pub draw_dimension_lines: bool,
 }
 
 fn label_plane_normal(view: &PlanarLabelView, world: &LinearDimensionWorldGeom) -> Vec3 {

@@ -1,6 +1,6 @@
 //! Lua script runner and internal instruction dispatch (SPEC §8).
 //!
-//! Scripts are `.lua` files that call the global `paramcad` API. They drive the
+//! Scripts are `.lua` files that call the global `le3` API. They drive the
 //! live UI via synthetic pointer/keyboard events and headless actions.
 
 use crate::actions::{
@@ -69,7 +69,7 @@ pub enum Instruction {
         expression: String,
     },
     AddGeometricConstraint(crate::geometric_constraints::GeometricConstraintType),
-    ApplyConstraintShortcut(u8),
+    ApplyConstraintShortcut(char),
     DragVertex {
         point: ConstraintPoint,
         u: f32,
@@ -105,6 +105,7 @@ pub enum Instruction {
     /// Show/hide a UI pane. `None` toggles.
     SetPane { pane: Pane, visible: Option<bool> },
     AddParameter { name: String, expression: String },
+    CreateParameterFromLineLength { line_index: usize, name: Option<String> },
     SetParameterName { index: usize, name: String },
     SetParameterExpression { index: usize, expression: String },
     DeleteParameter { index: usize },
@@ -127,7 +128,6 @@ pub enum Instruction {
     },
     RightDrag { dx: f32, dy: f32 },
     RightDragShift { dx: f32, dy: f32 },
-    Scroll { delta: f32 },
     Key(Key),
     KeyDown(Key),
     KeyUp(Key),
@@ -141,237 +141,22 @@ pub enum Instruction {
 }
 
 impl Instruction {
-    /// Format this instruction as a script line (for logging).
-    pub fn as_line(&self) -> String {
-        match self {
-            Instruction::New => "new".to_string(),
-            Instruction::Open(path) => format!("open {path}"),
-            Instruction::Save(None) => "save".to_string(),
-            Instruction::Save(Some(path)) => format!("save {path}"),
-            Instruction::Clear => "clear".to_string(),
-            Instruction::Undo => "undo".to_string(),
-            Instruction::Tool(Tool::Select) => "tool select".to_string(),
-            Instruction::Tool(Tool::Rectangle) => "tool rectangle".to_string(),
-            Instruction::Tool(Tool::Line) => "tool line".to_string(),
-            Instruction::Tool(Tool::Circle) => "tool circle".to_string(),
-            Instruction::Tool(Tool::ConstructionPlane) => "tool plane".to_string(),
-            Instruction::Tool(Tool::Sketch) => "tool sketch".to_string(),
-            Instruction::Tool(Tool::Dimension) => "tool dimension".to_string(),
-            Instruction::Tool(Tool::Constraint) => "tool constraint".to_string(),
-            Instruction::BeginSketch { face } => format!("begin_sketch {}", face_script_name(*face)),
-            Instruction::OpenSketch { sketch } => format!("open_sketch {sketch}"),
-            Instruction::ExitSketch => "exit_sketch".to_string(),
-            Instruction::SetElementVisible { element, visible } => {
-                let (kind, index) = element_script_parts(*element);
-                let verb = match visible {
-                    Some(true) => "show",
-                    Some(false) => "hide",
-                    None => "toggle",
-                };
-                format!("element {kind} {index} {verb}")
-            }
-            Instruction::SelectSceneElement { element, additive } => {
-                let tokens = element_script_tokens(*element);
-                let target = if let Some(point) = tokens.point {
-                    point_script_tokens(point)
-                } else {
-                    let edge = tokens
-                        .edge
-                        .map(|edge| format!(" {}", edge.script_name()))
-                        .unwrap_or_default();
-                    format!("{} {}{}", tokens.kind, tokens.index, edge)
-                };
-                if *additive {
-                    format!("select {target} add")
-                } else {
-                    format!("select {target}")
-                }
-            }
-            Instruction::ClearSceneSelection => "clear_selection".to_string(),
-            Instruction::SetShapeConstruction { element, construction } => {
-                let tokens = element_script_tokens(*element);
-                let edge = tokens
-                    .edge
-                    .map(|edge| format!(" {}", edge.script_name()))
-                    .unwrap_or_default();
-                format!(
-                    "set_construction {} {}{} {}",
-                    tokens.kind,
-                    tokens.index,
-                    edge,
-                    if *construction { "true" } else { "false" }
-                )
-            }
-            Instruction::ApplyConstruction { construction } => format!(
-                "apply_construction {}",
-                if *construction { "true" } else { "false" }
-            ),
-            Instruction::ToggleConstruction => "toggle_construction".to_string(),
-            Instruction::SetElementName { element, name } => {
-                let (kind, index) = element_script_parts(*element);
-                format!("set_name {kind} {index} {name}")
-            }
-            Instruction::FocusElementName => "focus_name".to_string(),
-            Instruction::SetDim { axis, value } => {
-                let name = match axis {
-                    RectAxis::Width => "width",
-                    RectAxis::Height => "height",
-                };
-                format!("set_dim {name} {value}")
-            }
-            Instruction::SetLineLength { value } => format!("set_dim length {value}"),
-            Instruction::SetCircleDiameter { value } => format!("set_dim diameter {value}"),
-            Instruction::SetDimLabelOffset { axis, offset } => {
-                let name = match axis {
-                    DimLabelAxis::Width => "width",
-                    DimLabelAxis::Height => "height",
-                    DimLabelAxis::Length => "length",
-                };
-                format!("set_dim_label_offset {name} {offset}")
-            }
-            Instruction::BeginEditCommittedDim { axis } => {
-                let name = match axis {
-                    DimLabelAxis::Width => "width",
-                    DimLabelAxis::Height => "height",
-                    DimLabelAxis::Length => "length",
-                };
-                format!("edit_dim {name}")
-            }
-            Instruction::CommitCommittedDim => "commit_dim".to_string(),
-            Instruction::AddDistanceConstraint { target, expression } => {
-                let target_name = match target {
-                    DistanceTarget::LineLength(i) => format!("line {i}"),
-                    DistanceTarget::RectWidth(i) => format!("rect {i} width"),
-                    DistanceTarget::RectHeight(i) => format!("rect {i} height"),
-                    DistanceTarget::CircleDiameter(i) => format!("circle {i}"),
-                    DistanceTarget::LineLineDistance { .. } => "line_line".to_string(),
-                    DistanceTarget::PointPointDistance { .. } => "point_point".to_string(),
-                    DistanceTarget::PointLineDistance { .. } => "point_line".to_string(),
-                };
-                format!("add_constraint {target_name} {expression}")
-            }
-            Instruction::AddGeometricConstraint(kind) => {
-                format!("add_geometric_constraint {}", geometric_constraint_script_name(*kind))
-            }
-            Instruction::ApplyConstraintShortcut(index) => {
-                format!("constraint_shortcut {index}")
-            }
-            Instruction::DragVertex { point, u, v } => {
-                format!("drag_vertex {} {} {}", point_script_tokens(*point), u, v)
-            }
-            Instruction::DragLineSegment {
-                target,
-                anchor_u,
-                anchor_v,
-                u,
-                v,
-            } => format!(
-                "drag_line {} {} {} {} {}",
-                constraint_line_script_tokens(*target),
-                anchor_u,
-                anchor_v,
-                u,
-                v
-            ),
-            Instruction::BeginEditConstructionPlane { index } => format!("edit_plane {index}"),
-            Instruction::CommitConstructionPlane => "commit_plane".to_string(),
-            Instruction::SetPlaneOffset { value } => format!("set_dim offset {value}"),
-            Instruction::SetPlaneAngle { value } => format!("set_dim angle {value}"),
-            Instruction::FocusDim(axis) => {
-                let name = match axis {
-                    RectAxis::Width => "width",
-                    RectAxis::Height => "height",
-                };
-                format!("focus_dim {name}")
-            }
-            Instruction::FocusLineLength => "focus_dim length".to_string(),
-            Instruction::FocusCircleDiameter => "focus_dim diameter".to_string(),
-            Instruction::FocusPlaneDim(PlaneDim::Offset) => "focus_dim offset".to_string(),
-            Instruction::FocusPlaneDim(PlaneDim::Angle) => "focus_dim angle".to_string(),
-            Instruction::Orbit { dx, dy } => format!("orbit {dx} {dy}"),
-            Instruction::Pan { dx, dy } => format!("pan {dx} {dy}"),
-            Instruction::Zoom { scroll } => format!("zoom {scroll}"),
-            Instruction::View(view) => format!("view {}", view_script_name(*view)),
-            Instruction::ViewEdge(edge) => format!("view edge {}", edge_script_name(*edge)),
-            Instruction::ViewCorner(corner) => {
-                format!("view corner {}", corner_script_name(*corner))
-            }
-            Instruction::ViewHome => "view_home".to_string(),
-            Instruction::SetHomeView => "set_home_view".to_string(),
-            Instruction::ProjectionMode(mode) => {
-                format!("view {}", projection_mode_script_name(*mode))
-            }
-            Instruction::ToggleProjectionMode => "toggle_projection".to_string(),
-            Instruction::SetPane { pane, visible } => {
-                let verb = match visible {
-                    Some(true) => "show",
-                    Some(false) => "hide",
-                    None => "toggle",
-                };
-                format!("pane {} {verb}", pane.script_name())
-            }
-            Instruction::AddParameter { name, expression } => {
-                format!("parameter add {name} {expression}")
-            }
-            Instruction::SetParameterName { index, name } => {
-                format!("parameter name {index} {name}")
-            }
-            Instruction::SetParameterExpression { index, expression } => {
-                format!("parameter value {index} {expression}")
-            }
-            Instruction::DeleteParameter { index } => format!("parameter delete {index}"),
-            Instruction::DeleteSelection => "delete_selection".to_string(),
-            Instruction::SetCommandPalette { open } => {
-                let verb = match open {
-                    Some(true) => "show",
-                    Some(false) => "hide",
-                    None => "toggle",
-                };
-                format!("palette {verb}")
-            }
-            Instruction::RunPaletteCommand { query } => format!("palette run {query}"),
-
-            Instruction::Move { x, y } => format!("move {x} {y}"),
-            Instruction::Click { x, y } => format!("click {x} {y}"),
-            Instruction::MoveGround { x, y } => format!("move_ground {x} {y}"),
-            Instruction::ClickGround { x, y } => format!("click_ground {x} {y}"),
-            Instruction::Drag { x0, y0, x1, y1 } => format!("drag {x0} {y0} {x1} {y1}"),
-            Instruction::RightDrag { dx, dy } => format!("right_drag_rel {dx} {dy}"),
-            Instruction::RightDragShift { dx, dy } => format!("right_drag_pan {dx} {dy}"),
-            Instruction::Scroll { delta } => format!("wheel {delta}"),
-            Instruction::Key(key) => format!("key {}", key_name(*key)),
-            Instruction::KeyDown(key) => format!("keydown {}", key_name(*key)),
-            Instruction::KeyUp(key) => format!("keyup {}", key_name(*key)),
-            Instruction::Type(text) => {
-                if text.contains(' ') {
-                    format!("type \"{text}\"")
-                } else {
-                    format!("type {text}")
-                }
-            }
-            Instruction::WaitMs(ms) => format!("wait {ms}ms"),
-            Instruction::WaitFrames(n) => format!("wait {n}"),
-            Instruction::Screenshot(path) => format!("screenshot {path}"),
-            Instruction::Quit => "quit".to_string(),
-        }
-    }
-
     /// Format this instruction as a Lua API call (for `--show-commands` logging).
     pub fn as_lua(&self) -> String {
         match self {
-            Instruction::New => "paramcad.new()".to_string(),
-            Instruction::Open(path) => format!("paramcad.open({path:?})"),
-            Instruction::Save(None) => "paramcad.save()".to_string(),
-            Instruction::Save(Some(path)) => format!("paramcad.save({path:?})"),
-            Instruction::Clear => "paramcad.clear()".to_string(),
-            Instruction::Undo => "paramcad.undo()".to_string(),
-            Instruction::Tool(tool) => format!("paramcad.tool({:?})", tool_lua_name(*tool)),
+            Instruction::New => "le3.new()".to_string(),
+            Instruction::Open(path) => format!("le3.open({path:?})"),
+            Instruction::Save(None) => "le3.save()".to_string(),
+            Instruction::Save(Some(path)) => format!("le3.save({path:?})"),
+            Instruction::Clear => "le3.clear()".to_string(),
+            Instruction::Undo => "le3.undo()".to_string(),
+            Instruction::Tool(tool) => format!("le3.tool({:?})", tool_lua_name(*tool)),
             Instruction::BeginSketch { face } => {
                 let (kind, index) = face_lua_parts(*face);
-                format!("paramcad.begin_sketch({kind:?}, {index})")
+                format!("le3.begin_sketch({kind:?}, {index})")
             }
-            Instruction::OpenSketch { sketch } => format!("paramcad.open_sketch({sketch})"),
-            Instruction::ExitSketch => "paramcad.exit_sketch()".to_string(),
+            Instruction::OpenSketch { sketch } => format!("le3.open_sketch({sketch})"),
+            Instruction::ExitSketch => "le3.exit_sketch()".to_string(),
             Instruction::SetElementVisible { element, visible } => {
                 let target = element_lua_ref(*element);
                 let verb = match visible {
@@ -379,72 +164,72 @@ impl Instruction {
                     Some(false) => "hide",
                     None => "toggle",
                 };
-                format!("paramcad.set_visible({target}, {verb:?})")
+                format!("le3.set_visible({target}, {verb:?})")
             }
             Instruction::SelectSceneElement { element, additive } => {
                 let target = element_lua_ref(*element);
                 if *additive {
-                    format!("paramcad.select({target}, {{ additive = true }})")
+                    format!("le3.select({target}, {{ additive = true }})")
                 } else {
-                    format!("paramcad.select({target})")
+                    format!("le3.select({target})")
                 }
             }
-            Instruction::ClearSceneSelection => "paramcad.clear_selection()".to_string(),
+            Instruction::ClearSceneSelection => "le3.clear_selection()".to_string(),
             Instruction::SetShapeConstruction { element, construction } => {
                 format!(
-                    "paramcad.set_construction({}, {})",
+                    "le3.set_construction({}, {})",
                     element_lua_ref(*element),
                     construction
                 )
             }
             Instruction::ApplyConstruction { construction } => {
-                format!("paramcad.apply_construction({construction})")
+                format!("le3.apply_construction({construction})")
             }
-            Instruction::ToggleConstruction => "paramcad.toggle_construction()".to_string(),
+            Instruction::ToggleConstruction => "le3.toggle_construction()".to_string(),
             Instruction::SetElementName { element, name } => {
                 format!(
-                    "paramcad.set_name({}, {name:?})",
+                    "le3.set_name({}, {name:?})",
                     element_lua_ref(*element)
                 )
             }
-            Instruction::FocusElementName => "paramcad.focus_name()".to_string(),
+            Instruction::FocusElementName => "le3.focus_name()".to_string(),
             Instruction::SetDim { axis, value } => {
                 format!(
-                    "paramcad.set_dim({:?}, {value:?})",
+                    "le3.set_dim({:?}, {value:?})",
                     rect_axis_lua_name(*axis)
                 )
             }
             Instruction::SetDimLabelOffset { axis, offset } => {
                 format!(
-                    "paramcad.set_dim_label_offset({:?}, {offset})",
+                    "le3.set_dim_label_offset({:?}, {offset})",
                     dim_label_axis_lua_name(*axis)
                 )
             }
             Instruction::BeginEditCommittedDim { axis } => {
                 format!(
-                    "paramcad.edit_dim({:?})",
+                    "le3.edit_dim({:?})",
                     dim_label_axis_lua_name(*axis)
                 )
             }
-            Instruction::CommitCommittedDim => "paramcad.commit_dim()".to_string(),
+            Instruction::CommitCommittedDim => "le3.commit_dim()".to_string(),
             Instruction::AddDistanceConstraint { target, expression } => {
                 format!(
-                    "paramcad.add_constraint({}, {expression:?})",
+                    "le3.add_constraint({}, {expression:?})",
                     distance_target_lua_ref(target)
                 )
             }
             Instruction::AddGeometricConstraint(kind) => {
                 format!(
-                    "paramcad.add_geometric_constraint({:?})",
+                    "le3.add_geometric_constraint({:?})",
                     geometric_constraint_lua_name(*kind)
                 )
             }
-            Instruction::ApplyConstraintShortcut(index) => {
-                format!("paramcad.constraint_shortcut({index})")
+            Instruction::ApplyConstraintShortcut(key) => {
+                format!("le3.constraint_shortcut({key:?})")
             }
             Instruction::DragVertex { point, u, v } => {
                 format!(
-                    "paramcad.drag_vertex({}, {u}, {v})",
+                    "le3.drag_vertex({}, {u}, {v})",
                     constraint_point_lua_ref(*point)
                 )
             }
@@ -455,102 +240,107 @@ impl Instruction {
                 u,
                 v,
             } => format!(
-                "paramcad.drag_line({}, {anchor_u}, {anchor_v}, {u}, {v})",
+                "le3.drag_line({}, {anchor_u}, {anchor_v}, {u}, {v})",
                 constraint_line_lua_ref(*target)
             ),
             Instruction::SetLineLength { value } => {
-                format!("paramcad.set_dim(\"length\", {value:?})")
+                format!("le3.set_dim(\"length\", {value:?})")
             }
             Instruction::SetCircleDiameter { value } => {
-                format!("paramcad.set_dim(\"diameter\", {value:?})")
+                format!("le3.set_dim(\"diameter\", {value:?})")
             }
             Instruction::BeginEditConstructionPlane { index } => {
-                format!("paramcad.edit_plane({index})")
+                format!("le3.edit_plane({index})")
             }
-            Instruction::CommitConstructionPlane => "paramcad.commit_plane()".to_string(),
+            Instruction::CommitConstructionPlane => "le3.commit_plane()".to_string(),
             Instruction::SetPlaneOffset { value } => {
-                format!("paramcad.set_dim(\"offset\", {value:?})")
+                format!("le3.set_dim(\"offset\", {value:?})")
             }
             Instruction::SetPlaneAngle { value } => {
-                format!("paramcad.set_dim(\"angle\", {value:?})")
+                format!("le3.set_dim(\"angle\", {value:?})")
             }
             Instruction::FocusDim(axis) => {
-                format!("paramcad.focus_dim({:?})", rect_axis_lua_name(*axis))
+                format!("le3.focus_dim({:?})", rect_axis_lua_name(*axis))
             }
-            Instruction::FocusLineLength => "paramcad.focus_dim(\"length\")".to_string(),
-            Instruction::FocusCircleDiameter => "paramcad.focus_dim(\"diameter\")".to_string(),
+            Instruction::FocusLineLength => "le3.focus_dim(\"length\")".to_string(),
+            Instruction::FocusCircleDiameter => "le3.focus_dim(\"diameter\")".to_string(),
             Instruction::FocusPlaneDim(dim) => {
-                format!("paramcad.focus_dim({:?})", plane_dim_lua_name(*dim))
+                format!("le3.focus_dim({:?})", plane_dim_lua_name(*dim))
             }
-            Instruction::Orbit { dx, dy } => format!("paramcad.orbit({dx}, {dy})"),
-            Instruction::Pan { dx, dy } => format!("paramcad.pan({dx}, {dy})"),
-            Instruction::Zoom { scroll } => format!("paramcad.wheel({scroll})"),
-            Instruction::View(view) => format!("paramcad.view({:?})", view_script_name(*view)),
+            Instruction::Orbit { dx, dy } => format!("le3.orbit({dx}, {dy})"),
+            Instruction::Pan { dx, dy } => format!("le3.pan({dx}, {dy})"),
+            Instruction::Zoom { scroll } => format!("le3.wheel({scroll})"),
+            Instruction::View(view) => format!("le3.view({:?})", view_script_name(*view)),
             Instruction::ViewEdge(edge) => {
-                format!("paramcad.view(\"edge\", {:?})", edge_script_name(*edge))
+                format!("le3.view(\"edge\", {:?})", edge_script_name(*edge))
             }
             Instruction::ViewCorner(corner) => format!(
-                "paramcad.view(\"corner\", {:?})",
+                "le3.view(\"corner\", {:?})",
                 corner_script_name(*corner)
             ),
-            Instruction::ViewHome => "paramcad.view_home()".to_string(),
-            Instruction::SetHomeView => "paramcad.set_home_view()".to_string(),
+            Instruction::ViewHome => "le3.view_home()".to_string(),
+            Instruction::SetHomeView => "le3.set_home_view()".to_string(),
             Instruction::ProjectionMode(mode) => {
-                format!("paramcad.view({:?})", projection_mode_script_name(*mode))
+                format!("le3.view({:?})", projection_mode_script_name(*mode))
             }
-            Instruction::ToggleProjectionMode => "paramcad.toggle_projection()".to_string(),
+            Instruction::ToggleProjectionMode => "le3.toggle_projection()".to_string(),
             Instruction::SetPane { pane, visible } => {
                 let verb = match visible {
                     Some(true) => "show",
                     Some(false) => "hide",
                     None => "toggle",
                 };
-                format!("paramcad.pane({:?}, {verb:?})", pane.script_name())
+                format!("le3.pane({:?}, {verb:?})", pane.script_name())
             }
             Instruction::AddParameter { name, expression } => {
-                format!("paramcad.parameter(\"add\", {name:?}, {expression:?})")
+                format!("le3.parameter(\"add\", {name:?}, {expression:?})")
             }
+            Instruction::CreateParameterFromLineLength { line_index, name } => match name {
+                Some(name) => format!(
+                    "le3.parameter(\"from_line_length\", {line_index}, {name:?})"
+                ),
+                None => format!("le3.parameter(\"from_line_length\", {line_index})"),
+            },
             Instruction::SetParameterName { index, name } => {
-                format!("paramcad.parameter(\"name\", {index}, {name:?})")
+                format!("le3.parameter(\"name\", {index}, {name:?})")
             }
             Instruction::SetParameterExpression { index, expression } => {
-                format!("paramcad.parameter(\"value\", {index}, {expression:?})")
+                format!("le3.parameter(\"value\", {index}, {expression:?})")
             }
             Instruction::DeleteParameter { index } => {
-                format!("paramcad.parameter(\"delete\", {index})")
+                format!("le3.parameter(\"delete\", {index})")
             }
-            Instruction::DeleteSelection => "paramcad.delete_selection()".to_string(),
+            Instruction::DeleteSelection => "le3.delete_selection()".to_string(),
             Instruction::SetCommandPalette { open } => {
                 let verb = match open {
                     Some(true) => "show",
                     Some(false) => "hide",
                     None => "toggle",
                 };
-                format!("paramcad.palette({verb:?})")
+                format!("le3.palette({verb:?})")
             }
             Instruction::RunPaletteCommand { query } => {
-                format!("paramcad.palette(\"run\", {query:?})")
+                format!("le3.palette(\"run\", {query:?})")
             }
-            Instruction::Move { x, y } => format!("paramcad.move({x}, {y})"),
-            Instruction::Click { x, y } => format!("paramcad.click({x}, {y})"),
-            Instruction::MoveGround { x, y } => format!("paramcad.move_ground({x}, {y})"),
-            Instruction::ClickGround { x, y } => format!("paramcad.click_ground({x}, {y})"),
+            Instruction::Move { x, y } => format!("le3.move({x}, {y})"),
+            Instruction::Click { x, y } => format!("le3.click({x}, {y})"),
+            Instruction::MoveGround { x, y } => format!("le3.move_ground({x}, {y})"),
+            Instruction::ClickGround { x, y } => format!("le3.click_ground({x}, {y})"),
             Instruction::Drag { x0, y0, x1, y1 } => {
-                format!("paramcad.drag({x0}, {y0}, {x1}, {y1})")
+                format!("le3.drag({x0}, {y0}, {x1}, {y1})")
             }
-            Instruction::RightDrag { dx, dy } => format!("paramcad.right_drag({dx}, {dy})"),
+            Instruction::RightDrag { dx, dy } => format!("le3.right_drag({dx}, {dy})"),
             Instruction::RightDragShift { dx, dy } => {
-                format!("paramcad.right_drag_pan({dx}, {dy})")
+                format!("le3.right_drag_pan({dx}, {dy})")
             }
-            Instruction::Scroll { delta } => format!("paramcad.wheel({delta})"),
-            Instruction::Key(key) => format!("paramcad.key({:?})", key_name(*key)),
-            Instruction::KeyDown(key) => format!("paramcad.keydown({:?})", key_name(*key)),
-            Instruction::KeyUp(key) => format!("paramcad.keyup({:?})", key_name(*key)),
-            Instruction::Type(text) => format!("paramcad.type({text:?})"),
-            Instruction::WaitMs(ms) => format!("paramcad.wait_ms({ms})"),
-            Instruction::WaitFrames(n) => format!("paramcad.wait({n})"),
-            Instruction::Screenshot(path) => format!("paramcad.screenshot({path:?})"),
-            Instruction::Quit => "paramcad.quit()".to_string(),
+            Instruction::Key(key) => format!("le3.key({:?})", key_name(*key)),
+            Instruction::KeyDown(key) => format!("le3.keydown({:?})", key_name(*key)),
+            Instruction::KeyUp(key) => format!("le3.keyup({:?})", key_name(*key)),
+            Instruction::Type(text) => format!("le3.type({text:?})"),
+            Instruction::WaitMs(ms) => format!("le3.wait_ms({ms})"),
+            Instruction::WaitFrames(n) => format!("le3.wait({n})"),
+            Instruction::Screenshot(path) => format!("le3.screenshot({path:?})"),
+            Instruction::Quit => "le3.quit()".to_string(),
         }
     }
 }
@@ -622,24 +412,11 @@ pub fn parse_key(name: &str) -> Result<Key, String> {
     }
 }
 
-fn face_script_name(face: FaceId) -> String {
-    match face {
-        FaceId::Rect(i) => format!("rect {i}"),
-        FaceId::Circle(i) => format!("circle {i}"),
-        FaceId::ConstructionPlane(i) => format!("construction_plane {i}"),
-    }
-}
-
 struct ElementScriptTokens {
     kind: &'static str,
     index: usize,
     edge: Option<RectEdge>,
     point: Option<crate::model::ConstraintPoint>,
-}
-
-fn element_script_parts(element: SceneElement) -> (&'static str, usize) {
-    let tokens = element_script_tokens(element);
-    (tokens.kind, tokens.index)
 }
 
 fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
@@ -695,23 +472,6 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
     }
 }
 
-fn point_script_tokens(point: crate::model::ConstraintPoint) -> String {
-    use crate::model::{ConstraintPoint, LineEnd};
-    match point {
-        ConstraintPoint::LineEndpoint { line, end } => {
-            let end_name = match end {
-                LineEnd::Start => "start",
-                LineEnd::End => "end",
-            };
-            format!("point line {line} {end_name}")
-        }
-        ConstraintPoint::RectCorner { rect, corner } => {
-            format!("point rect {rect} corner {corner}")
-        }
-        ConstraintPoint::CircleCenter(circle) => format!("point circle {circle} center"),
-    }
-}
-
 fn geometric_constraint_script_name(
     kind: crate::geometric_constraints::GeometricConstraintType,
 ) -> &'static str {
@@ -725,16 +485,6 @@ fn geometric_constraint_script_name(
         GeometricConstraintType::Vertical => "vertical",
     }
 }
-
-fn constraint_line_script_tokens(line: ConstraintLine) -> String {
-    match line {
-        ConstraintLine::Line(index) => format!("line {index}"),
-        ConstraintLine::RectEdge { rect, edge } => {
-            format!("rect {rect} {}", edge.script_name())
-        }
-    }
-}
-
 
 /// Map an applied [`Action`] to a script [`Instruction`] when one exists.
 pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) -> Option<Instruction> {
@@ -808,6 +558,12 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             name: name.clone(),
             expression: expression.clone(),
         }),
+        Action::CreateParameterFromLineLength { line_index, name } => {
+            Some(Instruction::CreateParameterFromLineLength {
+                line_index: *line_index,
+                name: name.clone(),
+            })
+        }
         Action::CommitParameterName { index, name } => Some(Instruction::SetParameterName {
             index: *index,
             name: name.clone(),
@@ -841,7 +597,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         }),
         Action::ToggleConstruction => Some(Instruction::ToggleConstruction),
         Action::AddGeometricConstraint(kind) => Some(Instruction::AddGeometricConstraint(*kind)),
-        Action::ApplyConstraintShortcut(index) => Some(Instruction::ApplyConstraintShortcut(*index)),
+        Action::ApplyConstraintShortcut(key) => Some(Instruction::ApplyConstraintShortcut(*key)),
         Action::DragVertex { point, u, v } => Some(Instruction::DragVertex {
             point: *point,
             u: *u,
@@ -1169,14 +925,6 @@ impl SyntheticInput {
         });
     }
 
-    pub fn scroll(&mut self, delta: f32) {
-        self.events.push(egui::Event::MouseWheel {
-            unit: egui::MouseWheelUnit::Line,
-            delta: egui::vec2(0.0, delta),
-            modifiers: Modifiers::NONE,
-        });
-    }
-
     pub fn key(&mut self, key: Key) {
         self.push_key(key, true);
         self.push_key(key, false);
@@ -1229,10 +977,6 @@ pub struct ScriptRunner {
 }
 
 impl ScriptRunner {
-    pub fn new(instructions: Vec<Instruction>) -> Self {
-        Self::from_instructions(instructions)
-    }
-
     pub fn from_instructions(instructions: Vec<Instruction>) -> Self {
         Self {
             instructions,
@@ -1295,10 +1039,6 @@ impl ScriptRunner {
             println!("---");
         }
         Ok(runner)
-    }
-
-    pub fn lua_done(&self) -> bool {
-        self.lua.as_ref().is_some_and(|lua| lua.finished) || self.done
     }
 
     fn log_instruction(&mut self, instr: &Instruction) {
@@ -1420,43 +1160,6 @@ impl ScriptRunner {
             Err(e) => {
                 self.error = Some(e.to_string());
                 lua_runner.finished = true;
-                self.done = true;
-                false
-            }
-        }
-    }
-
-    pub(crate) fn tick_lua(
-        &mut self,
-        lua: &Lua,
-        thread: &mlua::Thread,
-        state: &mut AppState,
-        synthetic: &mut SyntheticInput,
-        viewport: Option<egui::Rect>,
-        ctx: &egui::Context,
-    ) -> bool {
-        lua.set_app_data(ScriptTickData {
-            runner: self as *mut ScriptRunner,
-            state: state as *mut AppState,
-            synthetic: synthetic as *mut SyntheticInput,
-            viewport,
-            ctx: ctx as *const egui::Context as *mut egui::Context,
-        });
-        match thread.resume::<()>(()) {
-            Ok(_) => match thread.status() {
-                mlua::ThreadStatus::Finished => {
-                    self.done = true;
-                    false
-                }
-                mlua::ThreadStatus::Resumable | mlua::ThreadStatus::Running => true,
-                mlua::ThreadStatus::Error => {
-                    self.error = Some("Lua thread error".to_string());
-                    self.done = true;
-                    false
-                }
-            },
-            Err(e) => {
-                self.error = Some(e.to_string());
                 self.done = true;
                 false
             }
@@ -1718,8 +1421,8 @@ impl ScriptRunner {
                 let _ = state.apply(Action::AddGeometricConstraint(kind));
                 StepResult::Continue
             }
-            Instruction::ApplyConstraintShortcut(index) => {
-                let _ = state.apply(Action::ApplyConstraintShortcut(index));
+            Instruction::ApplyConstraintShortcut(key) => {
+                let _ = state.apply(Action::ApplyConstraintShortcut(key));
                 StepResult::Continue
             }
             Instruction::DragVertex { point, u, v } => {
@@ -1848,6 +1551,10 @@ impl ScriptRunner {
                 state.apply(Action::AddParameter { name, expression });
                 StepResult::Continue
             }
+            Instruction::CreateParameterFromLineLength { line_index, name } => {
+                state.apply(Action::CreateParameterFromLineLength { line_index, name });
+                StepResult::Continue
+            }
             Instruction::SetParameterName { index, name } => {
                 state.apply(Action::CommitParameterName { index, name });
                 StepResult::Continue
@@ -1938,10 +1645,6 @@ impl ScriptRunner {
                     return StepResult::Wait;
                 };
                 synthetic.right_drag(vp, dx, dy, true);
-                StepResult::Continue
-            }
-            Instruction::Scroll { delta } => {
-                synthetic.scroll(delta);
                 StepResult::Continue
             }
             Instruction::Key(key) => {
@@ -2180,13 +1883,13 @@ mod tests {
     #[test]
     fn instruction_as_lua_formats_click() {
         let ins = Instruction::Click { x: 100.0, y: 200.0 };
-        assert_eq!(ins.as_lua(), "paramcad.click(100, 200)");
+        assert_eq!(ins.as_lua(), "le3.click(100, 200)");
     }
 
     #[test]
     fn wait_frames_advances_to_next_instruction() {
         let mut runner =
-            ScriptRunner::new(vec![Instruction::WaitFrames(2), Instruction::Clear]);
+            ScriptRunner::from_instructions(vec![Instruction::WaitFrames(2), Instruction::Clear]);
         runner.verbose = false;
         let mut state = AppState::default();
         let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
@@ -2217,7 +1920,7 @@ mod tests {
 
     #[test]
     fn script_drag_line_translates_segment() {
-        let mut runner = ScriptRunner::new(vec![
+        let mut runner = ScriptRunner::from_instructions(vec![
             Instruction::Tool(Tool::Line),
             Instruction::Tool(Tool::Select),
             Instruction::DragLineSegment {
@@ -2265,7 +1968,7 @@ mod tests {
         state.doc.rects.push(crate::model::Rect::from_local_corners(
             sketch, 0.0, 0.0, 10.0, 5.0,
         ));
-        let mut runner = ScriptRunner::new(vec![
+        let mut runner = ScriptRunner::from_instructions(vec![
             Instruction::SelectSceneElement {
                 element: SceneElement::RectEdge(0, RectEdge::Bottom),
                 additive: false,
@@ -2292,7 +1995,7 @@ mod tests {
 
     #[test]
     fn script_rectangle_dimension_uses_parameter_and_updates() {
-        let mut runner = ScriptRunner::new(vec![
+        let mut runner = ScriptRunner::from_instructions(vec![
             Instruction::AddParameter {
                 name: "A".into(),
                 expression: "10mm".into(),
@@ -2347,7 +2050,7 @@ mod tests {
 
     #[test]
     fn script_palette_run_sets_top_view() {
-        let mut runner = ScriptRunner::new(vec![Instruction::RunPaletteCommand {
+        let mut runner = ScriptRunner::from_instructions(vec![Instruction::RunPaletteCommand {
             query: "view top".into(),
         }]);
         runner.verbose = false;
@@ -2372,7 +2075,7 @@ mod tests {
             sketch, 0.0, 0.0, 5.0, 0.0,
         ));
         state.doc.shape_order.push(crate::model::ShapeKind::Line);
-        let mut runner = ScriptRunner::new(vec![
+        let mut runner = ScriptRunner::from_instructions(vec![
             Instruction::SelectSceneElement {
                 element: SceneElement::Line(0),
                 additive: false,
@@ -2390,7 +2093,7 @@ mod tests {
 
     #[test]
     fn script_adds_and_renames_parameters() {
-        let mut runner = ScriptRunner::new(vec![
+        let mut runner = ScriptRunner::from_instructions(vec![
             Instruction::AddParameter {
                 name: "A".into(),
                 expression: "5mm".into(),
@@ -2421,8 +2124,35 @@ mod tests {
     }
 
     #[test]
+    fn script_adds_angle_parameter() {
+        let mut runner = ScriptRunner::from_instructions(vec![Instruction::AddParameter {
+            name: "corner".into(),
+            expression: "16.7deg".into(),
+        }]);
+        runner.verbose = false;
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        while !runner.done {
+            runner.tick(
+                &mut state,
+                &mut synthetic,
+                None,
+                &egui::Context::default(),
+            );
+        }
+        assert_eq!(state.doc.parameters[0].expression, "16.7deg");
+        let angle = crate::value::eval_parameter_in_doc("corner", &state.doc).unwrap();
+        match angle {
+            crate::value::EvaluatedParameter::AngleRad(v) => {
+                assert!((v.to_degrees() - 16.7).abs() < 1e-2);
+            }
+            _ => panic!("expected angle parameter"),
+        }
+    }
+
+    #[test]
     fn view_command_waits_until_transition_finishes() {
-        let mut runner = ScriptRunner::new(vec![
+        let mut runner = ScriptRunner::from_instructions(vec![
             Instruction::View(StandardView::Front),
             Instruction::Clear,
         ]);
@@ -2481,7 +2211,7 @@ mod tests {
             construction: false,
         });
         state.apply(crate::actions::Action::CommitRectangle);
-        let mut runner = ScriptRunner::new(vec![
+        let mut runner = ScriptRunner::from_instructions(vec![
             Instruction::BeginEditCommittedDim {
                 axis: DimLabelAxis::Width,
             },
@@ -2523,7 +2253,7 @@ mod tests {
             construction: false,
         });
         state.apply(crate::actions::Action::CommitRectangle);
-        let mut runner = ScriptRunner::new(vec![Instruction::SetDimLabelOffset {
+        let mut runner = ScriptRunner::from_instructions(vec![Instruction::SetDimLabelOffset {
             axis: DimLabelAxis::Width,
             offset: 60.0,
         }]);
@@ -2542,7 +2272,7 @@ mod tests {
     fn script_set_dim_commit_displays_computed_mm_not_expression() {
         use crate::value::format_length_display;
 
-        let mut runner = ScriptRunner::new(vec![
+        let mut runner = ScriptRunner::from_instructions(vec![
             Instruction::Tool(Tool::Rectangle),
             Instruction::SetDim {
                 axis: RectAxis::Width,
@@ -2590,7 +2320,7 @@ mod tests {
 
     #[test]
     fn runner_set_dim_expression_evaluates_length() {
-        let mut runner = ScriptRunner::new(vec![
+        let mut runner = ScriptRunner::from_instructions(vec![
             Instruction::Tool(Tool::Line),
             Instruction::SetLineLength {
                 value: "2in + 5mm / 2".into(),
@@ -2634,7 +2364,7 @@ mod tests {
 
     #[test]
     fn runner_executes_headless_actions() {
-        let mut runner = ScriptRunner::new(vec![
+        let mut runner = ScriptRunner::from_instructions(vec![
             Instruction::New,
             Instruction::BeginSketch {
                 face: FaceId::ConstructionPlane(0),

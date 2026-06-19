@@ -41,6 +41,30 @@ impl GeometricConstraintType {
             Self::Horizontal => "Horizontal",
         }
     }
+
+    /// Fixed context-pane shortcut (shown left of the constraint button).
+    pub fn shortcut_label(self) -> &'static str {
+        match self {
+            Self::Parallel => "A",
+            Self::Perpendicular => "E",
+            Self::Coincident => "I",
+            Self::Midpoint => "M",
+            Self::Vertical => "V",
+            Self::Horizontal => "H",
+        }
+    }
+
+    pub fn from_shortcut_key(key: char) -> Option<Self> {
+        match key.to_ascii_lowercase() {
+            'a' => Some(Self::Parallel),
+            'e' => Some(Self::Perpendicular),
+            'i' => Some(Self::Coincident),
+            'm' => Some(Self::Midpoint),
+            'v' => Some(Self::Vertical),
+            'h' => Some(Self::Horizontal),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,8 +86,6 @@ pub struct ConstraintPaneRow {
     pub enabled: bool,
     /// Role names still needed when disabled (e.g. `"line"`).
     pub missing: Vec<&'static str>,
-    /// 1–9 shortcut when enabled; assigned top-to-bottom among visible rows.
-    pub shortcut: Option<u8>,
 }
 
 /// Build context-pane rows for the current selection.
@@ -77,7 +99,6 @@ pub fn constraint_pane_rows(selection: &SceneSelection) -> Vec<ConstraintPaneRow
                 kind,
                 enabled: false,
                 missing: missing_for_kind(kind),
-                shortcut: None,
             });
         }
     } else {
@@ -87,19 +108,11 @@ pub fn constraint_pane_rows(selection: &SceneSelection) -> Vec<ConstraintPaneRow
                     kind,
                     enabled,
                     missing,
-                    shortcut: None,
                 });
             }
         }
     }
 
-    let mut shortcut = 1u8;
-    for row in &mut rows {
-        if row.enabled {
-            row.shortcut = Some(shortcut);
-            shortcut = shortcut.saturating_add(1);
-        }
-    }
     rows
 }
 
@@ -270,10 +283,14 @@ fn constraint_ref_sort_key(reference: ConstraintRef) -> (u8, usize, u8, u8) {
     }
 }
 
-/// Nth enabled constraint type (1-based shortcut index).
-pub fn enabled_constraint_type(rows: &[ConstraintPaneRow], shortcut: u8) -> Option<GeometricConstraintType> {
+/// Enabled constraint type for a fixed shortcut key, if the row is active.
+pub fn enabled_constraint_for_key(
+    rows: &[ConstraintPaneRow],
+    key: char,
+) -> Option<GeometricConstraintType> {
+    let kind = GeometricConstraintType::from_shortcut_key(key)?;
     rows.iter()
-        .find(|row| row.shortcut == Some(shortcut))
+        .find(|row| row.kind == kind && row.enabled)
         .map(|row| row.kind)
 }
 
@@ -407,7 +424,11 @@ fn validate_constraint_kind(
             validate_line_ref(doc, sketch, line)?;
             Ok(())
         }
-        ConstraintKind::Angle { line_a, line_b } => {
+        ConstraintKind::Angle {
+            line_a,
+            line_b,
+            rotation_sign: _,
+        } => {
             validate_line_ref(doc, sketch, line_a)?;
             validate_line_ref(doc, sketch, line_b)?;
             if line_a == line_b {
@@ -492,8 +513,27 @@ fn validate_point_ref(doc: &Document, sketch: SketchId, point: ConstraintPoint) 
     Ok(())
 }
 
+/// Restore pinned sketch points after a constraint application during interactive drag.
+pub fn restore_constraint_pins(
+    doc: &mut Document,
+    pins: &[(ConstraintPoint, (f32, f32))],
+) -> Result<(), String> {
+    for &(point, (u, v)) in pins {
+        set_point_uv(doc, point, u, v)?;
+    }
+    Ok(())
+}
+
 /// Apply all geometric constraints after distance constraints have been solved.
 pub fn apply_geometric_constraints(doc: &mut Document) -> Result<(), String> {
+    apply_geometric_constraints_with_pins(doc, &[])
+}
+
+/// Apply geometric constraints while keeping pinned points fixed (used during vertex/line drag).
+pub fn apply_geometric_constraints_with_pins(
+    doc: &mut Document,
+    pins: &[(ConstraintPoint, (f32, f32))],
+) -> Result<(), String> {
     let constraints: Vec<ConstraintKind> = doc
         .constraints
         .iter()
@@ -520,12 +560,15 @@ pub fn apply_geometric_constraints(doc: &mut Document) -> Result<(), String> {
     for _ in 0..MAX_PASSES {
         for kind in &orientation {
             let _ = apply_constraint_kind(doc, *kind);
+            restore_constraint_pins(doc, pins)?;
         }
         for kind in &midpoint {
             let _ = apply_constraint_kind(doc, *kind);
+            restore_constraint_pins(doc, pins)?;
         }
         for kind in &coincident {
             let _ = apply_constraint_kind(doc, *kind);
+            restore_constraint_pins(doc, pins)?;
         }
     }
     Ok(())
@@ -980,6 +1023,20 @@ mod tests {
     }
 
     #[test]
+    fn constraint_shortcut_keys_are_fixed_per_type() {
+        assert_eq!(GeometricConstraintType::Parallel.shortcut_label(), "A");
+        assert_eq!(
+            GeometricConstraintType::from_shortcut_key('a'),
+            Some(GeometricConstraintType::Parallel)
+        );
+        assert_eq!(
+            GeometricConstraintType::from_shortcut_key('H'),
+            Some(GeometricConstraintType::Horizontal)
+        );
+        assert!(GeometricConstraintType::from_shortcut_key('q').is_none());
+    }
+
+    #[test]
     fn single_line_enables_vertical_and_horizontal_only() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
@@ -996,8 +1053,14 @@ mod tests {
         assert!(!by_kind[&GeometricConstraintType::Midpoint].enabled);
         assert!(by_kind[&GeometricConstraintType::Vertical].enabled);
         assert!(by_kind[&GeometricConstraintType::Horizontal].enabled);
-        assert_eq!(by_kind[&GeometricConstraintType::Vertical].shortcut, Some(1));
-        assert_eq!(by_kind[&GeometricConstraintType::Horizontal].shortcut, Some(2));
+        assert_eq!(
+            enabled_constraint_for_key(&rows, 'v'),
+            Some(GeometricConstraintType::Vertical)
+        );
+        assert_eq!(
+            enabled_constraint_for_key(&rows, 'h'),
+            Some(GeometricConstraintType::Horizontal)
+        );
         assert_eq!(sole_enabled_constraint_type(&rows), None);
         let _ = doc;
     }
@@ -1021,10 +1084,16 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].kind, GeometricConstraintType::Coincident);
         assert!(rows[0].enabled);
-        assert_eq!(rows[0].shortcut, Some(1));
+        assert_eq!(
+            enabled_constraint_for_key(&rows, 'i'),
+            Some(GeometricConstraintType::Coincident)
+        );
         assert_eq!(rows[1].kind, GeometricConstraintType::Midpoint);
         assert!(rows[1].enabled);
-        assert_eq!(rows[1].shortcut, Some(2));
+        assert_eq!(
+            enabled_constraint_for_key(&rows, 'm'),
+            Some(GeometricConstraintType::Midpoint)
+        );
         assert_eq!(sole_enabled_constraint_type(&rows), None);
         let _ = doc;
     }
@@ -1053,7 +1122,7 @@ mod tests {
         assert_eq!(rows[0].kind, GeometricConstraintType::Coincident);
         assert_eq!(sole_enabled_constraint_type(&rows), Some(GeometricConstraintType::Coincident));
         assert_eq!(
-            enabled_constraint_type(&rows, 1),
+            enabled_constraint_for_key(&rows, 'i'),
             Some(GeometricConstraintType::Coincident)
         );
         let _ = doc;

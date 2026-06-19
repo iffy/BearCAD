@@ -306,6 +306,8 @@ pub fn show_pane(
 
     let controls_enabled = frozen.is_none();
     let mut any_control = false;
+    // Keep children from widening the side panel via egui's persisted PanelState.
+    ui.set_width(ui.available_width());
 
     if let Some(control) = &content.name {
         any_control = true;
@@ -351,8 +353,12 @@ pub fn show_pane(
         ui.label("Constraints");
         for row in rows {
             ui.horizontal(|ui| {
-                let row_w = ui.available_width();
                 let enabled = controls_enabled && row.enabled;
+                shortcuts::show_constraint_shortcut_left(
+                    ui,
+                    shortcuts::geometric_constraint_shortcut(row.kind),
+                    enabled,
+                );
                 let response = ui
                     .add_enabled(
                         enabled,
@@ -363,15 +369,6 @@ pub fn show_pane(
                         .frame(true),
                     )
                     .on_hover_text(row.kind.label());
-                if let Some(shortcut) = row.shortcut {
-                    shortcuts::show_right_aligned_shortcut(
-                        ui,
-                        row_w,
-                        response.rect.width(),
-                        response.rect.height(),
-                        shortcuts::constraint_number_hint(shortcut),
-                    );
-                }
                 if enabled && response.clicked() {
                     on_constraint_clicked(row.kind);
                 }

@@ -28,7 +28,7 @@ impl StandardView {
             "left" | "l" => Some(Self::Left),
             "right" | "r" => Some(Self::Right),
             "top" | "t" => Some(Self::Top),
-            "bottom" | "bot" => Some(Self::Bottom),
+            "bottom" | "bot" | "bo" => Some(Self::Bottom),
             _ => None,
         }
     }

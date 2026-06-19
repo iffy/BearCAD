@@ -1,4 +1,4 @@
-//! Lua scripting API (`paramcad` global) for driving the live application.
+//! Lua scripting API (`le3` global) for driving the live application.
 
 use crate::actions::{DimLabelAxis, Pane, RectAxis, Tool};
 use crate::camera::{ProjectionMode, StandardView};
@@ -111,69 +111,6 @@ pub fn scene_element_from_kind(kind: &str, index: usize) -> Option<SceneElement>
     }
 }
 
-fn parse_tool(name: &str) -> Option<Tool> {
-    match name.to_ascii_lowercase().as_str() {
-        "select" => Some(Tool::Select),
-        "rectangle" | "rect" => Some(Tool::Rectangle),
-        "line" => Some(Tool::Line),
-        "circle" => Some(Tool::Circle),
-        "plane" | "construction_plane" => Some(Tool::ConstructionPlane),
-        "sketch" => Some(Tool::Sketch),
-        "dimension" | "dim" => Some(Tool::Dimension),
-        "constraint" => Some(Tool::Constraint),
-        _ => None,
-    }
-}
-
-fn parse_rect_axis(name: &str) -> Option<RectAxis> {
-    match name.to_ascii_lowercase().as_str() {
-        "width" | "w" => Some(RectAxis::Width),
-        "height" | "h" => Some(RectAxis::Height),
-        _ => None,
-    }
-}
-
-fn parse_dim_label_axis(name: &str) -> Option<DimLabelAxis> {
-    match name.to_ascii_lowercase().as_str() {
-        "width" | "w" => Some(DimLabelAxis::Width),
-        "height" | "h" => Some(DimLabelAxis::Height),
-        "length" | "len" | "l" => Some(DimLabelAxis::Length),
-
-        _ => None,
-    }
-}
-
-fn parse_plane_dim(name: &str) -> Option<PlaneDim> {
-    match name.to_ascii_lowercase().as_str() {
-        "offset" => Some(PlaneDim::Offset),
-        "angle" => Some(PlaneDim::Angle),
-        _ => None,
-    }
-}
-
-fn parse_standard_view(name: &str) -> Option<StandardView> {
-    match name.to_ascii_lowercase().as_str() {
-        "front" | "f" => Some(StandardView::Front),
-        "back" | "b" => Some(StandardView::Back),
-        "left" | "l" => Some(StandardView::Left),
-        "right" | "r" => Some(StandardView::Right),
-        "top" | "t" => Some(StandardView::Top),
-        "bottom" | "bo" => Some(StandardView::Bottom),
-        _ => None,
-    }
-}
-
-fn parse_pane(name: &str) -> Option<Pane> {
-    match name.to_ascii_lowercase().as_str() {
-        "view_cube" | "viewcube" | "cube" => Some(Pane::ViewCube),
-        "hierarchy" | "tree" | "dag" | "elements" => Some(Pane::Hierarchy),
-        "parameters" | "params" | "param" => Some(Pane::Parameters),
-        "context" | "properties" | "props" => Some(Pane::Context),
-        "hud" => Some(Pane::ViewCube),
-        _ => None,
-    }
-}
-
 fn parse_visibility(value: Value) -> mlua::Result<Option<bool>> {
     match value {
         Value::Nil => Ok(None),
@@ -218,7 +155,7 @@ fn resolve_element(lua: &Lua, value: Value) -> mlua::Result<SceneElement> {
             if let Ok(el) = ud.borrow::<LuaElement>() {
                 return Ok(el.element);
             }
-            Err(mlua::Error::external("expected paramcad element"))
+            Err(mlua::Error::external("expected le3 element"))
         }
         Value::Table(table) => parse_element_table(lua, table),
         Value::String(s) => {
@@ -326,7 +263,7 @@ fn parse_distance_target(table: Table) -> mlua::Result<DistanceTarget> {
         "circle" => Ok(DistanceTarget::CircleDiameter(index)),
         "rect" | "rectangle" => {
             let axis_name: String = table.get("axis")?;
-            let axis = parse_rect_axis(&axis_name).ok_or_else(|| {
+            let axis = RectAxis::from_name(&axis_name).ok_or_else(|| {
                 mlua::Error::external(format!("unknown rectangle axis '{axis_name}'"))
             })?;
             Ok(match axis {
@@ -355,7 +292,7 @@ fn apply_optional_name(
     unsafe { tick.exec(Instruction::SetElementName { element, name }) }
 }
 
-/// Register the global `paramcad` API table on a Lua state.
+/// Register the global `le3` API table on a Lua state.
 pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     let api = lua.create_table()?;
 
@@ -410,7 +347,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "tool",
         lua.create_function(|lua, name: String| {
-            let tool = parse_tool(&name)
+            let tool = Tool::from_name(&name)
                 .ok_or_else(|| mlua::Error::external(format!("unknown tool '{name}'")))?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::Tool(tool)) }
@@ -420,7 +357,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "begin_sketch",
         lua.create_function(|lua, args: MultiValue| {
-            let mut args = args.into_vec();
+            let args = args.into_vec();
             let face = if let Some(Value::Table(table)) = args.first() {
                 let kind: String = table.get("kind").or_else(|_| table.get("type"))?;
                 let index: usize = table.get("index")?;
@@ -580,7 +517,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "set_dim",
         lua.create_function(|lua, (axis, value): (String, String)| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            if let Some(axis) = parse_rect_axis(&axis) {
+            if let Some(axis) = RectAxis::from_name(&axis) {
                 return unsafe { tick.exec(Instruction::SetDim { axis, value }) };
             }
             if axis.eq_ignore_ascii_case("length") || axis.eq_ignore_ascii_case("len") {
@@ -603,7 +540,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "focus_dim",
         lua.create_function(|lua, axis: String| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            if let Some(axis) = parse_rect_axis(&axis) {
+            if let Some(axis) = RectAxis::from_name(&axis) {
                 return unsafe { tick.exec(Instruction::FocusDim(axis)) };
             }
             if axis.eq_ignore_ascii_case("length") {
@@ -612,7 +549,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             if axis.eq_ignore_ascii_case("diameter") {
                 return unsafe { tick.exec(Instruction::FocusCircleDiameter) };
             }
-            if let Some(dim) = parse_plane_dim(&axis) {
+            if let Some(dim) = PlaneDim::from_name(&axis) {
                 return unsafe { tick.exec(Instruction::FocusPlaneDim(dim)) };
             }
             Err(mlua::Error::external(format!("unknown dimension '{axis}'")))
@@ -622,7 +559,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "edit_dim",
         lua.create_function(|lua, axis: String| {
-            let axis = parse_dim_label_axis(&axis)
+            let axis = DimLabelAxis::from_name(&axis)
                 .ok_or_else(|| mlua::Error::external(format!("unknown dimension '{axis}'")))?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::BeginEditCommittedDim { axis }) }
@@ -640,7 +577,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "set_dim_label_offset",
         lua.create_function(|lua, (axis, offset): (String, f32)| {
-            let axis = parse_dim_label_axis(&axis)
+            let axis = DimLabelAxis::from_name(&axis)
                 .ok_or_else(|| mlua::Error::external(format!("unknown dimension '{axis}'")))?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::SetDimLabelOffset { axis, offset }) }
@@ -672,9 +609,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     api.set(
         "constraint_shortcut",
-        lua.create_function(|lua, index: u8| {
+        lua.create_function(|lua, key: mlua::String| {
+            let key = key.to_str()?;
+            let key = key
+                .chars()
+                .next()
+                .ok_or_else(|| mlua::Error::external("constraint_shortcut requires a key"))?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe { tick.exec(Instruction::ApplyConstraintShortcut(index)) }
+            unsafe { tick.exec(Instruction::ApplyConstraintShortcut(key)) }
         })?,
     )?;
 
@@ -750,7 +692,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "_view",
         lua.create_function(|lua, args: MultiValue| {
-            let mut args = args.into_vec();
+            let args = args.into_vec();
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let first = args
                 .first()
@@ -758,15 +700,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             match first {
                 Value::String(s) => {
                     let name = s.to_str()?.to_string();
-                    if name.eq_ignore_ascii_case("orthographic") {
-                        return unsafe {
-                            tick.exec(Instruction::ProjectionMode(ProjectionMode::Orthographic))
-                        };
-                    }
-                    if name.eq_ignore_ascii_case("natural") {
-                        return unsafe {
-                            tick.exec(Instruction::ProjectionMode(ProjectionMode::Natural))
-                        };
+                    if let Some(mode) = ProjectionMode::from_name(&name) {
+                        return unsafe { tick.exec(Instruction::ProjectionMode(mode)) };
                     }
                     if name.eq_ignore_ascii_case("edge") {
                         let edge_name = match args.get(1) {
@@ -790,7 +725,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         })?;
                         return unsafe { tick.exec(Instruction::ViewCorner(corner)) };
                     }
-                    let view = parse_standard_view(&name).ok_or_else(|| {
+                    let view = StandardView::from_name(&name).ok_or_else(|| {
                         mlua::Error::external(format!("unknown standard view '{name}'"))
                     })?;
                     unsafe { tick.exec(Instruction::View(view)) }
@@ -829,7 +764,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "pane",
         lua.create_function(|lua, (pane, visible): (String, Value)| {
-            let pane = parse_pane(&pane)
+            let pane = Pane::from_name(&pane)
                 .ok_or_else(|| mlua::Error::external(format!("unknown pane '{pane}'")))?;
             let visible = parse_visibility(visible)?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
@@ -840,7 +775,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "parameter",
         lua.create_function(|lua, args: MultiValue| {
-            let mut args = args.into_vec();
+            let args = args.into_vec();
             let action = match args.first() {
                 Some(Value::String(s)) => s.to_str()?.to_ascii_lowercase(),
                 _ => return Err(mlua::Error::external("parameter requires action")),
@@ -863,6 +798,29 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     unsafe {
                         tick.exec(Instruction::AddParameter { name, expression },
                         )
+                    }
+                }
+                "from_line_length" => {
+                    let line_index = match args.get(1) {
+                        Some(Value::Integer(i)) => *i as usize,
+                        Some(Value::Number(n)) => n.round() as usize,
+                        _ => {
+                            return Err(mlua::Error::external(
+                                "parameter from_line_length requires line index",
+                            ))
+                        }
+                    };
+                    let name = match args.get(2) {
+                        Some(Value::String(s)) => Some(s.to_str()?.to_string()),
+                        None => None,
+                        _ => {
+                            return Err(mlua::Error::external(
+                                "parameter from_line_length name must be a string",
+                            ))
+                        }
+                    };
+                    unsafe {
+                        tick.exec(Instruction::CreateParameterFromLineLength { line_index, name })
                     }
                 }
                 "value" | "expression" => {
@@ -924,7 +882,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     api.set(
         "palette",
         lua.create_function(|lua, args: MultiValue| {
-            let mut args = args.into_vec();
+            let args = args.into_vec();
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             if args.is_empty() {
                 return unsafe { tick.exec(Instruction::SetCommandPalette { open: None }) };
@@ -1123,12 +1081,30 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    lua.globals().set("paramcad", api)?;
+    api.set(
+        "import",
+        lua.create_function(|lua, ()| {
+            let globals = lua.globals();
+            let le3: Table = globals.get("le3")?;
+            for pair in le3.pairs::<String, Value>() {
+                let (name, value) = pair?;
+                if name.starts_with('_') || name == "import" {
+                    continue;
+                }
+                if let Value::Function(func) = value {
+                    globals.set(name.as_str(), func)?;
+                }
+            }
+            Ok(())
+        })?,
+    )?;
+
+    lua.globals().set("le3", api)?;
     lua.load(
         r#"
         local function yielding(name, native_name)
-            local native = paramcad[native_name or name]
-            paramcad[name] = function(...)
+            local native = le3[native_name or name]
+            le3[name] = function(...)
                 native(...)
                 coroutine.yield()
             end
@@ -1177,9 +1153,9 @@ mod tests {
     fn lua_new_and_tool() {
         let state = run_lua(
             r#"
-            paramcad.new()
-            paramcad.begin_sketch("construction_plane", 0)
-            paramcad.tool("rectangle")
+            le3.new()
+            le3.begin_sketch("construction_plane", 0)
+            le3.tool("rectangle")
         "#,
         );
         assert_eq!(state.tool, Tool::Rectangle);
@@ -1190,8 +1166,8 @@ mod tests {
     fn lua_find_and_set_name() {
         let mut runner = ScriptRunner::from_lua_source(
             r#"
-            paramcad.set_name({ kind = "line", index = 0 }, "Main box")
-            local found = paramcad.find("Main box")
+            le3.set_name({ kind = "line", index = 0 }, "Main box")
+            local found = le3.find("Main box")
             assert(found ~= nil)
         "#,
         )
@@ -1214,11 +1190,31 @@ mod tests {
     }
 
     #[test]
+    fn lua_import_exposes_globals() {
+        let mut runner = ScriptRunner::from_lua_source(
+            r#"
+            le3.import()
+            new()
+            tool("select")
+        "#,
+        )
+        .unwrap();
+        runner.verbose = false;
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        let ctx = egui::Context::default();
+        while !runner.done {
+            runner.tick(&mut state, &mut synthetic, None, &ctx);
+        }
+        assert_eq!(state.tool, Tool::Select);
+    }
+
+    #[test]
     fn lua_wait_frames_advances() {
         let mut runner = ScriptRunner::from_lua_source(
             r#"
-            paramcad.wait(2)
-            paramcad.clear()
+            le3.wait(2)
+            le3.clear()
         "#,
         )
         .unwrap();

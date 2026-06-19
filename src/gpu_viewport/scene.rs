@@ -2,7 +2,9 @@
 
 use crate::actions::SketchSession;
 use crate::camera::Camera;
+use crate::constraint_viewport::ConstraintViewportGraphic;
 use crate::constraints::constraint_segment_endpoints;
+use crate::document_health::constraint_annotation_color;
 use crate::document_health::{health_tint_color, DocumentHealth};
 use crate::document_lifecycle::{circle_alive, constraint_alive, line_alive, rect_alive};
 use crate::construction::{
@@ -181,6 +183,8 @@ pub struct ViewportSceneInput<'a> {
     pub hover_highlight: Option<ViewportHoverHighlight>,
     pub hover_color: Color32,
     pub document_health: &'a DocumentHealth,
+    pub constraint_graphics: Option<&'a [ConstraintViewportGraphic]>,
+    pub constraint_connector_color: Option<Color32>,
 }
 
 impl ViewportScene {
@@ -389,6 +393,22 @@ impl ViewportScene {
             input.palette.dim_edge_highlight,
         );
 
+        if let Some(graphics) = input.constraint_graphics {
+            if !graphics.is_empty() {
+                mesh.push_constraint_connectors(
+                    input.selection,
+                    input.document_health,
+                    graphics,
+                    input
+                        .constraint_connector_color
+                        .unwrap_or(input.palette.dim_edge_highlight),
+                    input.cam,
+                    input.viewport,
+                    &vp,
+                );
+            }
+        }
+
         if let Some(face) = input.active_sketch_face {
             mesh.push_face_highlight(
                 input.doc,
@@ -481,15 +501,17 @@ impl ViewportScene {
         if input.dim_label_view.is_some() {
             let project = |w: Vec3| input.cam.project(w, input.viewport, &vp);
             for label in input.dimension_labels {
-                push_linear_dimension_world(
-                    &mut mesh,
-                    &label.world_geom,
-                    label.color,
-                    input.cam,
-                    input.viewport,
-                    &vp,
-                    &project,
-                );
+                if label.draw_dimension_lines {
+                    push_linear_dimension_world(
+                        &mut mesh,
+                        &label.world_geom,
+                        label.color,
+                        input.cam,
+                        input.viewport,
+                        &vp,
+                        &project,
+                    );
+                }
             }
         }
         drop(mesh);
@@ -1122,6 +1144,35 @@ impl<'a> SceneMesh<'a> {
                     }
                 }
                 _ => {}
+            }
+        }
+    }
+
+    fn push_constraint_connectors(
+        &mut self,
+        selection: &SceneSelection,
+        health: &DocumentHealth,
+        graphics: &[ConstraintViewportGraphic],
+        base_color: Color32,
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+    ) {
+        for graphic in graphics {
+            let color = constraint_annotation_color(health, graphic.constraint_index, base_color);
+            let selected =
+                selection.is_selected(SceneElement::Constraint(graphic.constraint_index));
+            let width = if selected { 2.5 } else { 1.5 };
+            for connector in &graphic.connectors {
+                self.push_dashed_line_segment(
+                    connector.a,
+                    connector.b,
+                    color,
+                    width,
+                    cam,
+                    viewport,
+                    view_proj,
+                );
             }
         }
     }
@@ -2213,6 +2264,8 @@ mod tests {
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
         });
         let preview_plane = state.doc.construction_planes[0].clone();
         let with_preview = ViewportScene::build(&ViewportSceneInput {
@@ -2238,6 +2291,8 @@ mod tests {
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
         });
         assert!(
             with_preview.overlay_indices.len() > base.overlay_indices.len(),
@@ -2269,6 +2324,8 @@ mod tests {
             hover_highlight: None,
             hover_color: crate::construction::PICK_HOVER_RGBA,
             document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
         });
         let with_hover = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
@@ -2291,6 +2348,8 @@ mod tests {
             )),
             hover_color: crate::construction::PICK_HOVER_RGBA,
             document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
         });
         let hover_indices =
             with_hover.overlay_indices.len() - base.overlay_indices.len();
@@ -2326,6 +2385,8 @@ mod tests {
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
         });
         let gizmo = ViewportPlaneGizmo {
             reference: PlaneReference::Face {
@@ -2358,6 +2419,8 @@ mod tests {
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
         });
         assert!(
             with_gizmo.indices.len() > base.indices.len(),
@@ -2388,6 +2451,8 @@ mod tests {
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
         });
         assert!(!scene.vertices.is_empty());
         assert!(!scene.indices.is_empty());
@@ -2429,6 +2494,8 @@ mod tests {
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
         })
     }
 
@@ -2528,6 +2595,8 @@ mod tests {
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
         });
         assert!(scene.vertices.len() >= 8);
         assert!(scene.indices.len() >= 18);
@@ -2569,6 +2638,8 @@ mod tests {
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
         });
         assert!(scene.indices.len() > CIRCLE_SEGMENTS);
     }
@@ -2613,6 +2684,91 @@ mod tests {
     #[test]
     fn stroke_depth_bias_beats_grid_depth_bias() {
         assert!(STROKE_DEPTH_BIAS > GRID_DEPTH_BIAS);
+    }
+
+    #[test]
+    fn constraint_connectors_add_overlay_geometry() {
+        use crate::constraint_viewport::viewport_constraints_for_selection;
+        use crate::hierarchy::ElementVisibility;
+        use crate::model::{Constraint, ConstraintKind, ConstraintLine, FaceId, Line, ShapeKind};
+        use crate::selection::SceneSelection;
+
+        let mut state = AppState::default();
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.shape_order.push(ShapeKind::Line);
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
+        state.doc.shape_order.push(ShapeKind::Line);
+        state.doc.constraints.push(Constraint {
+            sketch,
+            kind: ConstraintKind::Parallel {
+                line_a: ConstraintLine::Line(0),
+                line_b: ConstraintLine::Line(1),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+        let mut selection = SceneSelection::default();
+        crate::selection::click_scene_selection(
+            &mut selection,
+            SceneElement::Line(0),
+            false,
+        );
+        let graphics = viewport_constraints_for_selection(
+            &state.doc,
+            &ElementVisibility::default(),
+            &selection,
+            &std::collections::HashSet::new(),
+        );
+        let cam = state.cam.clone();
+        let without = ViewportScene::build(&ViewportSceneInput {
+            doc: &state.doc,
+            cam: &cam,
+            viewport: test_viewport(),
+            palette: ViewportPalette::default(),
+            sketch_session: None,
+            selection: &selection,
+            element_visibility: &state.element_visibility,
+            preview_rect: None,
+            preview_line: None,
+            preview_circle: None,
+            plane_preview: None,
+            active_sketch_face: None,
+            dimension_labels: &[],
+            dim_label_view: None,
+            plane_gizmo: None,
+            hover_highlight: None,
+            hover_color: Color32::WHITE,
+            document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
+        });
+        let with = ViewportScene::build(&ViewportSceneInput {
+            doc: &state.doc,
+            cam: &cam,
+            viewport: test_viewport(),
+            palette: ViewportPalette::default(),
+            sketch_session: None,
+            selection: &selection,
+            element_visibility: &state.element_visibility,
+            preview_rect: None,
+            preview_line: None,
+            preview_circle: None,
+            plane_preview: None,
+            active_sketch_face: None,
+            dimension_labels: &[],
+            dim_label_view: None,
+            plane_gizmo: None,
+            hover_highlight: None,
+            hover_color: Color32::WHITE,
+            document_health: &DocumentHealth::default(),
+            constraint_graphics: Some(&graphics),
+            constraint_connector_color: Some(Color32::from_rgb(255, 205, 88)),
+        });
+        assert!(with.overlay_indices.len() > without.overlay_indices.len());
+        assert_eq!(graphics.len(), 1);
     }
 
     #[test]
@@ -2721,6 +2877,7 @@ mod tests {
             color: Color32::WHITE,
             text_vertices,
             text_indices,
+            draw_dimension_lines: true,
         };
         let vertex_count_before = ViewportScene::build(&ViewportSceneInput {
             doc: &state.doc,
@@ -2742,6 +2899,8 @@ mod tests {
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
         })
         .vertices
         .len();
@@ -2765,6 +2924,8 @@ mod tests {
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
         });
         assert!(!scene.text_vertices.is_empty());
         assert!(!scene.text_indices.is_empty());
@@ -2855,6 +3016,8 @@ mod tests {
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
         })
         .indices
         .len();
@@ -2877,6 +3040,8 @@ mod tests {
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
         });
         let solid_scene = ViewportScene::build(&ViewportSceneInput {
             doc: &solid_doc,
@@ -2897,6 +3062,8 @@ mod tests {
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
         });
         let dashed_line_indices = dashed_scene.indices.len().saturating_sub(grid_indices);
         let solid_line_indices = solid_scene.indices.len().saturating_sub(grid_indices);

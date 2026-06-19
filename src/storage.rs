@@ -796,11 +796,13 @@ mod tests {
             name: "A".to_string(),
             expression: "B".to_string(),
             deleted: false,
+            source: None,
         });
         doc.parameters.push(Parameter {
             name: "B".to_string(),
             expression: "A".to_string(),
             deleted: false,
+            source: None,
         });
         doc.shape_order.push(ShapeKind::Parameter);
         doc.shape_order.push(ShapeKind::Parameter);
@@ -823,11 +825,13 @@ mod tests {
             name: "A".to_string(),
             expression: "5mm".to_string(),
             deleted: false,
+            source: None,
         });
         doc.parameters.push(Parameter {
             name: "B".to_string(),
             expression: "A + 5in".to_string(),
             deleted: false,
+            source: None,
         });
         doc.shape_order.push(ShapeKind::Parameter);
         doc.shape_order.push(ShapeKind::Parameter);
@@ -856,6 +860,7 @@ mod tests {
             name: "width".to_string(),
             expression: "10mm".to_string(),
             deleted: true,
+            source: None,
         });
         doc.shape_order.push(ShapeKind::Parameter);
 
