@@ -34,6 +34,7 @@ pub fn add_distance_constraint(
         kind: ConstraintKind::Distance { target },
         expression,
         dim_offset: None,
+        name: None,
     });
     doc.shape_order.push(crate::model::ShapeKind::Constraint);
     solve_document_constraints(doc)?;
@@ -106,6 +107,44 @@ fn distance_target_label(target: DistanceTarget) -> String {
         DistanceTarget::LineLength(i) => format!("Line {i} length"),
         DistanceTarget::RectWidth(i) => format!("Rectangle {i} width"),
         DistanceTarget::RectHeight(i) => format!("Rectangle {i} height"),
+    }
+}
+
+/// Map a single scene selection to a distance target in the active sketch.
+pub fn distance_target_from_selection(
+    doc: &Document,
+    sketch: SketchId,
+    selection: &crate::selection::SceneSelection,
+) -> Option<DistanceTarget> {
+    selection
+        .single()
+        .and_then(|element| distance_target_from_scene_element(doc, sketch, element))
+}
+
+/// Map a scene element to a distance target in the active sketch.
+pub fn distance_target_from_scene_element(
+    doc: &Document,
+    sketch: SketchId,
+    element: crate::hierarchy::SceneElement,
+) -> Option<DistanceTarget> {
+    use crate::hierarchy::SceneElement;
+    use crate::model::RectEdge;
+    match element {
+        SceneElement::Line(index) => {
+            let line = doc.lines.get(index)?;
+            (line.sketch == sketch).then_some(DistanceTarget::LineLength(index))
+        }
+        SceneElement::RectEdge(rect_index, edge) => {
+            let rect = doc.rects.get(rect_index)?;
+            if rect.sketch != sketch {
+                return None;
+            }
+            match edge {
+                RectEdge::Bottom | RectEdge::Top => Some(DistanceTarget::RectWidth(rect_index)),
+                RectEdge::Left | RectEdge::Right => Some(DistanceTarget::RectHeight(rect_index)),
+            }
+        }
+        _ => None,
     }
 }
 
@@ -349,6 +388,7 @@ fn add_distance_constraint_internal(
         kind: ConstraintKind::Distance { target },
         expression,
         dim_offset,
+        name: None,
     });
     doc.shape_order.push(crate::model::ShapeKind::Constraint);
     Ok(id)
@@ -492,6 +532,41 @@ mod tests {
             find_distance_constraint(&doc, DistanceTarget::RectWidth(0)),
             Some(0)
         );
+    }
+
+    #[test]
+    fn distance_target_from_selection_maps_line_and_rect_edge() {
+        use crate::hierarchy::SceneElement;
+        use crate::model::RectEdge;
+        use crate::selection::{click_scene_selection, SceneSelection};
+
+        let (mut doc, sketch) = sketch_doc();
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 5.0, 0.0));
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 10.0, 5.0));
+
+        let mut sel = SceneSelection::default();
+        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        assert_eq!(
+            distance_target_from_selection(&doc, sketch, &sel),
+            Some(DistanceTarget::LineLength(0))
+        );
+
+        click_scene_selection(&mut sel, SceneElement::RectEdge(0, RectEdge::Bottom), false);
+        assert_eq!(
+            distance_target_from_selection(&doc, sketch, &sel),
+            Some(DistanceTarget::RectWidth(0))
+        );
+
+        click_scene_selection(&mut sel, SceneElement::RectEdge(0, RectEdge::Left), false);
+        assert_eq!(
+            distance_target_from_selection(&doc, sketch, &sel),
+            Some(DistanceTarget::RectHeight(0))
+        );
+
+        click_scene_selection(&mut sel, SceneElement::Rect(0), true);
+        assert_eq!(distance_target_from_selection(&doc, sketch, &sel), None);
     }
 
     #[test]

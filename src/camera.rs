@@ -575,6 +575,22 @@ impl Camera {
 
     const ORBIT_SENSITIVITY: f32 = 0.01;
 
+    /// True while the user is right-dragging to orbit (not shift-panning).
+    pub fn is_orbiting(secondary_dragging: bool, shift_held: bool) -> bool {
+        secondary_dragging && !shift_held
+    }
+
+    /// True while the user is shift+right-dragging to pan.
+    pub fn is_panning(secondary_dragging: bool, shift_held: bool) -> bool {
+        secondary_dragging && shift_held
+    }
+
+    /// True while orbiting or panning — show the camera pivot indicator.
+    pub fn shows_camera_pivot(secondary_dragging: bool, shift_held: bool) -> bool {
+        Self::is_orbiting(secondary_dragging, shift_held)
+            || Self::is_panning(secondary_dragging, shift_held)
+    }
+
     /// Orbit by a screen-space drag delta (in points).
     pub fn orbit(&mut self, delta: egui::Vec2) {
         self.orbit_trackball(delta);
@@ -847,6 +863,16 @@ impl Camera {
     }
 }
 
+/// Foot of the orbit pivot on the ground plane (XY at z = 0), along world ±Z.
+pub fn orbit_pivot_ground_foot(target: Vec3) -> Vec3 {
+    Vec3::new(target.x, target.y, 0.0)
+}
+
+/// Whether a drop line should be drawn from the pivot to the ground plane.
+pub fn orbit_pivot_has_ground_drop(target: Vec3) -> bool {
+    target.z.abs() > 1e-4
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1060,6 +1086,52 @@ mod tests {
         cam.start_view_transition(StandardView::Top, 0.5);
         cam.orbit(egui::vec2(4.0, 2.0));
         assert!(!cam.is_transitioning());
+    }
+
+    #[test]
+    fn orbit_pivot_ground_foot_projects_along_z_to_xy_plane() {
+        let target = Vec3::new(12.0, -5.0, 30.0);
+        assert_eq!(
+            super::orbit_pivot_ground_foot(target),
+            Vec3::new(12.0, -5.0, 0.0)
+        );
+        assert!(!super::orbit_pivot_has_ground_drop(Vec3::ZERO));
+        assert!(super::orbit_pivot_has_ground_drop(target));
+        assert!(super::orbit_pivot_has_ground_drop(Vec3::new(0.0, 0.0, -8.0)));
+    }
+
+    #[test]
+    fn is_orbiting_requires_secondary_drag_without_shift() {
+        assert!(Camera::is_orbiting(true, false));
+        assert!(!Camera::is_orbiting(true, true));
+        assert!(!Camera::is_orbiting(false, false));
+        assert!(!Camera::is_orbiting(false, true));
+    }
+
+    #[test]
+    fn is_panning_requires_secondary_drag_with_shift() {
+        assert!(Camera::is_panning(true, true));
+        assert!(!Camera::is_panning(true, false));
+        assert!(!Camera::is_panning(false, true));
+    }
+
+    #[test]
+    fn shows_camera_pivot_while_orbiting_or_panning() {
+        assert!(Camera::shows_camera_pivot(true, false));
+        assert!(Camera::shows_camera_pivot(true, true));
+        assert!(!Camera::shows_camera_pivot(false, false));
+        assert!(!Camera::shows_camera_pivot(false, true));
+    }
+
+    #[test]
+    fn orbit_pivot_projects_to_viewport_center_from_default_pose() {
+        let cam = Camera::default();
+        let viewport = test_viewport();
+        let vp = cam.view_proj(viewport);
+        let pivot = cam.project(cam.target, viewport, &vp).expect("pivot visible");
+        let center = viewport.center();
+        assert!((pivot.x - center.x).abs() < 2.0);
+        assert!((pivot.y - center.y).abs() < 2.0);
     }
 
     #[test]

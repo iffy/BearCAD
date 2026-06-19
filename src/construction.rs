@@ -402,6 +402,7 @@ pub fn plane_from_face(offset: f32, origin: Vec3, normal: Vec3) -> ConstructionP
             offset,
             0.0,
         ),
+        name: None,
     }
 }
 
@@ -433,6 +434,7 @@ pub fn plane_from_axis(
             offset,
             angle_deg,
         ),
+        name: None,
     }
 }
 

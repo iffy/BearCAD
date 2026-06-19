@@ -52,6 +52,11 @@ pub enum Instruction {
     },
     /// Toggle construction/substantial on draw op or each constructable selected target.
     ToggleConstruction,
+    SetElementName {
+        element: SceneElement,
+        name: String,
+    },
+    FocusElementName,
     SetDim { axis: RectAxis, value: String },
     SetDimLabelOffset { axis: DimLabelAxis, offset: f32 },
     BeginEditCommittedDim { axis: DimLabelAxis },
@@ -176,6 +181,11 @@ impl Instruction {
                 if *construction { "true" } else { "false" }
             ),
             Instruction::ToggleConstruction => "toggle_construction".to_string(),
+            Instruction::SetElementName { element, name } => {
+                let (kind, index) = element_script_parts(*element);
+                format!("set_name {kind} {index} {name}")
+            }
+            Instruction::FocusElementName => "focus_name".to_string(),
             Instruction::SetDim { axis, value } => {
                 let name = match axis {
                     RectAxis::Width => "width",
@@ -526,6 +536,27 @@ fn parse_line(line: &str, line_no: usize) -> Result<Instruction, ParseError> {
         }
 
         "toggle_construction" => Ok(Instruction::ToggleConstruction),
+
+        "set_name" | "rename" => {
+            let mut parts = rest.split_whitespace();
+            let kind = parts
+                .next()
+                .ok_or_else(|| err("set_name requires kind and index"))?;
+            let index = parts
+                .next()
+                .ok_or_else(|| err("set_name requires index"))?
+                .parse::<usize>()
+                .map_err(|_| err("set_name index must be an integer"))?;
+            let element = scene_element_from_script(kind, index)
+                .ok_or_else(|| err(&format!("unknown element kind '{kind}'")))?;
+            let name = parts.collect::<Vec<_>>().join(" ");
+            if name.trim().is_empty() {
+                return Err(err("set_name requires a name"));
+            }
+            Ok(Instruction::SetElementName { element, name })
+        }
+
+        "focus_name" | "focus_element_name" => Ok(Instruction::FocusElementName),
 
         "pane" => {
             let mut parts = rest.split_whitespace();
@@ -1084,6 +1115,7 @@ fn scene_element_from_script(kind: &str, index: usize) -> Option<SceneElement> {
         "sketch" => Some(SceneElement::Sketch(index)),
         "rect" | "rectangle" => Some(SceneElement::Rect(index)),
         "line" => Some(SceneElement::Line(index)),
+        "constraint" => Some(SceneElement::Constraint(index)),
         _ => None,
     }
 }
@@ -1562,6 +1594,14 @@ impl ScriptRunner {
             }
             Instruction::ToggleConstruction => {
                 let _ = state.apply(Action::ToggleConstruction);
+                StepResult::Continue
+            }
+            Instruction::SetElementName { element, name } => {
+                state.apply(Action::CommitElementName { element, name });
+                StepResult::Continue
+            }
+            Instruction::FocusElementName => {
+                state.apply(Action::FocusElementName);
                 StepResult::Continue
             }
             Instruction::SetDim { axis, value } => {
@@ -2159,6 +2199,25 @@ mod tests {
                 Instruction::SetPane {
                     pane: Pane::Context,
                     visible: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_set_name_commands() {
+        let ins = parse("set_name line 0 Guide\nfocus_name\nrename rect 1 My box").unwrap();
+        assert_eq!(
+            ins,
+            vec![
+                Instruction::SetElementName {
+                    element: SceneElement::Line(0),
+                    name: "Guide".to_string(),
+                },
+                Instruction::FocusElementName,
+                Instruction::SetElementName {
+                    element: SceneElement::Rect(1),
+                    name: "My box".to_string(),
                 },
             ]
         );

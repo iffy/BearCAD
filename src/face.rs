@@ -37,6 +37,7 @@ pub fn default_xy_plane() -> ConstructionPlane {
         v_axis: Vec3::Y,
         parent: ConstructionPlaneParent::Root,
         definition: default_xy_plane_definition(),
+        name: None,
     }
 }
 
@@ -539,6 +540,7 @@ mod tests {
         assert!(!doc.has_children(FaceId::ConstructionPlane(0)));
         doc.sketches.push(Sketch {
             face: FaceId::ConstructionPlane(0),
+            name: None,
         });
         assert!(doc.has_children(FaceId::ConstructionPlane(0)));
     }

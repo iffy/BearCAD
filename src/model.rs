@@ -45,9 +45,12 @@ pub struct Parameter {
 }
 
 /// A 2D sketch hosted on a face. A single face may host multiple independent sketches.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sketch {
     pub face: FaceId,
+    /// User-visible label in the Elements pane; empty uses the default.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// One edge of a rectangle (bottom → right → top → left, matching [`rect_edge_segments`]).
@@ -132,6 +135,9 @@ pub struct Rect {
     /// Per-edge construction flags (bottom, right, top, left).
     #[serde(default)]
     pub construction_edges: [bool; 4],
+    /// User-visible label in the Elements pane; empty uses the default.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 impl Rect {
@@ -150,6 +156,7 @@ impl Rect {
             width_expr: None,
             height_expr: None,
             construction_edges: [false; 4],
+            name: None,
         }
     }
 
@@ -200,6 +207,8 @@ impl<'de> Deserialize<'de> for Rect {
             construction: bool,
             #[serde(default)]
             construction_edges: [bool; 4],
+            #[serde(default)]
+            name: Option<String>,
         }
 
         let raw = RawRect::deserialize(deserializer)?;
@@ -220,6 +229,7 @@ impl<'de> Deserialize<'de> for Rect {
             width_expr: raw.width_expr,
             height_expr: raw.height_expr,
             construction_edges,
+            name: raw.name,
         })
     }
 }
@@ -244,6 +254,9 @@ pub struct Line {
     /// Reference geometry (dashed, construction color); not solid model geometry.
     #[serde(default)]
     pub construction: bool,
+    /// User-visible label in the Elements pane; empty uses the default.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 impl Line {
@@ -264,6 +277,7 @@ impl Line {
             length_dim_offset: None,
             length_expr: None,
             construction: false,
+            name: None,
         }
     }
 
@@ -322,6 +336,8 @@ pub struct ConstructionPlane {
     pub v_axis: glam::Vec3,
     pub parent: ConstructionPlaneParent,
     pub definition: PlaneDefinition,
+    /// User-visible label in the Elements pane; empty uses the default.
+    pub name: Option<String>,
 }
 
 /// Geometry a distance constraint applies to.
@@ -349,6 +365,9 @@ pub struct Constraint {
     /// User-placed offset from the measured segment to the dimension line (px).
     #[serde(default)]
     pub dim_offset: Option<f32>,
+    /// User-visible label in the Elements pane; empty uses the default.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// Which sketch primitive was created, in chronological order (for undo).
@@ -413,7 +432,10 @@ impl Document {
 
     pub fn add_sketch(&mut self, face: FaceId) -> SketchId {
         let id = self.sketches.len();
-        self.sketches.push(Sketch { face });
+        self.sketches.push(Sketch {
+            face,
+            name: None,
+        });
         self.shape_order.push(ShapeKind::Sketch);
         id
     }

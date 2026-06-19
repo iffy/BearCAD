@@ -20,6 +20,7 @@ mod dimensions;
 mod expression_input;
 mod face;
 mod hierarchy;
+mod names;
 mod parameters;
 mod model;
 mod native_menu;
@@ -340,13 +341,15 @@ impl App {
                 && self.state.creating_plane.is_none()
                 && ctx.input(|i| i.key_pressed(egui::Key::D))
             {
-                if self.state.tool != Tool::Dimension {
-                    self.state.apply(Action::SetTool(Tool::Dimension));
-                }
+                self.state.apply(Action::SetTool(Tool::Dimension));
             }
 
             if ctx.input(|i| i.key_pressed(egui::Key::X)) {
                 self.state.apply(Action::ToggleConstruction);
+            }
+
+            if ctx.input(|i| i.key_pressed(egui::Key::N)) {
+                self.state.apply(Action::FocusElementName);
             }
         }
 
@@ -616,16 +619,29 @@ impl eframe::App for App {
                 draw_line_construction: self.state.line_draw_construction_mode(),
             };
             let content = context::context_pane_content(&context_input);
+            context::sync_name_draft(&mut self.state.context_pane, &self.state.doc, &content);
             let mut construction_change: Option<bool> = None;
+            let mut name_commit: Option<(SceneElement, String)> = None;
             egui::SidePanel::right("context")
                 .resizable(true)
                 .default_width(200.0)
                 .frame(theme::panel_frame())
                 .show(ctx, |ui| {
-                    context::show_pane(ui, &content, &mut |construction| {
-                        construction_change = Some(construction);
-                    });
+                    context::show_pane(
+                        ui,
+                        ctx,
+                        &content,
+                        &mut self.state.context_pane,
+                        &mut |element, name| name_commit = Some((element, name)),
+                        &mut |construction| {
+                            construction_change = Some(construction);
+                        },
+                    );
                 });
+            if let Some((element, name)) = name_commit {
+                self.state
+                    .apply(Action::CommitElementName { element, name });
+            }
             if let Some(construction) = construction_change {
                 self.state
                     .apply(Action::ApplyConstruction { construction });
@@ -675,6 +691,10 @@ mod col {
     pub const RECT_LINE: Color32 = Color32::from_rgb(120, 170, 240);
     pub const LINE_STROKE: Color32 = Color32::from_rgb(180, 140, 240);
     pub const PREVIEW: Color32 = Color32::from_rgb(240, 200, 120);
+    /// Pivot shown while right-dragging to orbit the camera.
+    pub const ORBIT_PIVOT: Color32 = Color32::from_rgb(255, 105, 180);
+    /// Drop line from the orbit pivot to the ground plane.
+    pub const ORBIT_PIVOT_DROP: Color32 = Color32::from_rgba_premultiplied(255, 105, 180, 70);
     pub const DIM_INPUT_BG: Color32 = Color32::from_rgb(22, 24, 30);
     pub const DIM_INPUT_BG_FOCUS: Color32 = Color32::from_rgb(34, 36, 44);
     pub const DIM_INPUT_BORDER: Color32 = Color32::from_rgb(110, 118, 136);
@@ -2534,6 +2554,14 @@ impl App {
             }
         }
 
+        let shift_held = ui.input(|i| i.modifiers.shift);
+        if camera::Camera::shows_camera_pivot(
+            response.dragged_by(egui::PointerButton::Secondary),
+            shift_held,
+        ) {
+            draw_orbit_pivot_indicator(&painter, &project, cam.target);
+        }
+
         if self.state.panes.is_visible(Pane::ViewCube) {
             view_cube::show_hud(ui.ctx(), &mut self.state.cam, viewport);
         }
@@ -2662,6 +2690,33 @@ fn draw_world_segment_dashed(
             6.0,
             4.0,
         ));
+    }
+}
+
+const ORBIT_PIVOT_RADIUS: f32 = 4.0;
+const ORBIT_PIVOT_GROUND_RADIUS: f32 = 2.0;
+
+fn draw_orbit_pivot_indicator(
+    painter: &egui::Painter,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    target: Vec3,
+) {
+    if camera::orbit_pivot_has_ground_drop(target) {
+        let foot = camera::orbit_pivot_ground_foot(target);
+        draw_world_segment_dashed(
+            painter,
+            project,
+            target,
+            foot,
+            col::ORBIT_PIVOT_DROP,
+            1.0,
+        );
+        if let Some(foot_sp) = project(foot) {
+            painter.circle_filled(foot_sp, ORBIT_PIVOT_GROUND_RADIUS, col::ORBIT_PIVOT);
+        }
+    }
+    if let Some(sp) = project(target) {
+        painter.circle_filled(sp, ORBIT_PIVOT_RADIUS, col::ORBIT_PIVOT);
     }
 }
 
@@ -3048,6 +3103,7 @@ mod tests {
         clip_segment_to_rect, col, initial_launch_maximize_frames, native_options,
         should_commit_sketch_on_click, should_select_all_rect_value, tick_launch_maximize,
         uses_deferred_launch_maximize, MACOS_LAUNCH_MAXIMIZE_DELAY_FRAMES, GRID_EXTENT,
+        ORBIT_PIVOT_GROUND_RADIUS, ORBIT_PIVOT_RADIUS,
     };
     use crate::face::SketchFrame;
     use eframe::egui::{self, Pos2, Rect, Vec2};
@@ -3119,6 +3175,11 @@ mod tests {
     #[test]
     fn z_axis_color_matches_view_cube_blue() {
         assert_eq!(col::Z_AXIS, Color32::from_rgb(80, 140, 230));
+    }
+
+    #[test]
+    fn orbit_pivot_ground_marker_is_smaller_than_pivot() {
+        assert!(ORBIT_PIVOT_GROUND_RADIUS < ORBIT_PIVOT_RADIUS);
     }
 
     #[test]

@@ -21,12 +21,14 @@ use crate::context::{
 };
 use crate::hierarchy::SceneElement;
 use crate::hierarchy::ElementVisibility;
+use crate::names::{element_name, set_element_name, single_nameable_from_selection};
 use crate::selection::{click_scene_selection, SceneSelection};
 use crate::model::SketchId;
 use crate::view_cube::{self, CubeCornerId, CubeEdgeId};
 use crate::constraints::{
     add_distance_constraint, constraint_expression, default_distance_expression,
-    find_distance_constraint, set_constraint_dim_offset, set_constraint_expression, ConstraintId,
+    distance_target_from_selection, find_distance_constraint, set_constraint_dim_offset,
+    set_constraint_expression, ConstraintId,
 };
 use crate::model::{
     ConstructionPlane, DistanceTarget, Document, FaceId, Line, Rect, RectEdge, ShapeKind,
@@ -306,6 +308,11 @@ pub enum Action {
     },
     /// Toggle construction/substantial on the active draw op or each constructable selected target.
     ToggleConstruction,
+    CommitElementName {
+        element: SceneElement,
+        name: String,
+    },
+    FocusElementName,
 }
 
 /// A toggleable UI pane (SPEC §11.1).
@@ -605,6 +612,7 @@ pub struct AppState {
     pub command_palette: CommandPaletteState,
     pub element_visibility: ElementVisibility,
     pub scene_selection: SceneSelection,
+    pub context_pane: crate::context::ContextPaneState,
     pub editing_committed_dim: Option<EditingCommittedDim>,
     pub status: String,
 }
@@ -626,6 +634,7 @@ impl Default for AppState {
             command_palette: CommandPaletteState::default(),
             element_visibility: ElementVisibility::default(),
             scene_selection: SceneSelection::default(),
+            context_pane: crate::context::ContextPaneState::default(),
             editing_committed_dim: None,
             status: String::new(),
         }
@@ -683,6 +692,42 @@ impl AppState {
         self.sketch_session.is_some()
             && self.creating_rect.is_none()
             && self.creating_line.is_none()
+    }
+
+    /// Start editing a dimension on the sole selected segment, if applicable.
+    pub fn try_begin_dimension_from_selection(&mut self) -> bool {
+        let Some(session) = self.sketch_session else {
+            return false;
+        };
+        let Some(target) =
+            distance_target_from_selection(&self.doc, session.sketch, &self.scene_selection)
+        else {
+            return false;
+        };
+        self.start_committed_dimension_edit(target);
+        true
+    }
+
+    fn start_committed_dimension_edit(&mut self, target: DistanceTarget) {
+        let edit_target = if let Some(id) = find_distance_constraint(&self.doc, target) {
+            DimEditTarget::Constraint(id)
+        } else {
+            DimEditTarget::New(target)
+        };
+        let text = match edit_target {
+            DimEditTarget::Constraint(id) => committed_dim_expression(&self.doc, id)
+                .unwrap_or_else(|| default_distance_expression(&self.doc, target)),
+            DimEditTarget::New(_) => default_distance_expression(&self.doc, target),
+        };
+        self.editing_committed_dim = Some(EditingCommittedDim {
+            target: edit_target,
+            text,
+            pending_focus: true,
+        });
+        self.status = format!(
+            "Dimension {} • type length • Enter commit • Esc cancel",
+            distance_target_status_label(target)
+        );
     }
 
     /// Active or pending construction draw mode while the rectangle tool is selected.
@@ -857,6 +902,9 @@ impl AppState {
                     Tool::Dimension => "Dimension tool — open a sketch first".to_string(),
                     Tool::ConstructionPlane => "Construction plane tool".to_string(),
                 };
+                if tool == Tool::Dimension {
+                    self.try_begin_dimension_from_selection();
+                }
                 ActionResult::Ok
             }
             Action::CancelOperation => {
@@ -1126,32 +1174,13 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::BeginDimensionEdit { target } => {
-                let Some(session) = self.sketch_session else {
+                let Some(_session) = self.sketch_session else {
                     return ActionResult::Err("Not in sketch mode".to_string());
                 };
                 if self.tool != Tool::Dimension {
                     return ActionResult::Err("Dimension tool required".to_string());
                 }
-                let edit_target = if let Some(id) = find_distance_constraint(&self.doc, target) {
-                    DimEditTarget::Constraint(id)
-                } else {
-                    DimEditTarget::New(target)
-                };
-                let text = match edit_target {
-                    DimEditTarget::Constraint(id) => committed_dim_expression(&self.doc, id)
-                        .unwrap_or_else(|| default_distance_expression(&self.doc, target)),
-                    DimEditTarget::New(_) => default_distance_expression(&self.doc, target),
-                };
-                self.editing_committed_dim = Some(EditingCommittedDim {
-                    target: edit_target,
-                    text,
-                    pending_focus: true,
-                });
-                self.status = format!(
-                    "Dimension {} • type length • Enter commit • Esc cancel",
-                    distance_target_status_label(target)
-                );
-                let _ = session;
+                self.start_committed_dimension_edit(target);
                 ActionResult::Ok
             }
             Action::CommitCommittedDim => {
@@ -1557,6 +1586,33 @@ impl AppState {
                     element_label(element),
                     if visible { "shown" } else { "hidden" }
                 );
+                ActionResult::Ok
+            }
+            Action::CommitElementName { element, name } => {
+                match set_element_name(&mut self.doc, element, name) {
+                    Ok(()) => {
+                        let label = element_name(&self.doc, element)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| element_label(element));
+                        self.status = format!("Renamed to {label}");
+                        ActionResult::Ok
+                    }
+                    Err(e) => {
+                        self.status = e.clone();
+                        ActionResult::Err(e)
+                    }
+                }
+            }
+            Action::FocusElementName => {
+                let Some(element) = single_nameable_from_selection(&self.scene_selection) else {
+                    return ActionResult::Err("Select a single element to rename".to_string());
+                };
+                self.panes.set(Pane::Context, true);
+                self.context_pane.focus_name_field = true;
+                self.context_pane.synced_element = Some(element);
+                self.context_pane.name_draft =
+                    element_name(&self.doc, element).unwrap_or_default().to_string();
+                self.status = "Rename element".to_string();
                 ActionResult::Ok
             }
         }
@@ -2172,6 +2228,43 @@ mod tests {
         assert_eq!(state.doc.constraints.len(), 1);
         assert!(state.doc.lines[0].length_locked);
         assert!(state.creating_line.is_none());
+    }
+
+    #[test]
+    fn dimension_tool_begins_edit_when_line_selected() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state.doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 8.0, 0.0));
+        state.doc.shape_order.push(ShapeKind::Line);
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Line(0),
+            additive: false,
+        });
+        state.apply(Action::SetTool(Tool::Dimension));
+        assert!(state.editing_committed_dim.is_some());
+        assert_eq!(
+            state.editing_committed_dim.as_ref().unwrap().target,
+            DimEditTarget::New(DistanceTarget::LineLength(0))
+        );
+    }
+
+    #[test]
+    fn dimension_tool_begins_edit_when_rect_edge_selected() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state.doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 10.0, 5.0));
+        state.doc.shape_order.push(ShapeKind::Rect);
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::RectEdge(0, RectEdge::Left),
+            additive: false,
+        });
+        state.apply(Action::SetTool(Tool::Dimension));
+        assert_eq!(
+            state.editing_committed_dim.as_ref().unwrap().target,
+            DimEditTarget::New(DistanceTarget::RectHeight(0))
+        );
     }
 
     #[test]
@@ -2870,5 +2963,37 @@ mod tests {
         let yaw = state.cam.yaw;
         state.apply(Action::OrbitCamera { delta: (10.0, 5.0) });
         assert_ne!(state.cam.yaw, yaw);
+    }
+
+    #[test]
+    fn commit_element_name_updates_document() {
+        let mut state = AppState::default();
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 0.0));
+        assert_eq!(
+            state.apply(Action::CommitElementName {
+                element: SceneElement::Line(0),
+                name: "Guide".to_string(),
+            }),
+            ActionResult::Ok
+        );
+        assert_eq!(state.doc.lines[0].name.as_deref(), Some("Guide"));
+    }
+
+    #[test]
+    fn focus_element_name_requires_single_selection() {
+        let mut state = AppState::default();
+        assert_eq!(
+            state.apply(Action::FocusElementName),
+            ActionResult::Err("Select a single element to rename".to_string())
+        );
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 0.0));
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Line(0),
+            additive: false,
+        });
+        assert_eq!(state.apply(Action::FocusElementName), ActionResult::Ok);
+        assert!(state.context_pane.focus_name_field);
     }
 }

@@ -84,6 +84,7 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
 }
 
 pub const TOGGLE_CONSTRUCTION: ShortcutHint = ShortcutHint::plain("X");
+pub const FOCUS_ELEMENT_NAME: ShortcutHint = ShortcutHint::plain("N");
 pub const CANCEL_OPERATION: ShortcutHint = ShortcutHint::plain("Esc");
 pub const UNDO: ShortcutHint = ShortcutHint::primary("Z");
 

@@ -31,6 +31,17 @@ impl SceneSelection {
             matches!(element, SceneElement::RectEdge(index, _) if *index == rect_index)
         })
     }
+
+    /// The sole selected element, if exactly one is selected.
+    pub fn single(&self) -> Option<SceneElement> {
+        let mut iter = self.iter();
+        let first = iter.next()?;
+        if iter.next().is_some() {
+            None
+        } else {
+            Some(first)
+        }
+    }
 }
 
 /// Click an elements row: deselect when already selected; replace selection unless additive.
@@ -65,6 +76,16 @@ mod tests {
         } else {
             None
         }
+    }
+
+    #[test]
+    fn single_returns_one_selected_element() {
+        let mut sel = SceneSelection::default();
+        assert_eq!(sel.single(), None);
+        click_scene_selection(&mut sel, SceneElement::Rect(0), false);
+        assert_eq!(sel.single(), Some(SceneElement::Rect(0)));
+        click_scene_selection(&mut sel, SceneElement::Line(1), true);
+        assert_eq!(sel.single(), None);
     }
 
     #[test]

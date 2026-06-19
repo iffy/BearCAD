@@ -2,8 +2,10 @@
 
 use crate::hierarchy::SceneElement;
 use crate::model::{Document, RectEdge};
+use crate::names::{element_name, single_nameable_from_selection};
 use crate::selection::SceneSelection;
 use crate::shortcuts;
+use eframe::egui::{self, Key, TextEdit};
 
 pub const PANE_TITLE: &str = "Context";
 
@@ -26,7 +28,21 @@ pub enum TriState {
 /// What the context pane should display.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContextPaneContent {
+    pub name: Option<NameControl>,
     pub construction: Option<ConstructionControl>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NameControl {
+    pub element: SceneElement,
+}
+
+/// Draft text and focus state for the name field in the context pane.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ContextPaneState {
+    pub name_draft: String,
+    pub focus_name_field: bool,
+    pub synced_element: Option<SceneElement>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,8 +52,11 @@ pub struct ConstructionControl {
 }
 
 pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
+    let name = single_nameable_from_selection(input.selection).map(|element| NameControl { element });
+
     if let Some(construction) = input.draw_rect_construction {
         return ContextPaneContent {
+            name,
             construction: Some(ConstructionControl {
                 value: tri_state_from_bool(construction),
                 target_count: 1,
@@ -46,6 +65,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     }
     if let Some(construction) = input.draw_line_construction {
         return ContextPaneContent {
+            name,
             construction: Some(ConstructionControl {
                 value: tri_state_from_bool(construction),
                 target_count: 1,
@@ -55,11 +75,30 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
 
     let targets = construction_targets_from_selection(input.selection);
     ContextPaneContent {
+        name,
         construction: (!targets.is_empty()).then(|| ConstructionControl {
             value: construction_tri_state(input.doc, &targets),
             target_count: targets.len(),
         }),
     }
+}
+
+pub fn sync_name_draft(
+    state: &mut ContextPaneState,
+    doc: &Document,
+    content: &ContextPaneContent,
+) {
+    let Some(control) = &content.name else {
+        state.synced_element = None;
+        return;
+    };
+    if state.synced_element == Some(control.element) {
+        return;
+    }
+    state.synced_element = Some(control.element);
+    state.name_draft = element_name(doc, control.element)
+        .unwrap_or_default()
+        .to_string();
 }
 
 pub fn construction_targets_from_selection(selection: &SceneSelection) -> Vec<SceneElement> {
@@ -190,42 +229,82 @@ pub fn toggle_construction_for_targets(
 }
 
 pub fn show_pane(
-    ui: &mut eframe::egui::Ui,
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
     content: &ContextPaneContent,
+    pane_state: &mut ContextPaneState,
+    on_name_committed: &mut impl FnMut(SceneElement, String),
     on_construction_changed: &mut impl FnMut(bool),
 ) {
     ui.heading(PANE_TITLE);
     ui.separator();
 
-    let Some(control) = &content.construction else {
-        ui.label(
-            eframe::egui::RichText::new("Select geometry or draw to edit properties")
-                .color(eframe::egui::Color32::from_gray(140))
-                .size(12.0),
-        );
-        return;
-    };
+    let mut any_control = false;
 
-    let label = match control.value {
-        TriState::Mixed => "Construction (mixed)",
-        _ => "Construction",
-    };
-    let mut checked = control.value == TriState::On;
-    if shortcuts::checkbox_with_shortcut(
-        ui,
-        &mut checked,
-        label,
-        Some(shortcuts::TOGGLE_CONSTRUCTION),
-    )
-    .changed()
-    {
-        on_construction_changed(checked);
+    if let Some(control) = &content.name {
+        any_control = true;
+        ui.label(shortcuts::compact_label("Name", Some(shortcuts::FOCUS_ELEMENT_NAME)));
+        let id = egui::Id::new(("element_name", control.element));
+        let output = TextEdit::singleline(&mut pane_state.name_draft)
+            .id(id)
+            .desired_width(f32::INFINITY)
+            .show(ui);
+        let response = &output.response;
+        let should_select_all = pane_state.focus_name_field;
+        if should_select_all {
+            response.request_focus();
+        }
+        if (should_select_all && response.has_focus()) || response.gained_focus() {
+            let len = pane_state.name_draft.chars().count();
+            let mut state = output.state;
+            state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::default(),
+                egui::text::CCursor::new(len),
+            )));
+            state.store(ctx, id);
+            pane_state.focus_name_field = false;
+        }
+        let enter = ui.input(|i| i.key_pressed(Key::Enter));
+        if (enter && response.has_focus()) || response.lost_focus() {
+            on_name_committed(control.element, pane_state.name_draft.clone());
+            if enter && response.has_focus() {
+                ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter));
+            }
+        }
+        ui.add_space(4.0);
     }
-    if control.target_count > 1 {
+
+    if let Some(control) = &content.construction {
+        any_control = true;
+        let label = match control.value {
+            TriState::Mixed => "Construction (mixed)",
+            _ => "Construction",
+        };
+        let mut checked = control.value == TriState::On;
+        if shortcuts::checkbox_with_shortcut(
+            ui,
+            &mut checked,
+            label,
+            Some(shortcuts::TOGGLE_CONSTRUCTION),
+        )
+        .changed()
+        {
+            on_construction_changed(checked);
+        }
+        if control.target_count > 1 {
+            ui.label(
+                egui::RichText::new(format!("{} items", control.target_count))
+                    .color(egui::Color32::from_gray(140))
+                    .size(11.0),
+            );
+        }
+    }
+
+    if !any_control {
         ui.label(
-            eframe::egui::RichText::new(format!("{} items", control.target_count))
-                .color(eframe::egui::Color32::from_gray(140))
-                .size(11.0),
+            egui::RichText::new("Select geometry or draw to edit properties")
+                .color(egui::Color32::from_gray(140))
+                .size(12.0),
         );
     }
 }
@@ -250,7 +329,10 @@ mod tests {
         let doc = Document::default();
         assert_eq!(
             context_pane_content(&input(&doc, &SceneSelection::default())),
-            ContextPaneContent { construction: None }
+            ContextPaneContent {
+                name: None,
+                construction: None,
+            }
         );
     }
 
@@ -266,6 +348,7 @@ mod tests {
         assert_eq!(
             context_pane_content(&input(&doc, &sel)),
             ContextPaneContent {
+                name: None,
                 construction: Some(ConstructionControl {
                     value: TriState::Off,
                     target_count: 2,
@@ -308,8 +391,30 @@ mod tests {
         assert_eq!(
             content,
             ContextPaneContent {
+                name: None,
                 construction: Some(ConstructionControl {
                     value: TriState::On,
+                    target_count: 1,
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn shows_name_when_single_element_selected() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 1.0, 0.0));
+        let mut sel = SceneSelection::default();
+        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        assert_eq!(
+            context_pane_content(&input(&doc, &sel)),
+            ContextPaneContent {
+                name: Some(NameControl {
+                    element: SceneElement::Line(0),
+                }),
+                construction: Some(ConstructionControl {
+                    value: TriState::Off,
                     target_count: 1,
                 }),
             }
@@ -347,6 +452,9 @@ mod tests {
         assert_eq!(
             content,
             ContextPaneContent {
+                name: Some(NameControl {
+                    element: SceneElement::Line(0),
+                }),
                 construction: Some(ConstructionControl {
                     value: TriState::On,
                     target_count: 1,

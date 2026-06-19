@@ -4,8 +4,8 @@
 pub const PANE_TITLE: &str = "Elements";
 
 use crate::actions::SketchSession;
-use crate::constraints::constraint_label;
 use crate::model::{ConstructionPlaneParent, Document, FaceId, RectEdge, ShapeKind, SketchId};
+use crate::names;
 use crate::selection::SceneSelection;
 use eframe::egui::{self, Color32, RichText};
 use std::collections::{HashMap, HashSet};
@@ -403,6 +403,39 @@ fn styled_label(label: &str, style: RowStyle) -> RichText {
     }
 }
 
+/// Primary double-click on a row label (fallback when [`egui::Response::double_clicked`] misses).
+fn row_primary_double_clicked(response: &egui::Response, ui: &egui::Ui) -> bool {
+    if response.double_clicked() {
+        return true;
+    }
+    let pointer_double = ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary));
+    if !pointer_double {
+        return false;
+    }
+    let pos = response
+        .interact_pointer_pos()
+        .or_else(|| ui.input(|i| i.pointer.interact_pos()));
+    pos.is_some_and(|pos| response.rect.contains(pos))
+}
+
+/// How a sketch row should react to pointer input this frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SketchRowAction {
+    None,
+    Select { additive: bool },
+    Edit,
+}
+
+pub fn sketch_row_action(double_clicked: bool, clicked: bool, additive: bool) -> SketchRowAction {
+    if double_clicked {
+        SketchRowAction::Edit
+    } else if clicked {
+        SketchRowAction::Select { additive }
+    } else {
+        SketchRowAction::None
+    }
+}
+
 fn build_face_sketches(
     doc: &Document,
     face: FaceId,
@@ -486,25 +519,7 @@ fn build_sketch_entry(
 }
 
 pub fn node_label(doc: &Document, node: HierarchyNode) -> String {
-    match node {
-        HierarchyNode::ConstructionPlane(i) => {
-            if i == 0 {
-                "Construction plane (XY)".to_string()
-            } else {
-                format!("Construction plane {i}")
-            }
-        }
-        HierarchyNode::Sketch(i) => format!("Sketch {i}"),
-        HierarchyNode::Rect(i) => {
-            let rect = &doc.rects[i];
-            format!("Rectangle {i} ({:.1} × {:.1} mm)", rect.w, rect.h)
-        }
-        HierarchyNode::Line(i) => {
-            let len = doc.lines[i].length();
-            format!("Line {i} ({len:.1} mm)")
-        }
-        HierarchyNode::Constraint(i) => constraint_label(doc, i),
-    }
+    names::node_label(doc, node)
 }
 
 pub fn scene_element_for_node(node: HierarchyNode) -> SceneElement {
@@ -584,11 +599,17 @@ fn show_row(
         );
         match node {
             HierarchyNode::Sketch(sketch) => {
-                if response.double_clicked() {
-                    on_edit_sketch(sketch);
-                } else if response.clicked() {
-                    let additive = ui.input(|i| i.modifiers.command);
-                    on_click_element(element, additive);
+                let additive = ui.input(|i| i.modifiers.command);
+                match sketch_row_action(
+                    row_primary_double_clicked(&response, ui),
+                    response.clicked(),
+                    additive,
+                ) {
+                    SketchRowAction::Edit => on_edit_sketch(sketch),
+                    SketchRowAction::Select { additive } => {
+                        on_click_element(element, additive)
+                    }
+                    SketchRowAction::None => {}
                 }
                 response.context_menu(|ui| {
                     if ui.button("Edit sketch").clicked() {
@@ -635,6 +656,36 @@ mod tests {
         doc.lines
             .push(Line::from_local_endpoints(s1, 0.0, 0.0, 5.0, 0.0));
         doc
+    }
+
+    #[test]
+    fn sketch_row_double_click_opens_for_edit_not_select() {
+        assert_eq!(
+            sketch_row_action(true, true, false),
+            SketchRowAction::Edit
+        );
+        assert_eq!(
+            sketch_row_action(false, true, false),
+            SketchRowAction::Select { additive: false }
+        );
+        assert_eq!(sketch_row_action(false, false, false), SketchRowAction::None);
+    }
+
+    #[test]
+    fn open_sketch_from_elements_pane_action() {
+        use crate::actions::{Action, AppState, SketchSession};
+
+        let mut state = AppState::default();
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        assert!(state.sketch_session.is_none());
+        assert_eq!(
+            state.apply(Action::OpenSketch {
+                sketch,
+                viewport: None,
+            }),
+            crate::actions::ActionResult::Ok
+        );
+        assert_eq!(state.sketch_session, Some(SketchSession { sketch }));
     }
 
     #[test]
