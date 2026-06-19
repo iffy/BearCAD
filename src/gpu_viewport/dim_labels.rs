@@ -1,11 +1,13 @@
 //! GPU mesh builders for committed sketch dimension labels.
 
+use crate::camera::Camera;
 use crate::dimensions::{
-    planar_label_corners_world, LinearDimensionWorldGeom, PlanarLabelView, LABEL_FONT_SIZE,
+    bilinear_quad_screen, planar_label_corners_screen, planar_label_corners_world,
+    LinearDimensionWorldGeom, PlanarLabelView, LABEL_FONT_SIZE,
 };
-use eframe::egui::{Color32, FontId};
+use eframe::egui::{Color32, FontId, Pos2, Rect};
 use egui::Context;
-use glam::Vec3;
+use glam::{Mat4, Vec3};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
@@ -32,21 +34,35 @@ pub struct ViewportDimLabel {
     pub text_indices: Vec<u32>,
 }
 
-fn bilinear_quad_world(tl: Vec3, tr: Vec3, br: Vec3, bl: Vec3, u: f32, v: f32) -> Vec3 {
-    tl.lerp(tr, u).lerp(bl.lerp(br, u), v)
+fn label_plane_normal(view: &PlanarLabelView, world: &LinearDimensionWorldGeom) -> Vec3 {
+    let mut plane_n = view.plane_normal.normalize_or_zero();
+    if plane_n.length_squared() < 1e-8 {
+        plane_n = world
+            .along_world
+            .cross(world.outward_world)
+            .normalize_or_zero();
+    }
+    plane_n
 }
 
 /// Tessellate a planar dimension label into world-space textured vertices.
+///
+/// Glyph positions are laid out in screen space (matching the CPU painter) and
+/// then unprojected onto the sketch plane so labels stay upright without skew
+/// as the camera rotates.
 pub fn build_planar_label_mesh<Project>(
     ctx: &Context,
     world: &LinearDimensionWorldGeom,
     view: &PlanarLabelView,
     label: &str,
     color: Color32,
+    cam: &Camera,
+    viewport: Rect,
+    view_proj: &Mat4,
     project: &Project,
 ) -> (Vec<GpuTextVertex>, Vec<u32>)
 where
-    Project: Fn(Vec3) -> Option<egui::Pos2>,
+    Project: Fn(Vec3) -> Option<Pos2>,
 {
     let galley = ctx.fonts(|fonts| {
         fonts.layout_no_wrap(
@@ -62,7 +78,14 @@ where
     let Some(corners_world) = planar_label_corners_world(world, view, size, project) else {
         return (Vec::new(), Vec::new());
     };
-    let [tl, tr, br, bl] = corners_world;
+    let Some(corners_screen) = planar_label_corners_screen(&corners_world, project) else {
+        return (Vec::new(), Vec::new());
+    };
+    let [tl, tr, br, bl] = corners_screen;
+    let plane_n = label_plane_normal(view, world);
+    if plane_n.length_squared() < 1e-8 {
+        return (Vec::new(), Vec::new());
+    }
     let to_eye = (view.eye - world.label_center).normalize_or_zero();
     let depth_bias = to_eye * 0.25;
 
@@ -83,13 +106,23 @@ where
             let local = vertex.pos.to_vec2();
             let u = local.x / size.x;
             let v = local.y / size.y;
+            let screen_pos = bilinear_quad_screen(tl, tr, br, bl, u, v);
+            let Some(mut world_pos) = cam.ray_plane_hit(
+                screen_pos,
+                viewport,
+                view_proj,
+                world.label_center,
+                plane_n,
+            ) else {
+                continue;
+            };
+            world_pos += depth_bias;
             let mut glyph_color = vertex.color;
             if glyph_color == Color32::PLACEHOLDER {
                 glyph_color = color;
             } else if row.visuals.glyph_vertex_range.contains(&i) {
                 glyph_color = color;
             }
-            let world_pos = bilinear_quad_world(tl, tr, br, bl, u, v) + depth_bias;
             let uv = vertex.uv.to_vec2() * uv_norm;
             vertices.push(GpuTextVertex {
                 position: world_pos.to_array(),
@@ -111,7 +144,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::camera::Camera;
     use crate::dimensions::linear_dimension_world_geom;
     use egui::Pos2;
 
@@ -126,6 +158,7 @@ mod tests {
         let _ = ctx.run(egui::RawInput::default(), |_| {});
         let cam = Camera::default();
         let viewport = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
         let project = test_project(&cam, viewport);
         let view = PlanarLabelView::from_camera_and_plane(&cam, Vec3::Z);
         let world = linear_dimension_world_geom(
@@ -136,10 +169,67 @@ mod tests {
             1.0,
             2.0,
         );
-        let (vertices, indices) =
-            build_planar_label_mesh(&ctx, &world, &view, "42.0 mm", Color32::WHITE, &project);
+        let (vertices, indices) = build_planar_label_mesh(
+            &ctx,
+            &world,
+            &view,
+            "42.0 mm",
+            Color32::WHITE,
+            &cam,
+            viewport,
+            &vp,
+            &project,
+        );
         assert!(!vertices.is_empty());
         assert!(!indices.is_empty());
         assert_eq!(indices.len() % 3, 0);
+    }
+
+    #[test]
+    fn screen_label_layout_round_trips_through_sketch_plane_under_tilted_camera() {
+        let mut cam = Camera::default();
+        cam.orbit(egui::vec2(120.0, 45.0));
+        let viewport = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
+        let project = test_project(&cam, viewport);
+        let view = PlanarLabelView::from_camera_and_plane(&cam, Vec3::Z);
+        let world = linear_dimension_world_geom(
+            Vec3::new(-50.0, 10.0, 0.0),
+            Vec3::new(50.0, 10.0, 0.0),
+            Vec3::Y,
+            5.0,
+            1.0,
+            2.0,
+        );
+        let corners_world = planar_label_corners_world(
+            &world,
+            &view,
+            egui::vec2(48.0, 14.0),
+            &project,
+        )
+        .unwrap();
+        let corners_screen = planar_label_corners_screen(&corners_world, &project).unwrap();
+        let plane_n = label_plane_normal(&view, &world);
+        for (u, v) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.5, 0.5)] {
+            let screen = bilinear_quad_screen(
+                corners_screen[0],
+                corners_screen[1],
+                corners_screen[2],
+                corners_screen[3],
+                u,
+                v,
+            );
+            let world_pos = cam
+                .ray_plane_hit(screen, viewport, &vp, world.label_center, plane_n)
+                .expect("screen label point should hit sketch plane");
+            let back = cam
+                .project(world_pos, viewport, &vp)
+                .expect("plane point should project");
+            let err = (back - screen).length();
+            assert!(
+                err < 0.5,
+                "screen layout ({u}, {v}) should round-trip through the plane, error {err}px"
+            );
+        }
     }
 }

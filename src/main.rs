@@ -797,6 +797,9 @@ fn build_gpu_dimension_labels(
     ctx: &egui::Context,
     layouts: &[CommittedDimLayout],
     view: &PlanarLabelView,
+    cam: &camera::Camera,
+    viewport: egui::Rect,
+    view_proj: &glam::Mat4,
     project: &impl Fn(glam::Vec3) -> Option<egui::Pos2>,
     skip_constraint: Option<DimLabelTarget>,
 ) -> Vec<gpu_viewport::ViewportDimLabel> {
@@ -812,6 +815,9 @@ fn build_gpu_dimension_labels(
                     view,
                     &layout.label,
                     col::DIM_ANNOTATION,
+                    cam,
+                    viewport,
+                    view_proj,
                     project,
                 )
             };
@@ -2483,6 +2489,9 @@ impl App {
                         ui.ctx(),
                         layouts,
                         &view,
+                        &cam,
+                        viewport,
+                        &vp,
                         &project,
                         editing_constraint,
                     )

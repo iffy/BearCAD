@@ -17,8 +17,8 @@ use crate::model::{
 };
 use crate::hierarchy::ElementVisibility;
 use crate::dimensions::{
-    pixels_to_world_distance, LinearDimensionWorldGeom, PlanarLabelView, ARROW_LENGTH, ARROW_WING,
-    LINE_WIDTH,
+    dimension_arrow_wing_world, pixels_to_world_distance, LinearDimensionWorldGeom,
+    PlanarLabelView, ARROW_LENGTH, ARROW_WING, LINE_WIDTH,
 };
 use crate::gpu_viewport::dim_labels::ViewportDimLabel;
 use crate::selection::SceneSelection;
@@ -48,6 +48,10 @@ pub const SHAPE_FILL_DEPTH_BIAS_BASE: f32 = 0.04;
 pub const SHAPE_FILL_DEPTH_BIAS_STEP: f32 = 0.008;
 /// In-progress previews render above committed geometry.
 pub const PREVIEW_FILL_DEPTH_BIAS: f32 = 0.2;
+/// Ground grid lines sit on the reference plane so element strokes win overlaps.
+pub const GRID_DEPTH_BIAS: f32 = 0.0;
+/// Lift strokes toward the camera so lines draw over coplanar face fills and grid.
+pub const STROKE_DEPTH_BIAS: f32 = 0.10;
 /// Lift construction-plane hover fills above the plane surface (avoids z-fighting).
 const HOVER_PLANE_DEPTH_LIFT: f32 = 0.02;
 
@@ -577,6 +581,30 @@ impl<'a> SceneMesh<'a> {
         viewport: UiRect,
         view_proj: &Mat4,
     ) {
+        self.push_line_segment_with_bias(
+            a,
+            b,
+            color,
+            width_px,
+            cam,
+            viewport,
+            view_proj,
+            STROKE_DEPTH_BIAS,
+        );
+    }
+
+    pub(crate) fn push_line_segment_with_bias(
+        &mut self,
+        a: Vec3,
+        b: Vec3,
+        color: Color32,
+        width_px: f32,
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+        depth_bias: f32,
+    ) {
+        let (a, b) = offset_segment_toward_camera(a, b, cam.eye(), depth_bias);
         let Some(quad) = line_screen_quad(a, b, width_px, cam, viewport, view_proj) else {
             return;
         };
@@ -609,7 +637,7 @@ impl<'a> SceneMesh<'a> {
                 palette.grid
             };
             let color = sketch_ground_color(base, dim);
-            self.push_line_segment(
+            self.push_line_segment_with_bias(
                 Vec3::new(-e, t, 0.0),
                 Vec3::new(e, t, 0.0),
                 color,
@@ -617,8 +645,9 @@ impl<'a> SceneMesh<'a> {
                 cam,
                 viewport,
                 view_proj,
+                GRID_DEPTH_BIAS,
             );
-            self.push_line_segment(
+            self.push_line_segment_with_bias(
                 Vec3::new(t, -e, 0.0),
                 Vec3::new(t, e, 0.0),
                 color,
@@ -626,10 +655,11 @@ impl<'a> SceneMesh<'a> {
                 cam,
                 viewport,
                 view_proj,
+                GRID_DEPTH_BIAS,
             );
             t += GRID_STEP;
         }
-        self.push_line_segment(
+        self.push_line_segment_with_bias(
             Vec3::ZERO,
             Vec3::new(e, 0.0, 0.0),
             sketch_ground_color(palette.x_axis, dim),
@@ -637,8 +667,9 @@ impl<'a> SceneMesh<'a> {
             cam,
             viewport,
             view_proj,
+            GRID_DEPTH_BIAS,
         );
-        self.push_line_segment(
+        self.push_line_segment_with_bias(
             Vec3::ZERO,
             Vec3::new(0.0, e, 0.0),
             sketch_ground_color(palette.y_axis, dim),
@@ -646,8 +677,9 @@ impl<'a> SceneMesh<'a> {
             cam,
             viewport,
             view_proj,
+            GRID_DEPTH_BIAS,
         );
-        self.push_line_segment(
+        self.push_line_segment_with_bias(
             Vec3::ZERO,
             Vec3::new(0.0, 0.0, e),
             sketch_ground_color(palette.z_axis, dim),
@@ -655,6 +687,7 @@ impl<'a> SceneMesh<'a> {
             cam,
             viewport,
             view_proj,
+            GRID_DEPTH_BIAS,
         );
     }
 
@@ -1330,6 +1363,15 @@ fn plane_camera_depth(plane: &ConstructionPlane, cam: &Camera) -> f32 {
     (cam.eye() - center).length()
 }
 
+fn offset_segment_toward_camera(a: Vec3, b: Vec3, eye: Vec3, bias: f32) -> (Vec3, Vec3) {
+    if bias == 0.0 {
+        return (a, b);
+    }
+    let mid = (a + b) * 0.5;
+    let to_cam = (eye - mid).normalize_or_zero();
+    (a + to_cam * bias, b + to_cam * bias)
+}
+
 pub fn offset_toward_camera(pos: Vec3, normal: Vec3, eye: Vec3, bias: f32) -> Vec3 {
     if bias == 0.0 {
         return pos;
@@ -1443,9 +1485,14 @@ fn push_arrowhead_world(
     }
     let arrow_len = pixels_to_world_distance(project, tip, along, ARROW_LENGTH);
     let arrow_wing = pixels_to_world_distance(project, tip, along, ARROW_WING);
-    let side = along
-        .cross(world.outward_world.normalize_or_zero())
-        .normalize_or_zero();
+    let mut side = dimension_arrow_wing_world(along, world.outward_world);
+    if side.length_squared() < 1e-8 {
+        let to_cam = (cam.eye() - tip).normalize_or_zero();
+        side = along.cross(to_cam).normalize_or_zero();
+    }
+    if side.length_squared() < 1e-8 {
+        return;
+    }
     let base = tip - along * arrow_len;
     mesh.push_line_segment(
         tip,
@@ -2469,6 +2516,48 @@ mod tests {
     }
 
     #[test]
+    fn stroke_depth_bias_beats_shape_fill_bias() {
+        assert!(STROKE_DEPTH_BIAS > shape_fill_depth_bias(0));
+        assert!(STROKE_DEPTH_BIAS > plane_fill_depth_bias(0));
+    }
+
+    #[test]
+    fn stroke_depth_bias_beats_grid_depth_bias() {
+        assert!(STROKE_DEPTH_BIAS > GRID_DEPTH_BIAS);
+    }
+
+    #[test]
+    fn element_strokes_sit_closer_to_camera_than_coplanar_grid() {
+        let cam = Camera::default();
+        let eye = cam.eye();
+        let on_plane = Vec3::new(10.0, 10.0, 0.0);
+        let grid = offset_toward_camera(on_plane, Vec3::Z, eye, GRID_DEPTH_BIAS);
+        let (stroke_a, _) =
+            offset_segment_toward_camera(on_plane, on_plane + Vec3::X, eye, STROKE_DEPTH_BIAS);
+        assert!(
+            (eye - stroke_a).length() < (eye - grid).length(),
+            "element strokes should render above coplanar grid lines"
+        );
+    }
+
+    #[test]
+    fn line_segments_are_biased_toward_camera_over_coplanar_fills() {
+        let cam = Camera::default();
+        let eye = cam.eye();
+        let on_plane = Vec3::new(10.0, 0.0, 0.0);
+        let fill = offset_toward_camera(on_plane, Vec3::Z, eye, shape_fill_depth_bias(0));
+        let (stroke_a, stroke_b) =
+            offset_segment_toward_camera(on_plane, on_plane + Vec3::X, eye, STROKE_DEPTH_BIAS);
+        let fill_dist = (eye - fill).length();
+        let stroke_dist = (eye - stroke_a).length();
+        assert!(
+            stroke_dist < fill_dist,
+            "strokes should sit closer to the camera than coplanar face fills"
+        );
+        assert_eq!(stroke_a.z, stroke_b.z);
+    }
+
+    #[test]
     fn shape_fills_sit_above_coplanar_plane_toward_camera() {
         let cam = Camera::default();
         let eye = cam.eye();
@@ -2533,6 +2622,9 @@ mod tests {
             &view,
             &label_text,
             Color32::WHITE,
+            &cam,
+            viewport,
+            &vp,
             &project,
         );
         let dim_label = crate::gpu_viewport::ViewportDimLabel {
