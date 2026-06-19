@@ -317,6 +317,11 @@ impl Camera {
         (right, up)
     }
 
+    /// Camera screen-right and screen-up in world space (for planar annotation layout).
+    pub fn screen_axes(&self, forward: Vec3) -> (Vec3, Vec3) {
+        self.camera_axes(forward)
+    }
+
     /// Animate to a standard orthographic view over `duration` seconds.
     pub fn start_view_transition(&mut self, view: StandardView, duration: f32) {
         let (yaw, pitch) = view.yaw_pitch();

@@ -38,7 +38,7 @@ use construction::{
     AxisGizmoHit, PlaneDim, PlaneReference, AXIS_GIZMO_HANDLE_HIT_RADIUS_PX, PLANE_DISPLAY_HALF,
 };
 use dimensions::{
-    draw_linear_dimension, effective_dim_offset, planar_dimension_label_layout,
+    draw_linear_dimension, effective_dim_offset, planar_dimension_label_layout, PlanarLabelView,
     linear_dimension_world_geom, outward_perpendicular_uv, pixels_to_world_distance,
     preferred_outward_uv, project_linear_dimension_geom, uv_dir_to_world, EXTENSION_OVERSHOOT,
     LABEL_OUTSET,
@@ -921,6 +921,7 @@ fn push_committed_dim_layout(
     layouts: &mut Vec<CommittedDimLayout>,
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    label_view: &PlanarLabelView,
     frame: &face::SketchFrame,
     target: DimLabelTarget,
     a: Vec3,
@@ -951,8 +952,14 @@ fn push_committed_dim_layout(
     let Some(geom) = project_linear_dimension_geom(&world_geom, &project) else {
         return;
     };
-    let label_rect =
-        planar_dimension_label_layout(painter, &world_geom, &geom, &label, color, &project);
+    let label_rect = planar_dimension_label_layout(
+        painter,
+        &world_geom,
+        label_view,
+        &label,
+        color,
+        &project,
+    );
     layouts.push(CommittedDimLayout {
         target,
         geom,
@@ -967,6 +974,7 @@ fn push_committed_dim_layout(
 fn build_committed_dim_layouts(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    label_view: &PlanarLabelView,
     doc: &model::Document,
     session: SketchSession,
 ) -> Vec<CommittedDimLayout> {
@@ -994,6 +1002,7 @@ fn build_committed_dim_layouts(
                 &mut layouts,
                 painter,
                 &project,
+                label_view,
                 &frame,
                 DimLabelTarget::RectWidth { index },
                 a,
@@ -1012,6 +1021,7 @@ fn build_committed_dim_layouts(
                 &mut layouts,
                 painter,
                 &project,
+                label_view,
                 &frame,
                 DimLabelTarget::RectHeight { index },
                 a,
@@ -1038,6 +1048,7 @@ fn build_committed_dim_layouts(
             &mut layouts,
             painter,
             &project,
+            label_view,
             &frame,
             DimLabelTarget::LineLength { index },
             a,
@@ -1053,6 +1064,7 @@ fn build_committed_dim_layouts(
 fn draw_committed_dim_layouts<Project>(
     painter: &egui::Painter,
     layouts: &[CommittedDimLayout],
+    label_view: &PlanarLabelView,
     project: &Project,
 ) where
     Project: Fn(Vec3) -> Option<egui::Pos2>,
@@ -1064,7 +1076,7 @@ fn draw_committed_dim_layouts<Project>(
             &layout.geom,
             &layout.label,
             color,
-            Some((&layout.world_geom, project)),
+            Some((&layout.world_geom, label_view, project)),
         );
     }
 }
@@ -1185,8 +1197,12 @@ impl App {
         let project = move |w: Vec3| cam_project.project(w, viewport, &vp);
 
         let sketch_session = self.state.sketch_session;
-        let committed_dim_layouts = sketch_session.map(|session| {
-            build_committed_dim_layouts(&painter, &project, &self.state.doc, session)
+        let planar_label_view = sketch_session.and_then(|session| {
+            sketch_geometry_frame(&self.state.doc, session.sketch)
+                .map(|frame| PlanarLabelView::from_camera_and_plane(&cam, frame.normal))
+        });
+        let committed_dim_layouts = sketch_session.zip(planar_label_view).map(|(session, view)| {
+            build_committed_dim_layouts(&painter, &project, &view, &self.state.doc, session)
         });
         let pointer_screen = response.hover_pos().or(response.interact_pointer_pos());
         let over_committed_dim_label = pointer_screen.is_some_and(|pp| {
@@ -1629,8 +1645,8 @@ impl App {
                     );
                 }
             }
-            if let Some(layouts) = &committed_dim_layouts {
-                draw_committed_dim_layouts(&painter, layouts, &project);
+            if let (Some(layouts), Some(view)) = (&committed_dim_layouts, planar_label_view) {
+                draw_committed_dim_layouts(&painter, layouts, &view, &project);
             }
         } else {
             self.dim_label_drag = None;
