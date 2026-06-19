@@ -54,6 +54,10 @@ jobs:
           fi
           cargo test
 
+      # cargo test builds a test harness, not target/debug/le3 — needed for smoke/scripts.
+      - name: cargo build
+        run: cargo build
+
       - name: Launch smoke test
         run: |
           set +e
