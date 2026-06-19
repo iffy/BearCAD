@@ -37,6 +37,13 @@ impl FaceId {
 /// Index into [`Document::sketches`].
 pub type SketchId = usize;
 
+/// A named length parameter (expression stored verbatim, evaluated on demand).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Parameter {
+    pub name: String,
+    pub expression: String,
+}
+
 /// A 2D sketch hosted on a face. A single face may host multiple independent sketches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sketch {
@@ -48,7 +55,7 @@ pub struct Sketch {
 /// Stored by its origin (`x`, `y`) and signed `w`/`h` extents in the local (u, v)
 /// frame of the sketch's host face. We normalise on creation so width/height are
 /// always positive, which keeps hit-testing simple.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Rect {
     pub sketch: SketchId,
     pub x: f32,
@@ -67,6 +74,12 @@ pub struct Rect {
     /// User-placed offset from the measured edge to the height dimension line (px).
     #[serde(default)]
     pub height_dim_offset: Option<f32>,
+    /// Expression text when [`width_locked`] is set.
+    #[serde(default)]
+    pub width_expr: Option<String>,
+    /// Expression text when [`height_locked`] is set.
+    #[serde(default)]
+    pub height_expr: Option<String>,
 }
 
 impl Rect {
@@ -82,12 +95,14 @@ impl Rect {
             height_locked: false,
             width_dim_offset: None,
             height_dim_offset: None,
+            width_expr: None,
+            height_expr: None,
         }
     }
 }
 
 /// A line segment in face-local coordinates (millimetres, per SPEC §5.3).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Line {
     pub sketch: SketchId,
     pub x0: f32,
@@ -100,6 +115,9 @@ pub struct Line {
     /// User-placed offset from the measured segment to the length dimension line (px).
     #[serde(default)]
     pub length_dim_offset: Option<f32>,
+    /// Expression text when [`length_locked`] is set.
+    #[serde(default)]
+    pub length_expr: Option<String>,
 }
 
 impl Line {
@@ -118,6 +136,7 @@ impl Line {
             y1: v1,
             length_locked: false,
             length_dim_offset: None,
+            length_expr: None,
         }
     }
 
@@ -184,12 +203,14 @@ pub enum ShapeKind {
     Sketch,
     Rect,
     Line,
+    Parameter,
     ConstructionPlane,
 }
 
 /// The whole document: sketches, sketch primitives, and construction planes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Document {
+    pub parameters: Vec<Parameter>,
     pub sketches: Vec<Sketch>,
     pub rects: Vec<Rect>,
     pub lines: Vec<Line>,
@@ -202,6 +223,7 @@ pub struct Document {
 impl Default for Document {
     fn default() -> Self {
         Self {
+            parameters: Vec::new(),
             sketches: Vec::new(),
             rects: Vec::new(),
             lines: Vec::new(),

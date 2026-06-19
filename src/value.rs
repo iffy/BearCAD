@@ -1,11 +1,33 @@
 //! Length expressions with units (SPEC §5.2–5.3).
 //!
 //! Canonical internal unit is millimetres. Supported length units: mm, cm, m, ft, in.
-//! Bare numbers are interpreted as millimetres.
+//! Bare numbers are interpreted as millimetres. Identifiers refer to document parameters.
+
+use crate::model::Document;
 
 /// Evaluate a length expression to millimetres, or `None` if parsing fails.
 pub fn eval_length_mm(text: &str) -> Option<f32> {
-    let mut p = Parser::new(text.trim());
+    eval_length_mm_with_params(text, &[])
+}
+
+/// Evaluate a length expression using document parameters.
+pub fn eval_length_mm_in_doc(text: &str, doc: &Document) -> Option<f32> {
+    let params: Vec<(&str, &str)> = doc
+        .parameters
+        .iter()
+        .map(|p| (p.name.as_str(), p.expression.as_str()))
+        .collect();
+    eval_length_mm_with_params(text, &params)
+}
+
+/// Evaluate with explicit parameter name → expression bindings.
+pub fn eval_length_mm_with_params(text: &str, params: &[(&str, &str)]) -> Option<f32> {
+    let mut visiting = Vec::new();
+    eval_length_mm_inner(text.trim(), params, &mut visiting)
+}
+
+fn eval_length_mm_inner(text: &str, params: &[(&str, &str)], visiting: &mut Vec<String>) -> Option<f32> {
+    let mut p = Parser::new(text, Some(params), visiting);
     let value = p.parse_expr().ok()?;
     p.skip_ws();
     if p.at_end() {
@@ -13,6 +35,57 @@ pub fn eval_length_mm(text: &str) -> Option<f32> {
     } else {
         None
     }
+}
+
+/// Whether `name` is a valid parameter identifier.
+pub fn is_valid_parameter_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Replace whole identifier occurrences of `old` with `new` in an expression.
+pub fn substitute_parameter_name(expression: &str, old: &str, new: &str) -> String {
+    if old == new || old.is_empty() || !is_valid_parameter_name(old) {
+        return expression.to_string();
+    }
+    let mut out = String::with_capacity(expression.len());
+    let mut i = 0;
+    while i < expression.len() {
+        if let Some((ident, len)) = identifier_at(expression, i) {
+            if ident == old {
+                out.push_str(new);
+            } else {
+                out.push_str(ident);
+            }
+            i += len;
+        } else {
+            let ch = expression[i..].chars().next().expect("char");
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    out
+}
+
+fn identifier_at(text: &str, start: usize) -> Option<(&str, usize)> {
+    let rest = &text[start..];
+    let mut chars = rest.chars();
+    let first = chars.next()?;
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return None;
+    }
+    let mut len = first.len_utf8();
+    for c in chars {
+        if !(c.is_ascii_alphanumeric() || c == '_') {
+            break;
+        }
+        len += c.len_utf8();
+    }
+    Some((&text[start..start + len], len))
 }
 
 /// Whether the text uses expression syntax (operators, parentheses, or units) and
@@ -46,9 +119,22 @@ pub fn parse_length_or(text: &str, fallback: f32) -> f32 {
     eval_length_mm(text).unwrap_or(fallback)
 }
 
+/// Parse a length expression with parameters, falling back when empty/invalid.
+pub fn parse_length_or_in_doc(text: &str, doc: &Document, fallback: f32) -> f32 {
+    eval_length_mm_in_doc(text, doc)
+        .unwrap_or(fallback)
+}
+
 /// Parse a positive length expression, falling back when empty/invalid/non-positive.
 pub fn parse_positive_length_or(text: &str, fallback: f32) -> f32 {
     eval_length_mm(text)
+        .filter(|v| *v > 0.0)
+        .unwrap_or(fallback)
+}
+
+/// Parse a positive length expression with parameters.
+pub fn parse_positive_length_or_in_doc(text: &str, doc: &Document, fallback: f32) -> f32 {
+    eval_length_mm_in_doc(text, doc)
         .filter(|v| *v > 0.0)
         .unwrap_or(fallback)
 }
@@ -90,12 +176,16 @@ impl LengthUnit {
 
 struct Parser<'a> {
     chars: std::iter::Peekable<std::str::Chars<'a>>,
+    params: Option<&'a [(&'a str, &'a str)]>,
+    visiting: &'a mut Vec<String>,
 }
 
 impl<'a> Parser<'a> {
-    fn new(input: &'a str) -> Self {
+    fn new(input: &'a str, params: Option<&'a [(&'a str, &'a str)]>, visiting: &'a mut Vec<String>) -> Self {
         Self {
             chars: input.chars().peekable(),
+            params,
+            visiting,
         }
     }
 
@@ -191,7 +281,38 @@ impl<'a> Parser<'a> {
             self.bump();
             return Ok(v);
         }
+        if let Some(name) = self.try_parse_identifier() {
+            return self.resolve_identifier(name);
+        }
         self.parse_quantity()
+    }
+
+    fn try_parse_identifier(&mut self) -> Option<String> {
+        self.skip_ws();
+        let rest: String = self.chars.clone().collect();
+        let (ident, len) = identifier_at(&rest, 0)?;
+        for _ in 0..len {
+            self.bump();
+        }
+        Some(ident.to_string())
+    }
+
+    fn resolve_identifier(&mut self, name: String) -> Result<f32, ()> {
+        let Some(params) = self.params else {
+            return Err(());
+        };
+        if self.visiting.iter().any(|v| v == &name) {
+            return Err(());
+        }
+        let expression = params
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, expr)| *expr)
+            .ok_or(())?;
+        self.visiting.push(name);
+        let value = eval_length_mm_inner(expression, params, self.visiting).ok_or(())?;
+        self.visiting.pop();
+        Ok(value)
     }
 
     fn parse_quantity(&mut self) -> Result<f32, ()> {
@@ -329,5 +450,32 @@ mod tests {
         assert!((v - 53.3).abs() < 1e-3);
         // Stored text is preserved by callers; re-evaluating yields the same value.
         assert!((eval_length_mm(expr).unwrap() - v).abs() < 1e-6);
+    }
+
+    #[test]
+    fn eval_with_parameter_references() {
+        let params = [("A", "5mm"), ("B", "A + 5in")];
+        let v = eval_length_mm_with_params("B", &params).unwrap();
+        assert!((v - (5.0 + 5.0 * 25.4)).abs() < 1e-2, "got {v}");
+    }
+
+    #[test]
+    fn eval_detects_parameter_cycles() {
+        let params = [("A", "B"), ("B", "A")];
+        assert!(eval_length_mm_with_params("A", &params).is_none());
+    }
+
+    #[test]
+    fn substitute_parameter_name_preserves_other_identifiers() {
+        let expr = "A + width + A2";
+        assert_eq!(substitute_parameter_name(expr, "A", "Len"), "Len + width + A2");
+    }
+
+    #[test]
+    fn is_valid_parameter_name_rules() {
+        assert!(is_valid_parameter_name("A"));
+        assert!(is_valid_parameter_name("width_1"));
+        assert!(!is_valid_parameter_name("1width"));
+        assert!(!is_valid_parameter_name(""));
     }
 }

@@ -21,7 +21,11 @@ use crate::model::SketchId;
 use crate::view_cube::{self, CubeCornerId, CubeEdgeId};
 use crate::model::{ConstructionPlane, Document, FaceId, Line, Rect, ShapeKind};
 use crate::face::SketchFrame;
-use crate::value::parse_positive_length_or;
+use crate::parameters::{
+    add_parameter, delete_parameter, set_parameter_expression, set_parameter_name,
+    ParametersPaneState,
+};
+use crate::value::parse_positive_length_or_in_doc;
 use eframe::egui;
 use glam::Vec3;
 
@@ -81,13 +85,13 @@ pub struct CreatingRect {
 
 impl CreatingRect {
     /// Current opposite corner in world space, respecting locked dimensions.
-    pub fn end_point(&self, frame: &SketchFrame) -> Vec3 {
+    pub fn end_point(&self, frame: &SketchFrame, doc: &Document) -> Vec3 {
         let (ou, ov) = world_to_local(frame, self.origin);
         let (mu, mv) = world_to_local(frame, self.last_mouse);
         let du = mu - ou;
         let dv = mv - ov;
-        let w = parse_positive_length_or(&self.texts[0], du.abs());
-        let h = parse_positive_length_or(&self.texts[1], dv.abs());
+        let w = parse_positive_length_or_in_doc(&self.texts[0], doc, du.abs());
+        let h = parse_positive_length_or_in_doc(&self.texts[1], doc, dv.abs());
         let su = if du < 0.0 { -1.0 } else { 1.0 };
         let sv = if dv < 0.0 { -1.0 } else { 1.0 };
         crate::face::local_to_world(frame, ou + su * w, ov + sv * h)
@@ -111,13 +115,13 @@ pub struct CreatingLine {
 
 impl CreatingLine {
     /// Current second endpoint in world space, respecting any locked length.
-    pub fn end_point(&self, frame: &SketchFrame) -> Vec3 {
+    pub fn end_point(&self, frame: &SketchFrame, doc: &Document) -> Vec3 {
         let (ou, ov) = world_to_local(frame, self.origin);
         let (mu, mv) = world_to_local(frame, self.last_mouse);
         let du = mu - ou;
         let dv = mv - ov;
         let dist = (du * du + dv * dv).sqrt();
-        let len = parse_positive_length_or(&self.text, dist);
+        let len = parse_positive_length_or_in_doc(&self.text, doc, dist);
         if dist < 1e-6 {
             return crate::face::local_to_world(frame, ou + len, ov);
         }
@@ -248,6 +252,10 @@ pub enum Action {
     ToggleProjectionMode,
     SetPaneVisible { pane: Pane, visible: bool },
     TogglePane(Pane),
+    AddParameter { name: String, expression: String },
+    CommitParameterName { index: usize, name: String },
+    CommitParameterExpression { index: usize, expression: String },
+    DeleteParameter { index: usize },
 }
 
 /// A toggleable UI pane (SPEC §11.1).
@@ -257,17 +265,20 @@ pub enum Pane {
     ViewCube,
     /// Scene tree with visibility toggles and sketch editing.
     Hierarchy,
+    /// Named parameters and expressions.
+    Parameters,
 }
 
 impl Pane {
     /// All panes, in menu order.
-    pub const ALL: &'static [Pane] = &[Pane::Hierarchy, Pane::ViewCube];
+    pub const ALL: &'static [Pane] = &[Pane::Hierarchy, Pane::Parameters, Pane::ViewCube];
 
     /// Human-readable label for menus.
     pub fn label(self) -> &'static str {
         match self {
             Pane::ViewCube => "Orientation Cube",
             Pane::Hierarchy => "Tree",
+            Pane::Parameters => "Parameters",
         }
     }
 
@@ -276,6 +287,7 @@ impl Pane {
         match self {
             Pane::ViewCube => "view_cube",
             Pane::Hierarchy => "hierarchy",
+            Pane::Parameters => "parameters",
         }
     }
 
@@ -283,6 +295,7 @@ impl Pane {
         match name.to_ascii_lowercase().as_str() {
             "view_cube" | "viewcube" | "cube" | "hud" => Some(Pane::ViewCube),
             "hierarchy" | "tree" | "dag" => Some(Pane::Hierarchy),
+            "parameters" | "params" | "param" => Some(Pane::Parameters),
             _ => None,
         }
     }
@@ -293,6 +306,7 @@ impl Pane {
 pub struct PaneVisibility {
     pub view_cube: bool,
     pub hierarchy: bool,
+    pub parameters: bool,
 }
 
 impl Default for PaneVisibility {
@@ -300,6 +314,7 @@ impl Default for PaneVisibility {
         Self {
             view_cube: true,
             hierarchy: true,
+            parameters: true,
         }
     }
 }
@@ -309,6 +324,7 @@ impl PaneVisibility {
         match pane {
             Pane::ViewCube => self.view_cube,
             Pane::Hierarchy => self.hierarchy,
+            Pane::Parameters => self.parameters,
         }
     }
 
@@ -316,6 +332,7 @@ impl PaneVisibility {
         match pane {
             Pane::ViewCube => self.view_cube = visible,
             Pane::Hierarchy => self.hierarchy = visible,
+            Pane::Parameters => self.parameters = visible,
         }
     }
 
@@ -421,6 +438,7 @@ pub struct AppState {
     pub creating_line: Option<CreatingLine>,
     pub creating_plane: Option<CreatingConstructionPlane>,
     pub panes: PaneVisibility,
+    pub parameters_pane: ParametersPaneState,
     pub element_visibility: ElementVisibility,
     pub status: String,
 }
@@ -437,6 +455,7 @@ impl Default for AppState {
             creating_line: None,
             creating_plane: None,
             panes: PaneVisibility::default(),
+            parameters_pane: ParametersPaneState::default(),
             element_visibility: ElementVisibility::default(),
             status: String::new(),
         }
@@ -541,6 +560,10 @@ impl AppState {
                     Some(ShapeKind::Line) => {
                         self.doc.lines.pop();
                         self.status = "Undid last line".to_string();
+                    }
+                    Some(ShapeKind::Parameter) => {
+                        self.doc.parameters.pop();
+                        self.status = "Undid last parameter".to_string();
                     }
                     Some(ShapeKind::ConstructionPlane) => {
                         if self.doc.construction_planes.len() <= 1 {
@@ -647,15 +670,18 @@ impl AppState {
                     return ActionResult::Err("No rectangle in progress".to_string());
                 };
                 let (ou, ov) = world_to_local(&frame, cr.origin);
-                let end = cr.end_point(&frame);
+                let end = cr.end_point(&frame, &self.doc);
                 let (eu, ev) = world_to_local(&frame, end);
                 let mut rect = Rect::from_local_corners(session.sketch, ou, ov, eu, ev);
                 rect.width_locked = cr.user_edited[0];
                 rect.height_locked = cr.user_edited[1];
+                rect.width_expr = cr.user_edited[0].then(|| cr.texts[0].clone());
+                rect.height_expr = cr.user_edited[1].then(|| cr.texts[1].clone());
                 if rect.w > 0.5 && rect.h > 0.5 {
+                    let (w, h) = (rect.w, rect.h);
                     self.doc.rects.push(rect);
                     self.doc.shape_order.push(ShapeKind::Rect);
-                    self.status = format!("Added rectangle ({:.1} × {:.1} mm)", rect.w, rect.h);
+                    self.status = format!("Added rectangle ({w:.1} × {h:.1} mm)");
                     ActionResult::Ok
                 } else {
                     self.creating_rect = Some(cr);
@@ -691,10 +717,11 @@ impl AppState {
                     return ActionResult::Err("No line in progress".to_string());
                 };
                 let (u0, v0) = world_to_local(&frame, cl.origin);
-                let end = cl.end_point(&frame);
+                let end = cl.end_point(&frame, &self.doc);
                 let (u1, v1) = world_to_local(&frame, end);
                 let mut line = Line::from_local_endpoints(session.sketch, u0, v0, u1, v1);
                 line.length_locked = cl.user_edited;
+                line.length_expr = cl.user_edited.then(|| cl.text.clone());
                 if line.length() > 0.5 {
                     let len = line.length();
                     self.doc.lines.push(line);
@@ -933,6 +960,54 @@ impl AppState {
                 self.cam.toggle_projection_mode();
                 self.status = format!("Projection: {:?}", self.cam.projection_mode());
                 ActionResult::Ok
+            }
+            Action::AddParameter { name, expression } => {
+                match add_parameter(&mut self.doc, name.clone(), expression.clone()) {
+                    Ok(_) => {
+                        self.status = format!("Added parameter {name}");
+                        ActionResult::Ok
+                    }
+                    Err(e) => {
+                        self.status = e.clone();
+                        ActionResult::Err(e)
+                    }
+                }
+            }
+            Action::CommitParameterName { index, name } => {
+                match set_parameter_name(&mut self.doc, index, name.clone()) {
+                    Ok(()) => {
+                        self.status = format!("Renamed parameter to {name}");
+                        ActionResult::Ok
+                    }
+                    Err(e) => {
+                        self.status = e.clone();
+                        ActionResult::Err(e)
+                    }
+                }
+            }
+            Action::CommitParameterExpression { index, expression } => {
+                match set_parameter_expression(&mut self.doc, index, expression.clone()) {
+                    Ok(()) => {
+                        self.status = "Updated parameter".to_string();
+                        ActionResult::Ok
+                    }
+                    Err(e) => {
+                        self.status = e.clone();
+                        ActionResult::Err(e)
+                    }
+                }
+            }
+            Action::DeleteParameter { index } => {
+                match delete_parameter(&mut self.doc, index) {
+                    Ok(()) => {
+                        self.status = "Deleted parameter".to_string();
+                        ActionResult::Ok
+                    }
+                    Err(e) => {
+                        self.status = e.clone();
+                        ActionResult::Err(e)
+                    }
+                }
             }
             Action::SetPaneVisible { pane, visible } => {
                 self.panes.set(pane, visible);
@@ -1391,7 +1466,8 @@ mod tests {
             pending_focus: false,
         };
         let frame = xy_frame();
-        let end = cr.end_point(&frame);
+        let doc = Document::default();
+        let end = cr.end_point(&frame, &doc);
         assert!((end.x - 50.8).abs() < 1e-3);
         assert!((end.y - 2.5).abs() < 1e-3);
     }
@@ -1406,7 +1482,8 @@ mod tests {
             pending_focus: false,
         };
         let frame = xy_frame();
-        let end = cl.end_point(&frame);
+        let doc = Document::default();
+        let end = cl.end_point(&frame, &doc);
         let (u0, v0) = world_to_local(&frame, cl.origin);
         let (u1, v1) = world_to_local(&frame, end);
         let line = Line::from_local_endpoints(0, u0, v0, u1, v1);
@@ -1442,7 +1519,8 @@ mod tests {
             pending_focus: false,
         };
         let frame = xy_frame();
-        let end = cl.end_point(&frame);
+        let doc = Document::default();
+        let end = cl.end_point(&frame, &doc);
         let (u0, v0) = world_to_local(&frame, cl.origin);
         let (u1, v1) = world_to_local(&frame, end);
         let line = Line::from_local_endpoints(0, u0, v0, u1, v1);
@@ -1459,7 +1537,8 @@ mod tests {
             pending_focus: false,
         };
         let frame = xy_frame();
-        let end = cl.end_point(&frame);
+        let doc = Document::default();
+        let end = cl.end_point(&frame, &doc);
         assert!((end.x - 7.0).abs() < 1e-4);
         assert!(end.y.abs() < 1e-4);
     }

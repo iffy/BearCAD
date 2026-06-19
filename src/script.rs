@@ -56,6 +56,10 @@ pub enum Instruction {
     ToggleProjectionMode,
     /// Show/hide a UI pane. `None` toggles.
     SetPane { pane: Pane, visible: Option<bool> },
+    AddParameter { name: String, expression: String },
+    SetParameterName { index: usize, name: String },
+    SetParameterExpression { index: usize, expression: String },
+    DeleteParameter { index: usize },
 
     // Synthetic input (viewport-local pixel coordinates)
     Move { x: f32, y: f32 },
@@ -163,6 +167,16 @@ impl Instruction {
                 };
                 format!("pane {} {verb}", pane.script_name())
             }
+            Instruction::AddParameter { name, expression } => {
+                format!("parameter add {name} {expression}")
+            }
+            Instruction::SetParameterName { index, name } => {
+                format!("parameter name {index} {name}")
+            }
+            Instruction::SetParameterExpression { index, expression } => {
+                format!("parameter value {index} {expression}")
+            }
+            Instruction::DeleteParameter { index } => format!("parameter delete {index}"),
             Instruction::Move { x, y } => format!("move {x} {y}"),
             Instruction::Click { x, y } => format!("click {x} {y}"),
             Instruction::MoveGround { x, y } => format!("move_ground {x} {y}"),
@@ -336,7 +350,7 @@ fn parse_line(line: &str, line_no: usize) -> Result<Instruction, ParseError> {
             let name = parts.next().ok_or_else(|| err("pane requires a name"))?;
             let pane = Pane::from_name(name).ok_or_else(|| {
                 err(&format!(
-                    "unknown pane '{name}' (expected tree or view_cube)"
+                    "unknown pane '{name}' (expected tree, parameters, or view_cube)"
                 ))
             })?;
             let visible = match parts.next().map(|s| s.to_ascii_lowercase()).as_deref() {
@@ -350,6 +364,72 @@ fn parse_line(line: &str, line_no: usize) -> Result<Instruction, ParseError> {
                 }
             };
             Ok(Instruction::SetPane { pane, visible })
+        }
+
+        "parameter" | "param" => {
+            let (sub, tail) = rest
+                .split_once(char::is_whitespace)
+                .map(|(s, t)| (s, t.trim()))
+                .unwrap_or((rest, ""));
+            match sub.to_ascii_lowercase().as_str() {
+                "add" => {
+                    let (name, expression) = tail
+                        .split_once(char::is_whitespace)
+                        .ok_or_else(|| err("parameter add requires name and expression"))?;
+                    let expression = expression.trim();
+                    if expression.is_empty() {
+                        return Err(err("parameter add requires an expression"));
+                    }
+                    Ok(Instruction::AddParameter {
+                        name: name.to_string(),
+                        expression: expression.to_string(),
+                    })
+                }
+                "name" | "rename" => {
+                    let (index_str, name) = tail
+                        .split_once(char::is_whitespace)
+                        .ok_or_else(|| err("parameter name requires index and name"))?;
+                    let index = index_str
+                        .parse::<usize>()
+                        .map_err(|_| err("parameter name index must be an integer"))?;
+                    let name = name.trim();
+                    if name.is_empty() {
+                        return Err(err("parameter name requires a name"));
+                    }
+                    Ok(Instruction::SetParameterName {
+                        index,
+                        name: name.to_string(),
+                    })
+                }
+                "value" | "expr" | "expression" => {
+                    let (index_str, expression) = tail
+                        .split_once(char::is_whitespace)
+                        .ok_or_else(|| err("parameter value requires index and expression"))?;
+                    let index = index_str
+                        .parse::<usize>()
+                        .map_err(|_| err("parameter value index must be an integer"))?;
+                    let expression = expression.trim();
+                    if expression.is_empty() {
+                        return Err(err("parameter value requires an expression"));
+                    }
+                    Ok(Instruction::SetParameterExpression {
+                        index,
+                        expression: expression.to_string(),
+                    })
+                }
+                "delete" | "del" | "remove" => {
+                    let index = tail
+                        .split_whitespace()
+                        .next()
+                        .ok_or_else(|| err("parameter delete requires index"))?
+                        .parse::<usize>()
+                        .map_err(|_| err("parameter delete index must be an integer"))?;
+                    Ok(Instruction::DeleteParameter { index })
+                }
+                other => Err(err(&format!(
+                    "unknown parameter command '{other}' (expected add, name, value, or delete)"
+                ))),
+            }
         }
 
         "set_dim_label_offset" | "setdimlabeloffset" | "dim_label_offset" => {
@@ -1240,6 +1320,22 @@ impl ScriptRunner {
                 };
                 StepResult::Continue
             }
+            Instruction::AddParameter { name, expression } => {
+                state.apply(Action::AddParameter { name, expression });
+                StepResult::Continue
+            }
+            Instruction::SetParameterName { index, name } => {
+                state.apply(Action::CommitParameterName { index, name });
+                StepResult::Continue
+            }
+            Instruction::SetParameterExpression { index, expression } => {
+                state.apply(Action::CommitParameterExpression { index, expression });
+                StepResult::Continue
+            }
+            Instruction::DeleteParameter { index } => {
+                state.apply(Action::DeleteParameter { index });
+                StepResult::Continue
+            }
 
             Instruction::Move { x, y } => {
                 let Some(vp) = viewport else {
@@ -1644,9 +1740,77 @@ mod tests {
     }
 
     #[test]
+    fn parses_parameters_pane_commands() {
+        let ins = parse("pane parameters show\npane params hide\npane param toggle").unwrap();
+        assert_eq!(
+            ins,
+            vec![
+                Instruction::SetPane {
+                    pane: Pane::Parameters,
+                    visible: Some(true),
+                },
+                Instruction::SetPane {
+                    pane: Pane::Parameters,
+                    visible: Some(false),
+                },
+                Instruction::SetPane {
+                    pane: Pane::Parameters,
+                    visible: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn rejects_unknown_pane() {
-        assert!(parse("pane parameters show").is_err());
+        assert!(parse("pane bogus show").is_err());
         assert!(parse("pane view_cube sideways").is_err());
+    }
+
+    #[test]
+    fn parses_parameter_commands() {
+        let ins = parse(
+            "parameter add A 5mm\nparameter value 0 A + 5in\nparameter name 0 Len\nparameter delete 1",
+        )
+        .unwrap();
+        assert_eq!(
+            ins,
+            vec![
+                Instruction::AddParameter {
+                    name: "A".to_string(),
+                    expression: "5mm".to_string(),
+                },
+                Instruction::SetParameterExpression {
+                    index: 0,
+                    expression: "A + 5in".to_string(),
+                },
+                Instruction::SetParameterName {
+                    index: 0,
+                    name: "Len".to_string(),
+                },
+                Instruction::DeleteParameter { index: 1 },
+            ]
+        );
+    }
+
+    #[test]
+    fn script_adds_and_renames_parameters() {
+        let script = "parameter add A 5mm\nparameter add B A+5in\nparameter name 0 Len";
+        let mut runner = ScriptRunner::new(parse(script).unwrap());
+        runner.verbose = false;
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        while !runner.done {
+            runner.tick(
+                &mut state,
+                &mut synthetic,
+                None,
+                &egui::Context::default(),
+            );
+        }
+        assert_eq!(state.doc.parameters.len(), 2);
+        assert_eq!(state.doc.parameters[0].name, "Len");
+        assert_eq!(state.doc.parameters[1].expression, "Len+5in");
     }
 
     #[test]
@@ -1859,7 +2023,7 @@ mod tests {
         assert_eq!(cl.text, "2in + 5mm / 2");
         let sketch = state.sketch_session.unwrap().sketch;
         let frame = crate::face::sketch_geometry_frame(&state.doc, sketch).unwrap();
-        let end = cl.end_point(&frame);
+        let end = cl.end_point(&frame, &state.doc);
         let (u0, v0) = crate::face::world_to_local(&frame, cl.origin);
         let (u1, v1) = crate::face::world_to_local(&frame, end);
         let len = crate::model::Line::from_local_endpoints(sketch, u0, v0, u1, v1).length();

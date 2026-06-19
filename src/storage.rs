@@ -8,7 +8,7 @@
 //! `dag_nodes` shape.
 
 use crate::face::default_xy_plane;
-use crate::model::{Document, Line, Rect, ShapeKind, Sketch};
+use crate::model::{Document, Line, Parameter, Rect, ShapeKind, Sketch};
 use rusqlite::Connection;
 
 /// Bump when the on-disk schema changes; pair with a migration below.
@@ -62,7 +62,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     .map_err(|e| e.to_string())?;
 
     tx.execute(
-        "DELETE FROM dag_nodes WHERE kind IN ('sketch', 'rectangle', 'line')",
+        "DELETE FROM dag_nodes WHERE kind IN ('sketch', 'rectangle', 'line', 'parameter')",
         [],
     )
     .map_err(|e| e.to_string())?;
@@ -70,6 +70,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     let mut sketch_i = 0usize;
     let mut rect_i = 0usize;
     let mut line_i = 0usize;
+    let mut param_i = 0usize;
     for (id, kind) in doc.shape_order.iter().enumerate() {
         match kind {
             ShapeKind::Sketch => {
@@ -114,6 +115,20 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
                 .map_err(|e| e.to_string())?;
                 line_i += 1;
             }
+            ShapeKind::Parameter => {
+                let param = doc
+                    .parameters
+                    .get(param_i)
+                    .ok_or_else(|| "shape_order out of sync with parameters".to_string())?;
+                let payload = serde_json::to_string(param).map_err(|e| e.to_string())?;
+                tx.execute(
+                    "INSERT INTO dag_nodes (id, component_id, kind, payload)
+                     VALUES (?1, 0, 'parameter', ?2)",
+                    rusqlite::params![id as i64, payload],
+                )
+                .map_err(|e| e.to_string())?;
+                param_i += 1;
+            }
             ShapeKind::ConstructionPlane => {}
         }
     }
@@ -129,7 +144,7 @@ pub fn open(path: &str) -> Result<Document> {
     let mut stmt = conn
         .prepare(
             "SELECT kind, payload FROM dag_nodes
-             WHERE kind IN ('sketch', 'rectangle', 'line')
+             WHERE kind IN ('sketch', 'rectangle', 'line', 'parameter')
              ORDER BY id",
         )
         .map_err(|e| e.to_string())?;
@@ -138,6 +153,7 @@ pub fn open(path: &str) -> Result<Document> {
         .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
         .map_err(|e| e.to_string())?;
 
+    let mut parameters = Vec::new();
     let mut sketches = Vec::new();
     let mut rects = Vec::new();
     let mut lines = Vec::new();
@@ -160,11 +176,17 @@ pub fn open(path: &str) -> Result<Document> {
                 lines.push(line);
                 shape_order.push(ShapeKind::Line);
             }
+            "parameter" => {
+                let param: Parameter = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+                parameters.push(param);
+                shape_order.push(ShapeKind::Parameter);
+            }
             _ => {}
         }
     }
 
     let mut doc = Document {
+        parameters,
         sketches,
         rects,
         lines,
@@ -194,6 +216,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document {
+            parameters: Vec::new(),
             sketches: Vec::new(),
             rects: Vec::new(),
             lines: vec![],
@@ -225,6 +248,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document {
+            parameters: Vec::new(),
             sketches: Vec::new(),
             rects: Vec::new(),
             lines: vec![],
@@ -254,6 +278,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document {
+            parameters: Vec::new(),
             sketches: Vec::new(),
             rects: Vec::new(),
             lines: vec![],
@@ -284,6 +309,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document {
+            parameters: Vec::new(),
             sketches: Vec::new(),
             rects: Vec::new(),
             lines: vec![],
@@ -328,6 +354,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut doc = Document {
+            parameters: Vec::new(),
             sketches: Vec::new(),
             rects: Vec::new(),
             lines: Vec::new(),
@@ -374,6 +401,33 @@ mod tests {
         assert_eq!(loaded.sketches[1].face, FaceId::ConstructionPlane(0));
         assert_eq!(loaded.rects[0].sketch, s0);
         let _ = s1;
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn round_trips_parameters() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("le3_parameters_roundtrip.le3");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        doc.parameters.push(Parameter {
+            name: "A".to_string(),
+            expression: "5mm".to_string(),
+        });
+        doc.parameters.push(Parameter {
+            name: "B".to_string(),
+            expression: "A + 5in".to_string(),
+        });
+        doc.shape_order.push(ShapeKind::Parameter);
+        doc.shape_order.push(ShapeKind::Parameter);
+
+        save(&path, &doc).unwrap();
+        let loaded = open(&path).unwrap();
+        assert_eq!(loaded.parameters, doc.parameters);
+        assert_eq!(loaded.shape_order, doc.shape_order);
 
         std::fs::remove_file(&path).unwrap();
     }

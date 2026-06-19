@@ -842,7 +842,7 @@ pub fn draw_axis_plane_gizmo(
 }
 
 /// Which geometry would be selected at a viewport position.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum PickTargetKind {
     /// A standalone sketch line segment.
     Line(Line),
@@ -880,7 +880,7 @@ impl PickTarget {
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         doc: &Document,
     ) {
-        draw_pick_highlight(painter, project, doc, self.kind, PICK_HOVER_RGBA);
+        draw_pick_highlight(painter, project, doc, self.kind.clone(), PICK_HOVER_RGBA);
     }
 }
 
@@ -928,7 +928,7 @@ pub fn resolve_pick_target(
     if let Some((rect, dist)) = nearest_rect(screen, project, doc) {
         let origin = rect_center_world(doc, &rect)
             .or_else(|| ground_point)
-            .unwrap_or(rect_center_legacy(rect));
+            .unwrap_or_else(|| rect_center_legacy(&rect));
         let face = doc
             .sketch_face(rect.sketch)
             .unwrap_or(FaceId::ConstructionPlane(0));
@@ -1012,7 +1012,7 @@ pub fn draw_pick_highlight(
 ) {
     match kind {
         PickTargetKind::Line(line) => {
-            draw_line_highlight(painter, project, doc, line, color);
+            draw_line_highlight(painter, project, doc, &line, color);
         }
         PickTargetKind::ShapeEdge { a, b, .. } => {
             draw_segment_highlight(painter, project, a, b, color);
@@ -1026,7 +1026,7 @@ pub fn draw_pick_highlight(
             draw_segment_highlight(painter, project, a, b, axis_color);
         }
         PickTargetKind::Rect(rect) => {
-            draw_rect_highlight(painter, project, doc, rect, color);
+            draw_rect_highlight(painter, project, doc, &rect, color);
         }
         PickTargetKind::ConstructionPlane(index) => {
             if let Some(plane) = doc.construction_planes.get(index) {
@@ -1054,7 +1054,7 @@ fn draw_line_highlight(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     doc: &Document,
-    line: Line,
+    line: &Line,
     color: egui::Color32,
 ) {
     let Some((a, b)) = line_world_endpoints(doc, &line) else {
@@ -1082,7 +1082,7 @@ fn draw_rect_highlight(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     doc: &Document,
-    rect: Rect,
+    rect: &Rect,
     color: egui::Color32,
 ) {
     let corners = rect_corners_world(doc, rect);
@@ -1173,7 +1173,7 @@ fn dist_point_to_segment_px(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 
 }
 
 /// Edges of a rectangle as world-space segment pairs (bottom, right, top, left).
-pub fn rect_edge_segments(doc: &Document, rect: Rect) -> [(Vec3, Vec3); 4] {
+pub fn rect_edge_segments(doc: &Document, rect: &Rect) -> [(Vec3, Vec3); 4] {
     let c = rect_corners_world(doc, rect);
     [(c[0], c[1]), (c[1], c[2]), (c[2], c[3]), (c[3], c[0])]
 }
@@ -1225,14 +1225,14 @@ fn nearest_sketch_edge(
         }
     };
 
-    for &line in &doc.lines {
-        let Some((a, b)) = line_world_endpoints(doc, &line) else {
+    for line in &doc.lines {
+        let Some((a, b)) = line_world_endpoints(doc, line) else {
             continue;
         };
-        consider(PickTargetKind::Line(line), a, b, "Line");
+        consider(PickTargetKind::Line(line.clone()), a, b, "Line");
     }
 
-    for &rect in &doc.rects {
+    for rect in &doc.rects {
         let Some(frame) = sketch_geometry_frame(doc, rect.sketch) else {
             continue;
         };
@@ -1296,7 +1296,7 @@ fn nearest_rect(
     doc: &Document,
 ) -> Option<(Rect, f32)> {
     let mut best: Option<(Rect, f32)> = None;
-    for &rect in &doc.rects {
+    for rect in &doc.rects {
         let corners = rect_corners_world(doc, rect);
         let pts: Option<Vec<egui::Pos2>> = corners.iter().map(|&c| project(c)).collect();
         let Some(pts) = pts else { continue };
@@ -1307,8 +1307,8 @@ fn nearest_rect(
             dist_point_to_quad_edges(screen, quad)
         };
         if dist <= FACE_PICK_MARGIN_PX {
-            if best.map(|(_, d)| dist < d).unwrap_or(true) {
-                best = Some((rect, dist));
+            if best.as_ref().is_none_or(|(_, d)| dist < *d) {
+                best = Some((rect.clone(), dist));
             }
         }
     }
@@ -1348,11 +1348,11 @@ fn dist_point_to_quad_edges(p: egui::Pos2, quad: [egui::Pos2; 4]) -> f32 {
         .fold(f32::MAX, f32::min)
 }
 
-fn rect_corners_world(doc: &Document, rect: Rect) -> [Vec3; 4] {
-    rect_world_corners(doc, &rect).unwrap_or_else(|| rect_corners_world_legacy(rect))
+fn rect_corners_world(doc: &Document, rect: &Rect) -> [Vec3; 4] {
+    rect_world_corners(doc, rect).unwrap_or_else(|| rect_corners_world_legacy(rect))
 }
 
-fn rect_corners_world_legacy(rect: Rect) -> [Vec3; 4] {
+fn rect_corners_world_legacy(rect: &Rect) -> [Vec3; 4] {
     [
         Vec3::new(rect.x, rect.y, 0.0),
         Vec3::new(rect.x + rect.w, rect.y, 0.0),
@@ -1361,7 +1361,7 @@ fn rect_corners_world_legacy(rect: Rect) -> [Vec3; 4] {
     ]
 }
 
-fn rect_center_legacy(rect: Rect) -> Vec3 {
+fn rect_center_legacy(rect: &Rect) -> Vec3 {
     Vec3::new(rect.x + rect.w * 0.5, rect.y + rect.h * 0.5, 0.0)
 }
 
@@ -1588,7 +1588,7 @@ mod tests {
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(1));
         doc.rects
             .push(Rect::from_local_corners(sketch, 5.0, 5.0, 25.0, 15.0));
-        let rect = doc.rects[0];
+        let rect = &doc.rects[0];
         let frame = sketch_geometry_frame(&doc, sketch).unwrap();
         let (a, b) = rect_edge_segments(&doc, rect)[0];
         let (au, av) = world_to_local(&frame, a);

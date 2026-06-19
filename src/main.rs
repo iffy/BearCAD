@@ -16,6 +16,7 @@ mod construction;
 mod dimensions;
 mod face;
 mod hierarchy;
+mod parameters;
 mod model;
 mod native_menu;
 mod script;
@@ -484,6 +485,25 @@ impl eframe::App for App {
             }
             if let Some(index) = edit_plane {
                 self.state.apply(Action::BeginEditConstructionPlane { index });
+            }
+        }
+
+        if self.state.panes.is_visible(Pane::Parameters) {
+            let mut pending_parameter_actions: Vec<Action> = Vec::new();
+            egui::SidePanel::right("parameters")
+                .resizable(true)
+                .default_width(240.0)
+                .frame(theme::panel_frame())
+                .show(ctx, |ui| {
+                    parameters::show_pane(
+                        ui,
+                        &self.state.doc,
+                        &mut self.state.parameters_pane,
+                        &mut |action| pending_parameter_actions.push(action),
+                    );
+                });
+            for action in pending_parameter_actions {
+                self.state.apply(action);
             }
         }
 
@@ -1287,7 +1307,7 @@ impl App {
 
                     let mut commit_click = false;
                     if let Some(cr) = &mut self.state.creating_rect {
-                        let end = cr.end_point(&frame);
+                        let end = cr.end_point(&frame, &self.state.doc);
                         let (ou, ov) = world_to_local(&frame, cr.origin);
                         let (eu, ev) = world_to_local(&frame, end);
                         let preview = Rect::from_local_corners(session.sketch, ou, ov, eu, ev);
@@ -1371,7 +1391,7 @@ impl App {
 
                     let mut commit_click = false;
                     if let Some(cl) = &mut self.state.creating_line {
-                        let end = cl.end_point(&frame);
+                        let end = cl.end_point(&frame, &self.state.doc);
                         let over_input = project(cl.origin).zip(project(end)).is_some_and(
                             |(pa, pb)| {
                                 pointer_over_dim_inputs(pp, &[line_dim_layout(pa, pb, &cl.text)])
@@ -1609,7 +1629,7 @@ impl App {
             let dim = sketch_session
                 .is_some_and(|s| !sketch_rect_is_active(doc, s, ri, r.sketch));
             let color = sketch_color(col::RECT_LINE, dim);
-            draw_rect(&painter, &project, doc, *r, color, true);
+            draw_rect(&painter, &project, doc, r, color, true);
         }
         for (li, line) in doc.lines.iter().enumerate() {
             if !visibility.effective_visible(doc, SceneElement::Line(li)) {
@@ -1617,7 +1637,7 @@ impl App {
             }
             let dim = sketch_session.is_some_and(|s| line.sketch != s.sketch);
             let color = sketch_color(col::LINE_STROKE, dim);
-            draw_line_segment(&painter, &project, doc, *line, color, 2.0);
+            draw_line_segment(&painter, &project, doc, line, color, 2.0);
         }
         for (i, plane) in doc.construction_planes.iter().enumerate() {
             if !visibility.effective_visible(doc, SceneElement::ConstructionPlane(i)) {
@@ -1655,11 +1675,11 @@ impl App {
             (&self.state.creating_rect, self.state.sketch_session)
         {
             if let Some(frame) = sketch_geometry_frame(&self.state.doc, session.sketch) {
-                let end = cr.end_point(&frame);
+                let end = cr.end_point(&frame, &self.state.doc);
                 let (ou, ov) = world_to_local(&frame, cr.origin);
                 let (eu, ev) = world_to_local(&frame, end);
                 let preview = Rect::from_local_corners(session.sketch, ou, ov, eu, ev);
-                draw_rect(&painter, &project, &self.state.doc, preview, col::PREVIEW, false);
+                draw_rect(&painter, &project, &self.state.doc, &preview, col::PREVIEW, false);
                 if let Some(sp) = project(cr.origin) {
                     painter.circle_filled(sp, 3.5, col::PREVIEW);
                 }
@@ -1669,7 +1689,7 @@ impl App {
             (&self.state.creating_line, self.state.sketch_session)
         {
             if let Some(frame) = sketch_geometry_frame(&self.state.doc, session.sketch) {
-                let end = cl.end_point(&frame);
+                let end = cl.end_point(&frame, &self.state.doc);
                 if let (Some(pa), Some(pb)) = (project(cl.origin), project(end)) {
                     painter.line_segment([pa, pb], egui::Stroke::new(2.0, col::PREVIEW));
                 }
@@ -1770,7 +1790,7 @@ impl App {
             (&mut self.state.creating_rect, self.state.sketch_session)
         {
             let frame = sketch_geometry_frame(&self.state.doc, session.sketch).unwrap();
-            let end = cr.end_point(&frame);
+            let end = cr.end_point(&frame, &self.state.doc);
             let (ou, ov) = world_to_local(&frame, cr.origin);
             let (eu, ev) = world_to_local(&frame, end);
             let preview = Rect::from_local_corners(session.sketch, ou, ov, eu, ev);
@@ -1857,7 +1877,7 @@ impl App {
             (&mut self.state.creating_line, self.state.sketch_session)
         {
             let frame = sketch_geometry_frame(&self.state.doc, session.sketch).unwrap();
-            let end = cl.end_point(&frame);
+            let end = cl.end_point(&frame, &self.state.doc);
             if let (Some(pa), Some(pb)) = (project(cl.origin), project(end)) {
                 let layout = line_dim_layout(pa, pb, &cl.text);
                 let ctx = ui.ctx();
@@ -2096,7 +2116,7 @@ fn draw_line_segment(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     doc: &model::Document,
-    line: Line,
+    line: &Line,
     color: egui::Color32,
     width: f32,
 ) {
@@ -2223,7 +2243,7 @@ fn draw_rect(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     doc: &model::Document,
-    r: Rect,
+    r: &Rect,
     color: egui::Color32,
     fill: bool,
 ) {
@@ -2645,40 +2665,44 @@ mod tests {
 
     #[test]
     fn end_point_free_follows_mouse() {
+        let doc = crate::model::Document::default();
         let cr = make_cr((0., 0.), ["", ""], (10., 4.));
         let frame = xy_frame();
-        let e = cr.end_point(&frame);
+        let e = cr.end_point(&frame, &doc);
         assert!((e.x - 10.0).abs() < 1e-4);
         assert!((e.y - 4.0).abs() < 1e-4);
     }
 
     #[test]
     fn end_point_one_constrained() {
+        let doc = crate::model::Document::default();
         let frame = xy_frame();
         let cr = make_cr((0., 0.), ["5", ""], (12., 3.));
-        let e = cr.end_point(&frame);
+        let e = cr.end_point(&frame, &doc);
         assert!((e.x - 5.0).abs() < 1e-4 && (e.y - 3.0).abs() < 1e-4);
 
         let cr2 = make_cr((10., 20.), ["5", ""], (3., 15.));
-        let e2 = cr2.end_point(&frame);
+        let e2 = cr2.end_point(&frame, &doc);
         assert!((e2.x - 5.0).abs() < 1e-4);
         assert!((e2.y - 15.0).abs() < 1e-4);
     }
 
     #[test]
     fn end_point_both_constrained() {
+        let doc = crate::model::Document::default();
         let frame = xy_frame();
         let cr = make_cr((0., 0.), ["3", "7"], (99., -4.));
-        let e = cr.end_point(&frame);
+        let e = cr.end_point(&frame, &doc);
         assert!((e.x - 3.0).abs() < 1e-4);
         assert!((e.y + 7.0).abs() < 1e-4);
     }
 
     #[test]
     fn end_point_invalid_text_falls_back_to_mouse() {
+        let doc = crate::model::Document::default();
         let frame = xy_frame();
         let cr = make_cr((0., 0.), ["abc", "12x"], (8., 9.));
-        let e = cr.end_point(&frame);
+        let e = cr.end_point(&frame, &doc);
         assert!((e.x - 8.0).abs() < 1e-4);
         assert!((e.y - 9.0).abs() < 1e-4);
     }
