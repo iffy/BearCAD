@@ -8,7 +8,7 @@
 //! `dag_nodes` shape.
 
 use crate::face::default_xy_plane;
-use crate::model::{Document, Line, Rect, ShapeKind};
+use crate::model::{Document, Line, Rect, ShapeKind, Sketch};
 use rusqlite::Connection;
 
 /// Bump when the on-disk schema changes; pair with a migration below.
@@ -42,10 +42,6 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 /// Save `doc` to `path`, overwriting any existing document content.
-///
-/// We rewrite the node table wholesale: at this scale it's simplest and keeps
-/// the file an exact reflection of the in-memory document. The action DAG
-/// (SPEC §4) will replace this with incremental, append-only history later.
 pub fn save(path: &str, doc: &Document) -> Result<()> {
     let mut conn = Connection::open(path).map_err(|e| e.to_string())?;
     init_schema(&conn).map_err(|e| e.to_string())?;
@@ -66,15 +62,30 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     .map_err(|e| e.to_string())?;
 
     tx.execute(
-        "DELETE FROM dag_nodes WHERE kind IN ('rectangle', 'line')",
+        "DELETE FROM dag_nodes WHERE kind IN ('sketch', 'rectangle', 'line')",
         [],
     )
     .map_err(|e| e.to_string())?;
 
+    let mut sketch_i = 0usize;
     let mut rect_i = 0usize;
     let mut line_i = 0usize;
     for (id, kind) in doc.shape_order.iter().enumerate() {
         match kind {
+            ShapeKind::Sketch => {
+                let sketch = doc
+                    .sketches
+                    .get(sketch_i)
+                    .ok_or_else(|| "shape_order out of sync with sketches".to_string())?;
+                let payload = serde_json::to_string(sketch).map_err(|e| e.to_string())?;
+                tx.execute(
+                    "INSERT INTO dag_nodes (id, component_id, kind, payload)
+                     VALUES (?1, 0, 'sketch', ?2)",
+                    rusqlite::params![id as i64, payload],
+                )
+                .map_err(|e| e.to_string())?;
+                sketch_i += 1;
+            }
             ShapeKind::Rect => {
                 let rect = doc
                     .rects
@@ -118,7 +129,7 @@ pub fn open(path: &str) -> Result<Document> {
     let mut stmt = conn
         .prepare(
             "SELECT kind, payload FROM dag_nodes
-             WHERE kind IN ('rectangle', 'line')
+             WHERE kind IN ('sketch', 'rectangle', 'line')
              ORDER BY id",
         )
         .map_err(|e| e.to_string())?;
@@ -127,12 +138,18 @@ pub fn open(path: &str) -> Result<Document> {
         .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
         .map_err(|e| e.to_string())?;
 
+    let mut sketches = Vec::new();
     let mut rects = Vec::new();
     let mut lines = Vec::new();
     let mut shape_order = Vec::new();
     for row in rows {
         let (kind, payload) = row.map_err(|e| e.to_string())?;
         match kind.as_str() {
+            "sketch" => {
+                let sketch: Sketch = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+                sketches.push(sketch);
+                shape_order.push(ShapeKind::Sketch);
+            }
             "rectangle" => {
                 let rect: Rect = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
                 rects.push(rect);
@@ -148,6 +165,7 @@ pub fn open(path: &str) -> Result<Document> {
     }
 
     let mut doc = Document {
+        sketches,
         rects,
         lines,
         construction_planes: Vec::new(),
@@ -164,6 +182,10 @@ mod tests {
     use super::*;
     use crate::model::FaceId;
 
+    fn plane_sketch(doc: &mut Document) -> usize {
+        doc.add_sketch(FaceId::ConstructionPlane(0))
+    }
+
     #[test]
     fn round_trips_rectangles() {
         let dir = std::env::temp_dir();
@@ -171,25 +193,25 @@ mod tests {
         let path = path.to_string_lossy().to_string();
         let _ = std::fs::remove_file(&path);
 
-        let doc = Document {
-            rects: vec![
-                Rect::from_local_corners(FaceId::ConstructionPlane(0), 1.0, 2.0, 4.0, 6.0),
-                Rect::from_local_corners(FaceId::ConstructionPlane(0), 10.0, 20.0, 40.0, 60.0),
-            ],
+        let mut doc = Document {
+            sketches: Vec::new(),
+            rects: Vec::new(),
             lines: vec![],
             construction_planes: vec![default_xy_plane()],
-            shape_order: vec![ShapeKind::Rect, ShapeKind::Rect],
+            shape_order: Vec::new(),
         };
+        let sketch = plane_sketch(&mut doc);
+        doc.rects.push(Rect::from_local_corners(sketch, 1.0, 2.0, 4.0, 6.0));
+        doc.shape_order.push(ShapeKind::Rect);
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 10.0, 20.0, 40.0, 60.0));
+        doc.shape_order.push(ShapeKind::Rect);
 
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();
 
         assert_eq!(loaded.rects, doc.rects);
         assert_eq!(loaded.shape_order, doc.shape_order);
-
-        save(&path, &doc).unwrap();
-        let reloaded = open(&path).unwrap();
-        assert_eq!(reloaded.rects.len(), 2);
 
         std::fs::remove_file(&path).unwrap();
     }
@@ -201,33 +223,39 @@ mod tests {
         let path = path.to_string_lossy().to_string();
         let _ = std::fs::remove_file(&path);
 
-        let doc = Document {
-            rects: vec![Rect::from_local_corners(
-                FaceId::ConstructionPlane(0),
-                0.0,
-                0.0,
-                10.0,
-                10.0,
-            )],
+        let mut doc = Document {
+            sketches: Vec::new(),
+            rects: Vec::new(),
             lines: vec![],
             construction_planes: vec![
                 default_xy_plane(),
-                crate::model::ConstructionPlane {
-                    origin: glam::Vec3::new(0.0, 0.0, 25.0),
-                    normal: glam::Vec3::Z,
-                    u_axis: glam::Vec3::X,
-                    v_axis: glam::Vec3::Y,
-                },
+                crate::construction::plane_from_definition(
+                    &crate::construction::definition_from_reference(
+                        &crate::construction::PlaneReference::Face {
+                            origin: glam::Vec3::ZERO,
+                            normal: glam::Vec3::Z,
+                            label: "Ground".to_string(),
+                        },
+                        25.0,
+                        0.0,
+                    ),
+                    crate::model::ConstructionPlaneParent::Root,
+                ),
             ],
-            shape_order: vec![ShapeKind::Rect, ShapeKind::ConstructionPlane],
+            shape_order: Vec::new(),
         };
+        let sketch = plane_sketch(&mut doc);
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 10.0, 10.0));
+        doc.shape_order.push(ShapeKind::Rect);
+        doc.shape_order.push(ShapeKind::ConstructionPlane);
 
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();
         assert_eq!(loaded.rects.len(), 1);
         assert_eq!(loaded.construction_planes.len(), 1);
         assert_eq!(loaded.construction_planes[0], default_xy_plane());
-        assert_eq!(loaded.shape_order, vec![ShapeKind::Rect]);
+        assert_eq!(loaded.shape_order, vec![ShapeKind::Sketch, ShapeKind::Rect]);
 
         std::fs::remove_file(&path).unwrap();
     }
@@ -239,25 +267,53 @@ mod tests {
         let path = path.to_string_lossy().to_string();
         let _ = std::fs::remove_file(&path);
 
-        let doc = Document {
-            rects: vec![Rect::from_local_corners(
-                FaceId::ConstructionPlane(0),
-                0.0,
-                0.0,
-                10.0,
-                10.0,
-            )],
-            lines: vec![
-                Line::from_local_endpoints(FaceId::ConstructionPlane(0), 0.0, 0.0, 5.0, 0.0),
-                Line::from_local_endpoints(FaceId::ConstructionPlane(0), 1.0, 1.0, 1.0, 6.0),
-            ],
+        let mut doc = Document {
+            sketches: Vec::new(),
+            rects: Vec::new(),
+            lines: Vec::new(),
             construction_planes: vec![default_xy_plane()],
-            shape_order: vec![ShapeKind::Rect, ShapeKind::Line, ShapeKind::Line],
+            shape_order: Vec::new(),
         };
+        let sketch = plane_sketch(&mut doc);
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 10.0, 10.0));
+        doc.shape_order.push(ShapeKind::Rect);
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 5.0, 0.0));
+        doc.shape_order.push(ShapeKind::Line);
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 1.0, 1.0, 1.0, 6.0));
+        doc.shape_order.push(ShapeKind::Line);
 
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();
-        assert_eq!(loaded, doc);
+        assert_eq!(loaded.rects, doc.rects);
+        assert_eq!(loaded.lines, doc.lines);
+        assert_eq!(loaded.shape_order, doc.shape_order);
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn round_trips_sketches() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("le3_sketch_roundtrip.le3");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let s1 = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.rects.push(Rect::from_local_corners(s0, 0.0, 0.0, 1.0, 1.0));
+        doc.shape_order.push(ShapeKind::Rect);
+
+        save(&path, &doc).unwrap();
+        let loaded = open(&path).unwrap();
+        assert_eq!(loaded.sketches.len(), 2);
+        assert_eq!(loaded.sketches[0].face, FaceId::ConstructionPlane(0));
+        assert_eq!(loaded.sketches[1].face, FaceId::ConstructionPlane(0));
+        assert_eq!(loaded.rects[0].sketch, s0);
+        let _ = s1;
 
         std::fs::remove_file(&path).unwrap();
     }

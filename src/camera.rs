@@ -94,8 +94,8 @@ struct ViewTransition {
     duration: f32,
 }
 
-/// Screen-space padding when framing a sketch face in the viewport.
-pub const SKETCH_FRAME_PADDING_PX: f32 = 8.0;
+/// Screen-space padding when framing existing sketch contents in the viewport.
+pub const SKETCH_EDIT_FRAME_PADDING_PX: f32 = 15.0;
 
 /// A look-at orbit camera parameterised in spherical coordinates around a
 /// `target` point.
@@ -113,6 +113,8 @@ pub struct Camera {
     /// Vertical field of view, radians (used for perspective and ortho framing).
     pub fov_y: f32,
     pub projection: ProjectionMode,
+    /// When set, overrides world Z as the look-at up vector (sketch mode).
+    view_up: Option<Vec3>,
     transition: Option<ViewTransition>,
 }
 
@@ -125,6 +127,7 @@ impl Default for Camera {
             distance: 400.0,
             fov_y: 45f32.to_radians(),
             projection: ProjectionMode::Natural,
+            view_up: None,
             transition: None,
         }
     }
@@ -168,6 +171,33 @@ impl Camera {
 
     pub fn cancel_transition(&mut self) {
         self.transition = None;
+    }
+
+    /// Override the look-at up vector (`None` restores world Z).
+    pub fn set_view_up(&mut self, up: Option<Vec3>) {
+        self.view_up = up.filter(|u| u.length_squared() >= 1e-8);
+    }
+
+    fn view_up_hint(&self) -> Vec3 {
+        self.view_up
+            .filter(|u| u.length_squared() >= 1e-8)
+            .unwrap_or(Vec3::Z)
+    }
+
+    fn camera_axes(&self, forward: Vec3) -> (Vec3, Vec3) {
+        let forward = forward.normalize_or_zero();
+        let up_hint = self.view_up_hint();
+        // Match `Mat4::look_at_rh`: right = cross(forward, up_hint), up = cross(right, forward).
+        let mut right = forward.cross(up_hint);
+        if right.length_squared() < 1e-8 {
+            right = forward.cross(Vec3::X);
+        }
+        if right.length_squared() < 1e-8 {
+            right = Vec3::Y;
+        }
+        right = right.normalize();
+        let up = right.cross(forward).normalize();
+        (right, up)
     }
 
     /// Animate to a standard orthographic view over `duration` seconds.
@@ -295,15 +325,8 @@ impl Camera {
         }
 
         let aspect = (viewport.width() / viewport.height().max(1.0)).max(0.01);
-        let (yaw, pitch) = Self::view_direction_to_yaw_pitch(dir);
-        let eye_dir = Vec3::new(pitch.cos() * yaw.cos(), pitch.cos() * yaw.sin(), pitch.sin());
-        let forward = -eye_dir.normalize_or_zero();
-        let mut right = forward.cross(Vec3::Z);
-        if right.length_squared() < 1e-8 {
-            right = Vec3::X;
-        }
-        right = right.normalize();
-        let up = right.cross(forward).normalize();
+        let forward = -dir;
+        let (right, up) = self.camera_axes(forward);
 
         let mut distance = self.distance.max(10.0);
         for _ in 0..2 {
@@ -420,8 +443,7 @@ impl Camera {
     /// cursor tracks it regardless of zoom level.
     pub fn pan(&mut self, delta: egui::Vec2, viewport_height: f32) {
         let forward = (self.target - self.eye()).normalize();
-        let right = forward.cross(Vec3::Z).normalize();
-        let up = right.cross(forward).normalize();
+        let (right, up) = self.camera_axes(forward);
         let half_h = self.viewport_half_extents(1.0).1;
         let world_per_px = 2.0 * half_h / viewport_height.max(1.0);
         self.target += (-right * delta.x + up * delta.y) * world_per_px;
@@ -485,7 +507,7 @@ impl Camera {
                 Mat4::orthographic_rh(-half_w, half_w, -half_h, half_h, 0.1, 100_000.0)
             }
         };
-        let view = Mat4::look_at_rh(self.eye(), self.target, Vec3::Z);
+        let view = Mat4::look_at_rh(self.eye(), self.target, self.view_up_hint());
         proj * view
     }
 
@@ -815,6 +837,14 @@ mod tests {
         let near = cam.distance_to_fit_corners(center, Vec3::Z, &small, 8.0, viewport);
         let far = cam.distance_to_fit_corners(center, Vec3::Z, &large, 8.0, viewport);
         assert!(far > near * 5.0);
+    }
+
+    #[test]
+    fn sketch_edit_padding_is_in_requested_range() {
+        assert!(
+            (10.0..=20.0).contains(&SKETCH_EDIT_FRAME_PADDING_PX),
+            "padding should leave 10-20px margin around framed sketch contents"
+        );
     }
 
 }

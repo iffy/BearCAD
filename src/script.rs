@@ -4,7 +4,8 @@
 //! via synthetic pointer/keyboard events and headless actions.
 
 use crate::actions::{Action, AppState, Pane, RectAxis, Tool};
-use crate::model::FaceId;
+use crate::hierarchy::SceneElement;
+use crate::model::{FaceId, SketchId};
 use crate::construction::PlaneDim;
 use crate::camera::{ProjectionMode, StandardView};
 use crate::view_cube::{CubeCornerId, CubeEdgeId};
@@ -25,9 +26,16 @@ pub enum Instruction {
     Undo,
     Tool(Tool),
     BeginSketch { face: FaceId },
+    OpenSketch { sketch: SketchId },
     ExitSketch,
+    SetElementVisible {
+        element: SceneElement,
+        visible: Option<bool>,
+    },
     SetDim { axis: RectAxis, value: String },
     SetLineLength { value: String },
+    BeginEditConstructionPlane { index: usize },
+    CommitConstructionPlane,
     SetPlaneOffset { value: String },
     SetPlaneAngle { value: String },
     FocusDim(RectAxis),
@@ -87,7 +95,17 @@ impl Instruction {
             Instruction::Tool(Tool::ConstructionPlane) => "tool plane".to_string(),
             Instruction::Tool(Tool::Sketch) => "tool sketch".to_string(),
             Instruction::BeginSketch { face } => format!("begin_sketch {}", face_script_name(*face)),
+            Instruction::OpenSketch { sketch } => format!("open_sketch {sketch}"),
             Instruction::ExitSketch => "exit_sketch".to_string(),
+            Instruction::SetElementVisible { element, visible } => {
+                let (kind, index) = element_script_parts(*element);
+                let verb = match visible {
+                    Some(true) => "show",
+                    Some(false) => "hide",
+                    None => "toggle",
+                };
+                format!("element {kind} {index} {verb}")
+            }
             Instruction::SetDim { axis, value } => {
                 let name = match axis {
                     RectAxis::Width => "width",
@@ -96,6 +114,8 @@ impl Instruction {
                 format!("set_dim {name} {value}")
             }
             Instruction::SetLineLength { value } => format!("set_dim length {value}"),
+            Instruction::BeginEditConstructionPlane { index } => format!("edit_plane {index}"),
+            Instruction::CommitConstructionPlane => "commit_plane".to_string(),
             Instruction::SetPlaneOffset { value } => format!("set_dim offset {value}"),
             Instruction::SetPlaneAngle { value } => format!("set_dim angle {value}"),
             Instruction::FocusDim(axis) => {
@@ -247,13 +267,63 @@ fn parse_line(line: &str, line_no: usize) -> Result<Instruction, ParseError> {
             Ok(Instruction::BeginSketch { face })
         }
 
+        "open_sketch" | "opensketch" | "edit_sketch" | "editsketch" => {
+            let index = rest
+                .split_whitespace()
+                .next()
+                .ok_or_else(|| err("open_sketch requires sketch index"))?
+                .parse::<usize>()
+                .map_err(|_| err("open_sketch index must be an integer"))?;
+            Ok(Instruction::OpenSketch { sketch: index })
+        }
+
         "exit_sketch" | "exitsketch" => Ok(Instruction::ExitSketch),
+
+        "edit_plane" | "editplane" => {
+            let index = rest
+                .split_whitespace()
+                .next()
+                .ok_or_else(|| err("edit_plane requires plane index"))?
+                .parse::<usize>()
+                .map_err(|_| err("edit_plane index must be an integer"))?;
+            Ok(Instruction::BeginEditConstructionPlane { index })
+        }
+
+        "commit_plane" | "commitplane" => Ok(Instruction::CommitConstructionPlane),
+
+        "element" => {
+            let mut parts = rest.split_whitespace();
+            let kind = parts
+                .next()
+                .ok_or_else(|| err("element requires kind and index"))?;
+            let index = parts
+                .next()
+                .ok_or_else(|| err("element requires index"))?
+                .parse::<usize>()
+                .map_err(|_| err("element index must be an integer"))?;
+            let element = scene_element_from_script(kind, index)
+                .ok_or_else(|| err(&format!("unknown element kind '{kind}'")))?;
+            let visible = match parts.next().map(|s| s.to_ascii_lowercase()).as_deref() {
+                None | Some("toggle") => None,
+                Some("show") | Some("on") | Some("true") => Some(true),
+                Some("hide") | Some("off") | Some("false") => Some(false),
+                Some(other) => {
+                    return Err(err(&format!(
+                        "unknown element state '{other}' (expected show, hide, or toggle)"
+                    )))
+                }
+            };
+            Ok(Instruction::SetElementVisible { element, visible })
+        }
 
         "pane" => {
             let mut parts = rest.split_whitespace();
             let name = parts.next().ok_or_else(|| err("pane requires a name"))?;
-            let pane = Pane::from_name(name)
-                .ok_or_else(|| err(&format!("unknown pane '{name}' (expected view_cube)")))?;
+            let pane = Pane::from_name(name).ok_or_else(|| {
+                err(&format!(
+                    "unknown pane '{name}' (expected tree or view_cube)"
+                ))
+            })?;
             let visible = match parts.next().map(|s| s.to_ascii_lowercase()).as_deref() {
                 None | Some("toggle") => None,
                 Some("show") | Some("on") | Some("true") => Some(true),
@@ -553,6 +623,27 @@ fn face_script_name(face: FaceId) -> String {
     match face {
         FaceId::Rect(i) => format!("rect {i}"),
         FaceId::ConstructionPlane(i) => format!("construction_plane {i}"),
+    }
+}
+
+fn element_script_parts(element: SceneElement) -> (&'static str, usize) {
+    match element {
+        SceneElement::ConstructionPlane(i) => ("construction_plane", i),
+        SceneElement::Sketch(i) => ("sketch", i),
+        SceneElement::Rect(i) => ("rect", i),
+        SceneElement::Line(i) => ("line", i),
+    }
+}
+
+fn scene_element_from_script(kind: &str, index: usize) -> Option<SceneElement> {
+    match kind.to_ascii_lowercase().as_str() {
+        "plane" | "construction_plane" | "constructionplane" => {
+            Some(SceneElement::ConstructionPlane(index))
+        }
+        "sketch" => Some(SceneElement::Sketch(index)),
+        "rect" | "rectangle" => Some(SceneElement::Rect(index)),
+        "line" => Some(SceneElement::Line(index)),
+        _ => None,
     }
 }
 
@@ -987,12 +1078,26 @@ impl ScriptRunner {
             Instruction::BeginSketch { face } => {
                 state.apply(Action::BeginSketch {
                     face,
-                    viewport: None,
+                    viewport: viewport,
+                });
+                StepResult::Continue
+            }
+            Instruction::OpenSketch { sketch } => {
+                state.apply(Action::OpenSketch {
+                    sketch,
+                    viewport: viewport,
                 });
                 StepResult::Continue
             }
             Instruction::ExitSketch => {
                 state.apply(Action::ExitSketch);
+                StepResult::Continue
+            }
+            Instruction::SetElementVisible { element, visible } => {
+                match visible {
+                    Some(v) => state.apply(Action::SetElementVisible { element, visible: v }),
+                    None => state.apply(Action::ToggleElementVisibility(element)),
+                };
                 StepResult::Continue
             }
             Instruction::SetDim { axis, value } => {
@@ -1001,6 +1106,14 @@ impl ScriptRunner {
             }
             Instruction::SetLineLength { value } => {
                 let _ = state.apply(Action::SetLineLength { value });
+                StepResult::Continue
+            }
+            Instruction::BeginEditConstructionPlane { index } => {
+                state.apply(Action::BeginEditConstructionPlane { index });
+                StepResult::Continue
+            }
+            Instruction::CommitConstructionPlane => {
+                state.apply(Action::CommitConstructionPlane);
                 StepResult::Continue
             }
             Instruction::SetPlaneOffset { value } => {
@@ -1320,13 +1433,11 @@ mod tests {
         let mut runner = ScriptRunner::new(parse(script).unwrap());
         runner.verbose = false;
         let mut state = AppState::default();
-        state.doc.rects.push(crate::model::Rect::from_local_corners(
-            FaceId::ConstructionPlane(0),
-            0.,
-            0.,
-            1.,
-            1.,
-        ));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        state
+            .doc
+            .rects
+            .push(crate::model::Rect::from_local_corners(sketch, 0., 0., 1., 1.));
         let mut synthetic = SyntheticInput::default();
         let ctx = egui::Context::default();
         let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
@@ -1374,6 +1485,52 @@ mod tests {
                 Instruction::ProjectionMode(ProjectionMode::Orthographic),
                 Instruction::ProjectionMode(ProjectionMode::Natural),
                 Instruction::ToggleProjectionMode,
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_edit_plane_commands() {
+        let ins = parse("edit_plane 1\ncommit_plane").unwrap();
+        assert_eq!(
+            ins,
+            vec![
+                Instruction::BeginEditConstructionPlane { index: 1 },
+                Instruction::CommitConstructionPlane,
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_edit_sketch_alias() {
+        let ins = parse("edit_sketch 2\nopen_sketch 2").unwrap();
+        assert_eq!(
+            ins,
+            vec![
+                Instruction::OpenSketch { sketch: 2 },
+                Instruction::OpenSketch { sketch: 2 },
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_tree_pane_commands() {
+        let ins = parse("pane tree show\npane hierarchy hide\npane dag toggle").unwrap();
+        assert_eq!(
+            ins,
+            vec![
+                Instruction::SetPane {
+                    pane: Pane::Hierarchy,
+                    visible: Some(true),
+                },
+                Instruction::SetPane {
+                    pane: Pane::Hierarchy,
+                    visible: Some(false),
+                },
+                Instruction::SetPane {
+                    pane: Pane::Hierarchy,
+                    visible: None,
+                },
             ]
         );
     }
@@ -1437,13 +1594,11 @@ mod tests {
         let mut runner = ScriptRunner::new(parse(script).unwrap());
         runner.verbose = false;
         let mut state = AppState::default();
-        state.doc.rects.push(crate::model::Rect::from_local_corners(
-            FaceId::ConstructionPlane(0),
-            0.,
-            0.,
-            1.,
-            1.,
-        ));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        state
+            .doc
+            .rects
+            .push(crate::model::Rect::from_local_corners(sketch, 0., 0., 1., 1.));
         let mut synthetic = SyntheticInput::default();
         let ctx = egui::Context::default();
         let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
@@ -1548,18 +1703,12 @@ mod tests {
 
         let cl = state.creating_line.as_ref().unwrap();
         assert_eq!(cl.text, "2in + 5mm / 2");
-        let frame = crate::face::sketch_frame(&state.doc, FaceId::ConstructionPlane(0)).unwrap();
+        let sketch = state.sketch_session.unwrap().sketch;
+        let frame = crate::face::sketch_geometry_frame(&state.doc, sketch).unwrap();
         let end = cl.end_point(&frame);
         let (u0, v0) = crate::face::world_to_local(&frame, cl.origin);
         let (u1, v1) = crate::face::world_to_local(&frame, end);
-        let len = crate::model::Line::from_local_endpoints(
-            FaceId::ConstructionPlane(0),
-            u0,
-            v0,
-            u1,
-            v1,
-        )
-        .length();
+        let len = crate::model::Line::from_local_endpoints(sketch, u0, v0, u1, v1).length();
         assert!((len - 53.3).abs() < 1e-2);
     }
 
@@ -1570,13 +1719,11 @@ mod tests {
         runner.verbose = false;
         let mut state = AppState::default();
         let mut synthetic = SyntheticInput::default();
-        state.doc.rects.push(crate::model::Rect::from_local_corners(
-            FaceId::ConstructionPlane(0),
-            0.,
-            0.,
-            1.,
-            1.,
-        ));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        state
+            .doc
+            .rects
+            .push(crate::model::Rect::from_local_corners(sketch, 0., 0., 1., 1.));
 
         while !runner.done {
             runner.tick(&mut state, &mut synthetic, Some(egui::Rect::from_min_size(

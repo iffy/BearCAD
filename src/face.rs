@@ -1,6 +1,9 @@
 //! Sketch faces and parent/child dependencies between faces and sketch entities.
 
-use crate::model::{ConstructionPlane, Document, FaceId, Line, Rect};
+use crate::model::{
+    ConstructionPlane, ConstructionPlaneParent, Document, FaceId, Line, PlaneAnchor,
+    PlaneDefinition, Rect, SketchId,
+};
 use glam::Vec3;
 
 /// Local (u, v) coordinate frame of a sketchable face in world space.
@@ -12,6 +15,19 @@ pub struct SketchFrame {
     pub normal: Vec3,
 }
 
+/// Default definition for the datum XY construction plane.
+pub fn default_xy_plane_definition() -> PlaneDefinition {
+    PlaneDefinition {
+        anchor: PlaneAnchor::Face {
+            origin: Vec3::ZERO,
+            normal: Vec3::Z,
+            label: "Ground".to_string(),
+        },
+        offset_mm: 0.0,
+        angle_deg: 0.0,
+    }
+}
+
 /// Default XY ground construction plane for new documents.
 pub fn default_xy_plane() -> ConstructionPlane {
     ConstructionPlane {
@@ -19,6 +35,8 @@ pub fn default_xy_plane() -> ConstructionPlane {
         normal: Vec3::Z,
         u_axis: Vec3::X,
         v_axis: Vec3::Y,
+        parent: ConstructionPlaneParent::Root,
+        definition: default_xy_plane_definition(),
     }
 }
 
@@ -36,7 +54,8 @@ pub fn sketch_frame(doc: &Document, face: FaceId) -> Option<SketchFrame> {
         }
         FaceId::Rect(i) => {
             let rect = doc.rects.get(i)?;
-            let parent = sketch_frame(doc, rect.parent)?;
+            let face = doc.sketch_face(rect.sketch)?;
+            let parent = sketch_frame(doc, face)?;
             let origin = local_to_world(&parent, rect.x, rect.y);
             Some(SketchFrame {
                 origin,
@@ -48,6 +67,12 @@ pub fn sketch_frame(doc: &Document, face: FaceId) -> Option<SketchFrame> {
     }
 }
 
+/// Resolve the world-space frame for geometry in a sketch.
+pub fn sketch_geometry_frame(doc: &Document, sketch: SketchId) -> Option<SketchFrame> {
+    let face = doc.sketch_face(sketch)?;
+    sketch_frame(doc, face)
+}
+
 pub fn world_to_local(frame: &SketchFrame, p: Vec3) -> (f32, f32) {
     let rel = p - frame.origin;
     (rel.dot(frame.u_axis), rel.dot(frame.v_axis))
@@ -57,8 +82,24 @@ pub fn local_to_world(frame: &SketchFrame, u: f32, v: f32) -> Vec3 {
     frame.origin + frame.u_axis * u + frame.v_axis * v
 }
 
+/// Camera up vector so the sketch plane's v-axis points up on screen and u-axis points right.
+pub fn sketch_view_up(view_direction: Vec3, frame: &SketchFrame) -> Vec3 {
+    // `view_direction` points from the face toward the eye; `look_at_rh` uses the opposite.
+    let look_forward = (-view_direction).normalize_or_zero();
+    let mut up = frame.v_axis.normalize_or_zero();
+    if up.length_squared() < 1e-8 {
+        return Vec3::Z;
+    }
+    // Match `Mat4::look_at_rh`: right = cross(look_forward, up_hint).
+    let right = look_forward.cross(up).normalize_or_zero();
+    if right.dot(frame.u_axis) < 0.0 {
+        up = -up;
+    }
+    up
+}
+
 pub fn rect_world_corners(doc: &Document, rect: &Rect) -> Option<[Vec3; 4]> {
-    let frame = sketch_frame(doc, rect.parent)?;
+    let frame = sketch_geometry_frame(doc, rect.sketch)?;
     Some([
         local_to_world(&frame, rect.x, rect.y),
         local_to_world(&frame, rect.x + rect.w, rect.y),
@@ -68,7 +109,7 @@ pub fn rect_world_corners(doc: &Document, rect: &Rect) -> Option<[Vec3; 4]> {
 }
 
 pub fn line_world_endpoints(doc: &Document, line: &Line) -> Option<(Vec3, Vec3)> {
-    let frame = sketch_frame(doc, line.parent)?;
+    let frame = sketch_geometry_frame(doc, line.sketch)?;
     Some((
         local_to_world(&frame, line.x0, line.y0),
         local_to_world(&frame, line.x1, line.y1),
@@ -76,7 +117,7 @@ pub fn line_world_endpoints(doc: &Document, line: &Line) -> Option<(Vec3, Vec3)>
 }
 
 pub fn rect_center_world(doc: &Document, rect: &Rect) -> Option<Vec3> {
-    let frame = sketch_frame(doc, rect.parent)?;
+    let frame = sketch_geometry_frame(doc, rect.sketch)?;
     Some(local_to_world(
         &frame,
         rect.x + rect.w * 0.5,
@@ -93,7 +134,7 @@ pub struct SketchZoomBounds {
     pub half_v: f32,
 }
 
-/// Camera framing parameters when entering sketch mode on a face.
+/// Camera framing parameters when entering sketch mode on a sketch.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SketchCameraTarget {
     pub target: glam::Vec3,
@@ -152,10 +193,10 @@ impl SketchZoomBounds {
     }
 }
 
-fn children_local_bounds(doc: &Document, face: FaceId) -> Option<SketchZoomBounds> {
+fn sketch_local_bounds(doc: &Document, sketch: SketchId) -> Option<SketchZoomBounds> {
     let mut bounds: Option<SketchZoomBounds> = None;
     for rect in &doc.rects {
-        if rect.parent != face {
+        if rect.sketch != sketch {
             continue;
         }
         let next = SketchZoomBounds::from_uv_rect(rect.x, rect.y, rect.x + rect.w, rect.y + rect.h);
@@ -165,11 +206,10 @@ fn children_local_bounds(doc: &Document, face: FaceId) -> Option<SketchZoomBound
         });
     }
     for line in &doc.lines {
-        if line.parent != face {
+        if line.sketch != sketch {
             continue;
         }
-        let next =
-            SketchZoomBounds::from_uv_rect(line.x0, line.y0, line.x1, line.y1);
+        let next = SketchZoomBounds::from_uv_rect(line.x0, line.y0, line.x1, line.y1);
         bounds = Some(match bounds {
             Some(b) => SketchZoomBounds::union(b, next),
             None => next,
@@ -179,13 +219,14 @@ fn children_local_bounds(doc: &Document, face: FaceId) -> Option<SketchZoomBound
 }
 
 /// Resolve camera target, view direction, and optional zoom bounds for sketch mode.
-pub fn sketch_camera_target(doc: &Document, face: FaceId) -> Option<SketchCameraTarget> {
+pub fn sketch_camera_target(doc: &Document, sketch: SketchId) -> Option<SketchCameraTarget> {
+    let face = doc.sketch_face(sketch)?;
     let frame = sketch_frame(doc, face)?;
     let face_normal = frame.normal;
 
     match face {
         FaceId::ConstructionPlane(_) => {
-            if let Some(zoom) = children_local_bounds(doc, face) {
+            if let Some(zoom) = sketch_local_bounds(doc, sketch) {
                 let target = local_to_world(&frame, zoom.center_u, zoom.center_v);
                 Some(SketchCameraTarget {
                     target,
@@ -208,7 +249,7 @@ pub fn sketch_camera_target(doc: &Document, face: FaceId) -> Option<SketchCamera
                 rect.x + rect.w,
                 rect.y + rect.h,
             );
-            if let Some(children) = children_local_bounds(doc, face) {
+            if let Some(children) = sketch_local_bounds(doc, sketch) {
                 zoom = SketchZoomBounds::union(zoom, children);
             }
             let target = local_to_world(&frame, zoom.center_u, zoom.center_v);
@@ -219,6 +260,14 @@ pub fn sketch_camera_target(doc: &Document, face: FaceId) -> Option<SketchCamera
             })
         }
     }
+}
+
+pub fn sketch_label(doc: &Document, sketch: SketchId) -> String {
+    let face = doc
+        .sketch_face(sketch)
+        .map(|face| face_label(doc, face))
+        .unwrap_or_else(|| "unknown face".to_string());
+    format!("Sketch {sketch} on {face}")
 }
 
 pub fn face_label(_doc: &Document, face: FaceId) -> String {
@@ -310,6 +359,8 @@ fn dist_point_to_segment_px(p: eframe::egui::Pos2, a: eframe::egui::Pos2, b: efr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Sketch;
+
     #[test]
     fn default_document_has_xy_construction_plane() {
         let doc = Document::default();
@@ -320,8 +371,9 @@ mod tests {
 
     #[test]
     fn sketch_on_plane_stores_local_coordinates() {
-        let doc = Document::default();
-        let frame = sketch_frame(&doc, FaceId::ConstructionPlane(0)).unwrap();
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let frame = sketch_geometry_frame(&doc, sketch).unwrap();
         let p = local_to_world(&frame, 10.0, 20.0);
         let (u, v) = world_to_local(&frame, p);
         assert!((u - 10.0).abs() < 1e-4);
@@ -331,8 +383,9 @@ mod tests {
     #[test]
     fn rect_face_frame_follows_parent_plane() {
         let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         doc.rects.push(Rect::from_local_corners(
-            FaceId::ConstructionPlane(0),
+            sketch,
             5.0,
             5.0,
             15.0,
@@ -346,14 +399,10 @@ mod tests {
     #[test]
     fn child_rect_is_offset_on_parent_face() {
         let mut doc = Document::default();
-        doc.rects.push(Rect::from_local_corners(
-            FaceId::ConstructionPlane(0),
-            0.0,
-            0.0,
-            10.0,
-            10.0,
-        ));
-        doc.rects.push(Rect::from_local_corners(FaceId::Rect(0), 2.0, 3.0, 5.0, 6.0));
+        let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.rects.push(Rect::from_local_corners(s0, 0.0, 0.0, 10.0, 10.0));
+        let s1 = doc.add_sketch(FaceId::Rect(0));
+        doc.rects.push(Rect::from_local_corners(s1, 2.0, 3.0, 5.0, 6.0));
         let corners = rect_world_corners(&doc, &doc.rects[1]).unwrap();
         assert!((corners[0].x - 2.0).abs() < 1e-4);
         assert!((corners[0].y - 3.0).abs() < 1e-4);
@@ -363,20 +412,17 @@ mod tests {
     fn has_children_detects_dependents() {
         let mut doc = Document::default();
         assert!(!doc.has_children(FaceId::ConstructionPlane(0)));
-        doc.rects.push(Rect::from_local_corners(
-            FaceId::ConstructionPlane(0),
-            0.0,
-            0.0,
-            1.0,
-            1.0,
-        ));
+        doc.sketches.push(Sketch {
+            face: FaceId::ConstructionPlane(0),
+        });
         assert!(doc.has_children(FaceId::ConstructionPlane(0)));
     }
 
     #[test]
     fn sketch_camera_empty_plane_orients_without_zoom() {
-        let doc = Document::default();
-        let target = sketch_camera_target(&doc, FaceId::ConstructionPlane(0)).unwrap();
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let target = sketch_camera_target(&doc, sketch).unwrap();
         assert!(target.zoom.is_none());
         assert!(target.target.length_squared() < 1e-8);
         assert!((target.face_normal.z - 1.0).abs() < 1e-4);
@@ -385,14 +431,15 @@ mod tests {
     #[test]
     fn sketch_camera_plane_with_children_requests_zoom() {
         let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         doc.rects.push(Rect::from_local_corners(
-            FaceId::ConstructionPlane(0),
+            sketch,
             10.0,
             20.0,
             90.0,
             60.0,
         ));
-        let target = sketch_camera_target(&doc, FaceId::ConstructionPlane(0)).unwrap();
+        let target = sketch_camera_target(&doc, sketch).unwrap();
         let zoom = target.zoom.expect("children should request zoom");
         assert!((zoom.center_u - 50.0).abs() < 1e-4);
         assert!((zoom.center_v - 40.0).abs() < 1e-4);
@@ -403,30 +450,81 @@ mod tests {
     #[test]
     fn sketch_camera_rect_face_includes_face_and_children() {
         let mut doc = Document::default();
+        let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.rects.push(Rect::from_local_corners(s0, 0.0, 0.0, 20.0, 20.0));
+        let s1 = doc.add_sketch(FaceId::Rect(0));
         doc.rects.push(Rect::from_local_corners(
-            FaceId::ConstructionPlane(0),
-            0.0,
-            0.0,
-            20.0,
-            20.0,
-        ));
-        doc.rects.push(Rect::from_local_corners(
-            FaceId::Rect(0),
+            s1,
             2.0,
             2.0,
             18.0,
             18.0,
         ));
         doc.lines.push(Line::from_local_endpoints(
-            FaceId::Rect(0),
+            s1,
             5.0,
             5.0,
             15.0,
             10.0,
         ));
-        let target = sketch_camera_target(&doc, FaceId::Rect(0)).unwrap();
+        let target = sketch_camera_target(&doc, s1).unwrap();
         let zoom = target.zoom.unwrap();
         assert!(zoom.half_u >= 8.0);
         assert!(zoom.half_v >= 8.0);
+    }
+
+    #[test]
+    fn sketch_view_up_aligns_plane_axes_with_screen() {
+        use crate::camera::Camera;
+        use crate::construction::{
+            definition_from_reference, plane_from_definition, PlaneReference,
+        };
+        use crate::model::ConstructionPlaneParent;
+        use eframe::egui::{Pos2, Rect};
+
+        let mut doc = Document::default();
+        doc.construction_planes.push(plane_from_definition(
+            &definition_from_reference(
+                &PlaneReference::Axis {
+                    origin: Vec3::ZERO,
+                    direction: Vec3::X,
+                    label: "X axis".to_string(),
+                },
+                0.0,
+                45.0,
+            ),
+            ConstructionPlaneParent::Root,
+        ));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(1));
+        let frame = sketch_frame(&doc, FaceId::ConstructionPlane(1)).unwrap();
+        let mut cam = Camera::default();
+        cam.target = frame.origin;
+        cam.distance = 200.0;
+        let view_direction =
+            cam.visible_face_view_direction(frame.origin, frame.normal);
+        cam.set_view_up(Some(sketch_view_up(view_direction, &frame)));
+        let (yaw, pitch) = Camera::view_direction_to_yaw_pitch(view_direction);
+        cam.yaw = yaw;
+        cam.pitch = pitch;
+
+        let viewport = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
+        let base = cam.project(frame.origin, viewport, &vp).unwrap();
+        let above = cam
+            .project(frame.origin + frame.v_axis * 10.0, viewport, &vp)
+            .unwrap();
+        let right = cam
+            .project(frame.origin + frame.u_axis * 10.0, viewport, &vp)
+            .unwrap();
+
+        assert!(
+            above.y < base.y,
+            "positive v should point up on screen (smaller egui y)"
+        );
+        assert!(
+            right.x > base.x,
+            "positive u should point right on screen"
+        );
+        let _ = sketch;
     }
 }

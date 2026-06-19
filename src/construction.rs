@@ -3,8 +3,14 @@
 //! Construction planes are defined by a reference face or axis/line, then an offset
 //! (and optionally an angle around an axis).
 
-use crate::face::{line_world_endpoints, rect_center_world, rect_world_corners};
-use crate::model::{ConstructionPlane, Document, Line, Rect};
+use crate::face::{
+    line_world_endpoints, rect_center_world, rect_world_corners, sketch_frame,
+    sketch_geometry_frame, world_to_local, SketchFrame,
+};
+use crate::model::{
+    ConstructionPlane, ConstructionPlaneParent, Document, FaceId, Line, PlaneAnchor,
+    PlaneDefinition, Rect, SketchId,
+};
 use crate::value::{eval_length_mm, parse_length_or};
 use eframe::egui;
 use glam::{Quat, Vec3};
@@ -88,6 +94,283 @@ impl PlaneDim {
 
 }
 
+pub fn reference_from_definition(def: &PlaneDefinition) -> PlaneReference {
+    match &def.anchor {
+        PlaneAnchor::Face {
+            origin,
+            normal,
+            label,
+        } => PlaneReference::Face {
+            origin: *origin,
+            normal: *normal,
+            label: label.clone(),
+        },
+        PlaneAnchor::Axis {
+            origin,
+            direction,
+            label,
+        } => PlaneReference::Axis {
+            origin: *origin,
+            direction: *direction,
+            label: label.clone(),
+        },
+    }
+}
+
+pub fn definition_from_reference(
+    reference: &PlaneReference,
+    offset_mm: f32,
+    angle_deg: f32,
+) -> PlaneDefinition {
+    let anchor = match reference {
+        PlaneReference::Face {
+            origin,
+            normal,
+            label,
+        } => PlaneAnchor::Face {
+            origin: *origin,
+            normal: *normal,
+            label: label.clone(),
+        },
+        PlaneReference::Axis {
+            origin,
+            direction,
+            label,
+        } => PlaneAnchor::Axis {
+            origin: *origin,
+            direction: *direction,
+            label: label.clone(),
+        },
+    };
+    PlaneDefinition {
+        anchor,
+        offset_mm,
+        angle_deg,
+    }
+}
+
+pub fn plane_from_definition(def: &PlaneDefinition, parent: ConstructionPlaneParent) -> ConstructionPlane {
+    let reference = reference_from_definition(def);
+    let mut plane = resolve_plane(
+        &reference,
+        &def.offset_mm.to_string(),
+        &def.angle_deg.to_string(),
+        def.offset_mm,
+        def.angle_deg,
+        true,
+        true,
+    );
+    plane.parent = parent;
+    plane.definition = def.clone();
+    plane
+}
+
+/// Construction-plane indices nested under sketches hosted on `root_plane`.
+pub fn descendant_plane_indices(doc: &Document, root_plane: usize) -> Vec<usize> {
+    let mut descendants = Vec::new();
+    let mut faces = vec![FaceId::ConstructionPlane(root_plane)];
+    let mut seen_faces = std::collections::HashSet::new();
+
+    while let Some(face) = faces.pop() {
+        if !seen_faces.insert(face) {
+            continue;
+        }
+        for sketch in doc.sketches_on_face(face) {
+            for (pi, plane) in doc.construction_planes.iter().enumerate() {
+                if matches!(plane.parent, ConstructionPlaneParent::Sketch(s) if s == sketch) {
+                    descendants.push(pi);
+                    faces.push(FaceId::ConstructionPlane(pi));
+                }
+            }
+            for (ri, rect) in doc.rects.iter().enumerate() {
+                if rect.sketch == sketch {
+                    faces.push(FaceId::Rect(ri));
+                }
+            }
+        }
+    }
+
+    descendants
+}
+
+/// Faces hosted on or nested under sketches on `root_plane` (including the root plane).
+pub fn descendant_faces(doc: &Document, root_plane: usize) -> Vec<FaceId> {
+    let mut faces = vec![FaceId::ConstructionPlane(root_plane)];
+    let mut seen_faces = std::collections::HashSet::new();
+    let mut collected = Vec::new();
+
+    while let Some(face) = faces.pop() {
+        if !seen_faces.insert(face) {
+            continue;
+        }
+        collected.push(face);
+        for sketch in doc.sketches_on_face(face) {
+            for (pi, plane) in doc.construction_planes.iter().enumerate() {
+                if matches!(plane.parent, ConstructionPlaneParent::Sketch(s) if s == sketch) {
+                    faces.push(FaceId::ConstructionPlane(pi));
+                }
+            }
+            for (ri, rect) in doc.rects.iter().enumerate() {
+                if rect.sketch == sketch {
+                    faces.push(FaceId::Rect(ri));
+                }
+            }
+        }
+    }
+
+    collected
+}
+
+/// World-space preview of geometry that moves when a construction plane is edited.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlaneEditDependentPreview {
+    pub planes: Vec<(usize, ConstructionPlane)>,
+    pub rects: Vec<[Vec3; 4]>,
+    pub lines: Vec<(Vec3, Vec3)>,
+}
+
+/// Where dependent planes and hosted sketch geometry will land after `preview_plane` is committed.
+pub fn preview_plane_edit_dependents(
+    doc: &Document,
+    plane_index: usize,
+    preview_plane: &ConstructionPlane,
+) -> Option<PlaneEditDependentPreview> {
+    let old_frame = sketch_frame(doc, FaceId::ConstructionPlane(plane_index))?;
+    let new_frame = SketchFrame {
+        origin: preview_plane.origin,
+        u_axis: preview_plane.u_axis,
+        v_axis: preview_plane.v_axis,
+        normal: preview_plane.normal,
+    };
+
+    let mut planes = Vec::new();
+    for index in descendant_plane_indices(doc, plane_index) {
+        let mut plane = doc.construction_planes[index].clone();
+        transform_plane_between_frames(&old_frame, &new_frame, &mut plane);
+        planes.push((index, plane));
+    }
+
+    let mut sketches = std::collections::HashSet::new();
+    for face in descendant_faces(doc, plane_index) {
+        for sketch in doc.sketches_on_face(face) {
+            sketches.insert(sketch);
+        }
+    }
+
+    let mut rects = Vec::new();
+    let mut lines = Vec::new();
+    for sketch in sketches {
+        for rect in &doc.rects {
+            if rect.sketch != sketch {
+                continue;
+            }
+            let Some(corners) = rect_world_corners(doc, rect) else {
+                continue;
+            };
+            rects.push(corners.map(|corner| {
+                transform_point_between_frames(&old_frame, &new_frame, corner)
+            }));
+        }
+        for line in &doc.lines {
+            if line.sketch != sketch {
+                continue;
+            }
+            let Some((a, b)) = line_world_endpoints(doc, line) else {
+                continue;
+            };
+            lines.push((
+                transform_point_between_frames(&old_frame, &new_frame, a),
+                transform_point_between_frames(&old_frame, &new_frame, b),
+            ));
+        }
+    }
+
+    Some(PlaneEditDependentPreview {
+        planes,
+        rects,
+        lines,
+    })
+}
+
+pub fn transform_point_between_frames(old: &SketchFrame, new: &SketchFrame, point: Vec3) -> Vec3 {
+    let relative = point - old.origin;
+    let along_u = relative.dot(old.u_axis);
+    let along_v = relative.dot(old.v_axis);
+    let along_n = relative.dot(old.normal);
+    new.origin + new.u_axis * along_u + new.v_axis * along_v + new.normal * along_n
+}
+
+pub fn transform_vector_between_frames(old: &SketchFrame, new: &SketchFrame, vector: Vec3) -> Vec3 {
+    let along_u = vector.dot(old.u_axis);
+    let along_v = vector.dot(old.v_axis);
+    let along_n = vector.dot(old.normal);
+    new.u_axis * along_u + new.v_axis * along_v + new.normal * along_n
+}
+
+pub fn transform_plane_between_frames(
+    old: &SketchFrame,
+    new: &SketchFrame,
+    plane: &mut ConstructionPlane,
+) {
+    plane.origin = transform_point_between_frames(old, new, plane.origin);
+    plane.normal = transform_vector_between_frames(old, new, plane.normal).normalize_or_zero();
+    plane.u_axis = transform_vector_between_frames(old, new, plane.u_axis).normalize_or_zero();
+    plane.v_axis = transform_vector_between_frames(old, new, plane.v_axis).normalize_or_zero();
+}
+
+pub fn transform_definition_between_frames(
+    old: &SketchFrame,
+    new: &SketchFrame,
+    definition: &mut PlaneDefinition,
+) {
+    match &mut definition.anchor {
+        PlaneAnchor::Face { origin, normal, .. } => {
+            *origin = transform_point_between_frames(old, new, *origin);
+            *normal = transform_vector_between_frames(old, new, *normal).normalize_or_zero();
+        }
+        PlaneAnchor::Axis {
+            origin,
+            direction,
+            ..
+        } => {
+            *origin = transform_point_between_frames(old, new, *origin);
+            *direction = transform_vector_between_frames(old, new, *direction).normalize_or_zero();
+        }
+    }
+}
+
+/// Rebuild a construction plane from its definition and move descendants with it.
+pub fn apply_construction_plane_edit(
+    doc: &mut Document,
+    plane_index: usize,
+    definition: &PlaneDefinition,
+    parent: ConstructionPlaneParent,
+) -> Result<(), String> {
+    if doc.construction_planes.get(plane_index).is_none() {
+        return Err(format!("Unknown construction plane {plane_index}"));
+    }
+
+    let old_frame = sketch_frame(doc, FaceId::ConstructionPlane(plane_index))
+        .ok_or_else(|| format!("Construction plane {plane_index} has no sketch frame"))?;
+    let descendants = descendant_plane_indices(doc, plane_index);
+
+    let plane = plane_from_definition(definition, parent);
+    doc.construction_planes[plane_index] = plane;
+
+    let new_frame = sketch_frame(doc, FaceId::ConstructionPlane(plane_index))
+        .ok_or_else(|| format!("Construction plane {plane_index} has no sketch frame"))?;
+
+    for index in descendants {
+        let Some(child) = doc.construction_planes.get_mut(index) else {
+            continue;
+        };
+        transform_plane_between_frames(&old_frame, &new_frame, child);
+        transform_definition_between_frames(&old_frame, &new_frame, &mut child.definition);
+    }
+
+    Ok(())
+}
+
 /// Build an orthonormal (u, v) basis on a plane from its unit normal.
 pub fn plane_basis(normal: Vec3) -> (Vec3, Vec3) {
     let n = normal.normalize_or_zero();
@@ -109,6 +392,16 @@ pub fn plane_from_face(offset: f32, origin: Vec3, normal: Vec3) -> ConstructionP
         normal: n,
         u_axis: u,
         v_axis: v,
+        parent: ConstructionPlaneParent::Root,
+        definition: definition_from_reference(
+            &PlaneReference::Face {
+                origin,
+                normal: n,
+                label: String::new(),
+            },
+            offset,
+            0.0,
+        ),
     }
 }
 
@@ -130,7 +423,42 @@ pub fn plane_from_axis(
         normal: n,
         u_axis: u,
         v_axis: v,
+        parent: ConstructionPlaneParent::Root,
+        definition: definition_from_reference(
+            &PlaneReference::Axis {
+                origin,
+                direction: axis,
+                label: String::new(),
+            },
+            offset,
+            angle_deg,
+        ),
     }
+}
+
+/// Sketch that owns geometry used as a construction-plane reference, if any.
+pub fn sketch_from_pick_target(doc: &Document, kind: PickTargetKind) -> Option<SketchId> {
+    match kind {
+        PickTargetKind::Line(line) => Some(line.sketch),
+        PickTargetKind::ShapeEdge { line, .. } => Some(line.sketch),
+        PickTargetKind::Rect(rect) => Some(rect.sketch),
+        PickTargetKind::ConstructionPlane(index) => doc.construction_planes.get(index).and_then(|plane| {
+            match plane.parent {
+                ConstructionPlaneParent::Sketch(sketch) => Some(sketch),
+                ConstructionPlaneParent::Root => None,
+            }
+        }),
+        PickTargetKind::PlaneEdge { .. } | PickTargetKind::GlobalAxis(_) | PickTargetKind::Ground(_) => {
+            None
+        }
+    }
+}
+
+/// Hierarchy parent for a new construction plane from a pick target.
+pub fn parent_from_pick_target(doc: &Document, kind: PickTargetKind) -> ConstructionPlaneParent {
+    sketch_from_pick_target(doc, kind)
+        .map(ConstructionPlaneParent::Sketch)
+        .unwrap_or(ConstructionPlaneParent::Root)
 }
 
 /// Resolve the final plane from a reference and dimension texts (typed or live).
@@ -519,7 +847,11 @@ pub enum PickTargetKind {
     /// A standalone sketch line segment.
     Line(Line),
     /// One edge of a rectangle (or other 2D shape).
-    ShapeEdge(Line),
+    ShapeEdge {
+        line: Line,
+        a: Vec3,
+        b: Vec3,
+    },
     /// One edge of a construction-plane quad.
     PlaneEdge {
         a: Vec3,
@@ -527,7 +859,7 @@ pub enum PickTargetKind {
     },
     GlobalAxis(GlobalAxis),
     Rect(Rect),
-    ConstructionPlane(ConstructionPlane),
+    ConstructionPlane(usize),
     Ground(Vec3),
 }
 
@@ -597,7 +929,10 @@ pub fn resolve_pick_target(
         let origin = rect_center_world(doc, &rect)
             .or_else(|| ground_point)
             .unwrap_or(rect_center_legacy(rect));
-        let normal = crate::face::sketch_frame(doc, rect.parent)
+        let face = doc
+            .sketch_face(rect.sketch)
+            .unwrap_or(FaceId::ConstructionPlane(0));
+        let normal = crate::face::sketch_frame(doc, face)
             .map(|f| f.normal)
             .unwrap_or(Vec3::Z);
         consider(PickTarget {
@@ -625,12 +960,13 @@ pub fn resolve_pick_target(
         });
     }
 
-    if let Some((plane, dist)) = nearest_construction_plane(screen, project, &doc.construction_planes)
+    if let Some((index, dist)) = nearest_construction_plane(screen, project, &doc.construction_planes)
     {
+        let plane = &doc.construction_planes[index];
         let origin = ground_point.unwrap_or(plane.origin);
-        let projected = project_point_on_plane(origin, &plane);
+        let projected = project_point_on_plane(origin, plane);
         consider(PickTarget {
-            kind: PickTargetKind::ConstructionPlane(plane),
+            kind: PickTargetKind::ConstructionPlane(index),
             reference: PlaneReference::Face {
                 origin: projected,
                 normal: plane.normal,
@@ -666,16 +1002,6 @@ impl PickTarget {
     }
 }
 
-/// Pick a plane/axis reference from a viewport click.
-pub fn pick_reference(
-    screen: egui::Pos2,
-    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
-    ground_point: Option<Vec3>,
-    doc: &Document,
-) -> Option<PlaneReference> {
-    resolve_pick_target(screen, project, ground_point, doc).map(|t| t.reference)
-}
-
 /// Draw a hover highlight for a pickable target.
 pub fn draw_pick_highlight(
     painter: &egui::Painter,
@@ -685,8 +1011,11 @@ pub fn draw_pick_highlight(
     color: egui::Color32,
 ) {
     match kind {
-        PickTargetKind::Line(line) | PickTargetKind::ShapeEdge(line) => {
+        PickTargetKind::Line(line) => {
             draw_line_highlight(painter, project, doc, line, color);
+        }
+        PickTargetKind::ShapeEdge { a, b, .. } => {
+            draw_segment_highlight(painter, project, a, b, color);
         }
         PickTargetKind::PlaneEdge { a, b } => {
             draw_segment_highlight(painter, project, a, b, color);
@@ -699,8 +1028,10 @@ pub fn draw_pick_highlight(
         PickTargetKind::Rect(rect) => {
             draw_rect_highlight(painter, project, doc, rect, color);
         }
-        PickTargetKind::ConstructionPlane(plane) => {
-            draw_plane_face_highlight(painter, project, &plane, color);
+        PickTargetKind::ConstructionPlane(index) => {
+            if let Some(plane) = doc.construction_planes.get(index) {
+                draw_plane_face_highlight(painter, project, plane, color);
+            }
         }
         PickTargetKind::Ground(p) => {
             if let Some(sp) = project(p) {
@@ -902,9 +1233,19 @@ fn nearest_sketch_edge(
     }
 
     for &rect in &doc.rects {
+        let Some(frame) = sketch_geometry_frame(doc, rect.sketch) else {
+            continue;
+        };
         for (a, b) in rect_edge_segments(doc, rect) {
-            let edge_line = Line::from_local_endpoints(rect.parent, a.x, a.y, b.x, b.y);
-            consider(PickTargetKind::ShapeEdge(edge_line), a, b, "Rectangle edge");
+            let (au, av) = world_to_local(&frame, a);
+            let (bu, bv) = world_to_local(&frame, b);
+            let edge_line = Line::from_local_endpoints(rect.sketch, au, av, bu, bv);
+            consider(
+                PickTargetKind::ShapeEdge { line: edge_line, a, b },
+                a,
+                b,
+                "Rectangle edge",
+            );
         }
     }
 
@@ -978,10 +1319,10 @@ fn nearest_construction_plane(
     screen: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     planes: &[ConstructionPlane],
-) -> Option<(ConstructionPlane, f32)> {
-    let mut best: Option<(ConstructionPlane, f32)> = None;
-    for &plane in planes.iter().rev() {
-        let corners = plane_corners(&plane, PLANE_DISPLAY_HALF);
+) -> Option<(usize, f32)> {
+    let mut best: Option<(usize, f32)> = None;
+    for (index, plane) in planes.iter().enumerate().rev() {
+        let corners = plane_corners(plane, PLANE_DISPLAY_HALF);
         let pts: Option<Vec<egui::Pos2>> = corners.iter().map(|&c| project(c)).collect();
         let Some(pts) = pts else { continue };
         let quad = [pts[0], pts[1], pts[2], pts[3]];
@@ -991,8 +1332,8 @@ fn nearest_construction_plane(
             dist_point_to_quad_edges(screen, quad)
         };
         if dist <= FACE_PICK_MARGIN_PX {
-            if best.map(|(_, d)| dist < d).unwrap_or(true) {
-                best = Some((plane, dist));
+            if best.as_ref().is_none_or(|(_, d)| dist < *d) {
+                best = Some((index, dist));
             }
         }
     }
@@ -1170,23 +1511,45 @@ mod tests {
         assert!(matches!(target.kind, PickTargetKind::GlobalAxis(_)));
     }
 
+    fn doc_with_plane_sketch() -> (Document, usize) {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        (doc, sketch)
+    }
+
+    #[test]
+    fn parent_from_line_pick_is_owning_sketch() {
+        let (doc, sketch) = doc_with_plane_sketch();
+        let line = Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0);
+        assert_eq!(
+            parent_from_pick_target(&doc, PickTargetKind::Line(line)),
+            ConstructionPlaneParent::Sketch(sketch)
+        );
+    }
+
+    #[test]
+    fn parent_from_ground_pick_is_root() {
+        let doc = Document::default();
+        assert_eq!(
+            parent_from_pick_target(&doc, PickTargetKind::Ground(Vec3::ZERO)),
+            ConstructionPlaneParent::Root
+        );
+    }
+
     #[test]
     fn pick_reference_prefers_line_over_ground() {
-        let doc = Document {
-            lines: vec![Line::from_local_endpoints(crate::model::FaceId::ConstructionPlane(0),0.0, 0.0, 100.0, 0.0)],
-            ..Default::default()
-        };
+        let (mut doc, sketch) = doc_with_plane_sketch();
+        doc.lines = vec![Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0)];
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
-        let reference = pick_reference(Pos2::new(50.0, 2.0), &project, Some(Vec3::ZERO), &doc);
+        let reference = resolve_pick_target(Pos2::new(50.0, 2.0), &project, Some(Vec3::ZERO), &doc)
+            .map(|t| t.reference);
         assert!(matches!(reference, Some(PlaneReference::Axis { .. })));
     }
 
     #[test]
     fn line_picked_within_proximity_threshold() {
-        let doc = Document {
-            lines: vec![Line::from_local_endpoints(crate::model::FaceId::ConstructionPlane(0),0.0, 0.0, 100.0, 0.0)],
-            ..Default::default()
-        };
+        let (mut doc, sketch) = doc_with_plane_sketch();
+        doc.lines = vec![Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0)];
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
         let target = resolve_pick_target(Pos2::new(50.0, 8.0), &project, None, &doc);
         assert!(matches!(
@@ -1197,10 +1560,8 @@ mod tests {
 
     #[test]
     fn line_endpoint_picked_within_point_threshold() {
-        let doc = Document {
-            lines: vec![Line::from_local_endpoints(crate::model::FaceId::ConstructionPlane(0),100.0, 50.0, 200.0, 50.0)],
-            ..Default::default()
-        };
+        let (mut doc, sketch) = doc_with_plane_sketch();
+        doc.lines = vec![Line::from_local_endpoints(sketch, 100.0, 50.0, 200.0, 50.0)];
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
         let target = resolve_pick_target(Pos2::new(100.0, 59.0), &project, None, &doc);
         assert!(matches!(
@@ -1210,20 +1571,67 @@ mod tests {
     }
 
     #[test]
-    fn rect_edge_picked_for_axis_reference() {
-        let doc = Document {
-            rects: vec![Rect::from_local_corners(
-                crate::model::FaceId::ConstructionPlane(0),
-                10.0,
-                10.0,
-                50.0,
-                40.0,
-            )],
-            ..Default::default()
+    fn shape_edge_highlight_matches_world_edge_on_tilted_plane() {
+        let mut doc = Document::default();
+        doc.construction_planes.push(plane_from_definition(
+            &definition_from_reference(
+                &PlaneReference::Axis {
+                    origin: Vec3::ZERO,
+                    direction: Vec3::X,
+                    label: "X axis".to_string(),
+                },
+                0.0,
+                45.0,
+            ),
+            ConstructionPlaneParent::Root,
+        ));
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(1));
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 5.0, 5.0, 25.0, 15.0));
+        let rect = doc.rects[0];
+        let frame = sketch_geometry_frame(&doc, sketch).unwrap();
+        let (a, b) = rect_edge_segments(&doc, rect)[0];
+        let (au, av) = world_to_local(&frame, a);
+        let (bu, bv) = world_to_local(&frame, b);
+        let edge_line = Line::from_local_endpoints(sketch, au, av, bu, bv);
+        let kind = PickTargetKind::ShapeEdge {
+            line: edge_line,
+            a,
+            b,
         };
+
+        let PickTargetKind::ShapeEdge {
+            line,
+            a: stored_a,
+            b: stored_b,
+        } = kind
+        else {
+            panic!("expected shape edge");
+        };
+        let (wa, wb) = line_world_endpoints(&doc, &line).unwrap();
+        assert!((wa - stored_a).length() < 1e-3);
+        assert!((wb - stored_b).length() < 1e-3);
+        let legacy_b = crate::face::local_to_world(
+            &frame,
+            stored_b.x,
+            stored_b.y,
+        );
+        assert!(
+            (legacy_b - stored_b).length() > 0.1,
+            "world xyz must not be treated as local uv on a tilted face"
+        );
+    }
+
+    #[test]
+    fn rect_edge_picked_for_axis_reference() {
+        let (mut doc, sketch) = doc_with_plane_sketch();
+        doc.rects = vec![Rect::from_local_corners(sketch, 10.0, 10.0, 50.0, 40.0)];
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
         let target = resolve_pick_target(Pos2::new(50.0, 8.0), &project, None, &doc).unwrap();
-        assert!(matches!(target.kind, PickTargetKind::ShapeEdge(_)));
+        assert!(matches!(
+            target.kind,
+            PickTargetKind::ShapeEdge { .. }
+        ));
         assert!(matches!(
             target.reference,
             PlaneReference::Axis { label, .. } if label == "Rectangle edge"
@@ -1232,37 +1640,21 @@ mod tests {
 
     #[test]
     fn rect_edge_beats_face_when_near_boundary() {
-        let doc = Document {
-            rects: vec![Rect::from_local_corners(
-                crate::model::FaceId::ConstructionPlane(0),
-                0.0,
-                0.0,
-                100.0,
-                100.0,
-            )],
-            ..Default::default()
-        };
+        let (mut doc, sketch) = doc_with_plane_sketch();
+        doc.rects = vec![Rect::from_local_corners(sketch, 0.0, 0.0, 100.0, 100.0)];
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
         let target = resolve_pick_target(Pos2::new(50.0, 2.0), &project, None, &doc);
         assert!(matches!(
             target.map(|t| t.kind),
-            Some(PickTargetKind::ShapeEdge(_))
+            Some(PickTargetKind::ShapeEdge { .. })
         ));
     }
 
     #[test]
     fn standalone_line_beats_rect_edge_when_closer() {
-        let doc = Document {
-            lines: vec![Line::from_local_endpoints(crate::model::FaceId::ConstructionPlane(0),48.0, 0.0, 52.0, 0.0)],
-            rects: vec![Rect::from_local_corners(
-                crate::model::FaceId::ConstructionPlane(0),
-                0.0,
-                10.0,
-                100.0,
-                40.0,
-            )],
-            ..Default::default()
-        };
+        let (mut doc, sketch) = doc_with_plane_sketch();
+        doc.lines = vec![Line::from_local_endpoints(sketch, 48.0, 0.0, 52.0, 0.0)];
+        doc.rects = vec![Rect::from_local_corners(sketch, 0.0, 10.0, 100.0, 40.0)];
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
         let target = resolve_pick_target(Pos2::new(50.0, 1.0), &project, None, &doc);
         assert!(matches!(
@@ -1273,16 +1665,8 @@ mod tests {
 
     #[test]
     fn rect_face_picked_from_interior() {
-        let doc = Document {
-            rects: vec![Rect::from_local_corners(
-                crate::model::FaceId::ConstructionPlane(0),
-                10.0,
-                10.0,
-                50.0,
-                40.0,
-            )],
-            ..Default::default()
-        };
+        let (mut doc, sketch) = doc_with_plane_sketch();
+        doc.rects = vec![Rect::from_local_corners(sketch, 10.0, 10.0, 50.0, 40.0)];
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
         let target = resolve_pick_target(Pos2::new(30.0, 25.0), &project, None, &doc);
         assert!(matches!(
@@ -1388,15 +1772,169 @@ mod tests {
     fn pick_reference_uses_ground_when_empty() {
         let doc = Document::default();
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
-        let reference = pick_reference(
+        let reference = resolve_pick_target(
             Pos2::new(80.0, 80.0),
             &project,
             Some(Vec3::new(80.0, 80.0, 0.0)),
             &doc,
-        );
+        )
+        .map(|t| t.reference);
         assert!(matches!(
             reference,
             Some(PlaneReference::Face { label, .. }) if label == "Ground"
         ));
+    }
+
+    #[test]
+    fn edit_plane_offset_moves_hosted_geometry_in_world_space() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 10.0, 10.0));
+        let before = rect_world_corners(&doc, &doc.rects[0]).unwrap()[0].z;
+
+        let definition = definition_from_reference(
+            &PlaneReference::Face {
+                origin: Vec3::ZERO,
+                normal: Vec3::Z,
+                label: "Ground".to_string(),
+            },
+            20.0,
+            0.0,
+        );
+        apply_construction_plane_edit(
+            &mut doc,
+            0,
+            &definition,
+            ConstructionPlaneParent::Root,
+        )
+        .unwrap();
+
+        let after = rect_world_corners(&doc, &doc.rects[0]).unwrap()[0].z;
+        assert!((after - before - 20.0).abs() < 1e-3);
+        assert!((doc.rects[0].x).abs() < 1e-6, "local sketch coords stay put");
+    }
+
+    #[test]
+    fn plane_edit_preview_matches_committed_dependent_geometry() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 10.0, 10.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 1.0, 1.0, 9.0, 1.0));
+        let child = plane_from_definition(
+            &definition_from_reference(
+                &PlaneReference::Face {
+                    origin: Vec3::ZERO,
+                    normal: Vec3::Z,
+                    label: "Ground".to_string(),
+                },
+                5.0,
+                0.0,
+            ),
+            ConstructionPlaneParent::Sketch(sketch),
+        );
+        doc.construction_planes.push(child);
+        let child_sketch = doc.add_sketch(FaceId::ConstructionPlane(1));
+        doc.rects
+            .push(Rect::from_local_corners(child_sketch, 2.0, 2.0, 8.0, 8.0));
+
+        let definition = definition_from_reference(
+            &PlaneReference::Face {
+                origin: Vec3::ZERO,
+                normal: Vec3::Z,
+                label: "Ground".to_string(),
+            },
+            15.0,
+            0.0,
+        );
+        let preview_plane = plane_from_definition(&definition, ConstructionPlaneParent::Root);
+        let preview = preview_plane_edit_dependents(&doc, 0, &preview_plane).unwrap();
+
+        apply_construction_plane_edit(
+            &mut doc,
+            0,
+            &definition,
+            ConstructionPlaneParent::Root,
+        )
+        .unwrap();
+
+        assert_eq!(preview.planes.len(), 1);
+        let committed_child = &doc.construction_planes[1];
+        assert!((preview.planes[0].1.origin - committed_child.origin).length() < 1e-3);
+        assert!((preview.planes[0].1.normal - committed_child.normal).length() < 1e-3);
+
+        let committed_rects: Vec<_> = doc
+            .rects
+            .iter()
+            .map(|rect| rect_world_corners(&doc, rect).unwrap())
+            .collect();
+        for corners in preview.rects {
+            assert!(
+                committed_rects
+                    .iter()
+                    .any(|committed| corners.iter().zip(committed.iter()).all(|(a, b)| {
+                        (*a - *b).length() < 1e-3
+                    })),
+                "preview rect should match a committed rect"
+            );
+        }
+
+        let committed_lines: Vec<_> = doc
+            .lines
+            .iter()
+            .map(|line| line_world_endpoints(&doc, line).unwrap())
+            .collect();
+        for (a, b) in preview.lines {
+            assert!(
+                committed_lines.iter().any(|(ca, cb)| {
+                    (a - *ca).length() < 1e-3 && (b - *cb).length() < 1e-3
+                }),
+                "preview line should match a committed line"
+            );
+        }
+    }
+
+    #[test]
+    fn edit_plane_offset_moves_descendant_planes() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        let child = plane_from_definition(
+            &definition_from_reference(
+                &PlaneReference::Face {
+                    origin: Vec3::ZERO,
+                    normal: Vec3::Z,
+                    label: "Ground".to_string(),
+                },
+                5.0,
+                0.0,
+            ),
+            ConstructionPlaneParent::Sketch(sketch),
+        );
+        doc.construction_planes.push(child);
+        let child_origin_before = doc.construction_planes[1].origin.z;
+
+        let definition = definition_from_reference(
+            &PlaneReference::Face {
+                origin: Vec3::ZERO,
+                normal: Vec3::Z,
+                label: "Ground".to_string(),
+            },
+            15.0,
+            0.0,
+        );
+        apply_construction_plane_edit(
+            &mut doc,
+            0,
+            &definition,
+            ConstructionPlaneParent::Root,
+        )
+        .unwrap();
+
+        let child_origin_after = doc.construction_planes[1].origin.z;
+        assert!((child_origin_after - child_origin_before - 15.0).abs() < 1e-3);
     }
 }

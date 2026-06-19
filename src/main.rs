@@ -14,26 +14,30 @@ mod actions;
 mod camera;
 mod construction;
 mod face;
+mod hierarchy;
 mod model;
 mod native_menu;
 mod script;
 mod stl;
 mod storage;
+mod theme;
 mod value;
 mod view_cube;
 
 use actions::{Action, AppState, CreatingLine, CreatingRect, Pane, RectAxis, SketchSession, Tool};
+use hierarchy::SceneElement;
 use construction::{
     angle_from_axis_plane_hit, axis_angle_handle, axis_gizmo_hit, axis_normal,
     axis_offset_handle, draw_axis_plane_gizmo, draw_offset_gizmo, draw_quad_face_highlight,
-    offset_from_normal_drag, offset_gizmo_hit, offset_handle, pick_reference, plane_corners,
-    resolve_pick_target, AxisGizmoDrag, AxisGizmoHit, PlaneDim, PlaneReference,
-    AXIS_GIZMO_HANDLE_HIT_RADIUS_PX, PLANE_DISPLAY_HALF,
+    offset_from_normal_drag, offset_gizmo_hit, offset_handle, parent_from_pick_target,
+    plane_corners, preview_plane_edit_dependents, resolve_pick_target, AxisGizmoDrag,
+    AxisGizmoHit, PlaneDim, PlaneReference, AXIS_GIZMO_HANDLE_HIT_RADIUS_PX, PLANE_DISPLAY_HALF,
 };
 use face::{
-    face_label, line_world_endpoints, pick_sketch_face, rect_world_corners, sketch_frame,
-    world_to_local,
+    line_world_endpoints, pick_sketch_face, rect_world_corners, sketch_frame,
+    sketch_geometry_frame, sketch_label, world_to_local,
 };
+use model::SketchId;
 use model::{FaceId, Line, Rect};
 use eframe::egui;
 use native_menu::{MenuCommand, NativeMenu};
@@ -76,6 +80,7 @@ fn main() -> eframe::Result<()> {
         "LE3",
         options,
         Box::new(move |cc| {
+            theme::apply(&cc.egui_ctx);
             let native_menu = NativeMenu::install(cc).map_err(|e| {
                 eframe::Error::AppCreation(Box::new(std::io::Error::new(
                     std::io::ErrorKind::Other,
@@ -347,6 +352,8 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        theme::apply(ctx);
+
         let dt = ctx.input(|i| i.stable_dt);
         if self.state.cam.tick_transition(dt) {
             ctx.request_repaint();
@@ -360,7 +367,9 @@ impl eframe::App for App {
 
         self.handle_native_menu(ctx);
 
-        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+        egui::TopBottomPanel::top("toolbar")
+            .frame(theme::panel_frame())
+            .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.state.tool, Tool::Select, "Select");
                 if ui
@@ -388,10 +397,7 @@ impl eframe::App for App {
                 );
                 if let Some(session) = self.state.sketch_session {
                     ui.separator();
-                    ui.label(format!(
-                        "Sketch: {}",
-                        face_label(&self.state.doc, session.face)
-                    ));
+                    ui.label(sketch_label(&self.state.doc, session.sketch));
                 }
                 ui.separator();
                 if ui.button("Clear").clicked() {
@@ -403,7 +409,9 @@ impl eframe::App for App {
             });
         });
 
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+        egui::TopBottomPanel::bottom("status")
+            .frame(theme::panel_frame())
+            .show(ctx, |ui| {
             let name = self.state.path.as_deref().unwrap_or("(unsaved)");
             ui.horizontal(|ui| {
                 ui.label(name);
@@ -412,9 +420,47 @@ impl eframe::App for App {
             });
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            self.draw_viewport(ui);
-        });
+        if self.state.panes.is_visible(Pane::Hierarchy) {
+            let mut edit_sketch: Option<SketchId> = None;
+            let mut edit_plane: Option<usize> = None;
+            egui::SidePanel::left("tree")
+                .resizable(true)
+                .default_width(220.0)
+                .frame(theme::panel_frame())
+                .show(ctx, |ui| {
+                    let mut queue_edit_sketch = |sketch: SketchId| {
+                        edit_sketch = Some(sketch);
+                    };
+                    let mut queue_edit_plane = |index: usize| {
+                        edit_plane = Some(index);
+                    };
+                    let mut noop_visibility = |_: SceneElement, _: bool| {};
+                    hierarchy::show_pane(
+                        ui,
+                        &self.state.doc,
+                        self.state.sketch_session,
+                        &mut self.state.element_visibility,
+                        &mut queue_edit_sketch,
+                        &mut queue_edit_plane,
+                        &mut noop_visibility,
+                    );
+                });
+            if let Some(sketch) = edit_sketch {
+                self.state.apply(Action::OpenSketch {
+                    sketch,
+                    viewport: self.last_viewport,
+                });
+            }
+            if let Some(index) = edit_plane {
+                self.state.apply(Action::BeginEditConstructionPlane { index });
+            }
+        }
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none())
+            .show(ctx, |ui| {
+                self.draw_viewport(ui);
+            });
     }
 }
 
@@ -810,7 +856,8 @@ fn sketch_plane_point(
     session: SketchSession,
     screen: egui::Pos2,
 ) -> Option<Vec3> {
-    let frame = sketch_frame(doc, session.face)?;
+    let face = doc.sketch_face(session.sketch)?;
+    let frame = sketch_frame(doc, face)?;
     cam.ray_plane_hit(screen, viewport, vp, frame.origin, frame.normal)
 }
 
@@ -947,7 +994,7 @@ impl App {
                 if let Some(gp) =
                     sketch_plane_point(&cam, viewport, &vp, &self.state.doc, session, pp)
                 {
-                    let frame = sketch_frame(&self.state.doc, session.face).unwrap();
+                    let frame = sketch_geometry_frame(&self.state.doc, session.sketch).unwrap();
                     let was_creating = self.state.creating_rect.is_some();
                     let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
 
@@ -969,7 +1016,7 @@ impl App {
                         let end = cr.end_point(&frame);
                         let (ou, ov) = world_to_local(&frame, cr.origin);
                         let (eu, ev) = world_to_local(&frame, end);
-                        let preview = Rect::from_local_corners(session.face, ou, ov, eu, ev);
+                        let preview = Rect::from_local_corners(session.sketch, ou, ov, eu, ev);
                         let corners = rect_world_corners(&self.state.doc, &preview).unwrap();
                         let dim_layouts = rectangle_dim_layout_from_corners(
                             &project,
@@ -1029,7 +1076,7 @@ impl App {
                 if let Some(gp) =
                     sketch_plane_point(&cam, viewport, &vp, &self.state.doc, session, pp)
                 {
-                    let frame = sketch_frame(&self.state.doc, session.face).unwrap();
+                    let frame = sketch_geometry_frame(&self.state.doc, session.sketch).unwrap();
                     let was_creating = self.state.creating_line.is_some();
                     let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
 
@@ -1085,10 +1132,14 @@ impl App {
                 let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
 
                 if !was_creating && primary_pressed {
-                    if let Some(reference) =
-                        pick_reference(pp, &project, gp, &self.state.doc)
+                    if let Some(target) =
+                        resolve_pick_target(pp, &project, gp, &self.state.doc)
                     {
-                        self.state.apply(Action::BeginConstructionPlane { reference });
+                        let parent = parent_from_pick_target(&self.state.doc, target.kind);
+                        self.state.apply(Action::BeginConstructionPlane {
+                            reference: target.reference,
+                            parent,
+                        });
                     }
                 }
 
@@ -1269,18 +1320,33 @@ impl App {
             sketch_session.is_some(),
         );
 
-        for (ri, r) in self.state.doc.rects.iter().enumerate() {
-            let dim = sketch_session.is_some_and(|s| !sketch_rect_is_active(s, ri, r.parent));
+        let visibility = &self.state.element_visibility;
+        let doc = &self.state.doc;
+
+        for (ri, r) in doc.rects.iter().enumerate() {
+            if !visibility.effective_visible(doc, SceneElement::Rect(ri)) {
+                continue;
+            }
+            let dim = sketch_session
+                .is_some_and(|s| !sketch_rect_is_active(doc, s, ri, r.sketch));
             let color = sketch_color(col::RECT_LINE, dim);
-            draw_rect(&painter, &project, &self.state.doc, *r, color, true);
+            draw_rect(&painter, &project, doc, *r, color, true);
         }
-        for line in &self.state.doc.lines {
-            let dim = sketch_session.is_some_and(|s| line.parent != s.face);
+        for (li, line) in doc.lines.iter().enumerate() {
+            if !visibility.effective_visible(doc, SceneElement::Line(li)) {
+                continue;
+            }
+            let dim = sketch_session.is_some_and(|s| line.sketch != s.sketch);
             let color = sketch_color(col::LINE_STROKE, dim);
-            draw_line_segment(&painter, &project, &self.state.doc, *line, color, 2.0);
+            draw_line_segment(&painter, &project, doc, *line, color, 2.0);
         }
-        for (i, plane) in self.state.doc.construction_planes.iter().enumerate() {
-            let active = sketch_session.is_some_and(|s| s.face == FaceId::ConstructionPlane(i));
+        for (i, plane) in doc.construction_planes.iter().enumerate() {
+            if !visibility.effective_visible(doc, SceneElement::ConstructionPlane(i)) {
+                continue;
+            }
+            let session_face =
+                sketch_session.and_then(|s| doc.sketch_face(s.sketch));
+            let active = session_face == Some(FaceId::ConstructionPlane(i));
             let color = if active {
                 col::DIM_EDGE_HIGHLIGHT
             } else {
@@ -1289,24 +1355,26 @@ impl App {
             draw_construction_plane(&painter, &project, plane, color, true);
         }
         if let Some(session) = sketch_session {
-            if !matches!(session.face, FaceId::ConstructionPlane(_)) {
-                draw_face_highlight(
-                    &painter,
-                    &project,
-                    &self.state.doc,
-                    session.face,
-                    col::DIM_EDGE_HIGHLIGHT,
-                );
+            if let Some(face) = doc.sketch_face(session.sketch) {
+                if !matches!(face, FaceId::ConstructionPlane(_)) {
+                    draw_face_highlight(
+                        &painter,
+                        &project,
+                        doc,
+                        face,
+                        col::DIM_EDGE_HIGHLIGHT,
+                    );
+                }
             }
         }
         if let (Some(cr), Some(session)) =
             (&self.state.creating_rect, self.state.sketch_session)
         {
-            if let Some(frame) = sketch_frame(&self.state.doc, session.face) {
+            if let Some(frame) = sketch_geometry_frame(&self.state.doc, session.sketch) {
                 let end = cr.end_point(&frame);
                 let (ou, ov) = world_to_local(&frame, cr.origin);
                 let (eu, ev) = world_to_local(&frame, end);
-                let preview = Rect::from_local_corners(session.face, ou, ov, eu, ev);
+                let preview = Rect::from_local_corners(session.sketch, ou, ov, eu, ev);
                 draw_rect(&painter, &project, &self.state.doc, preview, col::PREVIEW, false);
                 if let Some(sp) = project(cr.origin) {
                     painter.circle_filled(sp, 3.5, col::PREVIEW);
@@ -1316,7 +1384,7 @@ impl App {
         if let (Some(cl), Some(session)) =
             (&self.state.creating_line, self.state.sketch_session)
         {
-            if let Some(frame) = sketch_frame(&self.state.doc, session.face) {
+            if let Some(frame) = sketch_geometry_frame(&self.state.doc, session.sketch) {
                 let end = cl.end_point(&frame);
                 if let (Some(pa), Some(pb)) = (project(cl.origin), project(end)) {
                     painter.line_segment([pa, pb], egui::Stroke::new(2.0, col::PREVIEW));
@@ -1329,6 +1397,27 @@ impl App {
         if let Some(cp) = &self.state.creating_plane {
             let preview = cp.preview_plane();
             draw_construction_plane(&painter, &project, &preview, col::PREVIEW, false);
+            if let Some(edit_index) = cp.edit_index {
+                if let Some(dependent) =
+                    preview_plane_edit_dependents(&self.state.doc, edit_index, &preview)
+                {
+                    for (_, plane) in &dependent.planes {
+                        draw_construction_plane(
+                            &painter,
+                            &project,
+                            plane,
+                            col::PREVIEW,
+                            false,
+                        );
+                    }
+                    for corners in &dependent.rects {
+                        draw_world_quad(&painter, &project, *corners, col::PREVIEW, false);
+                    }
+                    for &(a, b) in &dependent.lines {
+                        draw_world_segment(&painter, &project, a, b, col::PREVIEW, 2.0);
+                    }
+                }
+            }
             let gizmo_hover = response
                 .hover_pos()
                 .or(response.interact_pointer_pos())
@@ -1396,11 +1485,11 @@ impl App {
         if let (Some(cr), Some(session)) =
             (&mut self.state.creating_rect, self.state.sketch_session)
         {
-            let frame = sketch_frame(&self.state.doc, session.face).unwrap();
+            let frame = sketch_geometry_frame(&self.state.doc, session.sketch).unwrap();
             let end = cr.end_point(&frame);
             let (ou, ov) = world_to_local(&frame, cr.origin);
             let (eu, ev) = world_to_local(&frame, end);
-            let preview = Rect::from_local_corners(session.face, ou, ov, eu, ev);
+            let preview = Rect::from_local_corners(session.sketch, ou, ov, eu, ev);
             let corners = rect_world_corners(&self.state.doc, &preview).unwrap();
             if let Some((width_layout, height_layout)) = rectangle_dim_layout_from_corners(
                 &project,
@@ -1483,7 +1572,7 @@ impl App {
         if let (Some(cl), Some(session)) =
             (&mut self.state.creating_line, self.state.sketch_session)
         {
-            let frame = sketch_frame(&self.state.doc, session.face).unwrap();
+            let frame = sketch_geometry_frame(&self.state.doc, session.sketch).unwrap();
             let end = cl.end_point(&frame);
             if let (Some(pa), Some(pb)) = (project(cl.origin), project(end)) {
                 let layout = line_dim_layout(pa, pb, &cl.text);
@@ -1632,13 +1721,25 @@ impl App {
             }
             Tool::ConstructionPlane => {
                 if self.state.creating_plane.is_some() {
+                    let editing = self
+                        .state
+                        .creating_plane
+                        .as_ref()
+                        .and_then(|cp| cp.edit_index)
+                        .is_some();
                     if self
                         .state
                         .creating_plane
                         .as_ref()
                         .is_some_and(|cp| cp.reference.is_axis())
                     {
-                        "Drag arrow for offset • drag circle handle for angle • type to lock • Tab: switch dims • Click/Enter: commit • Esc: cancel"
+                        if editing {
+                            "Edit plane • drag arrow/circle or type to lock • Tab: switch dims • Click/Enter: commit • Esc: cancel"
+                        } else {
+                            "Drag arrow for offset • drag circle handle for angle • type to lock • Tab: switch dims • Click/Enter: commit • Esc: cancel"
+                        }
+                    } else if editing {
+                        "Edit plane • drag arrow or type to lock offset • Click/Enter: commit • Esc: cancel"
                     } else {
                         "Drag arrow for offset • wheel or type to lock • Click/Enter: create plane • Esc: cancel"
                     }
@@ -1907,11 +2008,19 @@ fn sketch_color(color: egui::Color32, dim: bool) -> egui::Color32 {
     }
 }
 
-fn sketch_rect_is_active(session: SketchSession, rect_index: usize, parent: FaceId) -> bool {
-    match session.face {
-        FaceId::Rect(face_index) => rect_index == face_index || parent == session.face,
-        FaceId::ConstructionPlane(_) => parent == session.face,
+fn sketch_rect_is_active(
+    doc: &model::Document,
+    session: SketchSession,
+    rect_index: usize,
+    rect_sketch: SketchId,
+) -> bool {
+    if rect_sketch == session.sketch {
+        return true;
     }
+    if let Some(FaceId::Rect(face_index)) = doc.sketch_face(session.sketch) {
+        return rect_index == face_index;
+    }
+    false
 }
 
 fn draw_ground(

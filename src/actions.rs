@@ -4,12 +4,20 @@
 //! same [`Action`] values so behaviour stays in sync.
 
 use crate::camera::{
-    Camera, ProjectionMode, StandardView, SKETCH_FRAME_PADDING_PX, VIEW_TRANSITION_DURATION,
+    Camera, ProjectionMode, StandardView, SKETCH_EDIT_FRAME_PADDING_PX, VIEW_TRANSITION_DURATION,
 };
 use crate::construction::{
-    resolve_plane, AxisGizmoDrag, PlaneDim, PlaneReference,
+    apply_construction_plane_edit, definition_from_reference, plane_from_definition,
+    reference_from_definition, resolve_plane, AxisGizmoDrag, PlaneDim, PlaneReference,
 };
-use crate::face::{face_label, sketch_camera_target, sketch_frame, world_to_local};
+use crate::model::ConstructionPlaneParent;
+use crate::face::{
+    sketch_camera_target, sketch_frame, sketch_geometry_frame, sketch_label, sketch_view_up,
+    world_to_local,
+};
+use crate::hierarchy::SceneElement;
+use crate::hierarchy::ElementVisibility;
+use crate::model::SketchId;
 use crate::view_cube::{self, CubeCornerId, CubeEdgeId};
 use crate::model::{ConstructionPlane, Document, FaceId, Line, Rect, ShapeKind};
 use crate::face::SketchFrame;
@@ -118,10 +126,13 @@ impl CreatingLine {
     }
 }
 
-/// State for the in-progress construction-plane creation.
+/// State for creating or editing a construction plane.
 #[derive(Clone, Debug)]
 pub struct CreatingConstructionPlane {
+    /// When set, commit updates this plane instead of adding a new one.
+    pub edit_index: Option<usize>,
     pub reference: PlaneReference,
+    pub parent: ConstructionPlaneParent,
     pub offset_text: String,
     pub angle_text: String,
     pub focused: PlaneDim,
@@ -149,6 +160,25 @@ impl CreatingConstructionPlane {
         )
     }
 
+    pub fn resolved_definition(&self) -> crate::model::PlaneDefinition {
+        let (live_offset, live_angle) = self.live_dims();
+        let offset = if self.user_edited_offset {
+            crate::value::parse_length_or(&self.offset_text, live_offset)
+        } else {
+            live_offset
+        };
+        let angle = if self.user_edited_angle {
+            self.angle_text
+                .trim()
+                .parse::<f32>()
+                .unwrap_or(live_angle)
+                .rem_euclid(360.0)
+        } else {
+            live_angle
+        };
+        definition_from_reference(&self.reference, offset, angle)
+    }
+
     pub fn live_dims(&self) -> (f32, f32) {
         match &self.reference {
             PlaneReference::Face { .. } => (self.offset_live, 0.0),
@@ -173,7 +203,13 @@ pub enum Action {
     CommitLine,
     SetLineLength { value: String },
     FocusLineLength,
-    BeginConstructionPlane { reference: PlaneReference },
+    BeginConstructionPlane {
+        reference: PlaneReference,
+        parent: ConstructionPlaneParent,
+    },
+    BeginEditConstructionPlane {
+        index: usize,
+    },
     CommitConstructionPlane,
     SetPlaneOffset { value: String },
     SetPlaneAngle { value: String },
@@ -182,7 +218,16 @@ pub enum Action {
         face: FaceId,
         viewport: Option<egui::Rect>,
     },
+    OpenSketch {
+        sketch: SketchId,
+        viewport: Option<egui::Rect>,
+    },
     ExitSketch,
+    SetElementVisible {
+        element: SceneElement,
+        visible: bool,
+    },
+    ToggleElementVisibility(SceneElement),
     OrbitCamera { delta: (f32, f32) },
     PanCamera { delta: (f32, f32), viewport_height: f32 },
     ZoomCamera {
@@ -199,22 +244,24 @@ pub enum Action {
     TogglePane(Pane),
 }
 
-/// A toggleable UI pane (SPEC §11.1). For now only the orientation HUD cube
-/// exists; this grows as the viewport, parameters, history, etc. panes land.
+/// A toggleable UI pane (SPEC §11.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pane {
     /// The rotating orientation cube in the viewport corner ([`view_cube`]).
     ViewCube,
+    /// Scene tree with visibility toggles and sketch editing.
+    Hierarchy,
 }
 
 impl Pane {
     /// All panes, in menu order.
-    pub const ALL: &'static [Pane] = &[Pane::ViewCube];
+    pub const ALL: &'static [Pane] = &[Pane::Hierarchy, Pane::ViewCube];
 
     /// Human-readable label for menus.
     pub fn label(self) -> &'static str {
         match self {
             Pane::ViewCube => "Orientation Cube",
+            Pane::Hierarchy => "Tree",
         }
     }
 
@@ -222,12 +269,14 @@ impl Pane {
     pub fn script_name(self) -> &'static str {
         match self {
             Pane::ViewCube => "view_cube",
+            Pane::Hierarchy => "hierarchy",
         }
     }
 
     pub fn from_name(name: &str) -> Option<Self> {
         match name.to_ascii_lowercase().as_str() {
             "view_cube" | "viewcube" | "cube" | "hud" => Some(Pane::ViewCube),
+            "hierarchy" | "tree" | "dag" => Some(Pane::Hierarchy),
             _ => None,
         }
     }
@@ -237,11 +286,15 @@ impl Pane {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PaneVisibility {
     pub view_cube: bool,
+    pub hierarchy: bool,
 }
 
 impl Default for PaneVisibility {
     fn default() -> Self {
-        Self { view_cube: true }
+        Self {
+            view_cube: true,
+            hierarchy: true,
+        }
     }
 }
 
@@ -249,12 +302,14 @@ impl PaneVisibility {
     pub fn is_visible(&self, pane: Pane) -> bool {
         match pane {
             Pane::ViewCube => self.view_cube,
+            Pane::Hierarchy => self.hierarchy,
         }
     }
 
     pub fn set(&mut self, pane: Pane, visible: bool) {
         match pane {
             Pane::ViewCube => self.view_cube = visible,
+            Pane::Hierarchy => self.hierarchy = visible,
         }
     }
 
@@ -287,10 +342,10 @@ impl RectAxis {
     }
 }
 
-/// Active sketch session: drawings are parented to this face until exit.
+/// Active sketch session: new geometry is parented to this sketch until exit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SketchSession {
-    pub face: FaceId,
+    pub sketch: SketchId,
 }
 
 /// Application state that actions mutate.
@@ -304,6 +359,7 @@ pub struct AppState {
     pub creating_line: Option<CreatingLine>,
     pub creating_plane: Option<CreatingConstructionPlane>,
     pub panes: PaneVisibility,
+    pub element_visibility: ElementVisibility,
     pub status: String,
 }
 
@@ -319,6 +375,7 @@ impl Default for AppState {
             creating_line: None,
             creating_plane: None,
             panes: PaneVisibility::default(),
+            element_visibility: ElementVisibility::default(),
             status: String::new(),
         }
     }
@@ -326,6 +383,15 @@ impl Default for AppState {
 
 fn pane_status(pane: Pane, visible: bool) -> String {
     format!("{} {}", pane.label(), if visible { "shown" } else { "hidden" })
+}
+
+fn element_label(element: SceneElement) -> String {
+    match element {
+        SceneElement::ConstructionPlane(i) => format!("Construction plane {i}"),
+        SceneElement::Sketch(i) => format!("Sketch {i}"),
+        SceneElement::Rect(i) => format!("Rectangle {i}"),
+        SceneElement::Line(i) => format!("Line {i}"),
+    }
 }
 
 /// Result of dispatching an action.
@@ -344,9 +410,11 @@ impl AppState {
                 self.doc = Document::default();
                 self.path = None;
                 self.sketch_session = None;
+                self.cam.set_view_up(None);
                 self.creating_rect = None;
                 self.creating_line = None;
                 self.creating_plane = None;
+                self.element_visibility = ElementVisibility::default();
                 self.tool = Tool::Select;
                 self.status = "New document".to_string();
                 ActionResult::Ok
@@ -357,6 +425,7 @@ impl AppState {
                     let n_lines = doc.lines.len();
                     self.doc = doc;
                     self.sketch_session = None;
+                    self.cam.set_view_up(None);
                     self.path = Some(path.clone());
                     self.status = format!(
                         "Opened {} ({} rectangle(s), {} line(s))",
@@ -379,13 +448,32 @@ impl AppState {
             Action::Clear => {
                 self.doc = Document::default();
                 self.sketch_session = None;
+                self.cam.set_view_up(None);
                 self.creating_rect = None;
                 self.creating_line = None;
+                self.element_visibility = ElementVisibility::default();
                 self.status = "Cleared".to_string();
                 ActionResult::Ok
             }
             Action::UndoLast => {
                 match self.doc.shape_order.pop() {
+                    Some(ShapeKind::Sketch) => {
+                        let idx = self.doc.sketches.len().saturating_sub(1);
+                        if self.doc.sketch_has_geometry(idx) {
+                            self.doc.shape_order.push(ShapeKind::Sketch);
+                            self.status = "Cannot undo: sketch has geometry".to_string();
+                        } else if self.doc.sketches.is_empty() {
+                            self.status = "Nothing to undo".to_string();
+                        } else {
+                            self.doc.sketches.pop();
+                            if self.sketch_session == Some(SketchSession { sketch: idx }) {
+                                self.sketch_session = None;
+                                self.cam.set_view_up(None);
+                                self.tool = Tool::Select;
+                            }
+                            self.status = "Undid last sketch".to_string();
+                        }
+                    }
                     Some(ShapeKind::Rect) => {
                         self.doc.rects.pop();
                         self.status = "Undid last rectangle".to_string();
@@ -408,8 +496,11 @@ impl AppState {
                                         .to_string();
                             } else {
                                 self.doc.construction_planes.pop();
-                                if self.sketch_session == Some(SketchSession { face }) {
+                                if self.sketch_session.is_some_and(|s| {
+                                    self.doc.sketch_face(s.sketch) == Some(face)
+                                }) {
                                     self.sketch_session = None;
+                                    self.cam.set_view_up(None);
                                     self.tool = Tool::Select;
                                 }
                                 self.status = "Undid last construction plane".to_string();
@@ -465,45 +556,14 @@ impl AppState {
                 if sketch_frame(&self.doc, face).is_none() {
                     return ActionResult::Err(format!("Unknown face {:?}", face));
                 }
-                if let Some(frame_target) = sketch_camera_target(&self.doc, face) {
-                    let view_direction = self.cam.visible_face_view_direction(
-                        frame_target.target,
-                        frame_target.face_normal,
-                    );
-                    let zoom_distance = frame_target.zoom.and_then(|bounds| {
-                        let frame = sketch_frame(&self.doc, face)?;
-                        let vp = viewport?;
-                        let corners = bounds.world_corners(&frame);
-                        Some(self.cam.distance_to_fit_corners(
-                            frame_target.target,
-                            view_direction,
-                            &corners,
-                            SKETCH_FRAME_PADDING_PX,
-                            vp,
-                        ))
-                    });
-                    self.cam.start_sketch_view_transition(
-                        frame_target.target,
-                        frame_target.face_normal,
-                        zoom_distance,
-                        VIEW_TRANSITION_DURATION,
-                    );
+                let sketch = self.doc.add_sketch(face);
+                self.enter_sketch(sketch, viewport, None)
+            }
+            Action::OpenSketch { sketch, viewport } => {
+                if self.doc.sketches.get(sketch).is_none() {
+                    return ActionResult::Err(format!("Unknown sketch {sketch}"));
                 }
-                self.sketch_session = Some(SketchSession { face });
-                self.creating_rect = None;
-                self.creating_line = None;
-                if !self.tool.is_sketch_draw_tool() {
-                    self.tool = Tool::Select;
-                }
-                let face_name = face_label(&self.doc, face);
-                self.status = match self.tool {
-                    Tool::Rectangle => format!(
-                        "Sketching on {face_name} — click to set corner"
-                    ),
-                    Tool::Line => format!("Sketching on {face_name} — click to set start"),
-                    _ => format!("Sketching on {face_name} — pick line or rectangle"),
-                };
-                ActionResult::Ok
+                self.enter_sketch(sketch, viewport, Some(SKETCH_EDIT_FRAME_PADDING_PX))
             }
             Action::ExitSketch => {
                 if self.sketch_session.take().is_none() {
@@ -519,8 +579,8 @@ impl AppState {
                 let Some(session) = self.sketch_session else {
                     return ActionResult::Err("Not in sketch mode".to_string());
                 };
-                let Some(frame) = sketch_frame(&self.doc, session.face) else {
-                    return ActionResult::Err("Sketch face no longer exists".to_string());
+                let Some(frame) = sketch_geometry_frame(&self.doc, session.sketch) else {
+                    return ActionResult::Err("Sketch no longer exists".to_string());
                 };
                 let Some(cr) = self.creating_rect.take() else {
                     return ActionResult::Err("No rectangle in progress".to_string());
@@ -528,7 +588,7 @@ impl AppState {
                 let (ou, ov) = world_to_local(&frame, cr.origin);
                 let end = cr.end_point(&frame);
                 let (eu, ev) = world_to_local(&frame, end);
-                let rect = Rect::from_local_corners(session.face, ou, ov, eu, ev);
+                let rect = Rect::from_local_corners(session.sketch, ou, ov, eu, ev);
                 if rect.w > 0.5 && rect.h > 0.5 {
                     self.doc.rects.push(rect);
                     self.doc.shape_order.push(ShapeKind::Rect);
@@ -561,8 +621,8 @@ impl AppState {
                 let Some(session) = self.sketch_session else {
                     return ActionResult::Err("Not in sketch mode".to_string());
                 };
-                let Some(frame) = sketch_frame(&self.doc, session.face) else {
-                    return ActionResult::Err("Sketch face no longer exists".to_string());
+                let Some(frame) = sketch_geometry_frame(&self.doc, session.sketch) else {
+                    return ActionResult::Err("Sketch no longer exists".to_string());
                 };
                 let Some(cl) = self.creating_line.take() else {
                     return ActionResult::Err("No line in progress".to_string());
@@ -570,7 +630,7 @@ impl AppState {
                 let (u0, v0) = world_to_local(&frame, cl.origin);
                 let end = cl.end_point(&frame);
                 let (u1, v1) = world_to_local(&frame, end);
-                let line = Line::from_local_endpoints(session.face, u0, v0, u1, v1);
+                let line = Line::from_local_endpoints(session.sketch, u0, v0, u1, v1);
                 if line.length() > 0.5 {
                     let len = line.length();
                     self.doc.lines.push(line);
@@ -598,9 +658,11 @@ impl AppState {
                 cl.pending_focus = true;
                 ActionResult::Ok
             }
-            Action::BeginConstructionPlane { reference } => {
+            Action::BeginConstructionPlane { reference, parent } => {
                 self.creating_plane = Some(CreatingConstructionPlane {
+                    edit_index: None,
                     reference,
+                    parent,
                     offset_text: String::new(),
                     angle_text: String::new(),
                     focused: PlaneDim::Offset,
@@ -611,24 +673,79 @@ impl AppState {
                     pending_focus: true,
                     axis_gizmo_drag: None,
                 });
+                self.tool = Tool::ConstructionPlane;
                 self.status = "Set offset • type to lock • Tab cycle dims • click/Enter commit • Esc cancel"
                     .to_string();
+                ActionResult::Ok
+            }
+            Action::BeginEditConstructionPlane { index } => {
+                let Some(plane) = self.doc.construction_planes.get(index) else {
+                    return ActionResult::Err(format!("Unknown construction plane {index}"));
+                };
+                let reference = reference_from_definition(&plane.definition);
+                let (offset_live, axis_angle_deg) = match &reference {
+                    PlaneReference::Face { .. } => (plane.definition.offset_mm, 0.0),
+                    PlaneReference::Axis { .. } => {
+                        (plane.definition.offset_mm, plane.definition.angle_deg)
+                    }
+                };
+                self.creating_plane = Some(CreatingConstructionPlane {
+                    edit_index: Some(index),
+                    reference,
+                    parent: plane.parent,
+                    offset_text: format!("{offset_live:.1}"),
+                    angle_text: format!("{axis_angle_deg:.0}"),
+                    focused: PlaneDim::Offset,
+                    offset_live,
+                    axis_angle_deg,
+                    user_edited_offset: false,
+                    user_edited_angle: false,
+                    pending_focus: true,
+                    axis_gizmo_drag: None,
+                });
+                self.tool = Tool::ConstructionPlane;
+                self.status = format!(
+                    "Edit construction plane {index} • type to lock offset{} • Tab cycle dims • click/Enter commit • Esc cancel",
+                    if plane.definition.is_axis() { "/angle" } else { "" }
+                );
                 ActionResult::Ok
             }
             Action::CommitConstructionPlane => {
                 let Some(cp) = self.creating_plane.take() else {
                     return ActionResult::Err("No construction plane in progress".to_string());
                 };
-                let plane = cp.preview_plane();
-                let (live_offset, _) = cp.live_dims();
-                self.doc.construction_planes.push(plane);
-                self.doc.shape_order.push(ShapeKind::ConstructionPlane);
-                self.status = format!(
-                    "Added construction plane ({:.1} mm from {})",
-                    live_offset,
-                    cp.reference.label()
-                );
-                ActionResult::Ok
+                let definition = cp.resolved_definition();
+                let live_offset = definition.offset_mm;
+                if let Some(index) = cp.edit_index {
+                    match apply_construction_plane_edit(
+                        &mut self.doc,
+                        index,
+                        &definition,
+                        cp.parent,
+                    ) {
+                        Ok(()) => {
+                            self.status = format!(
+                                "Updated construction plane {index} ({live_offset:.1} mm from {})",
+                                cp.reference.label()
+                            );
+                            ActionResult::Ok
+                        }
+                        Err(message) => {
+                            self.creating_plane = Some(cp);
+                            self.status = message.clone();
+                            ActionResult::Err(message)
+                        }
+                    }
+                } else {
+                    let plane = plane_from_definition(&definition, cp.parent);
+                    self.doc.construction_planes.push(plane);
+                    self.doc.shape_order.push(ShapeKind::ConstructionPlane);
+                    self.status = format!(
+                        "Added construction plane ({live_offset:.1} mm from {})",
+                        cp.reference.label()
+                    );
+                    ActionResult::Ok
+                }
             }
             Action::SetPlaneOffset { value } => {
                 let Some(cp) = &mut self.creating_plane else {
@@ -720,7 +837,75 @@ impl AppState {
                 self.status = pane_status(pane, self.panes.is_visible(pane));
                 ActionResult::Ok
             }
+            Action::SetElementVisible { element, visible } => {
+                self.element_visibility.set_visible(element, visible);
+                self.status = format!(
+                    "{} {}",
+                    element_label(element),
+                    if visible { "shown" } else { "hidden" }
+                );
+                ActionResult::Ok
+            }
+            Action::ToggleElementVisibility(element) => {
+                let visible = self.element_visibility.toggle(element);
+                self.status = format!(
+                    "{} {}",
+                    element_label(element),
+                    if visible { "shown" } else { "hidden" }
+                );
+                ActionResult::Ok
+            }
         }
+    }
+
+    fn enter_sketch(
+        &mut self,
+        sketch: SketchId,
+        viewport: Option<egui::Rect>,
+        frame_padding_px: Option<f32>,
+    ) -> ActionResult {
+        if let Some(frame_target) = sketch_camera_target(&self.doc, sketch) {
+            let face = self.doc.sketch_face(sketch).unwrap();
+            let frame = sketch_frame(&self.doc, face).unwrap();
+            let view_direction = self.cam.visible_face_view_direction(
+                frame_target.target,
+                frame_target.face_normal,
+            );
+            self.cam
+                .set_view_up(Some(sketch_view_up(view_direction, &frame)));
+            let zoom_distance = frame_target.zoom.and_then(|bounds| {
+                let frame = sketch_frame(&self.doc, face)?;
+                let vp = viewport?;
+                let padding = frame_padding_px?;
+                let corners = bounds.world_corners(&frame);
+                Some(self.cam.distance_to_fit_corners(
+                    frame_target.target,
+                    view_direction,
+                    &corners,
+                    padding,
+                    vp,
+                ))
+            });
+            self.cam.start_sketch_view_transition(
+                frame_target.target,
+                frame_target.face_normal,
+                zoom_distance,
+                VIEW_TRANSITION_DURATION,
+            );
+        }
+        self.sketch_session = Some(SketchSession { sketch });
+        self.creating_rect = None;
+        self.creating_line = None;
+        if !self.tool.is_sketch_draw_tool() {
+            self.tool = Tool::Select;
+        }
+        let name = sketch_label(&self.doc, sketch);
+        self.status = match self.tool {
+            Tool::Rectangle => format!("{name} — click to set corner"),
+            Tool::Line => format!("{name} — click to set start"),
+            _ => format!("{name} — pick line or rectangle"),
+        };
+        ActionResult::Ok
     }
 
     fn write_to(&mut self, path: &str) -> ActionResult {
@@ -757,30 +942,20 @@ mod tests {
         }
     }
 
-    fn begin_default_sketch(state: &mut AppState) {
+    fn begin_default_sketch(state: &mut AppState) -> SketchId {
         state.apply(Action::BeginSketch {
             face: FaceId::ConstructionPlane(0),
             viewport: None,
         });
+        state.sketch_session.unwrap().sketch
     }
 
     #[test]
     fn new_document_clears_state() {
         let mut state = AppState::default();
-        state.doc.rects.push(Rect::from_local_corners(
-            FaceId::ConstructionPlane(0),
-            0.,
-            0.,
-            10.,
-            10.,
-        ));
-        state.doc.lines.push(Line::from_local_endpoints(
-            FaceId::ConstructionPlane(0),
-            0.,
-            0.,
-            1.,
-            0.,
-        ));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        state.doc.rects.push(Rect::from_local_corners(sketch, 0., 0., 10., 10.));
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0., 0., 1., 0.));
         state.doc.shape_order.push(ShapeKind::Line);
         state.path = Some("/tmp/test.le3".to_string());
         state.apply(Action::NewDocument);
@@ -830,6 +1005,36 @@ mod tests {
     }
 
     #[test]
+    fn edit_construction_plane_updates_offset_and_descendants() {
+        let mut state = AppState::default();
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.construction_planes.push(plane_from_definition(
+            &definition_from_reference(
+                &PlaneReference::Face {
+                    origin: Vec3::ZERO,
+                    normal: Vec3::Z,
+                    label: "Ground".to_string(),
+                },
+                5.0,
+                0.0,
+            ),
+            ConstructionPlaneParent::Sketch(sketch),
+        ));
+        let child_before = state.doc.construction_planes[1].origin.z;
+
+        state.apply(Action::BeginEditConstructionPlane { index: 0 });
+        state.apply(Action::SetPlaneOffset {
+            value: "30".to_string(),
+        });
+        state.apply(Action::CommitConstructionPlane);
+
+        assert!((state.doc.construction_planes[0].origin.z - 30.0).abs() < 1e-3);
+        assert!((state.doc.construction_planes[1].origin.z - child_before - 30.0).abs() < 1e-3);
+        assert!(state.creating_plane.is_none());
+    }
+
+    #[test]
     fn commit_construction_plane_adds_to_document_not_export_list() {
         let mut state = AppState::default();
         state.apply(Action::BeginConstructionPlane {
@@ -838,6 +1043,7 @@ mod tests {
                 normal: Vec3::Z,
                 label: "Ground".to_string(),
             },
+            parent: ConstructionPlaneParent::Root,
         });
         let mut cp = state.creating_plane.take().unwrap();
         cp.offset_text = "20".to_string();
@@ -857,6 +1063,7 @@ mod tests {
                 direction: Vec3::X,
                 label: "Line".to_string(),
             },
+            parent: ConstructionPlaneParent::Root,
         });
         let cp = state.creating_plane.as_mut().unwrap();
         cp.offset_live = 12.0;
@@ -873,6 +1080,7 @@ mod tests {
                 normal: Vec3::Z,
                 label: "Ground".to_string(),
             },
+            parent: ConstructionPlaneParent::Root,
         });
         let mut cp = state.creating_plane.take().unwrap();
         cp.offset_text = "5".to_string();
@@ -886,21 +1094,10 @@ mod tests {
     #[test]
     fn undo_last_removes_most_recent_shape() {
         let mut state = AppState::default();
-        state.doc.rects.push(Rect::from_local_corners(
-            FaceId::ConstructionPlane(0),
-            0.,
-            0.,
-            1.,
-            1.,
-        ));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        state.doc.rects.push(Rect::from_local_corners(sketch, 0., 0., 1., 1.));
         state.doc.shape_order.push(ShapeKind::Rect);
-        state.doc.lines.push(Line::from_local_endpoints(
-            FaceId::ConstructionPlane(0),
-            0.,
-            0.,
-            5.,
-            0.,
-        ));
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0., 0., 5., 0.));
         state.doc.shape_order.push(ShapeKind::Line);
         state.apply(Action::UndoLast);
         assert_eq!(state.doc.lines.len(), 0);
@@ -912,7 +1109,7 @@ mod tests {
     #[test]
     fn commit_rectangle_adds_to_document() {
         let mut state = AppState::default();
-        begin_default_sketch(&mut state);
+        let sketch = begin_default_sketch(&mut state);
         state.creating_rect = Some(CreatingRect {
             origin: Vec3::new(0.0, 0.0, 0.0),
             texts: ["10".to_string(), "5".to_string()],
@@ -925,7 +1122,7 @@ mod tests {
         assert_eq!(state.doc.rects.len(), 1);
         assert!((state.doc.rects[0].w - 10.0).abs() < 1e-4);
         assert!((state.doc.rects[0].h - 5.0).abs() < 1e-4);
-        assert_eq!(state.doc.rects[0].parent, FaceId::ConstructionPlane(0));
+        assert_eq!(state.doc.rects[0].sketch, sketch);
         assert!(state.creating_rect.is_none());
     }
 
@@ -975,7 +1172,7 @@ mod tests {
         let end = cl.end_point(&frame);
         let (u0, v0) = world_to_local(&frame, cl.origin);
         let (u1, v1) = world_to_local(&frame, end);
-        let line = Line::from_local_endpoints(FaceId::default(), u0, v0, u1, v1);
+        let line = Line::from_local_endpoints(0, u0, v0, u1, v1);
         assert!((line.length() - 53.3).abs() < 1e-2);
     }
 
@@ -988,6 +1185,7 @@ mod tests {
                 normal: Vec3::Z,
                 label: "Ground".to_string(),
             },
+            parent: ConstructionPlaneParent::Root,
         });
         state.apply(Action::SetPlaneOffset {
             value: "1in + 2mm".to_string(),
@@ -1010,7 +1208,7 @@ mod tests {
         let end = cl.end_point(&frame);
         let (u0, v0) = world_to_local(&frame, cl.origin);
         let (u1, v1) = world_to_local(&frame, end);
-        let line = Line::from_local_endpoints(FaceId::default(), u0, v0, u1, v1);
+        let line = Line::from_local_endpoints(0, u0, v0, u1, v1);
         assert!((line.length() - 5.0).abs() < 1e-4);
     }
 
@@ -1039,6 +1237,61 @@ mod tests {
     }
 
     #[test]
+    fn exit_sketch_preserves_camera_view() {
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        while state.cam.tick_transition(0.05) {}
+        let viewport =
+            egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        let samples = [
+            Vec3::ZERO,
+            Vec3::new(40.0, 20.0, 0.0),
+            Vec3::new(-30.0, 50.0, 10.0),
+        ];
+        let vp_before = state.cam.view_proj(viewport);
+        let screens_before: Vec<_> = samples
+            .iter()
+            .map(|p| state.cam.project(*p, viewport, &vp_before).unwrap())
+            .collect();
+
+        state.apply(Action::ExitSketch);
+
+        let vp_after = state.cam.view_proj(viewport);
+        for (p, before) in samples.iter().zip(screens_before) {
+            let after = state.cam.project(*p, viewport, &vp_after).unwrap();
+            assert!(
+                (before - after).length() < 0.5,
+                "exiting sketch should not move the camera: {before:?} -> {after:?} for {p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn begin_sketch_aligns_camera_up_with_plane_v_axis() {
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        let frame = sketch_frame(&state.doc, FaceId::ConstructionPlane(0)).unwrap();
+        while state.cam.tick_transition(0.05) {}
+        let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        let vp = state.cam.view_proj(viewport);
+        let base = state
+            .cam
+            .project(frame.origin, viewport, &vp)
+            .expect("origin visible");
+        let above = state
+            .cam
+            .project(frame.origin + frame.v_axis * 10.0, viewport, &vp)
+            .expect("v offset visible");
+        assert!(above.y < base.y, "plane v-axis should point up on screen");
+    }
+
+    #[test]
     fn begin_sketch_frames_camera_to_face_normal() {
         let mut state = AppState::default();
         let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(800.0, 600.0));
@@ -1056,24 +1309,66 @@ mod tests {
     }
 
     #[test]
-    fn begin_sketch_zooms_plane_when_it_has_children() {
+    fn open_sketch_zooms_with_edit_padding() {
         let mut state = AppState::default();
-        state.doc.rects.push(Rect::from_local_corners(
-            FaceId::ConstructionPlane(0),
-            0.0,
-            0.0,
-            100.0,
-            100.0,
-        ));
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        state.doc.rects.push(Rect::from_local_corners(sketch, 0.0, 0.0, 100.0, 100.0));
         let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(800.0, 600.0));
         let before = state.cam.distance;
-        state.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
+        state.apply(Action::OpenSketch {
+            sketch,
             viewport: Some(viewport),
         });
         assert!(state.cam.is_transitioning());
         while state.cam.tick_transition(0.05) {}
         assert!(state.cam.distance < before);
+
+        let frame = sketch_frame(&state.doc, FaceId::ConstructionPlane(0)).unwrap();
+        let bounds = sketch_camera_target(&state.doc, sketch)
+            .unwrap()
+            .zoom
+            .unwrap();
+        let corners = bounds.world_corners(&frame);
+        let view = (state.cam.eye() - state.cam.target).normalize();
+        let fitted = state.cam.distance_to_fit_corners(
+            state.cam.target,
+            view,
+            &corners,
+            SKETCH_EDIT_FRAME_PADDING_PX,
+            viewport,
+        );
+        assert!((state.cam.distance - fitted).abs() < 1.0);
+    }
+
+    #[test]
+    fn begin_sketch_creates_new_sketch_each_time() {
+        let mut state = AppState::default();
+        begin_default_sketch(&mut state);
+        let second = begin_default_sketch(&mut state);
+        assert_eq!(second, 1);
+        assert_eq!(state.doc.sketches.len(), 2);
+        assert_eq!(
+            state.doc.sketches[0].face,
+            FaceId::ConstructionPlane(0)
+        );
+        assert_eq!(
+            state.doc.sketches[1].face,
+            FaceId::ConstructionPlane(0)
+        );
+    }
+
+    #[test]
+    fn tree_pane_visible_by_default() {
+        let state = AppState::default();
+        assert!(state.panes.is_visible(Pane::Hierarchy));
+        assert_eq!(Pane::Hierarchy.label(), "Tree");
+    }
+
+    #[test]
+    fn toggle_element_visibility() {
+        let mut state = AppState::default();
+        state.apply(Action::ToggleElementVisibility(SceneElement::Sketch(0)));
+        assert!(!state.element_visibility.is_visible(SceneElement::Sketch(0)));
     }
 
     #[test]
