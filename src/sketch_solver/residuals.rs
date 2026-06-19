@@ -90,17 +90,11 @@ pub enum Equation {
         angle: f64,
         weight: f64,
     },
-    DirectedPointU {
+    PointPointDistance {
         mx: VarId,
-        ax: VarId,
-        dir_u: f64,
-        distance: f64,
-        weight: f64,
-    },
-    DirectedPointV {
         my: VarId,
+        ax: VarId,
         ay: VarId,
-        dir_v: f64,
         distance: f64,
         weight: f64,
     },
@@ -286,20 +280,24 @@ impl Equation {
                 let b_angle = line_angle(v(*bx0), v(*by0), v(*bx1), v(*by1));
                 weighted(wrap_angle(b_angle - a_angle - angle), *weight)
             }
-            Equation::DirectedPointU {
+            Equation::PointPointDistance {
                 mx,
-                ax,
-                dir_u,
-                distance,
-                weight,
-            } => weighted(v(*mx) - v(*ax) - dir_u * distance, *weight),
-            Equation::DirectedPointV {
                 my,
+                ax,
                 ay,
-                dir_v,
                 distance,
                 weight,
-            } => weighted(v(*my) - v(*ay) - dir_v * distance, *weight),
+            } => {
+                let du = v(*mx) - v(*ax);
+                let dv = v(*my) - v(*ay);
+                let len = du.hypot(dv);
+                let residual = if len < 1e-12 {
+                    -*distance
+                } else {
+                    len - distance
+                };
+                weighted(residual, *weight)
+            }
             Equation::LineLineDistance {
                 ax0,
                 ay0,
@@ -506,13 +504,26 @@ impl Equation {
                 push(accum, *bx1, bdx1, *weight);
                 push(accum, *by1, bdy1, *weight);
             }
-            Equation::DirectedPointU { mx, ax, dir_u: _, distance: _, weight } => {
-                push(accum, *mx, 1.0, *weight);
-                push(accum, *ax, -1.0, *weight);
-            }
-            Equation::DirectedPointV { my, ay, dir_v: _, distance: _, weight } => {
-                push(accum, *my, 1.0, *weight);
-                push(accum, *ay, -1.0, *weight);
+            Equation::PointPointDistance {
+                mx,
+                my,
+                ax,
+                ay,
+                distance: _,
+                weight,
+            } => {
+                let du = v(*mx) - v(*ax);
+                let dv = v(*my) - v(*ay);
+                let len = du.hypot(dv);
+                let (dmx, dmy) = if len < 1e-12 {
+                    (1.0, 0.0)
+                } else {
+                    (du / len, dv / len)
+                };
+                push(accum, *mx, dmx, *weight);
+                push(accum, *my, dmy, *weight);
+                push(accum, *ax, -dmx, *weight);
+                push(accum, *ay, -dmy, *weight);
             }
             Equation::LineLineDistance {
                 ax0,
@@ -575,4 +586,6 @@ impl Equation {
 }
 
 pub const DEFAULT_WEIGHT: f64 = 1.0;
+/// Soft anchor for reference geometry (reference lines stay put unless dragged).
+pub const REFERENCE_HOLD_WEIGHT: f64 = 1e4;
 pub const DRAG_PIN_WEIGHT: f64 = 1e6;

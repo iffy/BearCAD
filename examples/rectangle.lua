@@ -9,9 +9,9 @@ tool("rectangle")
 
 -- Viewport coordinates are relative to the 3D panel (below the toolbar).
 click(480, 320)
-wait(2)
+wait(1)
 move(580, 380)
-wait(2)
+wait(1)
 set_dim("width", "80")
 key("tab")
 set_dim("height", "50")
@@ -23,3 +23,4 @@ set_name(element("rect", 0), "Preview box")
 
 wait_ms(100)
 screenshot("rectangle_preview.png")
+quit()

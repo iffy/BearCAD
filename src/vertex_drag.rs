@@ -3,8 +3,11 @@
 use crate::constraints::{
     constraint_evaluated_length, find_distance_constraint, solve_document_constraints_with_pins,
 };
+use crate::model::RectEdge;
 use crate::construction::point_sketch;
-use crate::geometric_constraints::{line_uv_endpoints, point_uv, set_point_uv, translate_line};
+use crate::geometric_constraints::{
+    line_uv_endpoints, point_uv, set_line_uv_endpoints, set_point_uv, translate_line,
+};
 use crate::hierarchy::SceneElement;
 use crate::model::{
     ConstraintEntity, ConstraintKind, ConstraintLine, ConstraintPoint, DistanceTarget, Document,
@@ -66,7 +69,11 @@ pub fn can_drag_point(doc: &Document, sketch: SketchId, point: ConstraintPoint) 
         return false;
     }
     if let ConstraintPoint::LineEndpoint { line, .. } = point {
-        return !line_vertex_drag_blocked(doc, line);
+        return !crate::sketch_solver::sketch_line_vertex_drag_blocked(doc, sketch, line)
+            .unwrap_or(false);
+    }
+    if let ConstraintPoint::RectCorner { rect, .. } = point {
+        return !rect_corner_drag_blocked(doc, rect);
     }
     true
 }
@@ -76,56 +83,20 @@ pub fn can_drag_line(doc: &Document, sketch: SketchId, target: ConstraintLine) -
     match target {
         ConstraintLine::Line(line) => {
             point_in_sketch(doc, line_drag_seed_points(target)[0], sketch)
-                && !line_vertex_drag_blocked(doc, line)
+                && !crate::sketch_solver::sketch_line_vertex_drag_blocked(doc, sketch, line)
+                    .unwrap_or(false)
         }
-        ConstraintLine::RectEdge { rect, .. } => doc
-            .rects
-            .get(rect)
-            .is_some_and(|rect_entity| rect_entity.sketch == sketch),
+        ConstraintLine::RectEdge { rect, edge } => {
+            if !doc
+                .rects
+                .get(rect)
+                .is_some_and(|rect_entity| rect_entity.sketch == sketch)
+            {
+                return false;
+            }
+            !rect_edge_drag_blocked(doc, rect, edge)
+        }
     }
-}
-
-fn line_vertex_drag_blocked(doc: &Document, line_index: usize) -> bool {
-    let line = ConstraintLine::Line(line_index);
-    let has_length =
-        find_distance_constraint(doc, DistanceTarget::LineLength(line_index)).is_some();
-    if !has_length {
-        return false;
-    }
-    let has_orientation = doc.constraints.iter().any(|constraint| {
-        if constraint.deleted {
-            return false;
-        }
-        match constraint.kind {
-            ConstraintKind::Horizontal { line: constrained } => constrained == line,
-            ConstraintKind::Vertical { line: constrained } => constrained == line,
-            ConstraintKind::Parallel {
-                line_a,
-                line_b,
-            } => line_a == line || line_b == line,
-            ConstraintKind::Angle {
-                line_a,
-                line_b,
-                ..
-            } => line_a == line || line_b == line,
-            _ => false,
-        }
-    });
-    let has_spacing = doc.constraints.iter().any(|constraint| {
-        if constraint.deleted {
-            return false;
-        }
-        match constraint.kind {
-            ConstraintKind::Distance {
-                target: DistanceTarget::LineLineDistance { line_a, line_b, .. },
-            } => line_a == line || line_b == line,
-            ConstraintKind::Distance {
-                target: DistanceTarget::PointLineDistance { line: constrained, .. },
-            } => constrained == line,
-            _ => false,
-        }
-    });
-    has_length && has_orientation && has_spacing
 }
 
 pub fn begin_line_drag_session(
@@ -150,20 +121,36 @@ pub fn drag_line(
     current_uv: (f32, f32),
 ) -> Result<(), String> {
     validate_line_drag_target(doc, sketch, session.target)?;
-    let du = current_uv.0 - session.anchor_uv.0;
-    let dv = current_uv.1 - session.anchor_uv.1;
+    let mut du = current_uv.0 - session.anchor_uv.0;
+    let mut dv = current_uv.1 - session.anchor_uv.1;
+    if let ConstraintLine::RectEdge { rect, edge } = session.target {
+        let (locked_w, locked_h) = rect_locked_dimensions(doc, rect);
+        if locked_w.is_some() && matches!(edge, RectEdge::Left | RectEdge::Right) {
+            du = 0.0;
+        }
+        if locked_h.is_some() && matches!(edge, RectEdge::Bottom | RectEdge::Top) {
+            dv = 0.0;
+        }
+    }
     let seeds = line_drag_seed_points(session.target);
-    if matches!(session.target, ConstraintLine::RectEdge { .. }) {
-        translate_line(doc, session.target, du, dv)?;
+    if let ConstraintLine::RectEdge { .. } = session.target {
+        let [start, end] = seeds;
+        let (iu0, iv0) = session.initial_positions[&start];
+        let (iu1, iv1) = session.initial_positions[&end];
+        let (u0, v0) = project_drag_uv(doc, start, iu0 + du, iv0 + dv)?;
+        let (u1, v1) = project_drag_uv(doc, end, iu1 + du, iv1 + dv)?;
+        set_line_uv_endpoints(doc, session.target, (u0, v0), (u1, v1))?;
         for (point, (iu, iv)) in &session.initial_positions {
-            if seeds.iter().any(|seed| seed == point) || !point_in_sketch(doc, *point, sketch) {
+            if seeds.contains(point) || !point_in_sketch(doc, *point, sketch) {
                 continue;
             }
-            set_point_uv(doc, *point, iu + du, iv + dv)?;
+            let (pu, pv) = project_drag_uv(doc, *point, iu + du, iv + dv)?;
+            set_point_uv(doc, *point, pu, pv)?;
         }
     } else {
+        translate_line(doc, session.target, du, dv)?;
         for (point, (iu, iv)) in &session.initial_positions {
-            if !point_in_sketch(doc, *point, sketch) {
+            if seeds.contains(point) || !point_in_sketch(doc, *point, sketch) {
                 continue;
             }
             set_point_uv(doc, *point, iu + du, iv + dv)?;
@@ -173,7 +160,11 @@ pub fn drag_line(
         .initial_positions
         .iter()
         .filter(|(point, _)| point_in_sketch(doc, **point, sketch))
-        .map(|(point, (iu, iv))| (*point, (iu + du, iv + dv)))
+        .map(|(point, (iu, iv))| {
+            let projected = project_drag_uv(doc, *point, iu + du, iv + dv)
+                .unwrap_or((iu + du, iv + dv));
+            (*point, projected)
+        })
         .collect();
     solve_document_constraints_with_pins(doc, &pins)
 }
@@ -258,41 +249,293 @@ pub fn drag_point(
     solve_document_constraints_with_pins(doc, &pins)
 }
 
+fn rect_locked_dimensions(doc: &Document, rect: usize) -> (Option<f32>, Option<f32>) {
+    let width = find_distance_constraint(doc, DistanceTarget::RectWidth(rect))
+        .and_then(|id| constraint_evaluated_length(doc, id))
+        .filter(|value| *value > 0.0);
+    let height = find_distance_constraint(doc, DistanceTarget::RectHeight(rect))
+        .and_then(|id| constraint_evaluated_length(doc, id))
+        .filter(|value| *value > 0.0);
+    (width, height)
+}
+
+fn rect_corner_drag_blocked(doc: &Document, rect: usize) -> bool {
+    let (locked_w, locked_h) = rect_locked_dimensions(doc, rect);
+    locked_w.is_some() && locked_h.is_some()
+}
+
+fn rect_edge_drag_blocked(doc: &Document, rect: usize, edge: RectEdge) -> bool {
+    let (locked_w, locked_h) = rect_locked_dimensions(doc, rect);
+    match (locked_w, locked_h) {
+        (Some(_), Some(_)) => true,
+        (Some(_), None) => matches!(edge, RectEdge::Left | RectEdge::Right),
+        (None, Some(_)) => matches!(edge, RectEdge::Bottom | RectEdge::Top),
+        (None, None) => false,
+    }
+}
+
+fn rect_corner_axis_locks(
+    entity: &crate::model::Rect,
+    corner: u8,
+    locked_w: Option<f32>,
+    locked_h: Option<f32>,
+) -> (Option<f32>, Option<f32>) {
+    let fixed_u = locked_w.map(|width| match corner {
+        0 | 3 => entity.x,
+        1 | 2 => entity.x + width,
+        _ => entity.x,
+    });
+    let fixed_v = locked_h.map(|height| match corner {
+        0 | 1 => entity.y,
+        2 | 3 => entity.y + height,
+        _ => entity.y,
+    });
+    (fixed_u, fixed_v)
+}
+
+fn project_rect_corner_drag(
+    doc: &Document,
+    rect: usize,
+    corner: u8,
+    u: f32,
+    v: f32,
+) -> Result<(f32, f32), String> {
+    let entity = doc
+        .rects
+        .get(rect)
+        .ok_or_else(|| format!("Rectangle {rect} not found"))?;
+    let (locked_w, locked_h) = rect_locked_dimensions(doc, rect);
+    let (fixed_u, fixed_v) = rect_corner_axis_locks(entity, corner, locked_w, locked_h);
+    let point = ConstraintPoint::RectCorner { rect, corner };
+
+    let (pu, pv) = if let Some((pu, pv)) =
+        project_point_point_distance_drag(doc, point, u, v, fixed_u, fixed_v)?
+    {
+        (pu, pv)
+    } else {
+        (fixed_u.unwrap_or(u), fixed_v.unwrap_or(v))
+    };
+
+    // Keep the corner on its own side of the diagonal anchor so the rectangle cannot invert
+    // (which would relabel the corners and jump constrained geometry). This must run on the
+    // projected position because the drag pins the corner here, overriding `set_point_uv`.
+    Ok(clamp_rect_corner_to_anchor(entity, corner, pu, pv))
+}
+
+/// Clamp a rect corner's target so it stays on its side of the diagonally opposite corner.
+fn clamp_rect_corner_to_anchor(
+    entity: &crate::model::Rect,
+    corner: u8,
+    u: f32,
+    v: f32,
+) -> (f32, f32) {
+    const MIN_EXTENT: f32 = 1e-3;
+    let (anchor_u, anchor_v) = match corner {
+        0 => (entity.x + entity.w, entity.y + entity.h),
+        1 => (entity.x, entity.y + entity.h),
+        2 => (entity.x, entity.y),
+        3 => (entity.x + entity.w, entity.y),
+        _ => (entity.x, entity.y),
+    };
+    let cu = match corner {
+        0 | 3 => u.min(anchor_u - MIN_EXTENT),
+        _ => u.max(anchor_u + MIN_EXTENT),
+    };
+    let cv = match corner {
+        0 | 1 => v.min(anchor_v - MIN_EXTENT),
+        _ => v.max(anchor_v + MIN_EXTENT),
+    };
+    (cu, cv)
+}
+
+fn project_onto_distance_circle(
+    center_u: f32,
+    center_v: f32,
+    u: f32,
+    v: f32,
+    distance: f32,
+    fallback_dir_u: f32,
+    fallback_dir_v: f32,
+) -> (f32, f32) {
+    let du = u - center_u;
+    let dv = v - center_v;
+    let len = du.hypot(dv);
+    let (dir_u, dir_v) = if len < 1e-6 {
+        (fallback_dir_u, fallback_dir_v)
+    } else {
+        (du / len, dv / len)
+    };
+    (
+        center_u + dir_u * distance,
+        center_v + dir_v * distance,
+    )
+}
+
+fn project_onto_distance_circle_with_axis_locks(
+    center_u: f32,
+    center_v: f32,
+    u: f32,
+    v: f32,
+    distance: f32,
+    fixed_u: Option<f32>,
+    fixed_v: Option<f32>,
+    fallback_dir_u: f32,
+    fallback_dir_v: f32,
+) -> (f32, f32) {
+    match (fixed_u, fixed_v) {
+        (Some(fu), Some(fv)) => (fu, fv),
+        (Some(fu), None) => {
+            let du = fu - center_u;
+            let disc = distance * distance - du * du;
+            if disc <= 0.0 {
+                return (fu, center_v);
+            }
+            let span = disc.sqrt();
+            let v1 = center_v + span;
+            let v2 = center_v - span;
+            let fv = if (v1 - v).abs() <= (v2 - v).abs() { v1 } else { v2 };
+            (fu, fv)
+        }
+        (None, Some(fv)) => {
+            let dv = fv - center_v;
+            let disc = distance * distance - dv * dv;
+            if disc <= 0.0 {
+                return (center_u, fv);
+            }
+            let span = disc.sqrt();
+            let u1 = center_u + span;
+            let u2 = center_u - span;
+            let fu = if (u1 - u).abs() <= (u2 - u).abs() { u1 } else { u2 };
+            (fu, fv)
+        }
+        (None, None) => project_onto_distance_circle(
+            center_u,
+            center_v,
+            u,
+            v,
+            distance,
+            fallback_dir_u,
+            fallback_dir_v,
+        ),
+    }
+}
+
+fn project_point_point_distance_drag(
+    doc: &Document,
+    dragged: ConstraintPoint,
+    u: f32,
+    v: f32,
+    fixed_u: Option<f32>,
+    fixed_v: Option<f32>,
+) -> Result<Option<(f32, f32)>, String> {
+    for (index, constraint) in doc.constraints.iter().enumerate() {
+        if constraint.deleted {
+            continue;
+        }
+        let ConstraintKind::Distance {
+            target:
+                DistanceTarget::PointPointDistance {
+                    anchor,
+                    mover,
+                    dir_u,
+                    dir_v,
+                },
+        } = constraint.kind
+        else {
+            continue;
+        };
+        let Some(distance) = constraint_evaluated_length(doc, index) else {
+            continue;
+        };
+        if distance <= 0.0 {
+            continue;
+        }
+        if dragged == mover {
+            let (au, av) = point_uv(doc, anchor)?;
+            return Ok(Some(project_onto_distance_circle_with_axis_locks(
+                au,
+                av,
+                u,
+                v,
+                distance,
+                fixed_u,
+                fixed_v,
+                dir_u,
+                dir_v,
+            )));
+        }
+        if dragged == anchor {
+            let (mu, mv) = point_uv(doc, mover)?;
+            return Ok(Some(project_onto_distance_circle_with_axis_locks(
+                mu,
+                mv,
+                u,
+                v,
+                distance,
+                fixed_u,
+                fixed_v,
+                -dir_u,
+                -dir_v,
+            )));
+        }
+    }
+    Ok(None)
+}
+
 fn project_drag_uv(
     doc: &Document,
     dragged: ConstraintPoint,
     u: f32,
     v: f32,
 ) -> Result<(f32, f32), String> {
-    let ConstraintPoint::LineEndpoint { line: line_index, end } = dragged else {
-        return Ok((u, v));
-    };
-    let line = ConstraintLine::Line(line_index);
-    let mut projected_u = u;
-    let mut projected_v = v;
-    for constraint in &doc.constraints {
-        if constraint.deleted {
-            continue;
+    match dragged {
+        ConstraintPoint::RectCorner { rect, corner } => {
+            return project_rect_corner_drag(doc, rect, corner, u, v);
         }
-        match constraint.kind {
-            ConstraintKind::Horizontal { line: constrained } if constrained == line => {
-                let ((_x0, y0), (_x1, y1)) = line_uv_endpoints(doc, line)?;
-                projected_v = match end {
-                    LineEnd::Start => y1,
-                    LineEnd::End => y0,
-                };
+        ConstraintPoint::LineEndpoint { line: line_index, end } => {
+            let line = ConstraintLine::Line(line_index);
+            let mut projected_u = u;
+            let mut projected_v = v;
+            for constraint in &doc.constraints {
+                if constraint.deleted {
+                    continue;
+                }
+                match constraint.kind {
+                    ConstraintKind::Horizontal { line: constrained } if constrained == line => {
+                        let ((_x0, y0), (_x1, y1)) = line_uv_endpoints(doc, line)?;
+                        projected_v = match end {
+                            LineEnd::Start => y1,
+                            LineEnd::End => y0,
+                        };
+                    }
+                    ConstraintKind::Vertical { line: constrained } if constrained == line => {
+                        let ((x0, _y0), (x1, _y1)) = line_uv_endpoints(doc, line)?;
+                        projected_u = match end {
+                            LineEnd::Start => x1,
+                            LineEnd::End => x0,
+                        };
+                    }
+                    _ => {}
+                }
             }
-            ConstraintKind::Vertical { line: constrained } if constrained == line => {
-                let ((x0, _y0), (x1, _y1)) = line_uv_endpoints(doc, line)?;
-                projected_u = match end {
-                    LineEnd::Start => x1,
-                    LineEnd::End => x0,
-                };
+            if let Some((pu, pv)) =
+                project_point_point_distance_drag(doc, dragged, projected_u, projected_v, None, None)?
+            {
+                projected_u = pu;
+                projected_v = pv;
             }
-            _ => {}
+            Ok((projected_u, projected_v))
+        }
+        _ => {
+            if let Some((pu, pv)) =
+                project_point_point_distance_drag(doc, dragged, u, v, None, None)?
+            {
+                Ok((pu, pv))
+            } else {
+                Ok((u, v))
+            }
         }
     }
-    Ok((projected_u, projected_v))
 }
 
 fn coincident_group(doc: &Document, sketch: SketchId, seed: ConstraintPoint) -> Vec<ConstraintPoint> {
@@ -473,6 +716,279 @@ mod tests {
         assert!((line.y0 - 3.0).abs() < EPS);
         assert!((line.x1 - 15.0).abs() < EPS);
         assert!((line.y1 - 3.0).abs() < EPS);
+    }
+
+    /// Regression: dragging a bottom-left corner must not change a locked width.
+    #[test]
+    fn drag_rect_bottom_left_corner_preserves_locked_width() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 80.0, 40.0));
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::RectWidth(0),
+            "80mm".to_string(),
+        )
+        .unwrap();
+
+        drag_point(
+            &mut doc,
+            sketch,
+            ConstraintPoint::RectCorner {
+                rect: 0,
+                corner: 0,
+            },
+            -30.0,
+            0.0,
+        )
+        .unwrap();
+
+        assert!(
+            (doc.rects[0].w - 80.0).abs() < EPS,
+            "locked width must stay 80mm when dragging bottom-left corner, got w={}",
+            doc.rects[0].w
+        );
+    }
+
+    /// Regression: dragging a bottom-right corner on the constrained width side must not lengthen it.
+    #[test]
+    fn drag_rect_bottom_right_corner_preserves_locked_width() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 80.0, 40.0));
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::RectWidth(0),
+            "80mm".to_string(),
+        )
+        .unwrap();
+
+        drag_point(
+            &mut doc,
+            sketch,
+            ConstraintPoint::RectCorner {
+                rect: 0,
+                corner: 1,
+            },
+            150.0,
+            0.0,
+        )
+        .unwrap();
+
+        assert!(
+            (doc.rects[0].w - 80.0).abs() < EPS,
+            "locked width must stay 80mm when dragging bottom-right corner, got w={}",
+            doc.rects[0].w
+        );
+    }
+
+    /// Regression: dragging a bottom-left corner must not change a locked height.
+    #[test]
+    fn drag_rect_bottom_left_corner_preserves_locked_height() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 80.0, 40.0));
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::RectHeight(0),
+            "40mm".to_string(),
+        )
+        .unwrap();
+
+        drag_point(
+            &mut doc,
+            sketch,
+            ConstraintPoint::RectCorner {
+                rect: 0,
+                corner: 0,
+            },
+            0.0,
+            60.0,
+        )
+        .unwrap();
+
+        assert!(
+            (doc.rects[0].h - 40.0).abs() < EPS,
+            "locked height must stay 40mm when dragging bottom-left corner, got h={}",
+            doc.rects[0].h
+        );
+    }
+
+    /// Regression: dragging top-left corner horizontally must not change locked width.
+    #[test]
+    fn drag_rect_top_left_corner_preserves_locked_width() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 80.0, 40.0));
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::RectWidth(0),
+            "80mm".to_string(),
+        )
+        .unwrap();
+
+        drag_point(
+            &mut doc,
+            sketch,
+            ConstraintPoint::RectCorner {
+                rect: 0,
+                corner: 3,
+            },
+            -25.0,
+            40.0,
+        )
+        .unwrap();
+
+        assert!(
+            (doc.rects[0].w - 80.0).abs() < EPS,
+            "locked width must stay 80mm when dragging top-left corner, got w={}",
+            doc.rects[0].w
+        );
+    }
+
+    /// Regression: dragging the constrained bottom edge must not change locked width.
+    #[test]
+    fn drag_rect_bottom_edge_preserves_locked_width() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 80.0, 40.0));
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::RectWidth(0),
+            "80mm".to_string(),
+        )
+        .unwrap();
+
+        let session = begin_line_drag_session(
+            &doc,
+            sketch,
+            ConstraintLine::RectEdge {
+                rect: 0,
+                edge: RectEdge::Bottom,
+            },
+            (0.0, 0.0),
+        )
+        .unwrap();
+        drag_line(&mut doc, sketch, &session, (50.0, 0.0)).unwrap();
+
+        assert!(
+            (doc.rects[0].w - 80.0).abs() < EPS,
+            "locked width must stay 80mm when dragging bottom edge, got w={}",
+            doc.rects[0].w
+        );
+    }
+
+    #[test]
+    fn drag_rect_corner_preserves_locked_width() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 80.0, 40.0));
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::RectWidth(0),
+            "80mm".to_string(),
+        )
+        .unwrap();
+
+        drag_point(
+            &mut doc,
+            sketch,
+            ConstraintPoint::RectCorner {
+                rect: 0,
+                corner: 2,
+            },
+            200.0,
+            60.0,
+        )
+        .unwrap();
+
+        assert!((doc.rects[0].w - 80.0).abs() < EPS, "w={}", doc.rects[0].w);
+        assert!((doc.rects[0].h - 60.0).abs() < EPS, "h={}", doc.rects[0].h);
+    }
+
+    #[test]
+    fn drag_rect_corner_preserves_locked_height() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 80.0, 40.0));
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::RectHeight(0),
+            "40mm".to_string(),
+        )
+        .unwrap();
+
+        drag_point(
+            &mut doc,
+            sketch,
+            ConstraintPoint::RectCorner {
+                rect: 0,
+                corner: 2,
+            },
+            100.0,
+            90.0,
+        )
+        .unwrap();
+
+        assert!((doc.rects[0].w - 100.0).abs() < EPS, "w={}", doc.rects[0].w);
+        assert!((doc.rects[0].h - 40.0).abs() < EPS, "h={}", doc.rects[0].h);
+    }
+
+    #[test]
+    fn drag_rect_corner_blocked_when_width_and_height_locked() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 80.0, 40.0));
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::RectWidth(0),
+            "80mm".to_string(),
+        )
+        .unwrap();
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::RectHeight(0),
+            "40mm".to_string(),
+        )
+        .unwrap();
+
+        let corner = ConstraintPoint::RectCorner {
+            rect: 0,
+            corner: 2,
+        };
+        assert!(!can_drag_point(&doc, sketch, corner));
+    }
+
+    #[test]
+    fn drag_rect_right_edge_blocked_when_width_locked() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 80.0, 40.0));
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::RectWidth(0),
+            "80mm".to_string(),
+        )
+        .unwrap();
+
+        assert!(!can_drag_line(
+            &doc,
+            sketch,
+            ConstraintLine::RectEdge {
+                rect: 0,
+                edge: RectEdge::Right,
+            },
+        ));
     }
 
     #[test]
@@ -954,6 +1470,262 @@ mod tests {
         assert_lines_perpendicular(&doc, line_a, line_b);
     }
 
+    fn point_point_distance_mm(
+        doc: &Document,
+        anchor: ConstraintPoint,
+        mover: ConstraintPoint,
+    ) -> f32 {
+        let (au, av) = point_uv(doc, anchor).unwrap();
+        let (mu, mv) = point_uv(doc, mover).unwrap();
+        (mu - au).hypot(mv - av)
+    }
+
+    /// Regression: dragging the line vertex must not change a locked point-point distance.
+    #[test]
+    fn drag_line_vertex_preserves_point_point_distance_from_rect_corner() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 80.0, 40.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 130.0, 40.0, 160.0, 40.0));
+        doc.shape_order.push(crate::model::ShapeKind::Rect);
+        doc.shape_order.push(crate::model::ShapeKind::Line);
+
+        // Lock the rectangle so the anchor corner cannot slide to absorb drag error.
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::RectWidth(0),
+            "80mm".to_string(),
+        )
+        .unwrap();
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::RectHeight(0),
+            "40mm".to_string(),
+        )
+        .unwrap();
+
+        let anchor = ConstraintPoint::RectCorner {
+            rect: 0,
+            corner: 2,
+        };
+        let mover = ConstraintPoint::LineEndpoint {
+            line: 0,
+            end: LineEnd::Start,
+        };
+
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::PointPointDistance {
+                anchor,
+                mover,
+                dir_u: 1.0,
+                dir_v: 0.0,
+            },
+            "50mm".to_string(),
+        )
+        .unwrap();
+
+        assert!(
+            (point_point_distance_mm(&doc, anchor, mover) - 50.0).abs() < EPS,
+            "initial distance={}",
+            point_point_distance_mm(&doc, anchor, mover)
+        );
+
+        drag_point(&mut doc, sketch, mover, 200.0, 40.0).unwrap();
+
+        assert!(
+            (point_point_distance_mm(&doc, anchor, mover) - 50.0).abs() < EPS,
+            "locked 50mm point-point distance must be preserved after drag, got {}",
+            point_point_distance_mm(&doc, anchor, mover)
+        );
+    }
+
+    /// Regression: locked rect width must win over point-point drag projection.
+    #[test]
+    fn drag_rect_corner_on_locked_side_preserves_width_with_point_point_distance() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 80.0, 40.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 130.0, 40.0, 160.0, 40.0));
+        doc.shape_order.push(crate::model::ShapeKind::Rect);
+        doc.shape_order.push(crate::model::ShapeKind::Line);
+
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::RectWidth(0),
+            "80mm".to_string(),
+        )
+        .unwrap();
+
+        let anchor = ConstraintPoint::RectCorner {
+            rect: 0,
+            corner: 2,
+        };
+        let mover = ConstraintPoint::LineEndpoint {
+            line: 0,
+            end: LineEnd::Start,
+        };
+
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::PointPointDistance {
+                anchor,
+                mover,
+                dir_u: 1.0,
+                dir_v: 0.0,
+            },
+            "50mm".to_string(),
+        )
+        .unwrap();
+
+        drag_point(&mut doc, sketch, anchor, 150.0, 40.0).unwrap();
+
+        assert!(
+            (doc.rects[0].w - 80.0).abs() < EPS,
+            "locked width must stay 80mm when dragging constrained corner, got w={}",
+            doc.rects[0].w
+        );
+        assert!(
+            (point_point_distance_mm(&doc, anchor, mover) - 50.0).abs() < EPS,
+            "point-point distance after drag={}",
+            point_point_distance_mm(&doc, anchor, mover)
+        );
+    }
+
+    /// Locked width leaves one axis free; corner should still slide along the distance circle.
+    #[test]
+    fn drag_rect_corner_slides_on_circle_when_width_locked_with_point_point_distance() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 80.0, 40.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 110.0, 75.0, 140.0, 75.0));
+        doc.shape_order.push(crate::model::ShapeKind::Rect);
+        doc.shape_order.push(crate::model::ShapeKind::Line);
+
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::RectWidth(0),
+            "80mm".to_string(),
+        )
+        .unwrap();
+
+        let anchor = ConstraintPoint::RectCorner {
+            rect: 0,
+            corner: 2,
+        };
+        let mover = ConstraintPoint::LineEndpoint {
+            line: 0,
+            end: LineEnd::Start,
+        };
+
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::PointPointDistance {
+                anchor,
+                mover,
+                dir_u: 1.0,
+                dir_v: 0.0,
+            },
+            "50mm".to_string(),
+        )
+        .unwrap();
+
+        let iv = point_uv(&doc, anchor).unwrap().1;
+        drag_point(&mut doc, sketch, anchor, 120.0, 95.0).unwrap();
+        let (fu, fv) = point_uv(&doc, anchor).unwrap();
+
+        assert!((doc.rects[0].w - 80.0).abs() < EPS, "w={}", doc.rects[0].w);
+        assert!(
+            (point_point_distance_mm(&doc, anchor, mover) - 50.0).abs() < EPS,
+            "distance={}",
+            point_point_distance_mm(&doc, anchor, mover)
+        );
+        assert!((fu - 80.0).abs() < EPS, "locked side should stay at u=80, got {fu}");
+        assert!(
+            (fv - iv).abs() > 1.0,
+            "corner should move along the free axis, iv={iv} got ({fu}, {fv})"
+        );
+    }
+
+    /// Regression: point-point distance should allow dragging around a circle, not lock bearing.
+    #[test]
+    fn drag_line_vertex_around_point_point_distance_circle() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 80.0, 40.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 130.0, 40.0, 160.0, 40.0));
+        doc.shape_order.push(crate::model::ShapeKind::Rect);
+        doc.shape_order.push(crate::model::ShapeKind::Line);
+
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::RectWidth(0),
+            "80mm".to_string(),
+        )
+        .unwrap();
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::RectHeight(0),
+            "40mm".to_string(),
+        )
+        .unwrap();
+
+        let anchor = ConstraintPoint::RectCorner {
+            rect: 0,
+            corner: 2,
+        };
+        let mover = ConstraintPoint::LineEndpoint {
+            line: 0,
+            end: LineEnd::Start,
+        };
+
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::PointPointDistance {
+                anchor,
+                mover,
+                dir_u: 1.0,
+                dir_v: 0.0,
+            },
+            "50mm".to_string(),
+        )
+        .unwrap();
+
+        let (iu, iv) = point_uv(&doc, mover).unwrap();
+        assert!((iu - 130.0).abs() < EPS && (iv - 40.0).abs() < EPS, "iu={iu} iv={iv}");
+
+        drag_point(&mut doc, sketch, mover, 80.0, 90.0).unwrap();
+
+        let (fu, fv) = point_uv(&doc, mover).unwrap();
+        assert!(
+            (point_point_distance_mm(&doc, anchor, mover) - 50.0).abs() < EPS,
+            "distance after drag={}",
+            point_point_distance_mm(&doc, anchor, mover)
+        );
+        assert!(
+            (fu - 80.0).abs() < EPS && (fv - 90.0).abs() < EPS,
+            "mover should swing to (80, 90), got ({fu}, {fv})"
+        );
+        assert!(
+            (fu - iu).abs() > 1.0 || (fv - iv).abs() > 1.0,
+            "drag should move the vertex around the anchor"
+        );
+    }
+
     #[test]
     fn drag_horizontal_line_endpoint_stays_horizontal() {
         let (mut doc, sketch) = sketch_doc();
@@ -984,5 +1756,160 @@ mod tests {
         let line = &doc.lines[0];
         assert!((line.y0 - line.y1).abs() < 1e-3, "line should stay horizontal");
         assert!(line.x1 > 10.0);
+    }
+
+    /// Regression: with the left side (height) locked, dragging the top-right corner inward
+    /// must shorten the top edge. Previously the stale bottom-right corner pinned max-u so the
+    /// width could only grow, never shrink.
+    #[test]
+    fn drag_rect_top_right_corner_can_shorten_top_with_locked_height() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 60.0, 80.0));
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::RectHeight(0),
+            "80mm".to_string(),
+        )
+        .unwrap();
+
+        let w_before = doc.rects[0].w;
+        drag_point(
+            &mut doc,
+            sketch,
+            ConstraintPoint::RectCorner { rect: 0, corner: 2 },
+            30.0,
+            80.0,
+        )
+        .unwrap();
+
+        assert!(
+            doc.rects[0].w < w_before - 10.0,
+            "top edge should shorten when dragging top-right corner inward, w={} (was {w_before})",
+            doc.rects[0].w
+        );
+        assert!((doc.rects[0].h - 80.0).abs() < EPS, "height stays locked, h={}", doc.rects[0].h);
+    }
+
+    /// Regression: the bottom-right corner behaves the same as the top-right corner.
+    #[test]
+    fn drag_rect_bottom_right_corner_can_shorten_bottom_with_locked_height() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 60.0, 80.0));
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::RectHeight(0),
+            "80mm".to_string(),
+        )
+        .unwrap();
+
+        let w_before = doc.rects[0].w;
+        drag_point(
+            &mut doc,
+            sketch,
+            ConstraintPoint::RectCorner { rect: 0, corner: 1 },
+            30.0,
+            0.0,
+        )
+        .unwrap();
+
+        assert!(
+            doc.rects[0].w < w_before - 10.0,
+            "bottom edge should shorten when dragging bottom-right corner inward, w={} (was {w_before})",
+            doc.rects[0].w
+        );
+    }
+
+    /// Regression: the full reported scenario — left side locked to 80mm, and a line vertex
+    /// held 45mm from the rect's top-left corner. Dragging the top-right corner left must
+    /// shorten the top edge AND must never flip the top-left corner past the line vertex.
+    #[test]
+    fn drag_rect_top_right_corner_keeps_top_left_anchor_with_distanced_line() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 60.0, 80.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, -45.0, 80.0, -45.0, 100.0));
+        doc.shape_order.push(crate::model::ShapeKind::Rect);
+        doc.shape_order.push(crate::model::ShapeKind::Line);
+
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::RectHeight(0),
+            "80mm".to_string(),
+        )
+        .unwrap();
+
+        let rect_top_left = ConstraintPoint::RectCorner { rect: 0, corner: 3 };
+        let line_vertex = ConstraintPoint::LineEndpoint {
+            line: 0,
+            end: LineEnd::Start,
+        };
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::PointPointDistance {
+                anchor: rect_top_left,
+                mover: line_vertex,
+                dir_u: -1.0,
+                dir_v: 0.0,
+            },
+            "45mm".to_string(),
+        )
+        .unwrap();
+
+        let (tlu_before, tlv_before) = point_uv(&doc, rect_top_left).unwrap();
+
+        // Push the top-right corner well to the left of the top-left corner.
+        drag_point(
+            &mut doc,
+            sketch,
+            ConstraintPoint::RectCorner { rect: 0, corner: 2 },
+            -40.0,
+            80.0,
+        )
+        .unwrap();
+
+        // The top edge shrank (rather than the rect growing / flipping).
+        assert!(doc.rects[0].w < 60.0, "width should not grow, w={}", doc.rects[0].w);
+        // The top-left corner stayed put: it never flipped past the line vertex.
+        let (tlu_after, tlv_after) = point_uv(&doc, rect_top_left).unwrap();
+        assert!(
+            (tlu_after - tlu_before).abs() < EPS && (tlv_after - tlv_before).abs() < EPS,
+            "top-left corner must stay at ({tlu_before},{tlv_before}), got ({tlu_after},{tlv_after})"
+        );
+        // The 45mm distance to the line vertex is preserved.
+        assert!(
+            (point_point_distance_mm(&doc, rect_top_left, line_vertex) - 45.0).abs() < EPS,
+            "distance to line vertex must stay 45mm, got {}",
+            point_point_distance_mm(&doc, rect_top_left, line_vertex)
+        );
+    }
+
+    /// Dragging a corner past its diagonal anchor must not invert the rectangle (which would
+    /// relabel the corners and jump constrained geometry).
+    #[test]
+    fn drag_rect_corner_past_anchor_does_not_invert() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 60.0, 80.0));
+
+        drag_point(
+            &mut doc,
+            sketch,
+            ConstraintPoint::RectCorner { rect: 0, corner: 2 },
+            -40.0,
+            -40.0,
+        )
+        .unwrap();
+
+        // Bottom-left (the diagonal anchor) stays at the origin; rect collapses but never flips.
+        let (blu, blv) = point_uv(&doc, ConstraintPoint::RectCorner { rect: 0, corner: 0 }).unwrap();
+        assert!((blu).abs() < EPS && (blv).abs() < EPS, "anchor moved to ({blu},{blv})");
+        assert!(doc.rects[0].w > 0.0 && doc.rects[0].h > 0.0, "extents must stay positive");
     }
 }

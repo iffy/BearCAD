@@ -334,7 +334,7 @@ pub fn add_geometric_constraint_from_selection(
         deleted: false,
     });
     doc.shape_order.push(crate::model::ShapeKind::Constraint);
-    apply_geometric_constraints(doc)?;
+    crate::constraints::solve_document_constraints(doc)?;
     Ok(id)
 }
 
@@ -513,211 +513,6 @@ fn validate_point_ref(doc: &Document, sketch: SketchId, point: ConstraintPoint) 
     Ok(())
 }
 
-/// Restore pinned sketch points after a constraint application during interactive drag.
-pub fn restore_constraint_pins(
-    doc: &mut Document,
-    pins: &[(ConstraintPoint, (f32, f32))],
-) -> Result<(), String> {
-    for &(point, (u, v)) in pins {
-        set_point_uv(doc, point, u, v)?;
-    }
-    Ok(())
-}
-
-/// Apply all geometric constraints after distance constraints have been solved.
-pub fn apply_geometric_constraints(doc: &mut Document) -> Result<(), String> {
-    apply_geometric_constraints_with_pins(doc, &[])
-}
-
-/// Apply geometric constraints while keeping pinned points fixed (used during vertex/line drag).
-pub fn apply_geometric_constraints_with_pins(
-    doc: &mut Document,
-    pins: &[(ConstraintPoint, (f32, f32))],
-) -> Result<(), String> {
-    let constraints: Vec<ConstraintKind> = doc
-        .constraints
-        .iter()
-        .filter(|c| !c.deleted)
-        .filter_map(|c| match c.kind {
-            ConstraintKind::Distance { .. } => None,
-            other => Some(other),
-        })
-        .filter(|kind| crate::document_lifecycle::constraint_kind_applicable(doc, *kind))
-        .collect();
-
-    let mut orientation = Vec::new();
-    let mut coincident = Vec::new();
-    let mut midpoint = Vec::new();
-    for kind in constraints {
-        match kind {
-            ConstraintKind::Coincident { .. } => coincident.push(kind),
-            ConstraintKind::Midpoint { .. } => midpoint.push(kind),
-            _ => orientation.push(kind),
-        }
-    }
-
-    const MAX_PASSES: usize = 8;
-    for _ in 0..MAX_PASSES {
-        for kind in &orientation {
-            let _ = apply_constraint_kind(doc, *kind, pins);
-            restore_constraint_pins(doc, pins)?;
-        }
-        for kind in &midpoint {
-            let _ = apply_constraint_kind(doc, *kind, pins);
-            restore_constraint_pins(doc, pins)?;
-        }
-        for kind in &coincident {
-            let _ = apply_constraint_kind(doc, *kind, pins);
-            restore_constraint_pins(doc, pins)?;
-        }
-    }
-    Ok(())
-}
-
-fn is_point_pinned(point: ConstraintPoint, pins: &[(ConstraintPoint, (f32, f32))]) -> bool {
-    pins.iter().any(|(pinned, _)| *pinned == point)
-}
-
-fn constraint_line_endpoints(line: ConstraintLine) -> (ConstraintPoint, ConstraintPoint) {
-    match line {
-        ConstraintLine::Line(index) => (
-            ConstraintPoint::LineEndpoint {
-                line: index,
-                end: LineEnd::Start,
-            },
-            ConstraintPoint::LineEndpoint {
-                line: index,
-                end: LineEnd::End,
-            },
-        ),
-        ConstraintLine::RectEdge { rect, edge } => {
-            let (c0, c1) = edge.corner_indices();
-            (
-                ConstraintPoint::RectCorner { rect, corner: c0 },
-                ConstraintPoint::RectCorner { rect, corner: c1 },
-            )
-        }
-    }
-}
-
-/// Reorient a line to direction `(dir_u, dir_v)` while keeping drag-pinned endpoints fixed.
-fn orient_line_with_pins(
-    doc: &mut Document,
-    movable: ConstraintLine,
-    dir_u: f32,
-    dir_v: f32,
-    pins: &[(ConstraintPoint, (f32, f32))],
-) -> Result<(), String> {
-    let ((bx0, by0), (bx1, by1)) = line_uv_endpoints(doc, movable)?;
-    let bdu = bx1 - bx0;
-    let bdv = by1 - by0;
-    let blen = (bdu * bdu + bdv * bdv).sqrt();
-    if blen < 1e-6 {
-        return Err("Constrained line has zero length".to_string());
-    }
-    let len = (dir_u * dir_u + dir_v * dir_v).sqrt();
-    if len < 1e-6 {
-        return Err("Direction has zero length".to_string());
-    }
-    let du = dir_u / len;
-    let dv = dir_v / len;
-    let (start, end) = constraint_line_endpoints(movable);
-    let start_pinned = is_point_pinned(start, pins);
-    let end_pinned = is_point_pinned(end, pins);
-    if end_pinned && !start_pinned {
-        set_line_uv_endpoints(
-            doc,
-            movable,
-            (bx1 - du * blen, by1 - dv * blen),
-            (bx1, by1),
-        )
-    } else {
-        set_line_uv_endpoints(
-            doc,
-            movable,
-            (bx0, by0),
-            (bx0 + du * blen, by0 + dv * blen),
-        )
-    }
-}
-
-fn apply_constraint_kind(
-    doc: &mut Document,
-    kind: ConstraintKind,
-    pins: &[(ConstraintPoint, (f32, f32))],
-) -> Result<(), String> {
-    match kind {
-        ConstraintKind::Distance { .. } => Ok(()),
-        ConstraintKind::Horizontal { line } => apply_horizontal(doc, line, pins),
-        ConstraintKind::Vertical { line } => apply_vertical(doc, line, pins),
-        ConstraintKind::Parallel { line_a, line_b } => apply_parallel(doc, line_a, line_b, pins),
-        ConstraintKind::Perpendicular { line_a, line_b } => {
-            apply_perpendicular(doc, line_a, line_b, pins)
-        }
-        ConstraintKind::Coincident { a, b } => apply_coincident(doc, a, b),
-        ConstraintKind::Midpoint { point, line } => apply_midpoint(doc, point, line),
-        ConstraintKind::Angle { .. } => Ok(()),
-    }
-}
-
-fn apply_horizontal(
-    doc: &mut Document,
-    line: ConstraintLine,
-    pins: &[(ConstraintPoint, (f32, f32))],
-) -> Result<(), String> {
-    let ((x0, y0), (x1, y1)) = line_uv_endpoints(doc, line)?;
-    let (start, end) = constraint_line_endpoints(line);
-    if is_point_pinned(end, pins) && !is_point_pinned(start, pins) {
-        set_line_uv_endpoints(doc, line, (x0, y1), (x1, y1))
-    } else {
-        set_line_uv_endpoints(doc, line, (x0, y0), (x1, y0))
-    }
-}
-
-fn apply_vertical(
-    doc: &mut Document,
-    line: ConstraintLine,
-    pins: &[(ConstraintPoint, (f32, f32))],
-) -> Result<(), String> {
-    let ((x0, y0), (x1, y1)) = line_uv_endpoints(doc, line)?;
-    let (start, end) = constraint_line_endpoints(line);
-    if is_point_pinned(end, pins) && !is_point_pinned(start, pins) {
-        set_line_uv_endpoints(doc, line, (x1, y0), (x1, y1))
-    } else {
-        set_line_uv_endpoints(doc, line, (x0, y0), (x0, y1))
-    }
-}
-
-fn apply_parallel(
-    doc: &mut Document,
-    line_a: ConstraintLine,
-    line_b: ConstraintLine,
-    pins: &[(ConstraintPoint, (f32, f32))],
-) -> Result<(), String> {
-    let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
-    let ((ax0, ay0), (ax1, ay1)) = line_uv_endpoints(doc, reference)?;
-    let du = ax1 - ax0;
-    let dv = ay1 - ay0;
-    orient_line_with_pins(doc, movable, du, dv, pins)
-}
-
-fn apply_perpendicular(
-    doc: &mut Document,
-    line_a: ConstraintLine,
-    line_b: ConstraintLine,
-    pins: &[(ConstraintPoint, (f32, f32))],
-) -> Result<(), String> {
-    let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
-    let ((ax0, ay0), (ax1, ay1)) = line_uv_endpoints(doc, reference)?;
-    let du = ax1 - ax0;
-    let dv = ay1 - ay0;
-    let len = (du * du + dv * dv).sqrt();
-    if len < 1e-6 {
-        return Err("Reference line has zero length".to_string());
-    }
-    orient_line_with_pins(doc, movable, -dv, du, pins)
-}
-
 /// Prefer moving sketch lines over rectangle edges when one side of the pair is fixed.
 pub fn parallel_reference_and_movable(
     line_a: ConstraintLine,
@@ -731,35 +526,6 @@ pub fn parallel_reference_and_movable(
             (reference, movable)
         }
         (line_a, line_b) => (line_a, line_b),
-    }
-}
-
-fn apply_midpoint(
-    doc: &mut Document,
-    point: ConstraintPoint,
-    line: ConstraintLine,
-) -> Result<(), String> {
-    let ((x0, y0), (x1, y1)) = line_uv_endpoints(doc, line)?;
-    set_point_uv(doc, point, (x0 + x1) * 0.5, (y0 + y1) * 0.5)
-}
-
-fn apply_coincident(doc: &mut Document, a: ConstraintEntity, b: ConstraintEntity) -> Result<(), String> {
-    match (a, b) {
-        (ConstraintEntity::Point(pa), ConstraintEntity::Point(pb)) => {
-            let (mover, anchor) = coincident_mover_and_anchor(pa, pb);
-            let (u, v) = point_uv(doc, anchor)?;
-            set_point_uv(doc, mover, u, v)
-        }
-        (ConstraintEntity::Point(point), ConstraintEntity::Line(line))
-        | (ConstraintEntity::Line(line), ConstraintEntity::Point(point)) => {
-            let (pu, pv) = point_uv(doc, point)?;
-            let ((x0, y0), (x1, y1)) = line_uv_endpoints(doc, line)?;
-            let (proj_u, proj_v) = project_point_on_segment(pu, pv, x0, y0, x1, y1);
-            set_point_uv(doc, point, proj_u, proj_v)
-        }
-        (ConstraintEntity::Line(_), ConstraintEntity::Line(_)) => {
-            Err("Coincident line-line is not supported".to_string())
-        }
     }
 }
 
@@ -784,18 +550,6 @@ fn coincident_point_mobility(point: ConstraintPoint) -> u8 {
         ConstraintPoint::LineEndpoint { .. } | ConstraintPoint::CircleCenter(_) => 2,
         ConstraintPoint::RectCorner { .. } => 0,
     }
-}
-
-fn project_point_on_segment(px: f32, py: f32, x0: f32, y0: f32, x1: f32, y1: f32) -> (f32, f32) {
-    let dx = x1 - x0;
-    let dy = y1 - y0;
-    let len_sq = dx * dx + dy * dy;
-    if len_sq < 1e-12 {
-        return (x0, y0);
-    }
-    let t = ((px - x0) * dx + (py - y0) * dy) / len_sq;
-    let t = t.clamp(0.0, 1.0);
-    (x0 + dx * t, y0 + dy * t)
 }
 
 /// Whether two sketch lines are parallel (within tolerance).
@@ -990,22 +744,32 @@ pub fn set_point_uv(doc: &mut Document, point: ConstraintPoint, u: f32, v: f32) 
                 .rects
                 .get_mut(rect)
                 .ok_or_else(|| format!("Rectangle {rect} not found"))?;
-            let corners = [
-                (entity.x, entity.y),
-                (entity.x + entity.w, entity.y),
-                (entity.x + entity.w, entity.y + entity.h),
-                (entity.x, entity.y + entity.h),
-            ];
-            let mut next = corners;
-            next[corner as usize] = (u, v);
-            let min_u = next.iter().map(|(x, _)| *x).fold(f32::INFINITY, f32::min);
-            let max_u = next.iter().map(|(x, _)| *x).fold(f32::NEG_INFINITY, f32::max);
-            let min_v = next.iter().map(|(_, y)| *y).fold(f32::INFINITY, f32::min);
-            let max_v = next.iter().map(|(_, y)| *y).fold(f32::NEG_INFINITY, f32::max);
+            // A rect corner drag pivots about the diagonally opposite corner, which stays
+            // fixed. The two adjacent corners are derived from the edges this corner moves,
+            // so they must not anchor the new extents (doing so pins the rect and lets it
+            // only grow, never shrink). Corners 0/3 are on the min-u (left) side and 1/2 on
+            // the max-u (right) side; 0/1 are min-v (bottom) and 2/3 max-v (top). Clamp so
+            // the dragged corner cannot cross the anchor and invert the rectangle.
+            const MIN_EXTENT: f32 = 1e-3;
+            let (anchor_u, anchor_v) = match corner {
+                0 => (entity.x + entity.w, entity.y + entity.h),
+                1 => (entity.x, entity.y + entity.h),
+                2 => (entity.x, entity.y),
+                3 => (entity.x + entity.w, entity.y),
+                _ => return Err(format!("Invalid rect corner {corner}")),
+            };
+            let (min_u, max_u) = match corner {
+                0 | 3 => (u.min(anchor_u - MIN_EXTENT), anchor_u),
+                _ => (anchor_u, u.max(anchor_u + MIN_EXTENT)),
+            };
+            let (min_v, max_v) = match corner {
+                0 | 1 => (v.min(anchor_v - MIN_EXTENT), anchor_v),
+                _ => (anchor_v, v.max(anchor_v + MIN_EXTENT)),
+            };
             entity.x = min_u;
             entity.y = min_v;
-            entity.w = (max_u - min_u).max(1e-3);
-            entity.h = (max_v - min_v).max(1e-3);
+            entity.w = max_u - min_u;
+            entity.h = max_v - min_v;
             Ok(())
         }
         ConstraintPoint::CircleCenter(circle) => {
@@ -1065,7 +829,7 @@ mod tests {
             deleted: false,
         });
         doc.shape_order.push(ShapeKind::Constraint);
-        apply_geometric_constraints(doc).unwrap();
+        crate::constraints::solve_document_constraints(doc).unwrap();
     }
 
     fn select_two_points(

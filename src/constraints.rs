@@ -1,13 +1,8 @@
-//! Sketch constraints and a lightweight distance constraint solver.
-//!
-//! Distance constraints are the first constraint kind: they fix the length of a
-//! line segment or a rectangle width/height. Each constraint is stored as a
-//! first-class document element and evaluated when parameters or expressions change.
+//! Sketch constraints backed by the numeric [`crate::sketch_solver`].
 
 use crate::geometric_constraints::{
-    apply_geometric_constraints_with_pins, line_direction_uv, line_uv_endpoints, lines_are_parallel,
-    parallel_reference_and_movable, point_uv, restore_constraint_pins, selected_constraint_refs,
-    set_line_uv_endpoints, set_point_uv, translate_line, ConstraintRef,
+    line_direction_uv, line_uv_endpoints, lines_are_parallel, parallel_reference_and_movable,
+    point_uv, selected_constraint_refs, ConstraintRef,
 };
 use crate::model::{
     default_constraint_sign, Constraint, ConstraintKind, ConstraintLine, ConstraintPoint,
@@ -824,24 +819,22 @@ pub fn validate_distance_target(
     Ok(())
 }
 
+/// Remaining degrees of freedom for a sketch's numeric constraint system.
+pub fn sketch_degrees_of_freedom(doc: &Document, sketch: SketchId) -> Result<i32, String> {
+    crate::sketch_solver::sketch_dof_remaining(doc, sketch)
+}
+
+/// Constraint indices contributing most to an unsatisfied sketch solve.
+pub fn sketch_conflicting_constraints(
+    doc: &Document,
+    sketch: SketchId,
+) -> Result<Vec<ConstraintId>, String> {
+    crate::sketch_solver::sketch_conflicting_constraints(doc, sketch)
+}
+
 /// Apply all distance constraints to sketch geometry.
 pub fn solve_document_constraints(doc: &mut Document) -> Result<(), String> {
     solve_document_constraints_with_pins(doc, &[])
-}
-
-fn distance_target_moves_pinned_point(
-    target: DistanceTarget,
-    pins: &[(ConstraintPoint, (f32, f32))],
-) -> bool {
-    if pins.is_empty() {
-        return false;
-    }
-    let pinned = |point: ConstraintPoint| pins.iter().any(|(p, _)| *p == point);
-    match target {
-        DistanceTarget::PointLineDistance { point, .. }
-        | DistanceTarget::PointPointDistance { mover: point, .. } => pinned(point),
-        _ => false,
-    }
 }
 
 /// Apply all constraints while keeping pinned sketch points fixed (used during vertex/line drag).
@@ -852,53 +845,29 @@ pub fn solve_document_constraints_with_pins(
     if pins.is_empty() {
         clear_legacy_dimension_locks(doc);
     }
-    for i in 0..doc.constraints.len() {
-        let constraint = doc.constraints[i].clone();
-        if constraint.deleted {
-            continue;
-        }
-        if let ConstraintKind::Distance { target } = constraint.kind {
-            if !crate::document_lifecycle::distance_target_alive(doc, target) {
-                continue;
+    crate::sketch_solver::solve_document_sketches(doc, pins)?;
+    if pins.is_empty() {
+        let dimension_flags: Vec<_> = doc
+            .constraints
+            .iter()
+            .filter(|constraint| !constraint.deleted)
+            .filter_map(|constraint| match constraint.kind {
+                ConstraintKind::Distance { target } => Some((
+                    target,
+                    constraint.expression.clone(),
+                    constraint.dim_offset,
+                )),
+                _ => None,
+            })
+            .collect();
+        for (target, expression, dim_offset) in dimension_flags {
+            if crate::document_lifecycle::distance_target_alive(doc, target) {
+                sync_legacy_dimension_flags(doc, target, &expression, dim_offset);
             }
-            if distance_target_moves_pinned_point(target, pins) {
-                continue;
-            }
-            let Some(value) = eval_length_mm_in_doc(&constraint.expression, doc) else {
-                continue;
-            };
-            if value <= 0.0 {
-                continue;
-            }
-            if apply_distance_constraint(doc, target, value).is_err() {
-                continue;
-            }
-            restore_constraint_pins(doc, pins)?;
-            if pins.is_empty() {
-                sync_legacy_dimension_flags(doc, target, &constraint.expression, constraint.dim_offset);
-            }
-        } else if let ConstraintKind::Angle {
-            line_a,
-            line_b,
-            rotation_sign,
-        } = constraint.kind
-        {
-            if !crate::document_lifecycle::constraint_kind_applicable(doc, constraint.kind) {
-                continue;
-            }
-            let Some(value) = eval_angle_rad_in_doc(&constraint.expression, doc) else {
-                continue;
-            };
-            if value <= 0.0 || value >= std::f32::consts::PI {
-                continue;
-            }
-            let _ = apply_angle_constraint(doc, line_a, line_b, rotation_sign, value);
-            restore_constraint_pins(doc, pins)?;
         }
     }
-    let result = apply_geometric_constraints_with_pins(doc, pins);
     crate::parameters::sync_computed_parameters(doc);
-    result
+    Ok(())
 }
 
 fn clear_legacy_dimension_locks(doc: &mut Document) {
@@ -965,162 +934,6 @@ fn sync_legacy_dimension_flags(
         | DistanceTarget::PointPointDistance { .. }
         | DistanceTarget::PointLineDistance { .. } => {}
     }
-}
-
-fn apply_distance_constraint(doc: &mut Document, target: DistanceTarget, value: f32) -> Result<(), String> {
-    match target {
-        DistanceTarget::RectWidth(i) => {
-            let rect = doc
-                .rects
-                .get_mut(i)
-                .ok_or_else(|| format!("Rectangle {i} not found"))?;
-            rect.w = value;
-        }
-        DistanceTarget::RectHeight(i) => {
-            let rect = doc
-                .rects
-                .get_mut(i)
-                .ok_or_else(|| format!("Rectangle {i} not found"))?;
-            rect.h = value;
-        }
-        DistanceTarget::LineLength(i) => {
-            apply_line_length(doc, i, value)?;
-        }
-        DistanceTarget::CircleDiameter(i) => {
-            let circle = doc
-                .circles
-                .get_mut(i)
-                .ok_or_else(|| format!("Circle {i} not found"))?;
-            circle.r = value / 2.0;
-        }
-        DistanceTarget::LineLineDistance {
-            line_a,
-            line_b,
-            side,
-        } => apply_line_line_distance(doc, line_a, line_b, side, value)?,
-        DistanceTarget::PointPointDistance {
-            anchor,
-            mover,
-            dir_u,
-            dir_v,
-        } => apply_point_point_distance(doc, anchor, mover, dir_u, dir_v, value)?,
-        DistanceTarget::PointLineDistance {
-            point,
-            line,
-            side,
-        } => apply_point_line_distance(doc, point, line, side, value)?,
-    }
-    Ok(())
-}
-
-fn apply_line_line_distance(
-    doc: &mut Document,
-    line_a: ConstraintLine,
-    line_b: ConstraintLine,
-    side: crate::model::ConstraintSign,
-    value: f32,
-) -> Result<(), String> {
-    let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
-    let ((ax0, ay0), (ax1, ay1)) = line_uv_endpoints(doc, reference)?;
-    let ((bx0, by0), (bx1, by1)) = line_uv_endpoints(doc, movable)?;
-    let du = ax1 - ax0;
-    let dv = ay1 - ay0;
-    let len = (du * du + dv * dv).sqrt();
-    if len < 1e-6 {
-        return Err("Reference line has zero length".to_string());
-    }
-    let perp_u = -dv / len;
-    let perp_v = du / len;
-    let amu = (ax0 + ax1) * 0.5;
-    let amv = (ay0 + ay1) * 0.5;
-    let bmu = (bx0 + bx1) * 0.5;
-    let bmv = (by0 + by1) * 0.5;
-    let current_signed = (bmu - amu) * perp_u + (bmv - amv) * perp_v;
-    let target_signed = side as f32 * value;
-    let delta = target_signed - current_signed;
-    translate_line(doc, movable, perp_u * delta, perp_v * delta)
-}
-
-fn apply_point_point_distance(
-    doc: &mut Document,
-    anchor: ConstraintPoint,
-    mover: ConstraintPoint,
-    dir_u: f32,
-    dir_v: f32,
-    value: f32,
-) -> Result<(), String> {
-    let (au, av) = point_uv(doc, anchor)?;
-    set_point_uv(doc, mover, au + dir_u * value, av + dir_v * value)
-}
-
-fn apply_point_line_distance(
-    doc: &mut Document,
-    point: ConstraintPoint,
-    line: ConstraintLine,
-    side: crate::model::ConstraintSign,
-    value: f32,
-) -> Result<(), String> {
-    let (pu, pv) = point_uv(doc, point)?;
-    let ((x0, y0), (x1, y1)) = line_uv_endpoints(doc, line)?;
-    let dx = x1 - x0;
-    let dy = y1 - y0;
-    let len = (dx * dx + dy * dy).sqrt();
-    if len < 1e-6 {
-        return Err("Line has zero length".to_string());
-    }
-    let perp_u = -dy / len;
-    let perp_v = dx / len;
-    let current_signed = (pu - x0) * perp_u + (pv - y0) * perp_v;
-    let target_signed = side as f32 * value;
-    let delta = target_signed - current_signed;
-    set_point_uv(doc, point, pu + perp_u * delta, pv + perp_v * delta)
-}
-
-fn apply_angle_constraint(
-    doc: &mut Document,
-    line_a: ConstraintLine,
-    line_b: ConstraintLine,
-    rotation_sign: crate::model::ConstraintSign,
-    value: f32,
-) -> Result<(), String> {
-    let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
-    let (rdu, rdv) = line_direction_uv(doc, reference).ok_or_else(|| {
-        "Reference line has zero length".to_string()
-    })?;
-    let ((mx0, my0), (mx1, my1)) = line_uv_endpoints(doc, movable)?;
-    let mdu = mx1 - mx0;
-    let mdv = my1 - my0;
-    let mlen = (mdu * mdu + mdv * mdv).sqrt();
-    if mlen < 1e-6 {
-        return Err("Constrained line has zero length".to_string());
-    }
-    let r_angle = rdv.atan2(rdu);
-    let new_angle = r_angle + rotation_sign as f32 * value;
-    set_line_uv_endpoints(
-        doc,
-        movable,
-        (mx0, my0),
-        (mx0 + new_angle.cos() * mlen, my0 + new_angle.sin() * mlen),
-    )
-}
-
-fn apply_line_length(doc: &mut Document, index: usize, len: f32) -> Result<(), String> {
-    let line = doc
-        .lines
-        .get(index)
-        .ok_or_else(|| format!("Line {index} not found"))?;
-    let du = line.x1 - line.x0;
-    let dv = line.y1 - line.y0;
-    let dist = (du * du + dv * dv).sqrt();
-    let (x1, y1) = if dist < 1e-6 {
-        (line.x0 + len, line.y0)
-    } else {
-        let scale = len / dist;
-        (line.x0 + du * scale, line.y0 + dv * scale)
-    };
-    doc.lines[index].x1 = x1;
-    doc.lines[index].y1 = y1;
-    Ok(())
 }
 
 /// Create constraints from legacy `*_locked` fields (pre-constraint documents).
@@ -1517,6 +1330,14 @@ mod tests {
         assert_eq!(id, 0);
         assert!((doc.lines[0].length() - 5.0).abs() < 1e-3);
         assert!(doc.lines[0].length_locked);
+    }
+
+    #[test]
+    fn sketch_degrees_of_freedom_reports_positive_for_open_line() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        assert!(sketch_degrees_of_freedom(&doc, sketch).unwrap() > 0);
     }
 
     #[test]

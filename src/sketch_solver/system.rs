@@ -36,10 +36,12 @@ impl System {
         (u_id, v_id)
     }
 
+    #[allow(dead_code)]
     pub fn set_fixed(&mut self, var: VarId, fixed: bool) {
         self.fixed[var.0] = fixed;
     }
 
+    #[allow(dead_code)]
     pub fn set_value(&mut self, var: VarId, value: f64) {
         self.values[var.0] = value;
     }

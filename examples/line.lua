@@ -18,3 +18,4 @@ assert(le3.find("Guide line") ~= nil)
 
 le3.wait_ms(100)
 le3.screenshot("line_preview.png")
+le3.quit()

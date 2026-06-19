@@ -251,11 +251,14 @@ coincident, parallel, perpendicular, distance, angle, point-on-plane/line, etc. 
 back the assembly joints/mates (§2.3).
 
 ### 6.3 Solver
-- A numeric constraint solver resolves a constraint system to satisfy all constraints.
+- A native Rust numeric constraint solver (`sketch_solver`) resolves sketch constraint
+  systems by minimizing weighted residuals with dense Levenberg–Marquardt (SolveSpace-style).
+- Rectangles decompose to four corner points; circles use centre point + radius variable.
+- Interactive drag adds high-weight pin residuals; reference geometry uses softer holds that
+  are skipped during drag so the solver can rebalance.
 - The UI must report **under-** and **over-constrained** states and indicate conflicting
-  constraints.
-- Solver choice: **TBD** (candidates: port SolveSpace's solver approach, or a
-  Newton/least-squares solver over the DOF system). Must be deterministic for headless use.
+  constraints. `sketch_degrees_of_freedom()` exposes remaining DOF from Jacobian rank analysis.
+- The solver is deterministic for headless/script use (fixed iteration order, fixed LM damping).
 
 ---
 
@@ -516,7 +519,7 @@ sheets suitable for printing/manufacturing.
 
 ## 14. Open items (TBD) — must be resolved before building the relevant area
 1. Topological persistent-naming algorithm (§4.5).
-2. Constraint solver implementation choice (§6.3).
+2. ~~Constraint solver implementation choice (§6.3).~~ **Resolved:** native Rust LM solver.
 3. Canonical internal units & full math function library (§5.2–5.3).
 4. Full assembly joint catalog (§2.3).
 5. OCCT binding strategy and the exact C++ shim surface (§10).

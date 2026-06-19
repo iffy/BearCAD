@@ -296,6 +296,7 @@ impl ViewportScene {
                 || !input
                     .element_visibility
                     .effective_visible(input.doc, SceneElement::Line(li))
+                || input.selection.is_selected(SceneElement::Line(li))
             {
                 continue;
             }
@@ -2684,6 +2685,110 @@ mod tests {
     #[test]
     fn stroke_depth_bias_beats_grid_depth_bias() {
         assert!(STROKE_DEPTH_BIAS > GRID_DEPTH_BIAS);
+    }
+
+    fn count_indices_with_color(scene: &ViewportScene, indices: &[u32], color: Color32) -> usize {
+        let target = color32_to_gpu(color);
+        indices
+            .iter()
+            .filter(|&&index| scene.vertices[index as usize].color == target)
+            .count()
+    }
+
+    #[test]
+    fn selected_line_uses_highlight_color_only() {
+        use crate::model::{FaceId, Line, ShapeKind};
+        use crate::selection::SceneSelection;
+
+        let mut state = AppState::default();
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.shape_order.push(ShapeKind::Line);
+
+        let palette = ViewportPalette::default();
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let empty_selection = SceneSelection::default();
+        let mut selected = SceneSelection::default();
+        crate::selection::click_scene_selection(
+            &mut selected,
+            SceneElement::Line(0),
+            false,
+        );
+
+        let unselected = ViewportScene::build(&ViewportSceneInput {
+            doc: &state.doc,
+            cam: &cam,
+            viewport,
+            palette,
+            sketch_session: None,
+            selection: &empty_selection,
+            element_visibility: &state.element_visibility,
+            preview_rect: None,
+            preview_line: None,
+            preview_circle: None,
+            plane_preview: None,
+            active_sketch_face: None,
+            dimension_labels: &[],
+            dim_label_view: None,
+            plane_gizmo: None,
+            hover_highlight: None,
+            hover_color: Color32::WHITE,
+            document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
+        });
+        let selected_scene = ViewportScene::build(&ViewportSceneInput {
+            doc: &state.doc,
+            cam: &cam,
+            viewport,
+            palette,
+            sketch_session: None,
+            selection: &selected,
+            element_visibility: &state.element_visibility,
+            preview_rect: None,
+            preview_line: None,
+            preview_circle: None,
+            plane_preview: None,
+            active_sketch_face: None,
+            dimension_labels: &[],
+            dim_label_view: None,
+            plane_gizmo: None,
+            hover_highlight: None,
+            hover_color: Color32::WHITE,
+            document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
+        });
+
+        let unselected_base = count_indices_with_color(
+            &unselected,
+            &unselected.indices,
+            palette.line_stroke,
+        );
+        let selected_base = count_indices_with_color(
+            &selected_scene,
+            &selected_scene.indices,
+            palette.line_stroke,
+        );
+        let selected_highlight = count_indices_with_color(
+            &selected_scene,
+            &selected_scene.overlay_indices,
+            palette.dim_edge_highlight,
+        );
+
+        assert!(
+            unselected_base > 0,
+            "unselected line should render in the base layer"
+        );
+        assert_eq!(
+            selected_base, 0,
+            "selected line should not render with base stroke color"
+        );
+        assert!(
+            selected_highlight > 0,
+            "selected line should render with highlight color"
+        );
     }
 
     #[test]

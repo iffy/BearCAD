@@ -15,8 +15,8 @@ pub struct SolverConfig {
 impl Default for SolverConfig {
     fn default() -> Self {
         Self {
-            max_iterations: 50,
-            tolerance: 1e-8,
+            max_iterations: 100,
+            tolerance: 1e-6,
             lm_lambda_init: 1e-3,
             lm_lambda_up: 10.0,
             lm_lambda_down: 0.3,
@@ -25,11 +25,14 @@ impl Default for SolverConfig {
 }
 
 /// Outcome of a solve attempt.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SolveReport {
     pub success: bool,
     pub iterations: u32,
     pub residual_norm: f64,
+    pub dof_remaining: i32,
+    /// Document constraint indices with the largest residuals after a failed solve.
+    pub failed_constraints: Vec<usize>,
 }
 
 pub fn solve_lm(system: &mut System, config: SolverConfig) -> SolveReport {
@@ -40,6 +43,8 @@ pub fn solve_lm(system: &mut System, config: SolverConfig) -> SolveReport {
             success: norm <= config.tolerance,
             iterations: 0,
             residual_norm: norm,
+            dof_remaining: 0,
+            failed_constraints: Vec::new(),
         };
     }
 
@@ -74,6 +79,8 @@ pub fn solve_lm(system: &mut System, config: SolverConfig) -> SolveReport {
         success: norm <= config.tolerance,
         iterations,
         residual_norm: norm,
+        dof_remaining: 0,
+        failed_constraints: Vec::new(),
     }
 }
 

@@ -585,6 +585,42 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     api.set(
+        "sketch_conflicts",
+        lua.create_function(|lua, sketch: Option<SketchId>| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let state = unsafe { tick.state() };
+            let sketch = sketch
+                .or_else(|| state.sketch_session.map(|session| session.sketch))
+                .ok_or_else(|| mlua::Error::external("no active sketch"))?;
+            let conflicts =
+                crate::constraints::sketch_conflicting_constraints(&state.doc, sketch)
+                    .map_err(mlua::Error::external)?;
+            let table = lua.create_table()?;
+            for (i, index) in conflicts.iter().enumerate() {
+                table.set(i + 1, *index)?;
+            }
+            Ok(table)
+        })?,
+    )?;
+
+    api.set(
+        "sketch_dof",
+        lua.create_function(|lua, sketch: Option<SketchId>| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let state = unsafe { tick.state() };
+            let sketch = sketch
+                .or_else(|| state.sketch_session.map(|session| session.sketch))
+                .ok_or_else(|| mlua::Error::external("no active sketch"))?;
+            crate::constraints::sketch_degrees_of_freedom(&state.doc, sketch)
+                .map_err(mlua::Error::external)
+        })?,
+    )?;
+
+    api.set(
         "add_constraint",
         lua.create_function(|lua, (target, expression): (Table, String)| {
             let target = parse_distance_target(target)?;
@@ -1187,6 +1223,28 @@ mod tests {
             find_element_by_name(&state.doc, "Main box"),
             Some(SceneElement::Line(0))
         );
+    }
+
+    #[test]
+    fn lua_sketch_dof_reports_remaining_degrees_of_freedom() {
+        let mut runner = ScriptRunner::from_lua_source(
+            r#"
+            le3.begin_sketch("construction_plane", 0)
+            le3.tool("line")
+            le3.click(0, 0)
+            le3.click(100, 0)
+            le3.commit()
+            assert(le3.sketch_dof() > 0)
+        "#,
+        )
+        .unwrap();
+        runner.verbose = false;
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        let ctx = egui::Context::default();
+        while !runner.done {
+            runner.tick(&mut state, &mut synthetic, None, &ctx);
+        }
     }
 
     #[test]

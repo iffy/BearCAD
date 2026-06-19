@@ -3514,6 +3514,7 @@ impl App {
             for (li, line) in doc.lines.iter().enumerate() {
                 if !line_alive(doc, li)
                     || !visibility.effective_visible(doc, SceneElement::Line(li))
+                    || self.state.scene_selection.is_selected(SceneElement::Line(li))
                 {
                     continue;
                 }

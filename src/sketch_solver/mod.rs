@@ -1,21 +1,25 @@
 //! Native Rust sketch constraint solver (Levenberg–Marquardt).
-#![allow(dead_code)]
 //!
 //! Replaces the procedural `apply_*` constraint functions with a numeric system
 //! that minimizes weighted residuals simultaneously. See `plan.md` for the full
 //! implementation roadmap.
 
+mod bridge;
+mod dof;
 mod newton;
 mod residuals;
 mod system;
 
-pub use newton::{solve_lm, SolveReport, SolverConfig};
-pub use residuals::{Equation, DEFAULT_WEIGHT};
-pub use system::System;
+pub use bridge::{
+    sketch_conflicting_constraints, sketch_dof_remaining, sketch_line_vertex_drag_blocked,
+    solve_document_sketches,
+};
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::newton::{solve_lm, SolveReport, SolverConfig};
+    use super::residuals::{Equation, DEFAULT_WEIGHT};
+    use super::system::System;
 
     const EPS: f64 = 1e-5;
     const PIN_WEIGHT: f64 = 1e6;
@@ -252,6 +256,38 @@ mod tests {
         let _ = solve(&mut sys);
         assert!((sys.value(x0) - 3.0).abs() < EPS);
         assert!((sys.value(y0) - 4.0).abs() < EPS);
+    }
+
+    #[test]
+    fn solve_is_deterministic_for_same_sketch() {
+        let mut sys = System::new();
+        let (x0, y0) = sys.add_point(0.0, 0.0, true);
+        let (x1, y1) = sys.add_point(1.0, 99.0, false);
+        sys.add_equation(Equation::Horizontal {
+            y0,
+            y1,
+            weight: DEFAULT_WEIGHT,
+        });
+        sys.add_equation(Equation::LineLength {
+            x0,
+            y0,
+            x1,
+            y1,
+            length: 10.0,
+            weight: DEFAULT_WEIGHT,
+        });
+
+        let mut reference = sys.clone();
+        solve(&mut reference);
+        let ref_x1 = reference.value(x1) as f32;
+        let ref_y1 = reference.value(y1) as f32;
+
+        for _ in 0..100 {
+            let mut trial = sys.clone();
+            solve(&mut trial);
+            assert!((trial.value(x1) as f32).to_bits() == ref_x1.to_bits());
+            assert!((trial.value(y1) as f32).to_bits() == ref_y1.to_bits());
+        }
     }
 
     #[test]
