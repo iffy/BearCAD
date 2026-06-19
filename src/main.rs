@@ -15,6 +15,7 @@ mod camera;
 mod command_palette;
 mod construction;
 mod dimensions;
+mod expression_input;
 mod face;
 mod hierarchy;
 mod parameters;
@@ -58,6 +59,10 @@ use glam::Vec3;
 use model::ConstructionPlane;
 use script::{ScriptRunner, SyntheticInput};
 use std::path::Path;
+use expression_input::{
+    length_expression_field_errors, show_expression_error_tooltips_above, INVALID_BG,
+    INVALID_BORDER, INVALID_TEXT,
+};
 use value::{computed_length_in_doc, format_length_display, shows_computed_length_in_doc};
 
 fn main() -> eframe::Result<()> {
@@ -853,15 +858,27 @@ fn show_sketch_dimension_field(
     user_edited: bool,
 ) -> SketchDimFieldResult {
     let has_focus = ctx.memory(|m| m.focused()) == Some(id);
+    let field_errors = length_expression_field_errors(text, doc, None);
+    let has_errors = !field_errors.is_empty();
+    let show_computed_row = shows_computed_length_in_doc(text, doc);
+    let widget = if has_focus {
+        &ui.style().visuals.widgets.active
+    } else {
+        &ui.style().visuals.widgets.inactive
+    };
     let frame = egui::Frame::default()
-        .fill(if has_focus {
+        .fill(if has_errors {
+            INVALID_BG
+        } else if has_focus {
             col::DIM_INPUT_BG_FOCUS
         } else {
             col::DIM_INPUT_BG
         })
         .stroke(egui::Stroke::new(
-            1.5,
-            if has_focus {
+            widget.bg_stroke.width,
+            if has_errors {
+                INVALID_BORDER
+            } else if has_focus {
                 col::DIM_INPUT_BORDER_FOCUS
             } else {
                 col::DIM_INPUT_BORDER
@@ -870,39 +887,46 @@ fn show_sketch_dimension_field(
         .inner_margin(egui::Margin::symmetric(5.0, 3.0))
         .rounding(3.0);
 
-    let computed =
-        computed_length_in_doc(text, doc).filter(|_| shows_computed_length_in_doc(text, doc));
+    let computed = if has_errors {
+        None
+    } else {
+        computed_length_in_doc(text, doc).filter(|_| show_computed_row)
+    };
     let text_width = dim_input_text_width(text);
 
-    let output = frame
-        .show(ui, |ui| {
-            ui.set_width(text_width);
-            ui.vertical_centered(|ui| {
-                if let Some(v) = computed {
-                    ui.label(
-                        egui::RichText::new(format_length_display(v))
-                            .font(egui::FontId::monospace(11.0))
-                            .color(col::DIM_INPUT_TEXT.gamma_multiply(0.65)),
-                    );
-                }
-                ui.style_mut().spacing.text_edit_width = text_width;
-                ui.visuals_mut().selection.bg_fill = col::DIM_INPUT_SELECTION;
-                egui::TextEdit::singleline(text)
-                    .id(id)
-                    .frame(false)
-                    .desired_width(text_width)
-                    .font(egui::FontId::monospace(13.0))
-                    .text_color(if has_focus {
-                        col::DIM_INPUT_TEXT_FOCUS
-                    } else {
-                        col::DIM_INPUT_TEXT
-                    })
-                    .margin(egui::vec2(0.0, 0.0))
-                    .show(ui)
-            })
-            .inner
+    let frame_output = frame.show(ui, |ui| {
+        ui.set_width(text_width);
+        ui.vertical_centered(|ui| {
+            if let Some(v) = computed {
+                ui.label(
+                    egui::RichText::new(format_length_display(v))
+                        .font(egui::FontId::monospace(11.0))
+                        .color(col::DIM_INPUT_TEXT.gamma_multiply(0.65)),
+                );
+            } else if show_computed_row {
+                ui.add_space(14.0);
+            }
+            ui.style_mut().spacing.text_edit_width = text_width;
+            ui.visuals_mut().selection.bg_fill = col::DIM_INPUT_SELECTION;
+            egui::TextEdit::singleline(text)
+                .id(id)
+                .frame(false)
+                .desired_width(text_width)
+                .font(egui::FontId::monospace(13.0))
+                .text_color(if has_errors {
+                    INVALID_TEXT
+                } else if has_focus {
+                    col::DIM_INPUT_TEXT_FOCUS
+                } else {
+                    col::DIM_INPUT_TEXT
+                })
+                .margin(egui::vec2(0.0, 0.0))
+                .show(ui)
         })
-        .inner;
+        .inner
+    });
+    show_expression_error_tooltips_above(ui, &frame_output.response, &field_errors);
+    let output = frame_output.inner;
     let resp = &output.response;
     if is_focus_target && *pending_focus {
         resp.request_focus();

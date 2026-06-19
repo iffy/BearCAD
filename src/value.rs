@@ -71,6 +71,86 @@ pub fn substitute_parameter_name(expression: &str, old: &str, new: &str) -> Stri
     out
 }
 
+const LENGTH_UNIT_SUFFIXES: &[&str] = &["mm", "cm", "ft", "in", "m"];
+
+fn is_length_unit_suffix_at(expression: &str, unit_start: usize, ident: &str) -> bool {
+    if !LENGTH_UNIT_SUFFIXES.contains(&ident) {
+        return false;
+    }
+    let before = expression[..unit_start].trim_end();
+    before
+        .chars()
+        .last()
+        .is_some_and(|c| c.is_ascii_digit() || c == '.')
+}
+
+/// Variable-like identifiers in `expression`, excluding unit suffixes attached to numbers.
+pub fn identifiers_in_expression(expression: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut i = 0;
+    while i < expression.len() {
+        if let Some((ident, len)) = identifier_at(expression, i) {
+            if !is_length_unit_suffix_at(expression, i, ident)
+                && !names.iter().any(|n| n == ident)
+            {
+                names.push(ident.to_string());
+            }
+            i += len;
+        } else {
+            let step = expression[i..]
+                .chars()
+                .next()
+                .map(|c| c.len_utf8())
+                .unwrap_or(1);
+            i += step;
+        }
+    }
+    names
+}
+
+/// Whole identifiers in `expression` that match `known_names`.
+pub fn parameter_names_referenced_in_expression(expression: &str, known_names: &[&str]) -> Vec<String> {
+    identifiers_in_expression(expression)
+        .into_iter()
+        .filter(|name| known_names.contains(&name.as_str()))
+        .collect()
+}
+
+/// Identifiers in `expression` that are not present in `known_names`.
+pub fn unknown_variables_in_expression(expression: &str, known_names: &[&str]) -> Vec<String> {
+    identifiers_in_expression(expression)
+        .into_iter()
+        .filter(|name| !known_names.contains(&name.as_str()))
+        .collect()
+}
+
+/// Unknown parameter references when defining `param_name` (`existing_index` is `None` for a new row).
+pub fn unknown_variables_in_parameter_expression(
+    expression: &str,
+    doc: &Document,
+    param_name: &str,
+    existing_index: Option<usize>,
+) -> Vec<String> {
+    let known = document_parameter_names(doc);
+    identifiers_in_expression(expression)
+        .into_iter()
+        .filter(|name| {
+            if known.contains(&name.as_str()) {
+                return false;
+            }
+            !(existing_index.is_none() && name == param_name)
+        })
+        .collect()
+}
+
+pub fn format_unknown_variable_error(name: &str) -> String {
+    format!("Unknown variable: {name}")
+}
+
+pub fn document_parameter_names<'a>(doc: &'a Document) -> Vec<&'a str> {
+    doc.parameters.iter().map(|p| p.name.as_str()).collect()
+}
+
 /// Whether `expression` contains a whole identifier referencing a document parameter.
 pub fn expression_references_document_parameter(doc: &Document, expression: &str) -> bool {
     let mut i = 0;
@@ -512,6 +592,33 @@ mod tests {
     fn eval_detects_parameter_cycles() {
         let params = [("A", "B"), ("B", "A")];
         assert!(eval_length_mm_with_params("A", &params).is_none());
+    }
+
+    #[test]
+    fn parameter_names_referenced_in_expression_finds_known_names() {
+        let known = ["A", "B", "width"];
+        assert_eq!(
+            parameter_names_referenced_in_expression("A + width + A2", &known),
+            vec!["A".to_string(), "width".to_string()]
+        );
+        assert!(parameter_names_referenced_in_expression("10mm", &known).is_empty());
+    }
+
+    #[test]
+    fn identifiers_in_expression_ignores_unit_suffixes() {
+        assert!(identifiers_in_expression("10mm").is_empty());
+        assert!(identifiers_in_expression("2in + 5mm").is_empty());
+        assert_eq!(identifiers_in_expression("A + 2in"), vec!["A".to_string()]);
+    }
+
+    #[test]
+    fn unknown_variables_in_expression_lists_missing_names() {
+        let known = ["A"];
+        assert_eq!(
+            unknown_variables_in_expression("A + B", &known),
+            vec!["B".to_string()]
+        );
+        assert!(unknown_variables_in_expression("10mm", &known).is_empty());
     }
 
     #[test]

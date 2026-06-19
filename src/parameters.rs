@@ -3,8 +3,10 @@
 use crate::actions::{Action, ActionResult, AppState};
 use crate::model::{Document, Parameter};
 use crate::value::{
-    eval_length_mm_in_doc, expression_references_document_parameter, format_length_display,
-    is_valid_parameter_name, substitute_parameter_name,
+    eval_length_mm_in_doc, eval_length_mm_with_params, expression_references_document_parameter,
+    format_length_display, format_unknown_variable_error, is_valid_parameter_name,
+    parameter_names_referenced_in_expression, substitute_parameter_name,
+    unknown_variables_in_parameter_expression,
 };
 use eframe::egui::{self, Id, Key};
 
@@ -227,12 +229,138 @@ pub fn validate_new_parameter_name(doc: &Document, name: &str, except: Option<us
     Ok(())
 }
 
-pub fn validate_parameter_expression(doc: &Document, expression: &str) -> Result<(), String> {
+/// Parameter name/expression pairs for validation, optionally overriding one row or appending a new one.
+fn parameter_bindings_for_check(
+    doc: &Document,
+    param_name: &str,
+    expression: &str,
+    existing_index: Option<usize>,
+) -> Vec<(String, String)> {
+    let mut bindings: Vec<(String, String)> = doc
+        .parameters
+        .iter()
+        .enumerate()
+        .map(|(index, param)| {
+            let expr = if existing_index == Some(index) {
+                expression.to_string()
+            } else {
+                param.expression.clone()
+            };
+            (param.name.clone(), expr)
+        })
+        .collect();
+    if existing_index.is_none() && !bindings.iter().any(|(name, _)| name == param_name) {
+        bindings.push((param_name.to_string(), expression.to_string()));
+    }
+    bindings
+}
+
+/// Cycle path starting and ending at the same parameter (e.g. `["A", "B", "C", "A"]`).
+pub fn find_parameter_dependency_cycle(
+    doc: &Document,
+    param_name: &str,
+    expression: &str,
+    existing_index: Option<usize>,
+) -> Option<Vec<String>> {
+    let param_name = param_name.trim();
+    if param_name.is_empty() {
+        return None;
+    }
+    let bindings = parameter_bindings_for_check(doc, param_name, expression.trim(), existing_index);
+    let known_names: Vec<&str> = bindings.iter().map(|(name, _)| name.as_str()).collect();
+    let mut path = Vec::new();
+    find_parameter_dependency_cycle_from(param_name, &bindings, &known_names, &mut path)
+}
+
+fn find_parameter_dependency_cycle_from(
+    name: &str,
+    bindings: &[(String, String)],
+    known_names: &[&str],
+    path: &mut Vec<String>,
+) -> Option<Vec<String>> {
+    if let Some(start) = path.iter().position(|n| n == name) {
+        let mut cycle = path[start..].to_vec();
+        cycle.push(name.to_string());
+        return Some(cycle);
+    }
+    let expression = bindings
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, expr)| expr.as_str())?;
+    path.push(name.to_string());
+    for dep in parameter_names_referenced_in_expression(expression, known_names) {
+        if let Some(cycle) =
+            find_parameter_dependency_cycle_from(&dep, bindings, known_names, path)
+        {
+            return Some(cycle);
+        }
+    }
+    path.pop();
+    None
+}
+
+pub fn format_circular_dependency_error(cycle: &[String]) -> String {
+    if cycle.is_empty() {
+        return "Circular parameter dependency".to_string();
+    }
+    format!("Circular dependency: {}", cycle.join(" → "))
+}
+
+/// Live warning text for a draft expression, or `None` when no cycle is detected.
+pub fn parameter_expression_cycle_warning(
+    doc: &Document,
+    param_name: &str,
+    expression: &str,
+    existing_index: Option<usize>,
+) -> Option<String> {
+    let expression = expression.trim();
+    if expression.is_empty() || param_name.trim().is_empty() {
+        return None;
+    }
+    find_parameter_dependency_cycle(doc, param_name, expression, existing_index)
+        .map(|cycle| format_circular_dependency_error(&cycle))
+}
+
+pub fn validate_document_parameters_no_cycles(doc: &Document) -> Result<(), String> {
+    for (index, param) in doc.parameters.iter().enumerate() {
+        if let Some(cycle) = find_parameter_dependency_cycle(
+            doc,
+            &param.name,
+            &param.expression,
+            Some(index),
+        ) {
+            return Err(format_circular_dependency_error(&cycle));
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_parameter_expression_for(
+    doc: &Document,
+    param_name: &str,
+    expression: &str,
+    existing_index: Option<usize>,
+) -> Result<(), String> {
     let expression = expression.trim();
     if expression.is_empty() {
         return Err("Parameter value is required".to_string());
     }
-    eval_length_mm_in_doc(expression, doc)
+    if let Some(name) =
+        unknown_variables_in_parameter_expression(expression, doc, param_name, existing_index).first()
+    {
+        return Err(format_unknown_variable_error(name));
+    }
+    if let Some(cycle) =
+        find_parameter_dependency_cycle(doc, param_name, expression, existing_index)
+    {
+        return Err(format_circular_dependency_error(&cycle));
+    }
+    let bindings = parameter_bindings_for_check(doc, param_name, expression, existing_index);
+    let params: Vec<(&str, &str)> = bindings
+        .iter()
+        .map(|(name, expr)| (name.as_str(), expr.as_str()))
+        .collect();
+    eval_length_mm_with_params(expression, &params)
         .ok_or_else(|| format!("Invalid expression '{expression}'"))?;
     Ok(())
 }
@@ -241,7 +369,7 @@ pub fn add_parameter(doc: &mut Document, name: String, expression: String) -> Re
     let name = name.trim().to_string();
     let expression = expression.trim().to_string();
     validate_new_parameter_name(doc, &name, None)?;
-    validate_parameter_expression(doc, &expression)?;
+    validate_parameter_expression_for(doc, &name, &expression, None)?;
     let index = doc.parameters.len();
     doc.parameters.push(Parameter { name, expression });
     doc.shape_order.push(crate::model::ShapeKind::Parameter);
@@ -275,7 +403,8 @@ pub fn set_parameter_expression(
     if doc.parameters.get(index).is_none() {
         return Err(format!("Parameter {index} not found"));
     }
-    validate_parameter_expression(doc, &expression)?;
+    let param_name = doc.parameters[index].name.clone();
+    validate_parameter_expression_for(doc, &param_name, &expression, Some(index))?;
     doc.parameters[index].expression = expression;
     recompute_document_geometry(doc)
 }
@@ -320,6 +449,9 @@ pub fn parameter_edit_enter_pressed(
 }
 
 pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
+    use crate::expression_input::{
+        length_expression_field_errors, show_length_expression_text_edit, ParameterExpressionContext,
+    };
     use egui::{Grid, ScrollArea, TextEdit};
 
     ui.heading(PANE_TITLE);
@@ -399,10 +531,20 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
 
                     ui.horizontal(|ui| {
                         if editing_value {
-                            let response = ui.add(
-                                TextEdit::singleline(&mut app.parameters_pane.draft)
-                                    .id(param_value_id(index))
-                                    .desired_width(f32::INFINITY),
+                            let value_errors = length_expression_field_errors(
+                                &app.parameters_pane.draft,
+                                &app.doc,
+                                Some(&ParameterExpressionContext {
+                                    param_name: param_name.clone(),
+                                    existing_index: Some(index),
+                                }),
+                            );
+                            let response = show_length_expression_text_edit(
+                                ui,
+                                &mut app.parameters_pane.draft,
+                                param_value_id(index),
+                                "",
+                                &value_errors,
                             );
                             if app.parameters_pane.editing_focus {
                                 response.request_focus();
@@ -452,11 +594,23 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                     name_response.request_focus();
                     app.parameters_pane.focus_new_name = false;
                 }
-                let value_response = ui.add(
-                    TextEdit::singleline(&mut app.parameters_pane.new_value)
-                        .id(Id::new(NEW_VALUE_ID))
-                        .hint_text("value")
-                        .desired_width(f32::INFINITY),
+                let new_param_context = (!app.parameters_pane.new_name.trim().is_empty()).then(|| {
+                    ParameterExpressionContext {
+                        param_name: app.parameters_pane.new_name.trim().to_string(),
+                        existing_index: None,
+                    }
+                });
+                let new_value_errors = length_expression_field_errors(
+                    &app.parameters_pane.new_value,
+                    &app.doc,
+                    new_param_context.as_ref(),
+                );
+                let value_response = show_length_expression_text_edit(
+                    ui,
+                    &mut app.parameters_pane.new_value,
+                    Id::new(NEW_VALUE_ID),
+                    "value",
+                    &new_value_errors,
                 );
                 if app.parameters_pane.focus_new_value {
                     value_response.request_focus();
@@ -680,6 +834,68 @@ mod tests {
         assert_eq!(state.parameters_pane.new_name, "1bad");
         assert_eq!(state.parameters_pane.new_value, "10mm");
         assert!(state.parameters_pane.message.is_some());
+    }
+
+    #[test]
+    fn rejects_unknown_variable_in_parameter_expression() {
+        let mut doc = doc_with_param_a();
+        let err = set_parameter_expression(&mut doc, 0, "Missing".to_string()).unwrap_err();
+        assert_eq!(err, "Unknown variable: Missing");
+    }
+
+    #[test]
+    fn rejects_direct_self_referencing_parameter() {
+        let mut doc = Document::default();
+        assert!(add_parameter(&mut doc, "A".to_string(), "A".to_string()).is_err());
+    }
+
+    #[test]
+    fn rejects_two_parameter_cycle() {
+        let mut doc = doc_with_param_a();
+        add_parameter(&mut doc, "B".to_string(), "A".to_string()).unwrap();
+        let err = set_parameter_expression(&mut doc, 0, "B".to_string()).unwrap_err();
+        assert!(err.contains("Circular dependency"));
+        assert!(err.contains("A"));
+        assert!(err.contains("B"));
+    }
+
+    #[test]
+    fn rejects_three_parameter_cycle() {
+        let mut doc = doc_with_param_a();
+        add_parameter(&mut doc, "C".to_string(), "A".to_string()).unwrap();
+        add_parameter(&mut doc, "B".to_string(), "C".to_string()).unwrap();
+        let err = set_parameter_expression(&mut doc, 0, "B".to_string()).unwrap_err();
+        assert_eq!(err, "Circular dependency: A → B → C → A");
+    }
+
+    #[test]
+    fn rejects_add_parameter_that_references_itself() {
+        let mut doc = Document::default();
+        let err = add_parameter(&mut doc, "A".to_string(), "A".to_string()).unwrap_err();
+        assert!(err.contains("Circular dependency"));
+    }
+
+    #[test]
+    fn allows_non_circular_parameter_chain() {
+        let mut doc = doc_with_param_a();
+        add_parameter(&mut doc, "B".to_string(), "A + 5mm".to_string()).unwrap();
+        add_parameter(&mut doc, "C".to_string(), "2 * B".to_string()).unwrap();
+        assert_eq!(doc.parameters.len(), 3);
+    }
+
+    #[test]
+    fn parameter_expression_cycle_warning_for_draft_expression() {
+        let mut doc = doc_with_param_a();
+        add_parameter(&mut doc, "B".to_string(), "A".to_string()).unwrap();
+        let warning = parameter_expression_cycle_warning(&doc, "A", "B", Some(0)).unwrap();
+        assert_eq!(warning, "Circular dependency: A → B → A");
+    }
+
+    #[test]
+    fn validate_document_parameters_no_cycles_accepts_healthy_document() {
+        let mut doc = doc_with_param_a();
+        add_parameter(&mut doc, "B".to_string(), "A + 5mm".to_string()).unwrap();
+        validate_document_parameters_no_cycles(&doc).unwrap();
     }
 
     #[test]

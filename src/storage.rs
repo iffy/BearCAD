@@ -9,6 +9,7 @@
 
 use crate::face::default_xy_plane;
 use crate::model::{Document, Line, Parameter, Rect, ShapeKind, Sketch};
+use crate::parameters::validate_document_parameters_no_cycles;
 use rusqlite::Connection;
 
 /// Bump when the on-disk schema changes; pair with a migration below.
@@ -43,6 +44,7 @@ fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
 
 /// Save `doc` to `path`, overwriting any existing document content.
 pub fn save(path: &str, doc: &Document) -> Result<()> {
+    validate_document_parameters_no_cycles(doc)?;
     let mut conn = Connection::open(path).map_err(|e| e.to_string())?;
     init_schema(&conn).map_err(|e| e.to_string())?;
 
@@ -403,6 +405,31 @@ mod tests {
         let _ = s1;
 
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn save_rejects_circular_parameters() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("le3_circular_params_test.le3");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        doc.parameters.push(Parameter {
+            name: "A".to_string(),
+            expression: "B".to_string(),
+        });
+        doc.parameters.push(Parameter {
+            name: "B".to_string(),
+            expression: "A".to_string(),
+        });
+        doc.shape_order.push(ShapeKind::Parameter);
+        doc.shape_order.push(ShapeKind::Parameter);
+
+        let err = save(&path, &doc).unwrap_err();
+        assert!(err.contains("Circular dependency"));
+
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]
