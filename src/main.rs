@@ -40,6 +40,7 @@ mod script;
 mod selection;
 mod shortcuts;
 mod sketch_solver;
+mod snapping;
 mod stl;
 mod storage;
 mod theme;
@@ -791,6 +792,10 @@ impl eframe::App for App {
                     let mut queue_click = |element: SceneElement, additive: bool| {
                         click_element = Some((element, additive));
                     };
+                    // Highlight the elements that use the variable focused in the Parameters pane.
+                    let highlight_elements = parameters::focused_parameter_name(ctx, &self.state.doc)
+                        .map(|name| parameters::elements_using_parameter(&self.state.doc, &name))
+                        .unwrap_or_default();
                     hierarchy::show_pane(
                         ui,
                         &self.state.doc,
@@ -802,6 +807,7 @@ impl eframe::App for App {
                         &mut queue_edit_plane,
                         &mut noop_visibility,
                         &mut queue_click,
+                        &highlight_elements,
                     );
                 });
             if let Some((element, additive)) = click_element {
@@ -836,6 +842,8 @@ impl eframe::App for App {
                 draw_rect_construction: self.state.rect_draw_construction_mode(),
                 draw_line_construction: self.state.line_draw_construction_mode(),
                 draw_circle_construction: self.state.circle_draw_construction_mode(),
+                in_sketch: self.state.sketch_session.is_some(),
+                snapping_enabled: self.state.snapping_enabled,
             };
             let content = context::context_pane_content(&context_input);
             context::sync_name_draft(&mut self.state.context_pane, &self.state.doc, &content);
@@ -843,6 +851,7 @@ impl eframe::App for App {
             let mut name_commit: Option<(SceneElement, String)> = None;
             let mut constraint_apply: Option<crate::geometric_constraints::GeometricConstraintType> =
                 None;
+            let mut snapping_change: Option<bool> = None;
             egui::SidePanel::right("context")
                 .resizable(true)
                 .default_width(200.0)
@@ -861,8 +870,12 @@ impl eframe::App for App {
                             construction_change = Some(construction);
                         },
                         &mut |kind| constraint_apply = Some(kind),
+                        &mut |enabled| snapping_change = Some(enabled),
                     );
                 });
+            if let Some(enabled) = snapping_change {
+                self.state.apply(Action::SetSnapping(enabled));
+            }
             if let Some(kind) = constraint_apply {
                 self.state.apply(Action::AddGeometricConstraint(kind));
             }
@@ -2263,6 +2276,71 @@ fn handle_committed_dim_label_double_click(
     true
 }
 
+/// Snap radius in screen pixels, converted to sketch units per the current view.
+const SNAP_RADIUS_PX: f32 = 12.0;
+
+/// The snap radius in sketch-local units near `world` on the sketch plane.
+fn snap_radius_uv(
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    frame: &face::SketchFrame,
+    world: Vec3,
+) -> f32 {
+    pixels_to_world_distance(project, world, frame.u_axis, SNAP_RADIUS_PX)
+}
+
+/// World position and target of the active snap (dragged vertex or line end), for the marker.
+fn active_snap(state: &AppState, frame: &face::SketchFrame) -> Option<(Vec3, snapping::SnapTarget)> {
+    if let Some((point, target)) = state.active_snap {
+        let (u, v) = crate::geometric_constraints::point_uv(&state.doc, point).ok()?;
+        return Some((face::local_to_world(frame, u, v), target));
+    }
+    if let Some(target) = state.line_end_snap {
+        if let Some(cl) = &state.creating_line {
+            return Some((cl.end_point(frame, &state.doc), target));
+        }
+    }
+    if let Some(target) = state.rect_opposite_snap {
+        if let Some(cr) = &state.creating_rect {
+            return Some((cr.end_point(frame, &state.doc), target));
+        }
+    }
+    None
+}
+
+/// The constraint icon representing a snap target.
+fn snap_icon(target: snapping::SnapTarget) -> icons::IconId {
+    match target {
+        snapping::SnapTarget::Midpoint(_) => icons::IconId::Midpoint,
+        snapping::SnapTarget::Vertex(_) | snapping::SnapTarget::OnLine(_) => {
+            icons::IconId::Coincident
+        }
+    }
+}
+
+/// Snap a world-space sketch-plane point to nearby geometry, returning the (possibly snapped)
+/// world point and the snap target it latched onto.
+fn snap_ground_point(
+    state: &AppState,
+    session: SketchSession,
+    frame: &face::SketchFrame,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    world: Vec3,
+    exclude: &[ConstraintPoint],
+) -> (Vec3, Option<snapping::SnapTarget>) {
+    if !state.snapping_enabled {
+        return (world, None);
+    }
+    let (u, v) = world_to_local(frame, world);
+    let radius = snap_radius_uv(project, frame, world);
+    match snapping::find_snap(&state.doc, session.sketch, (u, v), radius, exclude) {
+        Some(snap) => (
+            face::local_to_world(frame, snap.uv.0, snap.uv.1),
+            Some(snap.target),
+        ),
+        None => (world, None),
+    }
+}
+
 fn handle_vertex_drag(
     ui: &egui::Ui,
     drag: &mut Option<VertexDrag>,
@@ -2289,6 +2367,10 @@ fn handle_vertex_drag(
 
     if let Some(active) = drag.as_ref() {
         if primary_released {
+            // Leaving a snapped vertex in place pins it with the implied constraint.
+            if let Some((point, target)) = state.active_snap.take() {
+                let _ = state.apply(Action::ApplySnapConstraint { point, target });
+            }
             *drag = None;
             return false;
         }
@@ -2298,7 +2380,27 @@ fn handle_vertex_drag(
                     sketch_plane_point(cam, viewport, vp, &state.doc, session, pp)
                 {
                     let frame = sketch_geometry_frame(&state.doc, session.sketch).unwrap();
-                    let (u, v) = world_to_local(&frame, world);
+                    let (mut u, mut v) = world_to_local(&frame, world);
+                    state.active_snap = None;
+                    if state.snapping_enabled {
+                        let radius = snap_radius_uv(project, &frame, world);
+                        let exclude = vertex_drag::coincident_group(
+                            &state.doc,
+                            session.sketch,
+                            active.point,
+                        );
+                        if let Some(snap) = snapping::find_snap(
+                            &state.doc,
+                            session.sketch,
+                            (u, v),
+                            radius,
+                            &exclude,
+                        ) {
+                            u = snap.uv.0;
+                            v = snap.uv.1;
+                            state.active_snap = Some((active.point, snap.target));
+                        }
+                    }
                     let _ = state.apply(Action::DragVertex {
                         point: active.point,
                         u,
@@ -2998,13 +3100,17 @@ impl App {
                     let frame = sketch_geometry_frame(&self.state.doc, session.sketch).unwrap();
                     let was_creating = self.state.creating_rect.is_some();
                     let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+                    let (sgp, snap_target) =
+                        snap_ground_point(&self.state, session, &frame, &project, gp, &[]);
 
                     if !was_creating && primary_pressed && !over_committed_dim_label {
+                        self.state.rect_origin_snap = snap_target;
+                        self.state.rect_opposite_snap = None;
                         self.state.creating_rect = Some(CreatingRect {
-                            origin: gp,
+                            origin: sgp,
                             texts: ["".to_string(), "".to_string()],
                             focused: 0,
-                            last_mouse: gp,
+                            last_mouse: sgp,
                             user_edited: [false, false],
                             pending_focus: true,
                             construction: self.state.draw_construction,
@@ -3037,15 +3143,22 @@ impl App {
                         ) {
                             commit_click = true;
                         } else if !over_input && !over_committed_dim_label {
-                            cr.last_mouse = gp;
+                            cr.last_mouse = sgp;
                             let (au, av) = world_to_local(&frame, cr.origin);
-                            let (bu, bv) = world_to_local(&frame, gp);
+                            let (bu, bv) = world_to_local(&frame, sgp);
                             if !cr.user_edited[0] {
                                 cr.texts[0] = format_live_dimension((bu - au).abs());
                             }
                             if !cr.user_edited[1] {
                                 cr.texts[1] = format_live_dimension((bv - av).abs());
                             }
+                            // The opposite corner only tracks the cursor when both dims are free.
+                            self.state.rect_opposite_snap =
+                                if cr.user_edited[0] || cr.user_edited[1] {
+                                    None
+                                } else {
+                                    snap_target
+                                };
                         }
                     }
                     if commit_click {
@@ -3088,8 +3201,12 @@ impl App {
                     let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
 
                     if !was_creating && primary_pressed && !over_committed_dim_label {
+                        // Snap the center; the rim follows the cursor freely.
+                        let (center, center_snap) =
+                            snap_ground_point(&self.state, session, &frame, &project, gp, &[]);
+                        self.state.circle_center_snap = center_snap;
                         self.state.creating_circle = Some(CreatingCircle {
-                            origin: gp,
+                            origin: center,
                             text: String::new(),
                             last_mouse: gp,
                             user_edited: false,
@@ -3162,11 +3279,17 @@ impl App {
                     let was_creating = self.state.creating_line.is_some();
                     let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
 
+                    // Snap the cursor to nearby geometry (vertices, midpoints, lines).
+                    let (sgp, snap_target) =
+                        snap_ground_point(&self.state, session, &frame, &project, gp, &[]);
+
                     if !was_creating && primary_pressed && !over_committed_dim_label {
+                        self.state.line_start_snap = snap_target;
+                        self.state.line_end_snap = None;
                         self.state.creating_line = Some(CreatingLine {
-                            origin: gp,
+                            origin: sgp,
                             text: String::new(),
-                            last_mouse: gp,
+                            last_mouse: sgp,
                             user_edited: false,
                             pending_focus: true,
                             construction: self.state.draw_construction,
@@ -3191,14 +3314,18 @@ impl App {
                         ) {
                             commit_click = true;
                         } else if !over_input && !over_committed_dim_label {
-                            cl.last_mouse = gp;
-                            if !cl.user_edited {
+                            cl.last_mouse = sgp;
+                            // A typed length overrides the free end, so the snap no longer applies.
+                            self.state.line_end_snap = if cl.user_edited {
+                                None
+                            } else {
                                 let (au, av) = world_to_local(&frame, cl.origin);
-                                let (bu, bv) = world_to_local(&frame, gp);
+                                let (bu, bv) = world_to_local(&frame, sgp);
                                 let du = bu - au;
                                 let dv = bv - av;
                                 cl.text = format_live_dimension((du * du + dv * dv).sqrt());
-                            }
+                                snap_target
+                            };
                         }
                     }
                     if commit_click {
@@ -4414,7 +4541,56 @@ impl App {
             }
         }
 
-        if self.state.panes.is_visible(Pane::ViewCube) {
+        // Snap indicator: a ring where a dragged/drawn point has latched onto geometry, or
+        // where the first point of a line would land if clicked now.
+        if let Some(session) = self.state.sketch_session {
+            if let Some(frame) = sketch_geometry_frame(&self.state.doc, session.sketch) {
+                let snap = active_snap(&self.state, &frame).or_else(|| {
+                    // Preview where the next click would place a point (the first point of a
+                    // line/rectangle, or a circle center), before any geometry exists.
+                    let drawing = matches!(
+                        self.state.tool,
+                        Tool::Line | Tool::Rectangle | Tool::Circle
+                    );
+                    let mid_op = self.state.creating_line.is_some()
+                        || self.state.creating_rect.is_some()
+                        || self.state.creating_circle.is_some();
+                    if !drawing || mid_op || self.vertex_drag.is_some() || !self.state.snapping_enabled
+                    {
+                        return None;
+                    }
+                    let pp = pointer_screen?;
+                    let gp =
+                        sketch_plane_point(&cam, viewport, &vp, &self.state.doc, session, pp)?;
+                    let (sgp, target) =
+                        snap_ground_point(&self.state, session, &frame, &project, gp, &[]);
+                    target.map(|t| (sgp, t))
+                });
+                if let Some((world, target)) = snap {
+                    if let Some(sp) = project(world) {
+                        let color = egui::Color32::from_rgb(120, 215, 230);
+                        painter.circle_stroke(sp, 7.0, egui::Stroke::new(2.0, color));
+                        // Emphasize the actual vertex being snapped to.
+                        if matches!(target, snapping::SnapTarget::Vertex(_)) {
+                            painter.circle_filled(sp, 3.5, color);
+                        }
+                        // Show the constraint a click would add (coincident, midpoint, …).
+                        let icon_rect = egui::Rect::from_min_size(
+                            sp + egui::vec2(9.0, -19.0),
+                            egui::vec2(16.0, 16.0),
+                        );
+                        icons::paint_icon(&painter, ui.ctx(), snap_icon(target), icon_rect, color);
+                    }
+                }
+            }
+        }
+
+        // Hide the view-cube HUD while a viewport screenshot is being captured this frame.
+        let suppress_hud_for_screenshot = self
+            .script
+            .as_ref()
+            .is_some_and(|runner| runner.screenshot_suppresses_hud());
+        if self.state.panes.is_visible(Pane::ViewCube) && !suppress_hud_for_screenshot {
             let command_log = self
                 .state
                 .command_log

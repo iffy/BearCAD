@@ -13,7 +13,7 @@ use crate::script::{parse_key, Instruction, ScriptRunner, SyntheticInput};
 use crate::view_cube::{CubeCornerId, CubeEdgeId};
 
 use crate::actions::AppState;
-use eframe::egui::{self, Key};
+use eframe::egui;
 use mlua::{Lua, MultiValue, Table, UserData, UserDataMethods, Value};
 use std::path::Path;
 
@@ -1062,9 +1062,18 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     api.set(
         "_screenshot",
-        lua.create_function(|lua, path: String| {
+        lua.create_function(|lua, (path, whole_window): (Option<String>, Option<bool>)| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe { tick.exec(Instruction::Screenshot(path)) }
+            let path = path
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty())
+                .unwrap_or_else(|| "screenshot-le3.png".to_string());
+            unsafe {
+                tick.exec(Instruction::Screenshot {
+                    path,
+                    whole_window: whole_window.unwrap_or(false),
+                })
+            }
         })?,
     )?;
 
@@ -1077,22 +1086,21 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let x: f32 = opts.get("x").unwrap_or(0.0);
             let y: f32 = opts.get("y").unwrap_or(0.0);
             unsafe {
-                tick.exec(Instruction::Tool(Tool::Rectangle))?;
-                tick.exec(Instruction::SetDim {
-                    axis: RectAxis::Width,
-                    value: width.to_string(),
-                })?;
-                tick.exec(Instruction::SetDim {
-                    axis: RectAxis::Height,
-                    value: height.to_string(),
-                })?;
-                tick.exec(Instruction::ClickGround {
+                // Make sure we're sketching; default to the ground (XY) construction plane.
+                if tick.state().sketch_session.is_none() {
+                    tick.exec(Instruction::BeginSketch {
+                        face: FaceId::ConstructionPlane(0),
+                    })?;
+                }
+                tick.exec(Instruction::CreateRect {
                     x,
-                    y: y + height,
+                    y,
+                    width,
+                    height,
                 })?;
-                tick.exec(Instruction::Key(Key::Enter))?;
             }
-            let element = SceneElement::Rect(unsafe { tick.state().doc.rects.len().saturating_sub(1) });
+            let element =
+                SceneElement::Rect(unsafe { tick.state().doc.rects.len().saturating_sub(1) });
             apply_optional_name(lua, element, Some(opts))
         })?,
     )?;
@@ -1101,18 +1109,28 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "line",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let length: f32 = opts.get("length")?;
-            let x: f32 = opts.get("x").unwrap_or(0.0);
-            let y: f32 = opts.get("y").unwrap_or(0.0);
+            // Either give explicit endpoints (x,y)-(x1,y1), or origin + length + optional angle.
+            let x0: f32 = opts.get("x").unwrap_or(0.0);
+            let y0: f32 = opts.get("y").unwrap_or(0.0);
+            let (x1, y1) = match (opts.get::<Option<f32>>("x1")?, opts.get::<Option<f32>>("y1")?) {
+                (Some(x1), Some(y1)) => (x1, y1),
+                _ => {
+                    let length: f32 = opts.get("length")?;
+                    let angle_deg: f32 = opts.get("angle").unwrap_or(0.0);
+                    let a = angle_deg.to_radians();
+                    (x0 + length * a.cos(), y0 + length * a.sin())
+                }
+            };
             unsafe {
-                tick.exec(Instruction::Tool(Tool::Line))?;
-                tick.exec(Instruction::SetLineLength {
-                    value: length.to_string(),
-                })?;
-                tick.exec(Instruction::ClickGround { x, y })?;
-                tick.exec(Instruction::Key(Key::Enter))?;
+                if tick.state().sketch_session.is_none() {
+                    tick.exec(Instruction::BeginSketch {
+                        face: FaceId::ConstructionPlane(0),
+                    })?;
+                }
+                tick.exec(Instruction::CreateLine { x0, y0, x1, y1 })?;
             }
-            let element = SceneElement::Line(unsafe { tick.state().doc.lines.len().saturating_sub(1) });
+            let element =
+                SceneElement::Line(unsafe { tick.state().doc.lines.len().saturating_sub(1) });
             apply_optional_name(lua, element, Some(opts))
         })?,
     )?;
@@ -1183,6 +1201,41 @@ mod tests {
             runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
         }
         state
+    }
+
+    #[test]
+    fn lua_rect_creates_rectangle_on_ground_plane() {
+        // A single call should enter a ground-plane sketch and make the rectangle.
+        let state = run_lua(
+            r#"
+            le3.new()
+            le3.rect{ width = 80, height = 50, name = "Box" }
+        "#,
+        );
+        assert_eq!(state.doc.rects.len(), 1);
+        let rect = &state.doc.rects[0];
+        assert!((rect.w - 80.0).abs() < 1e-2, "w={}", rect.w);
+        assert!((rect.h - 50.0).abs() < 1e-2, "h={}", rect.h);
+        assert_eq!(
+            find_element_by_name(&state.doc, "Box"),
+            Some(SceneElement::Rect(0))
+        );
+    }
+
+    #[test]
+    fn lua_line_creates_line_on_ground_plane() {
+        let state = run_lua(
+            r#"
+            le3.new()
+            le3.line{ length = 80, name = "Guide" }
+        "#,
+        );
+        assert_eq!(state.doc.lines.len(), 1);
+        assert!((state.doc.lines[0].length() - 80.0).abs() < 1e-2);
+        assert_eq!(
+            find_element_by_name(&state.doc, "Guide"),
+            Some(SceneElement::Line(0))
+        );
     }
 
     #[test]

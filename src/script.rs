@@ -35,6 +35,20 @@ pub enum Instruction {
     BeginSketch { face: FaceId },
     OpenSketch { sketch: SketchId },
     ExitSketch,
+    /// Create a rectangle directly in the active sketch (face-local mm) with locked dimensions.
+    CreateRect {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    },
+    /// Create a line directly in the active sketch (face-local mm endpoints) with a locked length.
+    CreateLine {
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+    },
     SetElementVisible {
         element: SceneElement,
         visible: Option<bool>,
@@ -136,7 +150,12 @@ pub enum Instruction {
     // Sequencing
     WaitMs(u64),
     WaitFrames(u32),
-    Screenshot(String),
+    /// Save a screenshot. `whole_window` captures the full window; otherwise just the 3D
+    /// viewport (with the view-cube HUD suppressed).
+    Screenshot {
+        path: String,
+        whole_window: bool,
+    },
     Quit,
 }
 
@@ -157,6 +176,15 @@ impl Instruction {
             }
             Instruction::OpenSketch { sketch } => format!("le3.open_sketch({sketch})"),
             Instruction::ExitSketch => "le3.exit_sketch()".to_string(),
+            Instruction::CreateRect {
+                x,
+                y,
+                width,
+                height,
+            } => format!("le3.rect{{ x = {x}, y = {y}, width = {width}, height = {height} }}"),
+            Instruction::CreateLine { x0, y0, x1, y1 } => {
+                format!("le3.line{{ x = {x0}, y = {y0}, x1 = {x1}, y1 = {y1} }}")
+            }
             Instruction::SetElementVisible { element, visible } => {
                 let target = element_lua_ref(*element);
                 let verb = match visible {
@@ -339,7 +367,13 @@ impl Instruction {
             Instruction::Type(text) => format!("le3.type({text:?})"),
             Instruction::WaitMs(ms) => format!("le3.wait_ms({ms})"),
             Instruction::WaitFrames(n) => format!("le3.wait({n})"),
-            Instruction::Screenshot(path) => format!("le3.screenshot({path:?})"),
+            Instruction::Screenshot { path, whole_window } => {
+                if *whole_window {
+                    format!("le3.screenshot({path:?}, true)")
+                } else {
+                    format!("le3.screenshot({path:?})")
+                }
+            }
             Instruction::Quit => "le3.quit()".to_string(),
         }
     }
@@ -959,6 +993,20 @@ struct LuaRunner {
     finished: bool,
 }
 
+/// A pending screenshot request, resolved when egui delivers the captured frame.
+struct ScreenshotRequest {
+    path: String,
+    /// `Some` crops the captured framebuffer to the 3D viewport; `None` keeps the whole window.
+    crop: Option<ScreenshotCrop>,
+}
+
+struct ScreenshotCrop {
+    /// 3D viewport rect in logical points.
+    rect: egui::Rect,
+    /// Logical-to-physical pixel ratio of the captured framebuffer.
+    pixels_per_point: f32,
+}
+
 /// Drives a script through the live application, one step at a time.
 pub struct ScriptRunner {
     instructions: Vec<Instruction>,
@@ -966,7 +1014,7 @@ pub struct ScriptRunner {
     pc: usize,
     wait_until: Option<Instant>,
     wait_frames_remaining: u32,
-    screenshot_pending: Option<String>,
+    screenshot_pending: Option<ScreenshotRequest>,
     waiting_view_transition: bool,
     /// Prevents re-printing an instruction while waiting (e.g. for viewport layout).
     logged_pc: Option<usize>,
@@ -1248,14 +1296,26 @@ impl ScriptRunner {
 
     /// Called when egui delivers a screenshot response for a pending request.
     pub fn on_screenshot(&mut self, image: &egui::ColorImage) -> Result<(), String> {
-        let Some(path) = self.screenshot_pending.take() else {
+        let Some(request) = self.screenshot_pending.take() else {
             return Ok(());
         };
-        save_screenshot(&path, image)?;
+        match request.crop {
+            Some(crop) => {
+                save_screenshot_cropped(&request.path, image, crop.rect, crop.pixels_per_point)?
+            }
+            None => save_screenshot(&request.path, image)?,
+        }
         if self.lua.is_none() {
             self.pc += 1;
         }
         Ok(())
+    }
+
+    /// Whether the view-cube HUD should be hidden this frame for a pending viewport screenshot.
+    pub fn screenshot_suppresses_hud(&self) -> bool {
+        self.screenshot_pending
+            .as_ref()
+            .is_some_and(|request| request.crop.is_some())
     }
 }
 
@@ -1338,6 +1398,24 @@ impl ScriptRunner {
             }
             Instruction::ExitSketch => {
                 state.apply(Action::ExitSketch);
+                StepResult::Continue
+            }
+            Instruction::CreateRect {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                state.apply(Action::CreateRectangle {
+                    x,
+                    y,
+                    width,
+                    height,
+                });
+                StepResult::Continue
+            }
+            Instruction::CreateLine { x0, y0, x1, y1 } => {
+                state.apply(Action::CreateLineSegment { x0, y0, x1, y1 });
                 StepResult::Continue
             }
             Instruction::SetElementVisible { element, visible } => {
@@ -1676,8 +1754,16 @@ impl ScriptRunner {
                     StepResult::Wait
                 }
             }
-            Instruction::Screenshot(path) => {
-                self.screenshot_pending = Some(path);
+            Instruction::Screenshot { path, whole_window } => {
+                let crop = if whole_window {
+                    None
+                } else {
+                    viewport.map(|rect| ScreenshotCrop {
+                        rect,
+                        pixels_per_point: ctx.pixels_per_point(),
+                    })
+                };
+                self.screenshot_pending = Some(ScreenshotRequest { path, crop });
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
                 StepResult::Wait
             }
@@ -1691,14 +1777,55 @@ impl ScriptRunner {
 
 /// Save an egui [`egui::ColorImage`] to a PNG file.
 pub fn save_screenshot(path: &str, image: &egui::ColorImage) -> Result<(), String> {
-    let width = image.width() as u32;
-    let height = image.height() as u32;
     let rgba: Vec<u8> = image
         .pixels
         .iter()
         .flat_map(|c| [c.r(), c.g(), c.b(), c.a()])
         .collect();
-    image::save_buffer(path, &rgba, width, height, image::ColorType::Rgba8)
+    save_rgba(path, image.width() as u32, image.height() as u32, &rgba)
+}
+
+/// Save the portion of `image` covered by `rect` (logical points), scaled by `pixels_per_point`.
+fn save_screenshot_cropped(
+    path: &str,
+    image: &egui::ColorImage,
+    rect: egui::Rect,
+    pixels_per_point: f32,
+) -> Result<(), String> {
+    let (x0, y0, x1, y1) = crop_bounds(image.width(), image.height(), rect, pixels_per_point);
+    let (w, h) = (x1 - x0, y1 - y0);
+    if w == 0 || h == 0 {
+        // Degenerate crop (e.g. viewport rect unknown): fall back to the whole frame.
+        return save_screenshot(path, image);
+    }
+    let mut rgba = Vec::with_capacity(w * h * 4);
+    for y in y0..y1 {
+        let row = y * image.width();
+        for x in x0..x1 {
+            let c = image.pixels[row + x];
+            rgba.extend_from_slice(&[c.r(), c.g(), c.b(), c.a()]);
+        }
+    }
+    save_rgba(path, w as u32, h as u32, &rgba)
+}
+
+/// Physical-pixel `(x0, y0, x1, y1)` crop bounds, clamped to the image.
+fn crop_bounds(
+    img_w: usize,
+    img_h: usize,
+    rect: egui::Rect,
+    pixels_per_point: f32,
+) -> (usize, usize, usize, usize) {
+    let to_px = |v: f32, max: usize| ((v * pixels_per_point).round() as i32).clamp(0, max as i32) as usize;
+    let x0 = to_px(rect.min.x, img_w);
+    let y0 = to_px(rect.min.y, img_h);
+    let x1 = to_px(rect.max.x, img_w).max(x0);
+    let y1 = to_px(rect.max.y, img_h).max(y0);
+    (x0, y0, x1, y1)
+}
+
+fn save_rgba(path: &str, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
+    image::save_buffer(path, rgba, width, height, image::ColorType::Rgba8)
         .map_err(|e| format!("failed to save screenshot to {path}: {e}"))
 }
 
@@ -1816,6 +1943,36 @@ mod tests {
         assert_eq!(parse_key("enter").unwrap(), Key::Enter);
         assert_eq!(parse_key("ESC").unwrap(), Key::Escape);
         assert!(parse_key("notakey").is_err());
+    }
+
+    #[test]
+    fn screenshot_crop_bounds_scale_by_pixels_per_point() {
+        // 800x600 logical window at 2x DPI -> 1600x1200 framebuffer.
+        let rect = egui::Rect::from_min_max(egui::pos2(220.0, 40.0), egui::pos2(800.0, 600.0));
+        let (x0, y0, x1, y1) = crop_bounds(1600, 1200, rect, 2.0);
+        assert_eq!((x0, y0, x1, y1), (440, 80, 1600, 1200));
+    }
+
+    #[test]
+    fn screenshot_crop_bounds_clamp_to_image() {
+        // Viewport extends past the framebuffer; bounds clamp instead of overflowing.
+        let rect = egui::Rect::from_min_max(egui::pos2(-10.0, -10.0), egui::pos2(2000.0, 2000.0));
+        let (x0, y0, x1, y1) = crop_bounds(1600, 1200, rect, 1.0);
+        assert_eq!((x0, y0, x1, y1), (0, 0, 1600, 1200));
+    }
+
+    #[test]
+    fn screenshot_crop_produces_subimage_dimensions() {
+        // 4x4 image, crop the bottom-right 2x2 (logical rect at 1x DPI).
+        let pixels = vec![egui::Color32::WHITE; 16];
+        let image = egui::ColorImage {
+            size: [4, 4],
+            pixels,
+            ..Default::default()
+        };
+        let rect = egui::Rect::from_min_max(egui::pos2(2.0, 2.0), egui::pos2(4.0, 4.0));
+        let (x0, y0, x1, y1) = crop_bounds(image.width(), image.height(), rect, 1.0);
+        assert_eq!((x1 - x0, y1 - y0), (2, 2));
     }
 
     #[test]

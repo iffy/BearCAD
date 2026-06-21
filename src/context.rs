@@ -21,6 +21,18 @@ pub struct ContextInput<'a> {
     pub draw_rect_construction: Option<bool>,
     pub draw_line_construction: Option<bool>,
     pub draw_circle_construction: Option<bool>,
+    /// Whether a sketch is open (snapping only applies inside a sketch).
+    pub in_sketch: bool,
+    /// Current snapping on/off state (shown as a toggle for snapping tools).
+    pub snapping_enabled: bool,
+}
+
+/// Tools that snap while drawing or moving sketch geometry.
+pub fn tool_uses_snapping(tool: Tool) -> bool {
+    matches!(
+        tool,
+        Tool::Select | Tool::Line | Tool::Rectangle | Tool::Circle
+    )
 }
 
 /// Tri-state value for a property shared by multiple targets.
@@ -37,6 +49,8 @@ pub struct ContextPaneContent {
     pub name: Option<NameControl>,
     pub construction: Option<ConstructionControl>,
     pub constraints: Option<Vec<ConstraintPaneRow>>,
+    /// `Some(enabled)` when the current tool snaps; renders an enable/disable toggle.
+    pub snapping: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,6 +74,8 @@ pub struct ConstructionControl {
 
 pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let name = single_nameable_from_selection(input.selection).map(|element| NameControl { element });
+    let snapping =
+        (input.in_sketch && tool_uses_snapping(input.tool)).then_some(input.snapping_enabled);
 
     if let Some(construction) = input.draw_rect_construction {
         return ContextPaneContent {
@@ -69,6 +85,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
                 target_count: 1,
             }),
             constraints: None,
+            snapping,
         };
     }
     if let Some(construction) = input.draw_line_construction {
@@ -79,6 +96,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
                 target_count: 1,
             }),
             constraints: None,
+            snapping,
         };
     }
     if let Some(construction) = input.draw_circle_construction {
@@ -89,6 +107,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
                 target_count: 1,
             }),
             constraints: None,
+            snapping,
         };
     }
 
@@ -102,6 +121,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             target_count: targets.len(),
         }),
         constraints,
+        snapping,
     }
 }
 
@@ -277,6 +297,7 @@ pub fn show_pane(
     on_name_committed: &mut impl FnMut(SceneElement, String),
     on_construction_changed: &mut impl FnMut(bool),
     on_constraint_clicked: &mut impl FnMut(crate::geometric_constraints::GeometricConstraintType),
+    on_snapping_changed: &mut impl FnMut(bool),
 ) {
     ui.heading(PANE_TITLE);
     ui.separator();
@@ -412,6 +433,19 @@ pub fn show_pane(
         }
     }
 
+    if let Some(enabled) = content.snapping {
+        any_control = true;
+        let mut checked = enabled;
+        if ui.checkbox(&mut checked, "Snapping").changed() {
+            on_snapping_changed(checked);
+        }
+        ui.label(
+            egui::RichText::new("Snap to vertices, midpoints, and lines while drawing or moving")
+                .color(egui::Color32::from_gray(140))
+                .size(11.0),
+        );
+    }
+
     if !any_control {
         ui.label(
             egui::RichText::new("Select geometry or draw to edit properties")
@@ -435,6 +469,8 @@ mod tests {
             draw_rect_construction: None,
             draw_line_construction: None,
             draw_circle_construction: None,
+            in_sketch: false,
+            snapping_enabled: true,
         }
     }
 
@@ -447,6 +483,7 @@ mod tests {
                 name: None,
                 construction: None,
                 constraints: None,
+                snapping: None,
             }
         );
     }
@@ -469,6 +506,7 @@ mod tests {
                     target_count: 2,
                 }),
                 constraints: None,
+                snapping: None,
             }
         );
     }
@@ -505,6 +543,8 @@ mod tests {
             draw_rect_construction: Some(true),
             draw_line_construction: None,
             draw_circle_construction: None,
+            in_sketch: false,
+            snapping_enabled: true,
         });
         assert_eq!(
             content,
@@ -515,6 +555,7 @@ mod tests {
                     target_count: 1,
                 }),
                 constraints: None,
+                snapping: None,
             }
         );
     }
@@ -537,6 +578,7 @@ mod tests {
                     target_count: 1,
                 }),
                 constraints: None,
+                snapping: None,
             }
         );
     }
@@ -551,6 +593,8 @@ mod tests {
             draw_rect_construction: Some(false),
             draw_line_construction: None,
             draw_circle_construction: None,
+            in_sketch: false,
+            snapping_enabled: true,
         });
         assert_eq!(
             content.construction.unwrap().value,
@@ -572,6 +616,8 @@ mod tests {
             draw_rect_construction: Some(true),
             draw_line_construction: None,
             draw_circle_construction: None,
+            in_sketch: false,
+            snapping_enabled: true,
         });
         assert_eq!(
             content,
@@ -584,6 +630,7 @@ mod tests {
                     target_count: 1,
                 }),
                 constraints: None,
+                snapping: None,
             }
         );
     }
@@ -598,6 +645,8 @@ mod tests {
             draw_rect_construction: None,
             draw_line_construction: None,
             draw_circle_construction: None,
+            in_sketch: false,
+            snapping_enabled: true,
         });
         assert_eq!(
             content.constraints.as_ref().map(|rows| rows.len()),

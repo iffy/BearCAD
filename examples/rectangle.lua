@@ -1,26 +1,12 @@
--- Example Lua script — sketch on the default XY plane, draw a rectangle, screenshot.
+-- Example — make a rectangle on the default ground plane with a single call.
 -- Run: cargo run -- --script examples/rectangle.lua --exit
 
-le3.import()
+le3.new()
 
-new()
-begin_sketch("construction_plane", 0)
-tool("rectangle")
+-- One call: enters a sketch on the default (XY) ground plane if needed, then creates an
+-- 80 x 50 mm rectangle with locked dimensions and names it.
+le3.rect{ width = 80, height = 50, name = "Preview box" }
 
--- Viewport coordinates are relative to the 3D panel (below the toolbar).
-click(480, 320)
-wait(1)
-move(580, 380)
-wait(1)
-set_dim("width", "80")
-key("tab")
-set_dim("height", "50")
-key("enter")
-exit_sketch()
-
--- Name the committed rectangle for later lookup.
-set_name(element("rect", 0), "Preview box")
-
-wait_ms(100)
-screenshot("rectangle_preview.png")
-quit()
+le3.wait_ms(100)
+le3.screenshot("rectangle_preview.png")
+le3.quit()

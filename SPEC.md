@@ -84,6 +84,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   variants. Convenience primitives (e.g. **rectangle**, drawn as four constrained lines)
   may be offered as tools that emit the underlying entities.
 - Sketches are fully constraint-driven (see §6).
+- **Snapping:** while drawing or dragging sketch geometry, the cursor snaps to nearby
+  vertices, line midpoints, and lines (vertices take priority, then midpoints, then
+  anywhere on a line). Leaving a point on a snap adds the implied constraint (coincident
+  for a vertex or on-line snap, midpoint for a midpoint snap), deduped against existing
+  constraints. A ring marks the active snap. Snapping is toggleable from the context pane
+  and the toggle only appears for tools that snap (Select, Line, Rectangle, Circle) while a
+  sketch is open.
 
 ### 3.2 Solid creation from sketches
 - **Extrude** — blind, symmetric, to-object, with optional draft angle.
@@ -175,6 +182,9 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
 - A parameter has: name, expression (text), evaluated value, unit, and optional
   description.
 - Parameter changes are DAG nodes (§4.1).
+- When a parameter's name or value field is focused in the Parameters pane, the Elements
+  pane highlights every element that uses that parameter (the dimensions referencing it and
+  the geometry they drive), dimming the rest.
 
 #### 5.1.1 Inline parameter creation
 - In **any value input** (GUI field or scripting), prefixing the entry with
@@ -327,6 +337,9 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
 - The API surface is versioned and documented. Exact module layout and function signatures
   are **TBD**, but must be designed so that the GUI's command set maps 1:1 onto API calls
   (this also powers the CLI, §9, and the command palette, §11).
+- `le3.screenshot([path], [whole_window])` captures the 3D viewport only by default (the
+  view-cube HUD is suppressed for that frame); passing `whole_window = true` captures the
+  entire window. With no `path`, the image is written to `screenshot-le3.png`.
 
 ---
 

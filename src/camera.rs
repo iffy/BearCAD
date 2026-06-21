@@ -429,30 +429,46 @@ impl Camera {
         };
     }
 
+    /// Capture the current camera pose (e.g. to restore it later).
+    pub fn capture_view(&mut self) -> HomeView {
+        self.resolve_orbit_state();
+        HomeView {
+            target: self.target,
+            yaw: self.yaw,
+            pitch: self.pitch,
+            distance: self.distance,
+            view_up: self.view_up,
+        }
+    }
+
     /// Animate to the stored home camera pose.
     pub fn start_home_transition(&mut self, duration: f32) {
+        self.start_transition_to_view(self.home, duration);
+    }
+
+    /// Animate to an arbitrary saved camera pose with minimal yaw rotation.
+    pub fn start_transition_to_view(&mut self, view: HomeView, duration: f32) {
         self.resolve_orbit_state();
-        let home = self.home;
         let from_view_up = self.view_up_hint();
-        let to_view_up = home.view_up.unwrap_or(Vec3::Z);
+        let to_view_up = view.view_up.unwrap_or(Vec3::Z);
         let had_custom_up = self.view_up.is_some();
         let animate_view_up =
-            had_custom_up || home.view_up.is_some() || (from_view_up - to_view_up).length() > 1e-3;
+            had_custom_up || view.view_up.is_some() || (from_view_up - to_view_up).length() > 1e-3;
         self.transition = Some(ViewTransition {
             from_yaw: self.yaw,
             from_pitch: self.pitch,
-            delta_yaw: shortest_yaw_delta(self.yaw, home.yaw),
-            to_pitch: home.pitch,
+            delta_yaw: shortest_yaw_delta(self.yaw, view.yaw),
+            to_pitch: view.pitch,
             from_target: self.target,
-            to_target: home.target,
+            to_target: view.target,
             from_distance: self.distance,
-            to_distance: home.distance,
+            to_distance: view.distance,
             from_view_up,
             to_view_up,
             animate_target: true,
             animate_distance: true,
             animate_view_up,
-            clear_view_up_on_complete: home.view_up.is_none() && had_custom_up,
+            clear_view_up_on_complete: view.view_up.is_none() && had_custom_up,
             elapsed: 0.0,
             duration: duration.max(0.01),
         });
@@ -476,7 +492,16 @@ impl Camera {
         let (yaw, pitch) = if current_view.dot(desired_view) > 0.999 {
             (self.yaw, self.pitch)
         } else {
-            Self::view_direction_to_yaw_pitch(view_direction)
+            let (yaw, pitch) = Self::view_direction_to_yaw_pitch(view_direction);
+            // For a near-vertical view (top/bottom sketches, e.g. the ground plane) yaw is
+            // degenerate — it only rolls the view. `view_direction_to_yaw_pitch` forces it to
+            // 0, which makes entry spin the long way around. Keep the current yaw and let
+            // `sketch_view_up` supply the (minimal) roll instead.
+            if desired_view.z.abs() > 0.999 {
+                (self.yaw, pitch)
+            } else {
+                (yaw, pitch)
+            }
         };
         let to_distance = zoom_distance.unwrap_or(self.distance).clamp(2.0, 50_000.0);
         let from_view_up = self.view_up_hint();

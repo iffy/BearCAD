@@ -554,6 +554,7 @@ pub fn selection_context_elements(
 enum RowStyle {
     Selected,
     RelatedConstraint,
+    UsesVariable,
     Invalid,
     Unstable,
     InContext,
@@ -565,6 +566,8 @@ enum RowStyle {
 const RELATED_CONSTRAINT_TEXT: Color32 = Color32::from_rgb(255, 205, 88);
 const INVALID_TEXT: Color32 = Color32::from_rgb(220, 80, 80);
 const UNSTABLE_TEXT: Color32 = Color32::from_rgb(255, 180, 60);
+/// Accent for rows whose dimension uses the focused variable.
+const USES_VARIABLE_TEXT: Color32 = Color32::from_rgb(120, 215, 230);
 
 fn row_is_selected(element: SceneElement, selection: &SceneSelection) -> bool {
     selection.is_selected(element)
@@ -593,11 +596,20 @@ fn row_style(
     related_constraints: &HashSet<usize>,
     style_selection: bool,
     health: &DocumentHealth,
+    highlight_elements: &HashSet<SceneElement>,
 ) -> RowStyle {
     match health.element_status(element) {
         HealthStatus::Invalid => return RowStyle::Invalid,
         HealthStatus::Unstable => return RowStyle::Unstable,
         HealthStatus::Healthy => {}
+    }
+    // A focused variable highlights the elements that use it, dimming the rest.
+    if !highlight_elements.is_empty() {
+        return if highlight_elements.contains(&element) {
+            RowStyle::UsesVariable
+        } else {
+            RowStyle::Faint
+        };
     }
     if !style_selection {
         return RowStyle::Normal;
@@ -617,6 +629,7 @@ fn styled_label(label: &str, style: RowStyle) -> RichText {
     match style {
         RowStyle::Selected | RowStyle::InContext | RowStyle::Normal => RichText::new(label),
         RowStyle::RelatedConstraint => RichText::new(label).color(RELATED_CONSTRAINT_TEXT),
+        RowStyle::UsesVariable => RichText::new(label).color(USES_VARIABLE_TEXT),
         RowStyle::Invalid => RichText::new(label).color(INVALID_TEXT),
         RowStyle::Unstable => RichText::new(label).color(UNSTABLE_TEXT),
         RowStyle::Faint => RichText::new(label).color(Color32::from_gray(120)),
@@ -627,6 +640,7 @@ fn icon_tint_for_row_style(style: RowStyle) -> Color32 {
     match style {
         RowStyle::Selected | RowStyle::InContext | RowStyle::Normal => Color32::WHITE,
         RowStyle::RelatedConstraint => RELATED_CONSTRAINT_TEXT,
+        RowStyle::UsesVariable => USES_VARIABLE_TEXT,
         RowStyle::Invalid => INVALID_TEXT,
         RowStyle::Unstable => UNSTABLE_TEXT,
         RowStyle::Faint => Color32::from_gray(120),
@@ -810,6 +824,7 @@ pub fn show_pane(
     on_edit_plane: &mut impl FnMut(usize),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
+    highlight_elements: &HashSet<SceneElement>,
 ) {
     ui.heading(PANE_TITLE);
     ui.separator();
@@ -835,6 +850,7 @@ pub fn show_pane(
                 on_edit_plane,
                 on_toggle_visibility,
                 on_click_element,
+                highlight_elements,
             );
         }
     });
@@ -854,6 +870,7 @@ fn show_row(
     on_edit_plane: &mut impl FnMut(usize),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
+    highlight_elements: &HashSet<SceneElement>,
 ) {
     let element = scene_element_for_node(node);
     if !element_alive(doc, element) {
@@ -867,6 +884,7 @@ fn show_row(
         related_constraints,
         style_selection,
         health,
+        highlight_elements,
     );
 
     ui.horizontal(|ui| {
@@ -1225,6 +1243,7 @@ mod tests {
                 &related_constraints,
                 style_selection,
                 &health,
+                &HashSet::new(),
             ),
             RowStyle::Selected
         );
@@ -1236,6 +1255,7 @@ mod tests {
                 &related_constraints,
                 style_selection,
                 &health,
+                &HashSet::new(),
             ),
             RowStyle::InContext
         );
@@ -1247,6 +1267,7 @@ mod tests {
                 &related_constraints,
                 style_selection,
                 &health,
+                &HashSet::new(),
             ),
             RowStyle::Faint
         );
@@ -1273,6 +1294,7 @@ mod tests {
                 &related_constraints,
                 false,
                 &DocumentHealth::default(),
+                &HashSet::new(),
             ),
             RowStyle::Normal
         );
@@ -1305,6 +1327,7 @@ mod tests {
                 &related_constraints,
                 false,
                 &DocumentHealth::default(),
+                &HashSet::new(),
             ),
             RowStyle::Normal
         );
@@ -1371,6 +1394,7 @@ mod tests {
                 &related,
                 style_selection,
                 &health,
+                &HashSet::new(),
             ),
             RowStyle::RelatedConstraint
         );
@@ -1382,6 +1406,7 @@ mod tests {
                 &related,
                 style_selection,
                 &health,
+                &HashSet::new(),
             ),
             RowStyle::Faint
         );
@@ -1429,6 +1454,7 @@ mod tests {
                 &related,
                 true,
                 &health,
+                &HashSet::new(),
             ),
             RowStyle::Invalid
         );
@@ -1440,6 +1466,7 @@ mod tests {
                 &related,
                 true,
                 &health,
+                &HashSet::new(),
             ),
             RowStyle::Unstable
         );

@@ -650,7 +650,7 @@ fn project_endpoint_onto_direction(
     Ok(Some((ox + ray_u * t, ov + ray_v * t)))
 }
 
-fn coincident_group(doc: &Document, sketch: SketchId, seed: ConstraintPoint) -> Vec<ConstraintPoint> {
+pub fn coincident_group(doc: &Document, sketch: SketchId, seed: ConstraintPoint) -> Vec<ConstraintPoint> {
     let mut group = vec![seed];
     let mut changed = true;
     while changed {

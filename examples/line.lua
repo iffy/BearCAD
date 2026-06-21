@@ -1,19 +1,11 @@
--- Example Lua script — draw a line on the default sketch plane, screenshot.
+-- Example — make a line on the default ground plane with a single call.
 -- Run: cargo run -- --script examples/line.lua --exit
 
 le3.new()
-le3.begin_sketch("construction_plane", 0)
-le3.tool("line")
 
-le3.click(480, 320)
-le3.wait(2)
-le3.move(580, 360)
-le3.wait(2)
-le3.set_dim("length", "80")
-le3.key("enter")
-le3.exit_sketch()
-
-le3.set_name(le3.element("line", 0), "Guide line")
+-- One call: enters a ground-plane sketch if needed, then creates an 80 mm line (horizontal
+-- by default; pass `angle` in degrees, or explicit `x1`/`y1` endpoints) and names it.
+le3.line{ length = 80, name = "Guide line" }
 assert(le3.find("Guide line") ~= nil)
 
 le3.wait_ms(100)

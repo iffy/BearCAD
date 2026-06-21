@@ -88,6 +88,90 @@ pub fn format_parameter_value_display(doc: &Document, expression: &str) -> Strin
     }
 }
 
+/// Name of the parameter whose name/value field currently holds keyboard focus, if any.
+pub fn focused_parameter_name(ctx: &egui::Context, doc: &Document) -> Option<String> {
+    let focused = ctx.memory(|m| m.focused())?;
+    doc.parameters.iter().enumerate().find_map(|(index, param)| {
+        if param.deleted {
+            return None;
+        }
+        (focused == param_name_id(index) || focused == param_value_id(index))
+            .then(|| param.name.clone())
+    })
+}
+
+fn pane_element_for_constraint_line(line: crate::model::ConstraintLine) -> crate::hierarchy::SceneElement {
+    use crate::hierarchy::SceneElement;
+    use crate::model::ConstraintLine;
+    match line {
+        ConstraintLine::Line(index) => SceneElement::Line(index),
+        ConstraintLine::RectEdge { rect, .. } => SceneElement::Rect(rect),
+    }
+}
+
+fn pane_element_for_constraint_point(
+    point: crate::model::ConstraintPoint,
+) -> crate::hierarchy::SceneElement {
+    use crate::hierarchy::SceneElement;
+    use crate::model::ConstraintPoint;
+    match point {
+        ConstraintPoint::LineEndpoint { line, .. } => SceneElement::Line(line),
+        ConstraintPoint::RectCorner { rect, .. } => SceneElement::Rect(rect),
+        ConstraintPoint::CircleCenter(circle) => SceneElement::Circle(circle),
+    }
+}
+
+/// Elements (constraints and the geometry they drive) whose expression references `name`.
+pub fn elements_using_parameter(
+    doc: &Document,
+    name: &str,
+) -> std::collections::HashSet<crate::hierarchy::SceneElement> {
+    use crate::hierarchy::SceneElement;
+    use crate::model::{ConstraintKind, DistanceTarget};
+    let mut elements = std::collections::HashSet::new();
+    let known = [name];
+    for (index, constraint) in doc.constraints.iter().enumerate() {
+        if constraint.deleted {
+            continue;
+        }
+        if parameter_names_referenced_in_expression(&constraint.expression, &known).is_empty() {
+            continue;
+        }
+        elements.insert(SceneElement::Constraint(index));
+        match constraint.kind {
+            ConstraintKind::Distance { target } => match target {
+                DistanceTarget::LineLength(i) => {
+                    elements.insert(SceneElement::Line(i));
+                }
+                DistanceTarget::RectWidth(i) | DistanceTarget::RectHeight(i) => {
+                    elements.insert(SceneElement::Rect(i));
+                }
+                DistanceTarget::CircleDiameter(i) => {
+                    elements.insert(SceneElement::Circle(i));
+                }
+                DistanceTarget::LineLineDistance { line_a, line_b, .. } => {
+                    elements.insert(pane_element_for_constraint_line(line_a));
+                    elements.insert(pane_element_for_constraint_line(line_b));
+                }
+                DistanceTarget::PointPointDistance { anchor, mover, .. } => {
+                    elements.insert(pane_element_for_constraint_point(anchor));
+                    elements.insert(pane_element_for_constraint_point(mover));
+                }
+                DistanceTarget::PointLineDistance { point, line, .. } => {
+                    elements.insert(pane_element_for_constraint_point(point));
+                    elements.insert(pane_element_for_constraint_line(line));
+                }
+            },
+            ConstraintKind::Angle { line_a, line_b, .. } => {
+                elements.insert(pane_element_for_constraint_line(line_a));
+                elements.insert(pane_element_for_constraint_line(line_b));
+            }
+            _ => {}
+        }
+    }
+    elements
+}
+
 pub fn parameter_field_focused(ctx: &egui::Context, doc: &Document) -> bool {
     ctx.memory(|m| {
         m.focused().is_some_and(|id| {
@@ -936,6 +1020,36 @@ mod tests {
         let mut doc = Document::default();
         add_parameter(&mut doc, "A".to_string(), "5mm".to_string()).unwrap();
         doc
+    }
+
+    #[test]
+    fn elements_using_parameter_includes_constraint_and_geometry() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        add_parameter(&mut doc, "w".to_string(), "20mm".to_string()).unwrap();
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 10.0, 5.0));
+        doc.shape_order.push(ShapeKind::Rect);
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.shape_order.push(ShapeKind::Line);
+        // Rect width uses `w`; the line length does not.
+        add_distance_constraint(&mut doc, sketch, DistanceTarget::RectWidth(0), "w".to_string())
+            .unwrap();
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::LineLength(0),
+            "10mm".to_string(),
+        )
+        .unwrap();
+
+        let using = elements_using_parameter(&doc, "w");
+        let width_constraint =
+            find_distance_constraint(&doc, DistanceTarget::RectWidth(0)).unwrap();
+        assert!(using.contains(&SceneElement::Constraint(width_constraint)));
+        assert!(using.contains(&SceneElement::Rect(0)));
+        assert!(!using.contains(&SceneElement::Line(0)));
     }
 
     #[test]

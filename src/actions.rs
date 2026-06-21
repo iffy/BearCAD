@@ -39,7 +39,7 @@ use crate::constraints::{
 };
 use crate::model::{
     Circle, ConstructionPlane, ConstraintPoint, DimensionTarget, DistanceTarget, Document, FaceId,
-    Line, Rect,
+    Line, LineEnd, Rect,
     RectEdge, ShapeKind,
 };
 use crate::vertex_drag;
@@ -422,6 +422,27 @@ pub enum Action {
     DragLine { u: f32, v: f32 },
     /// Finish an interactive line drag.
     EndLineDrag,
+    /// Create a rectangle directly in the active sketch (face-local mm) with locked dimensions.
+    CreateRectangle {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    },
+    /// Create a line directly in the active sketch (face-local mm) with a locked length.
+    CreateLineSegment {
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+    },
+    /// Enable or disable snapping while drawing/dragging.
+    SetSnapping(bool),
+    /// Add the constraint implied by leaving `point` on a snap target.
+    ApplySnapConstraint {
+        point: ConstraintPoint,
+        target: crate::snapping::SnapTarget,
+    },
 }
 
 /// A toggleable UI pane (SPEC §11.1).
@@ -797,8 +818,22 @@ pub struct AppState {
     pub command_log: Option<std::cell::RefCell<crate::command_log::CommandLog>>,
     /// Reframe sketch geometry once the viewport rect is known (e.g. hierarchy open before first paint).
     pub sketch_reframe_pending: bool,
+    /// Camera pose captured when entering a sketch, restored when exiting it.
+    pub pre_sketch_pose: Option<crate::camera::HomeView>,
     pub document_health: DocumentHealth,
     pub line_drag_session: Option<crate::vertex_drag::LineDragSession>,
+    /// Snap a moved/drawn point to nearby geometry (and add a constraint when left there).
+    pub snapping_enabled: bool,
+    /// The point being dragged and what it is currently snapped to (committed on release).
+    pub active_snap: Option<(ConstraintPoint, crate::snapping::SnapTarget)>,
+    /// Snap targets for the start/end of a line being drawn (applied on commit).
+    pub line_start_snap: Option<crate::snapping::SnapTarget>,
+    pub line_end_snap: Option<crate::snapping::SnapTarget>,
+    /// Snap targets for the origin/opposite corners of a rectangle being drawn.
+    pub rect_origin_snap: Option<crate::snapping::SnapTarget>,
+    pub rect_opposite_snap: Option<crate::snapping::SnapTarget>,
+    /// Snap target for the center of a circle being drawn.
+    pub circle_center_snap: Option<crate::snapping::SnapTarget>,
 }
 
 impl Default for AppState {
@@ -824,8 +859,16 @@ impl Default for AppState {
             status: String::new(),
             command_log: None,
             sketch_reframe_pending: false,
+            pre_sketch_pose: None,
             document_health: DocumentHealth::default(),
             line_drag_session: None,
+            snapping_enabled: true,
+            active_snap: None,
+            line_start_snap: None,
+            line_end_snap: None,
+            rect_origin_snap: None,
+            rect_opposite_snap: None,
+            circle_center_snap: None,
         }
     }
 }
@@ -834,6 +877,26 @@ impl AppState {
     pub fn refresh_document_health(&mut self) {
         self.document_health = recompute_document_health(&self.doc);
     }
+}
+
+/// Corner index (0–3) of `rect` nearest to local point `(u, v)`.
+fn rect_corner_index_at(rect: &Rect, u: f32, v: f32) -> u8 {
+    let corners = [
+        (rect.x, rect.y),
+        (rect.x + rect.w, rect.y),
+        (rect.x + rect.w, rect.y + rect.h),
+        (rect.x, rect.y + rect.h),
+    ];
+    let mut best = 0u8;
+    let mut best_d = f32::INFINITY;
+    for (i, (cu, cv)) in corners.iter().enumerate() {
+        let d = (cu - u).powi(2) + (cv - v).powi(2);
+        if d < best_d {
+            best_d = d;
+            best = i as u8;
+        }
+    }
+    best
 }
 
 fn pane_status(pane: Pane, visible: bool) -> String {
@@ -1184,6 +1247,11 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::CancelOperation => {
+                self.line_start_snap = None;
+                self.line_end_snap = None;
+                self.rect_origin_snap = None;
+                self.rect_opposite_snap = None;
+                self.circle_center_snap = None;
                 if self.editing_committed_dim.take().is_some() {
                     self.status = "Cancelled".to_string();
                 } else if self.creating_rect.take().is_some()
@@ -1266,6 +1334,12 @@ impl AppState {
                     self.doc.rects.push(rect);
                     self.doc.shape_order.push(ShapeKind::Rect);
                     let rect_index = self.doc.rects.len() - 1;
+                    // Map each snapped placement to its corner before width/height solving shifts
+                    // positions (corner indices are stable labels regardless).
+                    let origin_corner =
+                        rect_corner_index_at(&self.doc.rects[rect_index], ou, ov);
+                    let opposite_corner =
+                        rect_corner_index_at(&self.doc.rects[rect_index], eu, ev);
                     let mut constraint_err = None;
                     if cr.user_edited[0] {
                         if let Err(e) = add_distance_constraint(
@@ -1294,15 +1368,40 @@ impl AppState {
                         }
                         self.doc.rects.pop();
                         self.doc.shape_order.pop();
+                        self.rect_origin_snap = None;
+                        self.rect_opposite_snap = None;
                         self.creating_rect = Some(cr);
                         self.status = e.clone();
                         return ActionResult::Err(e);
+                    }
+                    // Pin corners that were left on a snap target.
+                    if let Some(target) = self.rect_origin_snap.take() {
+                        let _ = self.add_snap_constraint(
+                            session.sketch,
+                            ConstraintPoint::RectCorner {
+                                rect: rect_index,
+                                corner: origin_corner,
+                            },
+                            target,
+                        );
+                    }
+                    if let Some(target) = self.rect_opposite_snap.take() {
+                        let _ = self.add_snap_constraint(
+                            session.sketch,
+                            ConstraintPoint::RectCorner {
+                                rect: rect_index,
+                                corner: opposite_corner,
+                            },
+                            target,
+                        );
                     }
                     let rect = self.doc.rects.last().unwrap();
                     let (w, h) = (rect.w, rect.h);
                     self.status = format!("Added rectangle ({w:.1} × {h:.1} mm)");
                     ActionResult::Ok
                 } else {
+                    self.rect_origin_snap = None;
+                    self.rect_opposite_snap = None;
                     self.creating_rect = Some(cr);
                     self.status = "Rectangle too small".to_string();
                     ActionResult::Err("Rectangle too small".to_string())
@@ -1401,11 +1500,34 @@ impl AppState {
                             return ActionResult::Err(e);
                         }
                     }
+                    // Pin endpoints that were left on a snap target.
+                    if let Some(target) = self.line_start_snap.take() {
+                        let _ = self.add_snap_constraint(
+                            session.sketch,
+                            ConstraintPoint::LineEndpoint {
+                                line: line_index,
+                                end: LineEnd::Start,
+                            },
+                            target,
+                        );
+                    }
+                    if let Some(target) = self.line_end_snap.take() {
+                        let _ = self.add_snap_constraint(
+                            session.sketch,
+                            ConstraintPoint::LineEndpoint {
+                                line: line_index,
+                                end: LineEnd::End,
+                            },
+                            target,
+                        );
+                    }
                     let len = self.doc.lines.last().unwrap().length();
                     self.status = format!("Added line ({:.1} mm)", len);
                     ActionResult::Ok
                 } else {
                     self.creating_line = Some(cl);
+                    self.line_start_snap = None;
+                    self.line_end_snap = None;
                     self.status = "Line too short".to_string();
                     ActionResult::Err("Line too short".to_string())
                 }
@@ -1532,15 +1654,25 @@ impl AppState {
                         ) {
                             self.doc.circles.pop();
                             self.doc.shape_order.pop();
+                            self.circle_center_snap = None;
                             self.creating_circle = Some(cc);
                             self.status = e.clone();
                             return ActionResult::Err(e);
                         }
                     }
+                    // Pin the center if it was left on a snap target.
+                    if let Some(target) = self.circle_center_snap.take() {
+                        let _ = self.add_snap_constraint(
+                            session.sketch,
+                            ConstraintPoint::CircleCenter(circle_index),
+                            target,
+                        );
+                    }
                     let diameter = self.doc.circles.last().unwrap().diameter();
                     self.status = format!("Added circle (Ø{diameter:.1} mm)");
                     ActionResult::Ok
                 } else {
+                    self.circle_center_snap = None;
                     self.creating_circle = Some(cc);
                     self.status = "Circle too small".to_string();
                     ActionResult::Err("Circle too small".to_string())
@@ -2088,6 +2220,91 @@ impl AppState {
                 self.line_drag_session = None;
                 ActionResult::Ok
             }
+            Action::CreateRectangle {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                let Some(session) = self.sketch_session else {
+                    return ActionResult::Err("Not in sketch mode".to_string());
+                };
+                if width <= 0.0 || height <= 0.0 {
+                    return ActionResult::Err(
+                        "Rectangle needs positive width and height".to_string(),
+                    );
+                }
+                let rect =
+                    Rect::from_local_corners(session.sketch, x, y, x + width, y + height);
+                self.doc.rects.push(rect);
+                self.doc.shape_order.push(ShapeKind::Rect);
+                let rect_index = self.doc.rects.len() - 1;
+                let mut add_dim = |target, value: f32| {
+                    add_distance_constraint(&mut self.doc, session.sketch, target, value.to_string())
+                };
+                if let Err(e) = add_dim(DistanceTarget::RectWidth(rect_index), width)
+                    .and_then(|_| add_dim(DistanceTarget::RectHeight(rect_index), height))
+                {
+                    while self.doc.shape_order.last() == Some(&ShapeKind::Constraint) {
+                        self.doc.shape_order.pop();
+                        self.doc.constraints.pop();
+                    }
+                    self.doc.rects.pop();
+                    self.doc.shape_order.pop();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                self.refresh_document_health();
+                self.status = format!("Added rectangle ({width:.1} × {height:.1} mm)");
+                ActionResult::Ok
+            }
+            Action::CreateLineSegment { x0, y0, x1, y1 } => {
+                let Some(session) = self.sketch_session else {
+                    return ActionResult::Err("Not in sketch mode".to_string());
+                };
+                let mut line = Line::from_local_endpoints(session.sketch, x0, y0, x1, y1);
+                let length = line.length();
+                if length <= 0.5 {
+                    return ActionResult::Err("Line is too short".to_string());
+                }
+                line.construction = self.draw_construction;
+                self.doc.lines.push(line);
+                self.doc.shape_order.push(ShapeKind::Line);
+                let line_index = self.doc.lines.len() - 1;
+                if let Err(e) = add_distance_constraint(
+                    &mut self.doc,
+                    session.sketch,
+                    DistanceTarget::LineLength(line_index),
+                    length.to_string(),
+                ) {
+                    self.doc.lines.pop();
+                    self.doc.shape_order.pop();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                self.refresh_document_health();
+                self.status = format!("Added line ({length:.1} mm)");
+                ActionResult::Ok
+            }
+            Action::SetSnapping(enabled) => {
+                self.snapping_enabled = enabled;
+                self.active_snap = None;
+                self.status = if enabled {
+                    "Snapping on".to_string()
+                } else {
+                    "Snapping off".to_string()
+                };
+                ActionResult::Ok
+            }
+            Action::ApplySnapConstraint { point, target } => {
+                let Some(sketch) = self.sketch_session.map(|s| s.sketch) else {
+                    return ActionResult::Err("Not in sketch mode".to_string());
+                };
+                match self.add_snap_constraint(sketch, point, target) {
+                    Ok(()) => ActionResult::Ok,
+                    Err(e) => ActionResult::Err(e),
+                }
+            }
             Action::ClickSceneElement { element, additive } => {
                 click_scene_selection(&mut self.scene_selection, element, additive);
                 if let Some((health_status, reason)) =
@@ -2327,13 +2544,47 @@ impl AppState {
         result
     }
 
+    /// Add the constraint implied by leaving a snapped point on its target (deduped).
+    fn add_snap_constraint(
+        &mut self,
+        sketch: SketchId,
+        point: ConstraintPoint,
+        target: crate::snapping::SnapTarget,
+    ) -> Result<(), String> {
+        if crate::snapping::snap_constraint_already_present(&self.doc, point, target) {
+            return Ok(());
+        }
+        let kind = crate::snapping::snap_constraint_kind(point, target);
+        self.doc.constraints.push(crate::model::Constraint {
+            sketch,
+            kind,
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+        self.doc
+            .shape_order
+            .push(crate::model::ShapeKind::Constraint);
+        crate::constraints::solve_document_constraints(&mut self.doc)?;
+        self.refresh_document_health();
+        Ok(())
+    }
+
     fn exit_sketch_session(&mut self) {
+        self.active_snap = None;
         self.sketch_session = None;
         self.sketch_reframe_pending = false;
         self.creating_rect = None;
         self.creating_line = None;
         self.editing_committed_dim = None;
-        self.cam.leave_sketch_mode();
+        // Return to the pre-sketch camera pose; the transition restores world-orbit mode on
+        // completion (its `view_up` is `None`). Fall back to a plain mode-leave if unknown.
+        if let Some(pose) = self.pre_sketch_pose.take() {
+            self.cam.start_transition_to_view(pose, VIEW_TRANSITION_DURATION);
+        } else {
+            self.cam.leave_sketch_mode();
+        }
         self.tool = Tool::Select;
     }
 
@@ -2393,6 +2644,11 @@ impl AppState {
         frame_padding_px: Option<f32>,
     ) -> ActionResult {
         self.sketch_reframe_pending = false;
+        // Remember where the camera was so exiting can return to it. Only capture on the
+        // first entry, so switching between sketches still returns to the pre-sketch pose.
+        if self.sketch_session.is_none() {
+            self.pre_sketch_pose = Some(self.cam.capture_view());
+        }
         if let Some(frame_target) = sketch_camera_target(&self.doc, sketch) {
             let face = self.doc.sketch_face(sketch).unwrap();
             let frame = sketch_frame(&self.doc, face).unwrap();
@@ -2522,6 +2778,64 @@ mod tests {
             viewport: None,
         });
         state.sketch_session.unwrap().sketch
+    }
+
+    #[test]
+    fn apply_snap_constraint_adds_coincident_dedups_and_solves() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state
+            .doc
+            .lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state
+            .doc
+            .lines
+            .push(Line::from_local_endpoints(sketch, 10.3, 0.2, 20.0, 0.0));
+        state.doc.shape_order.push(ShapeKind::Line);
+        state.doc.shape_order.push(ShapeKind::Line);
+        state.refresh_document_health();
+
+        let moved = ConstraintPoint::LineEndpoint {
+            line: 1,
+            end: LineEnd::Start,
+        };
+        let anchor = ConstraintPoint::LineEndpoint {
+            line: 0,
+            end: LineEnd::End,
+        };
+        let target = crate::snapping::SnapTarget::Vertex(anchor);
+
+        let before = state.doc.constraints.len();
+        state.apply(Action::ApplySnapConstraint {
+            point: moved,
+            target,
+        });
+        assert_eq!(state.doc.constraints.len(), before + 1);
+
+        let a = crate::geometric_constraints::point_uv(&state.doc, anchor).unwrap();
+        let m = crate::geometric_constraints::point_uv(&state.doc, moved).unwrap();
+        assert!(
+            (a.0 - m.0).abs() < 1e-2 && (a.1 - m.1).abs() < 1e-2,
+            "snapped endpoints should coincide: {a:?} vs {m:?}"
+        );
+
+        // Applying the same snap again must not add a duplicate constraint.
+        state.apply(Action::ApplySnapConstraint {
+            point: moved,
+            target,
+        });
+        assert_eq!(state.doc.constraints.len(), before + 1);
+    }
+
+    #[test]
+    fn set_snapping_toggles_flag() {
+        let mut state = AppState::default();
+        assert!(state.snapping_enabled);
+        state.apply(Action::SetSnapping(false));
+        assert!(!state.snapping_enabled);
+        state.apply(Action::SetSnapping(true));
+        assert!(state.snapping_enabled);
     }
 
     #[test]
@@ -3405,6 +3719,9 @@ mod tests {
         state.cam.orbit_trackball(egui::vec2(10.0, 6.0));
         state.apply(Action::ExitSketch);
         assert!(state.sketch_session.is_none());
+        // Exit animates back to the pre-sketch pose; world-orbit mode is restored once the
+        // return transition completes.
+        while state.cam.tick_transition(0.05) {}
         assert!(!state.cam.has_custom_view_up());
         assert!(!state.cam.has_orbit_trackball_state());
     }
@@ -3419,13 +3736,8 @@ mod tests {
     }
 
     #[test]
-    fn exit_sketch_preserves_camera_view() {
+    fn exit_sketch_returns_to_pre_sketch_view() {
         let mut state = AppState::default();
-        state.apply(Action::BeginSketch {
-            face: FaceId::ConstructionPlane(0),
-            viewport: None,
-        });
-        while state.cam.tick_transition(0.05) {}
         let viewport =
             egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
         let samples = [
@@ -3433,22 +3745,55 @@ mod tests {
             Vec3::new(40.0, 20.0, 0.0),
             Vec3::new(-30.0, 50.0, 10.0),
         ];
+
+        // Capture the camera before entering the sketch.
         let vp_before = state.cam.view_proj(viewport);
         let screens_before: Vec<_> = samples
             .iter()
             .map(|p| state.cam.project(*p, viewport, &vp_before).unwrap())
             .collect();
 
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        while state.cam.tick_transition(0.05) {}
+        // Entering must actually have moved the camera (otherwise this proves nothing).
+        let vp_sketch = state.cam.view_proj(viewport);
+        let moved = samples.iter().zip(&screens_before).any(|(p, before)| {
+            (state.cam.project(*p, viewport, &vp_sketch).unwrap() - *before).length() > 1.0
+        });
+        assert!(moved, "entering the sketch should reframe the camera");
+
         state.apply(Action::ExitSketch);
+        while state.cam.tick_transition(0.05) {}
 
         let vp_after = state.cam.view_proj(viewport);
         for (p, before) in samples.iter().zip(screens_before) {
             let after = state.cam.project(*p, viewport, &vp_after).unwrap();
             assert!(
                 (before - after).length() < 0.5,
-                "exiting sketch should not move the camera: {before:?} -> {after:?} for {p:?}"
+                "exiting sketch should return to the pre-sketch view: {before:?} -> {after:?} for {p:?}"
             );
         }
+    }
+
+    #[test]
+    fn begin_ground_plane_sketch_does_not_spin_yaw() {
+        // The ground plane is a near-vertical (top-down) view, where yaw is just roll. Entry
+        // must keep the current yaw rather than swinging it to zero (which looks like a spin).
+        let mut state = AppState::default();
+        let yaw_before = state.cam.yaw;
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        while state.cam.tick_transition(0.05) {}
+        assert!(
+            (state.cam.yaw - yaw_before).abs() < 0.02,
+            "ground-plane sketch entry should not change yaw: {yaw_before} -> {}",
+            state.cam.yaw
+        );
     }
 
     #[test]
