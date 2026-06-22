@@ -116,6 +116,15 @@ pub enum Equation {
         diameter: f64,
         weight: f64,
     },
+    /// A point lies on a circle's perimeter: `|p - center| = radius`.
+    PointOnCircle {
+        px: VarId,
+        py: VarId,
+        cx: VarId,
+        cy: VarId,
+        radius: VarId,
+        weight: f64,
+    },
     Pin {
         var: VarId,
         target: f64,
@@ -328,6 +337,18 @@ impl Equation {
                 diameter,
                 weight,
             } => weighted(v(*radius) * 2.0 - diameter, *weight),
+            Equation::PointOnCircle {
+                px,
+                py,
+                cx,
+                cy,
+                radius,
+                weight,
+            } => {
+                let du = v(*px) - v(*cx);
+                let dv = v(*py) - v(*cy);
+                weighted(du.hypot(dv) - v(*radius), *weight)
+            }
             Equation::Pin { var, target, weight } => weighted(v(*var) - target, *weight),
         }
     }
@@ -577,6 +598,28 @@ impl Equation {
                 weight,
             } => {
                 push(accum, *radius, 2.0, *weight);
+            }
+            Equation::PointOnCircle {
+                px,
+                py,
+                cx,
+                cy,
+                radius,
+                weight,
+            } => {
+                let du = v(*px) - v(*cx);
+                let dv = v(*py) - v(*cy);
+                let len = du.hypot(dv);
+                let (nu, nv) = if len < 1e-12 {
+                    (1.0, 0.0)
+                } else {
+                    (du / len, dv / len)
+                };
+                push(accum, *px, nu, *weight);
+                push(accum, *py, nv, *weight);
+                push(accum, *cx, -nu, *weight);
+                push(accum, *cy, -nv, *weight);
+                push(accum, *radius, -1.0, *weight);
             }
             Equation::Pin { var, target: _, weight } => {
                 push(accum, *var, 1.0, *weight);

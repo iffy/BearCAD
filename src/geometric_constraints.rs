@@ -77,6 +77,8 @@ enum ConstraintRole {
 pub(crate) enum ConstraintRef {
     Line(ConstraintLine),
     Point(ConstraintPoint),
+    /// A whole circle (its perimeter), for point-on-circle coincidence.
+    Circle(usize),
 }
 
 /// One row in the constraint-tool context pane.
@@ -121,7 +123,7 @@ fn missing_for_kind(kind: GeometricConstraintType) -> Vec<&'static str> {
         GeometricConstraintType::Parallel | GeometricConstraintType::Perpendicular => {
             vec!["line", "line"]
         }
-        GeometricConstraintType::Coincident => vec!["point", "point or line"],
+        GeometricConstraintType::Coincident => vec!["point", "point, line, or circle"],
         GeometricConstraintType::Midpoint => vec!["point", "line"],
         GeometricConstraintType::Vertical | GeometricConstraintType::Horizontal => vec!["line"],
     }
@@ -136,8 +138,30 @@ fn match_kind(
             &[&[ConstraintRole::Line, ConstraintRole::Line][..]]
         }
         GeometricConstraintType::Coincident => {
-            if refs.iter().filter(|r| matches!(r, ConstraintRef::Point(_))).count() >= 2 {
+            let points = refs
+                .iter()
+                .filter(|r| matches!(r, ConstraintRef::Point(_)))
+                .count();
+            let circles = refs
+                .iter()
+                .filter(|r| matches!(r, ConstraintRef::Circle(_)))
+                .count();
+            let lines = refs
+                .iter()
+                .filter(|r| matches!(r, ConstraintRef::Line(_)))
+                .count();
+            if points >= 2 {
                 return Some((true, Vec::new()));
+            }
+            // A point on a circle's perimeter (point-on-circle coincidence).
+            if circles > 0 {
+                return if points == 1 && circles == 1 && lines == 0 {
+                    Some((true, Vec::new()))
+                } else if points == 0 && circles == 1 && lines == 0 {
+                    Some((false, vec!["point"]))
+                } else {
+                    None
+                };
             }
             &[
                 &[ConstraintRole::Point, ConstraintRole::Point][..],
@@ -265,6 +289,7 @@ pub fn scene_element_to_constraint_ref(element: SceneElement) -> Option<Constrai
             edge,
         })),
         SceneElement::Point(point) => Some(ConstraintRef::Point(point)),
+        SceneElement::Circle(index) => Some(ConstraintRef::Circle(index)),
         _ => None,
     }
 }
@@ -280,6 +305,7 @@ fn constraint_ref_sort_key(reference: ConstraintRef) -> (u8, usize, u8, u8) {
         }
         ConstraintRef::Point(ConstraintPoint::RectCorner { rect, corner }) => (3, rect, corner, 0),
         ConstraintRef::Point(ConstraintPoint::CircleCenter(i)) => (4, i, 0, 0),
+        ConstraintRef::Circle(i) => (5, i, 0, 0),
     }
 }
 
@@ -356,6 +382,13 @@ fn build_constraint_kind(
             _ => None,
         })
         .collect();
+    let circles: Vec<usize> = refs
+        .iter()
+        .filter_map(|r| match r {
+            ConstraintRef::Circle(index) => Some(*index),
+            _ => None,
+        })
+        .collect();
 
     match kind {
         GeometricConstraintType::Parallel => Ok(ConstraintKind::Parallel {
@@ -374,13 +407,19 @@ fn build_constraint_kind(
                     a: ConstraintEntity::Point(points[0]),
                     b: ConstraintEntity::Point(points[1]),
                 })
+            } else if points.len() == 1 && !circles.is_empty() {
+                Ok(ConstraintKind::Coincident {
+                    a: ConstraintEntity::Point(points[0]),
+                    b: ConstraintEntity::Circle(circles[0]),
+                })
             } else if points.len() == 1 && !lines.is_empty() {
                 Ok(ConstraintKind::Coincident {
                     a: ConstraintEntity::Point(points[0]),
                     b: ConstraintEntity::Line(lines[0]),
                 })
             } else {
-                Err("Coincident constraint requires two points or a point and a line".to_string())
+                Err("Coincident requires two points, a point and a line, or a point and a circle"
+                    .to_string())
             }
         }
         GeometricConstraintType::Midpoint => Ok(ConstraintKind::Midpoint {
@@ -474,6 +513,16 @@ fn validate_entity_ref(
     match entity {
         ConstraintEntity::Line(line) => validate_line_ref(doc, sketch, line),
         ConstraintEntity::Point(point) => validate_point_ref(doc, sketch, point),
+        ConstraintEntity::Circle(circle) => {
+            let entity = doc
+                .circles
+                .get(circle)
+                .ok_or_else(|| format!("Circle {circle} not found"))?;
+            if entity.sketch != sketch {
+                return Err(format!("Circle {circle} is not in sketch {sketch}"));
+            }
+            Ok(())
+        }
     }
 }
 
@@ -787,7 +836,7 @@ pub fn set_point_uv(doc: &mut Document, point: ConstraintPoint, u: f32, v: f32) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Document, FaceId, Line, Rect, ShapeKind};
+    use crate::model::{Circle, Document, FaceId, Line, Rect, ShapeKind};
     use crate::selection::{click_scene_selection, SceneSelection};
 
     const EPS: f32 = 1e-2;
@@ -1067,6 +1116,55 @@ mod tests {
         .unwrap();
         assert!((doc.lines[1].x0 - 5.0).abs() < EPS);
         assert!(doc.lines[1].y0.abs() < EPS);
+    }
+
+    #[test]
+    fn coincident_point_on_circle_perimeter() {
+        let (mut doc, sketch) = sketch_doc();
+        // Circle radius 10 centered at origin.
+        doc.circles
+            .push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
+        // A line whose start sits inside the circle.
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 3.0, 1.0, 20.0, 20.0));
+        doc.shape_order.push(ShapeKind::Circle);
+        doc.shape_order.push(ShapeKind::Line);
+
+        let point = ConstraintPoint::LineEndpoint {
+            line: 0,
+            end: LineEnd::Start,
+        };
+        let mut sel = SceneSelection::default();
+        click_scene_selection(&mut sel, SceneElement::Point(point), false);
+        click_scene_selection(&mut sel, SceneElement::Circle(0), true);
+
+        // Selecting a point and a circle enables Coincident.
+        let rows = constraint_pane_rows(&sel);
+        assert!(rows
+            .iter()
+            .any(|row| row.kind == GeometricConstraintType::Coincident && row.enabled));
+
+        add_geometric_constraint_from_selection(
+            &mut doc,
+            sketch,
+            GeometricConstraintType::Coincident,
+            &sel,
+        )
+        .unwrap();
+
+        let (pu, pv) = point_uv(&doc, point).unwrap();
+        assert!(
+            (pu.hypot(pv) - 10.0).abs() < EPS,
+            "point should land on the perimeter (r=10), distance={}",
+            pu.hypot(pv)
+        );
+        assert!(matches!(
+            doc.constraints[0].kind,
+            ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(_),
+                b: ConstraintEntity::Circle(0),
+            }
+        ));
     }
 
     #[test]

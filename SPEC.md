@@ -243,7 +243,9 @@ modeled on SolveSpace (https://solvespace.com).
 - **Geometric types (v1):**
   - **Parallel** — `line`, `line`
   - **Perpendicular** — `line`, `line`
-  - **Coincident** — `point`, `point` or `point`, `line`
+  - **Coincident** — `point`, `point`; `point`, `line`; or `point`, `circle` (point on the
+    circle's perimeter)
+  - **Midpoint** — `point`, `line`
   - **Vertical** — `line`
   - **Horizontal** — `line`
 - **Scripting:** `tool constraint`; `select point line 0 start`; `add_geometric_constraint
@@ -340,6 +342,10 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
 - `le3.screenshot([path], [whole_window])` captures the 3D viewport only by default (the
   view-cube HUD is suppressed for that frame); passing `whole_window = true` captures the
   entire window. With no `path`, the image is written to `screenshot-le3.png`.
+- Geometry-creation helpers are single calls that create the thing directly (no simulated
+  mouse/keyboard) and enter a ground-plane sketch if none is open: `le3.rect{ width, height,
+  x?, y?, name? }` and `le3.line{ length, angle?, x?, y?, name? }` (or explicit endpoints
+  `le3.line{ x, y, x1, y1 }`).
 
 ---
 

@@ -490,6 +490,13 @@ fn project_drag_uv(
     u: f32,
     v: f32,
 ) -> Result<(f32, f32), String> {
+    // A point pinned to a line's midpoint or onto a line must not be draggable off it; project
+    // the cursor onto the constrained position so the drag pin can't break the constraint.
+    if !matches!(dragged, ConstraintPoint::RectCorner { .. }) {
+        if let Some((pu, pv)) = project_onto_anchoring_constraint(doc, dragged, u, v)? {
+            return Ok((pu, pv));
+        }
+    }
     match dragged {
         ConstraintPoint::RectCorner { rect, corner } => {
             return project_rect_corner_drag(doc, rect, corner, u, v);
@@ -544,6 +551,61 @@ fn project_drag_uv(
             }
         }
     }
+}
+
+/// If `dragged` is pinned to a line's midpoint or onto a line, return the constrained position
+/// (the midpoint, or the perpendicular foot on the line) so the drag can't pull it off.
+fn project_onto_anchoring_constraint(
+    doc: &Document,
+    dragged: ConstraintPoint,
+    u: f32,
+    v: f32,
+) -> Result<Option<(f32, f32)>, String> {
+    for constraint in &doc.constraints {
+        if constraint.deleted {
+            continue;
+        }
+        match constraint.kind {
+            ConstraintKind::Midpoint { point, line } if point == dragged => {
+                let ((x0, y0), (x1, y1)) = line_uv_endpoints(doc, line)?;
+                return Ok(Some(((x0 + x1) * 0.5, (y0 + y1) * 0.5)));
+            }
+            ConstraintKind::Coincident { a, b } => {
+                let line = match (a, b) {
+                    (ConstraintEntity::Point(p), ConstraintEntity::Line(l))
+                    | (ConstraintEntity::Line(l), ConstraintEntity::Point(p))
+                        if p == dragged =>
+                    {
+                        Some(l)
+                    }
+                    _ => None,
+                };
+                if let Some(line) = line {
+                    return Ok(Some(project_point_onto_line_uv(doc, line, u, v)?));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
+/// Perpendicular foot of `(u, v)` on the infinite line through `line` (sketch units).
+fn project_point_onto_line_uv(
+    doc: &Document,
+    line: ConstraintLine,
+    u: f32,
+    v: f32,
+) -> Result<(f32, f32), String> {
+    let ((x0, y0), (x1, y1)) = line_uv_endpoints(doc, line)?;
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let len_sq = dx * dx + dy * dy;
+    if len_sq < 1e-12 {
+        return Ok((u, v));
+    }
+    let t = ((u - x0) * dx + (v - y0) * dy) / len_sq;
+    Ok((x0 + dx * t, y0 + dy * t))
 }
 
 /// The unit direction a line's `start -> end` must have because of a direction constraint
@@ -683,7 +745,7 @@ pub fn coincident_group(doc: &Document, sketch: SketchId, seed: ConstraintPoint)
 fn entity_point(entity: ConstraintEntity) -> Option<ConstraintPoint> {
     match entity {
         ConstraintEntity::Point(point) => Some(point),
-        ConstraintEntity::Line(_) => None,
+        ConstraintEntity::Line(_) | ConstraintEntity::Circle(_) => None,
     }
 }
 
@@ -2073,6 +2135,50 @@ mod tests {
             "angle drifted from {} to {} deg",
             angle_before.to_degrees(),
             angle_after.to_degrees()
+        );
+    }
+
+    /// Regression: a line vertex pinned to a rect edge midpoint must stay on that midpoint
+    /// when dragged (the drag pin must not override the midpoint constraint).
+    #[test]
+    fn drag_midpoint_constrained_vertex_stays_on_midpoint() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 40.0, 20.0));
+        // Bottom edge midpoint is (20, 0). Put the line's start near it.
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 20.0, 0.0, 30.0, 30.0));
+        doc.shape_order.push(crate::model::ShapeKind::Rect);
+        doc.shape_order.push(crate::model::ShapeKind::Line);
+
+        let point = ConstraintPoint::LineEndpoint {
+            line: 0,
+            end: LineEnd::Start,
+        };
+        let bottom = ConstraintLine::RectEdge {
+            rect: 0,
+            edge: RectEdge::Bottom,
+        };
+        let mut sel = SceneSelection::default();
+        click_scene_selection(&mut sel, SceneElement::Point(point), false);
+        click_scene_selection(&mut sel, SceneElement::RectEdge(0, RectEdge::Bottom), true);
+        add_geometric_constraint_from_selection(
+            &mut doc,
+            sketch,
+            GeometricConstraintType::Midpoint,
+            &sel,
+        )
+        .unwrap();
+
+        // Try to pull the vertex up and away from the edge.
+        drag_point(&mut doc, sketch, point, 35.0, 25.0).unwrap();
+
+        let (pu, pv) = point_uv(&doc, point).unwrap();
+        let ((x0, y0), (x1, y1)) = line_uv_endpoints(&doc, bottom).unwrap();
+        let mid = ((x0 + x1) * 0.5, (y0 + y1) * 0.5);
+        assert!(
+            (pu - mid.0).abs() < EPS && (pv - mid.1).abs() < EPS,
+            "vertex should stay on the edge midpoint {mid:?}, got ({pu},{pv})"
         );
     }
 

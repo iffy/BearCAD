@@ -336,6 +336,7 @@ pub fn constraint_entity_alive(doc: &Document, entity: ConstraintEntity) -> bool
     match entity {
         ConstraintEntity::Point(point) => constraint_point_alive(doc, point),
         ConstraintEntity::Line(line) => constraint_line_alive(doc, line),
+        ConstraintEntity::Circle(circle) => circle_alive(doc, circle),
     }
 }
 

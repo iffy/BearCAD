@@ -552,6 +552,8 @@ pub enum ConstraintKind {
 pub enum ConstraintEntity {
     Point(ConstraintPoint),
     Line(ConstraintLine),
+    /// A circle's perimeter (point-on-circle when paired with a point).
+    Circle(usize),
 }
 
 /// A sketch constraint (distance is the first supported kind).

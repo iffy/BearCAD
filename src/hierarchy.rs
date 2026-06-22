@@ -473,6 +473,7 @@ fn constraint_entity_touches_element(entity: ConstraintEntity, element: SceneEle
     match entity {
         ConstraintEntity::Point(point) => constraint_point_touches_element(point, element),
         ConstraintEntity::Line(line) => constraint_line_touches_element(line, element),
+        ConstraintEntity::Circle(circle) => element == SceneElement::Circle(circle),
     }
 }
 

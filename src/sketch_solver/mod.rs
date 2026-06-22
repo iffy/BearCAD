@@ -241,6 +241,26 @@ mod tests {
     }
 
     #[test]
+    fn point_on_circle_moves_point_to_perimeter() {
+        let mut sys = System::new();
+        let (cx, cy) = sys.add_point(0.0, 0.0, true); // center fixed
+        let radius = sys.add_var(10.0, true); // radius fixed
+        let (px, py) = sys.add_point(3.0, 1.0, false); // starts inside
+        sys.add_equation(Equation::PointOnCircle {
+            px,
+            py,
+            cx,
+            cy,
+            radius,
+            weight: DEFAULT_WEIGHT,
+        });
+        let report = solve(&mut sys);
+        assert!(report.success, "residual={}", report.residual_norm);
+        let dist = (sys.value(px) * sys.value(px) + sys.value(py) * sys.value(py)).sqrt();
+        assert!((dist - 10.0).abs() < 1e-4, "dist={dist}");
+    }
+
+    #[test]
     fn fixed_variable_honored() {
         let mut sys = System::new();
         let (x0, y0) = sys.add_point(3.0, 4.0, true);

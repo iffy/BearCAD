@@ -693,8 +693,36 @@ impl SketchBridge {
                     weight: DEFAULT_WEIGHT,
                 });
             }
-            (ConstraintEntity::Line(_), ConstraintEntity::Line(_)) => {
-                return Err("Coincident line-line is not supported".to_string());
+            (ConstraintEntity::Point(point), ConstraintEntity::Circle(circle))
+            | (ConstraintEntity::Circle(circle), ConstraintEntity::Point(point)) => {
+                let center = ConstraintPoint::CircleCenter(circle);
+                self.hold_point(center, REFERENCE_HOLD_WEIGHT)?;
+                let (px, py) = self.point_vars(point)?;
+                let (cx, cy) = self.point_vars(center)?;
+                let radius = self
+                    .circle_radius
+                    .get(&circle)
+                    .copied()
+                    .ok_or_else(|| format!("Circle {circle} not in solver graph"))?;
+                // The circle is the reference: hold its radius so the point moves to the
+                // perimeter rather than the circle shrinking to meet the point.
+                if self.hold_references {
+                    self.hold_var(radius, REFERENCE_HOLD_WEIGHT);
+                }
+                self.system.add_equation(Equation::PointOnCircle {
+                    px,
+                    py,
+                    cx,
+                    cy,
+                    radius,
+                    weight: DEFAULT_WEIGHT,
+                });
+            }
+            (ConstraintEntity::Line(_), ConstraintEntity::Line(_))
+            | (ConstraintEntity::Circle(_), ConstraintEntity::Circle(_))
+            | (ConstraintEntity::Line(_), ConstraintEntity::Circle(_))
+            | (ConstraintEntity::Circle(_), ConstraintEntity::Line(_)) => {
+                return Err("Unsupported coincident entity pair".to_string());
             }
         }
         Ok(())

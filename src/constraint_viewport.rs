@@ -9,7 +9,7 @@ use crate::geometric_constraints::line_uv_endpoints;
 use crate::hierarchy::{selection_related_constraints, ElementVisibility, SceneElement};
 use crate::icons::{icon_for_constraint_kind, paint_icon, IconId};
 use crate::model::{
-    ConstraintEntity, ConstraintKind, ConstraintLine, Document, SketchId,
+    ConstraintEntity, ConstraintKind, ConstraintLine, ConstraintPoint, Document, SketchId,
 };
 use crate::selection::SceneSelection;
 use eframe::egui::{self, Color32, Context, Painter, Pos2, Rect};
@@ -79,6 +79,9 @@ fn entity_world_position(doc: &Document, entity: ConstraintEntity) -> Option<Vec
             let (a, b) = constraint_line_world_endpoints(doc, line)?;
             Some(midpoint(a, b))
         }
+        ConstraintEntity::Circle(circle) => {
+            point_world_position(doc, ConstraintPoint::CircleCenter(circle))
+        }
     }
 }
 
@@ -118,20 +121,14 @@ fn build_graphic(doc: &Document, index: usize) -> Option<ConstraintViewportGraph
                 } else {
                     vec![]
                 },
-                icons: vec![
-                    ConstraintIconPlacement {
-                        constraint_index: index,
-                        world: pa,
-                        icon,
-                        offset_toward: Some(pb),
-                    },
-                    ConstraintIconPlacement {
-                        constraint_index: index,
-                        world: pb,
-                        icon,
-                        offset_toward: Some(pa),
-                    },
-                ],
+                // One icon for the one constraint, placed at the coincidence (nudged off the
+                // vertex toward the other entity when they are at distinct positions).
+                icons: vec![ConstraintIconPlacement {
+                    constraint_index: index,
+                    world: pa,
+                    icon,
+                    offset_toward: Some(pb),
+                }],
             })
         }
         ConstraintKind::Midpoint { point, line } => {
@@ -384,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn coincident_constraint_places_icons_at_both_points() {
+    fn coincident_constraint_places_single_icon() {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
@@ -409,7 +406,8 @@ mod tests {
             deleted: false,
         });
         let graphic = build_graphic(&doc, 0).unwrap();
-        assert_eq!(graphic.icons.len(), 2);
+        // One constraint → one icon (not one per endpoint).
+        assert_eq!(graphic.icons.len(), 1);
         assert!(graphic.icons[0].offset_toward.is_some());
     }
 
