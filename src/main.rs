@@ -25,6 +25,7 @@ mod dimensions;
 mod document_health;
 mod document_lifecycle;
 mod expression_input;
+mod extrude;
 mod face;
 mod gpu_view_cube;
 mod gpu_viewport;
@@ -50,7 +51,8 @@ mod view_cube;
 
 use actions::{
     angle_gizmo_constraint_for_edit, constraint_is_angle, constraint_is_circle_diameter, Action,
-    AppState, CreatingCircle, CreatingConstructionPlane, CreatingLine, CreatingRect,
+    AppState, CreatingCircle, CreatingConstructionPlane, CreatingExtrusion, CreatingLine,
+    CreatingRect,
     DimEditTarget, DimLabelTarget, Pane, RectAxis, SketchSession, Tool,
 };
 use constraint_viewport::{
@@ -68,7 +70,7 @@ use selection::additive_click_modifiers;
 use construction::{
     angle_from_axis_plane_hit, axis_angle_handle, axis_gizmo_hit, axis_normal,
     axis_offset_handle, draw_axis_plane_gizmo, draw_circle_face_highlight, draw_offset_gizmo,
-    draw_quad_face_highlight,
+    draw_polygon_face_highlight, draw_quad_face_highlight,
     nearest_sketch_line_in_sketch, nearest_sketch_point_in_sketch, offset_from_normal_drag,
     offset_gizmo_hit, offset_handle,
     parent_from_pick_target, plane_corners, point_world_position, preview_plane_edit_dependents,
@@ -240,6 +242,12 @@ struct AngleGizmoDrag {
     constraint_id: DimLabelTarget,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ExtrudeGizmoDrag {
+    start_screen: egui::Pos2,
+    start_distance: f32,
+}
+
 struct VertexDrag {
     point: ConstraintPoint,
 }
@@ -271,6 +279,9 @@ struct App {
     dim_label_drag: Option<DimLabelDrag>,
     angle_gizmo_drag: Option<AngleGizmoDrag>,
     vertex_drag: Option<VertexDrag>,
+    extrude_gizmo_drag: Option<ExtrudeGizmoDrag>,
+    /// Object the extrude gizmo is currently snapped to (applied on release).
+    pending_extrude_target: Option<model::ExtrudeTarget>,
     launch_maximize_frames_remaining: u8,
     gpu_viewport: bool,
     gpu_view_cube: bool,
@@ -316,6 +327,8 @@ impl App {
             native_menu,
             dim_label_drag: None,
             angle_gizmo_drag: None,
+            extrude_gizmo_drag: None,
+            pending_extrude_target: None,
             vertex_drag: None,
             launch_maximize_frames_remaining: initial_launch_maximize_frames(),
             gpu_viewport: gpu_viewport::install(cc),
@@ -482,6 +495,17 @@ impl App {
                 self.state.apply(Action::SetTool(Tool::Dimension));
             }
 
+            if self.state.creating_rect.is_none()
+                && self.state.creating_line.is_none()
+                && self.state.creating_circle.is_none()
+                && self.state.creating_plane.is_none()
+                && ctx.input(|i| i.key_pressed(egui::Key::E))
+            {
+                if self.state.tool != Tool::Extrude {
+                    self.state.apply(Action::SetTool(Tool::Extrude));
+                }
+            }
+
             if ctx.input(|i| i.key_pressed(egui::Key::X)) {
                 self.state.apply(Action::ToggleConstruction);
             }
@@ -556,6 +580,193 @@ impl App {
                     self.state.status = format!("Script error: {}", runner.error.as_deref().unwrap_or(""));
                 }
             }
+        }
+    }
+
+    /// Extrude tool interaction: click faces to toggle inclusion, and drag the normal gizmo
+    /// (rendered in the GPU scene) to set the distance, snapping to objects under the cursor.
+    fn handle_extrude_tool(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+    ) {
+        let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+        let primary_down = ui.input(|i| i.pointer.primary_down());
+        let primary_released = ui.input(|i| i.pointer.primary_released());
+
+        // Snapshot the pending extrusion so we can mutate state without holding a borrow.
+        let pending = self
+            .state
+            .creating_extrusion
+            .as_ref()
+            .filter(|ce| !ce.faces.is_empty())
+            .map(|ce| (ce.faces.clone(), ce.evaluated_distance(&self.state.doc)));
+
+        // 1) Gizmo handle drag → distance (with extrude-to-object snapping).
+        let mut gizmo_active = false;
+        if let Some((faces, distance)) = &pending {
+            if let Some((origin, normal)) = extrude::faces_anchor(&self.state.doc, faces) {
+                let handle_offset = extrude_gizmo_display_offset(*distance);
+                let hovered = pointer_screen.is_some_and(|pp| {
+                    construction::offset_gizmo_hit(pp, project, origin, normal, handle_offset)
+                });
+                if self.extrude_gizmo_drag.is_none() && primary_pressed && hovered {
+                    if let Some(pp) = pointer_screen {
+                        self.extrude_gizmo_drag = Some(ExtrudeGizmoDrag {
+                            start_screen: pp,
+                            start_distance: *distance,
+                        });
+                        // Grabbing the gizmo hands distance control back to it,
+                        // so the typed text resyncs to the dragged value.
+                        if let Some(ce) = self.state.creating_extrusion.as_mut() {
+                            ce.user_edited = false;
+                        }
+                        // Release the distance field's keyboard focus so a subsequent
+                        // keystroke overwrites the dragged value rather than appending to it.
+                        ui.ctx().memory_mut(|m| {
+                            m.surrender_focus(egui::Id::new(EXTRUDE_DISTANCE_FIELD_ID))
+                        });
+                    }
+                }
+                if let Some(drag) = self.extrude_gizmo_drag {
+                    gizmo_active = true;
+                    if primary_down {
+                        if let Some(pp) = pointer_screen {
+                            if let Some((target, dist)) = pick_extrude_target(
+                                pp,
+                                project,
+                                &self.state.doc,
+                                origin,
+                                normal,
+                                faces,
+                            ) {
+                                self.pending_extrude_target = Some(target);
+                                self.state.apply(Action::SetExtrudeDistance { distance: dist });
+                            } else {
+                                self.pending_extrude_target = None;
+                                let new_distance = construction::offset_from_normal_drag(
+                                    origin,
+                                    normal,
+                                    project,
+                                    drag.start_distance,
+                                    drag.start_screen,
+                                    pp,
+                                );
+                                self.state
+                                    .apply(Action::SetExtrudeDistance { distance: new_distance });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if primary_released {
+            if self.extrude_gizmo_drag.is_some() {
+                let target = self.pending_extrude_target.take();
+                self.state.apply(Action::SetExtrudeTarget { target });
+            }
+            self.extrude_gizmo_drag = None;
+        }
+        if gizmo_active {
+            return;
+        }
+
+        // 2) Click toggles the face under the cursor (highlighted via the GPU hover).
+        if primary_pressed {
+            if let Some(pp) = pointer_screen {
+                if let Some(face) = pick_extrude_face(pp, project, &self.state.doc) {
+                    self.state.apply(Action::ToggleExtrudeFace { face });
+                }
+            }
+        }
+    }
+
+    /// Floating distance field for the in-progress extrusion (Enter commits).
+    fn show_extrude_distance_input(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    ) {
+        let pos = {
+            let Some(ce) = self.state.creating_extrusion.as_ref() else {
+                return;
+            };
+            if ce.faces.is_empty() {
+                return;
+            }
+            let handle_offset = extrude_gizmo_display_offset(ce.evaluated_distance(&self.state.doc));
+            extrude::faces_anchor(&self.state.doc, &ce.faces)
+                .map(|(o, n)| construction::offset_handle(o, n, handle_offset))
+                .and_then(project)
+                .map(|p| p + egui::vec2(14.0, -12.0))
+        };
+        let Some(pos) = pos else {
+            return;
+        };
+        let ctx = ui.ctx();
+        let id = egui::Id::new(EXTRUDE_DISTANCE_FIELD_ID);
+        let mut commit = false;
+
+        // Enter commits the extrusion even when the distance field is unfocused (e.g.
+        // while driving depth with the pull handle), matching the other sketch tools.
+        if !ctx.memory(|m| m.has_focus(id)) && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+            self.state.apply(Action::CommitExtrusion);
+            return;
+        }
+
+        // Typing a number while the field is unfocused grabs focus and overwrites
+        // the current value, so the user can just start typing a depth.
+        if !ctx.memory(|m| m.has_focus(id)) {
+            let typed: String = ctx.input(|i| {
+                i.events
+                    .iter()
+                    .filter_map(|e| match e {
+                        egui::Event::Text(t) => Some(t.as_str()),
+                        _ => None,
+                    })
+                    .collect()
+            });
+            let typed: String = typed
+                .chars()
+                .filter(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+                .collect();
+            if !typed.is_empty() {
+                if let Some(ce) = self.state.creating_extrusion.as_mut() {
+                    ce.text = typed;
+                    ce.user_edited = true;
+                    ce.pending_focus = true;
+                }
+            }
+        }
+        if let Some(ce) = self.state.creating_extrusion.as_mut() {
+            let want_focus = ce.pending_focus;
+            egui::Area::new(egui::Id::new("extrude_distance_area"))
+                .fixed_pos(pos)
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut ce.text)
+                                .id(id)
+                                .desired_width(64.0),
+                        );
+                        if resp.changed() {
+                            ce.user_edited = true;
+                        }
+                        if want_focus {
+                            resp.request_focus();
+                            ce.pending_focus = false;
+                        }
+                        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            commit = true;
+                        }
+                        ui.label("mm");
+                    });
+                });
+        }
+        if commit {
+            self.state.apply(Action::CommitExtrusion);
         }
     }
 
@@ -731,6 +942,16 @@ impl eframe::App for App {
                 {
                     self.state.apply(Action::SetTool(Tool::ConstructionPlane));
                 }
+                if icons::selectable_icon_button(
+                    ui,
+                    icons::IconId::Extrude,
+                    self.state.tool == Tool::Extrude,
+                    shortcuts::compact_label("Extrude", shortcuts::tool_shortcut(Tool::Extrude)),
+                )
+                .clicked()
+                {
+                    self.state.apply(Action::SetTool(Tool::Extrude));
+                }
                 if let Some(session) = self.state.sketch_session {
                     ui.separator();
                     ui.label(sketch_label(&self.state.doc, session.sketch));
@@ -776,6 +997,7 @@ impl eframe::App for App {
         if self.state.panes.is_visible(Pane::Hierarchy) {
             let mut edit_sketch: Option<SketchId> = None;
             let mut edit_plane: Option<usize> = None;
+            let mut edit_extrusion: Option<usize> = None;
             let mut click_element: Option<(SceneElement, bool)> = None;
             egui::SidePanel::left("tree")
                 .resizable(true)
@@ -787,6 +1009,9 @@ impl eframe::App for App {
                     };
                     let mut queue_edit_plane = |index: usize| {
                         edit_plane = Some(index);
+                    };
+                    let mut queue_edit_extrusion = |index: usize| {
+                        edit_extrusion = Some(index);
                     };
                     let mut noop_visibility = |_: SceneElement, _: bool| {};
                     let mut queue_click = |element: SceneElement, additive: bool| {
@@ -805,6 +1030,7 @@ impl eframe::App for App {
                         &self.state.document_health,
                         &mut queue_edit_sketch,
                         &mut queue_edit_plane,
+                        &mut queue_edit_extrusion,
                         &mut noop_visibility,
                         &mut queue_click,
                         &highlight_elements,
@@ -821,6 +1047,9 @@ impl eframe::App for App {
             }
             if let Some(index) = edit_plane {
                 self.state.apply(Action::BeginEditConstructionPlane { index });
+            }
+            if let Some(index) = edit_extrusion {
+                self.state.apply(Action::EditExtrusion { index });
             }
         }
 
@@ -1152,7 +1381,9 @@ fn build_viewport_scene_input<'a>(
     creating_line: Option<&CreatingLine>,
     creating_circle: Option<&CreatingCircle>,
     creating_plane: Option<&CreatingConstructionPlane>,
+    creating_extrusion: Option<&CreatingExtrusion>,
     plane_gizmo: Option<gpu_viewport::ViewportPlaneGizmo>,
+    extrude_gizmo: Option<gpu_viewport::ViewportExtrudeGizmo>,
     hover_highlight: Option<gpu_viewport::ViewportHoverHighlight>,
     dimension_labels: &'a [gpu_viewport::ViewportDimLabel],
     dim_label_view: Option<PlanarLabelView>,
@@ -1217,6 +1448,18 @@ fn build_viewport_scene_input<'a>(
     let active_sketch_face = sketch_session.and_then(|session| doc.sketch_face(session.sketch));
     let active_sketch_face = active_sketch_face.filter(|face| !matches!(face, FaceId::ConstructionPlane(_)));
 
+    let preview_extrusion = creating_extrusion.and_then(|ce| {
+        (!ce.faces.is_empty()).then(|| model::Extrusion {
+            sketch: ce.sketch,
+            faces: ce.faces.clone(),
+            distance: ce.evaluated_distance(doc),
+            target: ce.target,
+            expression: String::new(),
+            name: None,
+            deleted: false,
+        })
+    });
+
     gpu_viewport::ViewportSceneInput {
         doc,
         cam,
@@ -1242,11 +1485,13 @@ fn build_viewport_scene_input<'a>(
         preview_rect,
         preview_line,
         preview_circle,
+        preview_extrusion,
         plane_preview,
         active_sketch_face,
         dimension_labels,
         dim_label_view,
         plane_gizmo,
+        extrude_gizmo,
         hover_highlight,
         hover_color: construction::PICK_HOVER_RGBA,
         document_health,
@@ -2170,6 +2415,71 @@ fn draw_committed_dim_layouts<Project>(
 /// Padding (px) keeping the clamped angle gizmo clear of the viewport edge.
 const ANGLE_GIZMO_VIEWPORT_PAD: f32 = 48.0;
 
+/// Pixel offset of the extrude-height dimension line from the measured edge.
+const EXTRUDE_DIM_OFFSET: f32 = 24.0;
+
+/// Draw a dimension line along one vertical edge of an in-progress extrusion when its
+/// height is a constrained (typed) value, so the constraint reads like a sketch dimension.
+fn draw_extrude_height_dimension<Project>(
+    painter: &egui::Painter,
+    project: &Project,
+    doc: &model::Document,
+    ce: &actions::CreatingExtrusion,
+) where
+    Project: Fn(Vec3) -> Option<egui::Pos2>,
+{
+    if !ce.user_edited || ce.faces.is_empty() {
+        return;
+    }
+    let distance = ce.evaluated_distance(doc);
+    if distance.abs() < 1e-4 {
+        return;
+    }
+    let Some((corners, normal)) = extrude::face_profile_world(doc, ce.faces[0]) else {
+        return;
+    };
+    if corners.len() < 3 {
+        return;
+    }
+    // One vertical edge of the prism: a base corner up to its extruded top.
+    let pa = corners[0];
+    let pb = pa + normal * distance;
+    // Offset the dimension line away from the solid, within the sketch plane.
+    let center = corners
+        .iter()
+        .fold(Vec3::ZERO, |acc, c| acc + *c)
+        / corners.len() as f32;
+    let outward_world = (pa - center).normalize_or_zero();
+    if outward_world.length_squared() < 1e-8 {
+        return;
+    }
+    let anchor = pa.lerp(pb, 0.5);
+    let offset_world = pixels_to_world_distance(project, anchor, outward_world, EXTRUDE_DIM_OFFSET);
+    let overshoot_world =
+        pixels_to_world_distance(project, anchor, outward_world, EXTENSION_OVERSHOOT);
+    let label_outset_world =
+        pixels_to_world_distance(project, anchor, outward_world, LABEL_OUTSET);
+    let world_geom = linear_dimension_world_geom(
+        pa,
+        pb,
+        outward_world,
+        offset_world,
+        overshoot_world,
+        label_outset_world,
+    );
+    let Some(geom) = project_linear_dimension_geom(&world_geom, project) else {
+        return;
+    };
+    let label = crate::value::format_length_display(distance.abs());
+    draw_linear_dimension::<fn(Vec3) -> Option<egui::Pos2>>(
+        painter,
+        &geom,
+        &label,
+        col::DIM_ANNOTATION,
+        None,
+    );
+}
+
 fn angle_gizmo_hit_target(
     layouts: &[CommittedDimLayout],
     pointer: egui::Pos2,
@@ -2276,6 +2586,85 @@ fn handle_committed_dim_label_double_click(
     true
 }
 
+/// The extrude-able face (rectangle/circle) under the cursor, if any.
+fn pick_extrude_face(
+    pp: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &model::Document,
+) -> Option<model::ExtrudeFace> {
+    match pick_sketch_face(pp, project, doc)? {
+        FaceId::Rect(i) => Some(model::ExtrudeFace::Rect(i)),
+        FaceId::Circle(i) => Some(model::ExtrudeFace::Circle(i)),
+        FaceId::ConstructionPlane(_) | FaceId::ExtrudeCap { .. } => None,
+    }
+}
+
+fn extrude_face_id(face: model::ExtrudeFace) -> FaceId {
+    match face {
+        model::ExtrudeFace::Rect(i) => FaceId::Rect(i),
+        model::ExtrudeFace::Circle(i) => FaceId::Circle(i),
+    }
+}
+
+/// Object under the cursor to extrude up to (vertex preferred, then face/plane), with the
+/// signed distance from the extrusion base to its extended plane. Excludes the faces being
+/// extruded.
+/// Distance, in sketch units, that the extrude gizmo handle floats above the
+/// solid's top face so it sits a little above the surface rather than on it.
+const EXTRUDE_GIZMO_LIFT: f32 = 4.0;
+
+/// egui id of the floating extrude-distance text field.
+const EXTRUDE_DISTANCE_FIELD_ID: &str = "extrude_distance_input";
+
+/// Where the extrude gizmo handle is drawn along the normal: the actual extrude
+/// distance plus a small lift in the extrusion direction.
+fn extrude_gizmo_display_offset(distance: f32) -> f32 {
+    let dir = if distance < 0.0 { -1.0 } else { 1.0 };
+    distance + dir * EXTRUDE_GIZMO_LIFT
+}
+
+fn pick_extrude_target(
+    pp: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &model::Document,
+    base: Vec3,
+    normal: Vec3,
+    exclude: &[model::ExtrudeFace],
+) -> Option<(model::ExtrudeTarget, f32)> {
+    use model::ExtrudeTarget;
+    const VERTEX_RADIUS_PX: f32 = 12.0;
+
+    // Nearest vertex.
+    let mut best: Option<(f32, ExtrudeTarget)> = None;
+    for vertex in snapping::all_sketch_vertices(doc) {
+        if let Some(world) = extrude::constraint_point_world(doc, vertex) {
+            if let Some(sp) = project(world) {
+                let d = (sp - pp).length();
+                if d <= VERTEX_RADIUS_PX && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+                    best = Some((d, ExtrudeTarget::Vertex(vertex)));
+                }
+            }
+        }
+    }
+
+    let target = if let Some((_, t)) = best {
+        t
+    } else {
+        match pick_sketch_face(pp, project, doc)? {
+            FaceId::Rect(i) if !exclude.contains(&model::ExtrudeFace::Rect(i)) => {
+                ExtrudeTarget::Face(model::ExtrudeFace::Rect(i))
+            }
+            FaceId::Circle(i) if !exclude.contains(&model::ExtrudeFace::Circle(i)) => {
+                ExtrudeTarget::Face(model::ExtrudeFace::Circle(i))
+            }
+            FaceId::ConstructionPlane(i) => ExtrudeTarget::Plane(i),
+            _ => return None,
+        }
+    };
+    let dist = extrude::target_distance(doc, base, normal, target)?;
+    Some((target, dist))
+}
+
 /// Snap radius in screen pixels, converted to sketch units per the current view.
 const SNAP_RADIUS_PX: f32 = 12.0;
 
@@ -2311,9 +2700,9 @@ fn active_snap(state: &AppState, frame: &face::SketchFrame) -> Option<(Vec3, sna
 fn snap_icon(target: snapping::SnapTarget) -> icons::IconId {
     match target {
         snapping::SnapTarget::Midpoint(_) => icons::IconId::Midpoint,
-        snapping::SnapTarget::Vertex(_) | snapping::SnapTarget::OnLine(_) => {
-            icons::IconId::Coincident
-        }
+        snapping::SnapTarget::Vertex(_)
+        | snapping::SnapTarget::Origin
+        | snapping::SnapTarget::OnLine(_) => icons::IconId::Coincident,
     }
 }
 
@@ -2698,6 +3087,15 @@ fn draw_face_highlight(
         FaceId::Circle(i) => {
             if let Some(circle) = doc.circles.get(i) {
                 draw_circle_face_highlight(painter, project, doc, circle, color);
+            }
+        }
+        FaceId::ExtrudeCap {
+            extrusion,
+            profile,
+            top,
+        } => {
+            if let Some(poly) = extrude::cap_polygon_world(doc, extrusion, profile, top) {
+                draw_polygon_face_highlight(painter, project, &poly, color);
             }
         }
     }
@@ -3335,6 +3733,11 @@ impl App {
             }
         }
 
+        if self.state.tool == Tool::Extrude {
+            self.handle_extrude_tool(ui, &project, pointer_screen);
+            self.show_extrude_distance_input(ui, &project);
+        }
+
         if self.state.tool == Tool::Dimension {
             if let (Some(session), Some(pp)) =
                 (self.state.sketch_session, pointer_screen)
@@ -3605,7 +4008,7 @@ impl App {
                 hover: plane_gizmo_hover(cp, pointer_screen, &project),
             }
         });
-        let hover_highlight = resolve_viewport_hover_highlight(
+        let mut hover_highlight = resolve_viewport_hover_highlight(
             suppress_hover_highlight,
             self.state.tool,
             sketch_session,
@@ -3620,6 +4023,33 @@ impl App {
             doc,
             &project,
         );
+        // Extrude tool: highlight the face under the cursor and render the normal gizmo (same
+        // arrow as the construction-plane offset gizmo) through the GPU scene.
+        let mut extrude_gizmo = None;
+        if self.state.tool == Tool::Extrude {
+            if self.extrude_gizmo_drag.is_none() {
+                hover_highlight = pointer_screen
+                    .and_then(|pp| pick_extrude_face(pp, &project, doc))
+                    .map(|f| gpu_viewport::ViewportHoverHighlight::SketchFace(extrude_face_id(f)));
+            }
+            if let Some(ce) = self.state.creating_extrusion.as_ref() {
+                if let Some((origin, normal)) = extrude::faces_anchor(doc, &ce.faces) {
+                    let handle_offset =
+                        extrude_gizmo_display_offset(ce.evaluated_distance(doc));
+                    let hovered = self.extrude_gizmo_drag.is_some()
+                        || pointer_screen.is_some_and(|pp| {
+                            construction::offset_gizmo_hit(pp, &project, origin, normal, handle_offset)
+                        });
+                    extrude_gizmo = Some(gpu_viewport::ViewportExtrudeGizmo {
+                        origin,
+                        normal,
+                        offset: handle_offset,
+                        color: col::PREVIEW,
+                        hovered,
+                    });
+                }
+            }
+        }
         let scene_input = build_viewport_scene_input(
             doc,
             &cam,
@@ -3632,7 +4062,9 @@ impl App {
             self.state.creating_line.as_ref(),
             self.state.creating_circle.as_ref(),
             self.state.creating_plane.as_ref(),
+            self.state.creating_extrusion.as_ref(),
             plane_gizmo,
+            extrude_gizmo,
             hover_highlight,
             &gpu_dim_labels,
             planar_label_view,
@@ -3757,6 +4189,12 @@ impl App {
                 col::DIM_ANNOTATION,
                 col::DIM_EDGE_HIGHLIGHT,
             );
+        }
+
+        if self.state.tool == Tool::Extrude {
+            if let Some(ce) = self.state.creating_extrusion.as_ref() {
+                draw_extrude_height_dimension(&painter, &project, doc, ce);
+            }
         }
 
         if sketch_session.is_some() {
@@ -4688,6 +5126,13 @@ impl App {
                     }
                 } else {
                     "p: plane  •  Click a face, line, shape edge, global axis, or ground • then set offset (and angle for lines)"
+                }
+            }
+            Tool::Extrude => {
+                if self.state.creating_extrusion.is_some() {
+                    "e: extrude  •  Click faces to toggle • drag the arrow or type a distance • Enter: commit • Esc: cancel"
+                } else {
+                    "e: extrude  •  Click a coplanar face (rectangle/circle) to start an extrusion"
                 }
             }
         };

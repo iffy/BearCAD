@@ -13,7 +13,9 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::Rect(_)
         | SceneElement::Line(_)
         | SceneElement::Circle(_)
-        | SceneElement::Constraint(_) => Some(element),
+        | SceneElement::Constraint(_)
+        | SceneElement::Extrusion(_)
+        | SceneElement::Body(_) => Some(element),
         SceneElement::Point(_) => None,
     }
 }
@@ -80,6 +82,14 @@ pub fn find_element_by_name(doc: &Document, name: &str) -> Option<SceneElement> 
             return Some(SceneElement::Constraint(index));
         }
     }
+    for (index, extrusion) in doc.extrusions.iter().enumerate() {
+        if extrusion.deleted {
+            continue;
+        }
+        if name_matches(extrusion.name.as_deref(), query) {
+            return Some(SceneElement::Extrusion(index));
+        }
+    }
     None
 }
 
@@ -91,6 +101,8 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         SceneElement::Line(index) => doc.lines.get(index)?.name.as_deref(),
         SceneElement::Circle(index) => doc.circles.get(index)?.name.as_deref(),
         SceneElement::Constraint(index) => doc.constraints.get(index)?.name.as_deref(),
+        SceneElement::Extrusion(index) => doc.extrusions.get(index)?.name.as_deref(),
+        SceneElement::Body(index) => doc.bodies.get(index)?.name.as_deref(),
         SceneElement::RectEdge(_, _) | SceneElement::Point(_) => None,
     }?;
     let trimmed = name.trim();
@@ -153,6 +165,20 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 .ok_or_else(|| format!("constraint {index} not found"))?;
             constraint.name = stored;
         }
+        SceneElement::Extrusion(index) => {
+            let extrusion = doc
+                .extrusions
+                .get_mut(index)
+                .ok_or_else(|| format!("extrusion {index} not found"))?;
+            extrusion.name = stored;
+        }
+        SceneElement::Body(index) => {
+            let body = doc
+                .bodies
+                .get_mut(index)
+                .ok_or_else(|| format!("body {index} not found"))?;
+            body.name = stored;
+        }
         SceneElement::RectEdge(_, _) => {
             return Err("rectangle edges cannot be renamed".to_string());
         }
@@ -186,6 +212,11 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
             format!("Circle {i} (Ø{diameter:.1} mm)")
         }
         HierarchyNode::Constraint(i) => constraint_label(doc, i),
+        HierarchyNode::Extrusion(i) => {
+            let distance = doc.extrusions.get(i).map(|e| e.distance).unwrap_or(0.0);
+            format!("Extrusion {i} ({distance:.1} mm)")
+        }
+        HierarchyNode::Body(i) => format!("Body {i}"),
     }
 }
 

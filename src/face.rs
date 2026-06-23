@@ -78,6 +78,30 @@ pub fn sketch_frame(doc: &Document, face: FaceId) -> Option<SketchFrame> {
                 normal: parent.normal,
             })
         }
+        FaceId::ExtrudeCap {
+            extrusion,
+            profile,
+            top,
+        } => {
+            let ext = doc.extrusions.get(extrusion)?;
+            if ext.deleted || !ext.faces.contains(&profile) {
+                return None;
+            }
+            // The cap shares the profile face's in-plane axes, shifted along the
+            // extrusion normal to the base or offset end.
+            let base = sketch_frame(doc, profile.face_id())?;
+            let dist = if top {
+                crate::extrude::effective_distance(doc, ext)
+            } else {
+                0.0
+            };
+            Some(SketchFrame {
+                origin: base.origin + base.normal * dist,
+                u_axis: base.u_axis,
+                v_axis: base.v_axis,
+                normal: base.normal,
+            })
+        }
     }
 }
 
@@ -474,6 +498,31 @@ pub fn sketch_camera_target(doc: &Document, sketch: SketchId) -> Option<SketchCa
                 zoom: Some(zoom),
             })
         }
+        FaceId::ExtrudeCap {
+            extrusion,
+            profile,
+            top,
+        } => {
+            let poly = crate::extrude::cap_polygon_world(doc, extrusion, profile, top)?;
+            let mut zoom: Option<SketchZoomBounds> = None;
+            for p in &poly {
+                let (u, v) = world_to_local(&frame, *p);
+                extend_sketch_bounds(&mut zoom, u, v, u, v);
+            }
+            if let Some(children) = sketch_local_bounds(doc, sketch) {
+                zoom = Some(match zoom {
+                    Some(z) => SketchZoomBounds::union(z, children),
+                    None => children,
+                });
+            }
+            let zoom = zoom?;
+            let target = local_to_world(&frame, zoom.center_u, zoom.center_v);
+            Some(SketchCameraTarget {
+                target,
+                face_normal,
+                zoom: Some(zoom),
+            })
+        }
     }
 }
 
@@ -490,6 +539,12 @@ pub fn face_label(_doc: &Document, face: FaceId) -> String {
         FaceId::ConstructionPlane(i) => format!("Construction plane {i}"),
         FaceId::Rect(i) => format!("Rectangle face {i}"),
         FaceId::Circle(i) => format!("Circle face {i}"),
+        FaceId::ExtrudeCap {
+            extrusion, top, ..
+        } => {
+            let end = if top { "top" } else { "bottom" };
+            format!("Extrusion {extrusion} {end} face")
+        }
     }
 }
 
@@ -542,6 +597,29 @@ pub fn pick_sketch_face(
         }
     }
 
+    // Planar caps of extruded bodies (so sketches can be placed on them). Tested
+    // before construction planes since a solid cap occludes the datum plane.
+    for (ei, extrusion) in doc.extrusions.iter().enumerate().rev() {
+        if extrusion.deleted {
+            continue;
+        }
+        for &profile in &extrusion.faces {
+            for top in [true, false] {
+                if let Some(dist) = cap_face_pick_distance(screen, project, doc, ei, profile, top) {
+                    consider_face_pick(
+                        &mut best,
+                        FaceId::ExtrudeCap {
+                            extrusion: ei,
+                            profile,
+                            top,
+                        },
+                        dist,
+                    );
+                }
+            }
+        }
+    }
+
     for (i, plane) in doc.construction_planes.iter().enumerate().rev() {
         let corners = crate::construction::plane_corners(plane, crate::construction::PLANE_DISPLAY_HALF);
         if let Some(dist) = quad_face_pick_distance(screen, project, corners) {
@@ -550,6 +628,34 @@ pub fn pick_sketch_face(
     }
 
     best.map(|(face, _)| face)
+}
+
+/// Screen-space pick distance to an extrusion cap polygon (0 inside).
+fn cap_face_pick_distance(
+    screen: eframe::egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<eframe::egui::Pos2>,
+    doc: &Document,
+    extrusion: usize,
+    profile: crate::model::ExtrudeFace,
+    top: bool,
+) -> Option<f32> {
+    let poly = crate::extrude::cap_polygon_world(doc, extrusion, profile, top)?;
+    let pts: Option<Vec<eframe::egui::Pos2>> = poly.iter().map(|&p| project(p)).collect();
+    let pts = pts?;
+    if pts.len() < 3 {
+        return None;
+    }
+    // Inside test via triangle fan from the first vertex.
+    let inside = (1..pts.len() - 1).any(|i| point_in_tri(screen, pts[0], pts[i], pts[i + 1]));
+    if inside {
+        return Some(0.0);
+    }
+    let mut edge = f32::MAX;
+    for i in 0..pts.len() {
+        let j = (i + 1) % pts.len();
+        edge = edge.min(dist_point_to_segment_px(screen, pts[i], pts[j]));
+    }
+    Some(edge)
 }
 
 fn circle_face_pick_distance(
@@ -711,6 +817,75 @@ mod tests {
         let zoom = target.zoom.unwrap();
         assert!(zoom.half_u >= 5.0);
         assert!(zoom.half_v >= 5.0);
+    }
+
+    fn doc_with_extruded_box() -> Document {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 20.0, 20.0));
+        doc.extrusions.push(crate::model::Extrusion {
+            sketch,
+            faces: vec![crate::model::ExtrudeFace::Rect(0)],
+            distance: 10.0,
+            target: None,
+            expression: String::new(),
+            name: None,
+            deleted: false,
+        });
+        doc
+    }
+
+    #[test]
+    fn sketch_on_extrusion_top_cap_is_offset_by_distance() {
+        let doc = doc_with_extruded_box();
+        let profile = crate::model::ExtrudeFace::Rect(0);
+        let top = sketch_frame(
+            &doc,
+            FaceId::ExtrudeCap {
+                extrusion: 0,
+                profile,
+                top: true,
+            },
+        )
+        .unwrap();
+        assert!((top.origin.z - 10.0).abs() < 1e-4, "top cap 10 above base");
+        assert!((top.normal.z - 1.0).abs() < 1e-4);
+
+        let bottom = sketch_frame(
+            &doc,
+            FaceId::ExtrudeCap {
+                extrusion: 0,
+                profile,
+                top: false,
+            },
+        )
+        .unwrap();
+        assert!(bottom.origin.z.abs() < 1e-4, "bottom cap at base plane");
+
+        // Geometry drawn on the top cap lands at the cap's height.
+        let p = local_to_world(&top, 5.0, 5.0);
+        assert!((p.z - 10.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn pick_sketch_face_finds_extrusion_cap() {
+        let doc = doc_with_extruded_box();
+        // Offset screen x by height so the top cap (z=10) separates from the base
+        // rect; click where only the lifted top cap projects.
+        let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x + p.z, p.y));
+        let face = pick_sketch_face(eframe::egui::pos2(25.0, 10.0), &project, &doc);
+        assert!(
+            matches!(
+                face,
+                Some(FaceId::ExtrudeCap {
+                    extrusion: 0,
+                    top: true,
+                    ..
+                })
+            ),
+            "clicking the lifted top cap should pick it, got {face:?}"
+        );
     }
 
     #[test]

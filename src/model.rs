@@ -15,6 +15,13 @@ pub enum FaceId {
     Rect(usize),
     Circle(usize),
     ConstructionPlane(usize),
+    /// A planar cap face of an extruded body: one profile face of an extrusion,
+    /// at either the base (`top = false`) or offset (`top = true`) end.
+    ExtrudeCap {
+        extrusion: usize,
+        profile: ExtrudeFace,
+        top: bool,
+    },
 }
 
 impl Default for FaceId {
@@ -554,6 +561,8 @@ pub enum ConstraintEntity {
     Line(ConstraintLine),
     /// A circle's perimeter (point-on-circle when paired with a point).
     Circle(usize),
+    /// The sketch origin (local UV `(0, 0)`); a fixed point for snapping.
+    Origin,
 }
 
 /// A sketch constraint (distance is the first supported kind).
@@ -572,6 +581,76 @@ pub struct Constraint {
     pub deleted: bool,
 }
 
+/// A closed sketch profile (face) included in an extrusion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtrudeFace {
+    Rect(usize),
+    Circle(usize),
+}
+
+impl ExtrudeFace {
+    /// The sketchable face this profile corresponds to.
+    pub fn face_id(self) -> FaceId {
+        match self {
+            ExtrudeFace::Rect(i) => FaceId::Rect(i),
+            ExtrudeFace::Circle(i) => FaceId::Circle(i),
+        }
+    }
+}
+
+/// An object an extrusion is constrained to reach (its extended plane), instead of a fixed
+/// distance.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtrudeTarget {
+    /// Up to the plane through a vertex (perpendicular to the extrusion normal).
+    Vertex(ConstraintPoint),
+    /// Up to the extended plane of a face.
+    Face(ExtrudeFace),
+    /// Up to a construction plane.
+    Plane(usize),
+}
+
+/// An extrusion of one or more coplanar sketch faces into a 3D solid.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Extrusion {
+    /// The sketch whose plane the faces lie on (gives the extrusion normal).
+    pub sketch: SketchId,
+    /// Faces included in this extrusion (toggled on/off while editing).
+    pub faces: Vec<ExtrudeFace>,
+    /// Signed extrusion distance along the plane normal (mm); negative goes the other way.
+    /// When `target` is set this is the cached/last value; the effective distance is derived.
+    pub distance: f32,
+    /// When set, the depth is constrained to reach this object's extended plane.
+    #[serde(default)]
+    pub target: Option<ExtrudeTarget>,
+    /// Optional expression driving `distance` (empty = free/gizmo-driven, no constraint).
+    #[serde(default)]
+    pub expression: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+/// The feature that produced a solid body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BodySource {
+    Extrusion(usize),
+}
+
+/// A solid body produced by a feature; it depends on its source feature.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Body {
+    pub source: BodySource,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
 /// Which sketch primitive was created, in chronological order (for undo).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShapeKind {
@@ -582,6 +661,8 @@ pub enum ShapeKind {
     Parameter,
     Constraint,
     ConstructionPlane,
+    Extrusion,
+    Body,
 }
 
 /// The whole document: sketches, sketch primitives, constraints, and construction planes.
@@ -594,6 +675,10 @@ pub struct Document {
     pub circles: Vec<Circle>,
     pub constraints: Vec<Constraint>,
     pub construction_planes: Vec<ConstructionPlane>,
+    #[serde(default)]
+    pub extrusions: Vec<Extrusion>,
+    #[serde(default)]
+    pub bodies: Vec<Body>,
     pub shape_order: Vec<ShapeKind>,
 }
 
@@ -607,6 +692,8 @@ impl Default for Document {
             circles: Vec::new(),
             constraints: Vec::new(),
             construction_planes: vec![default_xy_plane()],
+            extrusions: Vec::new(),
+            bodies: Vec::new(),
             shape_order: Vec::new(),
         }
     }

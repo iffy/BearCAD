@@ -86,7 +86,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     .map_err(|e| e.to_string())?;
 
     tx.execute(
-        "DELETE FROM dag_nodes WHERE kind IN ('sketch', 'rectangle', 'line', 'circle', 'parameter', 'constraint', 'construction_plane')",
+        "DELETE FROM dag_nodes WHERE kind IN ('sketch', 'rectangle', 'line', 'circle', 'parameter', 'constraint', 'construction_plane', 'extrusion', 'body')",
         [],
     )
     .map_err(|e| e.to_string())?;
@@ -98,6 +98,8 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "circle", &doc.circles)?;
     save_indexed_nodes(&tx, &mut row_id, "parameter", &doc.parameters)?;
     save_indexed_nodes(&tx, &mut row_id, "constraint", &doc.constraints)?;
+    save_indexed_nodes(&tx, &mut row_id, "extrusion", &doc.extrusions)?;
+    save_indexed_nodes(&tx, &mut row_id, "body", &doc.bodies)?;
     if doc.construction_planes.len() > 1 {
         save_indexed_nodes(
             &tx,
@@ -336,6 +338,9 @@ pub fn open(path: &str) -> Result<Document> {
 
     let construction_planes =
         load_construction_planes(&conn, construction_planes).map_err(|e| e.to_string())?;
+    // Extrusions/bodies (empty for legacy files that predate them).
+    let extrusions = load_indexed_entities(&conn, "extrusion")?;
+    let bodies = load_indexed_entities(&conn, "body")?;
 
     let mut doc = Document {
         parameters,
@@ -345,6 +350,8 @@ pub fn open(path: &str) -> Result<Document> {
         circles,
         constraints,
         construction_planes,
+        extrusions,
+        bodies,
         shape_order,
     };
     ensure_construction_plane_indices(&mut doc);
@@ -377,6 +384,8 @@ mod tests {
             circles: Vec::new(),
             constraints: Vec::new(),
             construction_planes: vec![default_xy_plane()],
+            extrusions: Vec::new(),
+            bodies: Vec::new(),
             shape_order: Vec::new(),
         };
         let sketch = plane_sketch(&mut doc);
@@ -411,6 +420,8 @@ mod tests {
             circles: Vec::new(),
             constraints: Vec::new(),
             construction_planes: vec![default_xy_plane()],
+            extrusions: Vec::new(),
+            bodies: Vec::new(),
             shape_order: Vec::new(),
         };
         let sketch = plane_sketch(&mut doc);
@@ -443,6 +454,8 @@ mod tests {
             circles: Vec::new(),
             constraints: Vec::new(),
             construction_planes: vec![default_xy_plane()],
+            extrusions: Vec::new(),
+            bodies: Vec::new(),
             shape_order: Vec::new(),
         };
         let sketch = plane_sketch(&mut doc);
@@ -548,6 +561,8 @@ mod tests {
             circles: Vec::new(),
             constraints: Vec::new(),
             construction_planes: vec![default_xy_plane(), offset_plane],
+            extrusions: Vec::new(),
+            bodies: Vec::new(),
             shape_order: Vec::new(),
         };
 
@@ -639,6 +654,8 @@ mod tests {
             circles: Vec::new(),
             constraints: Vec::new(),
             construction_planes: vec![default_xy_plane(), offset_plane.clone()],
+            extrusions: Vec::new(),
+            bodies: Vec::new(),
             shape_order: Vec::new(),
         };
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(1));
@@ -685,6 +702,8 @@ mod tests {
             circles: Vec::new(),
             constraints: Vec::new(),
             construction_planes: vec![default_xy_plane()],
+            extrusions: Vec::new(),
+            bodies: Vec::new(),
             shape_order: vec![ShapeKind::Sketch, ShapeKind::Rect],
         };
         save(&path, &doc).unwrap();
@@ -715,6 +734,8 @@ mod tests {
             circles: Vec::new(),
             constraints: Vec::new(),
             construction_planes: vec![default_xy_plane()],
+            extrusions: Vec::new(),
+            bodies: Vec::new(),
             shape_order: Vec::new(),
         };
         let sketch = plane_sketch(&mut doc);
@@ -780,6 +801,49 @@ mod tests {
         assert_eq!(loaded.sketches[1].face, FaceId::ConstructionPlane(0));
         assert_eq!(loaded.rects[0].sketch, s0);
         let _ = s1;
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn round_trips_extrusions_and_bodies() {
+        use crate::model::{Body, BodySource, ExtrudeFace, Extrusion};
+        let dir = std::env::temp_dir();
+        let path = dir.join("le3_extrusion_roundtrip.le3");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.rects.push(Rect::from_local_corners(sketch, 0.0, 0.0, 10.0, 5.0));
+        doc.shape_order.push(ShapeKind::Rect);
+        doc.extrusions.push(Extrusion {
+            sketch,
+            faces: vec![ExtrudeFace::Rect(0)],
+            distance: 12.0,
+            target: None,
+            expression: String::new(),
+            name: Some("Boss".to_string()),
+            deleted: false,
+        });
+        doc.shape_order.push(ShapeKind::Extrusion);
+        doc.bodies.push(Body {
+            source: BodySource::Extrusion(0),
+            name: None,
+            deleted: false,
+        });
+        doc.shape_order.push(ShapeKind::Body);
+
+        save(&path, &doc).unwrap();
+        let loaded = open(&path).unwrap();
+        assert_eq!(loaded.extrusions.len(), 1);
+        assert_eq!(loaded.extrusions[0].faces, vec![ExtrudeFace::Rect(0)]);
+        assert_eq!(loaded.extrusions[0].distance, 12.0);
+        assert_eq!(loaded.extrusions[0].name.as_deref(), Some("Boss"));
+        assert_eq!(loaded.bodies.len(), 1);
+        assert_eq!(loaded.bodies[0].source, BodySource::Extrusion(0));
+        assert!(loaded.shape_order.contains(&ShapeKind::Extrusion));
+        assert!(loaded.shape_order.contains(&ShapeKind::Body));
 
         std::fs::remove_file(&path).unwrap();
     }

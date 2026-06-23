@@ -50,7 +50,17 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         SceneElement::RectEdge(index, _) => rect_alive(doc, index),
         SceneElement::Point(point) => point_owner_alive(doc, point),
         SceneElement::Constraint(index) => constraint_alive(doc, index),
+        SceneElement::Extrusion(index) => extrusion_alive(doc, index),
+        SceneElement::Body(index) => body_alive(doc, index),
     }
+}
+
+pub fn extrusion_alive(doc: &Document, index: usize) -> bool {
+    doc.extrusions.get(index).is_some_and(|e| !e.deleted)
+}
+
+pub fn body_alive(doc: &Document, index: usize) -> bool {
+    doc.bodies.get(index).is_some_and(|b| !b.deleted)
 }
 
 fn point_owner_alive(
@@ -138,8 +148,55 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         SceneElement::Point(point) => {
             changed |= tombstone_element(doc, point_owner_element(point));
         }
+        SceneElement::Extrusion(index) => {
+            if tombstone_extrusion(doc, index) {
+                changed = true;
+            }
+        }
+        SceneElement::Body(index) => {
+            if tombstone_body(doc, index) {
+                changed = true;
+            }
+        }
     }
     changed
+}
+
+fn tombstone_extrusion(doc: &mut Document, index: usize) -> bool {
+    let Some(extrusion) = doc.extrusions.get_mut(index) else {
+        return false;
+    };
+    if extrusion.deleted {
+        return false;
+    }
+    extrusion.deleted = true;
+    remove_shape_order_entry(doc, ShapeKind::Extrusion, index);
+    // The body produced by this extrusion depends on it — remove it too.
+    let dependent: Vec<usize> = doc
+        .bodies
+        .iter()
+        .enumerate()
+        .filter(|(_, body)| {
+            !body.deleted && body.source == crate::model::BodySource::Extrusion(index)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    for bi in dependent {
+        tombstone_body(doc, bi);
+    }
+    true
+}
+
+fn tombstone_body(doc: &mut Document, index: usize) -> bool {
+    let Some(body) = doc.bodies.get_mut(index) else {
+        return false;
+    };
+    if body.deleted {
+        return false;
+    }
+    body.deleted = true;
+    remove_shape_order_entry(doc, ShapeKind::Body, index);
+    true
 }
 
 /// Tombstone every target in `elements`.
@@ -337,6 +394,7 @@ pub fn constraint_entity_alive(doc: &Document, entity: ConstraintEntity) -> bool
         ConstraintEntity::Point(point) => constraint_point_alive(doc, point),
         ConstraintEntity::Line(line) => constraint_line_alive(doc, line),
         ConstraintEntity::Circle(circle) => circle_alive(doc, circle),
+        ConstraintEntity::Origin => true,
     }
 }
 

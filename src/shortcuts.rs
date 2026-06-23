@@ -81,6 +81,7 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
         Tool::ConstructionPlane => Some(ShortcutHint::plain("P")),
         Tool::Dimension => Some(ShortcutHint::plain("D")),
         Tool::Constraint => Some(ShortcutHint::plain("C")),
+        Tool::Extrude => Some(ShortcutHint::plain("E")),
         Tool::Select => None,
     }
 }

@@ -72,7 +72,11 @@ fn midpoint(a: Vec3, b: Vec3) -> Vec3 {
     (a + b) * 0.5
 }
 
-fn entity_world_position(doc: &Document, entity: ConstraintEntity) -> Option<Vec3> {
+fn entity_world_position(
+    doc: &Document,
+    entity: ConstraintEntity,
+    sketch: SketchId,
+) -> Option<Vec3> {
     match entity {
         ConstraintEntity::Point(point) => point_world_position(doc, point),
         ConstraintEntity::Line(line) => {
@@ -81,6 +85,10 @@ fn entity_world_position(doc: &Document, entity: ConstraintEntity) -> Option<Vec
         }
         ConstraintEntity::Circle(circle) => {
             point_world_position(doc, ConstraintPoint::CircleCenter(circle))
+        }
+        ConstraintEntity::Origin => {
+            let frame = sketch_geometry_frame(doc, sketch)?;
+            Some(local_to_world(&frame, 0.0, 0.0))
         }
     }
 }
@@ -112,8 +120,8 @@ fn build_graphic(doc: &Document, index: usize) -> Option<ConstraintViewportGraph
             })
         }
         ConstraintKind::Coincident { a, b } => {
-            let pa = entity_world_position(doc, a)?;
-            let pb = entity_world_position(doc, b)?;
+            let pa = entity_world_position(doc, a, constraint.sketch)?;
+            let pb = entity_world_position(doc, b, constraint.sketch)?;
             Some(ConstraintViewportGraphic {
                 constraint_index: index,
                 connectors: if (pa - pb).length_squared() > 1e-6 {

@@ -27,6 +27,8 @@ pub enum HierarchyNode {
     Line(usize),
     Circle(usize),
     Constraint(usize),
+    Extrusion(usize),
+    Body(usize),
 }
 
 /// Identifies an element whose visibility can be toggled.
@@ -40,6 +42,8 @@ pub enum SceneElement {
     RectEdge(usize, RectEdge),
     Point(ConstraintPoint),
     Constraint(usize),
+    Extrusion(usize),
+    Body(usize),
 }
 
 impl From<HierarchyNode> for SceneElement {
@@ -51,6 +55,8 @@ impl From<HierarchyNode> for SceneElement {
             HierarchyNode::Line(i) => SceneElement::Line(i),
             HierarchyNode::Circle(i) => SceneElement::Circle(i),
             HierarchyNode::Constraint(i) => SceneElement::Constraint(i),
+            HierarchyNode::Extrusion(i) => SceneElement::Extrusion(i),
+            HierarchyNode::Body(i) => SceneElement::Body(i),
         }
     }
 }
@@ -114,6 +120,15 @@ impl ElementVisibility {
             SceneElement::Constraint(index) => doc.constraints.get(index).is_some_and(|c| {
                 self.effective_visible(doc, SceneElement::Sketch(c.sketch))
             }),
+            SceneElement::Extrusion(index) => self.is_visible(SceneElement::Extrusion(index)),
+            SceneElement::Body(index) => {
+                self.is_visible(SceneElement::Body(index))
+                    && doc.bodies.get(index).is_some_and(|body| match body.source {
+                        crate::model::BodySource::Extrusion(ei) => {
+                            self.effective_visible(doc, SceneElement::Extrusion(ei))
+                        }
+                    })
+            }
         }
     }
 }
@@ -141,6 +156,8 @@ fn face_element(face: FaceId) -> SceneElement {
         FaceId::ConstructionPlane(i) => SceneElement::ConstructionPlane(i),
         FaceId::Rect(i) => SceneElement::Rect(i),
         FaceId::Circle(i) => SceneElement::Circle(i),
+        // A sketch on a body cap depends on the extrusion that produced it.
+        FaceId::ExtrudeCap { extrusion, .. } => SceneElement::Extrusion(extrusion),
     }
 }
 
@@ -159,6 +176,8 @@ struct CreationRanks {
     circles: HashMap<usize, usize>,
     constraints: HashMap<usize, usize>,
     planes: HashMap<usize, usize>,
+    extrusions: HashMap<usize, usize>,
+    bodies: HashMap<usize, usize>,
 }
 
 fn build_creation_ranks(doc: &Document) -> CreationRanks {
@@ -170,6 +189,8 @@ fn build_creation_ranks(doc: &Document) -> CreationRanks {
     let mut circle_n = 0usize;
     let mut constraint_n = 0usize;
     let mut plane_n = 1usize;
+    let mut extrusion_n = 0usize;
+    let mut body_n = 0usize;
     for (rank, kind) in doc.shape_order.iter().enumerate() {
         match kind {
             ShapeKind::Sketch => {
@@ -196,6 +217,14 @@ fn build_creation_ranks(doc: &Document) -> CreationRanks {
                 ranks.planes.insert(plane_n, rank);
                 plane_n += 1;
             }
+            ShapeKind::Extrusion => {
+                ranks.extrusions.insert(extrusion_n, rank);
+                extrusion_n += 1;
+            }
+            ShapeKind::Body => {
+                ranks.bodies.insert(body_n, rank);
+                body_n += 1;
+            }
             ShapeKind::Parameter => {}
         }
     }
@@ -210,6 +239,8 @@ fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
         HierarchyNode::Line(i) => *ranks.lines.get(&i).unwrap_or(&i),
         HierarchyNode::Circle(i) => *ranks.circles.get(&i).unwrap_or(&i),
         HierarchyNode::Constraint(i) => *ranks.constraints.get(&i).unwrap_or(&i),
+        HierarchyNode::Extrusion(i) => *ranks.extrusions.get(&i).unwrap_or(&i),
+        HierarchyNode::Body(i) => *ranks.bodies.get(&i).unwrap_or(&i),
     }
 }
 
@@ -228,6 +259,22 @@ pub fn build_hierarchy(
         roots.push(HierarchyEntry {
             node: HierarchyNode::ConstructionPlane(i),
             children,
+        });
+    }
+    // Extrusions nest under the sketch they were built from (see
+    // build_sketch_entry). Any extrusion whose sketch is no longer reachable is
+    // surfaced at the top level so it never disappears from the tree.
+    for (i, extrusion) in doc.extrusions.iter().enumerate() {
+        if extrusion.deleted || sketch_alive(doc, extrusion.sketch) {
+            continue;
+        }
+        roots.push(HierarchyEntry {
+            node: HierarchyNode::Extrusion(i),
+            children: build_sketch_extrusions(doc, extrusion.sketch, sketch_session)
+                .into_iter()
+                .find(|e| e.node == HierarchyNode::Extrusion(i))
+                .map(|e| e.children)
+                .unwrap_or_default(),
         });
     }
     roots
@@ -319,6 +366,15 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
             .get(index)
             .map(|c| SceneElement::Sketch(c.sketch)),
         SceneElement::Point(point) => point_parent_element(doc, point),
+        // An extrusion depends on (and nests under) the sketch it was built from.
+        SceneElement::Extrusion(index) => doc
+            .extrusions
+            .get(index)
+            .map(|extrusion| SceneElement::Sketch(extrusion.sketch)),
+        // A body depends on (and nests under) the feature that produced it.
+        SceneElement::Body(index) => doc.bodies.get(index).map(|body| match body.source {
+            crate::model::BodySource::Extrusion(ei) => SceneElement::Extrusion(ei),
+        }),
     }
 }
 
@@ -378,6 +434,12 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                     collect_descendants(doc, SceneElement::ConstructionPlane(pi), out);
                 }
             }
+            for (ei, extrusion) in doc.extrusions.iter().enumerate() {
+                if !extrusion.deleted && extrusion.sketch == sketch {
+                    out.insert(SceneElement::Extrusion(ei));
+                    collect_descendants(doc, SceneElement::Extrusion(ei), out);
+                }
+            }
         }
         SceneElement::Rect(index) => {
             for sketch in doc.sketches_on_face(FaceId::Rect(index)) {
@@ -391,10 +453,27 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                 collect_descendants(doc, SceneElement::Sketch(sketch), out);
             }
         }
+        SceneElement::Extrusion(index) => {
+            for (bi, body) in doc.bodies.iter().enumerate() {
+                if !body.deleted && body.source == crate::model::BodySource::Extrusion(index) {
+                    out.insert(SceneElement::Body(bi));
+                }
+            }
+            // Sketches placed on this extrusion's cap faces.
+            for (si, sketch) in doc.sketches.iter().enumerate() {
+                if !sketch.deleted
+                    && matches!(sketch.face, FaceId::ExtrudeCap { extrusion, .. } if extrusion == index)
+                {
+                    out.insert(SceneElement::Sketch(si));
+                    collect_descendants(doc, SceneElement::Sketch(si), out);
+                }
+            }
+        }
         SceneElement::Line(_)
         | SceneElement::RectEdge(_, _)
         | SceneElement::Constraint(_)
-        | SceneElement::Point(_) => {}
+        | SceneElement::Point(_)
+        | SceneElement::Body(_) => {}
     }
 }
 
@@ -474,6 +553,7 @@ fn constraint_entity_touches_element(entity: ConstraintEntity, element: SceneEle
         ConstraintEntity::Point(point) => constraint_point_touches_element(point, element),
         ConstraintEntity::Line(line) => constraint_line_touches_element(line, element),
         ConstraintEntity::Circle(circle) => element == SceneElement::Circle(circle),
+        ConstraintEntity::Origin => false,
     }
 }
 
@@ -660,6 +740,8 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> IconId {
             .get(index)
             .map(|constraint| icon_for_constraint_kind(constraint.kind))
             .unwrap_or(IconId::Constraint),
+        HierarchyNode::Extrusion(_) => IconId::Extrude,
+        HierarchyNode::Body(_) => IconId::Body,
     }
 }
 
@@ -799,10 +881,52 @@ fn build_sketch_entry(
         }
     }
 
+    // Extrusions built from this sketch nest under it (each owns its Body).
+    children.extend(build_sketch_extrusions(doc, sketch, sketch_session));
+
     HierarchyEntry {
         node: HierarchyNode::Sketch(sketch),
         children,
     }
+}
+
+/// Hierarchy entries for the extrusions produced from `sketch`, each owning the
+/// body it created and any sketches placed on its cap faces.
+fn build_sketch_extrusions(
+    doc: &Document,
+    sketch: SketchId,
+    sketch_session: Option<SketchSession>,
+) -> Vec<HierarchyEntry> {
+    doc.extrusions
+        .iter()
+        .enumerate()
+        .filter(|(_, extrusion)| !extrusion.deleted && extrusion.sketch == sketch)
+        .map(|(ei, _)| {
+            let mut children: Vec<HierarchyEntry> = doc
+                .bodies
+                .iter()
+                .enumerate()
+                .filter(|(_, body)| {
+                    !body.deleted && body.source == crate::model::BodySource::Extrusion(ei)
+                })
+                .map(|(bi, _)| HierarchyEntry {
+                    node: HierarchyNode::Body(bi),
+                    children: Vec::new(),
+                })
+                .collect();
+            for (si, sk) in doc.sketches.iter().enumerate() {
+                if !sk.deleted
+                    && matches!(sk.face, FaceId::ExtrudeCap { extrusion, .. } if extrusion == ei)
+                {
+                    children.push(build_sketch_entry(doc, si, sketch_session));
+                }
+            }
+            HierarchyEntry {
+                node: HierarchyNode::Extrusion(ei),
+                children,
+            }
+        })
+        .collect()
 }
 
 pub fn node_label(doc: &Document, node: HierarchyNode) -> String {
@@ -823,6 +947,7 @@ pub fn show_pane(
     health: &DocumentHealth,
     on_edit_sketch: &mut impl FnMut(SketchId),
     on_edit_plane: &mut impl FnMut(usize),
+    on_edit_extrusion: &mut impl FnMut(usize),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
     highlight_elements: &HashSet<SceneElement>,
@@ -849,6 +974,7 @@ pub fn show_pane(
                 style_selection,
                 on_edit_sketch,
                 on_edit_plane,
+                on_edit_extrusion,
                 on_toggle_visibility,
                 on_click_element,
                 highlight_elements,
@@ -869,6 +995,7 @@ fn show_row(
     style_selection: bool,
     on_edit_sketch: &mut impl FnMut(SketchId),
     on_edit_plane: &mut impl FnMut(usize),
+    on_edit_extrusion: &mut impl FnMut(usize),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
     highlight_elements: &HashSet<SceneElement>,
@@ -943,10 +1070,25 @@ fn show_row(
                     }
                 });
             }
+            HierarchyNode::Extrusion(index) => {
+                if row_primary_double_clicked(&response, ui) {
+                    on_edit_extrusion(index);
+                } else if response.clicked() {
+                    let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+                    on_click_element(element, additive);
+                }
+                response.context_menu(|ui| {
+                    if ui.button("Edit extrusion").clicked() {
+                        on_edit_extrusion(index);
+                        ui.close_menu();
+                    }
+                });
+            }
             HierarchyNode::Rect(_)
             | HierarchyNode::Line(_)
             | HierarchyNode::Circle(_)
-            | HierarchyNode::Constraint(_) => {
+            | HierarchyNode::Constraint(_)
+            | HierarchyNode::Body(_) => {
                 if response.clicked() {
                     let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
                     on_click_element(element, additive);
@@ -1141,6 +1283,43 @@ mod tests {
             ]
         );
         let _ = s1;
+    }
+
+    #[test]
+    fn extrusion_and_body_nest_under_source_sketch() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 20.0, 20.0));
+        doc.extrusions.push(crate::model::Extrusion {
+            sketch,
+            faces: vec![crate::model::ExtrudeFace::Rect(0)],
+            distance: 10.0,
+            target: None,
+            expression: String::new(),
+            name: None,
+            deleted: false,
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(0),
+            name: None,
+            deleted: false,
+        });
+
+        assert_eq!(
+            parent_element(&doc, SceneElement::Extrusion(0)),
+            Some(SceneElement::Sketch(sketch))
+        );
+        assert_eq!(
+            parent_element(&doc, SceneElement::Body(0)),
+            Some(SceneElement::Extrusion(0))
+        );
+
+        let list = build_element_list(&doc, None);
+        let si = list.iter().position(|n| *n == HierarchyNode::Sketch(0)).unwrap();
+        let ei = list.iter().position(|n| *n == HierarchyNode::Extrusion(0)).unwrap();
+        let bi = list.iter().position(|n| *n == HierarchyNode::Body(0)).unwrap();
+        assert!(si < ei && ei < bi, "sketch -> extrusion -> body order: {list:?}");
     }
 
     #[test]

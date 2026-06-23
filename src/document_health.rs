@@ -453,6 +453,7 @@ fn geometry_elements_for_entity(entity: ConstraintEntity) -> Vec<SceneElement> {
         ConstraintEntity::Point(point) => vec![point_owner_element(point)],
         ConstraintEntity::Line(line) => geometry_elements_for_line(line),
         ConstraintEntity::Circle(circle) => vec![SceneElement::Circle(circle)],
+        ConstraintEntity::Origin => Vec::new(),
     }
 }
 

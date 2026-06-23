@@ -49,6 +49,12 @@ pub enum Instruction {
         x1: f32,
         y1: f32,
     },
+    /// Extrude coplanar sketch faces into a solid.
+    Extrude {
+        sketch: SketchId,
+        faces: Vec<crate::model::ExtrudeFace>,
+        distance: f32,
+    },
     SetElementVisible {
         element: SceneElement,
         visible: Option<bool>,
@@ -185,6 +191,9 @@ impl Instruction {
             Instruction::CreateLine { x0, y0, x1, y1 } => {
                 format!("le3.line{{ x = {x0}, y = {y0}, x1 = {x1}, y1 = {y1} }}")
             }
+            Instruction::Extrude {
+                faces, distance, ..
+            } => format!("le3.extrude{{ faces = {}, distance = {distance} }}", faces.len()),
             Instruction::SetElementVisible { element, visible } => {
                 let target = element_lua_ref(*element);
                 let verb = match visible {
@@ -503,6 +512,18 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             edge: None,
             point: Some(point),
         },
+        SceneElement::Extrusion(i) => ElementScriptTokens {
+            kind: "extrusion",
+            index: i,
+            edge: None,
+            point: None,
+        },
+        SceneElement::Body(i) => ElementScriptTokens {
+            kind: "body",
+            index: i,
+            edge: None,
+            point: None,
+        },
     }
 }
 
@@ -756,6 +777,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
         Tool::Sketch => "sketch",
         Tool::Dimension => "dimension",
         Tool::Constraint => "constraint",
+        Tool::Extrude => "extrude",
     }
 }
 
@@ -764,6 +786,8 @@ fn face_lua_parts(face: FaceId) -> (&'static str, usize) {
         FaceId::Rect(i) => ("rect", i),
         FaceId::Circle(i) => ("circle", i),
         FaceId::ConstructionPlane(i) => ("construction_plane", i),
+        // Cap faces aren't yet addressable from the two-argument script form.
+        FaceId::ExtrudeCap { extrusion, .. } => ("extrude_cap", extrusion),
     }
 }
 
@@ -1416,6 +1440,18 @@ impl ScriptRunner {
             }
             Instruction::CreateLine { x0, y0, x1, y1 } => {
                 state.apply(Action::CreateLineSegment { x0, y0, x1, y1 });
+                StepResult::Continue
+            }
+            Instruction::Extrude {
+                sketch,
+                faces,
+                distance,
+            } => {
+                state.apply(Action::CreateExtrusion {
+                    sketch,
+                    faces,
+                    distance,
+                });
                 StepResult::Continue
             }
             Instruction::SetElementVisible { element, visible } => {

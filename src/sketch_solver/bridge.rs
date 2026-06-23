@@ -718,10 +718,28 @@ impl SketchBridge {
                     weight: DEFAULT_WEIGHT,
                 });
             }
+            (ConstraintEntity::Point(point), ConstraintEntity::Origin)
+            | (ConstraintEntity::Origin, ConstraintEntity::Point(point)) => {
+                // Pin the point to the sketch origin via a fixed (0, 0) helper point.
+                let (px, py) = self.point_vars(point)?;
+                let (ox, oy) = self.system.add_point(0.0, 0.0, true);
+                self.system.add_equation(Equation::CoincidentU {
+                    a: px,
+                    b: ox,
+                    weight: DEFAULT_WEIGHT,
+                });
+                self.system.add_equation(Equation::CoincidentV {
+                    a: py,
+                    b: oy,
+                    weight: DEFAULT_WEIGHT,
+                });
+            }
             (ConstraintEntity::Line(_), ConstraintEntity::Line(_))
             | (ConstraintEntity::Circle(_), ConstraintEntity::Circle(_))
             | (ConstraintEntity::Line(_), ConstraintEntity::Circle(_))
-            | (ConstraintEntity::Circle(_), ConstraintEntity::Line(_)) => {
+            | (ConstraintEntity::Circle(_), ConstraintEntity::Line(_))
+            | (ConstraintEntity::Origin, _)
+            | (_, ConstraintEntity::Origin) => {
                 return Err("Unsupported coincident entity pair".to_string());
             }
         }

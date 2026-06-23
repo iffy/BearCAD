@@ -479,6 +479,10 @@ pub fn show_palette(
         state.selected = 0;
     }
 
+    // When the keyboard moved the selection, scroll the focused row into view so
+    // the visible pane follows the selection rather than leaving it offscreen.
+    let scroll_to_selected = up || down;
+
     if state.selected >= matches.len() {
         state.selected = matches.len().saturating_sub(1);
     }
@@ -491,14 +495,16 @@ pub fn show_palette(
                 .show(ui, |ui| {
                     for (index, (cmd, _score)) in matches.iter().enumerate() {
                         let selected = index == state.selected;
-                        if shortcuts::action_row(
+                        let response = shortcuts::action_row(
                             ui,
                             selected,
                             cmd.label,
                             shortcuts::palette_command_shortcut(cmd.id),
-                        )
-                        .clicked()
-                        {
+                        );
+                        if selected && scroll_to_selected {
+                            response.scroll_to_me(Some(egui::Align::Center));
+                        }
+                        if response.clicked() {
                             state.selected = index;
                         }
                     }

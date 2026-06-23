@@ -80,6 +80,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 
 ### 3.1 Sketching (2D)
 - Sketches are created on a datum plane or a planar face.
+- **Sketching on body faces:** the planar cap faces of an extruded body (the base and
+  offset ends of each extruded profile) are selectable sketch faces. Clicking one with the
+  Sketch tool starts a sketch on that face — its frame inherits the profile's in-plane axes,
+  offset along the extrusion normal — and the geometry drawn there behaves exactly like any
+  other sketch. Such a sketch (and anything built from it) nests under, and depends on, the
+  extrusion whose face it sits on. A solid cap occludes the datum plane behind it for picking.
 - Sketch entities: line, arc, circle, ellipse, spline, point, and construction-geometry
   variants. Convenience primitives (e.g. **rectangle**, drawn as four constrained lines)
   may be offered as tools that emit the underlying entities.
@@ -94,6 +100,26 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 
 ### 3.2 Solid creation from sketches
 - **Extrude** — blind, symmetric, to-object, with optional draft angle.
+  - An **Extrusion** is a first-class feature element (own hierarchy row, nameable, undoable):
+    it references one or more coplanar sketch faces (closed rect/circle profiles) and a signed
+    distance along the plane normal, and generates a solid mesh (prism per rect, cylinder per
+    circle). Each extrusion produces a **Body** (the solid result) that depends on it: the body
+    nests under the extrusion in the Elements pane and is removed if the extrusion is deleted.
+    Created in script via `le3.extrude{ rect|circle|rects|circles, distance, name? }`.
+  - Implemented: the data model (Extrusion + Body) with `.le3` persistence; mesh generation;
+    both hierarchy elements; depth-tested flat-shaded rendering; and the interactive **Extrude
+    tool** (`E`): click coplanar faces to toggle inclusion (hover-highlighted), drag the normal
+    gizmo or type a distance (expressions/variables) to set the depth (positive or negative),
+    with a live **semi-transparent** preview solid that updates as you type; Enter commits, Esc
+    cancels; double-click / right-click → Edit re-opens an extrusion for changing faces or
+    length. The gizmo handle floats a little above the solid's top face (rather than sitting on
+    it), and typing a digit while the tool is active focuses the distance field and overwrites
+    its value. The extrusion (and its body) nests under the sketch it was built from.
+  - **Extrude-to-object**: during a gizmo drag, hovering a vertex/face/plane snaps the depth to
+    that object and, on release, constrains the extrusion to it (`ExtrudeTarget`). The effective
+    depth is then derived from the target's extended plane — to a vertex's perpendicular plane,
+    or where the extrusion axis meets a face/construction-plane — and recomputes if that geometry
+    moves. A free gizmo drag (no object) leaves a plain unconstrained distance.
 - **Revolve** — about an axis, full or partial angle.
 
 ### 3.3 Combining solids

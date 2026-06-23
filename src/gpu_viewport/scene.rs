@@ -50,6 +50,12 @@ pub const DEFAULT_CONSTRUCTION_PLANE_OPACITY: f32 = 0.30;
 /// Lift plane fills slightly toward the camera so they win over the ground grid.
 pub const PLANE_FILL_DEPTH_BIAS: f32 = 0.02;
 /// Base depth lift for sketch shape fills toward the camera.
+/// Base fill color for extruded solid bodies (shaded per triangle).
+pub const SOLID_FILL: Color32 = Color32::from_rgb(150, 168, 196);
+/// Highlighted fill for the in-progress extrusion preview.
+pub const SOLID_PREVIEW_FILL: Color32 = Color32::from_rgb(120, 215, 230);
+/// Opacity of the in-progress extrusion preview body (before it is committed).
+pub const SOLID_PREVIEW_OPACITY: f32 = 0.4;
 pub const SHAPE_FILL_DEPTH_BIAS_BASE: f32 = 0.04;
 /// Per-shape increment so coplanar overlaps resolve stably (higher index wins).
 pub const SHAPE_FILL_DEPTH_BIAS_STEP: f32 = 0.008;
@@ -153,6 +159,16 @@ pub struct ViewportPlanePreview {
     pub dim_outline: bool,
 }
 
+/// Normal offset gizmo for the extrude tool (same arrow as the plane offset gizmo).
+#[derive(Clone, Copy, Debug)]
+pub struct ViewportExtrudeGizmo {
+    pub origin: Vec3,
+    pub normal: Vec3,
+    pub offset: f32,
+    pub color: Color32,
+    pub hovered: bool,
+}
+
 /// Construction-plane offset/angle gizmo while creating or editing a plane.
 #[derive(Clone, Debug)]
 pub struct ViewportPlaneGizmo {
@@ -175,11 +191,14 @@ pub struct ViewportSceneInput<'a> {
     pub preview_rect: Option<ModelRect>,
     pub preview_line: Option<Line>,
     pub preview_circle: Option<Circle>,
+    /// In-progress extrusion (rendered as a translucent preview solid).
+    pub preview_extrusion: Option<crate::model::Extrusion>,
     pub plane_preview: Option<ViewportPlanePreview>,
     pub active_sketch_face: Option<FaceId>,
     pub dimension_labels: &'a [ViewportDimLabel],
     pub dim_label_view: Option<PlanarLabelView>,
     pub plane_gizmo: Option<ViewportPlaneGizmo>,
+    pub extrude_gizmo: Option<ViewportExtrudeGizmo>,
     pub hover_highlight: Option<ViewportHoverHighlight>,
     pub hover_color: Color32,
     pub document_health: &'a DocumentHealth,
@@ -261,6 +280,33 @@ impl ViewportScene {
                 ),
                 shape_fill_depth_bias(ci),
             );
+        }
+
+        // Extruded solid bodies (3D, depth-tested, flat-shaded).
+        for (bi, body) in input.doc.bodies.iter().enumerate() {
+            if body.deleted
+                || !input
+                    .element_visibility
+                    .effective_visible(input.doc, SceneElement::Body(bi))
+            {
+                continue;
+            }
+            let crate::model::BodySource::Extrusion(ei) = body.source;
+            let Some(extrusion) = input.doc.extrusions.get(ei) else {
+                continue;
+            };
+            if extrusion.deleted {
+                continue;
+            }
+            if let Some(solid) = crate::extrude::extrusion_mesh(input.doc, extrusion) {
+                mesh.push_solid(&solid, SOLID_FILL);
+            }
+        }
+        // Live preview of the in-progress extrusion (semi-transparent until committed).
+        if let Some(preview) = input.preview_extrusion.as_ref() {
+            if let Some(solid) = crate::extrude::extrusion_mesh(input.doc, preview) {
+                mesh.push_solid_translucent(&solid, SOLID_PREVIEW_FILL, SOLID_PREVIEW_OPACITY);
+            }
         }
 
         let mut plane_draws: Vec<(usize, ConstructionPlane, Color32, f32)> = Vec::new();
@@ -488,6 +534,21 @@ impl ViewportScene {
             mesh.push_plane_gizmo(gizmo, input.cam, input.viewport, &vp, &project);
         }
 
+        if let Some(gizmo) = input.extrude_gizmo.as_ref() {
+            let project = |w: Vec3| input.cam.project(w, input.viewport, &vp);
+            mesh.push_offset_gizmo(
+                gizmo.origin,
+                gizmo.normal,
+                gizmo.offset,
+                gizmo.color,
+                gizmo.hovered,
+                input.cam,
+                input.viewport,
+                &vp,
+                &project,
+            );
+        }
+
         if let Some(hover) = input.hover_highlight.as_ref() {
             mesh.push_hover_highlight(
                 input.doc,
@@ -583,6 +644,41 @@ impl<'a> SceneMesh<'a> {
     fn push_quad_fill(&mut self, fill_corners: [Vec3; 4], fill: Color32) {
         self.push_triangle(fill_corners[0], fill_corners[1], fill_corners[2], fill);
         self.push_triangle(fill_corners[0], fill_corners[2], fill_corners[3], fill);
+    }
+
+    /// Push a solid mesh with flat (per-triangle) two-sided shading.
+    fn push_solid(&mut self, solid: &crate::extrude::SolidMesh, base: Color32) {
+        let light = Vec3::new(0.35, 0.45, 0.82).normalize_or_zero();
+        for tri in &solid.triangles {
+            let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
+            // Two-sided: faces are lit regardless of winding direction.
+            let shade = 0.4 + 0.6 * normal.dot(light).abs();
+            self.push_triangle(tri[0], tri[1], tri[2], scale_color(base, shade));
+        }
+    }
+
+    /// Push a solid mesh into the translucent (plane-fill) layer with two-sided
+    /// shading and the given opacity, so it blends over opaque geometry.
+    fn push_solid_translucent(
+        &mut self,
+        solid: &crate::extrude::SolidMesh,
+        base: Color32,
+        opacity: f32,
+    ) {
+        let light = Vec3::new(0.35, 0.45, 0.82).normalize_or_zero();
+        let prev = self.index_layer;
+        self.set_index_layer(MeshIndexLayer::PlaneFill);
+        for tri in &solid.triangles {
+            let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
+            let shade = 0.4 + 0.6 * normal.dot(light).abs();
+            self.push_triangle(
+                tri[0],
+                tri[1],
+                tri[2],
+                fill_color(scale_color(base, shade), opacity),
+            );
+        }
+        self.set_index_layer(prev);
     }
 
     #[allow(dead_code)]
@@ -1241,6 +1337,21 @@ impl<'a> SceneMesh<'a> {
                     }
                 }
             }
+            FaceId::ExtrudeCap {
+                extrusion,
+                profile,
+                top,
+            } => {
+                if let Some(poly) =
+                    crate::extrude::cap_polygon_world(doc, extrusion, profile, top)
+                {
+                    if poly.len() >= 3 {
+                        for i in 1..poly.len() - 1 {
+                            self.push_triangle(poly[0], poly[i], poly[i + 1], fill);
+                        }
+                    }
+                }
+            }
             FaceId::ConstructionPlane(_) => {}
         }
     }
@@ -1336,6 +1447,23 @@ impl<'a> SceneMesh<'a> {
                                 view_proj,
                             );
                         }
+                    }
+                }
+            }
+            FaceId::ExtrudeCap {
+                extrusion,
+                profile,
+                top,
+            } => {
+                if let Some(poly) =
+                    crate::extrude::cap_polygon_world(doc, extrusion, profile, top)
+                {
+                    let n = poly.len();
+                    for i in 0..n {
+                        let j = (i + 1) % n;
+                        self.push_line_segment(
+                            poly[i], poly[j], color, width, cam, viewport, view_proj,
+                        );
                     }
                 }
             }
@@ -2056,6 +2184,17 @@ fn sketch_color(color: Color32, dim: bool) -> Color32 {
     }
 }
 
+/// Scale an RGB color by `factor` (for flat shading), keeping alpha.
+fn scale_color(color: Color32, factor: f32) -> Color32 {
+    let f = factor.clamp(0.0, 1.0);
+    Color32::from_rgba_unmultiplied(
+        (color.r() as f32 * f) as u8,
+        (color.g() as f32 * f) as u8,
+        (color.b() as f32 * f) as u8,
+        color.a(),
+    )
+}
+
 pub fn sketch_ground_color(color: Color32, in_sketch: bool) -> Color32 {
     if in_sketch {
         color.gamma_multiply(SKETCH_GROUND_DIMMED)
@@ -2257,11 +2396,13 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
+            preview_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: None,
             plane_gizmo: None,
+            extrude_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -2280,6 +2421,7 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
+            preview_extrusion: None,
             plane_preview: Some(ViewportPlanePreview {
                 plane: preview_plane,
                 dependents: None,
@@ -2289,6 +2431,7 @@ mod tests {
             dimension_labels: &[],
             dim_label_view: None,
             plane_gizmo: None,
+            extrude_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -2317,11 +2460,13 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
+            preview_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: None,
             plane_gizmo: None,
+            extrude_gizmo: None,
             hover_highlight: None,
             hover_color: crate::construction::PICK_HOVER_RGBA,
             document_health: &DocumentHealth::default(),
@@ -2339,11 +2484,13 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
+            preview_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: None,
             plane_gizmo: None,
+            extrude_gizmo: None,
             hover_highlight: Some(ViewportHoverHighlight::SketchFace(
                 FaceId::ConstructionPlane(0),
             )),
@@ -2378,11 +2525,13 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
+            preview_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: None,
             plane_gizmo: None,
+            extrude_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -2411,12 +2560,14 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
+            preview_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: None,
 
             plane_gizmo: Some(gizmo),
+            extrude_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -2426,6 +2577,49 @@ mod tests {
         assert!(
             with_gizmo.indices.len() > base.indices.len(),
             "plane gizmo should add triangles to the viewport scene"
+        );
+    }
+
+    #[test]
+    fn extrude_gizmo_adds_mesh_geometry() {
+        let state = AppState::default();
+        let cam = state.cam.clone();
+        let base = build_scene_for_doc(&state);
+        let mut input = ViewportSceneInput {
+            doc: &state.doc,
+            cam: &cam,
+            viewport: test_viewport(),
+            palette: ViewportPalette::default(),
+            sketch_session: None,
+            selection: &state.scene_selection,
+            element_visibility: &state.element_visibility,
+            preview_rect: None,
+            preview_line: None,
+            preview_circle: None,
+            preview_extrusion: None,
+            plane_preview: None,
+            active_sketch_face: None,
+            dimension_labels: &[],
+            dim_label_view: None,
+            plane_gizmo: None,
+            extrude_gizmo: None,
+            hover_highlight: None,
+            hover_color: Color32::WHITE,
+            document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
+        };
+        input.extrude_gizmo = Some(ViewportExtrudeGizmo {
+            origin: Vec3::ZERO,
+            normal: Vec3::Z,
+            offset: 12.0,
+            color: Color32::from_rgb(240, 200, 120),
+            hovered: false,
+        });
+        let with_gizmo = ViewportScene::build(&input);
+        assert!(
+            with_gizmo.indices.len() > base.indices.len(),
+            "extrude gizmo should add triangles to the viewport scene"
         );
     }
 
@@ -2444,11 +2638,13 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
+            preview_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: None,
             plane_gizmo: None,
+            extrude_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -2487,11 +2683,13 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
+            preview_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: None,
             plane_gizmo: None,
+            extrude_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -2560,6 +2758,29 @@ mod tests {
     }
 
     #[test]
+    fn extruded_body_adds_solid_triangles() {
+        let mut state = AppState::default();
+        commit_test_rectangle(&mut state);
+        let sketch = state.doc.rects[0].sketch;
+        let before = build_scene_for_doc(&state).vertices.len();
+
+        state.apply(crate::actions::Action::CreateExtrusion {
+            sketch,
+            faces: vec![crate::model::ExtrudeFace::Rect(0)],
+            distance: 8.0,
+        });
+
+        let scene = build_scene_for_doc(&state);
+        // A box solid adds 12 triangles = 36 vertices.
+        assert!(
+            scene.vertices.len() >= before + 36,
+            "extruded body should add solid triangles: {} -> {}",
+            before,
+            scene.vertices.len()
+        );
+    }
+
+    #[test]
     fn rectangle_adds_fill_and_edge_triangles() {
         let mut state = AppState::default();
         state.apply(crate::actions::Action::BeginSketch {
@@ -2588,11 +2809,13 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
+            preview_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: None,
             plane_gizmo: None,
+            extrude_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -2631,11 +2854,13 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
+            preview_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: None,
             plane_gizmo: None,
+            extrude_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -2727,11 +2952,13 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
+            preview_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: None,
             plane_gizmo: None,
+            extrude_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -2749,11 +2976,13 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
+            preview_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: None,
             plane_gizmo: None,
+            extrude_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -2839,11 +3068,13 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
+            preview_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: None,
             plane_gizmo: None,
+            extrude_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -2861,11 +3092,13 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
+            preview_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: None,
             plane_gizmo: None,
+            extrude_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -2995,12 +3228,15 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
+            preview_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: Some(view),
 
             plane_gizmo: None,
+
+            extrude_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -3020,12 +3256,15 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
+            preview_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: std::slice::from_ref(&dim_label),
             dim_label_view: Some(view),
 
             plane_gizmo: None,
+
+            extrude_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -3113,11 +3352,13 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
+            preview_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: None,
             plane_gizmo: None,
+            extrude_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -3137,11 +3378,13 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
+            preview_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: None,
             plane_gizmo: None,
+            extrude_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -3159,11 +3402,13 @@ mod tests {
             preview_rect: None,
             preview_line: None,
             preview_circle: None,
+            preview_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
             dim_label_view: None,
             plane_gizmo: None,
+            extrude_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),

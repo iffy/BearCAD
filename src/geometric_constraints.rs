@@ -523,6 +523,8 @@ fn validate_entity_ref(
             }
             Ok(())
         }
+        // The origin is a fixed point in every sketch; always valid.
+        ConstraintEntity::Origin => Ok(()),
     }
 }
 

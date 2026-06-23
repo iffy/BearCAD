@@ -38,9 +38,8 @@ use crate::constraints::{
     find_distance_constraint, set_constraint_dim_offset, set_constraint_expression, ConstraintId,
 };
 use crate::model::{
-    Circle, ConstructionPlane, ConstraintPoint, DimensionTarget, DistanceTarget, Document, FaceId,
-    Line, LineEnd, Rect,
-    RectEdge, ShapeKind,
+    Circle, ConstructionPlane, ConstraintPoint, DimensionTarget, DistanceTarget, Document,
+    ExtrudeFace, Extrusion, FaceId, Line, LineEnd, Rect, RectEdge, ShapeKind,
 };
 use crate::vertex_drag;
 use crate::face::SketchFrame;
@@ -77,6 +76,8 @@ pub enum Tool {
     Dimension,
     /// Select sketch entities and apply geometric constraints from the context pane.
     Constraint,
+    /// Click coplanar faces to include them, then set a distance to extrude a solid.
+    Extrude,
 }
 
 impl Tool {
@@ -92,6 +93,7 @@ impl Tool {
             "sketch" => Some(Tool::Sketch),
             "dimension" | "dim" => Some(Tool::Dimension),
             "constraint" | "constraints" => Some(Tool::Constraint),
+            "extrude" => Some(Tool::Extrude),
             _ => None,
         }
     }
@@ -216,6 +218,37 @@ impl CreatingCircle {
             cu + angle.cos() * r,
             cv + angle.sin() * r,
         )
+    }
+}
+
+/// In-progress (or being-edited) extrusion: selected faces + live signed distance.
+#[derive(Clone, Debug)]
+pub struct CreatingExtrusion {
+    /// Sketch plane the faces lie on (all faces are coplanar).
+    pub sketch: SketchId,
+    pub faces: Vec<ExtrudeFace>,
+    /// Live signed distance along the plane normal (gizmo-driven).
+    pub distance: f32,
+    /// Distance input text (magnitude); the sign follows `distance`.
+    pub text: String,
+    pub user_edited: bool,
+    pub pending_focus: bool,
+    /// When set, the depth is constrained to this object's extended plane.
+    pub target: Option<crate::model::ExtrudeTarget>,
+    /// `Some` when editing an existing extrusion rather than creating one.
+    pub edit_index: Option<usize>,
+}
+
+impl CreatingExtrusion {
+    /// Evaluated signed distance: typed magnitude (if edited) keeps the live sign.
+    pub fn evaluated_distance(&self, doc: &Document) -> f32 {
+        if self.user_edited {
+            let magnitude = parse_positive_length_or_in_doc(&self.text, doc, self.distance.abs());
+            let sign = if self.distance < 0.0 { -1.0 } else { 1.0 };
+            magnitude * sign
+        } else {
+            self.distance
+        }
     }
 }
 
@@ -436,6 +469,24 @@ pub enum Action {
         x1: f32,
         y1: f32,
     },
+    /// Create an extrusion solid from coplanar sketch faces.
+    CreateExtrusion {
+        sketch: SketchId,
+        faces: Vec<ExtrudeFace>,
+        distance: f32,
+    },
+    /// Add/remove a face from the in-progress extrusion (starts one if needed).
+    ToggleExtrudeFace { face: ExtrudeFace },
+    /// Set the live (gizmo-driven) extrusion distance.
+    SetExtrudeDistance { distance: f32 },
+    /// Constrain (or unconstrain) the in-progress extrusion to an object's extended plane.
+    SetExtrudeTarget {
+        target: Option<crate::model::ExtrudeTarget>,
+    },
+    /// Begin editing an existing extrusion.
+    EditExtrusion { index: usize },
+    /// Finalize the in-progress extrusion (create or update).
+    CommitExtrusion,
     /// Enable or disable snapping while drawing/dragging.
     SetSnapping(bool),
     /// Add the constraint implied by leaving `point` on a snap target.
@@ -804,6 +855,8 @@ pub struct AppState {
     pub creating_rect: Option<CreatingRect>,
     pub creating_line: Option<CreatingLine>,
     pub creating_circle: Option<CreatingCircle>,
+    /// In-progress (or being-edited) extrusion: selected faces + live distance.
+    pub creating_extrusion: Option<CreatingExtrusion>,
     /// Shared construction draw mode for rectangle, line, and circle tools.
     pub draw_construction: bool,
     pub creating_plane: Option<CreatingConstructionPlane>,
@@ -847,6 +900,7 @@ impl Default for AppState {
             creating_rect: None,
             creating_line: None,
             creating_circle: None,
+            creating_extrusion: None,
             draw_construction: false,
             creating_plane: None,
             panes: PaneVisibility::default(),
@@ -876,6 +930,17 @@ impl Default for AppState {
 impl AppState {
     pub fn refresh_document_health(&mut self) {
         self.document_health = recompute_document_health(&self.doc);
+    }
+}
+
+/// Default starting extrusion distance (mm).
+pub const DEFAULT_EXTRUDE_DISTANCE: f32 = 10.0;
+
+/// The sketch a face (rect/circle profile) belongs to.
+fn extrude_face_sketch(doc: &Document, face: ExtrudeFace) -> Option<SketchId> {
+    match face {
+        ExtrudeFace::Rect(i) => doc.rects.get(i).map(|r| r.sketch),
+        ExtrudeFace::Circle(i) => doc.circles.get(i).map(|c| c.sketch),
     }
 }
 
@@ -945,6 +1010,8 @@ fn element_label(element: SceneElement) -> String {
         }
         SceneElement::Constraint(i) => format!("Constraint {i}"),
         SceneElement::Point(_) => "Point".to_string(),
+        SceneElement::Extrusion(i) => format!("Extrusion {i}"),
+        SceneElement::Body(i) => format!("Body {i}"),
     }
 }
 
@@ -1170,6 +1237,16 @@ impl AppState {
                         self.status = "Undid last parameter".to_string();
                         undone = true;
                     }
+                    Some(ShapeKind::Body) => {
+                        self.doc.bodies.pop();
+                        self.status = "Undid last body".to_string();
+                        undone = true;
+                    }
+                    Some(ShapeKind::Extrusion) => {
+                        self.doc.extrusions.pop();
+                        self.status = "Undid last extrusion".to_string();
+                        undone = true;
+                    }
                     Some(ShapeKind::ConstructionPlane) => {
                         if self.doc.construction_planes.len() <= 1 {
                             self.doc.shape_order.push(ShapeKind::ConstructionPlane);
@@ -1214,6 +1291,14 @@ impl AppState {
                 if self.creating_plane.is_some() && tool != Tool::ConstructionPlane {
                     self.creating_plane = None;
                 }
+                if self.creating_extrusion.is_some() && tool != Tool::Extrude {
+                    self.creating_extrusion = None;
+                }
+                // Extruding acts on the 3D model, not sketch geometry: leave sketch
+                // editing when the extrude tool is picked from inside a sketch.
+                if tool == Tool::Extrude && self.sketch_session.is_some() {
+                    self.exit_sketch_session();
+                }
                 if !matches!(tool, Tool::Select | Tool::Dimension | Tool::Constraint) {
                     self.editing_committed_dim = None;
                 }
@@ -1240,6 +1325,9 @@ impl AppState {
                     }
                     Tool::Constraint => "Constraint tool — open a sketch first".to_string(),
                     Tool::ConstructionPlane => "Construction plane tool".to_string(),
+                    Tool::Extrude => {
+                        "Extrude tool — click coplanar faces, then set a distance".to_string()
+                    }
                 };
                 if tool == Tool::Dimension {
                     self.try_begin_dimension_from_selection();
@@ -1254,6 +1342,8 @@ impl AppState {
                 self.circle_center_snap = None;
                 if self.editing_committed_dim.take().is_some() {
                     self.status = "Cancelled".to_string();
+                } else if self.creating_extrusion.take().is_some() {
+                    self.status = "Cancelled extrusion".to_string();
                 } else if self.creating_rect.take().is_some()
                     || self.creating_line.take().is_some()
                     || self.creating_circle.take().is_some()
@@ -2286,6 +2376,147 @@ impl AppState {
                 self.status = format!("Added line ({length:.1} mm)");
                 ActionResult::Ok
             }
+            Action::CreateExtrusion {
+                sketch,
+                faces,
+                distance,
+            } => {
+                if faces.is_empty() {
+                    return ActionResult::Err("Extrusion needs at least one face".to_string());
+                }
+                self.doc.extrusions.push(Extrusion {
+                    sketch,
+                    faces,
+                    distance,
+                    target: None,
+                    expression: String::new(),
+                    name: None,
+                    deleted: false,
+                });
+                self.doc.shape_order.push(ShapeKind::Extrusion);
+                let extrusion_index = self.doc.extrusions.len() - 1;
+                // The extrusion produces a solid body that depends on it.
+                self.doc.bodies.push(crate::model::Body {
+                    source: crate::model::BodySource::Extrusion(extrusion_index),
+                    name: None,
+                    deleted: false,
+                });
+                self.doc.shape_order.push(ShapeKind::Body);
+                self.refresh_document_health();
+                self.status = format!("Added extrusion ({distance:.1} mm)");
+                ActionResult::Ok
+            }
+            Action::ToggleExtrudeFace { face } => {
+                let Some(sketch) = extrude_face_sketch(&self.doc, face) else {
+                    return ActionResult::Err("Face not found".to_string());
+                };
+                match &mut self.creating_extrusion {
+                    Some(ce) if ce.sketch == sketch => {
+                        if let Some(pos) = ce.faces.iter().position(|f| *f == face) {
+                            ce.faces.remove(pos);
+                        } else {
+                            ce.faces.push(face);
+                        }
+                    }
+                    // A face on a different plane starts a fresh extrusion.
+                    _ => {
+                        self.creating_extrusion = Some(CreatingExtrusion {
+                            sketch,
+                            faces: vec![face],
+                            distance: DEFAULT_EXTRUDE_DISTANCE,
+                            text: crate::value::format_length_display(DEFAULT_EXTRUDE_DISTANCE),
+                            user_edited: false,
+                            pending_focus: true,
+                            target: None,
+                            edit_index: None,
+                        });
+                    }
+                }
+                ActionResult::Ok
+            }
+            Action::SetExtrudeDistance { distance } => {
+                if let Some(ce) = &mut self.creating_extrusion {
+                    ce.distance = distance;
+                    if !ce.user_edited {
+                        ce.text = crate::value::format_length_display(distance.abs());
+                    }
+                }
+                ActionResult::Ok
+            }
+            Action::SetExtrudeTarget { target } => {
+                if let Some(ce) = &mut self.creating_extrusion {
+                    ce.target = target;
+                    // Typing a distance again clears the object constraint.
+                    if target.is_some() {
+                        ce.user_edited = false;
+                    }
+                }
+                ActionResult::Ok
+            }
+            Action::EditExtrusion { index } => {
+                let Some(extrusion) = self.doc.extrusions.get(index) else {
+                    return ActionResult::Err("Extrusion not found".to_string());
+                };
+                if extrusion.deleted {
+                    return ActionResult::Err("Extrusion was deleted".to_string());
+                }
+                self.creating_extrusion = Some(CreatingExtrusion {
+                    sketch: extrusion.sketch,
+                    faces: extrusion.faces.clone(),
+                    distance: extrusion.distance,
+                    text: crate::value::format_length_display(extrusion.distance.abs()),
+                    user_edited: false,
+                    pending_focus: true,
+                    target: extrusion.target,
+                    edit_index: Some(index),
+                });
+                self.tool = Tool::Extrude;
+                self.status = format!("Editing extrusion {index}");
+                ActionResult::Ok
+            }
+            Action::CommitExtrusion => {
+                let Some(ce) = self.creating_extrusion.take() else {
+                    return ActionResult::Err("No extrusion in progress".to_string());
+                };
+                if ce.faces.is_empty() {
+                    self.creating_extrusion = Some(ce);
+                    return ActionResult::Err("Select at least one face".to_string());
+                }
+                let distance = ce.evaluated_distance(&self.doc);
+                if distance.abs() < 1e-3 {
+                    self.creating_extrusion = Some(ce);
+                    return ActionResult::Err("Extrusion distance must be non-zero".to_string());
+                }
+                if let Some(idx) = ce.edit_index {
+                    if let Some(extrusion) = self.doc.extrusions.get_mut(idx) {
+                        extrusion.faces = ce.faces.clone();
+                        extrusion.distance = distance;
+                        extrusion.target = ce.target;
+                    }
+                    self.status = format!("Updated extrusion ({distance:.1} mm)");
+                } else {
+                    self.doc.extrusions.push(Extrusion {
+                        sketch: ce.sketch,
+                        faces: ce.faces.clone(),
+                        distance,
+                        target: ce.target,
+                        expression: String::new(),
+                        name: None,
+                        deleted: false,
+                    });
+                    self.doc.shape_order.push(ShapeKind::Extrusion);
+                    let ei = self.doc.extrusions.len() - 1;
+                    self.doc.bodies.push(crate::model::Body {
+                        source: crate::model::BodySource::Extrusion(ei),
+                        name: None,
+                        deleted: false,
+                    });
+                    self.doc.shape_order.push(ShapeKind::Body);
+                    self.status = format!("Added extrusion ({distance:.1} mm)");
+                }
+                self.refresh_document_health();
+                ActionResult::Ok
+            }
             Action::SetSnapping(enabled) => {
                 self.snapping_enabled = enabled;
                 self.active_snap = None;
@@ -2778,6 +3009,83 @@ mod tests {
             viewport: None,
         });
         state.sketch_session.unwrap().sketch
+    }
+
+    #[test]
+    fn extrude_tool_toggle_distance_and_commit() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state
+            .doc
+            .rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 10.0, 5.0));
+        state.doc.shape_order.push(ShapeKind::Rect);
+        state.refresh_document_health();
+
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace {
+            face: ExtrudeFace::Rect(0),
+        });
+        assert_eq!(
+            state.creating_extrusion.as_ref().unwrap().faces,
+            vec![ExtrudeFace::Rect(0)]
+        );
+        // Toggling again removes it.
+        state.apply(Action::ToggleExtrudeFace {
+            face: ExtrudeFace::Rect(0),
+        });
+        assert!(state.creating_extrusion.as_ref().unwrap().faces.is_empty());
+
+        state.apply(Action::ToggleExtrudeFace {
+            face: ExtrudeFace::Rect(0),
+        });
+        state.apply(Action::SetExtrudeDistance { distance: 7.0 });
+        state.apply(Action::CommitExtrusion);
+
+        assert_eq!(state.doc.extrusions.len(), 1);
+        assert_eq!(state.doc.extrusions[0].distance, 7.0);
+        assert_eq!(state.doc.bodies.len(), 1);
+        assert!(state.creating_extrusion.is_none());
+    }
+
+    #[test]
+    fn picking_extrude_tool_from_within_a_sketch_exits_sketch_editing() {
+        let mut state = AppState::default();
+        let _sketch = begin_default_sketch(&mut state);
+        assert!(state.sketch_session.is_some());
+        // Extruding acts on the 3D model, so entering the tool leaves sketch editing.
+        state.apply(Action::SetTool(Tool::Extrude));
+        assert_eq!(state.tool, Tool::Extrude);
+        assert!(state.sketch_session.is_none());
+    }
+
+    #[test]
+    fn edit_extrusion_loads_into_creating_state() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state
+            .doc
+            .rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 10.0, 5.0));
+        state.doc.shape_order.push(ShapeKind::Rect);
+        state.apply(Action::CreateExtrusion {
+            sketch,
+            faces: vec![ExtrudeFace::Rect(0)],
+            distance: 6.0,
+        });
+
+        state.apply(Action::EditExtrusion { index: 0 });
+        let ce = state.creating_extrusion.as_ref().unwrap();
+        assert_eq!(ce.edit_index, Some(0));
+        assert_eq!(ce.distance, 6.0);
+        assert_eq!(state.tool, Tool::Extrude);
+
+        // Editing then committing updates in place (no new extrusion/body).
+        state.apply(Action::SetExtrudeDistance { distance: 15.0 });
+        state.apply(Action::CommitExtrusion);
+        assert_eq!(state.doc.extrusions.len(), 1);
+        assert_eq!(state.doc.extrusions[0].distance, 15.0);
+        assert_eq!(state.doc.bodies.len(), 1);
     }
 
     #[test]

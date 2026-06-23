@@ -30,6 +30,8 @@ pub enum IconId {
     Perspective,
     Orthographic,
     Sketch,
+    Extrude,
+    Body,
     Plus,
     Showing,
     Hidden,
@@ -37,7 +39,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 22] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -55,6 +57,8 @@ impl IconId {
         Self::Perspective,
         Self::Orthographic,
         Self::Sketch,
+        Self::Extrude,
+        Self::Body,
         Self::Plus,
         Self::Showing,
         Self::Hidden,
@@ -79,6 +83,8 @@ impl IconId {
             Self::Perspective => include_str!("assets/icons/perspective.svg"),
             Self::Orthographic => include_str!("assets/icons/orthographic.svg"),
             Self::Sketch => include_str!("assets/icons/sketch.svg"),
+            Self::Extrude => include_str!("assets/icons/extrude.svg"),
+            Self::Body => include_str!("assets/icons/body.svg"),
             Self::Plus => include_str!("assets/icons/plus.svg"),
             Self::Showing => include_str!("assets/icons/showing.svg"),
             Self::Hidden => include_str!("assets/icons/hidden.svg"),
@@ -104,6 +110,8 @@ impl IconId {
             Self::Perspective => "Perspective",
             Self::Orthographic => "Orthographic",
             Self::Sketch => "Sketch",
+            Self::Extrude => "Extrude",
+            Self::Body => "Body",
             Self::Plus => "Plus",
             Self::Showing => "Showing",
             Self::Hidden => "Hidden",

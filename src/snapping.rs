@@ -13,6 +13,8 @@ use crate::model::{
 pub enum SnapTarget {
     /// Coincident with another vertex.
     Vertex(ConstraintPoint),
+    /// Coincident with the sketch origin (local UV `(0, 0)`).
+    Origin,
     /// On the midpoint of a line/edge.
     Midpoint(ConstraintLine),
     /// Anywhere along a line/edge.
@@ -57,6 +59,20 @@ pub fn find_snap(
                 Snap {
                     uv: (u, v),
                     target: SnapTarget::Vertex(point),
+                },
+            ));
+        }
+    }
+    // The sketch origin is always snappable as a vertex. A real vertex at the same
+    // distance wins (it produces a richer point-to-point coincidence).
+    {
+        let d2 = dist_sq(query, (0.0, 0.0));
+        if d2 <= radius_sq && best_vertex.as_ref().is_none_or(|(b, _)| d2 < *b) {
+            best_vertex = Some((
+                d2,
+                Snap {
+                    uv: (0.0, 0.0),
+                    target: SnapTarget::Origin,
                 },
             ));
         }
@@ -118,6 +134,10 @@ pub fn snap_constraint_kind(point: ConstraintPoint, target: SnapTarget) -> Const
             a: ConstraintEntity::Point(point),
             b: ConstraintEntity::Point(other),
         },
+        SnapTarget::Origin => ConstraintKind::Coincident {
+            a: ConstraintEntity::Point(point),
+            b: ConstraintEntity::Origin,
+        },
         SnapTarget::Midpoint(line) => ConstraintKind::Midpoint { point, line },
         SnapTarget::OnLine(line) => ConstraintKind::Coincident {
             a: ConstraintEntity::Point(point),
@@ -156,6 +176,7 @@ fn entity_eq(a: ConstraintEntity, b: ConstraintEntity) -> bool {
     match (a, b) {
         (ConstraintEntity::Point(p), ConstraintEntity::Point(q)) => p == q,
         (ConstraintEntity::Line(l), ConstraintEntity::Line(m)) => l == m,
+        (ConstraintEntity::Origin, ConstraintEntity::Origin) => true,
         _ => false,
     }
 }
@@ -175,6 +196,39 @@ fn owning_lines(point: ConstraintPoint) -> Vec<ConstraintLine> {
         .collect(),
         ConstraintPoint::CircleCenter(_) => Vec::new(),
     }
+}
+
+/// Every vertex in the document (line endpoints, rect corners, circle centers), across sketches.
+pub fn all_sketch_vertices(doc: &Document) -> Vec<ConstraintPoint> {
+    let mut points = Vec::new();
+    for (index, line) in doc.lines.iter().enumerate() {
+        if line.deleted {
+            continue;
+        }
+        points.push(ConstraintPoint::LineEndpoint {
+            line: index,
+            end: LineEnd::Start,
+        });
+        points.push(ConstraintPoint::LineEndpoint {
+            line: index,
+            end: LineEnd::End,
+        });
+    }
+    for (index, rect) in doc.rects.iter().enumerate() {
+        if rect.deleted {
+            continue;
+        }
+        for corner in 0..4u8 {
+            points.push(ConstraintPoint::RectCorner { rect: index, corner });
+        }
+    }
+    for (index, circle) in doc.circles.iter().enumerate() {
+        if circle.deleted {
+            continue;
+        }
+        points.push(ConstraintPoint::CircleCenter(index));
+    }
+    points
 }
 
 /// All snap-able vertices in a sketch (line endpoints, rect corners, circle centers).
@@ -337,6 +391,36 @@ mod tests {
         doc.rects
             .push(Rect::from_local_corners(sketch, 0.0, 0.0, 10.0, 10.0));
         assert!(find_snap(&doc, sketch, (50.0, 50.0), 1.0, &[]).is_none());
+    }
+
+    #[test]
+    fn snaps_to_sketch_origin_as_a_vertex() {
+        let (mut doc, sketch) = sketch_doc();
+        // A rectangle away from the origin so its corners are out of range.
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 20.0, 20.0, 30.0, 30.0));
+        let snap = find_snap(&doc, sketch, (0.3, 0.2), 1.0, &[]).unwrap();
+        assert_eq!(snap.target, SnapTarget::Origin);
+        assert!(snap.uv.0.abs() < EPS && snap.uv.1.abs() < EPS);
+        // Leaving a point there pins it coincident with the origin.
+        let point = ConstraintPoint::RectCorner { rect: 0, corner: 0 };
+        assert!(matches!(
+            snap_constraint_kind(point, snap.target),
+            ConstraintKind::Coincident {
+                b: ConstraintEntity::Origin,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn real_vertex_beats_origin_when_closer() {
+        let (mut doc, sketch) = sketch_doc();
+        // A line endpoint very near the query, closer than the origin.
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.4, 0.4, 10.0, 0.0));
+        let snap = find_snap(&doc, sketch, (0.45, 0.45), 1.0, &[]).unwrap();
+        assert!(matches!(snap.target, SnapTarget::Vertex(_)));
     }
 
     #[test]

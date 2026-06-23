@@ -745,7 +745,8 @@ pub fn coincident_group(doc: &Document, sketch: SketchId, seed: ConstraintPoint)
 fn entity_point(entity: ConstraintEntity) -> Option<ConstraintPoint> {
     match entity {
         ConstraintEntity::Point(point) => Some(point),
-        ConstraintEntity::Line(_) | ConstraintEntity::Circle(_) => None,
+        // The origin is a fixed reference, not a draggable vertex.
+        ConstraintEntity::Line(_) | ConstraintEntity::Circle(_) | ConstraintEntity::Origin => None,
     }
 }
 

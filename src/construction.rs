@@ -1223,6 +1223,25 @@ pub fn draw_quad_face_highlight(
     ));
 }
 
+/// Highlight an arbitrary planar face given by its world-space boundary loop.
+pub fn draw_polygon_face_highlight(
+    painter: &egui::Painter,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    poly: &[Vec3],
+    color: egui::Color32,
+) {
+    let pts: Option<Vec<egui::Pos2>> = poly.iter().map(|&p| project(p)).collect();
+    let Some(pts) = pts else { return };
+    if pts.len() < 3 {
+        return;
+    }
+    painter.add(egui::Shape::convex_polygon(
+        pts,
+        color.gamma_multiply(FACE_HOVER_FILL_MULTIPLIER),
+        egui::Stroke::new(2.0, color),
+    ));
+}
+
 fn draw_plane_face_highlight(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,

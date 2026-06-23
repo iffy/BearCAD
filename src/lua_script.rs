@@ -81,6 +81,8 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::Circle(_) => "circle",
         SceneElement::Constraint(_) => "constraint",
         SceneElement::Point(_) => "point",
+        SceneElement::Extrusion(_) => "extrusion",
+        SceneElement::Body(_) => "body",
     }
 }
 
@@ -91,7 +93,9 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::Rect(i)
         | SceneElement::Line(i)
         | SceneElement::Circle(i)
-        | SceneElement::Constraint(i) => i,
+        | SceneElement::Constraint(i)
+        | SceneElement::Extrusion(i)
+        | SceneElement::Body(i) => i,
         SceneElement::RectEdge(i, _) => i,
         SceneElement::Point(_) => 0,
     }
@@ -107,6 +111,8 @@ pub fn scene_element_from_kind(kind: &str, index: usize) -> Option<SceneElement>
         "line" => Some(SceneElement::Line(index)),
         "circle" => Some(SceneElement::Circle(index)),
         "constraint" => Some(SceneElement::Constraint(index)),
+        "extrusion" => Some(SceneElement::Extrusion(index)),
+        "body" => Some(SceneElement::Body(index)),
         _ => None,
     }
 }
@@ -1136,6 +1142,53 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     api.set(
+        "extrude",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let distance: f32 = opts.get("distance")?;
+            // Faces: `rect`/`circle` (single) and/or `rects`/`circles` (arrays of indices).
+            let mut faces: Vec<crate::model::ExtrudeFace> = Vec::new();
+            if let Some(i) = opts.get::<Option<usize>>("rect")? {
+                faces.push(crate::model::ExtrudeFace::Rect(i));
+            }
+            if let Some(i) = opts.get::<Option<usize>>("circle")? {
+                faces.push(crate::model::ExtrudeFace::Circle(i));
+            }
+            if let Some(list) = opts.get::<Option<Vec<usize>>>("rects")? {
+                faces.extend(list.into_iter().map(crate::model::ExtrudeFace::Rect));
+            }
+            if let Some(list) = opts.get::<Option<Vec<usize>>>("circles")? {
+                faces.extend(list.into_iter().map(crate::model::ExtrudeFace::Circle));
+            }
+            if faces.is_empty() {
+                return Err(mlua::Error::external(
+                    "extrude requires a `rect`/`circle` or `rects`/`circles` face list",
+                ));
+            }
+            // Sketch from the first face's geometry (all faces should be coplanar).
+            let sketch = unsafe {
+                let doc = &tick.state().doc;
+                match faces[0] {
+                    crate::model::ExtrudeFace::Rect(i) => doc.rects.get(i).map(|r| r.sketch),
+                    crate::model::ExtrudeFace::Circle(i) => doc.circles.get(i).map(|c| c.sketch),
+                }
+            }
+            .ok_or_else(|| mlua::Error::external("extrude face does not exist"))?;
+            unsafe {
+                tick.exec(Instruction::Extrude {
+                    sketch,
+                    faces,
+                    distance,
+                })?;
+            }
+            let element = SceneElement::Extrusion(unsafe {
+                tick.state().doc.extrusions.len().saturating_sub(1)
+            });
+            apply_optional_name(lua, element, Some(opts))
+        })?,
+    )?;
+
+    api.set(
         "import",
         lua.create_function(|lua, ()| {
             let globals = lua.globals();
@@ -1236,6 +1289,54 @@ mod tests {
             find_element_by_name(&state.doc, "Guide"),
             Some(SceneElement::Line(0))
         );
+    }
+
+    #[test]
+    fn lua_extrude_creates_solid_in_hierarchy() {
+        let state = run_lua(
+            r#"
+            le3.new()
+            le3.rect{ width = 80, height = 50 }
+            le3.extrude{ rect = 0, distance = 20, name = "Boss" }
+        "#,
+        );
+        assert_eq!(state.doc.extrusions.len(), 1);
+        assert_eq!(state.doc.extrusions[0].distance, 20.0);
+        assert_eq!(
+            find_element_by_name(&state.doc, "Boss"),
+            Some(SceneElement::Extrusion(0))
+        );
+        // The extrusion produces a body that depends on it.
+        assert_eq!(state.doc.bodies.len(), 1);
+        assert_eq!(
+            state.doc.bodies[0].source,
+            crate::model::BodySource::Extrusion(0)
+        );
+        // Both appear as elements; the body nests under its extrusion.
+        let nodes = crate::hierarchy::build_element_list(&state.doc, state.sketch_session);
+        assert!(nodes.contains(&crate::hierarchy::HierarchyNode::Extrusion(0)));
+        assert!(nodes.contains(&crate::hierarchy::HierarchyNode::Body(0)));
+        let mesh =
+            crate::extrude::extrusion_mesh(&state.doc, &state.doc.extrusions[0]).unwrap();
+        assert_eq!(mesh.triangles.len(), 12);
+    }
+
+    #[test]
+    fn deleting_extrusion_removes_its_body() {
+        let mut state = run_lua(
+            r#"
+            le3.new()
+            le3.rect{ width = 80, height = 50 }
+            le3.extrude{ rect = 0, distance = 20 }
+        "#,
+        );
+        assert_eq!(state.doc.bodies.len(), 1);
+        crate::document_lifecycle::tombstone_element(
+            &mut state.doc,
+            SceneElement::Extrusion(0),
+        );
+        assert!(state.doc.extrusions[0].deleted);
+        assert!(state.doc.bodies[0].deleted, "body should be removed with its extrusion");
     }
 
     #[test]
