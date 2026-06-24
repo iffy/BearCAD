@@ -249,7 +249,7 @@ impl ViewportScene {
                     sketch_color(input.palette.construction, dim),
                     input.document_health.element_status(element),
                 ),
-                shape_fill_depth_bias(ri),
+                shape_fill_depth_bias_laned(ri, 0),
             );
         }
 
@@ -2753,6 +2753,33 @@ mod tests {
         state.apply(crate::actions::Action::CommitRectangle);
     }
 
+    /// Rectangle and circle both at index 0 on the ground plane, overlapping (#3).
+    fn commit_overlapping_rect_and_circle(state: &mut AppState) {
+        state.apply(crate::actions::Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        state.creating_rect = Some(crate::actions::CreatingRect {
+            origin: glam::Vec3::ZERO,
+            texts: ["80".into(), "50".into()],
+            focused: 0,
+            last_mouse: glam::Vec3::new(80.0, 50.0, 0.0),
+            user_edited: [true, true],
+            pending_focus: false,
+            construction: false,
+        });
+        state.apply(crate::actions::Action::CommitRectangle);
+        state.creating_circle = Some(crate::actions::CreatingCircle {
+            origin: glam::Vec3::new(40.0, 25.0, 0.0),
+            text: "40".into(),
+            last_mouse: glam::Vec3::new(60.0, 25.0, 0.0),
+            user_edited: true,
+            pending_focus: false,
+            construction: false,
+        });
+        state.apply(crate::actions::Action::CommitCircle);
+    }
+
     #[test]
     fn construction_planes_render_fill_without_edge_strokes() {
         use crate::hierarchy::SceneElement;
@@ -2943,6 +2970,62 @@ mod tests {
     fn stroke_depth_bias_beats_shape_fill_bias() {
         assert!(STROKE_DEPTH_BIAS > shape_fill_depth_bias(0));
         assert!(STROKE_DEPTH_BIAS > plane_fill_depth_bias(0));
+    }
+
+    fn mesh_z_closest_to(scene: &ViewportScene, target: Vec3) -> Option<f32> {
+        scene
+            .indices
+            .iter()
+            .map(|&index| Vec3::from_array(scene.vertices[index as usize].position))
+            .min_by(|a, b| {
+                (a - target)
+                    .length_squared()
+                    .partial_cmp(&(b - target).length_squared())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|p| p.z)
+    }
+
+    #[test]
+    fn overlapping_rect_and_circle_on_ground_plane_have_distinct_fill_depths() {
+        let mut state = AppState::default();
+        commit_overlapping_rect_and_circle(&mut state);
+        let scene = build_scene_for_doc(&state);
+        let cam = Camera::default();
+        let eye = cam.eye();
+        let sketch = state.doc.rects[0].sketch;
+        let frame = sketch_geometry_frame(&state.doc, sketch).expect("sketch frame");
+        let overlap = Vec3::new(40.0, 25.0, 0.0);
+        let rect_corner =
+            offset_toward_camera(Vec3::ZERO, frame.normal, eye, shape_fill_depth_bias_laned(0, 0));
+        let circle_center =
+            offset_toward_camera(overlap, frame.normal, eye, shape_fill_depth_bias_laned(0, 1));
+        let rect_overlap =
+            offset_toward_camera(overlap, frame.normal, eye, shape_fill_depth_bias_laned(0, 0));
+        assert!(
+            circle_center.z > rect_overlap.z,
+            "circle fill should sit above rectangle at overlap: rect_z={} circle_z={}",
+            rect_overlap.z,
+            circle_center.z
+        );
+
+        let rect_mesh_z = mesh_z_closest_to(&scene, rect_corner).expect("rectangle fill in mesh");
+        let circle_mesh_z =
+            mesh_z_closest_to(&scene, circle_center).expect("circle fill in mesh");
+        assert!(
+            (rect_mesh_z - rect_corner.z).abs() < 1e-4,
+            "rectangle mesh z {rect_mesh_z} should match biased corner {rect_corner_z}",
+            rect_corner_z = rect_corner.z
+        );
+        assert!(
+            (circle_mesh_z - circle_center.z).abs() < 1e-4,
+            "circle mesh z {circle_mesh_z} should match biased center {circle_center_z}",
+            circle_center_z = circle_center.z
+        );
+        assert!(
+            circle_mesh_z > rect_mesh_z,
+            "mesh depths must differ where shapes overlap (rect={rect_mesh_z} circle={circle_mesh_z})"
+        );
     }
 
     #[test]
