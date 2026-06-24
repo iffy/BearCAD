@@ -16,3 +16,6 @@
 .contai.config
 .todoer
 .mcp.json
+
+# Issue monitor runtime state (scripts/le3-monitor.sh)
+scripts/monitor-state/

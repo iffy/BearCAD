@@ -94,8 +94,11 @@ use crate::gpu_viewport::dim_labels::GpuTextVertex;
 #[derive(Clone, Debug, Default)]
 pub struct ViewportScene {
     pub vertices: Vec<GpuVertex>,
-    /// Ground grid, sketch fills, and standalone lines (drawn first).
+    /// Ground grid, solids, and standalone lines (drawn first).
     pub indices: Vec<u32>,
+    /// Committed coplanar sketch-shape fills, drawn with a stencil mask so each
+    /// pixel is painted once (avoids translucent overlaps darkening — #3).
+    pub sketch_fill_indices: Vec<u32>,
     /// Construction-plane fills (drawn after sketch fills, without depth write).
     pub plane_fill_indices: Vec<u32>,
     /// Strokes, selection, hover, and previews (drawn on top of plane fills).
@@ -236,6 +239,7 @@ impl ViewportScene {
                 !sketch_rect_is_active(input.doc, s, ri, rect.sketch)
             });
             let element = SceneElement::Rect(ri);
+            mesh.set_index_layer(MeshIndexLayer::SketchFill);
             mesh.push_rect_fill(
                 input.doc,
                 rect,
@@ -249,8 +253,9 @@ impl ViewportScene {
                     sketch_color(input.palette.construction, dim),
                     input.document_health.element_status(element),
                 ),
-                shape_fill_depth_bias(ri),
+                shape_fill_depth_bias_laned(ri, 0),
             );
+            mesh.set_index_layer(MeshIndexLayer::Base);
         }
 
         for (ci, circle) in input.doc.circles.iter().enumerate() {
@@ -265,6 +270,7 @@ impl ViewportScene {
                 !sketch_circle_is_active(input.doc, s, ci, circle.sketch)
             });
             let element = SceneElement::Circle(ci);
+            mesh.set_index_layer(MeshIndexLayer::SketchFill);
             mesh.push_circle_fill(
                 input.doc,
                 circle,
@@ -280,6 +286,7 @@ impl ViewportScene {
                 ),
                 shape_fill_depth_bias_laned(ci, 1),
             );
+            mesh.set_index_layer(MeshIndexLayer::Base);
         }
 
         // Extruded solid bodies (3D, depth-tested, flat-shaded).
@@ -596,6 +603,10 @@ impl ViewportScene {
 enum MeshIndexLayer {
     #[default]
     Base,
+    /// Committed coplanar sketch-shape fills. Drawn with a stencil mask so each
+    /// pixel is painted exactly once, preventing translucent overlap regions from
+    /// being alpha-blended twice (which made overlaps render darker — #3).
+    SketchFill,
     PlaneFill,
     Overlay,
 }
@@ -620,6 +631,7 @@ impl<'a> SceneMesh<'a> {
     fn indices_mut(&mut self) -> &mut Vec<u32> {
         match self.index_layer {
             MeshIndexLayer::Base => &mut self.scene.indices,
+            MeshIndexLayer::SketchFill => &mut self.scene.sketch_fill_indices,
             MeshIndexLayer::PlaneFill => &mut self.scene.plane_fill_indices,
             MeshIndexLayer::Overlay => &mut self.scene.overlay_indices,
         }
@@ -1662,6 +1674,9 @@ pub fn fill_color(base: Color32, opacity: f32) -> Color32 {
     base.gamma_multiply(opacity)
 }
 
+/// Test-only convenience for the lane-0 (rectangle) depth bias. Production code calls
+/// `shape_fill_depth_bias_laned` directly with the appropriate lane.
+#[cfg(test)]
 pub fn shape_fill_depth_bias(index: usize) -> f32 {
     shape_fill_depth_bias_laned(index, 0)
 }
@@ -2753,6 +2768,33 @@ mod tests {
         state.apply(crate::actions::Action::CommitRectangle);
     }
 
+    /// Rectangle and circle both at index 0 on the ground plane, overlapping (#3).
+    fn commit_overlapping_rect_and_circle(state: &mut AppState) {
+        state.apply(crate::actions::Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        state.creating_rect = Some(crate::actions::CreatingRect {
+            origin: glam::Vec3::ZERO,
+            texts: ["80".into(), "50".into()],
+            focused: 0,
+            last_mouse: glam::Vec3::new(80.0, 50.0, 0.0),
+            user_edited: [true, true],
+            pending_focus: false,
+            construction: false,
+        });
+        state.apply(crate::actions::Action::CommitRectangle);
+        state.creating_circle = Some(crate::actions::CreatingCircle {
+            origin: glam::Vec3::new(40.0, 25.0, 0.0),
+            text: "40".into(),
+            last_mouse: glam::Vec3::new(60.0, 25.0, 0.0),
+            user_edited: true,
+            pending_focus: false,
+            construction: false,
+        });
+        state.apply(crate::actions::Action::CommitCircle);
+    }
+
     #[test]
     fn construction_planes_render_fill_without_edge_strokes() {
         use crate::hierarchy::SceneElement;
@@ -2943,6 +2985,89 @@ mod tests {
     fn stroke_depth_bias_beats_shape_fill_bias() {
         assert!(STROKE_DEPTH_BIAS > shape_fill_depth_bias(0));
         assert!(STROKE_DEPTH_BIAS > plane_fill_depth_bias(0));
+    }
+
+    fn mesh_z_closest_to(scene: &ViewportScene, target: Vec3) -> Option<f32> {
+        // Committed sketch fills live in the stencil-masked sketch_fill layer (#3).
+        scene
+            .sketch_fill_indices
+            .iter()
+            .map(|&index| Vec3::from_array(scene.vertices[index as usize].position))
+            .min_by(|a, b| {
+                (a - target)
+                    .length_squared()
+                    .partial_cmp(&(b - target).length_squared())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|p| p.z)
+    }
+
+    #[test]
+    fn overlapping_rect_and_circle_on_ground_plane_have_distinct_fill_depths() {
+        let mut state = AppState::default();
+        commit_overlapping_rect_and_circle(&mut state);
+        let scene = build_scene_for_doc(&state);
+        let cam = Camera::default();
+        let eye = cam.eye();
+        let sketch = state.doc.rects[0].sketch;
+        let frame = sketch_geometry_frame(&state.doc, sketch).expect("sketch frame");
+        let overlap = Vec3::new(40.0, 25.0, 0.0);
+        let rect_corner =
+            offset_toward_camera(Vec3::ZERO, frame.normal, eye, shape_fill_depth_bias_laned(0, 0));
+        let circle_center =
+            offset_toward_camera(overlap, frame.normal, eye, shape_fill_depth_bias_laned(0, 1));
+        let rect_overlap =
+            offset_toward_camera(overlap, frame.normal, eye, shape_fill_depth_bias_laned(0, 0));
+        assert!(
+            circle_center.z > rect_overlap.z,
+            "circle fill should sit above rectangle at overlap: rect_z={} circle_z={}",
+            rect_overlap.z,
+            circle_center.z
+        );
+
+        let rect_mesh_z = mesh_z_closest_to(&scene, rect_corner).expect("rectangle fill in mesh");
+        let circle_mesh_z =
+            mesh_z_closest_to(&scene, circle_center).expect("circle fill in mesh");
+        assert!(
+            (rect_mesh_z - rect_corner.z).abs() < 1e-4,
+            "rectangle mesh z {rect_mesh_z} should match biased corner {rect_corner_z}",
+            rect_corner_z = rect_corner.z
+        );
+        assert!(
+            (circle_mesh_z - circle_center.z).abs() < 1e-4,
+            "circle mesh z {circle_mesh_z} should match biased center {circle_center_z}",
+            circle_center_z = circle_center.z
+        );
+        assert!(
+            circle_mesh_z > rect_mesh_z,
+            "mesh depths must differ where shapes overlap (rect={rect_mesh_z} circle={circle_mesh_z})"
+        );
+    }
+
+    #[test]
+    fn committed_sketch_fills_go_in_stencil_masked_layer() {
+        // The overlap-darkening fix (#3) routes committed coplanar sketch fills into
+        // the dedicated sketch_fill layer, which the renderer draws with a stencil mask
+        // so each pixel is painted once. Guard that the fills land there (and not in the
+        // base layer, which is drawn without the mask).
+        let mut state = AppState::default();
+        commit_overlapping_rect_and_circle(&mut state);
+        let scene = build_scene_for_doc(&state);
+        assert!(
+            !scene.sketch_fill_indices.is_empty(),
+            "committed rect + circle fills should populate the stencil-masked layer"
+        );
+        // Both fills overlap at (40, 25, 0); locating that point must succeed from the
+        // sketch_fill layer (the helper only scans that layer).
+        let frame = sketch_geometry_frame(&state.doc, state.doc.rects[0].sketch).unwrap();
+        let cam = Camera::default();
+        let overlap = offset_toward_camera(
+            Vec3::new(40.0, 25.0, 0.0),
+            frame.normal,
+            cam.eye(),
+            shape_fill_depth_bias_laned(0, 0),
+        );
+        assert!(mesh_z_closest_to(&scene, overlap).is_some());
     }
 
     #[test]
