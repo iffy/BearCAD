@@ -1,10 +1,12 @@
-//! Animated GIF capture (SPEC §11.4).
+//! Animated GIF capture (SPEC §11.6).
 //!
-//! While recording is active the app requests a viewport screenshot on a fixed
-//! cadence (~10 fps); each delivered frame is accumulated here. On stop the
-//! frames are encoded to `paramcad_<TIMESTAMP>.gif` using the `gif` codec
-//! bundled with the `image` crate. The encoder's default palette quantization
-//! yields medium-quality output.
+//! While recording is active the app requests a window screenshot on a fixed
+//! cadence (~10 fps); the App crops each delivered frame to the 3D viewport (the
+//! default) before handing it here, where it is downscaled to [`GIF_MAX_EDGE`] and
+//! accumulated. Cropping and downscaling on capture keep the synchronous encode on
+//! stop cheap. On stop the frames are encoded to `paramcad_<TIMESTAMP>.gif` using
+//! the `gif` codec bundled with the `image` crate; the encoder's default palette
+//! quantization yields medium-quality output.
 
 use std::time::{Duration, Instant};
 
@@ -33,6 +35,8 @@ pub struct GifRecorder {
     frames: Vec<CapturedFrame>,
     /// When the next frame should be captured. `None` means "capture now".
     next_capture: Option<Instant>,
+    /// `true` captures the whole window; `false` (default) just the 3D viewport (#5).
+    whole_window: bool,
 }
 
 impl GifRecorder {
@@ -48,12 +52,19 @@ impl GifRecorder {
         self.frames.len()
     }
 
+    /// Whether this recording captures the whole window (vs. just the 3D viewport).
+    pub fn whole_window(&self) -> bool {
+        self.whole_window
+    }
+
     /// Begin a new recording. No-op (returns `false`) if one is already running.
-    pub fn start(&mut self) -> bool {
+    /// `whole_window` selects full-window vs. 3D-viewport-only capture (#5).
+    pub fn start(&mut self, whole_window: bool) -> bool {
         if self.active {
             return false;
         }
         self.active = true;
+        self.whole_window = whole_window;
         self.frames.clear();
         self.next_capture = None;
         true
@@ -79,10 +90,22 @@ impl GifRecorder {
         }
     }
 
-    /// Store a delivered screenshot frame while recording.
+    /// Time to wait before the next capture is due, given `now`. Used to schedule a
+    /// just-in-time repaint instead of spinning the UI at full framerate while
+    /// recording — that wasted-render loop was the source of in-use lag (#5).
+    pub fn time_until_next_capture(&self, now: Instant) -> Duration {
+        match self.next_capture {
+            None => Duration::ZERO,
+            Some(due) => due.saturating_duration_since(now),
+        }
+    }
+
+    /// Store a delivered screenshot frame while recording. The frame is downscaled
+    /// to [`GIF_MAX_EDGE`] immediately so the synchronous encode on stop stays cheap
+    /// (encoding raw multi-megapixel frames was the source of save-time lag, #5).
     pub fn push_frame(&mut self, frame: CapturedFrame) {
         if self.active {
-            self.frames.push(frame);
+            self.frames.push(downscale_frame(frame));
         }
     }
 
@@ -155,9 +178,59 @@ pub fn scaled_dimensions(width: u32, height: u32) -> (u32, u32) {
     (w, h)
 }
 
-/// Encode captured frames to an animated GIF at [`GIF_FPS`], downscaling frames
-/// to [`GIF_MAX_EDGE`]. Frames are sized to the first frame's scaled dimensions so
-/// the GIF has a consistent canvas even if the window was resized mid-capture.
+/// Crop a frame to the given physical-pixel rectangle `(x, y, w, h)`, clamped to
+/// the frame. Used to capture only the 3D viewport region by default (#5). An
+/// empty or out-of-range rect returns the frame unchanged.
+pub fn crop_frame(frame: CapturedFrame, x: u32, y: u32, w: u32, h: u32) -> CapturedFrame {
+    let x1 = (x + w).min(frame.width);
+    let y1 = (y + h).min(frame.height);
+    if x >= frame.width || y >= frame.height || x1 <= x || y1 <= y {
+        return frame;
+    }
+    let (cw, ch) = (x1 - x, y1 - y);
+    let mut rgba = Vec::with_capacity((cw * ch * 4) as usize);
+    for row in y..y1 {
+        let start = ((row * frame.width + x) * 4) as usize;
+        let end = ((row * frame.width + x1) * 4) as usize;
+        rgba.extend_from_slice(&frame.rgba[start..end]);
+    }
+    CapturedFrame {
+        width: cw,
+        height: ch,
+        rgba,
+    }
+}
+
+/// Downscale a frame to [`GIF_MAX_EDGE`] long edge, preserving aspect ratio.
+/// Returns the frame unchanged if already within bounds (the common case once
+/// frames are cropped to the viewport), so the typical path does no work.
+fn downscale_frame(frame: CapturedFrame) -> CapturedFrame {
+    let (out_w, out_h) = scaled_dimensions(frame.width, frame.height);
+    if out_w == frame.width && out_h == frame.height {
+        return frame;
+    }
+    use image::RgbaImage;
+    let Some(buffer) = RgbaImage::from_raw(frame.width, frame.height, frame.rgba) else {
+        // Size mismatch: shouldn't happen, but never panic mid-recording.
+        return CapturedFrame {
+            width: out_w,
+            height: out_h,
+            rgba: vec![0; (out_w * out_h * 4) as usize],
+        };
+    };
+    let scaled =
+        image::imageops::resize(&buffer, out_w, out_h, image::imageops::FilterType::Triangle);
+    CapturedFrame {
+        width: out_w,
+        height: out_h,
+        rgba: scaled.into_raw(),
+    }
+}
+
+/// Encode captured frames to an animated GIF at [`GIF_FPS`]. Frames are already
+/// downscaled to [`GIF_MAX_EDGE`] on capture; here they are only normalized to the
+/// first frame's size so the GIF has a consistent canvas if the window was resized
+/// mid-capture.
 pub fn encode_gif(path: &str, frames: &[CapturedFrame]) -> Result<(), String> {
     use image::codecs::gif::{GifEncoder, Repeat};
     use image::{Delay, Frame, RgbaImage};
@@ -216,16 +289,16 @@ mod tests {
     fn start_clears_and_activates() {
         let mut r = GifRecorder::new();
         assert!(!r.is_recording());
-        assert!(r.start());
+        assert!(r.start(false));
         assert!(r.is_recording());
         // Starting again while active is a no-op.
-        assert!(!r.start());
+        assert!(!r.start(false));
     }
 
     #[test]
     fn first_capture_is_immediate_then_throttled() {
         let mut r = GifRecorder::new();
-        r.start();
+        r.start(false);
         let t0 = Instant::now();
         assert!(r.should_capture(t0), "first frame should capture immediately");
         // A request just after t0 (well under the interval) must be throttled.
@@ -243,7 +316,7 @@ mod tests {
     #[test]
     fn stop_returns_frames_and_deactivates() {
         let mut r = GifRecorder::new();
-        r.start();
+        r.start(false);
         r.push_frame(solid_frame(2, 2, [255, 0, 0]));
         r.push_frame(solid_frame(2, 2, [0, 255, 0]));
         assert_eq!(r.frame_count(), 2);
@@ -257,7 +330,7 @@ mod tests {
     #[test]
     fn stop_with_no_frames_is_none() {
         let mut r = GifRecorder::new();
-        r.start();
+        r.start(false);
         assert!(r.stop().is_none());
     }
 
@@ -329,5 +402,74 @@ mod tests {
         let width = u16::from_le_bytes([bytes[6], bytes[7]]);
         assert_eq!(width, GIF_MAX_EDGE as u16);
         let _ = std::fs::remove_file(path_str);
+    }
+
+    #[test]
+    fn start_records_whole_window_flag() {
+        let mut r = GifRecorder::new();
+        r.start(true);
+        assert!(r.whole_window());
+        r.stop();
+        r.start(false);
+        assert!(!r.whole_window());
+    }
+
+    #[test]
+    fn time_until_next_capture_counts_down() {
+        let mut r = GifRecorder::new();
+        r.start(false);
+        let t0 = Instant::now();
+        // Before the first capture, a frame is due immediately.
+        assert_eq!(r.time_until_next_capture(t0), Duration::ZERO);
+        // After capturing, the next is one interval out, then counts down.
+        assert!(r.should_capture(t0));
+        let remaining = r.time_until_next_capture(t0);
+        assert!(remaining <= FRAME_INTERVAL && remaining > Duration::ZERO);
+        // Once the interval has elapsed, it saturates to zero (never negative).
+        assert_eq!(
+            r.time_until_next_capture(t0 + FRAME_INTERVAL + Duration::from_millis(5)),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn push_frame_downscales_large_frames() {
+        let mut r = GifRecorder::new();
+        r.start(false);
+        r.push_frame(solid_frame(2000, 1000, [1, 2, 3]));
+        let frames = r.stop().expect("frame stored");
+        // Stored frame is already capped to GIF_MAX_EDGE so the encode is cheap.
+        assert_eq!(frames[0].width.max(frames[0].height), GIF_MAX_EDGE);
+        // Buffer length stays consistent with the reported dimensions.
+        assert_eq!(
+            frames[0].rgba.len(),
+            (frames[0].width * frames[0].height * 4) as usize
+        );
+    }
+
+    #[test]
+    fn crop_frame_extracts_subregion() {
+        // 4x4 frame; crop the bottom-right 2x2.
+        let mut f = solid_frame(4, 4, [0, 0, 0]);
+        // Mark pixel (3,3) red so we can confirm it survives the crop.
+        let idx = ((3 * 4 + 3) * 4) as usize;
+        f.rgba[idx] = 255;
+        let cropped = crop_frame(f, 2, 2, 2, 2);
+        assert_eq!((cropped.width, cropped.height), (2, 2));
+        assert_eq!(cropped.rgba.len(), 2 * 2 * 4);
+        // Bottom-right pixel of the cropped region is the red one.
+        assert_eq!(cropped.rgba[(3 * 4) as usize], 255);
+    }
+
+    #[test]
+    fn crop_frame_clamps_and_passes_through_bad_rects() {
+        // Rect overruns the frame: clamps to available pixels.
+        let f = solid_frame(4, 4, [9, 9, 9]);
+        let cropped = crop_frame(f, 2, 2, 100, 100);
+        assert_eq!((cropped.width, cropped.height), (2, 2));
+        // Out-of-range origin returns the frame unchanged (no panic).
+        let f = solid_frame(4, 4, [9, 9, 9]);
+        let same = crop_frame(f, 10, 10, 2, 2);
+        assert_eq!((same.width, same.height), (4, 4));
     }
 }

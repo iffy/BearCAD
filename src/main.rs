@@ -405,7 +405,7 @@ impl App {
             PaletteOutcome::OpenFile => self.open(),
             PaletteOutcome::SaveFile => self.save(),
             PaletteOutcome::SaveFileAs => self.save_as(),
-            PaletteOutcome::StartGifCapture => self.start_gif_recording(),
+            PaletteOutcome::StartGifCapture => self.start_gif_recording(false),
             PaletteOutcome::StopGifCapture => self.stop_gif_recording(),
         }
         self.state.command_palette.close_palette();
@@ -581,7 +581,7 @@ impl App {
         for image in &screenshots {
             // Accumulate frames for an in-progress GIF capture (#5).
             if self.gif_recorder.is_recording() {
-                self.gif_recorder.push_frame(gif_recorder::CapturedFrame {
+                let frame = gif_recorder::CapturedFrame {
                     width: image.width() as u32,
                     height: image.height() as u32,
                     rgba: image
@@ -589,7 +589,23 @@ impl App {
                         .iter()
                         .flat_map(|c| [c.r(), c.g(), c.b(), c.a()])
                         .collect(),
-                });
+                };
+                // Default to just the 3D viewport (like screenshots); crop in
+                // physical pixels using the last known viewport rect (#5). Cropping
+                // up front also shrinks frames, speeding the encode on stop.
+                let frame = if self.gif_recorder.whole_window() {
+                    frame
+                } else if let Some(rect) = self.last_viewport {
+                    let ppp = ctx.pixels_per_point();
+                    let x = (rect.min.x * ppp).round().max(0.0) as u32;
+                    let y = (rect.min.y * ppp).round().max(0.0) as u32;
+                    let w = (rect.width() * ppp).round().max(0.0) as u32;
+                    let h = (rect.height() * ppp).round().max(0.0) as u32;
+                    gif_recorder::crop_frame(frame, x, y, w, h)
+                } else {
+                    frame
+                };
+                self.gif_recorder.push_frame(frame);
             }
             if let Some(runner) = &mut self.script {
                 if let Err(e) = runner.on_screenshot(image) {
@@ -603,9 +619,14 @@ impl App {
     }
 
     /// Begin capturing an animated GIF (toolbar / palette / Lua entry point, #5).
-    fn start_gif_recording(&mut self) {
-        if self.gif_recorder.start() {
-            self.state.status = "Recording GIF…".to_string();
+    /// `whole_window` captures the full window; otherwise just the 3D viewport.
+    fn start_gif_recording(&mut self, whole_window: bool) {
+        if self.gif_recorder.start(whole_window) {
+            self.state.status = if whole_window {
+                "Recording GIF (whole window)…".to_string()
+            } else {
+                "Recording GIF…".to_string()
+            };
         }
     }
 
@@ -877,9 +898,9 @@ impl App {
                 let p = std::mem::take(&mut r.gif_stop_requested);
                 (s, p)
             })
-            .unwrap_or((false, false));
-        if gif_start {
-            self.start_gif_recording();
+            .unwrap_or((None, false));
+        if let Some(whole_window) = gif_start {
+            self.start_gif_recording(whole_window);
         }
         if gif_stop {
             self.stop_gif_recording();
@@ -906,13 +927,16 @@ impl eframe::App for App {
         }
 
         self.process_screenshots(ctx);
-        // While recording a GIF, request a frame on a fixed cadence and keep the
-        // UI repainting so capture continues even when otherwise idle (#5).
+        // While recording a GIF, request a frame on a fixed cadence. Schedule the
+        // next repaint for exactly when the next capture is due rather than
+        // repainting every frame — the full-speed repaint loop made the UI feel
+        // laggy during recording by starving normal interaction (#5).
         if self.gif_recorder.is_recording() {
-            if self.gif_recorder.should_capture(std::time::Instant::now()) {
+            let now = std::time::Instant::now();
+            if self.gif_recorder.should_capture(now) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
             }
-            ctx.request_repaint();
+            ctx.request_repaint_after(self.gif_recorder.time_until_next_capture(now));
         }
         self.tick_script(ctx);
         self.tick_exit_after_startup(ctx);
@@ -1053,10 +1077,10 @@ impl eframe::App for App {
                         }
                     } else if ui
                         .button("● GIF")
-                        .on_hover_text("Start recording an animated GIF")
+                        .on_hover_text("Record an animated GIF of the 3D viewport")
                         .clicked()
                     {
-                        self.start_gif_recording();
+                        self.start_gif_recording(false);
                     }
                 });
             });

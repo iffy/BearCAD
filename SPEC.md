@@ -372,8 +372,9 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   mouse/keyboard) and enter a ground-plane sketch if none is open: `le3.rect{ width, height,
   x?, y?, name? }` and `le3.line{ length, angle?, x?, y?, name? }` (or explicit endpoints
   `le3.line{ x, y, x1, y1 }`).
-- `le3.start_gif()` / `le3.stop_gif()` start and stop animated GIF capture (§11.6); on stop
-  the recording is written to `paramcad_<TIMESTAMP>.gif` at ~10 fps.
+- `le3.start_gif([whole_window])` / `le3.stop_gif()` start and stop animated GIF capture
+  (§11.6); capture defaults to the 3D viewport, or the whole window when `whole_window` is
+  true. On stop the recording is written to `paramcad_<TIMESTAMP>.gif` at ~10 fps.
 
 ---
 
@@ -525,7 +526,13 @@ explicit exception that lets us drive "mouse/keyboard" flows for testing purpose
   start button.
 - Frames are captured on a fixed cadence of **~10 fps** while recording is active, so the
   resulting GIF plays back in real time. Output is **medium quality** (the GIF encoder's
-  default palette quantization).
+  default palette quantization), with frames downscaled to a 720px long edge.
+- By default capture is limited to the **3D viewport** (matching screenshot behavior, §8);
+  the whole window can be captured instead via `le3.start_gif(true)`. The toolbar button and
+  palette command always record the viewport.
+- Recording does not run the UI at full framerate: between captures the app sleeps until the
+  next frame is due, so interaction stays responsive while recording. Frames are downscaled
+  as they are captured so the encode on stop is fast and does not block the UI.
 - On stop, the GIF is written to **`paramcad_<TIMESTAMP>.gif`** (timestamp `YYYYmmdd_HHMMSS`)
   in the working directory; the status bar reports the saved path and frame count. Stopping
   with no captured frames is a no-op.

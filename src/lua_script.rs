@@ -1085,9 +1085,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     api.set(
         "start_gif",
-        lua.create_function(|lua, ()| {
+        lua.create_function(|lua, whole_window: Option<bool>| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            unsafe { tick.exec(Instruction::StartGif) }
+            unsafe {
+                tick.exec(Instruction::StartGif {
+                    whole_window: whole_window.unwrap_or(false),
+                })
+            }
         })?,
     )?;
 

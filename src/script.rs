@@ -169,7 +169,10 @@ pub enum Instruction {
         whole_window: bool,
     },
     /// Begin capturing an animated GIF (#5). Handled by the App, which owns the recorder.
-    StartGif,
+    /// `whole_window` captures the full window; otherwise just the 3D viewport.
+    StartGif {
+        whole_window: bool,
+    },
     /// Stop GIF capture and save `paramcad_<TIMESTAMP>.gif` (#5).
     StopGif,
     Quit,
@@ -396,7 +399,13 @@ impl Instruction {
                     format!("le3.screenshot({path:?})")
                 }
             }
-            Instruction::StartGif => "le3.start_gif()".to_string(),
+            Instruction::StartGif { whole_window } => {
+                if *whole_window {
+                    "le3.start_gif(true)".to_string()
+                } else {
+                    "le3.start_gif()".to_string()
+                }
+            }
             Instruction::StopGif => "le3.stop_gif()".to_string(),
             Instruction::Quit => "le3.quit()".to_string(),
         }
@@ -1064,7 +1073,8 @@ pub struct ScriptRunner {
     pub should_quit: bool,
     /// Set when a script requests GIF capture start/stop; the App polls and clears these
     /// after each tick because it (not the runner) owns the recorder (#5).
-    pub gif_start_requested: bool,
+    /// `gif_start_requested` is `Some(whole_window)` when a start was requested.
+    pub gif_start_requested: Option<bool>,
     pub gif_stop_requested: bool,
 }
 
@@ -1083,7 +1093,7 @@ impl ScriptRunner {
             done: false,
             error: None,
             should_quit: false,
-            gif_start_requested: false,
+            gif_start_requested: None,
             gif_stop_requested: false,
         }
     }
@@ -1731,7 +1741,9 @@ impl ScriptRunner {
                             state.status =
                                 "Palette file commands require the GUI".to_string();
                         }
-                        PaletteOutcome::StartGifCapture => self.gif_start_requested = true,
+                        PaletteOutcome::StartGifCapture => {
+                            self.gif_start_requested = Some(false)
+                        }
                         PaletteOutcome::StopGifCapture => self.gif_stop_requested = true,
                     }
                 } else {
@@ -1831,8 +1843,8 @@ impl ScriptRunner {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
                 StepResult::Wait
             }
-            Instruction::StartGif => {
-                self.gif_start_requested = true;
+            Instruction::StartGif { whole_window } => {
+                self.gif_start_requested = Some(whole_window);
                 StepResult::Continue
             }
             Instruction::StopGif => {
@@ -2299,7 +2311,9 @@ mod tests {
     #[test]
     fn script_gif_instructions_set_recorder_flags() {
         let mut runner = ScriptRunner::from_instructions(vec![
-            Instruction::StartGif,
+            Instruction::StartGif {
+                whole_window: false,
+            },
             Instruction::StopGif,
         ]);
         runner.verbose = false;
@@ -2309,7 +2323,11 @@ mod tests {
             runner.tick(&mut state, &mut synthetic, None, &egui::Context::default());
         }
         // Both flags get set as the instructions execute; the App consumes them.
-        assert!(runner.gif_start_requested, "start_gif should flag the runner");
+        assert_eq!(
+            runner.gif_start_requested,
+            Some(false),
+            "start_gif should flag the runner (viewport-only)"
+        );
         assert!(runner.gif_stop_requested, "stop_gif should flag the runner");
     }
 
@@ -2324,12 +2342,25 @@ mod tests {
         while !runner.done {
             runner.tick(&mut state, &mut synthetic, None, &egui::Context::default());
         }
-        assert!(runner.gif_start_requested);
+        assert_eq!(runner.gif_start_requested, Some(false));
     }
 
     #[test]
     fn gif_instructions_format_as_lua() {
-        assert_eq!(Instruction::StartGif.as_lua(), "le3.start_gif()");
+        assert_eq!(
+            Instruction::StartGif {
+                whole_window: false
+            }
+            .as_lua(),
+            "le3.start_gif()"
+        );
+        assert_eq!(
+            Instruction::StartGif {
+                whole_window: true
+            }
+            .as_lua(),
+            "le3.start_gif(true)"
+        );
         assert_eq!(Instruction::StopGif.as_lua(), "le3.stop_gif()");
     }
 
