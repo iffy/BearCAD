@@ -372,6 +372,8 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   mouse/keyboard) and enter a ground-plane sketch if none is open: `le3.rect{ width, height,
   x?, y?, name? }` and `le3.line{ length, angle?, x?, y?, name? }` (or explicit endpoints
   `le3.line{ x, y, x1, y1 }`).
+- `le3.start_gif()` / `le3.stop_gif()` start and stop animated GIF capture (§11.6); on stop
+  the recording is written to `paramcad_<TIMESTAMP>.gif` at ~10 fps.
 
 ---
 
@@ -513,6 +515,20 @@ explicit exception that lets us drive "mouse/keyboard" flows for testing purpose
 - **Global axes:** the origin X/Y/Z triad is pickable as an axis reference when creating
   construction planes. Axis gizmo handles show a hover affordance (bright ring and thicker
   stroke) so the user can see which handle will be grabbed on click.
+
+### 11.6 Animated GIF capture
+- The user can record the session to an **animated GIF**: start capture, perform actions,
+  then stop. Capture is available from the **command palette** ("Start GIF Capture" /
+  "Stop GIF Capture"), from the **Lua API** (`le3.start_gif()` / `le3.stop_gif()`, §8), and
+  from a **toolbar button** anchored to the top-right of the toolbar. While recording, the
+  toolbar shows a **stop button** (with a live captured-frame count); when idle it shows a
+  start button.
+- Frames are captured on a fixed cadence of **~10 fps** while recording is active, so the
+  resulting GIF plays back in real time. Output is **medium quality** (the GIF encoder's
+  default palette quantization).
+- On stop, the GIF is written to **`paramcad_<TIMESTAMP>.gif`** (timestamp `YYYYmmdd_HHMMSS`)
+  in the working directory; the status bar reports the saved path and frame count. Stopping
+  with no captured frames is a no-op.
 
 ---
 

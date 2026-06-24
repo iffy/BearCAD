@@ -1084,6 +1084,22 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     api.set(
+        "start_gif",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::StartGif) }
+        })?,
+    )?;
+
+    api.set(
+        "stop_gif",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::StopGif) }
+        })?,
+    )?;
+
+    api.set(
         "rect",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();

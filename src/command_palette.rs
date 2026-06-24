@@ -49,6 +49,8 @@ pub enum PaletteCommandId {
     ShowPaneViewCube,
     HidePaneViewCube,
     DeleteSelection,
+    StartGifCapture,
+    StopGifCapture,
 }
 
 /// What happens when a palette entry is chosen.
@@ -58,6 +60,8 @@ pub enum PaletteOutcome {
     OpenFile,
     SaveFile,
     SaveFileAs,
+    StartGifCapture,
+    StopGifCapture,
 }
 
 /// One invokable palette entry.
@@ -167,6 +171,8 @@ impl PaletteCommand {
             PaletteCommandId::DeleteSelection => {
                 PaletteOutcome::Action(Action::DeleteSelection)
             }
+            PaletteCommandId::StartGifCapture => PaletteOutcome::StartGifCapture,
+            PaletteCommandId::StopGifCapture => PaletteOutcome::StopGifCapture,
         }
     }
 }
@@ -212,6 +218,25 @@ pub fn commands_for_state(state: &AppState) -> Vec<PaletteCommand> {
     for &cmd in BASE_COMMANDS {
         push(&mut out, cmd);
     }
+
+    // GIF capture (#5). Both entries are always listed; the handler is a no-op if
+    // recording is already in the requested state.
+    push(
+        &mut out,
+        PaletteCommand::new(
+            PaletteCommandId::StartGifCapture,
+            "Start GIF Capture",
+            "start gif capture record recording animation movie",
+        ),
+    );
+    push(
+        &mut out,
+        PaletteCommand::new(
+            PaletteCommandId::StopGifCapture,
+            "Stop GIF Capture",
+            "stop gif capture record recording animation movie save",
+        ),
+    );
 
     if !state.scene_selection.is_empty() {
         push(
