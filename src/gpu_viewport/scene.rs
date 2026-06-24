@@ -1662,6 +1662,9 @@ pub fn fill_color(base: Color32, opacity: f32) -> Color32 {
     base.gamma_multiply(opacity)
 }
 
+/// Test-only convenience for the lane-0 (rectangle) depth bias. Production code calls
+/// `shape_fill_depth_bias_laned` directly with the appropriate lane.
+#[cfg(test)]
 pub fn shape_fill_depth_bias(index: usize) -> f32 {
     shape_fill_depth_bias_laned(index, 0)
 }
