@@ -112,9 +112,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     gizmo or type a distance (expressions/variables) to set the depth (positive or negative),
     with a live **semi-transparent** preview solid that updates as you type; Enter commits, Esc
     cancels; double-click / right-click → Edit re-opens an extrusion for changing faces or
-    length. The gizmo handle floats a little above the solid's top face (rather than sitting on
-    it), and typing a digit while the tool is active focuses the distance field and overwrites
-    its value. The extrusion (and its body) nests under the sketch it was built from.
+    length. While an extrusion is being edited its committed body is hidden, so only the
+    semi-transparent ghost preview is shown (the preview, not the old solid, reflects the
+    in-progress edit). The gizmo handle floats a little above the solid's top face (rather than
+    sitting on it), and typing a digit while the tool is active focuses the distance field and
+    overwrites its value. The extrusion (and its body) nests under the sketch it was built from.
   - **Extrude-to-object**: during a gizmo drag, hovering a vertex/face/plane snaps the depth to
     that object and, on release, constrains the extrusion to it (`ExtrudeTarget`). The effective
     depth is then derived from the target's extended plane — to a vertex's perpendicular plane,

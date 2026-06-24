@@ -196,6 +196,9 @@ pub struct ViewportSceneInput<'a> {
     pub preview_circle: Option<Circle>,
     /// In-progress extrusion (rendered as a translucent preview solid).
     pub preview_extrusion: Option<crate::model::Extrusion>,
+    /// Index of the extrusion currently being edited, if any. Its committed body
+    /// is suppressed so only the ghost preview is shown while editing.
+    pub editing_extrusion: Option<usize>,
     pub plane_preview: Option<ViewportPlanePreview>,
     pub active_sketch_face: Option<FaceId>,
     pub dimension_labels: &'a [ViewportDimLabel],
@@ -299,6 +302,11 @@ impl ViewportScene {
                 continue;
             }
             let crate::model::BodySource::Extrusion(ei) = body.source;
+            // While editing an extrusion, hide its committed body so only the
+            // translucent ghost preview is visible.
+            if input.editing_extrusion == Some(ei) {
+                continue;
+            }
             let Some(extrusion) = input.doc.extrusions.get(ei) else {
                 continue;
             };
@@ -2434,6 +2442,75 @@ mod tests {
     }
 
     #[test]
+    fn editing_an_extrusion_hides_its_committed_body() {
+        use crate::actions::{Action, Tool};
+        use crate::model::ExtrudeFace;
+
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        state.creating_rect = Some(crate::actions::CreatingRect {
+            origin: glam::Vec3::ZERO,
+            texts: ["10".into(), "5".into()],
+            focused: 0,
+            last_mouse: glam::Vec3::new(10.0, 5.0, 0.0),
+            user_edited: [true, true],
+            pending_focus: false,
+            construction: false,
+        });
+        state.apply(Action::CommitRectangle);
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace {
+            face: ExtrudeFace::Rect(0),
+        });
+        state.apply(Action::SetExtrudeDistance { distance: 7.0 });
+        state.apply(Action::CommitExtrusion);
+        assert_eq!(state.doc.bodies.len(), 1);
+
+        let cam = state.cam.clone();
+        let build = |editing: Option<usize>| {
+            ViewportScene::build(&ViewportSceneInput {
+                doc: &state.doc,
+                cam: &cam,
+                viewport: test_viewport(),
+                palette: ViewportPalette::default(),
+                sketch_session: None,
+                selection: &state.scene_selection,
+                element_visibility: &state.element_visibility,
+                preview_rect: None,
+                preview_line: None,
+                preview_circle: None,
+                preview_extrusion: None,
+                editing_extrusion: editing,
+                plane_preview: None,
+                active_sketch_face: None,
+                dimension_labels: &[],
+                dim_label_view: None,
+                plane_gizmo: None,
+                extrude_gizmo: None,
+                hover_highlight: None,
+                hover_color: Color32::WHITE,
+                document_health: &DocumentHealth::default(),
+                constraint_graphics: None,
+                constraint_connector_color: None,
+            })
+        };
+
+        let with_body = build(None);
+        let editing = build(Some(0));
+        // The committed extrusion body contributes geometry; suppressing it while
+        // editing must reduce the vertex count (only the ghost preview would show).
+        assert!(
+            editing.vertices.len() < with_body.vertices.len(),
+            "editing scene ({}) should drop the committed body geometry present without editing ({})",
+            editing.vertices.len(),
+            with_body.vertices.len()
+        );
+    }
+
+    #[test]
     fn plane_creation_preview_adds_outline_geometry() {
         let state = AppState::default();
         let cam = state.cam.clone();
@@ -2450,6 +2527,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
@@ -2475,6 +2553,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            editing_extrusion: None,
             plane_preview: Some(ViewportPlanePreview {
                 plane: preview_plane,
                 dependents: None,
@@ -2514,6 +2593,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
@@ -2538,6 +2618,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
@@ -2579,6 +2660,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
@@ -2614,6 +2696,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
@@ -2650,6 +2733,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
@@ -2692,6 +2776,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
@@ -2737,6 +2822,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
@@ -2890,6 +2976,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
@@ -2935,6 +3022,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
@@ -3137,6 +3225,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
@@ -3161,6 +3250,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
@@ -3253,6 +3343,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
@@ -3277,6 +3368,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
@@ -3413,6 +3505,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
@@ -3441,6 +3534,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: std::slice::from_ref(&dim_label),
@@ -3537,6 +3631,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
@@ -3563,6 +3658,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
@@ -3587,6 +3683,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],

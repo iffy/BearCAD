@@ -1455,6 +1455,8 @@ fn build_viewport_scene_input<'a>(
     let active_sketch_face = sketch_session.and_then(|session| doc.sketch_face(session.sketch));
     let active_sketch_face = active_sketch_face.filter(|face| !matches!(face, FaceId::ConstructionPlane(_)));
 
+    let editing_extrusion = creating_extrusion.and_then(|ce| ce.edit_index);
+
     let preview_extrusion = creating_extrusion.and_then(|ce| {
         (!ce.faces.is_empty()).then(|| model::Extrusion {
             sketch: ce.sketch,
@@ -1493,6 +1495,7 @@ fn build_viewport_scene_input<'a>(
         preview_line,
         preview_circle,
         preview_extrusion,
+        editing_extrusion,
         plane_preview,
         active_sketch_face,
         dimension_labels,
