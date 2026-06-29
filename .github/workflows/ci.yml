@@ -78,9 +78,9 @@ jobs:
       - name: Run example scripts
         run: |
           shopt -s nullglob
-          scripts=(examples/*.le3script)
+          scripts=(examples/*.lua)
           if [[ ${#scripts[@]} -eq 0 ]]; then
-            echo "No example scripts found in examples/" >&2
+            echo "No example Lua scripts found in examples/" >&2
             exit 1
           fi
           for script in "${scripts[@]}"; do
