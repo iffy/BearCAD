@@ -6,8 +6,10 @@ use crate::actions::{Action, Pane};
 use eframe::CreationContext;
 use muda::{
     accelerator::{Accelerator, Code, Modifiers},
-    AboutMetadata, CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
+    CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
 };
+#[cfg(target_os = "macos")]
+use muda::AboutMetadata;
 #[cfg(target_os = "windows")]
 use raw_window_handle::HasWindowHandle;
 use std::sync::{Mutex, OnceLock};

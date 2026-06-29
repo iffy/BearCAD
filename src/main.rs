@@ -153,19 +153,27 @@ fn native_options() -> eframe::NativeOptions {
         viewport = viewport.with_maximized(true);
     }
 
-    let mut options = eframe::NativeOptions {
-        viewport,
-        renderer: eframe::Renderer::Wgpu,
-        ..Default::default()
-    };
     #[cfg(target_os = "macos")]
     {
         use winit::platform::macos::EventLoopBuilderExtMacOS;
+        let mut options = eframe::NativeOptions {
+            viewport,
+            renderer: eframe::Renderer::Wgpu,
+            ..Default::default()
+        };
         options.event_loop_builder = Some(Box::new(|builder| {
             builder.with_default_menu(false);
         }));
+        options
     }
-    options
+    #[cfg(not(target_os = "macos"))]
+    {
+        eframe::NativeOptions {
+            viewport,
+            renderer: eframe::Renderer::Wgpu,
+            ..Default::default()
+        }
+    }
 }
 
 fn main() -> eframe::Result<()> {
