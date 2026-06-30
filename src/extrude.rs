@@ -46,7 +46,7 @@ pub fn extrusion_mesh(doc: &Document, extrusion: &Extrusion) -> Option<SolidMesh
     }
     let mut mesh = SolidMesh::default();
     for face in &extrusion.faces {
-        if let Some((profile, normal)) = face_profile_world(doc, *face) {
+        if let Some((profile, normal)) = face_profile_world(doc, face) {
             let top: Vec<Vec3> = profile
                 .iter()
                 .map(|p| extruded_top_point(doc, extrusion, normal, *p, distance))
@@ -87,10 +87,10 @@ pub fn document_solid_mesh(doc: &Document) -> SolidMesh {
 /// The `(point, normal)` plane an extrusion's top cap should lie in, when its target defines
 /// one. A vertex target or a plain typed distance has no such plane.
 pub fn target_top_plane(doc: &Document, extrusion: &Extrusion) -> Option<(Vec3, Vec3)> {
-    match extrusion.target? {
+    match extrusion.target.as_ref()? {
         ExtrudeTarget::Face(face) => face_plane(doc, face),
         ExtrudeTarget::Plane(index) => {
-            let plane = doc.construction_planes.get(index)?;
+            let plane = doc.construction_planes.get(*index)?;
             Some((plane.origin, plane.normal))
         }
         ExtrudeTarget::Vertex(_) => None,
@@ -117,7 +117,7 @@ pub fn extruded_top_point(
 
 /// The effective signed depth: derived from `target`'s extended plane when set, else `distance`.
 pub fn effective_distance(doc: &Document, extrusion: &Extrusion) -> f32 {
-    if let Some(target) = extrusion.target {
+    if let Some(target) = &extrusion.target {
         if let Some((base, normal)) = faces_anchor(doc, &extrusion.faces) {
             if let Some(d) = target_distance(doc, base, normal, target) {
                 return d;
@@ -132,11 +132,11 @@ pub fn target_distance(
     doc: &Document,
     base: Vec3,
     normal: Vec3,
-    target: ExtrudeTarget,
+    target: &ExtrudeTarget,
 ) -> Option<f32> {
     match target {
         ExtrudeTarget::Vertex(point) => {
-            let world = constraint_point_world(doc, point)?;
+            let world = constraint_point_world(doc, *point)?;
             Some((world - base).dot(normal))
         }
         ExtrudeTarget::Face(face) => {
@@ -144,7 +144,7 @@ pub fn target_distance(
             plane_axis_distance(base, normal, p, n)
         }
         ExtrudeTarget::Plane(index) => {
-            let plane = doc.construction_planes.get(index)?;
+            let plane = doc.construction_planes.get(*index)?;
             plane_axis_distance(base, normal, plane.origin, plane.normal)
         }
     }
@@ -159,7 +159,7 @@ fn plane_axis_distance(base: Vec3, dir: Vec3, point: Vec3, plane_normal: Vec3) -
     Some((point - base).dot(plane_normal) / denom)
 }
 
-fn face_plane(doc: &Document, face: ExtrudeFace) -> Option<(Vec3, Vec3)> {
+fn face_plane(doc: &Document, face: &ExtrudeFace) -> Option<(Vec3, Vec3)> {
     let (center, normal) = face_center_world(doc, face)?;
     Some((center, normal))
 }
@@ -182,7 +182,7 @@ pub fn faces_anchor(doc: &Document, faces: &[ExtrudeFace]) -> Option<(Vec3, Vec3
     let mut count = 0u32;
     let mut normal = Vec3::ZERO;
     for face in faces {
-        if let Some(center) = face_center_world(doc, *face) {
+        if let Some(center) = face_center_world(doc, face) {
             sum += center.0;
             normal = center.1;
             count += 1;
@@ -192,10 +192,10 @@ pub fn faces_anchor(doc: &Document, faces: &[ExtrudeFace]) -> Option<(Vec3, Vec3
 }
 
 /// World center and normal of a face.
-fn face_center_world(doc: &Document, face: ExtrudeFace) -> Option<(Vec3, Vec3)> {
+fn face_center_world(doc: &Document, face: &ExtrudeFace) -> Option<(Vec3, Vec3)> {
     match face {
         ExtrudeFace::Rect(i) => {
-            let rect = doc.rects.get(i)?;
+            let rect = doc.rects.get(*i)?;
             let frame = sketch_geometry_frame(doc, rect.sketch)?;
             Some((
                 local_to_world(&frame, rect.x + rect.w * 0.5, rect.y + rect.h * 0.5),
@@ -203,18 +203,23 @@ fn face_center_world(doc: &Document, face: ExtrudeFace) -> Option<(Vec3, Vec3)> 
             ))
         }
         ExtrudeFace::Circle(i) => {
-            let circle = doc.circles.get(i)?;
+            let circle = doc.circles.get(*i)?;
             let frame = sketch_geometry_frame(doc, circle.sketch)?;
             Some((local_to_world(&frame, circle.cx, circle.cy), frame.normal))
+        }
+        ExtrudeFace::Polygon(lines) => {
+            let (profile, normal) = polygon_profile_world(doc, lines)?;
+            let centroid = profile.iter().copied().sum::<Vec3>() / profile.len() as f32;
+            Some((centroid, normal))
         }
     }
 }
 
 /// World-space boundary loop (CCW in the face frame) and outward normal of a face.
-pub fn face_profile_world(doc: &Document, face: ExtrudeFace) -> Option<(Vec<Vec3>, Vec3)> {
+pub fn face_profile_world(doc: &Document, face: &ExtrudeFace) -> Option<(Vec<Vec3>, Vec3)> {
     match face {
         ExtrudeFace::Rect(index) => {
-            let rect = doc.rects.get(index)?;
+            let rect = doc.rects.get(*index)?;
             if rect.deleted {
                 return None;
             }
@@ -229,7 +234,7 @@ pub fn face_profile_world(doc: &Document, face: ExtrudeFace) -> Option<(Vec<Vec3
             Some((corners.to_vec(), frame.normal))
         }
         ExtrudeFace::Circle(index) => {
-            let circle = doc.circles.get(index)?;
+            let circle = doc.circles.get(*index)?;
             if circle.deleted {
                 return None;
             }
@@ -237,7 +242,24 @@ pub fn face_profile_world(doc: &Document, face: ExtrudeFace) -> Option<(Vec<Vec3
             let profile = circle_profile_world(&frame, circle.cx, circle.cy, circle.r);
             Some((profile, frame.normal))
         }
+        ExtrudeFace::Polygon(lines) => polygon_profile_world(doc, lines),
     }
+}
+
+/// World-space boundary loop and outward normal of a closed polygon, given its ordered
+/// line indices (#66). `None` if any line is missing/deleted or the loop isn't closed.
+fn polygon_profile_world(doc: &Document, lines: &[usize]) -> Option<(Vec<Vec3>, Vec3)> {
+    let first = doc.lines.get(*lines.first()?)?;
+    if first.deleted || lines.iter().any(|&li| doc.lines.get(li).is_none_or(|l| l.deleted)) {
+        return None;
+    }
+    let frame = sketch_geometry_frame(doc, first.sketch)?;
+    let vertices_uv = crate::polygon::loop_vertices_uv(doc, first.sketch, lines)?;
+    let profile = vertices_uv
+        .into_iter()
+        .map(|(u, v)| local_to_world(&frame, u, v))
+        .collect();
+    Some((profile, frame.normal))
 }
 
 /// World-space boundary loop of an extrusion cap. `top` selects the offset end
@@ -245,11 +267,11 @@ pub fn face_profile_world(doc: &Document, face: ExtrudeFace) -> Option<(Vec<Vec3
 pub fn cap_polygon_world(
     doc: &Document,
     extrusion: usize,
-    profile: ExtrudeFace,
+    profile: &ExtrudeFace,
     top: bool,
 ) -> Option<Vec<Vec3>> {
     let ext = doc.extrusions.get(extrusion)?;
-    if ext.deleted || !ext.faces.contains(&profile) {
+    if ext.deleted || !ext.faces.contains(profile) {
         return None;
     }
     let (poly, normal) = face_profile_world(doc, profile)?;
@@ -265,12 +287,13 @@ pub fn cap_polygon_world(
     )
 }
 
-/// Number of flat, sketchable side walls of a profile (rectangles have 4; circular
-/// profiles are curved and have none).
-pub fn side_face_count(profile: ExtrudeFace) -> usize {
+/// Number of flat, sketchable side walls of a profile (rectangles have 4, polygons have
+/// one per edge; circular profiles are curved and have none).
+pub fn side_face_count(profile: &ExtrudeFace) -> usize {
     match profile {
         ExtrudeFace::Rect(_) => 4,
         ExtrudeFace::Circle(_) => 0,
+        ExtrudeFace::Polygon(lines) => lines.len(),
     }
 }
 
@@ -280,11 +303,11 @@ pub fn side_face_count(profile: ExtrudeFace) -> usize {
 pub fn side_quad_world(
     doc: &Document,
     extrusion: usize,
-    profile: ExtrudeFace,
+    profile: &ExtrudeFace,
     edge: usize,
 ) -> Option<[Vec3; 4]> {
     let ext = doc.extrusions.get(extrusion)?;
-    if ext.deleted || !ext.faces.contains(&profile) || edge >= side_face_count(profile) {
+    if ext.deleted || !ext.faces.contains(profile) || edge >= side_face_count(profile) {
         return None;
     }
     let (poly, normal) = face_profile_world(doc, profile)?;
@@ -370,6 +393,40 @@ mod tests {
         let (min, max) = mesh.bounds().unwrap();
         assert!((min.z).abs() < 1e-4 && (max.z - 6.0).abs() < 1e-4, "z [{},{}]", min.z, max.z);
         assert!((max.x - min.x - 10.0).abs() < 1e-4 && (max.y - min.y - 4.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn closed_line_loop_extrudes_to_a_prism_mesh() {
+        use crate::model::{Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, Line, LineEnd};
+
+        let (mut doc, sketch) = sketch_doc();
+        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 5.0, 8.0));
+        doc.lines.push(Line::from_local_endpoints(sketch, 5.0, 8.0, 0.0, 0.0));
+        let coincident = |a, b| Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(a),
+                b: ConstraintEntity::Point(b),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        };
+        let point = |line, end| ConstraintPoint::LineEndpoint { line, end };
+        doc.constraints.push(coincident(point(0, LineEnd::End), point(1, LineEnd::Start)));
+        doc.constraints.push(coincident(point(1, LineEnd::End), point(2, LineEnd::Start)));
+        doc.constraints.push(coincident(point(2, LineEnd::End), point(0, LineEnd::Start)));
+
+        let loops = crate::polygon::closed_line_loops(&doc, sketch);
+        assert_eq!(loops.len(), 1);
+        let ext = extrusion(sketch, vec![ExtrudeFace::Polygon(loops[0].clone())], 6.0);
+        let mesh = extrusion_mesh(&doc, &ext).unwrap();
+        // A triangular prism: 1 (bottom fan) + 1 (top fan) + 3 sides * 2 = 8 triangles.
+        assert_eq!(mesh.triangles.len(), 8);
+        let (min, max) = mesh.bounds().unwrap();
+        assert!((min.z).abs() < 1e-4 && (max.z - 6.0).abs() < 1e-4, "z [{},{}]", min.z, max.z);
     }
 
     #[test]
@@ -473,7 +530,7 @@ mod tests {
         doc.extrusions.push(ext.clone());
 
         // Every top-cap corner lies exactly in the slanted plane (full contact).
-        let cap = cap_polygon_world(&doc, 0, ExtrudeFace::Rect(0), true).unwrap();
+        let cap = cap_polygon_world(&doc, 0, &ExtrudeFace::Rect(0), true).unwrap();
         assert_eq!(cap.len(), 4);
         for corner in &cap {
             let signed = (*corner - plane_origin).dot(plane_normal);
@@ -486,7 +543,7 @@ mod tests {
         assert!(zmax - zmin > 1.0, "expected a slanted top, spread {}", zmax - zmin);
 
         // The base cap stays on the sketch plane (z = 0).
-        let base = cap_polygon_world(&doc, 0, ExtrudeFace::Rect(0), false).unwrap();
+        let base = cap_polygon_world(&doc, 0, &ExtrudeFace::Rect(0), false).unwrap();
         for corner in &base {
             assert!(corner.z.abs() < 1e-4);
         }

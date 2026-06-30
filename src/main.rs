@@ -35,6 +35,7 @@ mod hierarchy;
 mod icons;
 mod names;
 mod parameters;
+mod polygon;
 
 mod model;
 mod native_menu;
@@ -1624,7 +1625,7 @@ fn build_viewport_scene_input<'a>(
             // While dragging the gizmo, the target is only known live (not yet committed
             // onto `ce`) — fall back to it so the ghost preview actually shows the slanted
             // shape it will land in, instead of a generic blind extrude (#63).
-            target: ce.target.or(pending_extrude_target),
+            target: ce.target.clone().or(pending_extrude_target),
             expression: String::new(),
             name: None,
             deleted: false,
@@ -2608,7 +2609,7 @@ fn draw_extrude_height_dimension<Project>(
     if distance.abs() < 1e-4 {
         return;
     }
-    let Some((corners, normal)) = extrude::face_profile_world(doc, ce.faces[0]) else {
+    let Some((corners, normal)) = extrude::face_profile_world(doc, &ce.faces[0]) else {
         return;
     };
     if corners.len() < 3 {
@@ -2770,6 +2771,7 @@ fn pick_extrude_face(
     match pick_sketch_face(pp, project, doc, eye)? {
         FaceId::Rect(i) => Some(model::ExtrudeFace::Rect(i)),
         FaceId::Circle(i) => Some(model::ExtrudeFace::Circle(i)),
+        FaceId::Polygon(lines) => Some(model::ExtrudeFace::Polygon(lines)),
         FaceId::ConstructionPlane(_) | FaceId::ExtrudeCap { .. } | FaceId::ExtrudeSide { .. } => {
             None
         }
@@ -2777,10 +2779,7 @@ fn pick_extrude_face(
 }
 
 fn extrude_face_id(face: model::ExtrudeFace) -> FaceId {
-    match face {
-        model::ExtrudeFace::Rect(i) => FaceId::Rect(i),
-        model::ExtrudeFace::Circle(i) => FaceId::Circle(i),
-    }
+    face.face_id()
 }
 
 /// Object under the cursor to extrude up to (vertex preferred, then face/plane), with the
@@ -2839,7 +2838,7 @@ fn pick_extrude_target(
             _ => return None,
         }
     };
-    let dist = extrude::target_distance(doc, base, normal, target)?;
+    let dist = extrude::target_distance(doc, base, normal, &target)?;
     Some((target, dist))
 }
 
@@ -3289,12 +3288,19 @@ fn draw_face_highlight(
                 draw_circle_face_highlight(painter, project, doc, circle, color);
             }
         }
+        FaceId::Polygon(lines) => {
+            if let Some((poly, _)) =
+                extrude::face_profile_world(doc, &model::ExtrudeFace::Polygon(lines))
+            {
+                draw_polygon_face_highlight(painter, project, &poly, color);
+            }
+        }
         FaceId::ExtrudeCap {
             extrusion,
             profile,
             top,
         } => {
-            if let Some(poly) = extrude::cap_polygon_world(doc, extrusion, profile, top) {
+            if let Some(poly) = extrude::cap_polygon_world(doc, extrusion, &profile, top) {
                 draw_polygon_face_highlight(painter, project, &poly, color);
             }
         }
@@ -3303,7 +3309,7 @@ fn draw_face_highlight(
             profile,
             edge,
         } => {
-            if let Some(quad) = extrude::side_quad_world(doc, extrusion, profile, edge as usize) {
+            if let Some(quad) = extrude::side_quad_world(doc, extrusion, &profile, edge as usize) {
                 draw_polygon_face_highlight(painter, project, &quad, color);
             }
         }
@@ -4355,7 +4361,7 @@ impl App {
             self.state.creating_circle.as_ref(),
             self.state.creating_plane.as_ref(),
             self.state.creating_extrusion.as_ref(),
-            self.pending_extrude_target,
+            self.pending_extrude_target.clone(),
             plane_gizmo,
             extrude_gizmo,
             hover_highlight,
@@ -4489,7 +4495,7 @@ impl App {
                 draw_extrude_height_dimension(&painter, &project, doc, ce);
             }
             // Highlight the object the extrusion is currently snapping to.
-            if let Some(target) = self.pending_extrude_target {
+            if let Some(target) = self.pending_extrude_target.clone() {
                 draw_extrude_target_highlight(
                     &painter,
                     &project,
@@ -6158,7 +6164,7 @@ mod tests {
             None,
             None,
             state.creating_extrusion.as_ref(),
-            pending,
+            pending.clone(),
             None,
             None,
             None,
@@ -6167,7 +6173,7 @@ mod tests {
             None,
         );
         assert_eq!(
-            scene_input.preview_extrusion.as_ref().map(|e| e.target),
+            scene_input.preview_extrusion.as_ref().map(|e| e.target.clone()),
             Some(pending),
             "ghost preview should pick up the live pending target before commit"
         );

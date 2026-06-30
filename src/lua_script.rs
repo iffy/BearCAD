@@ -1234,17 +1234,24 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             if let Some(list) = opts.get::<Option<Vec<usize>>>("circles")? {
                 faces.extend(list.into_iter().map(crate::model::ExtrudeFace::Circle));
             }
+            // `polygon = {line0, line1, ...}`: a single closed-loop face (#66).
+            if let Some(lines) = opts.get::<Option<Vec<usize>>>("polygon")? {
+                faces.push(crate::model::ExtrudeFace::Polygon(lines));
+            }
             if faces.is_empty() {
                 return Err(mlua::Error::external(
-                    "extrude requires a `rect`/`circle` or `rects`/`circles` face list",
+                    "extrude requires a `rect`/`circle`/`polygon` or `rects`/`circles` face list",
                 ));
             }
             // Sketch from the first face's geometry (all faces should be coplanar).
             let sketch = unsafe {
                 let doc = &tick.state().doc;
-                match faces[0] {
-                    crate::model::ExtrudeFace::Rect(i) => doc.rects.get(i).map(|r| r.sketch),
-                    crate::model::ExtrudeFace::Circle(i) => doc.circles.get(i).map(|c| c.sketch),
+                match &faces[0] {
+                    crate::model::ExtrudeFace::Rect(i) => doc.rects.get(*i).map(|r| r.sketch),
+                    crate::model::ExtrudeFace::Circle(i) => doc.circles.get(*i).map(|c| c.sketch),
+                    crate::model::ExtrudeFace::Polygon(lines) => {
+                        lines.first().and_then(|&i| doc.lines.get(i)).map(|l| l.sketch)
+                    }
                 }
             }
             .ok_or_else(|| mlua::Error::external("extrude face does not exist"))?;
@@ -1503,6 +1510,24 @@ mod tests {
     }
 
     #[test]
+    fn lua_extrude_accepts_explicit_polygon_line_list() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
+            bearcad.line{ x = 10, y = 0, x1 = 5, y1 = 8 }
+            bearcad.line{ x = 5, y = 8, x1 = 0, y1 = 0 }
+            bearcad.extrude{ polygon = {0, 1, 2}, distance = 6 }
+        "#,
+        );
+        assert_eq!(state.doc.extrusions.len(), 1);
+        assert_eq!(
+            state.doc.extrusions[0].faces,
+            vec![crate::model::ExtrudeFace::Polygon(vec![0, 1, 2])]
+        );
+    }
+
+    #[test]
     fn lua_begin_sketch_on_extrude_cap_face() {
         let state = run_lua(
             r#"
@@ -1512,7 +1537,7 @@ mod tests {
             bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 0, profile = "rect", profile_index = 0, top = true }
         "#,
         );
-        let face = state.doc.sketches.last().map(|s| s.face);
+        let face = state.doc.sketches.last().map(|s| s.face.clone());
         assert_eq!(
             face,
             Some(FaceId::ExtrudeCap {
@@ -1534,7 +1559,7 @@ mod tests {
             bearcad.begin_sketch{ kind = "extrude_side", extrusion = 0, profile = "rect", profile_index = 0, edge = 1 }
         "#,
         );
-        let face = state.doc.sketches.last().map(|s| s.face);
+        let face = state.doc.sketches.last().map(|s| s.face.clone());
         assert_eq!(
             face,
             Some(FaceId::ExtrudeSide {

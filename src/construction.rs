@@ -178,7 +178,7 @@ pub fn descendant_plane_indices(doc: &Document, root_plane: usize) -> Vec<usize>
     let mut seen_faces = std::collections::HashSet::new();
 
     while let Some(face) = faces.pop() {
-        if !seen_faces.insert(face) {
+        if !seen_faces.insert(face.clone()) {
             continue;
         }
         for sketch in doc.sketches_on_face(face) {
@@ -211,10 +211,10 @@ pub fn descendant_faces(doc: &Document, root_plane: usize) -> Vec<FaceId> {
     let mut collected = Vec::new();
 
     while let Some(face) = faces.pop() {
-        if !seen_faces.insert(face) {
+        if !seen_faces.insert(face.clone()) {
             continue;
         }
-        collected.push(face);
+        collected.push(face.clone());
         for sketch in doc.sketches_on_face(face) {
             for (pi, plane) in doc.construction_planes.iter().enumerate() {
                 if matches!(plane.parent, ConstructionPlaneParent::Sketch(s) if s == sketch) {

@@ -159,6 +159,9 @@ fn face_element(face: FaceId) -> SceneElement {
         FaceId::ConstructionPlane(i) => SceneElement::ConstructionPlane(i),
         FaceId::Rect(i) => SceneElement::Rect(i),
         FaceId::Circle(i) => SceneElement::Circle(i),
+        // A polygon face is just a closed loop of existing lines (#66); its visibility
+        // tracks its first constituent line.
+        FaceId::Polygon(lines) => SceneElement::Line(lines[0]),
         // A sketch on a body cap or side wall depends on the extrusion that produced it.
         FaceId::ExtrudeCap { extrusion, .. } | FaceId::ExtrudeSide { extrusion, .. } => {
             SceneElement::Extrusion(extrusion)

@@ -122,15 +122,25 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   those edges (within a perpendicular tolerance), with a dashed guide line from the edge to the
   point. Leaving the point there adds a point-on-line coincidence (collinear with the edge), so
   e.g. touching a rectangle corner lets the next point be placed in line with one of its sides.
+- **Polygon faces from closed line loops (#66):** any set of plain `Line`s that connect
+  end-to-end into a closed loop, via `Coincident` constraints on their endpoints, is itself a
+  usable face — filled the same as a rect/circle profile (shared blue styling, construction
+  loops dashed/dimmed like other construction geometry), pickable for sketching-on-face, and
+  extrudable. Loops are detected on the fly (not a stored entity) as every simple cycle in the
+  sketch's line-connectivity graph; a line shared by two loops (e.g. a rectangle split by a
+  diagonal) yields multiple selectable polygon faces. Scriptable via
+  `bearcad.extrude{ polygon = {line_index, ...} }`, which takes an explicit ordered line list
+  rather than relying on auto-detection.
 
 ### 3.2 Solid creation from sketches
 - **Extrude** — blind, symmetric, to-object, with optional draft angle.
   - An **Extrusion** is a first-class feature element (own hierarchy row, nameable, undoable):
-    it references one or more coplanar sketch faces (closed rect/circle profiles) and a signed
-    distance along the plane normal, and generates a solid mesh (prism per rect, cylinder per
-    circle). Each extrusion produces a **Body** (the solid result) that depends on it: the body
-    nests under the extrusion in the Elements pane and is removed if the extrusion is deleted.
-    Created in script via `bearcad.extrude{ rect|circle|rects|circles, distance, name? }`.
+    it references one or more coplanar sketch faces (closed rect/circle/polygon profiles) and a
+    signed distance along the plane normal, and generates a solid mesh (prism per rect or
+    polygon, cylinder per circle). Each extrusion produces a **Body** (the solid result) that
+    depends on it: the body nests under the extrusion in the Elements pane and is removed if the
+    extrusion is deleted.
+    Created in script via `bearcad.extrude{ rect|circle|polygon|rects|circles, distance, name? }`.
   - Implemented: the data model (Extrusion + Body) with `.bearcad` persistence; mesh generation;
     both hierarchy elements; depth-tested flat-shaded rendering; and the interactive **Extrude
     tool** (`E`): click coplanar faces to toggle inclusion (hover-highlighted), drag the normal

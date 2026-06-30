@@ -190,7 +190,7 @@ impl Instruction {
             Instruction::Undo => "bearcad.undo()".to_string(),
             Instruction::Tool(tool) => format!("bearcad.ui.tool({:?})", tool_lua_name(*tool)),
             Instruction::BeginSketch { face } => {
-                let (kind, index) = face_lua_parts(*face);
+                let (kind, index) = face_lua_parts(face);
                 format!("bearcad.begin_sketch({kind:?}, {index})")
             }
             Instruction::OpenSketch { sketch } => format!("bearcad.open_sketch({sketch})"),
@@ -610,7 +610,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             value: value.clone(),
         }),
         Action::FocusPlaneDim { dim } => Some(Instruction::FocusPlaneDim(*dim)),
-        Action::BeginSketch { face, .. } => Some(Instruction::BeginSketch { face: *face }),
+        Action::BeginSketch { face, .. } => Some(Instruction::BeginSketch { face: face.clone() }),
         Action::OpenSketch { sketch, .. } => Some(Instruction::OpenSketch { sketch: *sketch }),
         Action::ExitSketch => Some(Instruction::ExitSketch),
         Action::SetElementVisible { element, visible } => Some(Instruction::SetElementVisible {
@@ -802,14 +802,17 @@ fn tool_lua_name(tool: Tool) -> &'static str {
     }
 }
 
-fn face_lua_parts(face: FaceId) -> (&'static str, usize) {
+fn face_lua_parts(face: &FaceId) -> (&'static str, usize) {
     match face {
-        FaceId::Rect(i) => ("rect", i),
-        FaceId::Circle(i) => ("circle", i),
-        FaceId::ConstructionPlane(i) => ("construction_plane", i),
+        FaceId::Rect(i) => ("rect", *i),
+        FaceId::Circle(i) => ("circle", *i),
+        FaceId::ConstructionPlane(i) => ("construction_plane", *i),
         // Cap/side faces aren't yet addressable from the two-argument script form.
-        FaceId::ExtrudeCap { extrusion, .. } => ("extrude_cap", extrusion),
-        FaceId::ExtrudeSide { extrusion, .. } => ("extrude_side", extrusion),
+        FaceId::ExtrudeCap { extrusion, .. } => ("extrude_cap", *extrusion),
+        FaceId::ExtrudeSide { extrusion, .. } => ("extrude_side", *extrusion),
+        // A polygon's full line list isn't expressible as a single index; same limitation
+        // as cap/side faces above (#66).
+        FaceId::Polygon(lines) => ("polygon", *lines.first().unwrap_or(&0)),
     }
 }
 

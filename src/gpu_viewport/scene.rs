@@ -303,6 +303,51 @@ impl ViewportScene {
             mesh.set_index_layer(MeshIndexLayer::Base);
         }
 
+        // Closed loops of plain lines (#66) — fill them the same way a rect/circle face is.
+        for sketch in 0..input.doc.sketches.len() {
+            for lines in crate::polygon::closed_line_loops(input.doc, sketch) {
+                let visible = lines.iter().all(|&li| {
+                    line_alive(input.doc, li)
+                        && input
+                            .element_visibility
+                            .effective_visible(input.doc, SceneElement::Line(li))
+                });
+                if !visible {
+                    continue;
+                }
+                let Some((profile, normal)) = crate::extrude::face_profile_world(
+                    input.doc,
+                    &crate::model::ExtrudeFace::Polygon(lines.clone()),
+                ) else {
+                    continue;
+                };
+                let all_construction = lines
+                    .iter()
+                    .all(|&li| input.doc.lines.get(li).is_some_and(|l| l.construction));
+                let dim = input.sketch_session.is_some_and(|s| {
+                    input.doc.lines.get(lines[0]).is_some_and(|l| l.sketch != s.sketch)
+                });
+                let element = SceneElement::Line(lines[0]);
+                mesh.set_index_layer(MeshIndexLayer::SketchFill);
+                mesh.push_polygon_fill(
+                    &profile,
+                    normal,
+                    input.cam,
+                    health_tint_color(
+                        sketch_color(input.palette.rect_line, dim),
+                        input.document_health.element_status(element),
+                    ),
+                    health_tint_color(
+                        sketch_color(input.palette.construction, dim),
+                        input.document_health.element_status(element),
+                    ),
+                    all_construction,
+                    shape_fill_depth_bias_laned(lines[0], 2),
+                );
+                mesh.set_index_layer(MeshIndexLayer::Base);
+            }
+        }
+
         // Extruded solid bodies (3D, depth-tested, flat-shaded).
         for (bi, body) in input.doc.bodies.iter().enumerate() {
             if body.deleted
@@ -483,7 +528,7 @@ impl ViewportScene {
             }
         }
 
-        if let Some(face) = input.active_sketch_face {
+        if let Some(face) = input.active_sketch_face.clone() {
             mesh.push_face_highlight(
                 input.doc,
                 face,
@@ -1036,6 +1081,36 @@ impl<'a> SceneMesh<'a> {
         }
     }
 
+    /// Fill for a closed loop of plain lines (#66), fanned from its first vertex — matches
+    /// the convex-fan triangulation `extrude::extrude_profile` uses for the same loop.
+    fn push_polygon_fill(
+        &mut self,
+        profile: &[Vec3],
+        normal: Vec3,
+        cam: &Camera,
+        solid: Color32,
+        construction: Color32,
+        all_construction: bool,
+        fill_depth_bias: f32,
+    ) {
+        if profile.len() < 3 {
+            return;
+        }
+        let eye = cam.eye();
+        let fill = if all_construction {
+            fill_color(construction, CONSTRUCTION_FILL_OPACITY)
+        } else {
+            fill_color(solid, SOLID_FILL_OPACITY)
+        };
+        let lifted: Vec<Vec3> = profile
+            .iter()
+            .map(|&p| offset_toward_camera(p, normal, eye, fill_depth_bias))
+            .collect();
+        for i in 1..lifted.len() - 1 {
+            self.push_triangle(lifted[0], lifted[i], lifted[i + 1], fill);
+        }
+    }
+
     fn push_circle_strokes(
         &mut self,
         doc: &Document,
@@ -1409,13 +1484,33 @@ impl<'a> SceneMesh<'a> {
                     }
                 }
             }
+            FaceId::Polygon(lines) => {
+                if let Some((poly, _)) =
+                    crate::extrude::face_profile_world(doc, &crate::model::ExtrudeFace::Polygon(lines))
+                {
+                    if poly.len() >= 3 {
+                        let normal =
+                            (poly[1] - poly[0]).cross(poly[2] - poly[0]).normalize_or_zero();
+                        let lift =
+                            |p: Vec3| offset_toward_camera(p, normal, eye, HOVER_FILL_DEPTH_BIAS);
+                        for i in 1..poly.len() - 1 {
+                            self.push_triangle(
+                                lift(poly[0]),
+                                lift(poly[i]),
+                                lift(poly[i + 1]),
+                                fill,
+                            );
+                        }
+                    }
+                }
+            }
             FaceId::ExtrudeCap {
                 extrusion,
                 profile,
                 top,
             } => {
                 if let Some(poly) =
-                    crate::extrude::cap_polygon_world(doc, extrusion, profile, top)
+                    crate::extrude::cap_polygon_world(doc, extrusion, &profile, top)
                 {
                     if poly.len() >= 3 {
                         let normal =
@@ -1439,7 +1534,7 @@ impl<'a> SceneMesh<'a> {
                 edge,
             } => {
                 if let Some(quad) =
-                    crate::extrude::side_quad_world(doc, extrusion, profile, edge as usize)
+                    crate::extrude::side_quad_world(doc, extrusion, &profile, edge as usize)
                 {
                     let normal =
                         (quad[1] - quad[0]).cross(quad[2] - quad[0]).normalize_or_zero();
@@ -1464,12 +1559,12 @@ impl<'a> SceneMesh<'a> {
     ) {
         let project = |w: Vec3| cam.project(w, viewport, view_proj);
         match hover {
-            ViewportHoverHighlight::SketchFace(face) => match *face {
+            ViewportHoverHighlight::SketchFace(face) => match face {
                 FaceId::ConstructionPlane(index) => {
-                    if let Some(plane) = doc.construction_planes.get(index) {
+                    if let Some(plane) = doc.construction_planes.get(*index) {
                         self.push_construction_plane_hover_fill(
                             plane,
-                            index,
+                            *index,
                             color,
                             FACE_HOVER_FILL_MULTIPLIER,
                             cam,
@@ -1477,10 +1572,10 @@ impl<'a> SceneMesh<'a> {
                     }
                 }
                 _ => {
-                    self.push_sketch_face_hover(doc, *face, color, FACE_HOVER_FILL_MULTIPLIER, cam);
+                    self.push_sketch_face_hover(doc, face.clone(), color, FACE_HOVER_FILL_MULTIPLIER, cam);
                     self.push_sketch_face_hover_border(
                         doc,
-                        *face,
+                        face.clone(),
                         color,
                         2.0,
                         cam,
@@ -1547,13 +1642,26 @@ impl<'a> SceneMesh<'a> {
                     }
                 }
             }
+            FaceId::Polygon(lines) => {
+                if let Some((poly, _)) =
+                    crate::extrude::face_profile_world(doc, &crate::model::ExtrudeFace::Polygon(lines))
+                {
+                    let n = poly.len();
+                    for i in 0..n {
+                        let j = (i + 1) % n;
+                        self.push_line_segment(
+                            poly[i], poly[j], color, width, cam, viewport, view_proj,
+                        );
+                    }
+                }
+            }
             FaceId::ExtrudeCap {
                 extrusion,
                 profile,
                 top,
             } => {
                 if let Some(poly) =
-                    crate::extrude::cap_polygon_world(doc, extrusion, profile, top)
+                    crate::extrude::cap_polygon_world(doc, extrusion, &profile, top)
                 {
                     let n = poly.len();
                     for i in 0..n {
@@ -1570,7 +1678,7 @@ impl<'a> SceneMesh<'a> {
                 edge,
             } => {
                 if let Some(quad) =
-                    crate::extrude::side_quad_world(doc, extrusion, profile, edge as usize)
+                    crate::extrude::side_quad_world(doc, extrusion, &profile, edge as usize)
                 {
                     for i in 0..quad.len() {
                         let j = (i + 1) % quad.len();
@@ -2942,6 +3050,50 @@ mod tests {
         });
     }
 
+    /// Three lines (0, 1, 2) closed into a triangle via Coincident constraints (#66).
+    fn commit_test_triangle_loop(state: &mut AppState) {
+        use crate::model::{Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, LineEnd};
+
+        state.apply(crate::actions::Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        state.apply(crate::actions::Action::CreateLineSegment {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 10.0,
+            y1: 0.0,
+        });
+        state.apply(crate::actions::Action::CreateLineSegment {
+            x0: 10.0,
+            y0: 0.0,
+            x1: 5.0,
+            y1: 8.0,
+        });
+        state.apply(crate::actions::Action::CreateLineSegment {
+            x0: 5.0,
+            y0: 8.0,
+            x1: 0.0,
+            y1: 0.0,
+        });
+        let sketch = state.sketch_session.unwrap().sketch;
+        let coincident = |a, b| Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(a),
+                b: ConstraintEntity::Point(b),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        };
+        let point = |line, end| ConstraintPoint::LineEndpoint { line, end };
+        state.doc.constraints.push(coincident(point(0, LineEnd::End), point(1, LineEnd::Start)));
+        state.doc.constraints.push(coincident(point(1, LineEnd::End), point(2, LineEnd::Start)));
+        state.doc.constraints.push(coincident(point(2, LineEnd::End), point(0, LineEnd::Start)));
+    }
+
     /// Rectangle and circle both at index 0 on the ground plane, overlapping (#3).
     fn commit_overlapping_rect_and_circle(state: &mut AppState) {
         state.apply(crate::actions::Action::BeginSketch {
@@ -3021,6 +3173,17 @@ mod tests {
         assert!(
             strokes > 0,
             "a solid line should render with the shared rect/circle/line stroke color"
+        );
+    }
+
+    #[test]
+    fn closed_line_loop_gets_a_sketch_fill_like_a_rect_or_circle() {
+        let mut state = AppState::default();
+        commit_test_triangle_loop(&mut state);
+        let scene = build_scene_for_doc(&state);
+        assert!(
+            !scene.sketch_fill_indices.is_empty(),
+            "a closed triangle of lines should fill the same as a rect/circle face (#66)"
         );
     }
 

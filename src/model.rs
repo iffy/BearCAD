@@ -9,11 +9,13 @@ use crate::face::default_xy_plane;
 use serde::{Deserialize, Serialize};
 
 /// A sketchable face that lines and rectangles can be drawn on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FaceId {
     Rect(usize),
     Circle(usize),
+    /// A closed loop of plain `Line`s, identified by its ordered line indices (#66).
+    Polygon(Vec<usize>),
     ConstructionPlane(usize),
     /// A planar cap face of an extruded body: one profile face of an extrusion,
     /// at either the base (`top = false`) or offset (`top = true`) end.
@@ -594,26 +596,29 @@ pub struct Constraint {
 }
 
 /// A closed sketch profile (face) included in an extrusion.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtrudeFace {
     Rect(usize),
     Circle(usize),
+    /// A closed loop of plain `Line`s, identified by its ordered line indices (#66).
+    Polygon(Vec<usize>),
 }
 
 impl ExtrudeFace {
     /// The sketchable face this profile corresponds to.
-    pub fn face_id(self) -> FaceId {
+    pub fn face_id(&self) -> FaceId {
         match self {
-            ExtrudeFace::Rect(i) => FaceId::Rect(i),
-            ExtrudeFace::Circle(i) => FaceId::Circle(i),
+            ExtrudeFace::Rect(i) => FaceId::Rect(*i),
+            ExtrudeFace::Circle(i) => FaceId::Circle(*i),
+            ExtrudeFace::Polygon(lines) => FaceId::Polygon(lines.clone()),
         }
     }
 }
 
 /// An object an extrusion is constrained to reach (its extended plane), instead of a fixed
 /// distance.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtrudeTarget {
     /// Up to the plane through a vertex (perpendicular to the extrusion normal).
@@ -716,7 +721,7 @@ impl Default for Document {
 
 impl Document {
     pub fn sketch_face(&self, sketch: SketchId) -> Option<FaceId> {
-        self.sketches.get(sketch).map(|s| s.face)
+        self.sketches.get(sketch).map(|s| s.face.clone())
     }
 
     pub fn sketches_on_face(&self, face: FaceId) -> impl Iterator<Item = SketchId> + '_ {
@@ -732,8 +737,8 @@ impl Document {
             || self.circles.iter().any(|c| c.sketch == sketch)
     }
 
-    pub fn has_children(&self, face: FaceId) -> bool {
-        self.sketches.iter().any(|s| s.face == face)
+    pub fn has_children(&self, face: &FaceId) -> bool {
+        self.sketches.iter().any(|s| &s.face == face)
     }
 
     pub fn add_sketch(&mut self, face: FaceId) -> SketchId {

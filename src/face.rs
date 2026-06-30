@@ -78,6 +78,20 @@ pub fn sketch_frame(doc: &Document, face: FaceId) -> Option<SketchFrame> {
                 normal: parent.normal,
             })
         }
+        FaceId::Polygon(ref lines) => {
+            let first_line = doc.lines.get(*lines.first()?)?;
+            let sketch = first_line.sketch;
+            let face = doc.sketch_face(sketch)?;
+            let parent = sketch_frame(doc, face)?;
+            let (u, v) = *crate::polygon::loop_vertices_uv(doc, sketch, lines)?.first()?;
+            let origin = local_to_world(&parent, u, v);
+            Some(SketchFrame {
+                origin,
+                u_axis: parent.u_axis,
+                v_axis: parent.v_axis,
+                normal: parent.normal,
+            })
+        }
         FaceId::ExtrudeCap {
             extrusion,
             profile,
@@ -91,7 +105,7 @@ pub fn sketch_frame(doc: &Document, face: FaceId) -> Option<SketchFrame> {
             // A top cap that meets a slanted target plane lies in that plane, so derive its
             // frame from the actual (slanted) cap polygon rather than a parallel offset.
             if top && crate::extrude::target_top_plane(doc, ext).is_some() {
-                let poly = crate::extrude::cap_polygon_world(doc, extrusion, profile, true)?;
+                let poly = crate::extrude::cap_polygon_world(doc, extrusion, &profile, true)?;
                 return frame_from_polygon(&poly, base.normal);
             }
             // Otherwise the cap shares the profile's in-plane axes, shifted along the
@@ -113,8 +127,8 @@ pub fn sketch_frame(doc: &Document, face: FaceId) -> Option<SketchFrame> {
             profile,
             edge,
         } => {
-            let quad = crate::extrude::side_quad_world(doc, extrusion, profile, edge as usize)?;
-            let (poly, _) = crate::extrude::face_profile_world(doc, profile)?;
+            let quad = crate::extrude::side_quad_world(doc, extrusion, &profile, edge as usize)?;
+            let (poly, _) = crate::extrude::face_profile_world(doc, &profile)?;
             let centroid = poly.iter().fold(Vec3::ZERO, |acc, p| acc + *p) / poly.len() as f32;
             let (a, b, a_top) = (quad[0], quad[1], quad[3]);
             let u_axis = (b - a).normalize_or_zero();
@@ -527,7 +541,7 @@ fn sketch_local_bounds(doc: &Document, sketch: SketchId) -> Option<SketchZoomBou
 /// Resolve camera target, view direction, and optional zoom bounds for sketch mode.
 pub fn sketch_camera_target(doc: &Document, sketch: SketchId) -> Option<SketchCameraTarget> {
     let face = doc.sketch_face(sketch)?;
-    let frame = sketch_frame(doc, face)?;
+    let frame = sketch_frame(doc, face.clone())?;
     let face_normal = frame.normal;
 
     match face {
@@ -583,12 +597,32 @@ pub fn sketch_camera_target(doc: &Document, sketch: SketchId) -> Option<SketchCa
                 zoom: Some(zoom),
             })
         }
+        FaceId::Polygon(ref lines) => {
+            let vertices = crate::polygon::loop_vertices_uv(doc, sketch, lines)?;
+            let mut zoom: Option<SketchZoomBounds> = None;
+            for (u, v) in vertices {
+                extend_sketch_bounds(&mut zoom, u, v, u, v);
+            }
+            if let Some(children) = sketch_local_bounds(doc, sketch) {
+                zoom = Some(match zoom {
+                    Some(z) => SketchZoomBounds::union(z, children),
+                    None => children,
+                });
+            }
+            let zoom = zoom?;
+            let target = local_to_world(&frame, zoom.center_u, zoom.center_v);
+            Some(SketchCameraTarget {
+                target,
+                face_normal,
+                zoom: Some(zoom),
+            })
+        }
         FaceId::ExtrudeCap {
             extrusion,
             profile,
             top,
         } => {
-            let poly = crate::extrude::cap_polygon_world(doc, extrusion, profile, top)?;
+            let poly = crate::extrude::cap_polygon_world(doc, extrusion, &profile, top)?;
             let mut zoom: Option<SketchZoomBounds> = None;
             for p in &poly {
                 let (u, v) = world_to_local(&frame, *p);
@@ -613,7 +647,7 @@ pub fn sketch_camera_target(doc: &Document, sketch: SketchId) -> Option<SketchCa
             profile,
             edge,
         } => {
-            let quad = crate::extrude::side_quad_world(doc, extrusion, profile, edge as usize)?;
+            let quad = crate::extrude::side_quad_world(doc, extrusion, &profile, edge as usize)?;
             let mut zoom: Option<SketchZoomBounds> = None;
             for p in &quad {
                 let (u, v) = world_to_local(&frame, *p);
@@ -649,6 +683,7 @@ pub fn face_label(_doc: &Document, face: FaceId) -> String {
         FaceId::ConstructionPlane(i) => format!("Construction plane {i}"),
         FaceId::Rect(i) => format!("Rectangle face {i}"),
         FaceId::Circle(i) => format!("Circle face {i}"),
+        FaceId::Polygon(lines) => format!("Polygon face ({} lines)", lines.len()),
         FaceId::ExtrudeCap {
             extrusion, top, ..
         } => {
@@ -741,22 +776,36 @@ pub fn pick_sketch_face(
         }
     }
 
+    // Closed loops of plain lines (#66).
+    for sketch in (0..doc.sketches.len()).rev() {
+        for lines in crate::polygon::closed_line_loops(doc, sketch) {
+            if let Some((poly, _)) = crate::extrude::face_profile_world(
+                doc,
+                &crate::model::ExtrudeFace::Polygon(lines.clone()),
+            ) {
+                if let Some((dist, c)) = polygon_face_pick_distance(screen, project, &poly) {
+                    consider_face_pick(&mut best, FaceId::Polygon(lines), dist, depth(c));
+                }
+            }
+        }
+    }
+
     // Planar caps of extruded bodies (so sketches can be placed on them). Tested
     // before construction planes since a solid cap occludes the datum plane.
     for (ei, extrusion) in doc.extrusions.iter().enumerate().rev() {
         if extrusion.deleted {
             continue;
         }
-        for &profile in &extrusion.faces {
+        for profile in &extrusion.faces {
             for top in [true, false] {
                 if let Some((dist, c)) =
-                    cap_face_pick_distance(screen, project, doc, ei, profile, top)
+                    cap_face_pick_distance(screen, project, doc, ei, profile.clone(), top)
                 {
                     consider_face_pick(
                         &mut best,
                         FaceId::ExtrudeCap {
                             extrusion: ei,
-                            profile,
+                            profile: profile.clone(),
                             top,
                         },
                         dist,
@@ -767,13 +816,13 @@ pub fn pick_sketch_face(
             // Flat side walls (rectangular profiles) are sketchable too.
             for edge in 0..crate::extrude::side_face_count(profile) {
                 if let Some((dist, c)) =
-                    side_face_pick_distance(screen, project, doc, ei, profile, edge)
+                    side_face_pick_distance(screen, project, doc, ei, profile.clone(), edge)
                 {
                     consider_face_pick(
                         &mut best,
                         FaceId::ExtrudeSide {
                             extrusion: ei,
-                            profile,
+                            profile: profile.clone(),
                             edge: edge as u8,
                         },
                         dist,
@@ -803,7 +852,7 @@ fn cap_face_pick_distance(
     profile: crate::model::ExtrudeFace,
     top: bool,
 ) -> Option<(f32, Vec3)> {
-    let poly = crate::extrude::cap_polygon_world(doc, extrusion, profile, top)?;
+    let poly = crate::extrude::cap_polygon_world(doc, extrusion, &profile, top)?;
     polygon_face_pick_distance(screen, project, &poly)
 }
 
@@ -816,7 +865,7 @@ fn side_face_pick_distance(
     profile: crate::model::ExtrudeFace,
     edge: usize,
 ) -> Option<(f32, Vec3)> {
-    let quad = crate::extrude::side_quad_world(doc, extrusion, profile, edge)?;
+    let quad = crate::extrude::side_quad_world(doc, extrusion, &profile, edge)?;
     polygon_face_pick_distance(screen, project, &quad)
 }
 
@@ -1032,7 +1081,7 @@ mod tests {
             &doc,
             FaceId::ExtrudeCap {
                 extrusion: 0,
-                profile,
+                profile: profile.clone(),
                 top: true,
             },
         )
@@ -1165,8 +1214,8 @@ mod tests {
             deleted: false,
         });
         let profile = crate::model::ExtrudeFace::Circle(0);
-        assert_eq!(crate::extrude::side_face_count(profile), 0);
-        assert!(crate::extrude::side_quad_world(&doc, 0, profile, 0).is_none());
+        assert_eq!(crate::extrude::side_face_count(&profile), 0);
+        assert!(crate::extrude::side_quad_world(&doc, 0, &profile, 0).is_none());
     }
 
     #[test]
@@ -1184,13 +1233,13 @@ mod tests {
     #[test]
     fn has_children_detects_dependents() {
         let mut doc = Document::default();
-        assert!(!doc.has_children(FaceId::ConstructionPlane(0)));
+        assert!(!doc.has_children(&FaceId::ConstructionPlane(0)));
         doc.sketches.push(Sketch {
             face: FaceId::ConstructionPlane(0),
             name: None,
             deleted: false,
         });
-        assert!(doc.has_children(FaceId::ConstructionPlane(0)));
+        assert!(doc.has_children(&FaceId::ConstructionPlane(0)));
     }
 
     #[test]

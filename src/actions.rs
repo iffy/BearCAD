@@ -1000,11 +1000,12 @@ impl AppState {
 /// Default starting extrusion distance (mm).
 pub const DEFAULT_EXTRUDE_DISTANCE: f32 = 10.0;
 
-/// The sketch a face (rect/circle profile) belongs to.
-fn extrude_face_sketch(doc: &Document, face: ExtrudeFace) -> Option<SketchId> {
+/// The sketch a face (rect/circle/polygon profile) belongs to.
+fn extrude_face_sketch(doc: &Document, face: &ExtrudeFace) -> Option<SketchId> {
     match face {
-        ExtrudeFace::Rect(i) => doc.rects.get(i).map(|r| r.sketch),
-        ExtrudeFace::Circle(i) => doc.circles.get(i).map(|c| c.sketch),
+        ExtrudeFace::Rect(i) => doc.rects.get(*i).map(|r| r.sketch),
+        ExtrudeFace::Circle(i) => doc.circles.get(*i).map(|c| c.sketch),
+        ExtrudeFace::Polygon(lines) => lines.first().and_then(|&i| doc.lines.get(i)).map(|l| l.sketch),
     }
 }
 
@@ -1383,7 +1384,7 @@ impl AppState {
                         } else {
                             let idx = self.doc.construction_planes.len() - 1;
                             let face = FaceId::ConstructionPlane(idx);
-                            if self.doc.has_children(face) {
+                            if self.doc.has_children(&face) {
                                 self.doc.shape_order.push(ShapeKind::ConstructionPlane);
                                 self.status =
                                     "Cannot undo: construction plane has child sketches"
@@ -1519,7 +1520,7 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::BeginSketch { face, viewport } => {
-                if sketch_frame(&self.doc, face).is_none() {
+                if sketch_frame(&self.doc, face.clone()).is_none() {
                     return ActionResult::Err(format!("Unknown face {:?}", face));
                 }
                 let sketch = self.doc.add_sketch(face);
@@ -2622,7 +2623,7 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::ToggleExtrudeFace { face } => {
-                let Some(sketch) = extrude_face_sketch(&self.doc, face) else {
+                let Some(sketch) = extrude_face_sketch(&self.doc, &face) else {
                     return ActionResult::Err("Face not found".to_string());
                 };
                 match &mut self.creating_extrusion {
@@ -2660,9 +2661,10 @@ impl AppState {
             }
             Action::SetExtrudeTarget { target } => {
                 if let Some(ce) = &mut self.creating_extrusion {
+                    let has_target = target.is_some();
                     ce.target = target;
                     // Typing a distance again clears the object constraint.
-                    if target.is_some() {
+                    if has_target {
                         ce.user_edited = false;
                     }
                 }
@@ -2682,7 +2684,7 @@ impl AppState {
                     text: crate::value::format_length_display(extrusion.distance.abs()),
                     user_edited: false,
                     pending_focus: true,
-                    target: extrusion.target,
+                    target: extrusion.target.clone(),
                     edit_index: Some(index),
                 });
                 self.tool = Tool::Extrude;
@@ -3265,6 +3267,47 @@ mod tests {
         assert_eq!(state.doc.extrusions[0].distance, 7.0);
         assert_eq!(state.doc.bodies.len(), 1);
         assert!(state.creating_extrusion.is_none());
+    }
+
+    #[test]
+    fn extrude_tool_toggles_closed_line_loop_polygon_face() {
+        use crate::model::{Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, Line, LineEnd};
+
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 5.0, 8.0));
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 5.0, 8.0, 0.0, 0.0));
+        state.doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line, ShapeKind::Line]);
+        let coincident = |a, b| Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(a),
+                b: ConstraintEntity::Point(b),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        };
+        let point = |line, end| ConstraintPoint::LineEndpoint { line, end };
+        state.doc.constraints.push(coincident(point(0, LineEnd::End), point(1, LineEnd::Start)));
+        state.doc.constraints.push(coincident(point(1, LineEnd::End), point(2, LineEnd::Start)));
+        state.doc.constraints.push(coincident(point(2, LineEnd::End), point(0, LineEnd::Start)));
+        state.refresh_document_health();
+
+        let loops = crate::polygon::closed_line_loops(&state.doc, sketch);
+        assert_eq!(loops.len(), 1);
+        let face = ExtrudeFace::Polygon(loops[0].clone());
+
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace { face: face.clone() });
+        assert_eq!(state.creating_extrusion.as_ref().unwrap().faces, vec![face]);
+        state.apply(Action::SetExtrudeDistance { distance: 6.0 });
+        state.apply(Action::CommitExtrusion);
+
+        assert_eq!(state.doc.extrusions.len(), 1);
+        assert_eq!(state.doc.bodies.len(), 1);
     }
 
     #[test]
