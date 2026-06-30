@@ -1,8 +1,8 @@
 //! Sketch constraints backed by the numeric [`crate::sketch_solver`].
 
 use crate::geometric_constraints::{
-    line_direction_uv, line_uv_endpoints, lines_are_parallel, parallel_reference_and_movable,
-    point_uv, selected_constraint_refs, ConstraintRef,
+    line_uv_endpoints, lines_are_parallel, parallel_reference_and_movable, point_uv,
+    selected_constraint_refs, ConstraintRef,
 };
 use crate::model::{
     default_constraint_sign, Constraint, ConstraintEntity, ConstraintKind, ConstraintLine,
@@ -122,24 +122,57 @@ fn capture_point_point_distance(
     })
 }
 
-pub fn capture_angle_rotation_sign(
+/// The rotation sign that reproduces [`angle_natural_legs`]'s unflipped leg directions
+/// (i.e. the sign `angle_constraint_display` would need to leave `dir_b` untouched).
+pub fn angle_constraint_natural_sign(
     doc: &Document,
     line_a: ConstraintLine,
     line_b: ConstraintLine,
-) -> Result<crate::model::ConstraintSign, String> {
-    let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
-    let (rdu, rdv) = line_direction_uv(doc, reference).ok_or_else(|| {
-        "Reference line has zero length".to_string()
-    })?;
-    let ((mx0, my0), (mx1, my1)) = line_uv_endpoints(doc, movable)?;
-    let mdu = mx1 - mx0;
-    let mdv = my1 - my0;
-    let cross = rdu * mdv - rdv * mdu;
-    Ok(constraint_sign_from_scalar(if cross.abs() < 1e-6 {
-        1.0
+) -> Option<crate::model::ConstraintSign> {
+    let (frame, _center, leg_a, leg_b) = angle_natural_legs(doc, line_a, line_b)?;
+    Some(leg_rotation_sign(leg_a.dir, leg_b.dir, frame.normal))
+}
+
+fn leg_rotation_sign(
+    dir_a: glam::Vec3,
+    dir_b: glam::Vec3,
+    plane_normal: glam::Vec3,
+) -> crate::model::ConstraintSign {
+    let cross = dir_a.cross(dir_b).dot(plane_normal.normalize_or_zero());
+    constraint_sign_from_scalar(if cross.abs() < 1e-6 { 1.0 } else { cross })
+}
+
+/// Which of the (up to 4) angular wedges around the lines' intersection contains
+/// `hover_world`, expressed as the [`ConstraintSign`] that reproduces it: the two
+/// wedges adjacent to the natural leg pair share `angle_constraint_natural_sign`'s
+/// value, the other two (the supplementary angle) share its negation (#40).
+pub fn angle_dimension_hover_sign(
+    doc: &Document,
+    line_a: ConstraintLine,
+    line_b: ConstraintLine,
+    hover_world: glam::Vec3,
+) -> Option<crate::model::ConstraintSign> {
+    let (frame, center, leg_a, leg_b) = angle_natural_legs(doc, line_a, line_b)?;
+    let natural_sign = leg_rotation_sign(leg_a.dir, leg_b.dir, frame.normal);
+    let theta = leg_a.dir.dot(leg_b.dir).clamp(-1.0, 1.0).acos();
+    let radial = hover_world - center;
+    if radial.length_squared() < 1e-8 {
+        return None;
+    }
+    let radial = radial.normalize();
+    let n = frame.normal.normalize_or_zero();
+    let cross = leg_a.dir.cross(radial).dot(n);
+    let dot = leg_a.dir.dot(radial).clamp(-1.0, 1.0);
+    let phi = cross.atan2(dot);
+    // Rotate into the natural leg's own sense of "positive" before folding mod π, so the
+    // wedge test below works the same whether the natural pair turns CW or CCW.
+    let psi = phi * natural_sign as f32;
+    let psi_reduced = psi.rem_euclid(std::f32::consts::PI);
+    Some(if psi_reduced <= theta {
+        natural_sign
     } else {
-        cross
-    }))
+        -natural_sign
+    })
 }
 
 /// Add a distance constraint; returns the new constraint index.
@@ -280,13 +313,13 @@ pub fn constraint_evaluated_angle(doc: &Document, index: ConstraintId) -> Option
     let ConstraintKind::Angle {
         line_a,
         line_b,
-        rotation_sign: _,
+        rotation_sign,
     } = constraint.kind
     else {
         return None;
     };
     eval_angle_rad_in_doc(&constraint.expression, doc)
-        .or_else(|| measured_angle_between_lines(doc, line_a, line_b))
+        .or_else(|| measured_angle_between_lines(doc, line_a, line_b, rotation_sign))
 }
 
 fn measured_distance(doc: &Document, target: DistanceTarget) -> Option<f32> {
@@ -349,15 +382,24 @@ fn measured_point_line_distance(
     Some(((pu - x0) * perp_u + (pv - y0) * perp_v).abs())
 }
 
+/// Angle between two lines as it will actually be drawn/edited, matching
+/// [`angle_constraint_display`]'s leg directions rather than the lines' raw stored
+/// endpoint order (which previously made the reported value depend on which way each
+/// line happened to be drawn, see #40).
 fn measured_angle_between_lines(
     doc: &Document,
     line_a: ConstraintLine,
     line_b: ConstraintLine,
+    rotation_sign: crate::model::ConstraintSign,
 ) -> Option<f32> {
-    let (adu, adv) = line_direction_uv(doc, line_a)?;
-    let (bdu, bdv) = line_direction_uv(doc, line_b)?;
-    let dot = (adu * bdu + adv * bdv).clamp(-1.0, 1.0);
-    Some(dot.acos())
+    let (frame, _center, leg_a, leg_b) = angle_natural_legs(doc, line_a, line_b)?;
+    let natural_sign = leg_rotation_sign(leg_a.dir, leg_b.dir, frame.normal);
+    let theta = leg_a.dir.dot(leg_b.dir).clamp(-1.0, 1.0).acos();
+    Some(if rotation_sign == natural_sign {
+        theta
+    } else {
+        std::f32::consts::PI - theta
+    })
 }
 
 pub fn constraint_label(doc: &Document, index: ConstraintId) -> String {
@@ -375,6 +417,7 @@ pub fn constraint_label(doc: &Document, index: ConstraintId) -> String {
             .unwrap_or_else(|| "?".to_string()),
         ConstraintKind::Parallel { .. }
         | ConstraintKind::Perpendicular { .. }
+        | ConstraintKind::Equal { .. }
         | ConstraintKind::Coincident { .. }
         | ConstraintKind::Midpoint { .. }
         | ConstraintKind::Horizontal { .. }
@@ -387,6 +430,7 @@ pub fn constraint_label(doc: &Document, index: ConstraintId) -> String {
         ConstraintKind::Distance { target } => distance_target_label(target),
         ConstraintKind::Parallel { .. } => "Parallel".to_string(),
         ConstraintKind::Perpendicular { .. } => "Perpendicular".to_string(),
+        ConstraintKind::Equal { .. } => "Equal".to_string(),
         ConstraintKind::Coincident { .. } => "Coincident".to_string(),
         ConstraintKind::Midpoint { .. } => "Midpoint".to_string(),
         ConstraintKind::Horizontal { .. } => "Horizontal".to_string(),
@@ -495,10 +539,12 @@ fn resolve_two_selection_dimension(
                 side: default_constraint_sign(),
             }))
         } else {
+            let rotation_sign = angle_constraint_natural_sign(doc, line_a, line_b)
+                .unwrap_or_else(default_constraint_sign);
             Some(DimensionTarget::Angle {
                 line_a,
                 line_b,
-                rotation_sign: default_constraint_sign(),
+                rotation_sign,
             })
         }
     } else if points.len() == 2 {
@@ -666,8 +712,13 @@ pub fn default_distance_expression(doc: &Document, target: DistanceTarget) -> St
         .unwrap_or_else(|| "10mm".to_string())
 }
 
-pub fn default_angle_expression(doc: &Document, line_a: ConstraintLine, line_b: ConstraintLine) -> String {
-    measured_angle_between_lines(doc, line_a, line_b)
+pub fn default_angle_expression(
+    doc: &Document,
+    line_a: ConstraintLine,
+    line_b: ConstraintLine,
+    rotation_sign: crate::model::ConstraintSign,
+) -> String {
+    measured_angle_between_lines(doc, line_a, line_b, rotation_sign)
         .map(format_angle_display)
         .unwrap_or_else(|| "45 deg".to_string())
 }
@@ -678,17 +729,19 @@ pub fn default_dimension_expression(doc: &Document, target: DimensionTarget) -> 
         DimensionTarget::Angle {
             line_a,
             line_b,
-            rotation_sign: _,
-        } => default_angle_expression(doc, line_a, line_b),
+            rotation_sign,
+        } => default_angle_expression(doc, line_a, line_b, rotation_sign),
     }
 }
 
-/// Add an angle constraint; returns the new constraint index.
-pub fn add_angle_constraint(
+/// Add an angle constraint with an explicit rotation sign (e.g. the quadrant the user
+/// placed it in, see #40); returns the new constraint index.
+pub fn add_angle_constraint_with_sign(
     doc: &mut Document,
     sketch: SketchId,
     line_a: ConstraintLine,
     line_b: ConstraintLine,
+    rotation_sign: crate::model::ConstraintSign,
     expression: String,
 ) -> Result<ConstraintId, String> {
     let expression = expression.trim().to_string();
@@ -707,7 +760,6 @@ pub fn add_angle_constraint(
     if let Some(index) = find_angle_constraint(doc, line_a, line_b) {
         return Err(format!("Angle constraint already exists (index {index})"));
     }
-    let rotation_sign = capture_angle_rotation_sign(doc, line_a, line_b)?;
     let kind = ConstraintKind::Angle {
         line_a,
         line_b,
@@ -747,12 +799,19 @@ pub fn apply_dimension_expression(
         DimensionTarget::Angle {
             line_a,
             line_b,
-            rotation_sign: _,
+            rotation_sign,
         } => {
             if let Some(id) = find_angle_constraint(doc, line_a, line_b) {
                 set_constraint_expression(doc, id, expression.to_string())
             } else {
-                add_angle_constraint(doc, sketch, line_a, line_b, expression.to_string())?;
+                add_angle_constraint_with_sign(
+                    doc,
+                    sketch,
+                    line_a,
+                    line_b,
+                    rotation_sign,
+                    expression.to_string(),
+                )?;
                 Ok(())
             }
         }
@@ -1165,6 +1224,7 @@ pub struct AngleConstraintDisplay {
     pub extend_b: bool,
 }
 
+#[derive(Clone, Copy)]
 struct LineAngleLeg {
     dir: glam::Vec3,
     root: glam::Vec3,
@@ -1213,11 +1273,14 @@ fn line_angle_leg(
     })
 }
 
-pub fn angle_constraint_display(
+/// Intersection point and unflipped leg directions for a line pair, shared by
+/// [`angle_constraint_display`], [`angle_constraint_natural_sign`], and
+/// [`angle_dimension_hover_sign`] so they all agree on what "natural" means (#40).
+fn angle_natural_legs(
     doc: &Document,
     line_a: ConstraintLine,
     line_b: ConstraintLine,
-) -> Option<AngleConstraintDisplay> {
+) -> Option<(crate::face::SketchFrame, glam::Vec3, LineAngleLeg, LineAngleLeg)> {
     let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
     let sketch = line_sketch(doc, reference)?;
     let ((ax0, ay0), (ax1, ay1)) = line_uv_endpoints(doc, reference).ok()?;
@@ -1227,6 +1290,20 @@ pub fn angle_constraint_display(
     let center = crate::face::local_to_world(&frame, cu, cv);
     let leg_a = line_angle_leg(&frame, (ax0, ay0), (ax1, ay1), (cu, cv))?;
     let leg_b = line_angle_leg(&frame, (bx0, by0), (bx1, by1), (cu, cv))?;
+    Some((frame, center, leg_a, leg_b))
+}
+
+pub fn angle_constraint_display(
+    doc: &Document,
+    line_a: ConstraintLine,
+    line_b: ConstraintLine,
+    rotation_sign: crate::model::ConstraintSign,
+) -> Option<AngleConstraintDisplay> {
+    let (frame, center, leg_a, mut leg_b) = angle_natural_legs(doc, line_a, line_b)?;
+    let natural_sign = leg_rotation_sign(leg_a.dir, leg_b.dir, frame.normal);
+    if rotation_sign != natural_sign {
+        leg_b.dir = -leg_b.dir;
+    }
     Some(AngleConstraintDisplay {
         center,
         dir_a: leg_a.dir,
@@ -1767,11 +1844,15 @@ mod tests {
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 10.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.shape_order.push(ShapeKind::Line);
-        add_angle_constraint(
+        let rotation_sign =
+            angle_constraint_natural_sign(&doc, ConstraintLine::Line(0), ConstraintLine::Line(1))
+                .unwrap();
+        add_angle_constraint_with_sign(
             &mut doc,
             sketch,
             ConstraintLine::Line(0),
             ConstraintLine::Line(1),
+            rotation_sign,
             "45".to_string(),
         )
         .unwrap();
@@ -1779,6 +1860,7 @@ mod tests {
             &doc,
             ConstraintLine::Line(0),
             ConstraintLine::Line(1),
+            rotation_sign,
         )
         .unwrap();
         assert!((angle.to_degrees() - 45.0).abs() < 1.0, "angle={}", angle.to_degrees());
@@ -1968,10 +2050,14 @@ mod tests {
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
             .push(Line::from_local_endpoints(sketch, 5.0, 10.0, 5.0, 20.0));
+        let rotation_sign =
+            angle_constraint_natural_sign(&doc, ConstraintLine::Line(0), ConstraintLine::Line(1))
+                .unwrap();
         let display = angle_constraint_display(
             &doc,
             ConstraintLine::Line(0),
             ConstraintLine::Line(1),
+            rotation_sign,
         )
         .unwrap();
         assert!(!display.extend_a);
@@ -1988,10 +2074,14 @@ mod tests {
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 10.0));
+        let rotation_sign =
+            angle_constraint_natural_sign(&doc, ConstraintLine::Line(0), ConstraintLine::Line(1))
+                .unwrap();
         let display = angle_constraint_display(
             &doc,
             ConstraintLine::Line(0),
             ConstraintLine::Line(1),
+            rotation_sign,
         )
         .unwrap();
         let frame = crate::face::sketch_geometry_frame(&doc, sketch).unwrap();
@@ -2011,11 +2101,16 @@ mod tests {
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, -10.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.shape_order.push(ShapeKind::Line);
-        add_angle_constraint(
+        let rotation_sign =
+            angle_constraint_natural_sign(&doc, ConstraintLine::Line(0), ConstraintLine::Line(1))
+                .unwrap();
+        assert_eq!(rotation_sign, -1);
+        add_angle_constraint_with_sign(
             &mut doc,
             sketch,
             ConstraintLine::Line(0),
             ConstraintLine::Line(1),
+            rotation_sign,
             "45".to_string(),
         )
         .unwrap();
@@ -2027,6 +2122,60 @@ mod tests {
         };
         assert_eq!(rotation_sign, -1);
         assert!(doc.lines[1].y1 < -5.0, "y1={}", doc.lines[1].y1);
+    }
+
+    #[test]
+    fn angle_dimension_hover_sign_distinguishes_supplementary_quadrants() {
+        use crate::model::ConstraintLine;
+
+        // Baseline with a line leaving its midpoint at ~80 degrees, matching the #40 repro
+        // (a line crossing near the middle of another at ~80 degrees was reported as 111.5).
+        let (mut doc, sketch) = sketch_doc();
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0));
+        let angle_rad = 80f32.to_radians();
+        doc.lines.push(Line::from_local_endpoints(
+            sketch,
+            50.0,
+            0.0,
+            50.0 + 50.0 * angle_rad.cos(),
+            50.0 * angle_rad.sin(),
+        ));
+        let line_a = ConstraintLine::Line(0);
+        let line_b = ConstraintLine::Line(1);
+
+        let natural_sign = angle_constraint_natural_sign(&doc, line_a, line_b).unwrap();
+        let display_natural = angle_constraint_display(&doc, line_a, line_b, natural_sign).unwrap();
+        let display_flipped =
+            angle_constraint_display(&doc, line_a, line_b, -natural_sign).unwrap();
+
+        let hover_natural =
+            display_natural.center + (display_natural.dir_a + display_natural.dir_b).normalize() * 10.0;
+        let hover_flipped =
+            display_flipped.center + (display_flipped.dir_a + display_flipped.dir_b).normalize() * 10.0;
+
+        assert_eq!(
+            angle_dimension_hover_sign(&doc, line_a, line_b, hover_natural),
+            Some(natural_sign)
+        );
+        assert_eq!(
+            angle_dimension_hover_sign(&doc, line_a, line_b, hover_flipped),
+            Some(-natural_sign)
+        );
+
+        // The two interpretations are supplementary, and one of them must be the ~80 degree
+        // angle that was actually drawn — not always 180-80=100ish (#40).
+        let natural_angle = measured_angle_between_lines(&doc, line_a, line_b, natural_sign).unwrap();
+        let flipped_angle =
+            measured_angle_between_lines(&doc, line_a, line_b, -natural_sign).unwrap();
+        assert!((natural_angle + flipped_angle - std::f32::consts::PI).abs() < 1e-3);
+        assert!(
+            (natural_angle.to_degrees() - 80.0).abs() < 1.0
+                || (flipped_angle.to_degrees() - 80.0).abs() < 1.0,
+            "natural={} flipped={}",
+            natural_angle.to_degrees(),
+            flipped_angle.to_degrees()
+        );
     }
 
     #[test]

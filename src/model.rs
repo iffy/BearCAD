@@ -541,6 +541,11 @@ pub enum ConstraintKind {
         line_a: ConstraintLine,
         line_b: ConstraintLine,
     },
+    /// Two edges constrained to have equal length. See #47.
+    Equal {
+        line_a: ConstraintLine,
+        line_b: ConstraintLine,
+    },
     Coincident {
         a: ConstraintEntity,
         b: ConstraintEntity,

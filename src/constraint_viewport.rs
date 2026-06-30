@@ -103,7 +103,8 @@ fn build_graphic(doc: &Document, index: usize) -> Option<ConstraintViewportGraph
     match constraint.kind {
         ConstraintKind::Distance { .. } => None,
         ConstraintKind::Parallel { line_a, line_b }
-        | ConstraintKind::Perpendicular { line_a, line_b } => {
+        | ConstraintKind::Perpendicular { line_a, line_b }
+        | ConstraintKind::Equal { line_a, line_b } => {
             let (a0, a1) = constraint_line_world_endpoints(doc, line_a)?;
             let (b0, b1) = constraint_line_world_endpoints(doc, line_b)?;
             let ma = midpoint(a0, a1);
@@ -170,9 +171,9 @@ fn build_graphic(doc: &Document, index: usize) -> Option<ConstraintViewportGraph
         ConstraintKind::Angle {
             line_a,
             line_b,
-            rotation_sign: _,
+            rotation_sign,
         } => {
-            let display = angle_constraint_display(doc, line_a, line_b)?;
+            let display = angle_constraint_display(doc, line_a, line_b, rotation_sign)?;
             Some(ConstraintViewportGraphic {
                 constraint_index: index,
                 connectors: vec![

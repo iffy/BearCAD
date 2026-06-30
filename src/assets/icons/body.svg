@@ -1,5 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <!-- isometric solid cube -->
-  <path d="M16 4 L27 10 L27 22 L16 28 L5 22 L5 10 Z" />
-  <path d="M16 4 L16 16 M16 16 L27 10 M16 16 L5 10" />
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <!-- solid isometric cube: top face full tone, side faces shaded -->
+  <path d="M16 4 L27 10 L16 16 L5 10 Z" fill="currentColor" stroke="none" />
+  <path d="M27 10 L27 22 L16 28 L16 16 Z" fill="currentColor" fill-opacity="0.78" stroke="none" />
+  <path d="M5 10 L5 22 L16 28 L16 16 Z" fill="currentColor" fill-opacity="0.55" stroke="none" />
+  <path d="M16 4 L27 10 L27 22 L16 28 L5 22 L5 10 Z" stroke="currentColor" />
 </svg>

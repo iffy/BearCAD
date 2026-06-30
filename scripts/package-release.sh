@@ -61,8 +61,24 @@ package_macos() {
 </plist>
 EOF
 
+  # Ad-hoc code-sign the bundle. Apple Silicon requires every executable to carry
+  # at least an ad-hoc signature; an unsigned (or signature-invalidated) bundle that
+  # has been quarantined after download is reported by Gatekeeper as "damaged and
+  # can't be opened". Signing the assembled bundle deeply produces a valid signature
+  # so the app launches (after the user clears quarantine / right-click → Open).
+  codesign --force --deep --sign - --timestamp=none "$app_dir"
+  codesign --verify --deep --strict "$app_dir"
+
+  # Stage the .dmg contents: the app plus an /Applications symlink so the user can
+  # drag BearCAD.app straight into Applications from the mounted volume.
+  local stage="dist/dmg"
+  rm -rf "$stage"
+  mkdir -p "$stage"
+  cp -R "$app_dir" "$stage/"
+  ln -s /Applications "$stage/Applications"
+
   rm -f "$dmg"
-  hdiutil create -volname "$app_name" -srcfolder "$app_dir" -ov -format UDZO "$dmg"
+  hdiutil create -volname "$app_name" -srcfolder "$stage" -ov -format UDZO "$dmg"
   echo "Created $dmg"
 }
 

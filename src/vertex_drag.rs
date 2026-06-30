@@ -882,7 +882,10 @@ fn project_endpoint_with_length(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constraints::{add_angle_constraint, add_distance_constraint, solve_document_constraints};
+    use crate::constraints::{
+        add_angle_constraint_with_sign, add_distance_constraint, angle_constraint_natural_sign,
+        solve_document_constraints,
+    };
     use crate::model::RectEdge;
     use crate::geometric_constraints::{
         add_geometric_constraint_from_selection, line_direction_uv, GeometricConstraintType,
@@ -1552,7 +1555,9 @@ mod tests {
         doc: &mut Document,
         sketch: SketchId,
     ) -> Result<(), String> {
-        use crate::constraints::{add_angle_constraint, add_distance_constraint};
+        use crate::constraints::{
+            add_angle_constraint_with_sign, add_distance_constraint, angle_constraint_natural_sign,
+        };
 
         doc.lines
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0));
@@ -1564,11 +1569,15 @@ mod tests {
         doc.shape_order.push(crate::model::ShapeKind::Line);
         doc.shape_order.push(crate::model::ShapeKind::Line);
 
-        add_angle_constraint(
+        let rotation_sign =
+            angle_constraint_natural_sign(doc, ConstraintLine::Line(0), ConstraintLine::Line(1))
+                .ok_or_else(|| "Lines do not intersect".to_string())?;
+        add_angle_constraint_with_sign(
             doc,
             sketch,
             ConstraintLine::Line(0),
             ConstraintLine::Line(1),
+            rotation_sign,
             "16.7".to_string(),
         )?;
         let mut sel = SceneSelection::default();
@@ -2230,14 +2239,18 @@ mod tests {
             &sel,
         )
         .unwrap();
-        add_angle_constraint(
+        let angle_line_a = ConstraintLine::RectEdge {
+            rect: 0,
+            edge: RectEdge::Top,
+        };
+        let angle_line_b = ConstraintLine::Line(0);
+        let rotation_sign = angle_constraint_natural_sign(&doc, angle_line_a, angle_line_b).unwrap();
+        add_angle_constraint_with_sign(
             &mut doc,
             sketch,
-            ConstraintLine::RectEdge {
-                rect: 0,
-                edge: RectEdge::Top,
-            },
-            ConstraintLine::Line(0),
+            angle_line_a,
+            angle_line_b,
+            rotation_sign,
             "45 deg".to_string(),
         )
         .unwrap();

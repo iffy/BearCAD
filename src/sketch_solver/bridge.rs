@@ -97,6 +97,7 @@ impl SketchBridge {
                 }
                 | ConstraintKind::Parallel { line_a, line_b }
                 | ConstraintKind::Perpendicular { line_a, line_b }
+                | ConstraintKind::Equal { line_a, line_b }
                 | ConstraintKind::Angle { line_a, line_b, .. } => {
                     let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
                     self.hold_reference_when_movable_dragged(reference, movable, &pinned);
@@ -386,6 +387,23 @@ impl SketchBridge {
                 let a = self.line_vars(reference)?;
                 let b = self.line_vars(movable)?;
                 self.system.add_equation(Equation::Perpendicular {
+                    ax0: a.0.0,
+                    ay0: a.0.1,
+                    ax1: a.1.0,
+                    ay1: a.1.1,
+                    bx0: b.0.0,
+                    by0: b.0.1,
+                    bx1: b.1.0,
+                    by1: b.1.1,
+                    weight: DEFAULT_WEIGHT,
+                });
+            }
+            ConstraintKind::Equal { line_a, line_b } => {
+                let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
+                self.hold_line(reference)?;
+                let a = self.line_vars(reference)?;
+                let b = self.line_vars(movable)?;
+                self.system.add_equation(Equation::EqualLength {
                     ax0: a.0.0,
                     ay0: a.0.1,
                     ax1: a.1.0,
@@ -1251,6 +1269,35 @@ mod tests {
         let (ldu, ldv) = line_direction_uv(&doc, ConstraintLine::Line(0)).unwrap();
         let cross = edu * ldv - edv * ldu;
         assert!(cross.abs() < EPS, "cross={cross}");
+    }
+
+    #[test]
+    fn bridge_equal_makes_two_lines_equal_length() {
+        let (mut doc, sketch) = sketch_doc();
+        // A horizontal line of length 10 and a horizontal line of length 4.
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 5.0, 4.0, 5.0));
+        doc.shape_order.push(crate::model::ShapeKind::Line);
+        doc.shape_order.push(crate::model::ShapeKind::Line);
+        let mut sel = SceneSelection::default();
+        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        click_scene_selection(&mut sel, SceneElement::Line(1), true);
+        add_geometric_constraint_from_selection(
+            &mut doc,
+            sketch,
+            GeometricConstraintType::Equal,
+            &sel,
+        )
+        .unwrap();
+        solve_bridge(&mut doc, sketch);
+        assert!(
+            (doc.lines[0].length() - doc.lines[1].length()).abs() < EPS,
+            "lengths: {} vs {}",
+            doc.lines[0].length(),
+            doc.lines[1].length()
+        );
     }
 
     #[test]

@@ -38,8 +38,8 @@ use crate::constraints::{
     find_distance_constraint, set_constraint_dim_offset, set_constraint_expression, ConstraintId,
 };
 use crate::model::{
-    Circle, ConstructionPlane, ConstraintPoint, DimensionTarget, DistanceTarget, Document,
-    ExtrudeFace, Extrusion, FaceId, Line, LineEnd, Rect, RectEdge, ShapeKind,
+    Circle, ConstraintLine, ConstructionPlane, ConstraintPoint, DimensionTarget, DistanceTarget,
+    Document, ExtrudeFace, Extrusion, FaceId, Line, LineEnd, Rect, RectEdge, ShapeKind,
 };
 use crate::vertex_drag;
 use crate::face::SketchFrame;
@@ -779,6 +779,17 @@ pub struct EditingCommittedDim {
     pub pending_focus: bool,
 }
 
+/// Placement phase for a brand-new angle dimension: the preview follows the mouse,
+/// snapping `rotation_sign` to whichever of the angle's two distinct magnitudes
+/// (the natural one or its supplement) encloses the cursor; a click commits it and
+/// moves on to typing the value (#40).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlacingAngleDimension {
+    pub line_a: ConstraintLine,
+    pub line_b: ConstraintLine,
+    pub rotation_sign: crate::model::ConstraintSign,
+}
+
 /// Expression text shown when editing a committed dimension.
 pub fn committed_dim_expression(doc: &Document, target: DimLabelTarget) -> Option<String> {
     constraint_expression(doc, target)
@@ -878,6 +889,8 @@ pub struct AppState {
     pub scene_selection: SceneSelection,
     pub context_pane: crate::context::ContextPaneState,
     pub editing_committed_dim: Option<EditingCommittedDim>,
+    /// Active placement phase for a new angle dimension (#40); see [`PlacingAngleDimension`].
+    pub placing_angle_dimension: Option<PlacingAngleDimension>,
     pub status: String,
     pub command_log: Option<std::cell::RefCell<crate::command_log::CommandLog>>,
     /// Reframe sketch geometry once the viewport rect is known (e.g. hierarchy open before first paint).
@@ -929,6 +942,7 @@ impl Default for AppState {
             scene_selection: SceneSelection::default(),
             context_pane: crate::context::ContextPaneState::default(),
             editing_committed_dim: None,
+            placing_angle_dimension: None,
             status: String::new(),
             command_log: None,
             sketch_reframe_pending: false,
@@ -1103,6 +1117,23 @@ impl AppState {
         else {
             return false;
         };
+        if let DimensionTarget::Angle {
+            line_a,
+            line_b,
+            rotation_sign,
+        } = target
+        {
+            if crate::constraints::find_angle_constraint(&self.doc, line_a, line_b).is_none() {
+                self.placing_angle_dimension = Some(PlacingAngleDimension {
+                    line_a,
+                    line_b,
+                    rotation_sign,
+                });
+                self.status =
+                    "Move the mouse to choose the angle, then click to place".to_string();
+                return true;
+            }
+        }
         self.start_committed_dimension_edit(target);
         true
     }
@@ -1400,6 +1431,9 @@ impl AppState {
                 if !matches!(tool, Tool::Select | Tool::Dimension | Tool::Constraint) {
                     self.editing_committed_dim = None;
                 }
+                if tool != Tool::Dimension {
+                    self.placing_angle_dimension = None;
+                }
                 self.tool = tool;
                 self.status = match tool {
                     Tool::Select => {
@@ -1439,7 +1473,9 @@ impl AppState {
                 self.rect_opposite_snap = None;
                 self.circle_center_snap = None;
                 self.extension_anchors.clear();
-                if self.editing_committed_dim.take().is_some() {
+                if self.editing_committed_dim.take().is_some()
+                    || self.placing_angle_dimension.take().is_some()
+                {
                     self.status = "Cancelled".to_string();
                 } else if self.creating_extrusion.take().is_some() {
                     self.status = "Cancelled extrusion".to_string();
@@ -2977,6 +3013,7 @@ impl AppState {
         self.creating_rect = None;
         self.creating_line = None;
         self.editing_committed_dim = None;
+        self.placing_angle_dimension = None;
         // Return to the pre-sketch camera pose; the transition restores world-orbit mode on
         // completion (its `view_up` is `None`). Fall back to a plain mode-leave if unknown.
         if let Some(pose) = self.pre_sketch_pose.take() {
@@ -4171,11 +4208,18 @@ mod tests {
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0));
         state.doc.shape_order.push(ShapeKind::Line);
         state.doc.shape_order.push(ShapeKind::Line);
-        crate::constraints::add_angle_constraint(
+        let rotation_sign = crate::constraints::angle_constraint_natural_sign(
+            &state.doc,
+            ConstraintLine::Line(0),
+            ConstraintLine::Line(1),
+        )
+        .unwrap();
+        crate::constraints::add_angle_constraint_with_sign(
             &mut state.doc,
             sketch,
             ConstraintLine::Line(0),
             ConstraintLine::Line(1),
+            rotation_sign,
             "90deg".to_string(),
         )
         .unwrap();
@@ -4228,13 +4272,28 @@ mod tests {
             additive: true,
         });
         state.apply(Action::SetTool(Tool::Dimension));
+        // A brand-new angle dimension enters a placement phase (mouse picks the quadrant)
+        // rather than jumping straight to editing the value (#40).
+        assert!(state.editing_committed_dim.is_none());
         assert_eq!(
-            state.editing_committed_dim.as_ref().unwrap().target,
-            DimEditTarget::New(DimensionTarget::Angle {
+            state.placing_angle_dimension,
+            Some(PlacingAngleDimension {
                 line_a: ConstraintLine::Line(0),
                 line_b: ConstraintLine::Line(1),
                 rotation_sign: 1,
             })
+        );
+
+        let target = DimensionTarget::Angle {
+            line_a: ConstraintLine::Line(0),
+            line_b: ConstraintLine::Line(1),
+            rotation_sign: 1,
+        };
+        state.placing_angle_dimension = None;
+        state.apply(Action::BeginDimensionEdit { target });
+        assert_eq!(
+            state.editing_committed_dim.as_ref().unwrap().target,
+            DimEditTarget::New(target)
         );
     }
 

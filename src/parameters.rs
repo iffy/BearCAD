@@ -1364,7 +1364,7 @@ mod tests {
 
     #[test]
     fn angle_parameter_drives_angle_constraint() {
-        use crate::constraints::add_angle_constraint;
+        use crate::constraints::{add_angle_constraint_with_sign, angle_constraint_natural_sign};
         use crate::model::{ConstraintLine, Line, ShapeKind};
 
         let mut doc = Document::default();
@@ -1376,11 +1376,15 @@ mod tests {
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 100.0));
         doc.shape_order.push(ShapeKind::Line);
         doc.shape_order.push(ShapeKind::Line);
-        add_angle_constraint(
+        let rotation_sign =
+            angle_constraint_natural_sign(&doc, ConstraintLine::Line(0), ConstraintLine::Line(1))
+                .unwrap();
+        add_angle_constraint_with_sign(
             &mut doc,
             sketch,
             ConstraintLine::Line(0),
             ConstraintLine::Line(1),
+            rotation_sign,
             "corner".to_string(),
         )
         .unwrap();

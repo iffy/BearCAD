@@ -1,0 +1,1 @@
+Angle dimensions now report the angle as actually drawn (previously could report the supplementary angle depending on line-draw direction), and creating a new angle dimension adds a placement phase: the preview follows the mouse and snaps to whichever of the two distinct angles (the wedge enclosing the cursor) you want, before you type the value (#40)

@@ -1,0 +1,1 @@
+Extruding to a slanted target plane no longer z-fights with the plane's own fill at grazing camera angles — the top cap is biased a hair toward the camera for rendering only (export/measurement geometry is unaffected) (#29)

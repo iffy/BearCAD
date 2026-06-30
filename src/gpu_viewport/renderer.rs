@@ -26,6 +26,8 @@ pub struct ViewportGpuResources {
     target_format: wgpu::TextureFormat,
     msaa_sample_count: u32,
     scene_pipeline: wgpu::RenderPipeline,
+    /// Depth-test-disabled pipeline so gizmo handles stay visible through bodies (#36).
+    gizmo_pipeline: wgpu::RenderPipeline,
     /// Stencil-masked pipeline for coplanar sketch fills: each pixel is painted
     /// exactly once so translucent overlaps don't double-blend (#3).
     sketch_fill_pipeline: wgpu::RenderPipeline,
@@ -192,6 +194,60 @@ impl ViewportGpuResources {
                 format: VIEWPORT_DEPTH_FORMAT,
                 depth_write_enabled: true,
                 depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: multisample_state(msaa_sample_count),
+            multiview: None,
+            cache: None,
+        });
+
+        // Gizmo pipeline: same as the scene pipeline but with the depth test disabled
+        // (compare Always) and no depth writes, so manipulation handles drawn last stay
+        // visible even when a body is in front of them (#36).
+        let gizmo_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("bearcad_viewport_gizmo_pipeline"),
+            layout: Some(&scene_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs_main",
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<GpuVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 12,
+                            shader_location: 1,
+                        },
+                    ],
+                }],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: VIEWPORT_DEPTH_FORMAT,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Always,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -510,6 +566,7 @@ impl ViewportGpuResources {
             target_format,
             msaa_sample_count,
             scene_pipeline,
+            gizmo_pipeline,
             sketch_fill_pipeline,
             scene_transparent_pipeline,
             text_pipeline,
@@ -743,8 +800,12 @@ impl ViewportGpuResources {
         let sketch_fill_index_count = scene.sketch_fill_indices.len();
         let plane_fill_index_count = scene.plane_fill_indices.len();
         let overlay_index_count = scene.overlay_indices.len();
-        let total_index_count =
-            base_index_count + sketch_fill_index_count + plane_fill_index_count + overlay_index_count;
+        let gizmo_index_count = scene.gizmo_indices.len();
+        let total_index_count = base_index_count
+            + sketch_fill_index_count
+            + plane_fill_index_count
+            + overlay_index_count
+            + gizmo_index_count;
         let index_bytes = (total_index_count * std::mem::size_of::<u32>()) as u64;
         let text_vertex_bytes =
             (scene.text_vertices.len() * std::mem::size_of::<GpuTextVertex>()) as u64;
@@ -772,6 +833,7 @@ impl ViewportGpuResources {
             combined_indices.extend_from_slice(&scene.sketch_fill_indices);
             combined_indices.extend_from_slice(&scene.plane_fill_indices);
             combined_indices.extend_from_slice(&scene.overlay_indices);
+            combined_indices.extend_from_slice(&scene.gizmo_indices);
             queue.write_buffer(
                 &self.index_buffer,
                 0,
@@ -850,6 +912,7 @@ impl ViewportGpuResources {
                 let sketch_fill_end = (base_index_count + sketch_fill_index_count) as u32;
                 let plane_end =
                     (base_index_count + sketch_fill_index_count + plane_fill_index_count) as u32;
+                let overlay_end = plane_end + overlay_index_count as u32;
                 let total_end = total_index_count as u32;
                 if base_end > 0 {
                     pass.set_pipeline(&self.scene_pipeline);
@@ -867,9 +930,14 @@ impl ViewportGpuResources {
                     pass.set_pipeline(&self.scene_transparent_pipeline);
                     pass.draw_indexed(sketch_fill_end..plane_end, 0, 0..1);
                 }
-                if total_end > plane_end {
+                if overlay_end > plane_end {
                     pass.set_pipeline(&self.scene_pipeline);
-                    pass.draw_indexed(plane_end..total_end, 0, 0..1);
+                    pass.draw_indexed(plane_end..overlay_end, 0, 0..1);
+                }
+                if total_end > overlay_end {
+                    // Gizmos: depth test disabled so handles show through bodies (#36).
+                    pass.set_pipeline(&self.gizmo_pipeline);
+                    pass.draw_indexed(overlay_end..total_end, 0, 0..1);
                 }
             }
             if !scene.text_indices.is_empty() {

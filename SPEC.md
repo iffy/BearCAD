@@ -29,6 +29,16 @@ executable per platform (kernel and other native libs may be dynamically linked 
 be bundled with the distributable). The executable launches the GUI by default and acts
 as a CLI when given a subcommand (see §9).
 
+**macOS packaging:** the `.app` bundle inside the distributed `.dmg` must be code-signed.
+Absent a paid Apple Developer certificate, it must at minimum be **ad-hoc signed**
+(`codesign --force --deep --sign -`) so that a quarantined download is not rejected by
+Gatekeeper as *"'BearCAD' is damaged and can't be opened"* (the message macOS shows for an
+unsigned or signature-invalidated bundle on Apple Silicon). The signature must be applied to
+the fully assembled bundle (after the executable, icons, and `Info.plist` are in place) and
+verified with `codesign --verify --deep --strict`. The `.dmg` volume must also contain an
+`Applications` symlink (→ `/Applications`) alongside the app so the user can drag
+`BearCAD.app` straight into Applications from the mounted volume.
+
 ---
 
 ## 2. Core concepts and domain model
@@ -276,6 +286,12 @@ modeled on SolveSpace (https://solvespace.com).
 
 - **Tool:** Constraint, shortcut **`C`**. Distance/dimensional constraints remain on the
   **Dimension** tool (`D`).
+- **Angle dimensions — placement phase:** pressing `D` with two non-parallel lines selected
+  (and no existing angle constraint between them) does not commit a value immediately.
+  Instead the angle preview follows the mouse: two lines crossing have two distinct angle
+  magnitudes (supplementary, one on each pair of opposite wedges), and whichever wedge
+  encloses the cursor is the one previewed. Clicking commits that choice and moves to typing
+  the value, the same as other dimensions (#40).
 - **Selection:** Sketch points (line endpoints, rectangle corners, circle centres), lines,
   and rectangle edges are selectable in the viewport. Point picks take precedence near
   vertices within the point pick tolerance.
@@ -287,12 +303,14 @@ modeled on SolveSpace (https://solvespace.com).
     (e.g. `line, line` for Parallel). Buttons are **enabled** only when the selection
     satisfies that constraint.
   - **Shortcuts:** each type has a fixed **mnemonic letter** shown left of its button —
-    Parallel `A`, Perpendicular `T`, Coincident `I`, Midpoint `M`, Vertical `V`,
+    Parallel `A`, Perpendicular `T`, Equal `Q`, Coincident `I`, Midpoint `M`, Vertical `V`,
     Horizontal `H` (chosen to avoid the global tool keys). Pressing the letter while the
     constraint tool is active applies that constraint if it is currently enabled.
 - **Geometric types (v1):**
   - **Parallel** — `line`, `line`
   - **Perpendicular** — `line`, `line`
+  - **Equal** — `line`, `line` (the two edges are constrained to equal length; rect edges
+    count as lines). See #47.
   - **Coincident** — `point`, `point`; `point`, `line`; or `point`, `circle` (point on the
     circle's perimeter)
   - **Midpoint** — `point`, `line`
@@ -435,9 +453,17 @@ and automation (including screenshot capture of the live UI).
 - `set` / parameter override + re-export — override named parameters from the command line
   and export, enabling part families from one file.
 - `import` / `convert` — import STEP/STL/etc. into a `.bearcad`, or convert between formats.
+- `install-cli` / `uninstall-cli` — symlink the running executable onto PATH as `bearcad`
+  (default `/usr/local/bin/bearcad`), and remove it. Because macOS drag-to-Applications
+  installs run no code, this is how the bundled binary becomes usable from a terminal; it is
+  also exposed as **Help → Install "bearcad" Command in PATH**. Refuses to clobber a
+  non-symlink at the target, and reports a sudo hint on permission errors.
 
 The command set is expected to **grow over time** toward full GUI parity. New GUI actions
 should be added to the shared action layer so they become available headlessly by default.
+
+- `--timeout <seconds>` — force-exit (non-zero) if the app hasn't closed on its own within
+  the given duration, so an unattended/CI launch can't hang forever (#61).
 
 ### 9.2 Export formats (required)
 `.3mf`, `.stl`, `.obj`, `.amf`, `.step`/`.stp`. STEP via OCCT; mesh formats via OCCT
@@ -562,6 +588,9 @@ explicit exception that lets us drive "mouse/keyboard" flows for testing purpose
 - **Global axes:** the origin X/Y/Z triad is pickable as an axis reference when creating
   construction planes. Axis gizmo handles show a hover affordance (bright ring and thicker
   stroke) so the user can see which handle will be grabbed on click.
+- **Gizmos draw through bodies:** manipulation gizmos and their grab handles (plane-making,
+  extrusion offset/angle, and any future gizmo) render with depth testing disabled, so they
+  stay visible and clickable even when a body would otherwise occlude them.
 
 ---
 

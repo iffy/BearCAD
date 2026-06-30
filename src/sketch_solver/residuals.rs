@@ -55,6 +55,18 @@ pub enum Equation {
         by1: VarId,
         weight: f64,
     },
+    /// Two edges with equal length: `len(a) - len(b) = 0`. See #47.
+    EqualLength {
+        ax0: VarId,
+        ay0: VarId,
+        ax1: VarId,
+        ay1: VarId,
+        bx0: VarId,
+        by0: VarId,
+        bx1: VarId,
+        by1: VarId,
+        weight: f64,
+    },
     PointLineDistance {
         px: VarId,
         py: VarId,
@@ -232,6 +244,23 @@ impl Equation {
                 let bdu = v(*bx1) - v(*bx0);
                 let bdv = v(*by1) - v(*by0);
                 weighted(adu * bdu + adv * bdv, *weight)
+            }
+            Equation::EqualLength {
+                ax0,
+                ay0,
+                ax1,
+                ay1,
+                bx0,
+                by0,
+                bx1,
+                by1,
+                weight,
+            } => {
+                let adu = v(*ax1) - v(*ax0);
+                let adv = v(*ay1) - v(*ay0);
+                let bdu = v(*bx1) - v(*bx0);
+                let bdv = v(*by1) - v(*by0);
+                weighted(adu.hypot(adv) - bdu.hypot(bdv), *weight)
             }
             Equation::PointLineDistance {
                 px,
@@ -447,6 +476,39 @@ impl Equation {
                 push(accum, *bx1, adu, *weight);
                 push(accum, *by0, -adv, *weight);
                 push(accum, *by1, adv, *weight);
+            }
+            Equation::EqualLength {
+                ax0,
+                ay0,
+                ax1,
+                ay1,
+                bx0,
+                by0,
+                bx1,
+                by1,
+                weight,
+            } => {
+                let adu = v(*ax1) - v(*ax0);
+                let adv = v(*ay1) - v(*ay0);
+                let bdu = v(*bx1) - v(*bx0);
+                let bdv = v(*by1) - v(*by0);
+                let la = adu.hypot(adv);
+                let lb = bdu.hypot(bdv);
+                if la > 1e-12 {
+                    let inv = 1.0 / la;
+                    push(accum, *ax0, -adu * inv, *weight);
+                    push(accum, *ay0, -adv * inv, *weight);
+                    push(accum, *ax1, adu * inv, *weight);
+                    push(accum, *ay1, adv * inv, *weight);
+                }
+                if lb > 1e-12 {
+                    let inv = 1.0 / lb;
+                    // residual subtracts len(b), so its derivatives are negated.
+                    push(accum, *bx0, bdu * inv, *weight);
+                    push(accum, *by0, bdv * inv, *weight);
+                    push(accum, *bx1, -bdu * inv, *weight);
+                    push(accum, *by1, -bdv * inv, *weight);
+                }
             }
             Equation::PointLineDistance {
                 px,

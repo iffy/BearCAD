@@ -15,6 +15,7 @@
 mod actions;
 mod app_icon;
 mod camera;
+mod cli_install;
 mod command_log;
 mod command_palette;
 mod constraints;
@@ -83,8 +84,8 @@ use construction::{
 use document_health::{health_tint_color, DocumentHealth, HealthStatus};
 use document_lifecycle::{circle_alive, constraint_alive, line_alive, rect_alive};
 use constraints::{
-    angle_constraint_display, angle_rad_from_sketch_hit, constraint_evaluated_angle,
-    AngleConstraintDisplay,
+    angle_constraint_display, angle_dimension_hover_sign, angle_rad_from_sketch_hit,
+    constraint_evaluated_angle, default_angle_expression, AngleConstraintDisplay,
 };
 use dimensions::{
     angle_gizmo_handle_hit, angle_gizmo_handle_world, arc_dimension_world_geom,
@@ -185,11 +186,37 @@ fn main() -> eframe::Result<()> {
             script::print_usage();
             return Ok(());
         }
+        script::CliOutcome::InstallCli => {
+            run_cli_action(cli_install::run_install());
+            return Ok(());
+        }
+        script::CliOutcome::UninstallCli => {
+            run_cli_action(cli_install::run_uninstall());
+            return Ok(());
+        }
         script::CliOutcome::Run(script_opts) => run_app(script_opts),
     }
 }
 
+/// Print the result of a CLI install/uninstall action and exit non-zero on failure.
+fn run_cli_action(result: Result<String, String>) {
+    match result {
+        Ok(msg) => println!("{msg}"),
+        Err(err) => {
+            eprintln!("error: {err}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
+    if let Some(secs) = script_opts.timeout_secs {
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(secs));
+            eprintln!("error: bearcad did not exit within {secs}s, forcing exit");
+            std::process::exit(1);
+        });
+    }
     let options = native_options();
 
     let script = script_opts
@@ -235,6 +262,27 @@ mod cli_tests {
             script::parse_cli(["bearcad", "--help"]),
             script::CliOutcome::Run(script::ScriptOptions::default())
         );
+    }
+
+    #[test]
+    fn install_cli_subcommands_parse() {
+        assert_eq!(
+            script::parse_cli(["bearcad", "install-cli"]),
+            script::CliOutcome::InstallCli
+        );
+        assert_eq!(
+            script::parse_cli(["bearcad", "uninstall-cli"]),
+            script::CliOutcome::UninstallCli
+        );
+    }
+
+    #[test]
+    fn install_cli_does_not_shadow_a_document_named_like_it() {
+        // A real path/script argument still runs the app; only the bare subcommand installs.
+        assert!(matches!(
+            script::parse_cli(["bearcad", "drawing.bearcad", "--exit"]),
+            script::CliOutcome::Run(_)
+        ));
     }
 }
 
@@ -460,6 +508,12 @@ impl App {
                 MenuCommand::About => {
                     self.state.status =
                         "BearCAD — on-device parametric CAD (prototype)".to_string();
+                }
+                MenuCommand::InstallCli => {
+                    self.state.status = match cli_install::run_install() {
+                        Ok(msg) => msg,
+                        Err(err) => format!("Install CLI failed: {err}"),
+                    };
                 }
                 _ => {
                     if let Some(action) = command.to_action() {
@@ -1292,6 +1346,14 @@ const GRID_STEP: f32 = gpu_viewport::GRID_STEP;
 
 /// Screen-space height of a floating dimension input (frame + text field).
 const DIM_INPUT_HEIGHT: f32 = 26.0;
+/// Radial outset (px, beyond the arc/gizmo ring) for the angle dimension's editable
+/// input box. Pushed far enough out along the angle bisector that the box clears the
+/// angle gizmo's grab handle (which sits on the ring, off the bisector), so the handle
+/// isn't hidden behind the text field (#40). Sized from the handle hit radius plus the
+/// full input height plus a small margin so even the box's near corner clears the
+/// handle's grab circle for typical short live values.
+const ANGLE_DIM_INPUT_GIZMO_CLEARANCE_PX: f32 =
+    AXIS_GIZMO_HANDLE_HIT_RADIUS_PX + DIM_INPUT_HEIGHT + 4.0;
 /// Horizontal padding inside the dimension input frame (inner margin × 2).
 const DIM_INPUT_FRAME_H_PAD: f32 = 10.0;
 /// Minimum text-edit width (fits short live values like `80.0`).
@@ -2189,10 +2251,11 @@ fn push_arc_dim_layout(
     target: DimLabelTarget,
     line_a: model::ConstraintLine,
     line_b: model::ConstraintLine,
+    rotation_sign: model::ConstraintSign,
     dim_offset: Option<f32>,
     label: String,
 ) {
-    let Some(display) = angle_constraint_display(doc, line_a, line_b) else {
+    let Some(display) = angle_constraint_display(doc, line_a, line_b, rotation_sign) else {
         return;
     };
     let center = display.center;
@@ -2432,7 +2495,7 @@ fn build_committed_dim_layouts(
         let ConstraintKind::Angle {
             line_a,
             line_b,
-            rotation_sign: _,
+            rotation_sign,
         } = constraint.kind
         else {
             continue;
@@ -2449,6 +2512,7 @@ fn build_committed_dim_layouts(
             index,
             line_a,
             line_b,
+            rotation_sign,
             constraint.dim_offset,
             label,
         );
@@ -2616,6 +2680,7 @@ fn draw_angle_dim_for_lines<Project>(
     doc: &model::Document,
     line_a: model::ConstraintLine,
     line_b: model::ConstraintLine,
+    rotation_sign: model::ConstraintSign,
     dim_offset: Option<f32>,
     label: &str,
     show_gizmo: bool,
@@ -2623,7 +2688,7 @@ fn draw_angle_dim_for_lines<Project>(
 ) where
     Project: Fn(Vec3) -> Option<egui::Pos2>,
 {
-    let Some(display) = angle_constraint_display(doc, line_a, line_b) else {
+    let Some(display) = angle_constraint_display(doc, line_a, line_b, rotation_sign) else {
         return;
     };
     let pixel_offset = effective_arc_dim_offset(dim_offset);
@@ -3951,6 +4016,61 @@ impl App {
             }
         }
 
+        if let Some(placing) = self.state.placing_angle_dimension {
+            if let Some(session) = self.state.sketch_session {
+                if let Some(frame) = sketch_geometry_frame(&self.state.doc, session.sketch) {
+                    if let Some(pp) = pointer_screen {
+                        if let Some(hover_world) =
+                            cam.ray_plane_hit(pp, viewport, &vp, frame.origin, frame.normal)
+                        {
+                            if let Some(sign) = angle_dimension_hover_sign(
+                                &self.state.doc,
+                                placing.line_a,
+                                placing.line_b,
+                                hover_world,
+                            ) {
+                                if let Some(p) = self.state.placing_angle_dimension.as_mut() {
+                                    p.rotation_sign = sign;
+                                }
+                            }
+                        }
+                    }
+                    // Re-read: the hover update above may have just flipped the sign.
+                    let placing = self.state.placing_angle_dimension.unwrap_or(placing);
+                    let label = default_angle_expression(
+                        &self.state.doc,
+                        placing.line_a,
+                        placing.line_b,
+                        placing.rotation_sign,
+                    );
+                    draw_angle_dim_for_lines(
+                        &painter,
+                        &project,
+                        &frame,
+                        &self.state.doc,
+                        placing.line_a,
+                        placing.line_b,
+                        placing.rotation_sign,
+                        None,
+                        &label,
+                        false,
+                        false,
+                    );
+                    let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+                    if primary_pressed && !over_committed_dim_label {
+                        self.state.placing_angle_dimension = None;
+                        self.state.apply(Action::BeginDimensionEdit {
+                            target: model::DimensionTarget::Angle {
+                                line_a: placing.line_a,
+                                line_b: placing.line_b,
+                                rotation_sign: placing.rotation_sign,
+                            },
+                        });
+                    }
+                }
+            }
+        }
+
         if self.state.tool == Tool::ConstructionPlane {
             let ground = |p: egui::Pos2| cam.ground_point(p, viewport, &vp);
 
@@ -4444,14 +4564,19 @@ impl App {
                     } else if let Some(model::DimensionTarget::Angle {
                         line_a,
                         line_b,
-                        rotation_sign: _,
+                        rotation_sign,
                     }) = edit.target.dimension_target(&self.state.doc)
                     {
                         // Place the input inside the angle (on the bisector), not on the vertex
                         // where it would overlap both lines.
                         sketch_session
                             .and_then(|s| sketch_geometry_frame(&self.state.doc, s.sketch))
-                            .zip(angle_constraint_display(&self.state.doc, line_a, line_b))
+                            .zip(angle_constraint_display(
+                                &self.state.doc,
+                                line_a,
+                                line_b,
+                                rotation_sign,
+                            ))
                             .and_then(|(frame, display)| {
                                 let radius_world = pixels_to_world_distance(
                                     &project,
@@ -4459,11 +4584,13 @@ impl App {
                                     display.dir_a,
                                     effective_arc_dim_offset(None),
                                 );
+                                // Clear the gizmo ring/handle so it isn't hidden behind
+                                // the editable input box (#40).
                                 let label_outset_world = pixels_to_world_distance(
                                     &project,
                                     display.center,
                                     display.dir_a,
-                                    LABEL_OUTSET,
+                                    ANGLE_DIM_INPUT_GIZMO_CLEARANCE_PX,
                                 );
                                 arc_dimension_world_geom(
                                     display.center,
@@ -4548,7 +4675,7 @@ impl App {
                             if let Some(model::DimensionTarget::Angle {
                                 line_a,
                                 line_b,
-                                rotation_sign: _,
+                                rotation_sign,
                             }) = edit.target.dimension_target(&self.state.doc)
                             {
                                 draw_angle_dim_for_lines(
@@ -4558,6 +4685,7 @@ impl App {
                                     &self.state.doc,
                                     line_a,
                                     line_b,
+                                    rotation_sign,
                                     None,
                                     &edit.text,
                                     true,
@@ -6155,6 +6283,45 @@ mod tests {
         let handle_rect =
             egui::Rect::from_center_size(handle_screen, egui::vec2(24.0, 24.0));
         assert!(!angle_layout.rect.intersects(handle_rect));
+    }
+
+    #[test]
+    fn angle_dim_input_box_clears_gizmo_handle() {
+        // The editable angle-dimension input box must not sit on top of the gizmo grab
+        // handle, otherwise the handle can't be grabbed (#40). Check across a spread of
+        // wedge angles that the box rect stays clear of the handle's grab circle.
+        use super::{dim_input_size_for_text, ANGLE_DIM_INPUT_GIZMO_CLEARANCE_PX};
+        use crate::construction::AXIS_GIZMO_HANDLE_HIT_RADIUS_PX;
+        use crate::dimensions::{arc_dimension_world_geom, ARC_RADIUS};
+        let center = Vec3::ZERO;
+        let normal = Vec3::Z;
+        // Identity projection: world XY maps straight to screen px.
+        let project = |w: Vec3| Pos2::new(w.x, w.y);
+        for deg in [20.0_f32, 45.0, 90.0, 135.0, 160.0] {
+            let theta = deg.to_radians();
+            let dir_a = Vec3::X;
+            let dir_b = Vec3::new(theta.cos(), theta.sin(), 0.0);
+            let geom = arc_dimension_world_geom(
+                center,
+                dir_a,
+                dir_b,
+                normal,
+                ARC_RADIUS,
+                ANGLE_DIM_INPUT_GIZMO_CLEARANCE_PX,
+            )
+            .unwrap();
+            let box_center = project(geom.label_center);
+            let size = dim_input_size_for_text("80");
+            let rect = egui::Rect::from_center_size(box_center, size);
+            let handle = project(center + dir_b * ARC_RADIUS);
+            // Distance from the handle to the nearest point of the box rect.
+            let nearest = rect.clamp(handle);
+            let gap = (nearest - handle).length();
+            assert!(
+                gap > AXIS_GIZMO_HANDLE_HIT_RADIUS_PX,
+                "input box must clear the gizmo handle at {deg} deg (gap {gap})"
+            );
+        }
     }
 
     #[test]

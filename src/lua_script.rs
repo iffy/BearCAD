@@ -253,6 +253,7 @@ fn parse_geometric_constraint(name: &str) -> Option<GeometricConstraintType> {
     match name.to_ascii_lowercase().as_str() {
         "parallel" => Some(GeometricConstraintType::Parallel),
         "perpendicular" => Some(GeometricConstraintType::Perpendicular),
+        "equal" => Some(GeometricConstraintType::Equal),
         "coincident" => Some(GeometricConstraintType::Coincident),
         "midpoint" => Some(GeometricConstraintType::Midpoint),
         "horizontal" => Some(GeometricConstraintType::Horizontal),
@@ -1376,6 +1377,33 @@ mod tests {
                 assert(type(bearcad[name]) == "function", "bearcad." .. name .. " should stay top-level")
             end
         "#,
+        );
+    }
+
+    #[test]
+    fn lua_equal_constraint_is_scriptable() {
+        // #47: the Equal constraint is reachable from scripting via
+        // add_geometric_constraint("equal"); it records an Equal constraint between the
+        // two selected edges. (The geometric effect on unlocked lines is covered by the
+        // solver/geometric_constraints unit tests; lines drawn with the tool also carry
+        // auto length locks, so this test only asserts the constraint is created.)
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0, name = "a" }
+            bearcad.line{ x = 0, y = 5, x1 = 3, y1 = 5, name = "b" }
+            bearcad.select("a")
+            bearcad.select("b", true)
+            bearcad.add_geometric_constraint("equal")
+        "#,
+        );
+        assert!(
+            state
+                .doc
+                .constraints
+                .iter()
+                .any(|c| !c.deleted && matches!(c.kind, crate::model::ConstraintKind::Equal { .. })),
+            "an Equal constraint should have been created"
         );
     }
 

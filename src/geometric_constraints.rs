@@ -15,6 +15,7 @@ use crate::selection::SceneSelection;
 pub enum GeometricConstraintType {
     Parallel,
     Perpendicular,
+    Equal,
     Coincident,
     Midpoint,
     Vertical,
@@ -22,9 +23,10 @@ pub enum GeometricConstraintType {
 }
 
 impl GeometricConstraintType {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Parallel,
         Self::Perpendicular,
+        Self::Equal,
         Self::Coincident,
         Self::Midpoint,
         Self::Vertical,
@@ -35,6 +37,7 @@ impl GeometricConstraintType {
         match self {
             Self::Parallel => "Parallel",
             Self::Perpendicular => "Perpendicular",
+            Self::Equal => "Equal",
             Self::Coincident => "Coincident",
             Self::Midpoint => "Midpoint",
             Self::Vertical => "Vertical",
@@ -48,6 +51,7 @@ impl GeometricConstraintType {
         match self {
             Self::Parallel => "A",      // p-A-rallel
             Self::Perpendicular => "T", // a "T" is a right angle
+            Self::Equal => "Q",         // e-Q-ual
             Self::Coincident => "I",    // co-I-ncident
             Self::Midpoint => "M",      // Midpoint
             Self::Vertical => "V",      // Vertical
@@ -59,6 +63,7 @@ impl GeometricConstraintType {
         match key.to_ascii_uppercase() {
             'A' => Some(Self::Parallel),
             'T' => Some(Self::Perpendicular),
+            'Q' => Some(Self::Equal),
             'I' => Some(Self::Coincident),
             'M' => Some(Self::Midpoint),
             'V' => Some(Self::Vertical),
@@ -119,7 +124,9 @@ pub fn constraint_pane_rows(selection: &SceneSelection) -> Vec<ConstraintPaneRow
 
 fn missing_for_kind(kind: GeometricConstraintType) -> Vec<&'static str> {
     match kind {
-        GeometricConstraintType::Parallel | GeometricConstraintType::Perpendicular => {
+        GeometricConstraintType::Parallel
+        | GeometricConstraintType::Perpendicular
+        | GeometricConstraintType::Equal => {
             vec!["line", "line"]
         }
         GeometricConstraintType::Coincident => vec!["point", "point, line, or circle"],
@@ -133,7 +140,9 @@ fn match_kind(
     refs: &[ConstraintRef],
 ) -> Option<(bool, Vec<&'static str>)> {
     let patterns: &[&[ConstraintRole]] = match kind {
-        GeometricConstraintType::Parallel | GeometricConstraintType::Perpendicular => {
+        GeometricConstraintType::Parallel
+        | GeometricConstraintType::Perpendicular
+        | GeometricConstraintType::Equal => {
             &[&[ConstraintRole::Line, ConstraintRole::Line][..]]
         }
         GeometricConstraintType::Coincident => {
@@ -399,6 +408,10 @@ fn build_constraint_kind(
             line_a: lines[0],
             line_b: lines[1],
         }),
+        GeometricConstraintType::Equal => Ok(ConstraintKind::Equal {
+            line_a: lines[0],
+            line_b: lines[1],
+        }),
         GeometricConstraintType::Horizontal => Ok(ConstraintKind::Horizontal { line: lines[0] }),
         GeometricConstraintType::Vertical => Ok(ConstraintKind::Vertical { line: lines[0] }),
         GeometricConstraintType::Coincident => {
@@ -439,7 +452,8 @@ fn validate_constraint_kind(
             crate::constraints::validate_distance_target(doc, sketch, target)
         }
         ConstraintKind::Parallel { line_a, line_b }
-        | ConstraintKind::Perpendicular { line_a, line_b } => {
+        | ConstraintKind::Perpendicular { line_a, line_b }
+        | ConstraintKind::Equal { line_a, line_b } => {
             validate_line_ref(doc, sketch, line_a)?;
             validate_line_ref(doc, sketch, line_b)?;
             if line_a == line_b {
@@ -1057,6 +1071,38 @@ mod tests {
         let (du0, dv0) = line_dir(&doc.lines[0]);
         let (du1, dv1) = line_dir(&doc.lines[1]);
         assert_dirs_parallel(du0, dv0, du1, dv1);
+    }
+
+    #[test]
+    fn equal_constraint_enabled_for_two_lines_and_equalizes_length() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 5.0, 3.0, 5.0));
+        let mut sel = SceneSelection::default();
+        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        click_scene_selection(&mut sel, SceneElement::Line(1), true);
+        // Pane shows Equal as enabled for two selected lines.
+        let rows = constraint_pane_rows(&sel);
+        assert!(
+            rows.iter()
+                .any(|row| row.kind == GeometricConstraintType::Equal && row.enabled),
+            "Equal should be enabled for two lines"
+        );
+        add_geometric_constraint_from_selection(
+            &mut doc,
+            sketch,
+            GeometricConstraintType::Equal,
+            &sel,
+        )
+        .unwrap();
+        assert!(
+            (doc.lines[0].length() - doc.lines[1].length()).abs() < EPS,
+            "lengths: {} vs {}",
+            doc.lines[0].length(),
+            doc.lines[1].length()
+        );
     }
 
     #[test]

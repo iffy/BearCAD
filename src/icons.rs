@@ -22,6 +22,7 @@ pub enum IconId {
     Plane,
     Parallel,
     Perpendicular,
+    Equal,
     Coincident,
     Midpoint,
     Vertical,
@@ -39,7 +40,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -49,6 +50,7 @@ impl IconId {
         Self::Plane,
         Self::Parallel,
         Self::Perpendicular,
+        Self::Equal,
         Self::Coincident,
         Self::Midpoint,
         Self::Vertical,
@@ -75,6 +77,7 @@ impl IconId {
             Self::Plane => include_str!("assets/icons/plane.svg"),
             Self::Parallel => include_str!("assets/icons/parallel.svg"),
             Self::Perpendicular => include_str!("assets/icons/perpendicular.svg"),
+            Self::Equal => include_str!("assets/icons/equal.svg"),
             Self::Coincident => include_str!("assets/icons/coincident.svg"),
             Self::Midpoint => include_str!("assets/icons/midpoint.svg"),
             Self::Vertical => include_str!("assets/icons/vertical.svg"),
@@ -102,6 +105,7 @@ impl IconId {
             Self::Plane => "Plane",
             Self::Parallel => "Parallel",
             Self::Perpendicular => "Perpendicular",
+            Self::Equal => "Equal",
             Self::Coincident => "Coincident",
             Self::Midpoint => "Midpoint",
             Self::Vertical => "Vertical",
@@ -138,6 +142,7 @@ pub fn icon_for_constraint(kind: GeometricConstraintType) -> IconId {
     match kind {
         GeometricConstraintType::Parallel => IconId::Parallel,
         GeometricConstraintType::Perpendicular => IconId::Perpendicular,
+        GeometricConstraintType::Equal => IconId::Equal,
         GeometricConstraintType::Coincident => IconId::Coincident,
         GeometricConstraintType::Midpoint => IconId::Midpoint,
         GeometricConstraintType::Vertical => IconId::Vertical,
@@ -150,6 +155,7 @@ pub fn icon_for_constraint_kind(kind: ConstraintKind) -> IconId {
         ConstraintKind::Distance { .. } => IconId::Dimension,
         ConstraintKind::Parallel { .. } => IconId::Parallel,
         ConstraintKind::Perpendicular { .. } => IconId::Perpendicular,
+        ConstraintKind::Equal { .. } => IconId::Equal,
         ConstraintKind::Coincident { .. } => IconId::Coincident,
         ConstraintKind::Midpoint { .. } => IconId::Midpoint,
         ConstraintKind::Horizontal { .. } => IconId::Horizontal,

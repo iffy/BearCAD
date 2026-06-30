@@ -72,6 +72,10 @@ const HOVER_PLANE_DEPTH_LIFT: f32 = 0.02;
 /// overlapping faces renders behind/at-equal-depth with those fills and shows patchy
 /// artifacts along the overlaps (#19).
 const HOVER_FILL_DEPTH_BIAS: f32 = 0.09;
+/// Lift an extrusion's top-cap triangles toward the camera when they lie on the target
+/// plane, so the solid wins over the (separately rendered) target plane's own fill instead
+/// of z-fighting with it at grazing camera angles (#29).
+const SOLID_CAP_DEPTH_BIAS: f32 = 0.02;
 
 const GIZMO_OFFSET_STROKE_PX: f32 = 2.5;
 const GIZMO_OFFSET_STROKE_HOVER_PX: f32 = 4.0;
@@ -108,6 +112,9 @@ pub struct ViewportScene {
     pub plane_fill_indices: Vec<u32>,
     /// Strokes, selection, hover, and previews (drawn on top of plane fills).
     pub overlay_indices: Vec<u32>,
+    /// Manipulation gizmos (plane/extrude offset+angle handles). Drawn last with the
+    /// depth test disabled so handles stay visible even when behind a body (#36).
+    pub gizmo_indices: Vec<u32>,
     pub text_vertices: Vec<GpuTextVertex>,
     pub text_indices: Vec<u32>,
     pub view_proj: Mat4,
@@ -319,7 +326,8 @@ impl ViewportScene {
                 continue;
             }
             if let Some(solid) = crate::extrude::extrusion_mesh(input.doc, extrusion) {
-                mesh.push_solid(&solid, SOLID_FILL);
+                let cap_plane = crate::extrude::target_top_plane(input.doc, extrusion);
+                mesh.push_solid(&solid, SOLID_FILL, input.cam, cap_plane);
             }
         }
         // Live preview of the in-progress extrusion (semi-transparent until committed).
@@ -549,6 +557,9 @@ impl ViewportScene {
             );
         }
 
+        // Gizmos go in the depth-disabled Gizmo layer so handles stay visible even when
+        // a body is in front of them (#36).
+        mesh.set_index_layer(MeshIndexLayer::Gizmo);
         if let Some(gizmo) = input.plane_gizmo.as_ref() {
             let project = |w: Vec3| input.cam.project(w, input.viewport, &vp);
             mesh.push_plane_gizmo(gizmo, input.cam, input.viewport, &vp, &project);
@@ -568,6 +579,7 @@ impl ViewportScene {
                 &project,
             );
         }
+        mesh.set_index_layer(MeshIndexLayer::Overlay);
 
         if let Some(hover) = input.hover_highlight.as_ref() {
             mesh.push_hover_highlight(
@@ -622,6 +634,8 @@ enum MeshIndexLayer {
     SketchFill,
     PlaneFill,
     Overlay,
+    /// Manipulation gizmos, drawn last with the depth test disabled (#36).
+    Gizmo,
 }
 
 pub(crate) struct SceneMesh<'a> {
@@ -647,6 +661,7 @@ impl<'a> SceneMesh<'a> {
             MeshIndexLayer::SketchFill => &mut self.scene.sketch_fill_indices,
             MeshIndexLayer::PlaneFill => &mut self.scene.plane_fill_indices,
             MeshIndexLayer::Overlay => &mut self.scene.overlay_indices,
+            MeshIndexLayer::Gizmo => &mut self.scene.gizmo_indices,
         }
     }
 
@@ -671,14 +686,33 @@ impl<'a> SceneMesh<'a> {
         self.push_triangle(fill_corners[0], fill_corners[2], fill_corners[3], fill);
     }
 
-    /// Push a solid mesh with flat (per-triangle) two-sided shading.
-    fn push_solid(&mut self, solid: &crate::extrude::SolidMesh, base: Color32) {
+    /// Push a solid mesh with flat (per-triangle) two-sided shading. `cap_plane`, when the
+    /// extrusion targets a face/plane, nudges triangles lying exactly on that plane (the top
+    /// cap) toward the camera by a hair so they don't z-fight with the target plane's own
+    /// fill at grazing angles (#29) — geometry used for export/measurement is untouched,
+    /// this only biases what gets rasterized.
+    fn push_solid(
+        &mut self,
+        solid: &crate::extrude::SolidMesh,
+        base: Color32,
+        cam: &Camera,
+        cap_plane: Option<(Vec3, Vec3)>,
+    ) {
         let light = Vec3::new(0.35, 0.45, 0.82).normalize_or_zero();
+        let eye = cam.eye();
         for tri in &solid.triangles {
             let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
             // Two-sided: faces are lit regardless of winding direction.
             let shade = 0.4 + 0.6 * normal.dot(light).abs();
-            self.push_triangle(tri[0], tri[1], tri[2], scale_color(base, shade));
+            let verts = match cap_plane {
+                Some((origin, plane_normal)) if triangle_on_plane(tri, origin, plane_normal) => [
+                    offset_toward_camera(tri[0], plane_normal, eye, SOLID_CAP_DEPTH_BIAS),
+                    offset_toward_camera(tri[1], plane_normal, eye, SOLID_CAP_DEPTH_BIAS),
+                    offset_toward_camera(tri[2], plane_normal, eye, SOLID_CAP_DEPTH_BIAS),
+                ],
+                _ => *tri,
+            };
+            self.push_triangle(verts[0], verts[1], verts[2], scale_color(base, shade));
         }
     }
 
@@ -1748,6 +1782,16 @@ fn offset_segment_toward_camera(a: Vec3, b: Vec3, eye: Vec3, bias: f32) -> (Vec3
     let mid = (a + b) * 0.5;
     let to_cam = (eye - mid).normalize_or_zero();
     (a + to_cam * bias, b + to_cam * bias)
+}
+
+/// Whether every vertex of `tri` lies (within tolerance) on the plane through `origin`
+/// with unit-ish `normal`.
+fn triangle_on_plane(tri: &[Vec3; 3], origin: Vec3, normal: Vec3) -> bool {
+    let n = normal.normalize_or_zero();
+    if n.length_squared() < 1e-8 {
+        return false;
+    }
+    tri.iter().all(|p| (*p - origin).dot(n).abs() < 1e-3)
 }
 
 pub fn offset_toward_camera(pos: Vec3, normal: Vec3, eye: Vec3, bias: f32) -> Vec3 {
@@ -2975,6 +3019,86 @@ mod tests {
             "extruded body should add solid triangles: {} -> {}",
             before,
             scene.vertices.len()
+        );
+    }
+
+    #[test]
+    fn extruded_top_cap_on_slanted_target_plane_is_biased_toward_camera() {
+        let mut state = AppState::default();
+        commit_test_rectangle(&mut state);
+        let sketch = state.doc.rects[0].sketch;
+
+        // A construction plane tilted about the X axis, raised above the sketch — extruding
+        // to it lands the top cap exactly in this slanted plane.
+        let plane_origin = Vec3::new(0.0, 0.0, 12.0);
+        let plane_normal = Vec3::new(0.0, 0.4, 1.0).normalize();
+        let mut slanted = crate::face::default_xy_plane();
+        slanted.origin = plane_origin;
+        slanted.normal = plane_normal;
+        state.doc.construction_planes.push(slanted);
+
+        state.apply(crate::actions::Action::CreateExtrusion {
+            sketch,
+            faces: vec![crate::model::ExtrudeFace::Rect(0)],
+            distance: 6.0,
+        });
+        state.doc.extrusions[0].target = Some(crate::model::ExtrudeTarget::Plane(1));
+
+        let raw = crate::extrude::extrusion_mesh(&state.doc, &state.doc.extrusions[0]).unwrap();
+        let cap_vertex = *raw
+            .triangles
+            .iter()
+            .flat_map(|t| t.iter())
+            .find(|p| ((**p - plane_origin).dot(plane_normal)).abs() < 1e-3)
+            .expect("expected at least one top-cap vertex on the target plane");
+
+        // This corner is shared by the top cap and two side walls in the raw mesh — only the
+        // cap copies should move, so count how many raw triangle-vertices sit here before
+        // biasing as a baseline.
+        let raw_unbiased_count = raw
+            .triangles
+            .iter()
+            .flat_map(|t| t.iter())
+            .filter(|p| (**p - cap_vertex).length() < 1e-5)
+            .count();
+
+        let scene = build_scene_for_doc(&state);
+        let eye = state.cam.eye();
+        let biased = offset_toward_camera(cap_vertex, plane_normal, eye, SOLID_CAP_DEPTH_BIAS);
+        let scene_unbiased_count = scene
+            .vertices
+            .iter()
+            .filter(|v| (Vec3::from(v.position) - cap_vertex).length() < 1e-5)
+            .count();
+
+        // The cap vertex was rasterized at the biased position, not its raw (z-fight-prone)
+        // position (#29) — the side-wall copies of this same corner stay put, but the
+        // top-cap copies move, so fewer unbiased copies should remain than the raw mesh had.
+        assert!(
+            scene
+                .vertices
+                .iter()
+                .any(|v| (Vec3::from(v.position) - biased).length() < 1e-4),
+            "expected a rasterized vertex at the camera-biased cap position {biased:?}"
+        );
+        assert!(
+            scene_unbiased_count < raw_unbiased_count,
+            "expected fewer unbiased copies of the cap corner after biasing: raw={raw_unbiased_count} scene={scene_unbiased_count}"
+        );
+
+        // A base-cap vertex (not on the target plane) is rasterized unbiased.
+        let base_vertex = *raw
+            .triangles
+            .iter()
+            .flat_map(|t| t.iter())
+            .find(|p| ((**p - plane_origin).dot(plane_normal)).abs() > 1.0)
+            .expect("expected a non-cap vertex");
+        assert!(
+            scene
+                .vertices
+                .iter()
+                .any(|v| (Vec3::from(v.position) - base_vertex).length() < 1e-4),
+            "non-cap vertices should be rasterized at their raw position"
         );
     }
 

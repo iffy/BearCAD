@@ -572,7 +572,8 @@ fn constraint_kind_touches_element(kind: ConstraintKind, element: SceneElement) 
     match kind {
         ConstraintKind::Distance { target } => distance_target_touches_element(target, element),
         ConstraintKind::Parallel { line_a, line_b }
-        | ConstraintKind::Perpendicular { line_a, line_b } => {
+        | ConstraintKind::Perpendicular { line_a, line_b }
+        | ConstraintKind::Equal { line_a, line_b } => {
             constraint_line_touches_element(line_a, element)
                 || constraint_line_touches_element(line_b, element)
         }

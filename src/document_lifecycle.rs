@@ -411,7 +411,8 @@ pub fn constraint_kind_applicable(doc: &Document, kind: ConstraintKind) -> bool 
     match kind {
         ConstraintKind::Distance { target } => distance_target_alive(doc, target),
         ConstraintKind::Parallel { line_a, line_b }
-        | ConstraintKind::Perpendicular { line_a, line_b } => {
+        | ConstraintKind::Perpendicular { line_a, line_b }
+        | ConstraintKind::Equal { line_a, line_b } => {
             constraint_line_alive(doc, line_a) && constraint_line_alive(doc, line_b)
         }
         ConstraintKind::Coincident { a, b } => {

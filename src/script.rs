@@ -550,6 +550,7 @@ fn geometric_constraint_script_name(
     match kind {
         GeometricConstraintType::Parallel => "parallel",
         GeometricConstraintType::Perpendicular => "perpendicular",
+        GeometricConstraintType::Equal => "equal",
         GeometricConstraintType::Coincident => "coincident",
         GeometricConstraintType::Midpoint => "midpoint",
         GeometricConstraintType::Horizontal => "horizontal",
@@ -1902,12 +1903,19 @@ pub struct ScriptOptions {
     pub document_path: Option<String>,
     pub exit_on_complete: bool,
     pub show_commands: bool,
+    /// Force-exit (non-zero) if the app hasn't closed on its own within this many
+    /// seconds — a watchdog for unattended/CI launches. See #61.
+    pub timeout_secs: Option<u64>,
 }
 
 /// Parsed command-line outcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CliOutcome {
     Help,
+    /// Install the `bearcad` CLI symlink onto PATH (`bearcad install-cli`). See #49.
+    InstallCli,
+    /// Remove the `bearcad` CLI symlink (`bearcad uninstall-cli`).
+    UninstallCli,
     Run(ScriptOptions),
 }
 
@@ -1919,12 +1927,20 @@ BearCAD — parametric CAD prototype
 
 Usage:
   bearcad [options] [script.lua]
+  bearcad <command>
+
+Commands:
+  install-cli           Symlink this executable onto PATH as `bearcad`
+                        (default /usr/local/bin; use sudo if it is not writable)
+  uninstall-cli         Remove the `bearcad` PATH symlink
 
 Options:
   --script <path>       Run a Lua script
   --exit, --exit-on-complete
                         Exit after startup, or after the script finishes
   --show-commands       Print each user action as a script line on stdout
+  --timeout <seconds>   Force-exit with an error if the app hasn't closed on
+                        its own within this many seconds
   -h, --help            Show this help and exit
 
 Examples:
@@ -1933,6 +1949,8 @@ Examples:
   bearcad drawing.bearcad --exit
   bearcad --script demo.lua
   bearcad demo.lua --exit
+  bearcad --exit --timeout 30
+  bearcad install-cli
 "
     );
 }
@@ -1948,6 +1966,12 @@ pub fn parse_cli(args: impl IntoIterator<Item = impl AsRef<str>>) -> CliOutcome 
         .any(|arg| arg == "--help" || arg == "-h")
     {
         return CliOutcome::Help;
+    }
+    // Subcommands (args[0] is the program name).
+    match args.get(1).map(String::as_str) {
+        Some("install-cli") => return CliOutcome::InstallCli,
+        Some("uninstall-cli") => return CliOutcome::UninstallCli,
+        _ => {}
     }
     CliOutcome::Run(parse_args_from_vec(&args))
 }
@@ -1978,6 +2002,12 @@ fn parse_args_from_vec(args: &[String]) -> ScriptOptions {
             }
             "--show-commands" => {
                 opts.show_commands = true;
+            }
+            "--timeout" => {
+                i += 1;
+                if i < args.len() {
+                    opts.timeout_secs = args[i].parse::<u64>().ok();
+                }
             }
             arg if !arg.starts_with('-') => {
                 if opts.script_path.is_none()
@@ -2070,8 +2100,21 @@ mod tests {
                 document_path: None,
                 exit_on_complete: true,
                 show_commands: false,
+                timeout_secs: None,
             })
         );
+    }
+
+    #[test]
+    fn parse_args_finds_timeout_flag() {
+        let opts = parse_args(["bearcad", "--exit", "--timeout", "30"]);
+        assert_eq!(opts.timeout_secs, Some(30));
+    }
+
+    #[test]
+    fn parse_args_ignores_invalid_timeout_value() {
+        let opts = parse_args(["bearcad", "--timeout", "soon"]);
+        assert_eq!(opts.timeout_secs, None);
     }
 
     #[test]

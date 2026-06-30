@@ -311,7 +311,8 @@ fn mark_invalid_constraints_and_unstable_geometry(doc: &Document, health: &mut D
                 }
             }
             ConstraintKind::Parallel { line_a, line_b }
-            | ConstraintKind::Perpendicular { line_a, line_b } => {
+            | ConstraintKind::Perpendicular { line_a, line_b }
+            | ConstraintKind::Equal { line_a, line_b } => {
                 let a_alive = constraint_line_alive(doc, line_a);
                 let b_alive = constraint_line_alive(doc, line_b);
                 if !a_alive || !b_alive {
