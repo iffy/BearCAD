@@ -521,8 +521,13 @@ pub fn show_palette(
 
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(">").monospace().strong());
+            // A stable id keeps keyboard focus on the input across layout changes. Without it
+            // egui derives the id from the widget's position in the tree, so when the results
+            // area above swaps between the matches list and the "No matching commands" label
+            // the input is treated as a new widget and silently loses focus (#55).
             let response = ui.add(
                 TextEdit::singleline(&mut state.query)
+                    .id(egui::Id::new("command_palette_query"))
                     .hint_text("Type a command…")
                     .desired_width(f32::INFINITY)
                     .font(egui::FontId::monospace(14.0)),

@@ -1,0 +1,1 @@
+Dragging a rectangle edge no longer breaks a point-on-line coincident constraint (e.g. a rect inference-snapped to the same width as another). The constrained corner now stays on its reference line instead of being pulled off it, so the rectangle keeps its constrained width.

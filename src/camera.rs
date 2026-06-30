@@ -418,15 +418,47 @@ impl Camera {
     }
 
     /// Capture the current camera pose as the home view.
+    ///
+    /// This must not call `resolve_orbit_state`: doing so bakes the view-cube trackball
+    /// rotation into yaw/pitch and clears `orbit_quat`, which drops the trackball roll and
+    /// visibly snaps the live view ("rotates in a strange way", #51). Instead we read the
+    /// current pose without mutating the camera, and store the current up (including any
+    /// trackball roll) so returning home reproduces what the user saw.
     pub fn set_home_from_current(&mut self) {
-        self.resolve_orbit_state();
-        self.home = HomeView {
-            target: self.target,
-            yaw: self.yaw,
-            pitch: self.pitch,
-            distance: self.distance,
-            view_up: self.view_up,
+        self.home = self.current_pose();
+    }
+
+    /// The live camera pose as a storable `HomeView`, derived without mutating the camera.
+    fn current_pose(&self) -> HomeView {
+        let offset = self.eye() - self.target;
+        let len = offset.length();
+        let (yaw, pitch, distance) = if len < 1e-6 {
+            (self.yaw, self.pitch, self.distance)
+        } else {
+            let dir = offset / len;
+            let pitch = dir.z.asin();
+            let horizontal_len_sq = offset.x * offset.x + offset.y * offset.y;
+            let yaw = if pitch.cos().abs() < 1e-4 || horizontal_len_sq < 1e-6 {
+                self.yaw
+            } else {
+                offset.y.atan2(offset.x)
+            };
+            (yaw, pitch, len)
         };
+        // While trackball-orbiting (e.g. via the view cube) the live up vector carries roll
+        // that yaw/pitch cannot represent; capture it so home matches the current view.
+        let view_up = if self.orbit_quat.is_some() {
+            Some(self.view_up_hint())
+        } else {
+            self.view_up
+        };
+        HomeView {
+            target: self.target,
+            yaw,
+            pitch,
+            distance,
+            view_up,
+        }
     }
 
     /// Capture the current camera pose (e.g. to restore it later).
@@ -1417,6 +1449,34 @@ mod tests {
         assert!((home.yaw - cam.yaw).abs() < 1e-4);
         assert!((home.pitch - cam.pitch).abs() < 1e-4);
         assert!((home.distance - cam.distance).abs() < 1e-4);
+    }
+
+    /// #51: setting the home view must not move/rotate the live camera. Previously it baked
+    /// the trackball orbit into yaw/pitch and dropped the roll, snapping the view.
+    #[test]
+    fn set_home_from_current_does_not_disturb_live_view() {
+        let mut cam = Camera::default();
+        cam.target = Vec3::new(5.0, 2.0, 1.0);
+        cam.yaw = 0.9;
+        cam.pitch = -0.2;
+        cam.distance = 100.0;
+        // Trackball-orbit like the view cube does, which introduces roll yaw/pitch can't hold.
+        cam.orbit_trackball(egui::Vec2::new(40.0, 25.0));
+        let eye_before = cam.eye();
+        let up_before = cam.view_up_hint();
+
+        cam.set_home_from_current();
+
+        assert!(
+            (cam.eye() - eye_before).length() < 1e-4,
+            "camera eye moved: {eye_before} -> {}",
+            cam.eye()
+        );
+        assert!(
+            (cam.view_up_hint() - up_before).length() < 1e-4,
+            "camera rolled: {up_before} -> {}",
+            cam.view_up_hint()
+        );
     }
 
     #[test]

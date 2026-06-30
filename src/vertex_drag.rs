@@ -133,6 +133,25 @@ pub fn drag_line(
         if locked_h.is_some() && matches!(edge, RectEdge::Bottom | RectEdge::Top) {
             dv = 0.0;
         }
+        // A corner of this edge coincident onto an axis-aligned reference line must stay on
+        // that line: lock the motion component that would pull it off (otherwise the drag pin
+        // silently breaks the coincident constraint and the rectangle distorts). See #42.
+        let (corner_a, corner_b) = edge.corner_indices();
+        for corner in [corner_a, corner_b] {
+            let point = ConstraintPoint::RectCorner { rect, corner };
+            let Some(line) = coincident_line_for_point(doc, point) else {
+                continue;
+            };
+            let Ok(((lx0, ly0), (lx1, ly1))) = line_uv_endpoints(doc, line) else {
+                continue;
+            };
+            let (ldx, ldy) = (lx1 - lx0, ly1 - ly0);
+            if ldx.abs() <= 1e-4 && ldy.abs() > 1e-4 {
+                du = 0.0; // vertical reference line -> corner's u is fixed
+            } else if ldy.abs() <= 1e-4 && ldx.abs() > 1e-4 {
+                dv = 0.0; // horizontal reference line -> corner's v is fixed
+            }
+        }
     }
     let seeds = line_drag_seed_points(session.target);
     if let ConstraintLine::RectEdge { .. } = session.target {
@@ -309,6 +328,13 @@ fn project_rect_corner_drag(
     let (locked_w, locked_h) = rect_locked_dimensions(doc, rect);
     let (fixed_u, fixed_v) = rect_corner_axis_locks(entity, corner, locked_w, locked_h);
     let point = ConstraintPoint::RectCorner { rect, corner };
+
+    // A corner coincident onto a line must slide along that line, not pull off it (the drag
+    // pin would otherwise override and break the coincident constraint). See #42.
+    let (u, v) = match coincident_line_for_point(doc, point) {
+        Some(line) => project_point_onto_line_uv(doc, line, u, v)?,
+        None => (u, v),
+    };
 
     let (pu, pv) = if let Some((pu, pv)) =
         project_point_point_distance_drag(doc, point, u, v, fixed_u, fixed_v)?
@@ -588,6 +614,27 @@ fn project_onto_anchoring_constraint(
         }
     }
     Ok(None)
+}
+
+/// If `point` is constrained coincident onto a line (point-on-line), return that line.
+fn coincident_line_for_point(doc: &Document, point: ConstraintPoint) -> Option<ConstraintLine> {
+    for constraint in &doc.constraints {
+        if constraint.deleted {
+            continue;
+        }
+        if let ConstraintKind::Coincident { a, b } = constraint.kind {
+            match (a, b) {
+                (ConstraintEntity::Point(p), ConstraintEntity::Line(l))
+                | (ConstraintEntity::Line(l), ConstraintEntity::Point(p))
+                    if p == point =>
+                {
+                    return Some(l);
+                }
+                _ => {}
+            }
+        }
+    }
+    None
 }
 
 /// Perpendicular foot of `(u, v)` on the infinite line through `line` (sketch units).
@@ -1055,6 +1102,84 @@ mod tests {
             (doc.rects[0].w - 80.0).abs() < EPS,
             "locked width must stay 80mm when dragging bottom edge, got w={}",
             doc.rects[0].w
+        );
+    }
+
+    /// Repro for #42: rect B is constrained "same width" as rect A via inference
+    /// (its left/right corners lie on A's left/right edge lines). A's width is locked.
+    /// Dragging B's left edge must not collapse A or break the coincident constraints.
+    #[test]
+    fn repro_42_drag_inference_width_rect_does_not_collapse_other() {
+        let (mut doc, sketch) = sketch_doc();
+        // Rect A (rect 0): corners (0,0)-(100,50), width locked to 100mm.
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 100.0, 50.0));
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::RectWidth(0),
+            "100mm".to_string(),
+        )
+        .unwrap();
+        // Rect B (rect 1): below A, same x-range. Inference snapping put its
+        // bottom-left/bottom-right corners on A's left/right edge lines.
+        doc.rects
+            .push(Rect::from_local_corners(sketch, 0.0, -80.0, 100.0, -30.0));
+        doc.constraints.push(crate::model::Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(ConstraintPoint::RectCorner { rect: 1, corner: 0 }),
+                b: ConstraintEntity::Line(ConstraintLine::RectEdge {
+                    rect: 0,
+                    edge: RectEdge::Left,
+                }),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+        doc.constraints.push(crate::model::Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(ConstraintPoint::RectCorner { rect: 1, corner: 1 }),
+                b: ConstraintEntity::Line(ConstraintLine::RectEdge {
+                    rect: 0,
+                    edge: RectEdge::Right,
+                }),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+        solve_document_constraints(&mut doc).unwrap();
+
+        let session = begin_line_drag_session(
+            &doc,
+            sketch,
+            ConstraintLine::RectEdge {
+                rect: 1,
+                edge: RectEdge::Left,
+            },
+            (0.0, -55.0),
+        )
+        .unwrap();
+        drag_line(&mut doc, sketch, &session, (-30.0, -55.0)).unwrap();
+
+        // A (the reference) is untouched.
+        assert!((doc.rects[0].w - 100.0).abs() < EPS, "A width = {}", doc.rects[0].w);
+        assert!((doc.rects[0].h - 50.0).abs() < EPS, "A height collapsed: {}", doc.rects[0].h);
+        // The coincident constraints hold: B's left/right edges stay on A's edge lines, so B
+        // keeps the same width as A rather than becoming wider.
+        let bl = point_uv(&doc, ConstraintPoint::RectCorner { rect: 1, corner: 0 }).unwrap();
+        let br = point_uv(&doc, ConstraintPoint::RectCorner { rect: 1, corner: 1 }).unwrap();
+        assert!(bl.0.abs() < EPS, "B left corner left A's left edge: x={}", bl.0);
+        assert!((br.0 - 100.0).abs() < EPS, "B right corner left A's right edge: x={}", br.0);
+        assert!(
+            (doc.rects[1].w - 100.0).abs() < EPS,
+            "B width should match A (100), got {}",
+            doc.rects[1].w
         );
     }
 

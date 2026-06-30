@@ -1,0 +1,1 @@
+Setting the home view (right-click the home button > Set current view as home) no longer rotates/snaps the live camera. It now captures the current pose without baking and discarding the view-cube trackball roll.
