@@ -9,6 +9,11 @@ license = "MIT OR Apache-2.0"
 name = "le3"
 path = "src/main.rs"
 
+[build-dependencies]
+ico = "0.4"
+image = { version = "0.25", default-features = false, features = ["png"] }
+winres = "0.1"
+
 [dependencies]
 # wgpu backend (Metal on macOS) per SPEC §1; the default glow/OpenGL backend
 # crashes with a bus error on some macOS setups.

@@ -13,6 +13,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod actions;
+mod app_icon;
 mod camera;
 mod command_log;
 mod command_palette;
@@ -37,6 +38,7 @@ mod parameters;
 mod model;
 mod native_menu;
 mod lua_script;
+#[cfg(test)]
 mod release_artifacts;
 mod script;
 mod selection;
@@ -149,7 +151,7 @@ fn native_options() -> eframe::NativeOptions {
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([960.0, 640.0])
         .with_title("LE3")
-        .with_icon(std::sync::Arc::new(egui::IconData::default()));
+        .with_icon(app_icon::load());
     if !uses_deferred_launch_maximize() {
         viewport = viewport.with_maximized(true);
     }

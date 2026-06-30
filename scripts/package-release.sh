@@ -26,9 +26,11 @@ package_macos() {
   dmg="le3-macos-aarch64.dmg"
 
   rm -rf dist
-  mkdir -p "${app_dir}/Contents/MacOS"
+  mkdir -p "${app_dir}/Contents/MacOS" "${app_dir}/Contents/Resources"
   cp target/release/le3 "${app_dir}/Contents/MacOS/le3"
   chmod +x "${app_dir}/Contents/MacOS/le3"
+  bash scripts/generate-macos-icns.sh dist/AppIcon.icns
+  cp dist/AppIcon.icns "${app_dir}/Contents/Resources/AppIcon.icns"
 
   cat >"${app_dir}/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -43,6 +45,8 @@ package_macos() {
   <string>com.le3.app</string>
   <key>CFBundleName</key>
   <string>${app_name}</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>

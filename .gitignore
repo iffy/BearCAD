@@ -3,6 +3,7 @@
 
 # Local release packaging output
 /dist/
+/target/generated/
 le3-*.tar.gz
 le3-*.dmg
 le3-*.exe
