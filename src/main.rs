@@ -1316,8 +1316,8 @@ mod col {
     pub const Y_AXIS: Color32 = Color32::from_rgb(70, 190, 90);
     /// Matches the view-cube Z triad (`view_cube::AXES`).
     pub const Z_AXIS: Color32 = Color32::from_rgb(80, 140, 230);
+    /// Shared stroke color for all solid sketch shape edges (lines, rect edges, circles).
     pub const RECT_LINE: Color32 = Color32::from_rgb(120, 170, 240);
-    pub const LINE_STROKE: Color32 = Color32::from_rgb(180, 140, 240);
     pub const PREVIEW: Color32 = Color32::from_rgb(240, 200, 120);
     /// Pivot shown while right-dragging to orbit the camera.
     pub const ORBIT_PIVOT: Color32 = Color32::from_rgb(255, 105, 180);
@@ -1547,6 +1547,7 @@ fn build_viewport_scene_input<'a>(
     creating_circle: Option<&CreatingCircle>,
     creating_plane: Option<&CreatingConstructionPlane>,
     creating_extrusion: Option<&CreatingExtrusion>,
+    pending_extrude_target: Option<model::ExtrudeTarget>,
     plane_gizmo: Option<gpu_viewport::ViewportPlaneGizmo>,
     extrude_gizmo: Option<gpu_viewport::ViewportExtrudeGizmo>,
     hover_highlight: Option<gpu_viewport::ViewportHoverHighlight>,
@@ -1620,7 +1621,10 @@ fn build_viewport_scene_input<'a>(
             sketch: ce.sketch,
             faces: ce.faces.clone(),
             distance: ce.evaluated_distance(doc),
-            target: ce.target,
+            // While dragging the gizmo, the target is only known live (not yet committed
+            // onto `ce`) — fall back to it so the ghost preview actually shows the slanted
+            // shape it will land in, instead of a generic blind extrude (#63).
+            target: ce.target.or(pending_extrude_target),
             expression: String::new(),
             name: None,
             deleted: false,
@@ -1639,7 +1643,6 @@ fn build_viewport_scene_input<'a>(
             y_axis: col::Y_AXIS,
             z_axis: col::Z_AXIS,
             rect_line: col::RECT_LINE,
-            line_stroke: col::LINE_STROKE,
             preview: col::PREVIEW,
             construction: col::CONSTRUCTION,
             dim_edge_highlight: col::DIM_EDGE_HIGHLIGHT,
@@ -4352,6 +4355,7 @@ impl App {
             self.state.creating_circle.as_ref(),
             self.state.creating_plane.as_ref(),
             self.state.creating_extrusion.as_ref(),
+            self.pending_extrude_target,
             plane_gizmo,
             extrude_gizmo,
             hover_highlight,
@@ -4396,7 +4400,7 @@ impl App {
                 let base = if line.construction {
                     sketch_color(col::CONSTRUCTION, dim)
                 } else {
-                    sketch_color(col::LINE_STROKE, dim)
+                    sketch_color(col::RECT_LINE, dim)
                 };
                 let color = health_tint_color(base, health.element_status(SceneElement::Line(li)));
                 if line.construction {
@@ -6095,10 +6099,11 @@ fn draw_ground(
 mod tests {
     use super::actions::CreatingRect;
     use super::{
-        clip_segment_to_rect, col, initial_launch_maximize_frames, native_options,
-        should_commit_sketch_on_click, should_select_all_rect_value, side_panel_resize_active,
-        tick_launch_maximize, uses_deferred_launch_maximize, MACOS_LAUNCH_MAXIMIZE_DELAY_FRAMES,
-        GRID_EXTENT, ORBIT_PIVOT_GROUND_RADIUS, ORBIT_PIVOT_RADIUS,
+        build_viewport_scene_input, clip_segment_to_rect, col, initial_launch_maximize_frames,
+        native_options, should_commit_sketch_on_click, should_select_all_rect_value,
+        side_panel_resize_active, tick_launch_maximize, uses_deferred_launch_maximize,
+        MACOS_LAUNCH_MAXIMIZE_DELAY_FRAMES, GRID_EXTENT, ORBIT_PIVOT_GROUND_RADIUS,
+        ORBIT_PIVOT_RADIUS,
     };
     use crate::face::SketchFrame;
     use eframe::egui::{self, Pos2, Rect, Vec2};
@@ -6106,9 +6111,70 @@ mod tests {
     use glam::Vec3;
 
     #[test]
-    fn circles_use_rectangle_stroke_color() {
-        assert_ne!(col::RECT_LINE, col::LINE_STROKE);
+    fn shape_edge_stroke_color_is_shared() {
         assert_eq!(col::RECT_LINE, Color32::from_rgb(120, 170, 240));
+    }
+
+    #[test]
+    fn extrude_preview_uses_pending_target_before_commit() {
+        // While dragging the gizmo, the snapped target lives in `pending_extrude_target`
+        // (only copied onto `creating_extrusion.target` at commit time) — the ghost preview
+        // must still pick it up live so it shows the real (e.g. slanted) shape while
+        // dragging, not just after release (#63).
+        use crate::actions::{Action, AppState, Tool};
+        use crate::model::{ExtrudeFace, ExtrudeTarget, Rect, ShapeKind};
+
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: crate::model::FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        let sketch = state.sketch_session.unwrap().sketch;
+        state.doc.rects.push(Rect::from_local_corners(sketch, 0.0, 0.0, 10.0, 5.0));
+        state.doc.shape_order.push(ShapeKind::Rect);
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace {
+            face: ExtrudeFace::Rect(0),
+        });
+        let ce = state.creating_extrusion.as_ref().unwrap();
+        assert_eq!(ce.target, None, "target isn't committed onto ce yet");
+
+        let cam = state.cam.clone();
+        let element_visibility = state.element_visibility.clone();
+        let selection = state.scene_selection.clone();
+        let health = state.document_health.clone();
+        let pending = Some(ExtrudeTarget::Plane(0));
+
+        let scene_input = build_viewport_scene_input(
+            &state.doc,
+            &cam,
+            test_viewport_rect(),
+            None,
+            &element_visibility,
+            &selection,
+            &health,
+            None,
+            None,
+            None,
+            None,
+            state.creating_extrusion.as_ref(),
+            pending,
+            None,
+            None,
+            None,
+            &[],
+            None,
+            None,
+        );
+        assert_eq!(
+            scene_input.preview_extrusion.as_ref().map(|e| e.target),
+            Some(pending),
+            "ghost preview should pick up the live pending target before commit"
+        );
+    }
+
+    fn test_viewport_rect() -> egui::Rect {
+        egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0))
     }
 
     #[test]

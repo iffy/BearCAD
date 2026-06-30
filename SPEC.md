@@ -146,7 +146,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     that object and, on release, constrains the extrusion to it (`ExtrudeTarget`). The effective
     depth is then derived from the target's extended plane — to a vertex's perpendicular plane,
     or where the extrusion axis meets a face/construction-plane — and recomputes if that geometry
-    moves. A free gizmo drag (no object) leaves a plain unconstrained distance.
+    moves. A free gizmo drag (no object) leaves a plain unconstrained distance. The live ghost
+    preview reflects the snapped target immediately while still dragging (not just after
+    release), so extruding to a slanted or irregular target shows the actual resulting shape —
+    e.g. a slanted top cap — rather than a generic blind/rectangular extrude (#63).
 - **Revolve** — about an axis, full or partial angle.
 
 ### 3.3 Combining solids

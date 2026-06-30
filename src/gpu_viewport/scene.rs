@@ -129,8 +129,8 @@ pub struct ViewportPalette {
     pub x_axis: Color32,
     pub y_axis: Color32,
     pub z_axis: Color32,
+    /// Shared stroke color for all solid sketch shape edges (lines, rect edges, circles).
     pub rect_line: Color32,
-    pub line_stroke: Color32,
     pub preview: Color32,
     pub construction: Color32,
     pub dim_edge_highlight: Color32,
@@ -148,7 +148,6 @@ impl Default for ViewportPalette {
             y_axis: Color32::from_rgb(70, 190, 90),
             z_axis: Color32::from_rgb(80, 140, 230),
             rect_line: Color32::from_rgb(120, 170, 240),
-            line_stroke: Color32::from_rgb(180, 140, 240),
             preview: Color32::from_rgb(240, 200, 120),
             construction: CONSTRUCTION_RGBA,
             dim_edge_highlight: Color32::from_rgb(255, 205, 88),
@@ -379,7 +378,7 @@ impl ViewportScene {
             let base = if line.construction {
                 sketch_color(input.palette.construction, dim)
             } else {
-                sketch_color(input.palette.line_stroke, dim)
+                sketch_color(input.palette.rect_line, dim)
             };
             let color = health_tint_color(base, input.document_health.element_status(element));
             if let Some((a, b)) = line_world_endpoints(input.doc, line) {
@@ -2930,6 +2929,19 @@ mod tests {
         state.apply(crate::actions::Action::CommitRectangle);
     }
 
+    fn commit_test_line(state: &mut AppState) {
+        state.apply(crate::actions::Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        state.apply(crate::actions::Action::CreateLineSegment {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 10.0,
+            y1: 0.0,
+        });
+    }
+
     /// Rectangle and circle both at index 0 on the ground plane, overlapping (#3).
     fn commit_overlapping_rect_and_circle(state: &mut AppState) {
         state.apply(crate::actions::Action::BeginSketch {
@@ -2996,6 +3008,19 @@ mod tests {
         assert_eq!(
             mixed_strokes, 12,
             "mixed rect should draw solid strokes only on non-construction edges"
+        );
+    }
+
+    #[test]
+    fn solid_line_strokes_use_rectangle_stroke_color() {
+        let mut state = AppState::default();
+        commit_test_line(&mut state);
+        let scene = build_scene_for_doc(&state);
+        let strokes =
+            count_opaque_stroke_vertices(&scene, ViewportPalette::default().rect_line);
+        assert!(
+            strokes > 0,
+            "a solid line should render with the shared rect/circle/line stroke color"
         );
     }
 
@@ -3099,6 +3124,83 @@ mod tests {
                 .iter()
                 .any(|v| (Vec3::from(v.position) - base_vertex).length() < 1e-4),
             "non-cap vertices should be rasterized at their raw position"
+        );
+    }
+
+    #[test]
+    fn extrude_preview_to_slanted_target_plane_shows_slanted_top() {
+        // The in-progress (uncommitted) ghost preview should show the actual slanted shape
+        // once the gizmo has snapped to a slanted target plane, not a generic blind/
+        // rectangular extrude (#63).
+        let mut state = AppState::default();
+        commit_test_rectangle(&mut state);
+        let sketch = state.doc.rects[0].sketch;
+
+        let plane_origin = Vec3::new(0.0, 0.0, 12.0);
+        let plane_normal = Vec3::new(0.0, 0.4, 1.0).normalize();
+        let mut slanted = crate::face::default_xy_plane();
+        slanted.origin = plane_origin;
+        slanted.normal = plane_normal;
+        state.doc.construction_planes.push(slanted);
+
+        let preview = crate::model::Extrusion {
+            sketch,
+            faces: vec![crate::model::ExtrudeFace::Rect(0)],
+            distance: 6.0,
+            target: Some(crate::model::ExtrudeTarget::Plane(1)),
+            expression: String::new(),
+            name: None,
+            deleted: false,
+        };
+
+        let cam = state.cam.clone();
+        let scene = ViewportScene::build(&ViewportSceneInput {
+            doc: &state.doc,
+            cam: &cam,
+            viewport: test_viewport(),
+            palette: ViewportPalette::default(),
+            sketch_session: None,
+            selection: &state.scene_selection,
+            element_visibility: &state.element_visibility,
+            preview_rect: None,
+            preview_line: None,
+            preview_circle: None,
+            preview_extrusion: Some(preview.clone()),
+            editing_extrusion: None,
+            plane_preview: None,
+            active_sketch_face: None,
+            dimension_labels: &[],
+            dim_label_view: None,
+            plane_gizmo: None,
+            extrude_gizmo: None,
+            hover_highlight: None,
+            hover_color: Color32::WHITE,
+            document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
+        });
+
+        let raw = crate::extrude::extrusion_mesh(&state.doc, &preview).unwrap();
+        let cap_heights: Vec<f32> = raw
+            .triangles
+            .iter()
+            .flat_map(|t| t.iter())
+            .filter(|p| ((**p - plane_origin).dot(plane_normal)).abs() < 1e-3)
+            .map(|p| p.z)
+            .collect();
+        let zmin = cap_heights.iter().cloned().fold(f32::MAX, f32::min);
+        let zmax = cap_heights.iter().cloned().fold(f32::MIN, f32::max);
+        assert!(
+            zmax - zmin > 1.0,
+            "expected the raw preview mesh itself to be slanted, spread {}",
+            zmax - zmin
+        );
+
+        // The preview's solid triangles were actually rasterized into the scene (not skipped
+        // or substituted with a non-slanted placeholder).
+        assert!(
+            scene.vertices.len() >= raw.triangles.len() * 3,
+            "expected the slanted preview solid's triangles in the rasterized scene"
         );
     }
 
@@ -3423,12 +3525,12 @@ mod tests {
         let unselected_base = count_indices_with_color(
             &unselected,
             &unselected.indices,
-            palette.line_stroke,
+            palette.rect_line,
         );
         let selected_base = count_indices_with_color(
             &selected_scene,
             &selected_scene.indices,
-            palette.line_stroke,
+            palette.rect_line,
         );
         let selected_highlight = count_indices_with_color(
             &selected_scene,

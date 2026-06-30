@@ -1353,8 +1353,22 @@ impl AppState {
                         undone = true;
                     }
                     Some(ShapeKind::Body) => {
-                        self.doc.bodies.pop();
-                        self.status = "Undid last body".to_string();
+                        let body = self.doc.bodies.pop();
+                        // A body is always created in lockstep with the extrusion that
+                        // produced it (CreateExtrusion/CommitExtrusion push Extrusion then
+                        // Body together), so undo must remove both as one step, not just
+                        // the body (#64).
+                        let crate::model::BodySource::Extrusion(ei) =
+                            body.map(|b| b.source).unwrap_or(crate::model::BodySource::Extrusion(usize::MAX));
+                        if self.doc.shape_order.last() == Some(&ShapeKind::Extrusion)
+                            && ei == self.doc.extrusions.len().wrapping_sub(1)
+                        {
+                            self.doc.shape_order.pop();
+                            self.doc.extrusions.pop();
+                            self.status = "Undid last extrusion".to_string();
+                        } else {
+                            self.status = "Undid last body".to_string();
+                        }
                         undone = true;
                     }
                     Some(ShapeKind::Extrusion) => {
@@ -3682,6 +3696,38 @@ mod tests {
         state.doc.shape_order.push(ShapeKind::Line);
         state.apply(Action::UndoLast);
         assert_eq!(state.doc.lines.len(), 0);
+        assert_eq!(state.doc.rects.len(), 1);
+        state.apply(Action::UndoLast);
+        assert!(state.doc.rects.is_empty());
+    }
+
+    #[test]
+    fn undo_last_after_extrude_removes_extrusion_and_body_together() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state
+            .doc
+            .rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 10.0, 5.0));
+        state.doc.shape_order.push(ShapeKind::Rect);
+        state.apply(Action::CreateExtrusion {
+            sketch,
+            faces: vec![ExtrudeFace::Rect(0)],
+            distance: 6.0,
+        });
+        assert_eq!(state.doc.extrusions.len(), 1);
+        assert_eq!(state.doc.bodies.len(), 1);
+
+        // A single Undo should remove the whole extrude (extrusion + body), not just the
+        // body it produced (#64).
+        state.apply(Action::UndoLast);
+        assert!(
+            state.doc.extrusions.is_empty(),
+            "extrusion should be undone along with its body"
+        );
+        assert!(state.doc.bodies.is_empty());
+
+        // The rectangle the extrusion was built from is still there and undoes normally.
         assert_eq!(state.doc.rects.len(), 1);
         state.apply(Action::UndoLast);
         assert!(state.doc.rects.is_empty());
