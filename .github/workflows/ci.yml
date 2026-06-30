@@ -104,7 +104,7 @@ jobs:
             artifact: bearcad-linux-x86_64.tar.gz
           - runner: macos-latest
             os_slug: macos-aarch64
-            artifact: bearcad-macos-aarch64.dmg
+            artifact: bearcad.dmg
           - runner: windows-latest
             os_slug: windows-x86_64
             artifact: bearcad.exe
