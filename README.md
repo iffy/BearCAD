@@ -6,13 +6,11 @@
 
 Local-first, parametric CAD. Built by robots.
 
-Source: [github.com/iffy/BearCAD](https://github.com/iffy/BearCAD)
-
 ## Download
 
 | Platform | Download |
 |----------|----------|
-| macOS (Apple Silicon) | [bearcad-macos-aarch64.dmg](https://github.com/iffy/BearCAD/releases/latest/download/bearcad.dmg) |
+| macOS (Apple Silicon) | [bearcad.dmg](https://github.com/iffy/BearCAD/releases/latest/download/bearcad.dmg) |
 | Windows (x86_64) | [bearcad.exe](https://github.com/iffy/BearCAD/releases/latest/download/bearcad.exe) |
 | Linux (x86_64) | [bearcad-linux-x86_64.tar.gz](https://github.com/iffy/BearCAD/releases/latest/download/bearcad-linux-x86_64.tar.gz) |
 
