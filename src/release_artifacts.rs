@@ -24,6 +24,23 @@ mod tests {
     }
 
     #[test]
+    fn ci_publishes_draft_releases_and_prunes_old_drafts() {
+        let workflow = include_str!("../.github/workflows/ci.yml");
+        assert!(
+            workflow.contains("draft: true"),
+            "CI should publish draft releases"
+        );
+        assert!(
+            workflow.contains("prerelease: false"),
+            "CI releases should not be pre-releases"
+        );
+        assert!(
+            workflow.contains("prune-draft-releases.sh 2"),
+            "CI should keep only the two newest draft releases"
+        );
+    }
+
+    #[test]
     fn readme_links_to_github_repo() {
         let readme = include_str!("../README.md");
         assert!(
