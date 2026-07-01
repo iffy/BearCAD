@@ -38,7 +38,9 @@ Select's picks feed directly into other tools and panes:
 - The Elements pane, Context pane, and Parameters table all react to the current selection.
 - The Elements pane has three view modes, toggled via icon buttons next to its heading: **List**
   (flat, the default), **Tree** (nested, each level indented under its parent), and **Graph** (a
-  2D node-link diagram). In Graph view, clicking a node selects it like any other row, and
+  2D node-link diagram with a **force-directed layout**: nodes settle into depth-ordered layers
+  that flow top-to-bottom, bouncing until they come to rest, while staying within the pane
+  width). In Graph view, clicking a node selects it like any other row, and
   selecting a node highlights its ancestor/descendant nodes and edges.
 
 ## Scripting

@@ -80,9 +80,10 @@ cargo test
 ## Building with the OCCT kernel
 
 BearCAD's real BREP geometry kernel is [OpenCASCADE (OCCT)](https://dev.opencascade.org/),
-linked in behind the **`occt`** Cargo feature. The feature is **off by default** —
-the standard `cargo build` / `cargo test` above need no C++ toolchain and no OCCT,
-so day-to-day development and CI are unaffected. Build with the kernel like this:
+behind the **`occt`** Cargo feature, which is **on by default** — solid
+booleans/cut, true BREP fillets/chamfers, and curved-surface STEP all come from the
+kernel. So the default `cargo build` / `cargo run` needs a C++ toolchain and a built
+OCCT; set that up once:
 
 ```sh
 # 1. Fetch the pinned OCCT source (once):
@@ -91,13 +92,26 @@ git submodule update --init --depth 1 third_party/OCCT
 # 2. Build OCCT as static libraries (needs cmake + a C++17 compiler; takes a while):
 scripts/build-occt.sh
 
-# 3. Build/run BearCAD with the kernel linked in:
-cargo run --features occt
+# 3. Build/run BearCAD (the default build links the kernel):
+cargo run
 ```
 
-`scripts/build-occt.sh` builds only the modeling toolkits (no visualization or
-data-exchange modules) into `third_party/OCCT/occt-install`, which `build.rs`
-statically links against.
+`scripts/build-occt.sh` builds the modeling toolkits plus DataExchange (for STEP
+read/write) — no visualization, application-framework, or Draw modules — into
+`third_party/OCCT/occt-install`, which `build.rs` statically links against.
+
+### Building without the kernel
+
+To build the lean fallback — **no C++ toolchain, no OCCT** — disable the default
+feature:
+
+```sh
+cargo run --no-default-features
+```
+
+This is what the Windows release and the fast CI check build. The kernel-only
+features fall back to hand-rolled mesh geometry (or are hidden, e.g. extrude Cut),
+but the app is otherwise fully functional.
 
 ### Recompiling against a different OCCT version
 
@@ -107,13 +121,29 @@ so, point the **`OCCT_DIR`** environment variable at any OCCT install prefix —
 containing `include/opencascade/*.hxx` and `lib/libTK*.a` — and rebuild:
 
 ```sh
-OCCT_DIR=/path/to/your/occt-install cargo build --features occt
+OCCT_DIR=/path/to/your/occt-install cargo build
 ```
 
 When `OCCT_DIR` is set it takes precedence over the bundled submodule build, so
 you can swap in your own OCCT (from Homebrew, a distro package, or a custom build)
 without touching BearCAD's source. See
 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) for the full licensing story.
+
+### Kernel in CI and releases
+
+CI (`.github/workflows/ci.yml`) has a dedicated `occt` job that builds OCCT once
+(cached on the pinned submodule + build script, so it's restored rather than
+rebuilt on later runs) and runs the kernel test suite, so kernel regressions are
+caught on every push/PR. The `ci` job separately builds/tests the
+`--no-default-features` (no-kernel fallback) configuration — fast, no OCCT — so
+both code paths stay green.
+
+The **macOS and Linux release binaries ship with the kernel** (the default build).
+**Windows currently ships the no-kernel fallback build** (`--no-default-features`)
+— a static OCCT/MSVC build isn't wired up yet (see issue #89), so on Windows the
+kernel-only features (real BREP fillets/chamfers, solid booleans/cut,
+curved-surface STEP) fall back to hand-rolled mesh geometry (or are hidden) until
+that lands.
 
 ## Script quickstart
 

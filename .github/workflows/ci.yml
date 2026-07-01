@@ -53,18 +53,22 @@ jobs:
             libgtk-3-dev \
             xvfb
 
-      - name: cargo test
+      # This job checks the lean no-kernel (fallback) build — `occt` is a default
+      # feature now (#89), so `--no-default-features` builds without OCCT / a C++
+      # toolchain, keeping this check fast. The kernel build is covered by the
+      # `occt` job below.
+      - name: cargo test (no kernel)
         run: |
           if [[ "${{ steps.cargo-cache.outputs.cache-hit }}" == "true" ]]; then
             echo "Cargo cache hit — dependency artifacts restored."
           else
             echo "Cargo cache miss — compiling dependencies (~2 min on a cold runner)."
           fi
-          cargo test
+          cargo test --no-default-features
 
       # cargo test builds a test harness, not target/debug/bearcad — needed for smoke/scripts.
-      - name: cargo build
-        run: cargo build
+      - name: cargo build (no kernel)
+        run: cargo build --no-default-features
 
       - name: Launch smoke test
         run: |
@@ -92,22 +96,106 @@ jobs:
             xvfb-run -a ./target/debug/bearcad --script "$script" --exit
           done
 
+  # Builds BearCAD with the statically-linked OpenCASCADE kernel (#86/#89). The
+  # OCCT build is expensive, so it's cached on the pinned submodule + build-script
+  # hash — after the first cold run it's restored, not rebuilt. Linux only here;
+  # the macOS OCCT path (-dead_strip) is exercised by the macOS release build.
+  occt:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # Submodules are fetched only on an OCCT cache miss (below), to avoid the
+        # large OCCT clone on every run.
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: occt-linux
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            libx11-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-0 \
+            libwayland-dev \
+            libssl-dev \
+            libvulkan-dev \
+            mesa-vulkan-drivers \
+            libgtk-3-dev \
+            xvfb
+
+      - name: Cache OCCT static build
+        id: occt-cache
+        uses: actions/cache@v4
+        with:
+          # build.rs resolves OCCT from this prefix by default (or $OCCT_DIR).
+          path: third_party/OCCT/occt-install
+          # Bump the version segment when the OCCT submodule commit changes.
+          key: occt-install-${{ runner.os }}-v8.0.0-${{ hashFiles('scripts/build-occt.sh') }}
+
+      - name: Build OCCT (cache miss only)
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        run: |
+          git submodule update --init --depth 1 third_party/OCCT
+          scripts/build-occt.sh
+
+      - name: cargo test (occt)
+        run: cargo test --features occt
+
+      - name: cargo build (occt)
+        run: cargo build --features occt
+
+      - name: Launch smoke test (occt)
+        run: |
+          set +e
+          timeout 15 xvfb-run -a ./target/debug/bearcad --exit --timeout 10
+          code=$?
+          set -e
+          if [[ $code -eq 0 || $code -eq 124 ]]; then
+            echo "occt build launched successfully (exit code $code)."
+          else
+            echo "occt build failed to launch (exit code $code)." >&2
+            exit "$code"
+          fi
+
   build-release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    needs: ci
+    needs: [ci, occt]
     strategy:
       fail-fast: false
       matrix:
+        # `kernel` selects whether the shipped binary links the OCCT kernel.
+        # macOS/Linux ship with it (the default build); Windows lags (no clean
+        # static OCCT/MSVC build yet — see #89) and ships the no-kernel fallback
+        # build via --no-default-features.
         include:
           - runner: ubuntu-latest
             os_slug: linux-x86_64
             artifact: bearcad-linux-x86_64.tar.gz
+            kernel: true
+            cargo_flags: ""
           - runner: macos-latest
             os_slug: macos-aarch64
             artifact: bearcad.dmg
+            kernel: true
+            cargo_flags: ""
           - runner: windows-latest
             os_slug: windows-x86_64
             artifact: bearcad.exe
+            kernel: false
+            cargo_flags: "--no-default-features"
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
@@ -127,6 +215,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            build-essential \
+            cmake \
             libx11-dev \
             libxcb-render0-dev \
             libxcb-shape0-dev \
@@ -139,8 +229,26 @@ jobs:
             mesa-vulkan-drivers \
             libgtk-3-dev
 
+      # OCCT kernel for the platforms that ship it (macOS/Linux). Cached on the
+      # pinned submodule + build script, matching the `occt` CI job's key so Linux
+      # reuses the same build. Windows (kernel == false) skips all of this.
+      - name: Cache OCCT static build
+        if: matrix.kernel
+        id: occt-cache
+        uses: actions/cache@v4
+        with:
+          path: third_party/OCCT/occt-install
+          key: occt-install-${{ runner.os }}-v8.0.0-${{ hashFiles('scripts/build-occt.sh') }}
+
+      - name: Build OCCT (cache miss only)
+        if: matrix.kernel && steps.occt-cache.outputs.cache-hit != 'true'
+        run: |
+          git submodule update --init --depth 1 third_party/OCCT
+          scripts/build-occt.sh
+
+      # macOS/Linux use the default build (occt); Windows passes --no-default-features.
       - name: cargo build --release
-        run: cargo build --release
+        run: cargo build --release ${{ matrix.cargo_flags }}
 
       - name: Package Linux release
         if: matrix.os_slug == 'linux-x86_64'

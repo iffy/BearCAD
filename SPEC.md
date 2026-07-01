@@ -781,6 +781,19 @@ explicit exception that lets us drive "mouse/keyboard" flows for testing purpose
 - Kernel errors must be converted into typed Rust errors attached to the failing DAG node —
   the shim catches OCCT C++ exceptions at the boundary and returns error sentinels rather than
   unwinding across FFI.
+- **Default feature + CI/release wiring** (#89): `occt` is **on by default**, so the normal
+  `cargo build`/`cargo run` ships the kernel (the default `cargo build` therefore needs a C++
+  toolchain + a built OCCT). The lean no-kernel fallback builds with `--no-default-features`.
+  A dedicated CI job builds OCCT once (cached on the pinned submodule + build-script hash) and
+  runs the default (kernel) test suite; the `ci` job separately tests `--no-default-features`,
+  so both paths stay green. **macOS and Linux release binaries ship with the kernel** (default
+  build); **Windows lags** — a static OCCT/MSVC build isn't wired up yet, so Windows ships the
+  `--no-default-features` fallback build for now.
+- **Migration status**: extrusions (prism/loft), multi-body union, solid booleans (incl.
+  extrude cut), 3D edge fillet/chamfer, and STEP I/O are switched onto OCCT in `occt` builds,
+  each with a hand-rolled fallback retained for the no-kernel build and for cases OCCT doesn't
+  yet cover (multi-face profiles, imported meshes). The fallbacks are **not** removed until the
+  kernel is the shipping default on all platforms (blocked on Windows, above).
 
 ---
 
@@ -841,9 +854,13 @@ explicit exception that lets us drive "mouse/keyboard" flows for testing purpose
 - **Elements pane view modes (#34):** three icon-toggle buttons next to the pane heading switch
   between **List** (the default flat, topologically-sorted view), **Tree** (the real nested
   hierarchy, each level indented farther than its parent — planes/sketches/extrusions/bodies
-  nest exactly as the Document root tree does, #87), and **Graph** (a 2D node-link diagram:
-  column = tree depth, row = position within that column, width-constrained to the pane so it
-  never scrolls horizontally, only vertically). Clicking a node in Graph view selects it like any
+  nest exactly as the Document root tree does, #87), and **Graph** (a 2D node-link diagram
+  laid out by a **force-directed simulation (#94)**: nodes are pulled into depth-ordered
+  horizontal layers so the graph flows top-to-bottom — "somewhat vertical" — while pairwise
+  repulsion and parent↔child springs spread siblings sideways; the layout animates each frame
+  ("bounces") until its kinetic energy decays and it settles, then stops repainting. x is
+  contained to the pane width so it never scrolls horizontally, only vertically; the seed
+  layout is deterministic (reproducible across runs, no RNG)). Clicking a node in Graph view selects it like any
   other row; selecting a node highlights its ancestor and descendant nodes/edges with a distinct
   accent color/stroke. This is a per-session UI preference, not saved with the document.
 

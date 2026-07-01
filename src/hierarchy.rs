@@ -323,6 +323,196 @@ pub fn graph_related_nodes(tree: &[HierarchyEntry], selected: HierarchyNode) -> 
     related
 }
 
+/// Persistent physics state for the Graph view's force-directed layout (#94). Held on `App`
+/// (never persisted to disk — a purely ephemeral view state, like [`HierarchyViewMode`]) and
+/// threaded into [`show_graph_view`], so node positions/velocities carry across frames and the
+/// simulation can animate ("bounce around") until it settles. Coordinates are layout-local:
+/// x is contained to the pane width, y flows top-to-bottom by tree depth.
+#[derive(Default)]
+pub struct GraphLayout {
+    nodes: HashMap<HierarchyNode, GraphNodeState>,
+}
+
+/// One node's live physics state in [`GraphLayout`]: current position and velocity.
+#[derive(Clone, Copy, Debug)]
+struct GraphNodeState {
+    pos: egui::Vec2,
+    vel: egui::Vec2,
+}
+
+/// Vertical spacing between successive tree depths — the "somewhat vertical" target the
+/// layering force pulls each node toward (parents above children, flow top-to-bottom, #94).
+const LAYER_HEIGHT: f32 = 64.0;
+/// Horizontal inset kept clear at each side of the pane; x is soft-restored and hard-clamped
+/// into `[MARGIN, width - MARGIN]` so the graph never exceeds the pane width (#34).
+const GRAPH_MARGIN: f32 = 18.0;
+
+/// Deterministic horizontal seed for a freshly-inserted node, derived purely from the node's
+/// identity (no `rand`, so layout is reproducible across runs and in tests). Spreads new nodes
+/// across the pane width so the simulation starts un-coincident.
+fn seed_x(node: HierarchyNode, width: f32) -> f32 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    node.hash(&mut hasher);
+    let frac = (hasher.finish() % 10_000) as f32 / 10_000.0;
+    let lo = GRAPH_MARGIN;
+    let hi = (width - GRAPH_MARGIN).max(GRAPH_MARGIN + 1.0);
+    lo + frac * (hi - lo)
+}
+
+/// Advance the force-directed layout one integration step (semi-implicit Euler) and return the
+/// total kinetic energy (Σ‖vel‖²) — a pure, `egui`-painting-free function so the physics is
+/// directly unit-testable (settle, containment, vertical ordering, determinism). `edges` are
+/// `(child, parent)` pairs; `depth_of` gives each node's tree depth; `width` is the pane width
+/// the x coordinate is contained to.
+///
+/// Forces: a vertical layering spring pulling `y` toward `depth * LAYER_HEIGHT`; pairwise
+/// inverse-square repulsion (min-distance/max-force capped) spreading siblings sideways;
+/// parent↔child edge springs toward a rest length; a soft horizontal-containment restoring
+/// force; and per-step velocity damping so it settles rather than oscillating forever.
+fn step_graph_layout(
+    nodes: &mut HashMap<HierarchyNode, GraphNodeState>,
+    edges: &[(HierarchyNode, HierarchyNode)],
+    depth_of: &HashMap<HierarchyNode, usize>,
+    width: f32,
+    dt: f32,
+) -> f32 {
+    const LAYER_STIFFNESS: f32 = 10.0;
+    const REPULSION: f32 = 5000.0;
+    const MIN_DIST: f32 = 6.0;
+    const MAX_REPULSION_FORCE: f32 = 2000.0;
+    const EDGE_SPRING_K: f32 = 7.0;
+    const EDGE_REST_LENGTH: f32 = 58.0;
+    const CONTAIN_STIFFNESS: f32 = 14.0;
+    const DAMPING: f32 = 0.86;
+
+    // Iterate a sorted key list (not the HashMap's arbitrary order) so force accumulation is
+    // order-independent and thus bit-for-bit deterministic across runs.
+    let mut keys: Vec<HierarchyNode> = nodes.keys().copied().collect();
+    keys.sort();
+    let index_of: HashMap<HierarchyNode, usize> =
+        keys.iter().enumerate().map(|(i, n)| (*n, i)).collect();
+    let mut forces = vec![egui::Vec2::ZERO; keys.len()];
+
+    // Vertical layering spring: pull y toward the node's depth band.
+    for (i, node) in keys.iter().enumerate() {
+        let target_y = *depth_of.get(node).unwrap_or(&0) as f32 * LAYER_HEIGHT;
+        let y = nodes[node].pos.y;
+        forces[i].y += LAYER_STIFFNESS * (target_y - y);
+    }
+
+    // Pairwise repulsion (inverse-square, min-distance and max-force capped).
+    for a in 0..keys.len() {
+        for b in (a + 1)..keys.len() {
+            let pa = nodes[&keys[a]].pos;
+            let pb = nodes[&keys[b]].pos;
+            let mut delta = pa - pb;
+            let mut dist = delta.length();
+            if dist < MIN_DIST {
+                // Coincident (or nearly): shove apart along a deterministic axis to avoid a
+                // divide-by-zero / NaN blowup.
+                if dist < 1e-4 {
+                    delta = egui::vec2(1.0, 0.0);
+                    dist = 1.0;
+                }
+                dist = dist.max(MIN_DIST);
+            }
+            let dir = delta / dist;
+            let mag = (REPULSION / (dist * dist)).min(MAX_REPULSION_FORCE);
+            let f = dir * mag;
+            forces[a] += f;
+            forces[b] -= f;
+        }
+    }
+
+    // Edge springs (parent↔child attraction toward a rest length).
+    for (child, parent) in edges {
+        let (Some(&ci), Some(&pi)) = (index_of.get(child), index_of.get(parent)) else {
+            continue;
+        };
+        let delta = nodes[child].pos - nodes[parent].pos;
+        let dist = delta.length().max(MIN_DIST);
+        let dir = delta / dist;
+        let f = dir * (-EDGE_SPRING_K * (dist - EDGE_REST_LENGTH));
+        forces[ci] += f;
+        forces[pi] -= f;
+    }
+
+    // Horizontal soft-containment restoring force.
+    let lo = GRAPH_MARGIN;
+    let hi = (width - GRAPH_MARGIN).max(lo);
+    for (i, node) in keys.iter().enumerate() {
+        let x = nodes[node].pos.x;
+        if x < lo {
+            forces[i].x += CONTAIN_STIFFNESS * (lo - x);
+        } else if x > hi {
+            forces[i].x += CONTAIN_STIFFNESS * (hi - x);
+        }
+    }
+
+    // Integrate: vel += force*dt; vel *= damping; pos += vel*dt; then hard-clamp x.
+    let mut kinetic = 0.0;
+    for (i, node) in keys.iter().enumerate() {
+        let state = nodes.get_mut(node).expect("key came from this map");
+        let mut force = forces[i];
+        if !force.x.is_finite() {
+            force.x = 0.0;
+        }
+        if !force.y.is_finite() {
+            force.y = 0.0;
+        }
+        state.vel += force * dt;
+        state.vel *= DAMPING;
+        state.pos += state.vel * dt;
+        state.pos.x = state.pos.x.clamp(lo, hi);
+        if !state.pos.x.is_finite() {
+            state.pos.x = lo;
+        }
+        if !state.pos.y.is_finite() {
+            state.pos.y = 0.0;
+        }
+        kinetic += state.vel.length_sq();
+    }
+    kinetic
+}
+
+impl GraphLayout {
+    /// Sync the live node set to `positions` (seed newly-appeared nodes deterministically,
+    /// drop departed ones), then advance the simulation `substeps` times, returning the final
+    /// kinetic energy for settle detection.
+    fn sync_and_step(
+        &mut self,
+        positions: &[GraphNodePosition],
+        width: f32,
+        substeps: u32,
+        dt: f32,
+    ) -> f32 {
+        let present: HashSet<HierarchyNode> = positions.iter().map(|p| p.node).collect();
+        self.nodes.retain(|node, _| present.contains(node));
+        let depth_of: HashMap<HierarchyNode, usize> =
+            positions.iter().map(|p| (p.node, p.depth)).collect();
+        for p in positions {
+            self.nodes.entry(p.node).or_insert_with(|| GraphNodeState {
+                pos: egui::vec2(seed_x(p.node, width), p.depth as f32 * LAYER_HEIGHT),
+                vel: egui::Vec2::ZERO,
+            });
+        }
+        let edges: Vec<(HierarchyNode, HierarchyNode)> = positions
+            .iter()
+            .filter_map(|p| p.parent.map(|parent| (p.node, parent)))
+            .collect();
+        let mut kinetic = 0.0;
+        for _ in 0..substeps.max(1) {
+            kinetic = step_graph_layout(&mut self.nodes, &edges, &depth_of, width, dt);
+        }
+        kinetic
+    }
+
+    fn pos_of(&self, node: HierarchyNode) -> Option<egui::Vec2> {
+        self.nodes.get(&node).map(|s| s.pos)
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct CreationRanks {
     sketches: HashMap<SketchId, usize>,
@@ -1168,6 +1358,7 @@ pub fn show_pane(
     selection: &SceneSelection,
     health: &DocumentHealth,
     view_mode: &mut HierarchyViewMode,
+    graph_layout: &mut GraphLayout,
     on_edit_sketch: &mut impl FnMut(SketchId),
     on_edit_plane: &mut impl FnMut(usize),
     on_edit_extrusion: &mut impl FnMut(usize),
@@ -1258,6 +1449,7 @@ pub fn show_pane(
                 ui,
                 doc,
                 &tree,
+                graph_layout,
                 selection,
                 health,
                 &context,
@@ -1342,14 +1534,17 @@ fn show_tree_entries(
 /// [`icon_tint_for_row_style`] for consistency with the List/Tree views).
 const GRAPH_RELATED_EDGE: Color32 = Color32::from_rgb(120, 200, 255);
 
-/// Render the graph-node view: a 2D node-link diagram laid out by [`graph_node_positions`]
-/// (column = depth, row = position within that column), constrained to the pane's width and
-/// scrollable vertically (#34).
+/// Render the graph-node view: a force-directed node-link diagram (#94). Nodes are pulled into
+/// depth-ordered horizontal layers (so the graph flows top-to-bottom, "somewhat vertical"),
+/// repelled from one another, and joined by parent↔child springs; the simulation animates each
+/// frame ("bounce around") until its kinetic energy decays below a threshold, then settles and
+/// stops requesting repaints. x is contained to the pane width; height scrolls vertically (#34).
 #[allow(clippy::too_many_arguments)]
 fn show_graph_view(
     ui: &mut egui::Ui,
     doc: &Document,
     tree: &[HierarchyEntry],
+    graph_layout: &mut GraphLayout,
     selection: &SceneSelection,
     health: &DocumentHealth,
     context: &HashSet<SceneElement>,
@@ -1362,11 +1557,16 @@ fn show_graph_view(
         return;
     }
 
-    let max_depth = positions.iter().map(|p| p.depth).max().unwrap_or(0);
-    let max_row = positions.iter().map(|p| p.row).max().unwrap_or(0);
-    const COLUMN_MIN: f32 = 90.0;
-    const ROW_HEIGHT: f32 = 40.0;
     const NODE_RADIUS: f32 = 9.0;
+    const TOP_PADDING: f32 = 24.0;
+    const BOTTOM_PADDING: f32 = 24.0;
+    // Per-frame integration: a handful of small substeps keeps the sim stable while settling
+    // within a second or so of wall-clock animation.
+    const SUBSTEPS: u32 = 6;
+    const DT: f32 = 0.16;
+    // Below this total kinetic energy the layout is considered settled; stop animating so an
+    // idle pane doesn't busy-repaint.
+    const SETTLE_KE: f32 = 0.05;
 
     // Nodes matching the current selection, plus their tree ancestors/descendants (#34): the
     // set of related nodes whose edges/fills get the bold accent.
@@ -1382,10 +1582,21 @@ fn show_graph_view(
     // `selection_styles_visible_list` uses for the List/Tree rows.
     let style_selection = !selection.is_empty();
 
-    let available_width = ui.available_width().max(COLUMN_MIN);
-    let column_width = (available_width / (max_depth as f32 + 1.0)).max(COLUMN_MIN);
-    let content_width = column_width * (max_depth as f32 + 1.0);
-    let content_height = (max_row as f32 + 1.0) * ROW_HEIGHT + ROW_HEIGHT;
+    let available_width = ui.available_width().max(2.0 * GRAPH_MARGIN + 1.0);
+
+    // Advance the physics, then keep animating until it settles.
+    let kinetic = graph_layout.sync_and_step(&positions, available_width, SUBSTEPS, DT);
+    if kinetic > SETTLE_KE {
+        ui.ctx().request_repaint();
+    }
+
+    // Content height from the current simulated y-extent so tall graphs scroll (#34).
+    let max_y = positions
+        .iter()
+        .filter_map(|p| graph_layout.pos_of(p.node).map(|v| v.y))
+        .fold(0.0_f32, f32::max);
+    let content_width = available_width;
+    let content_height = max_y + TOP_PADDING + BOTTOM_PADDING + NODE_RADIUS;
 
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -1394,19 +1605,14 @@ fn show_graph_view(
                 ui.allocate_exact_size(egui::vec2(content_width, content_height), egui::Sense::hover());
             let painter = ui.painter_at(rect);
 
-            let pos_of = |p: &GraphNodePosition| -> egui::Pos2 {
-                egui::pos2(
-                    rect.left() + (p.column as f32 + 0.5) * column_width,
-                    rect.top() + (p.row as f32 + 0.5) * ROW_HEIGHT + ROW_HEIGHT * 0.5,
-                )
+            let pos_of = |node: HierarchyNode| -> egui::Pos2 {
+                let local = graph_layout.pos_of(node).unwrap_or(egui::Vec2::ZERO);
+                egui::pos2(rect.left() + local.x, rect.top() + TOP_PADDING + local.y)
             };
-            let by_node: HashMap<HierarchyNode, &GraphNodePosition> =
-                positions.iter().map(|p| (p.node, p)).collect();
 
             // Edges first, so node dots paint over the line endpoints.
             for position in &positions {
                 let Some(parent) = position.parent else { continue };
-                let Some(parent_position) = by_node.get(&parent) else { continue };
                 let highlighted =
                     related_nodes.contains(&position.node) && related_nodes.contains(&parent);
                 let stroke = if highlighted {
@@ -1414,11 +1620,11 @@ fn show_graph_view(
                 } else {
                     egui::Stroke::new(1.0, Color32::from_gray(110))
                 };
-                painter.line_segment([pos_of(parent_position), pos_of(position)], stroke);
+                painter.line_segment([pos_of(parent), pos_of(position.node)], stroke);
             }
 
             for position in &positions {
-                let center = pos_of(position);
+                let center = pos_of(position.node);
                 let element = scene_element_for_node(position.node);
                 let style = element.clone().map(|el| {
                     row_style(
@@ -1460,7 +1666,9 @@ fn show_graph_view(
                 painter.circle_stroke(center, NODE_RADIUS, egui::Stroke::new(1.0, Color32::from_gray(30)));
 
                 let label = node_label(doc, position.node);
-                let max_label_width = (column_width - NODE_RADIUS * 2.0 - 10.0).max(20.0);
+                // Keep the label inside the pane's right edge (#34).
+                let max_label_width =
+                    (rect.right() - (center.x + NODE_RADIUS + 4.0) - 4.0).max(20.0);
                 let truncated = truncate_label(&label, max_label_width, &painter);
                 painter.text(
                     center + egui::vec2(NODE_RADIUS + 4.0, 0.0),
@@ -2569,5 +2777,98 @@ mod tests {
     #[test]
     fn hierarchy_view_mode_defaults_to_list() {
         assert_eq!(HierarchyViewMode::default(), HierarchyViewMode::List);
+    }
+
+    /// Drive the force layout to rest and return the final state, using the same fixture as the
+    /// static-layout tests (plane → sketch → rect + extrusion → body).
+    fn settle_graph_layout(width: f32, steps: u32) -> (GraphLayout, Vec<GraphNodePosition>) {
+        let (doc, sketch) = doc_with_plane_sketch_rect_and_extrusion();
+        let tree = build_hierarchy(&doc, Some(SketchSession { sketch }));
+        let positions = graph_node_positions(&tree);
+        let mut layout = GraphLayout::default();
+        // First call seeds all nodes; subsequent calls just step.
+        for _ in 0..steps {
+            layout.sync_and_step(&positions, width, 1, 0.16);
+        }
+        (layout, positions)
+    }
+
+    #[test]
+    fn force_layout_settles_stays_contained_and_flows_top_to_bottom() {
+        let width = 300.0;
+        let (layout, positions) = settle_graph_layout(width, 4000);
+
+        // Kinetic energy has decayed toward zero — the sim settled rather than oscillating.
+        let depth_of: HashMap<HierarchyNode, usize> =
+            positions.iter().map(|p| (p.node, p.depth)).collect();
+        let edges: Vec<(HierarchyNode, HierarchyNode)> = positions
+            .iter()
+            .filter_map(|p| p.parent.map(|parent| (p.node, parent)))
+            .collect();
+        let mut nodes = layout.nodes.clone();
+        let ke = step_graph_layout(&mut nodes, &edges, &depth_of, width, 0.16);
+        assert!(ke < 1e-2, "layout should settle, residual KE = {ke}");
+
+        for p in &positions {
+            let pos = layout.pos_of(p.node).expect("node has a settled position");
+            assert!(pos.x.is_finite() && pos.y.is_finite(), "finite pos for {:?}: {pos:?}", p.node);
+            assert!(
+                (0.0..=width).contains(&pos.x),
+                "x contained to pane for {:?}: {}",
+                p.node,
+                pos.x
+            );
+        }
+
+        // Vertical-layering invariant: every parent settles strictly above (smaller y than)
+        // each of its children.
+        for p in &positions {
+            let Some(parent) = p.parent else { continue };
+            let child_y = layout.pos_of(p.node).unwrap().y;
+            let parent_y = layout.pos_of(parent).unwrap().y;
+            assert!(
+                parent_y < child_y,
+                "parent {parent:?} (y={parent_y}) must sit above child {:?} (y={child_y})",
+                p.node
+            );
+        }
+    }
+
+    #[test]
+    fn force_layout_is_deterministic() {
+        let width = 320.0;
+        let (a, positions) = settle_graph_layout(width, 1500);
+        let (b, _) = settle_graph_layout(width, 1500);
+        for p in &positions {
+            let pa = a.pos_of(p.node).unwrap();
+            let pb = b.pos_of(p.node).unwrap();
+            assert!(
+                (pa.x - pb.x).abs() < 1e-4 && (pa.y - pb.y).abs() < 1e-4,
+                "same seed must give same settled position for {:?}: {pa:?} vs {pb:?}",
+                p.node
+            );
+        }
+    }
+
+    #[test]
+    fn force_layout_syncs_added_and_removed_nodes() {
+        let (doc, sketch) = doc_with_plane_sketch_rect_and_extrusion();
+        let tree = build_hierarchy(&doc, Some(SketchSession { sketch }));
+        let positions = graph_node_positions(&tree);
+        let mut layout = GraphLayout::default();
+        layout.sync_and_step(&positions, 300.0, 1, 0.16);
+        assert_eq!(layout.nodes.len(), positions.len());
+
+        // A smaller node set (just the Document root) drops the departed nodes.
+        let root_only = vec![GraphNodePosition {
+            node: HierarchyNode::Document,
+            parent: None,
+            depth: 0,
+            column: 0,
+            row: 0,
+        }];
+        layout.sync_and_step(&root_only, 300.0, 1, 0.16);
+        assert_eq!(layout.nodes.len(), 1);
+        assert!(layout.pos_of(HierarchyNode::Document).is_some());
     }
 }
