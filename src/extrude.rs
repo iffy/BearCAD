@@ -1655,6 +1655,56 @@ mod tests {
         loops[0].clone()
     }
 
+    /// Build an ellipse counter profile (matching `draw_counter` in the letter-B script): four
+    /// cubic-bezier quarter-arcs (kappa control offset) closed into one loop, centred at
+    /// (`cx`, `cy`) with radii (`rx`, `ry`) in letter coords. Returns its `ExtrudeFace::Polygon`.
+    fn push_oval_profile(
+        doc: &mut Document,
+        sketch: crate::model::SketchId,
+        cx: f32,
+        cy: f32,
+        rx: f32,
+        ry: f32,
+    ) -> ExtrudeFace {
+        use crate::model::{
+            Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, Line, LineEnd,
+        };
+        const K: f32 = 0.552_284_75;
+        let (kx, ky) = (K * rx, K * ry);
+        // (start, end, ctrl-near-start, ctrl-near-end) per quarter, CCW from +x.
+        let arcs = [
+            ((cx + rx, cy), (cx, cy + ry), (cx + rx, cy + ky), (cx + kx, cy + ry)),
+            ((cx, cy + ry), (cx - rx, cy), (cx - kx, cy + ry), (cx - rx, cy + ky)),
+            ((cx - rx, cy), (cx, cy - ry), (cx - rx, cy - ky), (cx - kx, cy - ry)),
+            ((cx, cy - ry), (cx + rx, cy), (cx + kx, cy - ry), (cx + rx, cy - ky)),
+        ];
+        let base = doc.lines.len();
+        for (p0, p1, c0, c1) in arcs {
+            let mut line = Line::from_local_endpoints(sketch, p0.0, p0.1, p1.0, p1.1);
+            line.bezier = Some([c0, c1]);
+            doc.lines.push(line);
+        }
+        let point = |line, end| ConstraintPoint::LineEndpoint { line, end };
+        for k in 0..4 {
+            doc.constraints.push(Constraint {
+                sketch,
+                kind: ConstraintKind::Coincident {
+                    a: ConstraintEntity::Point(point(base + k, LineEnd::End)),
+                    b: ConstraintEntity::Point(point(base + (k + 1) % 4, LineEnd::Start)),
+                },
+                expression: String::new(),
+                dim_offset: None,
+                name: None,
+                deleted: false,
+            });
+        }
+        let loop_ = crate::polygon::closed_line_loops(doc, sketch)
+            .into_iter()
+            .find(|l| l.contains(&base))
+            .expect("oval counter forms a closed loop");
+        ExtrudeFace::Polygon(loop_)
+    }
+
     /// The letter-B outline extrudes to a valid solid. Kernel-agnostic (plain polygon
     /// extrusion needs no OCCT), so it must pass with and without the `occt` feature. The
     /// bezier lobes make an exact area fiddly, so this locks the docs example with robust
@@ -1703,28 +1753,27 @@ mod tests {
     /// counter holes punched clean through as **cut** extrusions (`BodySource::Solid { add,
     /// cut }`, #35). Needs the kernel for the boolean subtraction, so it's `occt`-only. The
     /// curved outer area is fiddly to compute exactly, so this isolates the holes: compare the
-    /// no-cut solid to the cut solid and assert the removed volume equals the two rectangular
-    /// holes' area × depth (the curved outer area cancels between the two).
+    /// no-cut solid to the cut solid and assert the removed volume equals the two oval
+    /// counters' area (π·rx·ry) × depth (the curved outer area cancels between the two).
     #[cfg(feature = "occt")]
     #[test]
     fn occt_letter_b_with_two_counters_cuts_to_the_expected_volume() {
-        // Counter holes inside the upper/lower bowls (letter coords: x, y, w, h) — must match
-        // upper_hole/lower_hole in docs-site/screenshots/letter-b.lua.
-        const UPPER: (f32, f32, f32, f32) = (10.0, 48.0, 26.0, 16.0);
-        const LOWER: (f32, f32, f32, f32) = (10.0, 8.0, 28.0, 16.0);
+        // Oval counters (letter coords): center (cx, cy) + radii (rx, ry) — must match
+        // upper_oval/lower_oval in docs-site/screenshots/letter-b.lua.
+        const UPPER: (f32, f32, f32, f32) = (23.0, 56.0, 13.0, 8.0);
+        const LOWER: (f32, f32, f32, f32) = (24.0, 16.0, 14.0, 8.0);
 
         let (mut doc, sketch) = sketch_doc();
-        let loop_ = push_letter_b_outline(&mut doc, sketch);
-        let outer = ExtrudeFace::Polygon(loop_);
+        let outer = ExtrudeFace::Polygon(push_letter_b_outline(&mut doc, sketch));
 
         // No-cut solid volume (curved outer × depth) — the isolation baseline.
         let outer_only = extrusion(sketch, vec![outer.clone()], LETTER_B_DEPTH);
         let outer_vol =
             mesh_signed_volume(&extrusion_mesh(&doc, &outer_only).expect("outer B mesh")).abs();
 
-        // Two hole profiles cut through the full thickness.
-        let upper = rect_profile(&mut doc, sketch, UPPER.0, UPPER.1, UPPER.2, UPPER.3);
-        let lower = rect_profile(&mut doc, sketch, LOWER.0, LOWER.1, LOWER.2, LOWER.3);
+        // Two oval counter profiles cut through the full thickness.
+        let upper = push_oval_profile(&mut doc, sketch, UPPER.0, UPPER.1, UPPER.2, UPPER.3);
+        let lower = push_oval_profile(&mut doc, sketch, LOWER.0, LOWER.1, LOWER.2, LOWER.3);
         doc.extrusions.push(extrusion(sketch, vec![outer], LETTER_B_DEPTH)); // 0: the B
         doc.extrusions.push(extrusion(sketch, vec![upper], LETTER_B_DEPTH)); // 1: upper cut
         doc.extrusions.push(extrusion(sketch, vec![lower], LETTER_B_DEPTH)); // 2: lower cut
@@ -1735,13 +1784,14 @@ mod tests {
         });
         let cut_vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("occt B mesh")).abs();
 
-        // The two cuts remove exactly their rectangular footprint × depth (fully enclosed in
-        // the bowls => clean through-holes), independent of the curved outer area.
+        // Each oval removes ≈ π·rx·ry × depth (a fine bezier ellipse, tessellated), fully
+        // enclosed in its bowl => a clean through-hole, independent of the curved outer area.
+        use std::f32::consts::PI;
         let removed = outer_vol - cut_vol;
-        let expected_removed = (UPPER.2 * UPPER.3 + LOWER.2 * LOWER.3) * LETTER_B_DEPTH; // 864*12
+        let expected_removed = (PI * UPPER.2 * UPPER.3 + PI * LOWER.2 * LOWER.3) * LETTER_B_DEPTH;
         assert!(
-            (removed - expected_removed).abs() < expected_removed * 0.02,
-            "counters removed {removed} mm^3, expected ~{expected_removed} (two holes × depth)"
+            (removed - expected_removed).abs() < expected_removed * 0.03,
+            "oval counters removed {removed} mm^3, expected ~{expected_removed} (π·rx·ry × depth)"
         );
         assert!(cut_vol > 0.0 && cut_vol < outer_vol, "cut {cut_vol}, outer {outer_vol}");
     }
