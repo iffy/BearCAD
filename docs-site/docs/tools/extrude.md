@@ -14,6 +14,12 @@ normal gizmo or type a distance — expressions and parameter references work �
 commits, **Esc** cancels; double-click or right-click → **Edit** re-opens a committed extrusion to
 change its faces or length.
 
+![An 80 × 50 mm rectangle extruded 20 mm into a solid block](/img/screenshots/extrude.png)
+
+> This image is auto-generated from
+> [`docs-site/screenshots/extrude.lua`](https://github.com/iffy/BearCAD/tree/master/docs-site/screenshots/extrude.lua).
+> See [Auto-generated screenshots](/docs/scripting/screenshots).
+
 - The gizmo handle floats a little above the solid's top face rather than sitting on it.
 - Typing a digit while the tool is active focuses the distance field and overwrites its value.
 - While an extrusion is being edited, its committed body is hidden — only the semi-transparent

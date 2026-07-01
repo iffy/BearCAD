@@ -46,6 +46,12 @@ and STL/STEP-imported meshes have no analytic edge to bevel and are out of scope
 miter**, where 3+ treated edges would meet at a shared corner, is rejected at commit time rather
 than blended.
 
+![A box with its four vertical edges rounded by a mesh-bevel fillet](/img/screenshots/fillet.png)
+
+> This image is auto-generated from
+> [`docs-site/screenshots/fillet.lua`](https://github.com/iffy/BearCAD/tree/master/docs-site/screenshots/fillet.lua).
+> See [Auto-generated screenshots](/docs/scripting/screenshots).
+
 ## Scope: 2D sketch vertices only
 
 The bezier-arc approximation, tangent-length clamping, and degenerate-corner rejection described

@@ -31,5 +31,10 @@ bearcad-*.exe
 
 # Issue monitor runtime state (scripts/bearcad-monitor.sh)
 scripts/monitor-state/
+
+# Auto-generated documentation screenshots (scripts/gen-doc-screenshots.sh).
+# These are build artifacts: regenerated locally on demand and by the Website CI
+# job before the Docusaurus build, never committed.
+/docs-site/static/img/screenshots/
 block.stl
 block.step

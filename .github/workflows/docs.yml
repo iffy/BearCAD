@@ -6,6 +6,12 @@ on:
     paths:
       - "docs-site/**"
       - ".github/workflows/docs.yml"
+      - "scripts/gen-doc-screenshots.sh"
+      # App source affects the rendered screenshots, so regenerate + redeploy the
+      # site when the geometry/UI code changes too.
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
   # Lets us trigger a rebuild manually (e.g. after enabling Pages for the first time)
   # without needing an unrelated docs-site change.
   workflow_dispatch:
@@ -20,7 +26,77 @@ permissions:
   id-token: write
 
 jobs:
+  # Build the app and render the documentation screenshots headlessly (xvfb +
+  # software Vulkan via mesa-vulkan-drivers, matching the CI smoke test). The
+  # PNGs are uploaded as a workflow artifact (so they can be downloaded to
+  # confirm rendering worked — this is the validation path) and handed to the
+  # `build` job so the deployed site includes them.
+  screenshots:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          # Reuse the OCCT CI job's cache — same (default, kernel-linked) build flags.
+          shared-key: occt-linux
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            libx11-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-0 \
+            libwayland-dev \
+            libssl-dev \
+            libvulkan-dev \
+            mesa-vulkan-drivers \
+            libgtk-3-dev \
+            xvfb
+
+      - name: Cache OCCT static build
+        id: occt-cache
+        uses: actions/cache@v4
+        with:
+          # build.rs resolves OCCT from this prefix by default (or $OCCT_DIR).
+          path: third_party/OCCT/occt-install
+          # Same key as the `occt` CI job so the kernel build is shared, not rebuilt.
+          key: occt-install-${{ runner.os }}-v8.0.0-${{ hashFiles('scripts/build-occt.sh') }}
+
+      - name: Build OCCT (cache miss only)
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        run: |
+          git submodule update --init --depth 1 third_party/OCCT
+          scripts/build-occt.sh
+
+      # Default (OCCT kernel) build: letter-b.lua punches its two counters with an
+      # OCCT boolean cut, which needs the kernel; the other screenshot scenes render
+      # under it fine too. gen-doc-screenshots.sh wraps each run in xvfb-run on Linux
+      # and fails if any expected PNG is missing.
+      - name: Generate documentation screenshots
+        run: scripts/gen-doc-screenshots.sh
+
+      - name: Upload screenshots artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: doc-screenshots
+          path: docs-site/static/img/screenshots/
+          if-no-files-found: error
+
   build:
+    needs: screenshots
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -35,6 +111,14 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: docs-site/package-lock.json
+
+      # Pull the generated PNGs into the static dir before building so the
+      # deployed site includes them (they are git-ignored build artifacts).
+      - name: Download generated screenshots
+        uses: actions/download-artifact@v5
+        with:
+          name: doc-screenshots
+          path: docs-site/static/img/screenshots
 
       - name: Install dependencies
         run: npm ci

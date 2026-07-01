@@ -1,0 +1,1 @@
+Auto-generated documentation screenshots: Lua scene scripts in docs-site/screenshots/, a scripts/gen-doc-screenshots.sh harness that renders them to docs-site/static/img/screenshots/, docs pages that embed them, and a Website CI job that regenerates + uploads them before deploy (#97).

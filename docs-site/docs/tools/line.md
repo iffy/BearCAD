@@ -22,6 +22,14 @@ on their endpoints) is itself a usable face — filled the same as a rectangle o
 pickable for sketching-on-face, and extrudable. A line shared by two loops (e.g. a rectangle
 split by a diagonal) yields multiple selectable polygon faces.
 
+![A capital letter "B", traced as a closed line-loop outline and extruded into a solid](/img/screenshots/letter-b.png)
+
+> An extruded capital **"B"** — its outer silhouette drawn segment by segment with the Line tool,
+> closed into a loop, and extruded 12 mm into a solid, then its two counters punched clean
+> through with cut extrusions. This image is auto-generated from
+> [`docs-site/screenshots/letter-b.lua`](https://github.com/iffy/BearCAD/tree/master/docs-site/screenshots/letter-b.lua).
+> See [Auto-generated screenshots](/docs/scripting/screenshots).
+
 ## Snapping
 
 While drawing, the cursor snaps to nearby vertices, line midpoints, and lines — vertices take

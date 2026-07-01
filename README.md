@@ -40,6 +40,25 @@ For a live-reloading dev server while editing:
 cd docs-site && npm run start
 ```
 
+### Documentation screenshots
+
+The screenshots in the docs are **auto-generated** from Lua scripts in
+[`docs-site/screenshots/`](docs-site/screenshots/), so they stay in sync with the app. Each script
+builds a small deterministic scene, sets a fixed camera, and captures a PNG via
+`bearcad.ui.screenshot(...)`. Regenerate them with:
+
+```sh
+scripts/gen-doc-screenshots.sh                              # build + generate all
+BEARCAD_SKIP_BUILD=1 scripts/gen-doc-screenshots.sh         # reuse an existing binary
+BEARCAD_CARGO_FLAGS="--no-default-features" scripts/gen-doc-screenshots.sh  # lean build
+```
+
+The PNGs land in `docs-site/static/img/screenshots/` (served as `/img/screenshots/<name>.png`) and
+are git-ignored build artifacts. Capturing needs a real rendered GPU frame, so run this on a machine
+with a working display/GPU, or on Linux under `xvfb` + `mesa-vulkan-drivers` (as the Website CI job
+does — it regenerates the screenshots and uploads them as a downloadable artifact before deploying).
+See [Auto-generated screenshots](docs-site/docs/scripting/screenshots.md) for details.
+
 ## Status
 
 - **GUI** with a **wgpu**-accelerated 3D viewport (orbit/pan/zoom, view cube, HUD bear).

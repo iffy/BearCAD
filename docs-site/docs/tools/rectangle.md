@@ -11,6 +11,12 @@ Draws a rectangle as four constrained lines. Click to fix the first corner, move
 position the opposite corner (a live preview follows the cursor), then click — or type width and
 height and press **Enter** — to commit.
 
+![An 80 × 50 mm rectangle on the ground plane](/img/screenshots/rectangle.png)
+
+> This image is auto-generated from
+> [`docs-site/screenshots/rectangle.lua`](https://github.com/iffy/BearCAD/tree/master/docs-site/screenshots/rectangle.lua).
+> See [Auto-generated screenshots](/docs/scripting/screenshots).
+
 - **Tab** cycles between the width and height input fields while drawing.
 - **Enter** commits the rectangle.
 - **Esc** cancels the in-progress rectangle.
