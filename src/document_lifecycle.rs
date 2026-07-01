@@ -171,18 +171,22 @@ fn tombstone_extrusion(doc: &mut Document, index: usize) -> bool {
     }
     extrusion.deleted = true;
     remove_shape_order_entry(doc, ShapeKind::Extrusion, index);
-    // The body produced by this extrusion depends on it — remove it too.
+    // A body that depends solely on this extrusion is removed with it; a body merging this
+    // extrusion with others (#32) just drops this one and keeps the rest.
     let dependent: Vec<usize> = doc
         .bodies
         .iter()
         .enumerate()
-        .filter(|(_, body)| {
-            !body.deleted && body.source == crate::model::BodySource::Extrusion(index)
-        })
+        .filter(|(_, body)| !body.deleted && body.source.owns_extrusion(index))
         .map(|(i, _)| i)
         .collect();
     for bi in dependent {
-        tombstone_body(doc, bi);
+        let solely_owned = doc.bodies[bi].source.extrusion_indices() == [index];
+        if solely_owned {
+            tombstone_body(doc, bi);
+        } else {
+            doc.bodies[bi].source.remove_extrusion(index);
+        }
     }
     true
 }

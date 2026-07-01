@@ -396,6 +396,19 @@ pub fn line_world_endpoints(doc: &Document, line: &Line) -> Option<(Vec3, Vec3)>
     ))
 }
 
+/// World-space polyline approximation of a line, sampled with
+/// [`crate::model::BEZIER_SEGMENTS`] segments for a curved line, or just its two endpoints
+/// for a straight one.
+pub fn line_world_polyline(doc: &Document, line: &Line) -> Option<Vec<Vec3>> {
+    let frame = sketch_geometry_frame(doc, line.sketch)?;
+    Some(
+        line.sample_local(crate::model::BEZIER_SEGMENTS)
+            .into_iter()
+            .map(|(u, v)| local_to_world(&frame, u, v))
+            .collect(),
+    )
+}
+
 pub fn rect_center_world(doc: &Document, rect: &Rect) -> Option<Vec3> {
     let frame = sketch_geometry_frame(doc, rect.sketch)?;
     Some(local_to_world(
@@ -882,8 +895,10 @@ fn polygon_face_pick_distance(
         return None;
     }
     let c = centroid(poly);
-    // Inside test via triangle fan from the first vertex.
-    let inside = (1..pts.len() - 1).any(|i| point_in_tri(screen, pts[0], pts[i], pts[i + 1]));
+    let normal = (poly[1] - poly[0]).cross(poly[2] - poly[0]).normalize_or_zero();
+    let inside = crate::polygon::triangulate_planar(poly, normal)
+        .into_iter()
+        .any(|[a, b, c]| point_in_tri(screen, pts[a], pts[b], pts[c]));
     if inside {
         return Some((0.0, c));
     }
@@ -1238,6 +1253,8 @@ mod tests {
             face: FaceId::ConstructionPlane(0),
             name: None,
             deleted: false,
+            length_unit: None,
+            angle_unit: None,
         });
         assert!(doc.has_children(&FaceId::ConstructionPlane(0)));
     }

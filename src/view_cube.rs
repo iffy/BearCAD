@@ -1165,56 +1165,109 @@ fn paint_icon_toggle_button(ui: &Ui, rect: Rect, hovered: bool, pressed: bool) {
     );
 }
 
-fn show_icon_toggle_button(
-    ui: &mut Ui,
-    rect: Rect,
-    hover_hint: &str,
-    icon: IconId,
-    on_click: impl FnOnce(),
-) {
-    let response = ui.allocate_rect(rect, Sense::click());
-    let hovered = response.hovered();
-    let clicked = response.clicked();
-    let pressed = response.is_pointer_button_down_on();
-
-    if hovered {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        response.on_hover_text(hover_hint);
-    }
-
-    paint_icon_toggle_button(ui, rect, hovered, pressed);
-    paint_icon(
-        ui.painter(),
-        ui.ctx(),
-        icon,
-        projection_toggle_icon_rect(rect),
-        Color32::from_gray(210),
-    );
-
-    if clicked {
-        on_click();
+fn projection_mode_tooltip(mode: ProjectionMode) -> &'static str {
+    match mode {
+        ProjectionMode::Orthographic => "Orthographic projection",
+        ProjectionMode::Natural => "Natural (perspective) projection",
     }
 }
 
-fn show_projection_mode_toggle(
+fn shading_mode_tooltip(mode: crate::camera::ShadingMode) -> &'static str {
+    use crate::camera::ShadingMode;
+    match mode {
+        ShadingMode::Wireframe => "Wireframe",
+        ShadingMode::TransparentSolid => "Transparent solid",
+        ShadingMode::Solid => "Solid",
+        ShadingMode::SolidWireframe => "Solid + wireframe",
+    }
+}
+
+/// Gear button (where the projection toggle used to be) that opens a popup with two
+/// sections: the projection (ortho/perspective) choice and the shading (wireframe/
+/// transparent-solid/solid/solid+wireframe) choice, each shown as a row of icon
+/// buttons with the active one highlighted (#33).
+fn show_view_settings_button(
     ui: &mut Ui,
     cam: &mut Camera,
     pad_rect: Rect,
     command_log: &mut Option<std::cell::RefMut<'_, crate::command_log::CommandLog>>,
 ) {
     let rect = view_preset_toggle_rect(pad_rect);
-    let active = cam.projection_mode();
-    let target = active.opposite();
-    let hint = match target {
-        ProjectionMode::Orthographic => "Orthographic projection",
-        ProjectionMode::Natural => "Natural (perspective) projection",
-    };
-    show_icon_toggle_button(ui, rect, hint, icon_for_projection_mode(target), || {
-        cam.set_projection_mode(target);
-        if let Some(log) = command_log {
-            log.note_view_instruction(crate::script::Instruction::ProjectionMode(target));
-        }
-    });
+    let response = ui.allocate_rect(rect, Sense::click());
+    let hovered = response.hovered();
+    let pressed = response.is_pointer_button_down_on();
+
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        response.clone().on_hover_text("View settings");
+    }
+
+    paint_icon_toggle_button(ui, rect, hovered, pressed);
+    paint_icon(
+        ui.painter(),
+        ui.ctx(),
+        IconId::Gear,
+        projection_toggle_icon_rect(rect),
+        Color32::from_gray(210),
+    );
+
+    let popup_id = ui.make_persistent_id("view_cube_settings_popup");
+    if response.clicked() {
+        ui.memory_mut(|m| m.toggle_popup(popup_id));
+    }
+
+    egui::popup::popup_below_widget(
+        ui,
+        popup_id,
+        &response,
+        egui::popup::PopupCloseBehavior::CloseOnClickOutside,
+        |ui| {
+            ui.set_min_width(88.0);
+            ui.label(egui::RichText::new("Projection").small().weak());
+            ui.horizontal(|ui| {
+                let active = cam.projection_mode();
+                for mode in [ProjectionMode::Natural, ProjectionMode::Orthographic] {
+                    let selected = active == mode;
+                    let resp = crate::icons::selectable_icon_button(
+                        ui,
+                        icon_for_projection_mode(mode),
+                        selected,
+                        projection_mode_tooltip(mode),
+                    );
+                    if resp.clicked() && !selected {
+                        cam.set_projection_mode(mode);
+                        if let Some(log) = command_log.as_mut() {
+                            log.note_view_instruction(crate::script::Instruction::ProjectionMode(
+                                mode,
+                            ));
+                        }
+                    }
+                }
+            });
+            ui.separator();
+            ui.label(egui::RichText::new("Shading").small().weak());
+            ui.horizontal(|ui| {
+                let active = cam.shading_mode();
+                for mode in crate::camera::SHADING_MODES {
+                    let selected = active == mode;
+                    let resp = crate::icons::selectable_icon_button(
+                        ui,
+                        crate::icons::icon_for_shading_mode(mode),
+                        selected,
+                        shading_mode_tooltip(mode),
+                    );
+                    if resp.clicked() && !selected {
+                        cam.set_shading_mode(mode);
+                        if let Some(log) = command_log.as_mut() {
+                            log.note_view_instruction(crate::script::Instruction::ShadingMode(
+                                mode,
+                            ));
+                        }
+                    }
+                }
+            });
+        },
+    );
 }
 
 fn show_home_button(
@@ -1385,13 +1438,34 @@ fn show(
     if let Some(id) = hover_corner {
         draw_hovered_corner(painter, &corners, id);
     }
-    show_projection_mode_toggle(ui, cam, pad_rect, &mut command_log);
+    show_view_settings_button(ui, cam, pad_rect, &mut command_log);
     show_home_button(ui, cam, pad_rect, &mut command_log);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn projection_mode_tooltip_is_distinct_per_mode() {
+        assert_ne!(
+            projection_mode_tooltip(ProjectionMode::Orthographic),
+            projection_mode_tooltip(ProjectionMode::Natural)
+        );
+    }
+
+    #[test]
+    fn shading_mode_tooltip_is_distinct_per_mode() {
+        use crate::camera::SHADING_MODES;
+        let labels: Vec<&str> = SHADING_MODES.iter().map(|&m| shading_mode_tooltip(m)).collect();
+        for (i, a) in labels.iter().enumerate() {
+            for (j, b) in labels.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "shading tooltip collision at {i}/{j}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn cube_rect_is_in_viewport_top_right() {

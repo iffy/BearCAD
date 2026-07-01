@@ -44,6 +44,51 @@ pub fn parse_ascii_stl(data: &str) -> Result<Vec<MeshTriangle>, String> {
     Ok(triangles)
 }
 
+/// Parse triangles from an STL document of either flavor (#70), auto-detecting binary vs.
+/// ASCII. Binary STL has no reliable magic number — some binary files even start with the
+/// literal text `solid` — so the standard discriminator is the byte length: a binary file's
+/// 80-byte header is followed by a little-endian `u32` triangle count and exactly that many
+/// 50-byte records, so an exact size match is a strong signal. Anything else is parsed as
+/// ASCII (UTF-8 is required for that path).
+pub fn parse_stl(data: &[u8]) -> Result<Vec<MeshTriangle>, String> {
+    if let Some(triangles) = try_parse_binary_stl(data) {
+        return Ok(triangles);
+    }
+    let text = std::str::from_utf8(data)
+        .map_err(|_| "not a valid ASCII STL and not a valid binary STL".to_string())?;
+    parse_ascii_stl(text)
+}
+
+fn try_parse_binary_stl(data: &[u8]) -> Option<Vec<MeshTriangle>> {
+    let header = data.get(0..84)?;
+    let count = u32::from_le_bytes(header[80..84].try_into().ok()?) as usize;
+    if data.len() != 84 + count * 50 {
+        return None;
+    }
+    let mut triangles = Vec::with_capacity(count);
+    let mut offset = 84;
+    for _ in 0..count {
+        let record = &data[offset..offset + 50];
+        let normal = read_vec3_le(&record[0..12])?;
+        let vertices = [
+            read_vec3_le(&record[12..24])?,
+            read_vec3_le(&record[24..36])?,
+            read_vec3_le(&record[36..48])?,
+        ];
+        triangles.push(MeshTriangle { vertices, normal });
+        offset += 50;
+    }
+    Some(triangles)
+}
+
+fn read_vec3_le(bytes: &[u8]) -> Option<Vec3> {
+    Some(Vec3::new(
+        f32::from_le_bytes(bytes[0..4].try_into().ok()?),
+        f32::from_le_bytes(bytes[4..8].try_into().ok()?),
+        f32::from_le_bytes(bytes[8..12].try_into().ok()?),
+    ))
+}
+
 /// Serialize a solid mesh as an ASCII STL document named `name`. Each triangle's facet
 /// normal is derived from its winding (right-hand rule); degenerate triangles get a zero
 /// normal. The output round-trips through [`parse_ascii_stl`].
@@ -183,6 +228,72 @@ mod tests {
     #[test]
     fn parse_ascii_stl_rejects_empty() {
         assert!(parse_ascii_stl("solid empty\nendsolid empty").is_err());
+    }
+
+    fn write_binary_stl(triangles: &[MeshTriangle]) -> Vec<u8> {
+        let mut out = vec![0u8; 80];
+        out.extend_from_slice(&(triangles.len() as u32).to_le_bytes());
+        for tri in triangles {
+            for f in [tri.normal.x, tri.normal.y, tri.normal.z] {
+                out.extend_from_slice(&f.to_le_bytes());
+            }
+            for v in tri.vertices {
+                for f in [v.x, v.y, v.z] {
+                    out.extend_from_slice(&f.to_le_bytes());
+                }
+            }
+            out.extend_from_slice(&[0u8; 2]); // attribute byte count
+        }
+        out
+    }
+
+    #[test]
+    fn parse_stl_detects_binary_by_exact_size() {
+        let triangles = vec![
+            MeshTriangle {
+                vertices: [
+                    Vec3::new(0.0, 0.0, 0.0),
+                    Vec3::new(1.0, 0.0, 0.0),
+                    Vec3::new(0.0, 1.0, 0.0),
+                ],
+                normal: Vec3::Z,
+            },
+            MeshTriangle {
+                vertices: [
+                    Vec3::new(0.0, 0.0, 1.0),
+                    Vec3::new(1.0, 0.0, 1.0),
+                    Vec3::new(0.0, 1.0, 1.0),
+                ],
+                normal: Vec3::Z,
+            },
+        ];
+        let bytes = write_binary_stl(&triangles);
+        let parsed = parse_stl(&bytes).expect("binary stl");
+        assert_eq!(parsed, triangles);
+    }
+
+    #[test]
+    fn parse_stl_handles_binary_header_that_starts_with_solid() {
+        // A real-world gotcha: some binary STL exporters still write "solid ..." in the
+        // 80-byte header, so detection can't rely on that prefix alone.
+        let triangles = vec![MeshTriangle {
+            vertices: [
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(2.0, 0.0, 0.0),
+                Vec3::new(0.0, 2.0, 0.0),
+            ],
+            normal: Vec3::Z,
+        }];
+        let mut bytes = write_binary_stl(&triangles);
+        bytes[0..5].copy_from_slice(b"solid");
+        let parsed = parse_stl(&bytes).expect("binary stl with solid-prefixed header");
+        assert_eq!(parsed, triangles);
+    }
+
+    #[test]
+    fn parse_stl_falls_back_to_ascii() {
+        let parsed = parse_stl(BEAR_STL.as_bytes()).expect("ascii stl");
+        assert!(parsed.len() >= 100);
     }
 
     #[test]

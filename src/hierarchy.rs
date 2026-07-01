@@ -126,10 +126,10 @@ impl ElementVisibility {
             SceneElement::Extrusion(index) => self.is_visible(SceneElement::Extrusion(index)),
             SceneElement::Body(index) => {
                 self.is_visible(SceneElement::Body(index))
-                    && doc.bodies.get(index).is_some_and(|body| match body.source {
-                        crate::model::BodySource::Extrusion(ei) => {
+                    && doc.bodies.get(index).is_some_and(|body| {
+                        body.source.extrusion_indices().iter().any(|&ei| {
                             self.effective_visible(doc, SceneElement::Extrusion(ei))
-                        }
+                        })
                     })
             }
         }
@@ -287,6 +287,16 @@ pub fn build_hierarchy(
                 .unwrap_or_default(),
         });
     }
+    // Bodies with no source extrusion (e.g. STL imports, #70) have no sketch/feature to nest
+    // under, so they surface at the top level, same as an orphaned extrusion above.
+    for (bi, body) in doc.bodies.iter().enumerate() {
+        if !body.deleted && body.source.extrusion_indices().is_empty() {
+            roots.push(HierarchyEntry {
+                node: HierarchyNode::Body(bi),
+                children: Vec::new(),
+            });
+        }
+    }
     roots
 }
 
@@ -383,9 +393,13 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
             .extrusions
             .get(index)
             .map(|extrusion| SceneElement::Sketch(extrusion.sketch)),
-        // A body depends on (and nests under) the feature that produced it.
-        SceneElement::Body(index) => doc.bodies.get(index).map(|body| match body.source {
-            crate::model::BodySource::Extrusion(ei) => SceneElement::Extrusion(ei),
+        // A body depends on (and nests under) the feature that produced it; a merged body
+        // nests under its first (originating) extrusion.
+        SceneElement::Body(index) => doc.bodies.get(index).and_then(|body| {
+            body.source
+                .extrusion_indices()
+                .first()
+                .map(|&ei| SceneElement::Extrusion(ei))
         }),
     }
 }
@@ -467,7 +481,7 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         }
         SceneElement::Extrusion(index) => {
             for (bi, body) in doc.bodies.iter().enumerate() {
-                if !body.deleted && body.source == crate::model::BodySource::Extrusion(index) {
+                if !body.deleted && body.source.owns_extrusion(index) {
                     out.insert(SceneElement::Body(bi));
                 }
             }
@@ -921,9 +935,7 @@ fn build_sketch_extrusions(
                 .bodies
                 .iter()
                 .enumerate()
-                .filter(|(_, body)| {
-                    !body.deleted && body.source == crate::model::BodySource::Extrusion(ei)
-                })
+                .filter(|(_, body)| !body.deleted && body.source.owns_extrusion(ei))
                 .map(|(bi, _)| HierarchyEntry {
                     node: HierarchyNode::Body(bi),
                     children: Vec::new(),
@@ -966,6 +978,7 @@ pub fn show_pane(
     on_edit_plane: &mut impl FnMut(usize),
     on_edit_extrusion: &mut impl FnMut(usize),
     on_export_body: &mut impl FnMut(usize),
+    on_export_body_step: &mut impl FnMut(usize),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
     highlight_elements: &HashSet<SceneElement>,
@@ -994,6 +1007,7 @@ pub fn show_pane(
                 on_edit_plane,
                 on_edit_extrusion,
                 on_export_body,
+                on_export_body_step,
                 on_toggle_visibility,
                 on_click_element,
                 highlight_elements,
@@ -1016,6 +1030,7 @@ fn show_row(
     on_edit_plane: &mut impl FnMut(usize),
     on_edit_extrusion: &mut impl FnMut(usize),
     on_export_body: &mut impl FnMut(usize),
+    on_export_body_step: &mut impl FnMut(usize),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
     highlight_elements: &HashSet<SceneElement>,
@@ -1114,6 +1129,10 @@ fn show_row(
                         on_export_body(index);
                         ui.close_menu();
                     }
+                    if ui.button("Export STEP…").clicked() {
+                        on_export_body_step(index);
+                        ui.close_menu();
+                    }
                 });
             }
             HierarchyNode::Rect(_)
@@ -1145,6 +1164,28 @@ mod tests {
         doc.lines
             .push(Line::from_local_endpoints(s1, 0.0, 0.0, 5.0, 0.0));
         doc
+    }
+
+    #[test]
+    fn imported_mesh_body_surfaces_at_top_level() {
+        let mut doc = Document::default();
+        doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles: vec![[glam::Vec3::ZERO, glam::Vec3::X, glam::Vec3::Y]],
+            source_name: "part".to_string(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: Some("part".to_string()),
+            deleted: false,
+        });
+        doc.shape_order.push(ShapeKind::Body);
+
+        let list = build_element_list(&doc, None);
+        assert!(
+            list.contains(&HierarchyNode::Body(0)),
+            "imported body should be visible in the elements list, got {list:?}"
+        );
+        assert_eq!(parent_element(&doc, SceneElement::Body(0)), None);
     }
 
     #[test]

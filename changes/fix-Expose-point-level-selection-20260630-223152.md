@@ -1,0 +1,1 @@
+Expose point-level selection (line endpoints, rect corners, and circle centers) from Lua's bearcad.select, closing a real scriptability gap: constructing coincident-constrained geometry like closed polygon loops previously required simulating mouse clicks.

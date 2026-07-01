@@ -22,6 +22,9 @@ pub enum MenuCommand {
     Save,
     SaveAs,
     ExportStl,
+    ExportStep,
+    ImportStl,
+    ImportStep,
     ExportSessionCommands,
     Quit,
     UndoLast,
@@ -41,6 +44,9 @@ pub struct MenuIds {
     pub save: MenuId,
     pub save_as: MenuId,
     pub export_stl: MenuId,
+    pub export_step: MenuId,
+    pub import_stl: MenuId,
+    pub import_step: MenuId,
     pub export_session_commands: MenuId,
     pub quit: MenuId,
     pub undo: MenuId,
@@ -93,6 +99,15 @@ pub fn command_for_id(
     }
     if ids.export_stl == id {
         return Some(MenuCommand::ExportStl);
+    }
+    if ids.export_step == id {
+        return Some(MenuCommand::ExportStep);
+    }
+    if ids.import_stl == id {
+        return Some(MenuCommand::ImportStl);
+    }
+    if ids.import_step == id {
+        return Some(MenuCommand::ImportStep);
     }
     if ids.export_session_commands == id {
         return Some(MenuCommand::ExportSessionCommands);
@@ -148,7 +163,13 @@ impl MenuCommand {
             MenuCommand::NewDocument => Some(Action::NewDocument),
             MenuCommand::Open | MenuCommand::Save | MenuCommand::SaveAs => None,
             // Needs a file-save dialog, handled in the app frame loop.
-            MenuCommand::ExportStl | MenuCommand::ExportSessionCommands => None,
+            MenuCommand::ExportStl
+            | MenuCommand::ExportStep
+            | MenuCommand::ImportStl
+            | MenuCommand::ImportStep
+            | MenuCommand::ExportSessionCommands => {
+                None
+            }
             MenuCommand::Quit => None,
             MenuCommand::UndoLast => Some(Action::UndoLast),
             MenuCommand::Clear => Some(Action::Clear),
@@ -231,6 +252,9 @@ impl NativeMenu {
             )),
         );
         let export_stl = MenuItem::with_id("export_stl", "Export STL…", true, None);
+        let export_step = MenuItem::with_id("export_step", "Export STEP…", true, None);
+        let import_stl = MenuItem::with_id("import_stl", "Import STL…", true, None);
+        let import_step = MenuItem::with_id("import_step", "Import STEP…", true, None);
         let quit = MenuItem::with_id(
             "quit",
             "Quit",
@@ -282,6 +306,9 @@ impl NativeMenu {
         file_menu.append(&save_as)?;
         file_menu.append(&PredefinedMenuItem::separator())?;
         file_menu.append(&export_stl)?;
+        file_menu.append(&export_step)?;
+        file_menu.append(&import_stl)?;
+        file_menu.append(&import_step)?;
         #[cfg(not(target_os = "macos"))]
         {
             let quit_sep = PredefinedMenuItem::separator();
@@ -319,6 +346,9 @@ impl NativeMenu {
             save: save.id().clone(),
             save_as: save_as.id().clone(),
             export_stl: export_stl.id().clone(),
+            export_step: export_step.id().clone(),
+            import_stl: import_stl.id().clone(),
+            import_step: import_step.id().clone(),
             export_session_commands: export_session_commands.id().clone(),
             quit: quit.id().clone(),
             undo: undo.id().clone(),
@@ -406,6 +436,9 @@ mod tests {
             save: MenuId::new("save"),
             save_as: MenuId::new("save_as"),
             export_stl: MenuId::new("export_stl"),
+            export_step: MenuId::new("export_step"),
+            import_stl: MenuId::new("import_stl"),
+            import_step: MenuId::new("import_step"),
             export_session_commands: MenuId::new("export_session_commands"),
             quit: MenuId::new("quit"),
             undo: MenuId::new("undo"),

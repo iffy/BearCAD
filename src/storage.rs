@@ -14,6 +14,7 @@ use crate::model::{
     Sketch,
 };
 use crate::parameters::validate_document_parameters_no_cycles;
+use crate::value::{AngleUnit, LengthUnit};
 use rusqlite::Connection;
 
 /// Bump when the on-disk schema changes; pair with a migration below.
@@ -21,6 +22,12 @@ const SCHEMA_VERSION: i64 = 1;
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CONSTRUCTION_PLANES_META_KEY: &str = "construction_planes";
 const SHAPE_ORDER_META_KEY: &str = "shape_order";
+/// Document-level default length unit (#52); missing for files saved before this change,
+/// which fall back to [`LengthUnit::default`] (mm), matching their pre-existing behaviour.
+const DEFAULT_LENGTH_UNIT_META_KEY: &str = "default_length_unit";
+/// Document-level default angle unit (#52); missing for files saved before this change,
+/// which fall back to [`AngleUnit::default`] (deg), matching their pre-existing behaviour.
+const DEFAULT_ANGLE_UNIT_META_KEY: &str = "default_angle_unit";
 
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -85,8 +92,24 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     )
     .map_err(|e| e.to_string())?;
 
+    let default_length_unit_payload =
+        serde_json::to_string(&doc.default_length_unit).map_err(|e| e.to_string())?;
     tx.execute(
-        "DELETE FROM dag_nodes WHERE kind IN ('sketch', 'rectangle', 'line', 'circle', 'parameter', 'constraint', 'construction_plane', 'extrusion', 'body')",
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+        rusqlite::params![DEFAULT_LENGTH_UNIT_META_KEY, default_length_unit_payload],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let default_angle_unit_payload =
+        serde_json::to_string(&doc.default_angle_unit).map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+        rusqlite::params![DEFAULT_ANGLE_UNIT_META_KEY, default_angle_unit_payload],
+    )
+    .map_err(|e| e.to_string())?;
+
+    tx.execute(
+        "DELETE FROM dag_nodes WHERE kind IN ('sketch', 'rectangle', 'line', 'circle', 'parameter', 'constraint', 'construction_plane', 'extrusion', 'body', 'imported_mesh')",
         [],
     )
     .map_err(|e| e.to_string())?;
@@ -100,6 +123,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "constraint", &doc.constraints)?;
     save_indexed_nodes(&tx, &mut row_id, "extrusion", &doc.extrusions)?;
     save_indexed_nodes(&tx, &mut row_id, "body", &doc.bodies)?;
+    save_indexed_nodes(&tx, &mut row_id, "imported_mesh", &doc.imported_meshes)?;
     if doc.construction_planes.len() > 1 {
         save_indexed_nodes(
             &tx,
@@ -141,6 +165,32 @@ fn load_shape_order_meta(conn: &Connection) -> Option<Vec<ShapeKind>> {
         )
         .ok()?;
     serde_json::from_str(&payload).ok()
+}
+
+/// Load the document-level default length unit, falling back to mm for files saved before
+/// this key existed (#52).
+fn load_default_length_unit_meta(conn: &Connection) -> LengthUnit {
+    conn.query_row(
+        "SELECT value FROM meta WHERE key = ?1",
+        rusqlite::params![DEFAULT_LENGTH_UNIT_META_KEY],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|payload| serde_json::from_str(&payload).ok())
+    .unwrap_or_default()
+}
+
+/// Load the document-level default angle unit, falling back to degrees for files saved
+/// before this key existed (#52).
+fn load_default_angle_unit_meta(conn: &Connection) -> AngleUnit {
+    conn.query_row(
+        "SELECT value FROM meta WHERE key = ?1",
+        rusqlite::params![DEFAULT_ANGLE_UNIT_META_KEY],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|payload| serde_json::from_str(&payload).ok())
+    .unwrap_or_default()
 }
 
 fn load_indexed_entities<T: serde::de::DeserializeOwned>(
@@ -341,6 +391,9 @@ pub fn open(path: &str) -> Result<Document> {
     // Extrusions/bodies (empty for legacy files that predate them).
     let extrusions = load_indexed_entities(&conn, "extrusion")?;
     let bodies = load_indexed_entities(&conn, "body")?;
+    let imported_meshes = load_indexed_entities(&conn, "imported_mesh")?;
+    let default_length_unit = load_default_length_unit_meta(&conn);
+    let default_angle_unit = load_default_angle_unit_meta(&conn);
 
     let mut doc = Document {
         parameters,
@@ -352,7 +405,10 @@ pub fn open(path: &str) -> Result<Document> {
         construction_planes,
         extrusions,
         bodies,
+        imported_meshes,
         shape_order,
+        default_length_unit,
+        default_angle_unit,
     };
     ensure_construction_plane_indices(&mut doc);
     migrate_legacy_dimensions(&mut doc);
@@ -386,7 +442,10 @@ mod tests {
             construction_planes: vec![default_xy_plane()],
             extrusions: Vec::new(),
             bodies: Vec::new(),
+            imported_meshes: Vec::new(),
             shape_order: Vec::new(),
+            default_length_unit: LengthUnit::default(),
+            default_angle_unit: AngleUnit::default(),
         };
         let sketch = plane_sketch(&mut doc);
         let mut rect = Rect::from_local_corners(sketch, 0.0, 0.0, 50.8, 5.0);
@@ -422,7 +481,10 @@ mod tests {
             construction_planes: vec![default_xy_plane()],
             extrusions: Vec::new(),
             bodies: Vec::new(),
+            imported_meshes: Vec::new(),
             shape_order: Vec::new(),
+            default_length_unit: LengthUnit::default(),
+            default_angle_unit: AngleUnit::default(),
         };
         let sketch = plane_sketch(&mut doc);
         let mut rect = Rect::from_local_corners(sketch, 0.0, 0.0, 50.8, 5.0);
@@ -456,7 +518,10 @@ mod tests {
             construction_planes: vec![default_xy_plane()],
             extrusions: Vec::new(),
             bodies: Vec::new(),
+            imported_meshes: Vec::new(),
             shape_order: Vec::new(),
+            default_length_unit: LengthUnit::default(),
+            default_angle_unit: AngleUnit::default(),
         };
         let sketch = plane_sketch(&mut doc);
         doc.rects.push(Rect::from_local_corners(sketch, 1.0, 2.0, 4.0, 6.0));
@@ -563,7 +628,10 @@ mod tests {
             construction_planes: vec![default_xy_plane(), offset_plane],
             extrusions: Vec::new(),
             bodies: Vec::new(),
+            imported_meshes: Vec::new(),
             shape_order: Vec::new(),
+            default_length_unit: LengthUnit::default(),
+            default_angle_unit: AngleUnit::default(),
         };
 
         let s0 = doc.add_sketch(FaceId::ConstructionPlane(0));
@@ -656,7 +724,10 @@ mod tests {
             construction_planes: vec![default_xy_plane(), offset_plane.clone()],
             extrusions: Vec::new(),
             bodies: Vec::new(),
+            imported_meshes: Vec::new(),
             shape_order: Vec::new(),
+            default_length_unit: LengthUnit::default(),
+            default_angle_unit: AngleUnit::default(),
         };
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(1));
         doc.rects
@@ -696,6 +767,8 @@ mod tests {
                 face: FaceId::ConstructionPlane(1),
                 name: None,
                 deleted: false,
+                length_unit: None,
+                angle_unit: None,
             }],
             rects: vec![Rect::from_local_corners(0, 0.0, 0.0, 10.0, 10.0)],
             lines: vec![],
@@ -704,7 +777,10 @@ mod tests {
             construction_planes: vec![default_xy_plane()],
             extrusions: Vec::new(),
             bodies: Vec::new(),
+            imported_meshes: Vec::new(),
             shape_order: vec![ShapeKind::Sketch, ShapeKind::Rect],
+            default_length_unit: LengthUnit::default(),
+            default_angle_unit: AngleUnit::default(),
         };
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();
@@ -736,7 +812,10 @@ mod tests {
             construction_planes: vec![default_xy_plane()],
             extrusions: Vec::new(),
             bodies: Vec::new(),
+            imported_meshes: Vec::new(),
             shape_order: Vec::new(),
+            default_length_unit: LengthUnit::default(),
+            default_angle_unit: AngleUnit::default(),
         };
         let sketch = plane_sketch(&mut doc);
         doc.rects

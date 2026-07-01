@@ -36,11 +36,18 @@ pub enum IconId {
     Plus,
     Showing,
     Hidden,
+    Chamfer,
+    Fillet,
+    Gear,
+    ShadingWireframe,
+    ShadingTransparentSolid,
+    ShadingSolid,
+    ShadingSolidWireframe,
 }
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 30] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -64,6 +71,13 @@ impl IconId {
         Self::Plus,
         Self::Showing,
         Self::Hidden,
+        Self::Chamfer,
+        Self::Fillet,
+        Self::Gear,
+        Self::ShadingWireframe,
+        Self::ShadingTransparentSolid,
+        Self::ShadingSolid,
+        Self::ShadingSolidWireframe,
     ];
 
     pub fn svg_source(self) -> &'static str {
@@ -91,6 +105,13 @@ impl IconId {
             Self::Plus => include_str!("assets/icons/plus.svg"),
             Self::Showing => include_str!("assets/icons/showing.svg"),
             Self::Hidden => include_str!("assets/icons/hidden.svg"),
+            Self::Chamfer => include_str!("assets/icons/chamfer.svg"),
+            Self::Fillet => include_str!("assets/icons/fillet.svg"),
+            Self::Gear => include_str!("assets/icons/gear.svg"),
+            Self::ShadingWireframe => include_str!("assets/icons/wireframe.svg"),
+            Self::ShadingTransparentSolid => include_str!("assets/icons/transparent_solid.svg"),
+            Self::ShadingSolid => include_str!("assets/icons/solid.svg"),
+            Self::ShadingSolidWireframe => include_str!("assets/icons/solid_wireframe.svg"),
         }
     }
 
@@ -119,6 +140,13 @@ impl IconId {
             Self::Plus => "Plus",
             Self::Showing => "Showing",
             Self::Hidden => "Hidden",
+            Self::Chamfer => "Chamfer",
+            Self::Fillet => "Fillet",
+            Self::Gear => "Gear",
+            Self::ShadingWireframe => "Wireframe",
+            Self::ShadingTransparentSolid => "Transparent solid",
+            Self::ShadingSolid => "Solid",
+            Self::ShadingSolidWireframe => "Solid + wireframe",
         }
     }
 }
@@ -135,6 +163,15 @@ pub fn icon_for_projection_mode(mode: crate::camera::ProjectionMode) -> IconId {
     match mode {
         crate::camera::ProjectionMode::Natural => IconId::Perspective,
         crate::camera::ProjectionMode::Orthographic => IconId::Orthographic,
+    }
+}
+
+pub fn icon_for_shading_mode(mode: crate::camera::ShadingMode) -> IconId {
+    match mode {
+        crate::camera::ShadingMode::Wireframe => IconId::ShadingWireframe,
+        crate::camera::ShadingMode::TransparentSolid => IconId::ShadingTransparentSolid,
+        crate::camera::ShadingMode::Solid => IconId::ShadingSolid,
+        crate::camera::ShadingMode::SolidWireframe => IconId::ShadingSolidWireframe,
     }
 }
 
@@ -282,6 +319,28 @@ mod tests {
         assert_eq!(
             icon_for_projection_mode(ProjectionMode::Orthographic),
             IconId::Orthographic
+        );
+    }
+
+    #[test]
+    fn hud_icons_map_to_shading_modes() {
+        use crate::camera::ShadingMode;
+
+        assert_eq!(
+            icon_for_shading_mode(ShadingMode::Wireframe),
+            IconId::ShadingWireframe
+        );
+        assert_eq!(
+            icon_for_shading_mode(ShadingMode::TransparentSolid),
+            IconId::ShadingTransparentSolid
+        );
+        assert_eq!(
+            icon_for_shading_mode(ShadingMode::Solid),
+            IconId::ShadingSolid
+        );
+        assert_eq!(
+            icon_for_shading_mode(ShadingMode::SolidWireframe),
+            IconId::ShadingSolidWireframe
         );
     }
 

@@ -6,6 +6,7 @@
 //! (`storage.rs`) is kept narrow so the file format can evolve underneath it.
 
 use crate::face::default_xy_plane;
+use crate::value::{AngleUnit, LengthUnit};
 use serde::{Deserialize, Serialize};
 
 /// A sketchable face that lines and rectangles can be drawn on.
@@ -83,6 +84,12 @@ pub struct Sketch {
     pub name: Option<String>,
     #[serde(default)]
     pub deleted: bool,
+    /// Default length unit override for this sketch; `None` inherits [`Document::default_length_unit`] (#52).
+    #[serde(default)]
+    pub length_unit: Option<LengthUnit>,
+    /// Default angle unit override for this sketch; `None` inherits [`Document::default_angle_unit`] (#52).
+    #[serde(default)]
+    pub angle_unit: Option<AngleUnit>,
 }
 
 /// One edge of a rectangle (bottom → right → top → left, matching [`rect_edge_segments`]).
@@ -307,7 +314,19 @@ pub struct Line {
     pub name: Option<String>,
     #[serde(default)]
     pub deleted: bool,
+    /// Cubic-bezier tangent handles in face-local coords: `[near (x0,y0), near (x1,y1)]`.
+    /// `None` means a straight segment (the common case).
+    #[serde(default)]
+    pub bezier: Option<[(f32, f32); 2]>,
 }
+
+/// Number of straight sub-segments used to approximate a curved [`Line`] for rendering,
+/// hit-testing, and extrusion tessellation (mirrors [`CIRCLE_SEGMENTS`]-style faceting).
+pub const BEZIER_SEGMENTS: usize = 24;
+
+/// Minimum perpendicular deviation (mm) a drag path must reach before it is treated as
+/// shaping a curve rather than a plain click; below this a line tool drag stays straight.
+const BEZIER_MIN_BULGE_MM: f32 = 1.0;
 
 impl Line {
     pub fn from_local_endpoints(
@@ -329,6 +348,7 @@ impl Line {
             construction: false,
             name: None,
             deleted: false,
+            bezier: None,
         }
     }
 
@@ -337,6 +357,193 @@ impl Line {
         let dv = self.y1 - self.y0;
         (du * du + dv * dv).sqrt()
     }
+
+    pub fn is_curved(&self) -> bool {
+        self.bezier.is_some()
+    }
+
+    /// Sample this segment as a polyline in local coords (`segments + 1` points).
+    /// Straight lines just return the two endpoints regardless of `segments`.
+    pub fn sample_local(&self, segments: usize) -> Vec<(f32, f32)> {
+        let p0 = (self.x0, self.y0);
+        let p1 = (self.x1, self.y1);
+        match self.bezier {
+            None => vec![p0, p1],
+            Some([c0, c1]) => (0..=segments)
+                .map(|i| cubic_bezier_point(p0, c0, c1, p1, i as f32 / segments as f32))
+                .collect(),
+        }
+    }
+}
+
+fn cubic_bezier_point(p0: (f32, f32), c0: (f32, f32), c1: (f32, f32), p1: (f32, f32), t: f32) -> (f32, f32) {
+    let mt = 1.0 - t;
+    let a = mt * mt * mt;
+    let b = 3.0 * mt * mt * t;
+    let c = 3.0 * mt * t * t;
+    let d = t * t * t;
+    (
+        a * p0.0 + b * c0.0 + c * c1.0 + d * p1.0,
+        a * p0.1 + b * c0.1 + c * c1.1 + d * p1.1,
+    )
+}
+
+/// Derive tangent-handle control points for a line-tool click-drag gesture, from the
+/// sampled pointer path recorded while the button was held. Returns `None` when the path
+/// is too short or too straight to be a deliberate curve (a plain click/tap stays straight).
+///
+/// Finds the path point of maximum perpendicular deviation from the `p0`→`p1` chord and
+/// fits a quadratic bezier through it at t=0.5, then converts to cubic control points.
+pub fn bezier_from_drag_path(p0: (f32, f32), p1: (f32, f32), path: &[(f32, f32)]) -> Option<[(f32, f32); 2]> {
+    if path.len() < 3 {
+        return None;
+    }
+    let cx = p1.0 - p0.0;
+    let cy = p1.1 - p0.1;
+    let chord_len = (cx * cx + cy * cy).sqrt();
+    if chord_len < 1e-6 {
+        return None;
+    }
+    let (nx, ny) = (-cy / chord_len, cx / chord_len);
+    let mut best_dev = 0.0f32;
+    let mut best_point = p0;
+    for &(px, py) in path {
+        let dev = (px - p0.0) * nx + (py - p0.1) * ny;
+        if dev.abs() > best_dev.abs() {
+            best_dev = dev;
+            best_point = (px, py);
+        }
+    }
+    if best_dev.abs() < BEZIER_MIN_BULGE_MM {
+        return None;
+    }
+    let q = (
+        2.0 * best_point.0 - 0.5 * (p0.0 + p1.0),
+        2.0 * best_point.1 - 0.5 * (p0.1 + p1.1),
+    );
+    let c0 = (p0.0 + (2.0 / 3.0) * (q.0 - p0.0), p0.1 + (2.0 / 3.0) * (q.1 - p0.1));
+    let c1 = (p1.0 + (2.0 / 3.0) * (q.0 - p1.0), p1.1 + (2.0 / 3.0) * (q.1 - p1.1));
+    Some([c0, c1])
+}
+
+/// Smooths the joint at a shared vertex `v` between two lines (right-click "convert to bezier
+/// curve"), given each line's other endpoint `a`/`b`. The tangent through `v` runs along the
+/// `a`→`b` chord (Catmull-Rom style), so the curve stays visually smooth across the joint; each
+/// line's far handle (away from `v`) sits a third of the way toward `v`, keeping that end
+/// nearly straight since only the joint itself is being rounded.
+///
+/// Returns `([handle_near_a, handle_near_v], [handle_near_v, handle_near_b])` for the first and
+/// second line respectively.
+pub fn smooth_joint_bezier(
+    a: (f32, f32),
+    v: (f32, f32),
+    b: (f32, f32),
+) -> ([(f32, f32); 2], [(f32, f32); 2]) {
+    let tx = b.0 - a.0;
+    let ty = b.1 - a.1;
+    let tlen = (tx * tx + ty * ty).sqrt();
+    let unit = if tlen > 1e-6 { (tx / tlen, ty / tlen) } else { (0.0, 0.0) };
+
+    let dist_av = ((v.0 - a.0).powi(2) + (v.1 - a.1).powi(2)).sqrt();
+    let dist_vb = ((b.0 - v.0).powi(2) + (b.1 - v.1).powi(2)).sqrt();
+
+    let h1_far = (a.0 + (v.0 - a.0) / 3.0, a.1 + (v.1 - a.1) / 3.0);
+    let h1_near = (v.0 - unit.0 * dist_av / 3.0, v.1 - unit.1 * dist_av / 3.0);
+    let h2_near = (v.0 + unit.0 * dist_vb / 3.0, v.1 + unit.1 * dist_vb / 3.0);
+    let h2_far = (b.0 + (v.0 - b.0) / 3.0, b.1 + (v.1 - b.1) / 3.0);
+
+    ([h1_far, h1_near], [h2_near, h2_far])
+}
+
+/// Whether a sketch-vertex treatment truncates the two adjoining lines and bridges them with a
+/// straight cut (chamfer) or a rounded single-cubic-bezier arc (fillet). See SPEC §3.1, #37/#38.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VertexTreatmentKind {
+    Chamfer,
+    Fillet,
+}
+
+/// Truncated endpoints (and, for a fillet, bridging-line tangent-handle bezier control points)
+/// produced by [`vertex_treatment_geometry`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VertexTreatmentGeometry {
+    /// New endpoint for the line whose far point was `a` (truncated back from the vertex).
+    pub p1: (f32, f32),
+    /// New endpoint for the line whose far point was `b` (truncated back from the vertex).
+    pub p2: (f32, f32),
+    /// `Some` for a fillet (bridging line curves); `None` for a chamfer (bridging line is
+    /// straight).
+    pub bezier: Option<[(f32, f32); 2]>,
+}
+
+/// Interior angle (radians, within ~1° of 0° or 180°) treated as a degenerate corner: the two
+/// edges are (nearly) parallel or anti-parallel, so there's no real corner to chamfer/fillet.
+const VERTEX_TREATMENT_DEGENERATE_EPS: f32 = 0.0175; // ~1 degree
+
+/// Computes the truncated endpoints (and bridging-line geometry) for a chamfer or fillet applied
+/// at a sketch vertex `v` shared by two lines whose other ("far") endpoints are `a` and `b`, in
+/// face-local/sketch-local UV coordinates (same convention as [`smooth_joint_bezier`]).
+///
+/// `amount` is the chamfer distance (straight tangent length back from `v`) or the fillet radius,
+/// depending on `kind`. Returns `None` when `amount` isn't positive, either adjacent edge is
+/// degenerate (zero length), or the corner itself is degenerate (interior angle within ~1° of 0°
+/// or 180° — the edges are parallel/anti-parallel, so there's no real corner to round or cut).
+///
+/// The tangent length back from `v` is clamped so it never cuts back past either adjacent edge's
+/// own far endpoint; for a fillet, the effective radius (and its arc) are recomputed from the
+/// clamped tangent length so the arc stays geometrically consistent with where the truncated
+/// endpoints actually land, rather than the originally requested radius.
+pub fn vertex_treatment_geometry(
+    v: (f32, f32),
+    a: (f32, f32),
+    b: (f32, f32),
+    kind: VertexTreatmentKind,
+    amount: f32,
+) -> Option<VertexTreatmentGeometry> {
+    if !(amount > 0.0) {
+        return None;
+    }
+    let dist_va = ((a.0 - v.0).powi(2) + (a.1 - v.1).powi(2)).sqrt();
+    let dist_vb = ((b.0 - v.0).powi(2) + (b.1 - v.1).powi(2)).sqrt();
+    if dist_va < 1e-6 || dist_vb < 1e-6 {
+        return None;
+    }
+    let dir_a = ((a.0 - v.0) / dist_va, (a.1 - v.1) / dist_va);
+    let dir_b = ((b.0 - v.0) / dist_vb, (b.1 - v.1) / dist_vb);
+    let cos_alpha = (dir_a.0 * dir_b.0 + dir_a.1 * dir_b.1).clamp(-1.0, 1.0);
+    let alpha = cos_alpha.acos();
+    if alpha < VERTEX_TREATMENT_DEGENERATE_EPS
+        || alpha > std::f32::consts::PI - VERTEX_TREATMENT_DEGENERATE_EPS
+    {
+        return None;
+    }
+
+    let raw_t = match kind {
+        VertexTreatmentKind::Chamfer => amount,
+        VertexTreatmentKind::Fillet => amount / (alpha / 2.0).tan(),
+    };
+    let max_t = (dist_va * 0.95).min(dist_vb * 0.95);
+    let t = raw_t.min(max_t);
+
+    let p1 = (v.0 + dir_a.0 * t, v.1 + dir_a.1 * t);
+    let p2 = (v.0 + dir_b.0 * t, v.1 + dir_b.1 * t);
+
+    let bezier = match kind {
+        VertexTreatmentKind::Chamfer => None,
+        VertexTreatmentKind::Fillet => {
+            // Recompute the effective radius from the (possibly clamped) tangent length so the
+            // arc stays consistent with where p1/p2 actually landed.
+            let radius = t * (alpha / 2.0).tan();
+            let theta = std::f32::consts::PI - alpha;
+            let k = radius * (4.0 / 3.0) * (theta / 4.0).tan();
+            let h0 = (p1.0 - dir_a.0 * k, p1.1 - dir_a.1 * k);
+            let h1 = (p2.0 - dir_b.0 * k, p2.1 - dir_b.1 * k);
+            Some([h0, h1])
+        }
+    };
+
+    Some(VertexTreatmentGeometry { p1, p2, bezier })
 }
 
 /// A circle in face-local coordinates (millimetres, per SPEC §5.3).
@@ -651,11 +858,72 @@ pub struct Extrusion {
     pub deleted: bool,
 }
 
-/// The feature that produced a solid body.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// The feature(s) that produced a solid body.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BodySource {
     Extrusion(usize),
+    Extrusions(Vec<usize>),
+    /// A mesh body brought in via STL import (#70); indexes `Document::imported_meshes`
+    /// rather than depending on a sketch-based feature.
+    Imported(usize),
+}
+
+impl BodySource {
+    pub fn single(extrusion: usize) -> Self {
+        Self::Extrusion(extrusion)
+    }
+
+    pub fn extrusion_indices(&self) -> &[usize] {
+        match self {
+            Self::Extrusion(index) => std::slice::from_ref(index),
+            Self::Extrusions(indices) => indices.as_slice(),
+            Self::Imported(_) => &[],
+        }
+    }
+
+    pub fn imported_mesh_index(&self) -> Option<usize> {
+        match self {
+            Self::Imported(index) => Some(*index),
+            Self::Extrusion(_) | Self::Extrusions(_) => None,
+        }
+    }
+
+    pub fn owns_extrusion(&self, extrusion: usize) -> bool {
+        self.extrusion_indices().contains(&extrusion)
+    }
+
+    pub fn append_extrusion(&mut self, extrusion: usize) {
+        match self {
+            Self::Extrusion(existing) => {
+                *self = Self::Extrusions(vec![*existing, extrusion]);
+            }
+            Self::Extrusions(indices) => indices.push(extrusion),
+            // An imported mesh body has no extrusion to merge into; unreachable in practice
+            // since merge candidates only ever come from extrusion-backed bodies.
+            Self::Imported(_) => {}
+        }
+    }
+
+    /// Remove `extrusion` from this source (e.g. undoing a merge). Collapses back to the
+    /// single-extrusion form when only one index remains. No-op if `extrusion` isn't owned
+    /// or this is already a single-extrusion source (undo never removes a body's last/only
+    /// extrusion this way — that path tombstones the whole body instead).
+    pub fn remove_extrusion(&mut self, extrusion: usize) {
+        if let Self::Extrusions(indices) = self {
+            indices.retain(|&ei| ei != extrusion);
+            if let [only] = indices.as_slice() {
+                *self = Self::Extrusion(*only);
+            }
+        }
+    }
+}
+
+/// Body index whose source includes `extrusion`, if any.
+pub fn body_index_for_extrusion(doc: &Document, extrusion: usize) -> Option<usize> {
+    doc.bodies.iter().position(|body| {
+        !body.deleted && body.source.owns_extrusion(extrusion)
+    })
 }
 
 /// A solid body produced by a feature; it depends on its source feature.
@@ -666,6 +934,15 @@ pub struct Body {
     pub name: Option<String>,
     #[serde(default)]
     pub deleted: bool,
+}
+
+/// A solid mesh brought in via file import (STL, #70), stored as-is (no scaling/centering)
+/// in the document's coordinate space. Backs a `Body` via `BodySource::Imported`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ImportedMesh {
+    pub triangles: Vec<[glam::Vec3; 3]>,
+    /// Source file name (without extension), used as the default body name.
+    pub source_name: String,
 }
 
 /// Which sketch primitive was created, in chronological order (for undo).
@@ -699,7 +976,20 @@ pub struct Document {
     pub extrusions: Vec<Extrusion>,
     #[serde(default)]
     pub bodies: Vec<Body>,
+    #[serde(default)]
+    pub imported_meshes: Vec<ImportedMesh>,
     pub shape_order: Vec<ShapeKind>,
+    /// Document-wide default length unit (context pane, nothing selected; #52).
+    ///
+    /// NOTE: this currently only stores/displays the user's choice. It does not yet drive
+    /// bare-number parsing defaults (`src/value.rs` still hardcodes mm) or dimension-label
+    /// formatting (`format_length_display` etc. still hardcode mm) — see SPEC §5.3.
+    #[serde(default)]
+    pub default_length_unit: LengthUnit,
+    /// Document-wide default angle unit (context pane, nothing selected; #52). Same scope
+    /// caveat as [`default_length_unit`](Document::default_length_unit).
+    #[serde(default)]
+    pub default_angle_unit: AngleUnit,
 }
 
 impl Default for Document {
@@ -714,7 +1004,10 @@ impl Default for Document {
             construction_planes: vec![default_xy_plane()],
             extrusions: Vec::new(),
             bodies: Vec::new(),
+            imported_meshes: Vec::new(),
             shape_order: Vec::new(),
+            default_length_unit: LengthUnit::default(),
+            default_angle_unit: AngleUnit::default(),
         }
     }
 }
@@ -747,10 +1040,30 @@ impl Document {
             face,
             name: None,
             deleted: false,
+            length_unit: None,
+            angle_unit: None,
         });
         self.shape_order.push(ShapeKind::Sketch);
         id
     }
+}
+
+/// Effective default length unit for `sketch`: its own override, or the document default if
+/// unset or the sketch doesn't exist (#52).
+pub fn effective_length_unit(doc: &Document, sketch: SketchId) -> LengthUnit {
+    doc.sketches
+        .get(sketch)
+        .and_then(|s| s.length_unit)
+        .unwrap_or(doc.default_length_unit)
+}
+
+/// Effective default angle unit for `sketch`: its own override, or the document default if
+/// unset or the sketch doesn't exist (#52).
+pub fn effective_angle_unit(doc: &Document, sketch: SketchId) -> AngleUnit {
+    doc.sketches
+        .get(sketch)
+        .and_then(|s| s.angle_unit)
+        .unwrap_or(doc.default_angle_unit)
 }
 
 #[cfg(test)]
@@ -763,6 +1076,194 @@ mod tests {
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         let line = Line::from_local_endpoints(sketch, 0.0, 0.0, 3.0, 4.0);
         assert!((line.length() - 5.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn straight_line_samples_to_just_its_two_endpoints() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let line = Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0);
+        assert_eq!(line.sample_local(BEZIER_SEGMENTS), vec![(0.0, 0.0), (10.0, 0.0)]);
+        assert!(!line.is_curved());
+    }
+
+    #[test]
+    fn curved_line_samples_pass_through_both_endpoints() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let mut line = Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0);
+        line.bezier = Some([(3.0, 4.0), (7.0, 4.0)]);
+        let pts = line.sample_local(BEZIER_SEGMENTS);
+        assert_eq!(pts.len(), BEZIER_SEGMENTS + 1);
+        assert_eq!(pts[0], (0.0, 0.0));
+        assert_eq!(*pts.last().unwrap(), (10.0, 0.0));
+        // Bulges away from the straight chord partway through.
+        assert!(pts[BEZIER_SEGMENTS / 2].1 > 1.0);
+        assert!(line.is_curved());
+    }
+
+    #[test]
+    fn bezier_from_drag_path_ignores_a_short_or_straight_path() {
+        // Too few samples.
+        assert_eq!(bezier_from_drag_path((0.0, 0.0), (10.0, 0.0), &[(0.0, 0.0), (10.0, 0.0)]), None);
+        // Enough samples but negligible deviation from the chord (a near-straight drag).
+        let straight_path = vec![(0.0, 0.0), (5.0, 0.01), (10.0, 0.0)];
+        assert_eq!(bezier_from_drag_path((0.0, 0.0), (10.0, 0.0), &straight_path), None);
+    }
+
+    #[test]
+    fn smooth_joint_bezier_keeps_both_handles_on_the_a_to_b_tangent() {
+        let a = (0.0, 0.0);
+        let v = (10.0, 0.0);
+        let b = (20.0, 0.0);
+        let ([h1_far, h1_near], [h2_near, h2_far]) = smooth_joint_bezier(a, v, b);
+        // Collinear a-v-b: every handle should stay on the same horizontal line.
+        for (_, y) in [h1_far, h1_near, h2_near, h2_far] {
+            assert!(y.abs() < 1e-4);
+        }
+        // Handles near the joint sit strictly between the far endpoints and v.
+        assert!(h1_near.0 > a.0 && h1_near.0 < v.0);
+        assert!(h2_near.0 > v.0 && h2_near.0 < b.0);
+    }
+
+    #[test]
+    fn bezier_from_drag_path_fits_a_curve_through_the_bulge() {
+        let path = vec![(0.0, 0.0), (2.0, 1.0), (5.0, 4.0), (8.0, 1.0), (10.0, 0.0)];
+        let controls = bezier_from_drag_path((0.0, 0.0), (10.0, 0.0), &path);
+        assert!(controls.is_some());
+        let [c0, c1] = controls.unwrap();
+        // Both handles should bulge toward the same side as the drag path (positive y).
+        assert!(c0.1 > 0.0);
+        assert!(c1.1 > 0.0);
+        // Sampling the resulting curve should reproduce a peak near the recorded bulge.
+        let mut line = Line::from_local_endpoints(0, 0.0, 0.0, 10.0, 0.0);
+        line.bezier = Some([c0, c1]);
+        let pts = line.sample_local(BEZIER_SEGMENTS);
+        let peak = pts.iter().cloned().fold(f32::MIN, |acc, (_, y)| acc.max(y));
+        assert!(peak > 2.0);
+    }
+
+    #[test]
+    fn vertex_treatment_chamfer_on_a_right_angle_corner_is_symmetric() {
+        let v = (0.0, 0.0);
+        let a = (10.0, 0.0);
+        let b = (0.0, 10.0);
+        let geom =
+            vertex_treatment_geometry(v, a, b, VertexTreatmentKind::Chamfer, 3.0).unwrap();
+        assert!((geom.p1.0 - 3.0).abs() < 1e-4 && geom.p1.1.abs() < 1e-4);
+        assert!((geom.p2.1 - 3.0).abs() < 1e-4 && geom.p2.0.abs() < 1e-4);
+        assert_eq!(geom.bezier, None);
+    }
+
+    #[test]
+    fn vertex_treatment_fillet_on_a_right_angle_corner_stays_radius_from_center() {
+        let v = (0.0, 0.0);
+        let a = (10.0, 0.0);
+        let b = (0.0, 10.0);
+        let radius = 3.0;
+        let geom =
+            vertex_treatment_geometry(v, a, b, VertexTreatmentKind::Fillet, radius).unwrap();
+        // Tangent length for a 90 degree corner equals the radius (tan(45deg) == 1).
+        assert!((geom.p1.0 - radius).abs() < 1e-4 && geom.p1.1.abs() < 1e-4);
+        assert!((geom.p2.1 - radius).abs() < 1e-4 && geom.p2.0.abs() < 1e-4);
+        let bezier = geom.bezier.expect("fillet should curve the bridging line");
+
+        // The arc center sits on the inward bisector, equidistant (by `radius`) from both p1/p2.
+        let center = (3.0, 3.0);
+        let mut line =
+            Line::from_local_endpoints(0, geom.p1.0, geom.p1.1, geom.p2.0, geom.p2.1);
+        line.bezier = Some(bezier);
+        for (x, y) in line.sample_local(BEZIER_SEGMENTS) {
+            let dist = ((x - center.0).powi(2) + (y - center.1).powi(2)).sqrt();
+            assert!(
+                (dist - radius).abs() < radius * 0.02,
+                "sampled point ({x}, {y}) at distance {dist} from center, expected ~{radius}"
+            );
+        }
+    }
+
+    #[test]
+    fn vertex_treatment_fillet_on_a_45_degree_corner_stays_radius_from_center() {
+        // A shallower corner: far points at 90 degrees apart around a 45 degree wedge.
+        let v = (0.0, 0.0);
+        let a = (10.0, 0.0);
+        let b = (10.0 * (std::f32::consts::FRAC_PI_4).cos(), 10.0 * (std::f32::consts::FRAC_PI_4).sin());
+        let radius = 2.0;
+        let geom =
+            vertex_treatment_geometry(v, a, b, VertexTreatmentKind::Fillet, radius).unwrap();
+        let bezier = geom.bezier.unwrap();
+        let alpha = std::f32::consts::FRAC_PI_4;
+        let bisector_len = radius / (alpha / 2.0).sin();
+        let bisector_angle = alpha / 2.0;
+        let center = (
+            bisector_len * bisector_angle.cos(),
+            bisector_len * bisector_angle.sin(),
+        );
+        let mut line =
+            Line::from_local_endpoints(0, geom.p1.0, geom.p1.1, geom.p2.0, geom.p2.1);
+        line.bezier = Some(bezier);
+        for (x, y) in line.sample_local(BEZIER_SEGMENTS) {
+            let dist = ((x - center.0).powi(2) + (y - center.1).powi(2)).sqrt();
+            assert!(
+                (dist - radius).abs() < radius * 0.05,
+                "sampled point ({x}, {y}) at distance {dist} from center, expected ~{radius}"
+            );
+        }
+    }
+
+    #[test]
+    fn vertex_treatment_clamps_tangent_length_to_the_shorter_edge() {
+        // Both edges only 2mm long; a 10mm chamfer distance must clamp back to ~1.9mm (0.95x).
+        let v = (0.0, 0.0);
+        let a = (2.0, 0.0);
+        let b = (0.0, 2.0);
+        let geom =
+            vertex_treatment_geometry(v, a, b, VertexTreatmentKind::Chamfer, 10.0).unwrap();
+        assert!((geom.p1.0 - 1.9).abs() < 1e-4);
+        assert!((geom.p2.1 - 1.9).abs() < 1e-4);
+    }
+
+    #[test]
+    fn vertex_treatment_rejects_a_degenerate_straight_corner() {
+        let v = (0.0, 0.0);
+        // a and b both lie along +X from v: the "corner" is actually a straight continuation.
+        let a = (10.0, 0.0);
+        let b = (20.0, 0.0);
+        assert_eq!(
+            vertex_treatment_geometry(v, a, b, VertexTreatmentKind::Chamfer, 3.0),
+            None
+        );
+        assert_eq!(
+            vertex_treatment_geometry(v, a, b, VertexTreatmentKind::Fillet, 3.0),
+            None
+        );
+    }
+
+    #[test]
+    fn vertex_treatment_rejects_a_degenerate_folded_back_corner() {
+        let v = (0.0, 0.0);
+        // a and b point in opposite directions from v: a 180 degree fold, not a real corner.
+        let a = (10.0, 0.0);
+        let b = (-10.0, 0.0);
+        assert_eq!(
+            vertex_treatment_geometry(v, a, b, VertexTreatmentKind::Chamfer, 3.0),
+            None
+        );
+    }
+
+    #[test]
+    fn vertex_treatment_rejects_non_positive_amount() {
+        let v = (0.0, 0.0);
+        let a = (10.0, 0.0);
+        let b = (0.0, 10.0);
+        assert_eq!(
+            vertex_treatment_geometry(v, a, b, VertexTreatmentKind::Chamfer, 0.0),
+            None
+        );
+        assert_eq!(
+            vertex_treatment_geometry(v, a, b, VertexTreatmentKind::Fillet, -1.0),
+            None
+        );
     }
 
     #[test]

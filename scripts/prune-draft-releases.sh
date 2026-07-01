@@ -25,7 +25,9 @@ fi
 for ((i = KEEP; i < ${#DRAFTS[@]}; i++)); do
   tag="${DRAFTS[$i]}"
   echo "Deleting draft release ${tag}"
-  gh release delete "$tag" --repo "$REPO" --yes --cleanup-tag
+  gh release delete "$tag" --repo "$REPO" --yes
+  # Draft releases may exist without a matching tag ref; ignore missing refs.
+  gh api -X DELETE "repos/${REPO}/git/refs/tags/${tag}" 2>/dev/null || true
 done
 
 echo "Kept ${KEEP} newest draft(s); deleted $((${#DRAFTS[@]} - KEEP)) older draft(s)"

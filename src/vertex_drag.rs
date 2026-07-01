@@ -789,6 +789,29 @@ pub fn coincident_group(doc: &Document, sketch: SketchId, seed: ConstraintPoint)
     group
 }
 
+/// The two `(line, end)` pairs meeting at `point` via `Coincident` constraints, if exactly two
+/// distinct plain-line endpoints share that vertex. Used by both "convert to bezier" (#54) and
+/// chamfer/fillet (#37/#38) to find the two edges that meet at a sketch vertex.
+pub fn incident_two_lines(
+    doc: &Document,
+    sketch: SketchId,
+    point: ConstraintPoint,
+) -> Option<[(usize, LineEnd); 2]> {
+    let mut endpoints: Vec<(usize, LineEnd)> = coincident_group(doc, sketch, point)
+        .into_iter()
+        .filter_map(|p| match p {
+            ConstraintPoint::LineEndpoint { line, end } => Some((line, end)),
+            _ => None,
+        })
+        .collect();
+    endpoints.sort_by_key(|&(line, end)| (line, matches!(end, LineEnd::End)));
+    endpoints.dedup();
+    match endpoints.as_slice() {
+        [a, b] => Some([*a, *b]),
+        _ => None,
+    }
+}
+
 fn entity_point(entity: ConstraintEntity) -> Option<ConstraintPoint> {
     match entity {
         ConstraintEntity::Point(point) => Some(point),

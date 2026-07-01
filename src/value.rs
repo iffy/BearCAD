@@ -4,6 +4,7 @@
 //! Bare numbers are interpreted as millimetres. Identifiers refer to document parameters.
 
 use crate::model::Document;
+use serde::{Deserialize, Serialize};
 
 /// Evaluate a length expression to millimetres, or `None` if parsing fails.
 pub fn eval_length_mm(text: &str) -> Option<f32> {
@@ -431,8 +432,11 @@ fn has_length_unit_suffix(text: &str) -> bool {
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum LengthUnit {
+/// A unit of length, as accepted by expression parsing and offered as a document/sketch
+/// default in the context pane (#52).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LengthUnit {
     Mm,
     Cm,
     M,
@@ -440,14 +444,58 @@ enum LengthUnit {
     In,
 }
 
+impl Default for LengthUnit {
+    /// Matches today's implicit parser fallback for bare numbers (mm).
+    fn default() -> Self {
+        LengthUnit::Mm
+    }
+}
+
 impl LengthUnit {
-    fn to_mm(self) -> f32 {
+    /// All variants, in the order they should be offered in a unit picker.
+    pub const ALL: [LengthUnit; 5] = [
+        LengthUnit::Mm,
+        LengthUnit::Cm,
+        LengthUnit::M,
+        LengthUnit::Ft,
+        LengthUnit::In,
+    ];
+
+    pub fn to_mm(self) -> f32 {
         match self {
             LengthUnit::Mm => 1.0,
             LengthUnit::Cm => 10.0,
             LengthUnit::M => 1000.0,
             LengthUnit::Ft => 304.8,
             LengthUnit::In => 25.4,
+        }
+    }
+
+    /// Short label for UI pickers (e.g. `"mm"`).
+    pub fn label(self) -> &'static str {
+        match self {
+            LengthUnit::Mm => "mm",
+            LengthUnit::Cm => "cm",
+            LengthUnit::M => "m",
+            LengthUnit::Ft => "ft",
+            LengthUnit::In => "in",
+        }
+    }
+
+    /// Name used in Lua scripts (`bearcad.set_units{ length = "mm" }`).
+    pub fn script_name(self) -> &'static str {
+        self.label()
+    }
+
+    /// Parse a script/UI name back into a unit (case-insensitive); `None` if unrecognised.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "mm" => Some(LengthUnit::Mm),
+            "cm" => Some(LengthUnit::Cm),
+            "m" => Some(LengthUnit::M),
+            "ft" => Some(LengthUnit::Ft),
+            "in" => Some(LengthUnit::In),
+            _ => None,
         }
     }
 }
@@ -652,17 +700,52 @@ impl<'a> Parser<'a> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum AngleUnit {
+/// A unit of angle, as accepted by expression parsing and offered as a document/sketch
+/// default in the context pane (#52).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AngleUnit {
     Deg,
     Rad,
 }
 
+impl Default for AngleUnit {
+    /// Matches today's implicit parser fallback for bare numbers (degrees).
+    fn default() -> Self {
+        AngleUnit::Deg
+    }
+}
+
 impl AngleUnit {
-    fn to_rad(self) -> f32 {
+    /// All variants, in the order they should be offered in a unit picker.
+    pub const ALL: [AngleUnit; 2] = [AngleUnit::Deg, AngleUnit::Rad];
+
+    pub fn to_rad(self) -> f32 {
         match self {
             AngleUnit::Deg => std::f32::consts::PI / 180.0,
             AngleUnit::Rad => 1.0,
+        }
+    }
+
+    /// Short label for UI pickers (e.g. `"deg"`).
+    pub fn label(self) -> &'static str {
+        match self {
+            AngleUnit::Deg => "deg",
+            AngleUnit::Rad => "rad",
+        }
+    }
+
+    /// Name used in Lua scripts (`bearcad.set_units{ angle = "deg" }`).
+    pub fn script_name(self) -> &'static str {
+        self.label()
+    }
+
+    /// Parse a script/UI name back into a unit (case-insensitive); `None` if unrecognised.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "deg" => Some(AngleUnit::Deg),
+            "rad" => Some(AngleUnit::Rad),
+            _ => None,
         }
     }
 }

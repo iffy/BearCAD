@@ -140,7 +140,9 @@ fn walk(
 /// The boundary vertices (local sketch coordinates) of a closed loop, in order: vertex `i`
 /// is the endpoint of `lines[i]` shared with `lines[i - 1]` (wrapping around) — i.e. each
 /// line is walked in whichever direction continues the loop, regardless of which endpoint
-/// is stored as that line's `Start`/`End`.
+/// is stored as that line's `Start`/`End`. A curved (bezier) line contributes its entry
+/// point plus intermediate sampled points (its exit point is the next line's entry point),
+/// so the returned vertex count can exceed `lines.len()`.
 ///
 /// Returns `None` if the lines don't actually form a closed loop (consecutive lines, with
 /// wraparound, must share a vertex via a `Coincident` constraint).
@@ -158,23 +160,169 @@ pub fn loop_vertices_uv(doc: &Document, sketch: SketchId, lines: &[usize]) -> Op
         })
         .collect();
 
-    let mut vertices = Vec::with_capacity(lines.len());
+    let mut vertices = Vec::new();
     for i in 0..lines.len() {
         let prev = (i + lines.len() - 1) % lines.len();
         let (prev_start, prev_end) = keys[prev];
         let (start, end) = keys[i];
-        let entry_uv = if start == prev_start || start == prev_end {
-            let line = doc.lines.get(lines[i])?;
-            (line.x0, line.y0)
+        let reversed = if start == prev_start || start == prev_end {
+            false
         } else if end == prev_start || end == prev_end {
-            let line = doc.lines.get(lines[i])?;
-            (line.x1, line.y1)
+            true
         } else {
             return None;
         };
-        vertices.push(entry_uv);
+        let line = doc.lines.get(lines[i])?;
+        let mut sampled = line.sample_local(crate::model::BEZIER_SEGMENTS);
+        if reversed {
+            sampled.reverse();
+        }
+        sampled.pop(); // the exit point is the next line's entry point
+        vertices.extend(sampled);
     }
     Some(vertices)
+}
+
+/// Ear-clipping triangulation of a simple (possibly concave) 2D polygon. `vertices` are
+/// ordered boundary points; returns `n - 2` triangles as index triples into `vertices`.
+pub fn triangulate_uv(vertices: &[(f32, f32)]) -> Vec<[usize; 3]> {
+    let n = vertices.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    if n == 3 {
+        return vec![[0, 1, 2]];
+    }
+
+    let ccw = signed_area_2d(vertices) > 0.0;
+    let mut indices: Vec<usize> = (0..n).collect();
+    let mut triangles = Vec::with_capacity(n - 2);
+
+    let mut guard = 0;
+    while indices.len() > 3 {
+        if guard > n * n {
+            break;
+        }
+        guard += 1;
+        let mut ear_found = false;
+        let len = indices.len();
+        for i in 0..len {
+            let prev = indices[(i + len - 1) % len];
+            let curr = indices[i];
+            let next = indices[(i + 1) % len];
+            if !is_convex_vertex_2d(vertices[prev], vertices[curr], vertices[next], ccw) {
+                continue;
+            }
+            let tri = [vertices[prev], vertices[curr], vertices[next]];
+            let contains_other = indices.iter().any(|&idx| {
+                idx != prev
+                    && idx != curr
+                    && idx != next
+                    && point_in_triangle_2d(vertices[idx], tri[0], tri[1], tri[2])
+            });
+            if contains_other {
+                continue;
+            }
+            triangles.push([prev, curr, next]);
+            indices.remove(i);
+            ear_found = true;
+            break;
+        }
+        if !ear_found {
+            break;
+        }
+    }
+    if indices.len() == 3 {
+        triangles.push([indices[0], indices[1], indices[2]]);
+    }
+    triangles
+}
+
+/// Triangulate a simple planar polygon in world space (same winding as the boundary loop).
+pub fn triangulate_planar(vertices: &[glam::Vec3], normal: glam::Vec3) -> Vec<[usize; 3]> {
+    if vertices.len() < 3 {
+        return Vec::new();
+    }
+    let uv = project_planar_uv(vertices, normal);
+    triangulate_uv(&uv)
+}
+
+fn project_planar_uv(vertices: &[glam::Vec3], normal: glam::Vec3) -> Vec<(f32, f32)> {
+    let n = normal.normalize_or_zero();
+    let mut u_axis = if n.z.abs() < 0.9 {
+        glam::Vec3::Z.cross(n)
+    } else {
+        glam::Vec3::X.cross(n)
+    };
+    u_axis = u_axis.normalize_or_zero();
+    let v_axis = n.cross(u_axis).normalize_or_zero();
+    let origin = vertices[0];
+    vertices
+        .iter()
+        .map(|p| {
+            let rel = *p - origin;
+            (rel.dot(u_axis), rel.dot(v_axis))
+        })
+        .collect()
+}
+
+fn signed_area_2d(vertices: &[(f32, f32)]) -> f32 {
+    let mut area = 0.0;
+    for i in 0..vertices.len() {
+        let j = (i + 1) % vertices.len();
+        area += vertices[i].0 * vertices[j].1 - vertices[j].0 * vertices[i].1;
+    }
+    area * 0.5
+}
+
+fn is_convex_vertex_2d(prev: (f32, f32), curr: (f32, f32), next: (f32, f32), ccw: bool) -> bool {
+    let cross = (curr.0 - prev.0) * (next.1 - prev.1) - (curr.1 - prev.1) * (next.0 - prev.0);
+    if ccw {
+        cross > 1e-6
+    } else {
+        cross < -1e-6
+    }
+}
+
+pub(crate) fn point_in_triangle_2d(
+    p: (f32, f32),
+    a: (f32, f32),
+    b: (f32, f32),
+    c: (f32, f32),
+) -> bool {
+    let v0 = (c.0 - a.0, c.1 - a.1);
+    let v1 = (b.0 - a.0, b.1 - a.1);
+    let v2 = (p.0 - a.0, p.1 - a.1);
+    let dot00 = v0.0 * v0.0 + v0.1 * v0.1;
+    let dot01 = v0.0 * v1.0 + v0.1 * v1.1;
+    let dot02 = v0.0 * v2.0 + v0.1 * v2.1;
+    let dot11 = v1.0 * v1.0 + v1.1 * v1.1;
+    let dot12 = v1.0 * v2.0 + v1.1 * v2.1;
+    let denom = dot00 * dot11 - dot01 * dot01;
+    if denom.abs() < 1e-8 {
+        return false;
+    }
+    let inv = 1.0 / denom;
+    let u = (dot11 * dot02 - dot01 * dot12) * inv;
+    let v = (dot00 * dot12 - dot01 * dot02) * inv;
+    u >= -1e-4 && v >= -1e-4 && (u + v) <= 1.0 + 1e-4
+}
+
+#[cfg(test)]
+pub(crate) fn point_in_polygon_2d(p: (f32, f32), vertices: &[(f32, f32)]) -> bool {
+    let mut inside = false;
+    let n = vertices.len();
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let (xi, yi) = vertices[i];
+        let (xj, yj) = vertices[j];
+        let intersects = (yi > p.1) != (yj > p.1)
+            && p.0 < (xj - xi) * (p.1 - yi) / (yj - yi) + xi;
+        if intersects {
+            inside = !inside;
+        }
+    }
+    inside
 }
 
 #[cfg(test)]
@@ -309,5 +457,82 @@ mod tests {
         let mut sorted = loops[0].clone();
         sorted.sort_unstable();
         assert_eq!(sorted, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn concave_polygon_triangulation_stays_inside_boundary() {
+        // L-shaped hexagon: convex fan from the first vertex fills the missing notch.
+        let pts = vec![
+            (0.0, 0.0),
+            (4.0, 0.0),
+            (4.0, 1.0),
+            (1.0, 1.0),
+            (1.0, 4.0),
+            (0.0, 4.0),
+        ];
+        let tris = triangulate_uv(&pts);
+        assert_eq!(tris.len(), 4);
+        for [a, b, c] in &tris {
+            let centroid = (
+                (pts[*a].0 + pts[*b].0 + pts[*c].0) / 3.0,
+                (pts[*a].1 + pts[*b].1 + pts[*c].1) / 3.0,
+            );
+            assert!(
+                point_in_polygon_2d(centroid, &pts),
+                "centroid {centroid:?} outside polygon"
+            );
+        }
+        let leak = (2.0, 2.0);
+        assert!(!point_in_polygon_2d(leak, &pts), "notch point should lie outside the L");
+        for [a, b, c] in &tris {
+            assert!(!point_in_triangle_2d(leak, pts[*a], pts[*b], pts[*c]));
+        }
+    }
+
+    #[test]
+    fn concave_loop_inside_a_split_quad_is_detected_and_triangulated() {
+        // Outer quad A-B-C-D with a concave inner loop A-P-E-F-A where P lies on edge B-C.
+        let mut doc = Document::default();
+        doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        // Outer quad edges 0..3
+        doc.lines.push(line(0, 0.0, 0.0, 10.0, 0.0)); // A-B
+        doc.lines.push(line(0, 10.0, 0.0, 10.0, 10.0)); // B-C
+        doc.lines.push(line(0, 10.0, 10.0, 0.0, 10.0)); // C-D
+        doc.lines.push(line(0, 0.0, 10.0, 0.0, 0.0)); // D-A
+        // Inner concave loop edges 4..7
+        doc.lines.push(line(0, 0.0, 0.0, 10.0, 5.0)); // A-P
+        doc.lines.push(line(0, 10.0, 5.0, 6.0, 8.0)); // P-E
+        doc.lines.push(line(0, 6.0, 8.0, 2.0, 6.0)); // E-F
+        doc.lines.push(line(0, 2.0, 6.0, 0.0, 0.0)); // F-A
+        doc.constraints.push(coincident(0, point(0, LineEnd::End), point(1, LineEnd::Start)));
+        doc.constraints.push(coincident(0, point(1, LineEnd::End), point(2, LineEnd::Start)));
+        doc.constraints.push(coincident(0, point(2, LineEnd::End), point(3, LineEnd::Start)));
+        doc.constraints.push(coincident(0, point(3, LineEnd::End), point(0, LineEnd::Start)));
+        doc.constraints.push(coincident(0, point(4, LineEnd::End), point(1, LineEnd::Start)));
+        doc.constraints.push(coincident(0, point(4, LineEnd::Start), point(0, LineEnd::Start)));
+        doc.constraints.push(coincident(0, point(5, LineEnd::End), point(6, LineEnd::Start)));
+        doc.constraints.push(coincident(0, point(6, LineEnd::End), point(7, LineEnd::Start)));
+        doc.constraints.push(coincident(0, point(7, LineEnd::End), point(4, LineEnd::Start)));
+
+        let loops = closed_line_loops(&doc, 0);
+        assert!(loops.len() >= 2, "expected outer and inner loops, got {loops:?}");
+        let inner = loops
+            .iter()
+            .find(|l| l.len() == 4 && l.contains(&4))
+            .expect("inner concave loop");
+        let uv = loop_vertices_uv(&doc, 0, inner).unwrap();
+        assert_eq!(uv.len(), 4);
+        let tris = triangulate_uv(&uv);
+        assert_eq!(tris.len(), 2);
+        for [a, b, c] in &tris {
+            let centroid = (
+                (uv[*a].0 + uv[*b].0 + uv[*c].0) / 3.0,
+                (uv[*a].1 + uv[*b].1 + uv[*c].1) / 3.0,
+            );
+            assert!(
+                point_in_polygon_2d(centroid, &uv),
+                "inner face centroid {centroid:?} leaked outside loop"
+            );
+        }
     }
 }

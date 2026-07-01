@@ -1,14 +1,15 @@
 //! Context pane: union of editable properties for the current selection or draw op.
 
-use crate::actions::Tool;
+use crate::actions::{ExtrudeBodyMode, Tool};
 use crate::document_health::{health_status_label, selection_frozen_summary, DocumentHealth, HealthStatus};
 use crate::geometric_constraints::{constraint_pane_rows, ConstraintPaneRow};
 use crate::hierarchy::SceneElement;
-use crate::model::{Document, RectEdge};
+use crate::model::{Document, RectEdge, SketchId};
 use crate::names::{element_name, single_nameable_from_selection};
 use crate::selection::SceneSelection;
 use crate::icons::icon_for_constraint;
 use crate::shortcuts;
+use crate::value::{AngleUnit, LengthUnit};
 use eframe::egui::{self, Key, TextEdit};
 
 pub const PANE_TITLE: &str = "Context";
@@ -25,6 +26,10 @@ pub struct ContextInput<'a> {
     pub in_sketch: bool,
     /// Current snapping on/off state (shown as a toggle for snapping tools).
     pub snapping_enabled: bool,
+    /// Body an in-progress/edited extrusion would join by default, if any (#32).
+    pub extrude_merge_candidate: Option<usize>,
+    /// Current new-body/merge-into choice for the in-progress/edited extrusion.
+    pub extrude_body_mode: Option<ExtrudeBodyMode>,
 }
 
 /// Tools that snap while drawing or moving sketch geometry.
@@ -51,6 +56,54 @@ pub struct ContextPaneContent {
     pub constraints: Option<Vec<ConstraintPaneRow>>,
     /// `Some(enabled)` when the current tool snaps; renders an enable/disable toggle.
     pub snapping: Option<bool>,
+    /// New-body/merge-into choice for an in-progress or edited extrusion (#32).
+    pub extrude_body: Option<ExtrudeBodyControl>,
+    /// Default length/angle unit picker: document-level when nothing is selected, or
+    /// per-sketch (with a "follow document" inherit option) when a single sketch is
+    /// selected (#52).
+    pub units: Option<UnitsControl>,
+}
+
+/// What the units picker in the context pane should show and let the user change.
+///
+/// NOTE (#52 scope): this control only reads/writes the stored default-unit choice. It
+/// does not (yet) change how bare numbers are parsed or how any dimension is displayed —
+/// see the doc comments on [`crate::model::Document::default_length_unit`] and SPEC §5.3.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnitsControl {
+    /// Sketch this control edits; `None` for the document-level default (nothing selected).
+    pub sketch: Option<SketchId>,
+    /// Effective length unit: `length_override` if set, else the document default.
+    pub effective_length: LengthUnit,
+    /// Effective angle unit: `angle_override` if set, else the document default.
+    pub effective_angle: AngleUnit,
+    /// Explicit per-sketch length override; always `None` for the document-level control.
+    pub length_override: Option<LengthUnit>,
+    /// Explicit per-sketch angle override; always `None` for the document-level control.
+    pub angle_override: Option<AngleUnit>,
+    /// Document defaults, used to label the "Follow document" combo entry when `sketch.is_some()`.
+    pub document_length: LengthUnit,
+    pub document_angle: AngleUnit,
+}
+
+/// A user pick from the [`UnitsControl`] combo boxes, to be applied via
+/// `Action::SetDocumentUnits` or `Action::SetSketchUnits` (#52).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnitsChoice {
+    Document { length: LengthUnit, angle: AngleUnit },
+    Sketch {
+        sketch: SketchId,
+        /// `None` means "follow the document default".
+        length: Option<LengthUnit>,
+        angle: Option<AngleUnit>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtrudeBodyControl {
+    pub mode: ExtrudeBodyMode,
+    pub merge_body: usize,
+    pub merge_body_label: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,6 +129,17 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let name = single_nameable_from_selection(input.selection).map(|element| NameControl { element });
     let snapping =
         (input.in_sketch && tool_uses_snapping(input.tool)).then_some(input.snapping_enabled);
+    let extrude_body = match (input.extrude_merge_candidate, input.extrude_body_mode) {
+        (Some(bi), Some(mode)) => Some(ExtrudeBodyControl {
+            mode,
+            merge_body: bi,
+            merge_body_label: element_name(input.doc, SceneElement::Body(bi))
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| format!("Body {bi}")),
+        }),
+        _ => None,
+    };
+    let units = units_control_from_selection(input.doc, input.selection);
 
     if let Some(construction) = input.draw_rect_construction {
         return ContextPaneContent {
@@ -86,6 +150,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             }),
             constraints: None,
             snapping,
+            extrude_body,
+            units,
         };
     }
     if let Some(construction) = input.draw_line_construction {
@@ -97,6 +163,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             }),
             constraints: None,
             snapping,
+            extrude_body,
+            units,
         };
     }
     if let Some(construction) = input.draw_circle_construction {
@@ -108,6 +176,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             }),
             constraints: None,
             snapping,
+            extrude_body,
+            units,
         };
     }
 
@@ -122,7 +192,39 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         }),
         constraints,
         snapping,
+        extrude_body,
+        units,
     }
+}
+
+/// Build the units picker for the current selection: document-level when nothing is
+/// selected, per-sketch (with an inherit option) when a single sketch is selected, and
+/// hidden (`None`) for any other selection (#52).
+fn units_control_from_selection(doc: &Document, selection: &SceneSelection) -> Option<UnitsControl> {
+    if selection.is_empty() {
+        return Some(UnitsControl {
+            sketch: None,
+            effective_length: doc.default_length_unit,
+            effective_angle: doc.default_angle_unit,
+            length_override: None,
+            angle_override: None,
+            document_length: doc.default_length_unit,
+            document_angle: doc.default_angle_unit,
+        });
+    }
+    let Some(SceneElement::Sketch(id)) = selection.single() else {
+        return None;
+    };
+    let sketch = doc.sketches.get(id)?;
+    Some(UnitsControl {
+        sketch: Some(id),
+        effective_length: sketch.length_unit.unwrap_or(doc.default_length_unit),
+        effective_angle: sketch.angle_unit.unwrap_or(doc.default_angle_unit),
+        length_override: sketch.length_unit,
+        angle_override: sketch.angle_unit,
+        document_length: doc.default_length_unit,
+        document_angle: doc.default_angle_unit,
+    })
 }
 
 pub fn sync_name_draft(
@@ -298,6 +400,8 @@ pub fn show_pane(
     on_construction_changed: &mut impl FnMut(bool),
     on_constraint_clicked: &mut impl FnMut(crate::geometric_constraints::GeometricConstraintType),
     on_snapping_changed: &mut impl FnMut(bool),
+    on_extrude_body_mode_changed: &mut impl FnMut(ExtrudeBodyMode),
+    on_units_changed: &mut impl FnMut(UnitsChoice),
 ) {
     ui.heading(PANE_TITLE);
     ui.separator();
@@ -446,6 +550,120 @@ pub fn show_pane(
         );
     }
 
+    if let Some(control) = &content.extrude_body {
+        any_control = true;
+        ui.label("Extrude into");
+        let mut mode = control.mode;
+        ui.add_enabled_ui(controls_enabled, |ui| {
+            ui.radio_value(
+                &mut mode,
+                ExtrudeBodyMode::MergeInto(control.merge_body),
+                format!("Add to {}", control.merge_body_label),
+            );
+            ui.radio_value(&mut mode, ExtrudeBodyMode::NewBody, "New body");
+        });
+        if mode != control.mode {
+            on_extrude_body_mode_changed(mode);
+        }
+        ui.add_space(4.0);
+    }
+
+    if let Some(control) = &content.units {
+        any_control = true;
+        ui.label(if control.sketch.is_some() {
+            "Sketch units"
+        } else {
+            "Default units"
+        });
+        ui.add_enabled_ui(controls_enabled, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Length");
+                let follow_document_label =
+                    format!("Follow document ({})", control.document_length.label());
+                let selected_text = match (control.sketch, control.length_override) {
+                    (Some(_), None) => follow_document_label.clone(),
+                    _ => control.effective_length.label().to_string(),
+                };
+                egui::ComboBox::from_id_salt("context_length_unit")
+                    .selected_text(selected_text)
+                    .show_ui(ui, |ui| {
+                        if let Some(sketch) = control.sketch {
+                            if ui
+                                .selectable_label(control.length_override.is_none(), follow_document_label)
+                                .clicked()
+                            {
+                                on_units_changed(UnitsChoice::Sketch {
+                                    sketch,
+                                    length: None,
+                                    angle: control.angle_override,
+                                });
+                            }
+                        }
+                        for unit in LengthUnit::ALL {
+                            let selected = control.length_override == Some(unit)
+                                || (control.sketch.is_none() && control.effective_length == unit);
+                            if ui.selectable_label(selected, unit.label()).clicked() {
+                                match control.sketch {
+                                    Some(sketch) => on_units_changed(UnitsChoice::Sketch {
+                                        sketch,
+                                        length: Some(unit),
+                                        angle: control.angle_override,
+                                    }),
+                                    None => on_units_changed(UnitsChoice::Document {
+                                        length: unit,
+                                        angle: control.effective_angle,
+                                    }),
+                                }
+                            }
+                        }
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.label("Angle ");
+                let follow_document_label =
+                    format!("Follow document ({})", control.document_angle.label());
+                let selected_text = match (control.sketch, control.angle_override) {
+                    (Some(_), None) => follow_document_label.clone(),
+                    _ => control.effective_angle.label().to_string(),
+                };
+                egui::ComboBox::from_id_salt("context_angle_unit")
+                    .selected_text(selected_text)
+                    .show_ui(ui, |ui| {
+                        if let Some(sketch) = control.sketch {
+                            if ui
+                                .selectable_label(control.angle_override.is_none(), follow_document_label)
+                                .clicked()
+                            {
+                                on_units_changed(UnitsChoice::Sketch {
+                                    sketch,
+                                    length: control.length_override,
+                                    angle: None,
+                                });
+                            }
+                        }
+                        for unit in AngleUnit::ALL {
+                            let selected = control.angle_override == Some(unit)
+                                || (control.sketch.is_none() && control.effective_angle == unit);
+                            if ui.selectable_label(selected, unit.label()).clicked() {
+                                match control.sketch {
+                                    Some(sketch) => on_units_changed(UnitsChoice::Sketch {
+                                        sketch,
+                                        length: control.length_override,
+                                        angle: Some(unit),
+                                    }),
+                                    None => on_units_changed(UnitsChoice::Document {
+                                        length: control.effective_length,
+                                        angle: unit,
+                                    }),
+                                }
+                            }
+                        }
+                    });
+            });
+        });
+        ui.add_space(4.0);
+    }
+
     if !any_control {
         ui.label(
             egui::RichText::new("Select geometry or draw to edit properties")
@@ -471,6 +689,8 @@ mod tests {
             draw_circle_construction: None,
             in_sketch: false,
             snapping_enabled: true,
+            extrude_merge_candidate: None,
+            extrude_body_mode: None,
         }
     }
 
@@ -484,6 +704,16 @@ mod tests {
                 construction: None,
                 constraints: None,
                 snapping: None,
+                extrude_body: None,
+                units: Some(UnitsControl {
+                    sketch: None,
+                    effective_length: LengthUnit::Mm,
+                    effective_angle: AngleUnit::Deg,
+                    length_override: None,
+                    angle_override: None,
+                    document_length: LengthUnit::Mm,
+                    document_angle: AngleUnit::Deg,
+                }),
             }
         );
     }
@@ -507,6 +737,8 @@ mod tests {
                 }),
                 constraints: None,
                 snapping: None,
+                extrude_body: None,
+                units: None,
             }
         );
     }
@@ -545,6 +777,8 @@ mod tests {
             draw_circle_construction: None,
             in_sketch: false,
             snapping_enabled: true,
+            extrude_merge_candidate: None,
+            extrude_body_mode: None,
         });
         assert_eq!(
             content,
@@ -556,6 +790,16 @@ mod tests {
                 }),
                 constraints: None,
                 snapping: None,
+                extrude_body: None,
+                units: Some(UnitsControl {
+                    sketch: None,
+                    effective_length: LengthUnit::Mm,
+                    effective_angle: AngleUnit::Deg,
+                    length_override: None,
+                    angle_override: None,
+                    document_length: LengthUnit::Mm,
+                    document_angle: AngleUnit::Deg,
+                }),
             }
         );
     }
@@ -579,6 +823,8 @@ mod tests {
                 }),
                 constraints: None,
                 snapping: None,
+                extrude_body: None,
+                units: None,
             }
         );
     }
@@ -595,6 +841,8 @@ mod tests {
             draw_circle_construction: None,
             in_sketch: false,
             snapping_enabled: true,
+            extrude_merge_candidate: None,
+            extrude_body_mode: None,
         });
         assert_eq!(
             content.construction.unwrap().value,
@@ -618,6 +866,8 @@ mod tests {
             draw_circle_construction: None,
             in_sketch: false,
             snapping_enabled: true,
+            extrude_merge_candidate: None,
+            extrude_body_mode: None,
         });
         assert_eq!(
             content,
@@ -631,6 +881,8 @@ mod tests {
                 }),
                 constraints: None,
                 snapping: None,
+                extrude_body: None,
+                units: None,
             }
         );
     }
@@ -647,6 +899,8 @@ mod tests {
             draw_circle_construction: None,
             in_sketch: false,
             snapping_enabled: true,
+            extrude_merge_candidate: None,
+            extrude_body_mode: None,
         });
         assert_eq!(
             content.constraints.as_ref().map(|rows| rows.len()),

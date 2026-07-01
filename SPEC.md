@@ -131,6 +131,51 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   diagonal) yields multiple selectable polygon faces. Scriptable via
   `bearcad.extrude{ polygon = {line_index, ...} }`, which takes an explicit ordered line list
   rather than relying on auto-detection.
+- **Bezier curves (#54):** a curve is a `Line` with an optional pair of cubic tangent-handle
+  control points (`[0]` near `(x0,y0)`, `[1]` near `(x1,y1)`) — its two endpoints stay ordinary
+  constrainable vertices, so coincidence/distance constraints, dragging, undo, and persistence
+  all work unchanged. Curves are made three ways:
+  - **Click-drag with the Line tool:** a click-click still draws a straight segment (unchanged);
+    holding the button down and dragging away from the straight chord before releasing shapes a
+    curve through the drag path instead. A negligible drag (a plain click/tap) stays straight.
+  - **Draggable handles:** once committed, a curved line's two tangent handles are shown (in the
+    active sketch) as small discs with dashed guides back to their endpoint; dragging one
+    reshapes the curve live.
+  - **Right-click a vertex:** right-clicking a vertex where exactly two plain lines meet offers
+    "Convert to bezier curve", which smooths the joint into a tangent-continuous pair of curves
+    (Catmull-Rom-style, using the two lines' far endpoints to set the tangent direction through
+    the shared vertex). The reverse, "Straighten curve", is offered when right-clicking an
+    existing curved line.
+  - A curved line is faceted into `BEZIER_SEGMENTS` (24) straight sub-segments for rendering,
+    hit-testing, and — when part of a closed polygon loop — extrusion tessellation (the same
+    style of approximation already used for circular profiles). Side walls of an extrusion
+    swept from a curved profile edge are correspondingly multi-faceted, not a single flat quad;
+    however, per-edge affordances that still assume one edge = one flat quad (e.g. sketching on
+    an extrusion's side-wall face) are not curve-aware — sketching on the side wall of a curved
+    extrusion edge is not currently supported. Inference/extension snapping onto a curved line
+    still uses its straight chord (not the true curve) for the midpoint/on-line snap targets.
+  - Scriptable via `bearcad.line{ x=, y=, x1=, y1=, bezier = { {cx0, cy0}, {cx1, cy1} } }`.
+- **Chamfer and fillet (#37/#38), 2D sketch vertices only:** both are tools ("push/pull" gizmo
+  + text-entry input, mirroring the extrude tool) that operate on a sketch vertex where exactly
+  two plain lines meet. Both truncate each line's endpoint back along itself and bridge the two
+  new endpoints with a new `Line`: a **chamfer** truncates by the typed distance and bridges with
+  a **straight** line; a **fillet** truncates by the tangent length implied by the requested
+  radius and bridges with a line whose `bezier` field is set to a **single-cubic-bezier
+  approximation of the circular arc** (accurate for realistic corner angles, not a true NURBS
+  arc) — this reuses the bezier-curve machinery above (rendering, hit-testing, extrusion
+  tessellation) for free, since a filleted corner is, to the rest of the app, just another curved
+  `Line`. The tangent length is clamped so it never cuts back past either adjacent line's own far
+  endpoint; a corner within ~1° of straight (0°/180°, i.e. parallel/anti-parallel edges) is
+  rejected as degenerate. Only the `Coincident` constraint directly between the two treated
+  endpoints is removed on commit — other constraints that happened to reference the old vertex
+  position are **not** automatically fixed up (a known, documented limitation; the resulting
+  sketch may need manual re-constraining). This is explicitly **2D sketch vertices only** — there
+  is no 3D solid-edge chamfer/fillet in this version, because BearCAD has no BREP/NURBS kernel
+  yet (see §10); a mesh-bevel approximation on extrusion side/cap edges would need new per-edge
+  picking infrastructure and mesh-stitching at corners, and is left as future work alongside true
+  kernel-backed 3D fillets. Scriptable via `bearcad.chamfer_vertex{ point = {...}, distance = }`
+  and `bearcad.fillet_vertex{ point = {...}, radius = }`, where `point` is the usual
+  `ConstraintPoint` table (e.g. `{ kind = "line", index = 0, ["end"] = "end" }`).
 
 ### 3.2 Solid creation from sketches
 - **Extrude** — blind, symmetric, to-object, with optional draft angle.
@@ -140,7 +185,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     polygon, cylinder per circle). Each extrusion produces a **Body** (the solid result) that
     depends on it: the body nests under the extrusion in the Elements pane and is removed if the
     extrusion is deleted.
-    Created in script via `bearcad.extrude{ rect|circle|polygon|rects|circles, distance, name? }`.
+    Created in script via
+    `bearcad.extrude{ rect|circle|polygon|rects|circles, distance, name?, body? }`.
   - Implemented: the data model (Extrusion + Body) with `.bearcad` persistence; mesh generation;
     both hierarchy elements; depth-tested flat-shaded rendering; and the interactive **Extrude
     tool** (`E`): click coplanar faces to toggle inclusion (hover-highlighted), drag the normal
@@ -160,14 +206,27 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     preview reflects the snapped target immediately while still dragging (not just after
     release), so extruding to a slanted or irregular target shows the actual resulting shape —
     e.g. a slanted top cap — rather than a generic blind/rectangular extrude (#63).
+  - **Body target (#32)**: a `Body`'s source is one or more extrusions (`BodySource::Extrusion`
+    for one, `BodySource::Extrusions` for several). Extruding from a sketch on an existing body's
+    face (a cap or side face) defaults to joining that body instead of creating a new one; the
+    context pane shows "Add to `<body>`" vs. "New body" while extruding or editing an extrusion
+    to override the choice (editing can also split a merged extrusion back out into its own
+    body). Deleting one extrusion of a multi-extrusion body only drops that extrusion's
+    contribution — the body survives as long as it still has at least one. Scriptable via
+    `bearcad.extrude{ ..., body = "merge" }` (joins the face's body if there is one; omitted or
+    any other value always creates a new body, matching the declarative/OpenSCAD-style default).
 - **Revolve** — about an axis, full or partial angle.
 
 ### 3.3 Combining solids
 - **Boolean**: union, cut (subtract), intersect.
 
 ### 3.4 Modifying solids
-- **Fillet** and **Chamfer** on selected edges (constant radius/distance for v1; variable
-  is a stretch goal).
+- **Fillet** and **Chamfer**: v1 ships these as the 2D sketch-vertex tools described in §3.1
+  (#37/#38) — truncate-and-bridge on a sketch vertex where two lines meet, with the fillet arc
+  approximated by a single bezier segment on the bridging `Line`. True 3D solid-edge fillet/
+  chamfer on selected edges (constant radius/distance for v1; variable is a stretch goal) remains
+  future work pending a BREP/NURBS geometry kernel (see §10) — BearCAD has none today, and a
+  mesh-bevel approximation without one was judged out of scope for this change.
 - **Shell** — hollow a solid to a wall thickness, removing selected faces.
 
 ### 3.5 Advanced features
@@ -445,6 +504,15 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   with `index`, it accepts **3D body faces**: `kind = "extrude_cap", extrusion, profile =
   "rect"|"circle", profile_index, top?` and `kind = "extrude_side", extrusion, profile,
   profile_index, edge?`. (This makes sketching on a solid's face scriptable, e.g. for testing.)
+- **Point-level selection (#68):** `bearcad.select{ kind = "line", index, ["end"] = "start"|"end" }`
+  or `bearcad.select{ kind = "rect", index, corner = 0..3 }` selects an individual vertex (a
+  `ConstraintPoint`) rather than the whole element, so e.g. `bearcad.select{...}` +
+  `bearcad.select({...}, true)` + `bearcad.add_geometric_constraint("coincident")` can join two
+  line endpoints (closing a polygon loop) purely from a script — the same point-numbering the
+  interactive Constraint tool uses (a rect's corners are numbered 0–3 counterclockwise starting
+  at its `(x, y)` origin corner; a line's two points are `start`/`end`, i.e. `(x0,y0)`/`(x1,y1)`).
+  A table with neither `end` nor `corner` still resolves to the whole element as before; pass an
+  explicit `point = true` to target a point that has no such field (e.g. a circle's center).
 
 ---
 
@@ -549,10 +617,33 @@ explicit exception that lets us drive "mouse/keyboard" flows for testing purpose
 - **STL export from the GUI:** **File → Export STL…** exports all bodies (via a save
   dialog); right-clicking a **body** row in the Elements pane exports just that body. Both
   mirror the scriptable `bearcad.export_stl` (§8, §9.2).
+- **STL import (#70):** **File → Import STL…** (open dialog) reads an STL file — ASCII or
+  binary, auto-detected by exact byte-length match against the binary format's
+  header+triangle-count framing — and adds it as a new **Body** with no source feature (no
+  sketch/extrusion to nest under, so it appears at the top level of the Elements pane, named
+  after the file). Scriptable via `bearcad.import_stl(path)`. The mesh is stored and rendered
+  as-is (no auto-centering/scaling); it participates in STL/STEP export, visibility, renaming,
+  and deletion exactly like any other body, but — since it has no sketch/distance parameters —
+  can't be edited or merged into by a further extrude the way an extrusion-backed body can (#32).
+- **STEP import (#71):** **File → Import STEP…** reads a STEP (ISO-10303-21) document's
+  `FACETED_BREP` geometry — the same `POLY_LOOP`-bounded planar `FACE_SURFACE` subset BearCAD's
+  own STEP export produces — and adds it as a new **Body**, the same way STL import does
+  (top-level in the Elements pane, named after the file). Scriptable via
+  `bearcad.import_step(path)`. STEP files using full BREP geometry (`ADVANCED_FACE` with
+  curved/NURBS surfaces, as most CAD tools export) are rejected with a clear error rather than
+  approximated: BearCAD has no NURBS/curve kernel yet (§10 is still **TBD**), so only the
+  triangulated subset round-trips.
 - **Export session commands:** **Help → Export Session Commands…** (also a command-palette
   entry, "Export Session Commands…") writes everything done since the app opened as a
   timestamped, replayable Lua script (the same instructions as `--show-commands`, §9). Useful
-  for reproducing a bug by pasting the steps. The session is always recorded interactively.
+  for reproducing a bug by pasting the steps, or for turning an interactively-modeled part into
+  a script. The session is always recorded interactively, including the interactive draw/extrude
+  tools (#59): committing a rectangle/line/circle/extrusion logs the equivalent declarative
+  `bearcad.rect{}`/`line{}`/`circle{}`/`extrude{}` call built from the as-committed geometry (not
+  the in-progress drag), so a script-recorded session and a hand-written script produce the same
+  document when replayed. Editing an already-committed extrusion isn't yet representable by a
+  declarative call, so re-commits from the Edit flow aren't re-logged (a known gap, not a second,
+  wrong instruction).
 
 ### 11.2 Command palette
 - VS Code-style palette listing **context-pertinent** commands. Commands come from the
@@ -604,6 +695,24 @@ explicit exception that lets us drive "mouse/keyboard" flows for testing purpose
 - **Gizmos draw through bodies:** manipulation gizmos and their grab handles (plane-making,
   extrusion offset/angle, and any future gizmo) render with depth testing disabled, so they
   stay visible and clickable even when a body would otherwise occlude them.
+- **View-cube HUD settings popup (#33):** where the projection (orthographic/perspective)
+  toggle button used to sit (bottom-left of the view-cube HUD), a gear icon instead opens a
+  popup with two icon-button rows (words are avoided in favour of icons + tooltips):
+  - **Projection** — the same orthographic/perspective choice the old button toggled
+    directly; the active one is highlighted, click the other to switch.
+  - **Shading** — how committed bodies render, one of:
+    - *Wireframe*: edges only, no fill.
+    - *Transparent solid*: translucent fill with edges visible through it.
+    - *Solid*: opaque fill, no edge overlay (the default — today's existing look).
+    - *Solid + wireframe*: opaque fill plus an edge overlay that stays visible through the
+      body, using the same depth-test-disabled technique as gizmos drawing through bodies
+      (above) so the far-side edges aren't occluded by the near faces.
+
+  Both rows are backed by `Camera` state (a viewport display preference, alongside
+  projection mode — not saved model geometry) and are fully scriptable:
+  `bearcad.ui.toggle_projection()` / `bearcad.ui.view("orthographic" | "natural")` for
+  projection, and `bearcad.ui.shading("wireframe" | "transparent" | "solid" |
+  "solid_wireframe")` for shading.
 
 ---
 

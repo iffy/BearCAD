@@ -82,6 +82,9 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
         Tool::Dimension => Some(ShortcutHint::plain("D")),
         Tool::Constraint => Some(ShortcutHint::plain("C")),
         Tool::Extrude => Some(ShortcutHint::plain("E")),
+        // K/F: no conflict with any other tool letter or constraint mnemonic (A/T/I/M/V/H).
+        Tool::Chamfer => Some(ShortcutHint::plain("K")),
+        Tool::Fillet => Some(ShortcutHint::plain("F")),
         Tool::Select => None,
     }
 }

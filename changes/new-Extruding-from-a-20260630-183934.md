@@ -1,0 +1,1 @@
+Extruding from a body's own face now defaults to joining that body instead of always creating a new one; the context pane (and bearcad.extrude{body="merge"}) lets you choose new-body vs. add-to-body when extruding or editing, including splitting a merged extrusion back out

@@ -801,11 +801,16 @@ impl ViewportGpuResources {
         let plane_fill_index_count = scene.plane_fill_indices.len();
         let overlay_index_count = scene.overlay_indices.len();
         let gizmo_index_count = scene.gizmo_indices.len();
+        // Body edge-wireframe overlay (#33). Same depth-disabled pipeline as gizmos (both
+        // need to stay visible "through" bodies), so it shares the final draw call below
+        // rather than getting a dedicated pipeline and boundary.
+        let wireframe_index_count = scene.wireframe_indices.len();
         let total_index_count = base_index_count
             + sketch_fill_index_count
             + plane_fill_index_count
             + overlay_index_count
-            + gizmo_index_count;
+            + gizmo_index_count
+            + wireframe_index_count;
         let index_bytes = (total_index_count * std::mem::size_of::<u32>()) as u64;
         let text_vertex_bytes =
             (scene.text_vertices.len() * std::mem::size_of::<GpuTextVertex>()) as u64;
@@ -834,6 +839,7 @@ impl ViewportGpuResources {
             combined_indices.extend_from_slice(&scene.plane_fill_indices);
             combined_indices.extend_from_slice(&scene.overlay_indices);
             combined_indices.extend_from_slice(&scene.gizmo_indices);
+            combined_indices.extend_from_slice(&scene.wireframe_indices);
             queue.write_buffer(
                 &self.index_buffer,
                 0,
@@ -935,7 +941,9 @@ impl ViewportGpuResources {
                     pass.draw_indexed(plane_end..overlay_end, 0, 0..1);
                 }
                 if total_end > overlay_end {
-                    // Gizmos: depth test disabled so handles show through bodies (#36).
+                    // Gizmos, then the body edge-wireframe overlay (#33): both use the
+                    // depth-test-disabled pipeline so they show through bodies (#36), so
+                    // they share this one draw call over their combined index range.
                     pass.set_pipeline(&self.gizmo_pipeline);
                     pass.draw_indexed(overlay_end..total_end, 0, 0..1);
                 }

@@ -4,7 +4,8 @@
 //! (and optionally an angle around an axis).
 
 use crate::face::{
-    line_world_endpoints, rect_center_world, rect_world_corners, sketch_frame, SketchFrame,
+    line_world_endpoints, line_world_polyline, rect_center_world, rect_world_corners, sketch_frame,
+    SketchFrame,
 };
 use crate::hierarchy::SceneElement;
 use crate::model::{
@@ -1145,10 +1146,21 @@ fn draw_line_highlight(
     line: &Line,
     color: egui::Color32,
 ) {
-    let Some((a, b)) = line_world_endpoints(doc, &line) else {
+    let Some(points) = line_world_polyline(doc, line) else {
         return;
     };
-    draw_segment_highlight(painter, project, a, b, color);
+    for pair in points.windows(2) {
+        if let (Some(pa), Some(pb)) = (project(pair[0]), project(pair[1])) {
+            painter.line_segment([pa, pb], egui::Stroke::new(4.0, color));
+        }
+    }
+    if let (Some(&a), Some(&b)) = (points.first(), points.last()) {
+        for p in [a, b] {
+            if let Some(sp) = project(p) {
+                painter.circle_filled(sp, 5.0, color);
+            }
+        }
+    }
 }
 
 fn draw_segment_highlight(
@@ -1235,11 +1247,14 @@ pub fn draw_polygon_face_highlight(
     if pts.len() < 3 {
         return;
     }
-    painter.add(egui::Shape::convex_polygon(
-        pts,
-        color.gamma_multiply(FACE_HOVER_FILL_MULTIPLIER),
-        egui::Stroke::new(2.0, color),
-    ));
+    let normal = (poly[1] - poly[0]).cross(poly[2] - poly[0]).normalize_or_zero();
+    for [a, b, c] in crate::polygon::triangulate_planar(poly, normal) {
+        painter.add(egui::Shape::convex_polygon(
+            vec![pts[a], pts[b], pts[c]],
+            color.gamma_multiply(FACE_HOVER_FILL_MULTIPLIER),
+            egui::Stroke::new(2.0, color),
+        ));
+    }
 }
 
 fn draw_plane_face_highlight(
@@ -1456,10 +1471,12 @@ pub fn nearest_sketch_line_in_sketch(
         if line.deleted || line.sketch != sketch {
             continue;
         }
-        let Some((a, b)) = line_world_endpoints(doc, line) else {
+        let Some(points) = line_world_polyline(doc, line) else {
             continue;
         };
-        consider(ConstraintLine::Line(li), a, b);
+        for pair in points.windows(2) {
+            consider(ConstraintLine::Line(li), pair[0], pair[1]);
+        }
     }
 
     for (ri, rect) in doc.rects.iter().enumerate() {
@@ -1571,10 +1588,12 @@ fn nearest_sketch_edge(
         if line.deleted {
             continue;
         }
-        let Some((a, b)) = line_world_endpoints(doc, line) else {
+        let Some(points) = line_world_polyline(doc, line) else {
             continue;
         };
-        consider(PickTargetKind::Line(li), a, b, "Line");
+        for pair in points.windows(2) {
+            consider(PickTargetKind::Line(li), pair[0], pair[1], "Line");
+        }
     }
 
     for (ri, rect) in doc.rects.iter().enumerate() {

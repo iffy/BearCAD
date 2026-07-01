@@ -7,7 +7,7 @@
 
 use crate::face::{local_to_world, sketch_geometry_frame, SketchFrame};
 use crate::geometric_constraints::point_uv;
-use crate::model::{BodySource, Document, ExtrudeFace, ExtrudeTarget, Extrusion};
+use crate::model::{Document, ExtrudeFace, ExtrudeTarget, Extrusion};
 use glam::Vec3;
 
 /// Number of segments used to facet a circular profile.
@@ -64,12 +64,25 @@ pub fn body_solid_mesh(doc: &Document, body_index: usize) -> Option<SolidMesh> {
     if body.deleted {
         return None;
     }
-    let BodySource::Extrusion(ei) = body.source;
-    let extrusion = doc.extrusions.get(ei)?;
-    if extrusion.deleted {
-        return None;
+    if let Some(idx) = body.source.imported_mesh_index() {
+        let imported = doc.imported_meshes.get(idx)?;
+        return (!imported.triangles.is_empty()).then(|| SolidMesh {
+            triangles: imported.triangles.clone(),
+        });
     }
-    extrusion_mesh(doc, extrusion)
+    let mut mesh = SolidMesh::default();
+    for &ei in body.source.extrusion_indices() {
+        let Some(extrusion) = doc.extrusions.get(ei) else {
+            continue;
+        };
+        if extrusion.deleted {
+            continue;
+        }
+        if let Some(solid) = extrusion_mesh(doc, extrusion) {
+            mesh.triangles.extend(solid.triangles);
+        }
+    }
+    (!mesh.is_empty()).then_some(mesh)
 }
 
 /// Combined solid mesh of every non-deleted body in the document (the geometry an STL/OBJ
@@ -333,21 +346,23 @@ fn circle_profile_world(frame: &SketchFrame, cx: f32, cy: f32, r: f32) -> Vec<Ve
         .collect()
 }
 
-/// Emit caps + side walls for a convex profile, given its base loop and the matching
-/// `top` loop (one top vertex per base vertex, so the top cap may be slanted).
+/// Emit caps + side walls for a simple (possibly concave) profile, given its base loop and
+/// the matching `top` loop (one top vertex per base vertex, so the top cap may be slanted).
 fn extrude_profile(profile: &[Vec3], top: &[Vec3], triangles: &mut Vec<[Vec3; 3]>) {
     let n = profile.len();
     if n < 3 || top.len() != n {
         return;
     }
 
-    // Bottom cap (fan).
-    for i in 1..n - 1 {
-        triangles.push([profile[0], profile[i + 1], profile[i]]);
+    let normal = (profile[1] - profile[0])
+        .cross(profile[2] - profile[0])
+        .normalize_or_zero();
+    let cap_tris = crate::polygon::triangulate_planar(profile, normal);
+    for &[a, b, c] in &cap_tris {
+        triangles.push([profile[a], profile[c], profile[b]]);
     }
-    // Top cap (fan, opposite winding).
-    for i in 1..n - 1 {
-        triangles.push([top[0], top[i], top[i + 1]]);
+    for &[a, b, c] in &cap_tris {
+        triangles.push([top[a], top[b], top[c]]);
     }
     // Side walls (one quad per edge).
     for i in 0..n {
@@ -437,7 +452,7 @@ mod tests {
         doc.extrusions
             .push(extrusion(sketch, vec![ExtrudeFace::Rect(0)], 6.0));
         doc.bodies.push(crate::model::Body {
-            source: BodySource::Extrusion(0),
+            source: crate::model::BodySource::Extrusion(0),
             name: Some("Box".into()),
             deleted: false,
         });

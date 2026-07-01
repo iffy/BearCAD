@@ -20,6 +20,7 @@ pub struct CommandLog {
     defer_baseline: bool,
     print_stdout: bool,
     history: Vec<Instruction>,
+    extrusion_count_before: usize,
 }
 
 impl CommandLog {
@@ -61,6 +62,7 @@ impl CommandLog {
                 | Action::ViewHome
                 | Action::SetProjectionMode(_)
                 | Action::ToggleProjectionMode
+                | Action::SetShadingMode(_)
         )
     }
 
@@ -77,13 +79,17 @@ impl CommandLog {
             Action::CancelOperation
                 | Action::BeginConstructionPlane { .. }
                 | Action::BeginDimensionEdit { .. }
-                | Action::CommitRectangle
-                | Action::CommitLine
-                | Action::CommitCircle
         )
     }
 
-    pub fn before_apply(&mut self, action: &Action, cam: &Camera) {
+    pub fn before_apply(&mut self, action: &Action, doc: &Document, cam: &Camera) {
+        // CommitExtrusion is reused for both creating a new extrusion and editing an
+        // existing one (#59); only the former is replayable via the declarative
+        // `bearcad.extrude{}` call, so remember the pre-commit count to tell them apart
+        // in `after_apply`.
+        if matches!(action, Action::CommitExtrusion) {
+            self.extrusion_count_before = doc.extrusions.len();
+        }
         if Self::should_log(action) && !Self::is_camera_action(action) {
             self.flush_camera(cam);
         }
@@ -100,7 +106,14 @@ impl CommandLog {
             }
             return;
         }
-        if let Some(instruction) = instruction_from_action(&action, doc) {
+        let instruction = if matches!(action, Action::CommitExtrusion) {
+            (doc.extrusions.len() > self.extrusion_count_before)
+                .then(|| crate::script::instruction_for_new_extrusion(doc))
+                .flatten()
+        } else {
+            instruction_from_action(&action, doc)
+        };
+        if let Some(instruction) = instruction {
             self.emit(instruction);
         }
         if Self::is_automatic_camera_side_effect(&action) {
@@ -165,6 +178,9 @@ impl CommandLog {
             }
             Action::ToggleProjectionMode => {
                 self.note_view_instruction(Instruction::ToggleProjectionMode);
+            }
+            Action::SetShadingMode(mode) => {
+                self.note_view_instruction(Instruction::ShadingMode(mode));
             }
             _ => {}
         }
@@ -257,7 +273,7 @@ mod tests {
         let cam = Camera::default();
         log.note_orbit(Vec2::new(10.0, 0.0));
         log.note_orbit(Vec2::new(-4.0, 5.0));
-        log.before_apply(&Action::SetTool(crate::actions::Tool::Select), &cam);
+        log.before_apply(&Action::SetTool(crate::actions::Tool::Select), &Document::default(), &cam);
         assert_eq!(log.pending_orbit, Vec2::ZERO);
     }
 
@@ -266,7 +282,7 @@ mod tests {
         let mut log = CommandLog::new_recording(false);
         let cam = Camera::default();
         log.note_view_instruction(Instruction::View(crate::camera::StandardView::Front));
-        log.before_apply(&Action::SetTool(crate::actions::Tool::Rectangle), &cam);
+        log.before_apply(&Action::SetTool(crate::actions::Tool::Rectangle), &Document::default(), &cam);
         assert!(log.pending_discrete.is_none());
     }
 

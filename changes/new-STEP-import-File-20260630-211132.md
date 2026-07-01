@@ -1,0 +1,1 @@
+STEP import: File > Import STEP... (and bearcad.import_step) reads a STEP file's FACETED_BREP/POLY_LOOP geometry as a new body; files needing a real BREP kernel (curved surfaces) are rejected with a clear error instead of silently mis-imported

@@ -9,10 +9,14 @@ use crate::actions::{
 use crate::command_palette::{best_match, commands_for_state, PaletteOutcome};
 use crate::constraints::add_distance_constraint;
 use crate::hierarchy::SceneElement;
-use crate::model::{ConstraintLine, ConstraintPoint, DistanceTarget, FaceId, RectEdge, SketchId};
+use crate::model::{
+    ConstraintLine, ConstraintPoint, DistanceTarget, FaceId, RectEdge, SketchId,
+    VertexTreatmentKind,
+};
+use crate::value::{AngleUnit, LengthUnit};
 
 use crate::construction::PlaneDim;
-use crate::camera::{ProjectionMode, StandardView};
+use crate::camera::{ProjectionMode, ShadingMode, StandardView};
 use crate::view_cube::{CubeCornerId, CubeEdgeId};
 
 use crate::lua_script::{load_script, ScriptTickData};
@@ -31,6 +35,12 @@ pub enum Instruction {
     Save(Option<String>),
     /// Export bodies to an STL file at `path`; `body` names a single body (`None` = all).
     ExportStl { path: String, body: Option<String> },
+    /// Export bodies to a STEP file at `path`; `body` names a single body (`None` = all).
+    ExportStep { path: String, body: Option<String> },
+    /// Import an STL file at `path` as a new body (#70).
+    ImportStl { path: String },
+    /// Import a STEP file at `path` as a new body (#71).
+    ImportStep { path: String },
     Clear,
     Undo,
     Tool(Tool),
@@ -45,11 +55,13 @@ pub enum Instruction {
         height: f32,
     },
     /// Create a line directly in the active sketch (face-local mm endpoints) with a locked length.
+    /// `bezier` (#54) makes it a curve: `[handle near (x0,y0), handle near (x1,y1)]`.
     CreateLine {
         x0: f32,
         y0: f32,
         x1: f32,
         y1: f32,
+        bezier: Option<[(f32, f32); 2]>,
     },
     /// Create a circle directly in the active sketch (face-local mm) with a locked diameter.
     CreateCircle {
@@ -62,6 +74,8 @@ pub enum Instruction {
         sketch: SketchId,
         faces: Vec<crate::model::ExtrudeFace>,
         distance: f32,
+        /// Join the body of the face being extruded from instead of creating a new one (#32).
+        merge_into_body: bool,
     },
     SetElementVisible {
         element: SceneElement,
@@ -88,6 +102,14 @@ pub enum Instruction {
         name: String,
     },
     FocusElementName,
+    /// Set the document-wide default length/angle units (#52).
+    SetDocumentUnits { length: LengthUnit, angle: AngleUnit },
+    /// Set (or clear, via `None`) a per-sketch length/angle unit override (#52).
+    SetSketchUnits {
+        sketch: SketchId,
+        length: Option<LengthUnit>,
+        angle: Option<AngleUnit>,
+    },
     SetDim { axis: RectAxis, value: String },
     SetDimLabelOffset { axis: DimLabelAxis, offset: f32 },
     BeginEditCommittedDim { axis: DimLabelAxis },
@@ -110,6 +132,15 @@ pub enum Instruction {
         u: f32,
         v: f32,
     },
+    /// Chamfer or fillet a sketch vertex where exactly two plain lines meet (#37/#38):
+    /// truncates both lines back from the vertex and bridges them with a new line (straight
+    /// for a chamfer, single-cubic-bezier arc for a fillet). `amount` is the chamfer distance
+    /// or fillet radius depending on `kind`.
+    VertexTreatment {
+        point: ConstraintPoint,
+        kind: VertexTreatmentKind,
+        amount: f32,
+    },
     SetLineLength { value: String },
     SetCircleDiameter { value: String },
     BeginEditConstructionPlane { index: usize },
@@ -130,6 +161,7 @@ pub enum Instruction {
     SetHomeView,
     ProjectionMode(ProjectionMode),
     ToggleProjectionMode,
+    ShadingMode(ShadingMode),
     /// Show/hide a UI pane. `None` toggles.
     SetPane { pane: Pane, visible: Option<bool> },
     AddParameter { name: String, expression: String },
@@ -186,6 +218,13 @@ impl Instruction {
                 path,
                 body: Some(body),
             } => format!("bearcad.export_stl({path:?}, {body:?})"),
+            Instruction::ExportStep { path, body: None } => format!("bearcad.export_step({path:?})"),
+            Instruction::ExportStep {
+                path,
+                body: Some(body),
+            } => format!("bearcad.export_step({path:?}, {body:?})"),
+            Instruction::ImportStl { path } => format!("bearcad.import_stl({path:?})"),
+            Instruction::ImportStep { path } => format!("bearcad.import_step({path:?})"),
             Instruction::Clear => "bearcad.clear()".to_string(),
             Instruction::Undo => "bearcad.undo()".to_string(),
             Instruction::Tool(tool) => format!("bearcad.ui.tool({:?})", tool_lua_name(*tool)),
@@ -201,15 +240,30 @@ impl Instruction {
                 width,
                 height,
             } => format!("bearcad.rect{{ x = {x}, y = {y}, width = {width}, height = {height} }}"),
-            Instruction::CreateLine { x0, y0, x1, y1 } => {
-                format!("bearcad.line{{ x = {x0}, y = {y0}, x1 = {x1}, y1 = {y1} }}")
+            Instruction::CreateLine { x0, y0, x1, y1, bezier } => {
+                let bezier_arg = match bezier {
+                    Some([(c0x, c0y), (c1x, c1y)]) => format!(
+                        ", bezier = {{ {{ {c0x}, {c0y} }}, {{ {c1x}, {c1y} }} }}"
+                    ),
+                    None => String::new(),
+                };
+                format!("bearcad.line{{ x = {x0}, y = {y0}, x1 = {x1}, y1 = {y1}{bezier_arg} }}")
             }
             Instruction::CreateCircle { cx, cy, r } => {
                 format!("bearcad.circle{{ x = {cx}, y = {cy}, r = {r} }}")
             }
             Instruction::Extrude {
-                faces, distance, ..
-            } => format!("bearcad.extrude{{ faces = {}, distance = {distance} }}", faces.len()),
+                faces,
+                distance,
+                merge_into_body,
+                ..
+            } => {
+                let body = if *merge_into_body { ", body = \"merge\"" } else { "" };
+                format!(
+                    "bearcad.extrude{{ {}, distance = {distance}{body} }}",
+                    extrude_face_args(faces)
+                )
+            }
             Instruction::SetElementVisible { element, visible } => {
                 let target = element_lua_ref(*element);
                 let verb = match visible {
@@ -246,6 +300,24 @@ impl Instruction {
                 )
             }
             Instruction::FocusElementName => "bearcad.ui.focus_name()".to_string(),
+            Instruction::SetDocumentUnits { length, angle } => {
+                format!(
+                    "bearcad.set_units{{ length = {:?}, angle = {:?} }}",
+                    length.script_name(),
+                    angle.script_name()
+                )
+            }
+            Instruction::SetSketchUnits { sketch, length, angle } => {
+                let length_arg = match length {
+                    Some(length) => format!(", length = {:?}", length.script_name()),
+                    None => String::new(),
+                };
+                let angle_arg = match angle {
+                    Some(angle) => format!(", angle = {:?}", angle.script_name()),
+                    None => String::new(),
+                };
+                format!("bearcad.set_units{{ sketch = {sketch}{length_arg}{angle_arg} }}")
+            }
             Instruction::SetDim { axis, value } => {
                 format!(
                     "bearcad.set_dim({:?}, {value:?})",
@@ -296,6 +368,16 @@ impl Instruction {
                 "bearcad.ui.drag_line({}, {anchor_u}, {anchor_v}, {u}, {v})",
                 constraint_line_lua_ref(*target)
             ),
+            Instruction::VertexTreatment { point, kind, amount } => {
+                let (fname, amount_key) = match kind {
+                    VertexTreatmentKind::Chamfer => ("chamfer_vertex", "distance"),
+                    VertexTreatmentKind::Fillet => ("fillet_vertex", "radius"),
+                };
+                format!(
+                    "bearcad.{fname}{{ point = {}, {amount_key} = {amount} }}",
+                    constraint_point_lua_ref(*point)
+                )
+            }
             Instruction::SetLineLength { value } => {
                 format!("bearcad.set_dim(\"length\", {value:?})")
             }
@@ -337,6 +419,9 @@ impl Instruction {
                 format!("bearcad.ui.view({:?})", projection_mode_script_name(*mode))
             }
             Instruction::ToggleProjectionMode => "bearcad.ui.toggle_projection()".to_string(),
+            Instruction::ShadingMode(mode) => {
+                format!("bearcad.ui.shading({:?})", mode.script_name())
+            }
             Instruction::SetPane { pane, visible } => {
                 let verb = match visible {
                     Some(true) => "show",
@@ -569,9 +654,37 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             path: path.clone(),
             body: body.clone(),
         }),
+        Action::ExportStep { path, body } => Some(Instruction::ExportStep {
+            path: path.clone(),
+            body: body.clone(),
+        }),
+        Action::ImportStl { path } => Some(Instruction::ImportStl { path: path.clone() }),
+        Action::ImportStep { path } => Some(Instruction::ImportStep { path: path.clone() }),
         Action::Clear => Some(Instruction::Clear),
         Action::UndoLast => Some(Instruction::Undo),
         Action::SetTool(tool) => Some(Instruction::Tool(*tool)),
+        // The interactive draw tools commit straight to `doc` without going through the
+        // declarative Create*/Extrude actions (#59); replay them as the equivalent call
+        // using the as-committed geometry. A failed commit (e.g. "too small") returns
+        // `ActionResult::Err`, so `after_apply` never reaches here for those.
+        Action::CommitRectangle => doc.rects.last().map(|r| Instruction::CreateRect {
+            x: r.x,
+            y: r.y,
+            width: r.w,
+            height: r.h,
+        }),
+        Action::CommitLine => doc.lines.last().map(|l| Instruction::CreateLine {
+            x0: l.x0,
+            y0: l.y0,
+            x1: l.x1,
+            y1: l.y1,
+            bezier: l.bezier,
+        }),
+        Action::CommitCircle => doc.circles.last().map(|c| Instruction::CreateCircle {
+            cx: c.cx,
+            cy: c.cy,
+            r: c.r,
+        }),
         Action::SetRectDimension { axis, value } => Some(Instruction::SetDim {
             axis: *axis,
             value: value.clone(),
@@ -684,8 +797,80 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             name: name.clone(),
         }),
         Action::FocusElementName => Some(Instruction::FocusElementName),
+        Action::SetDocumentUnits { length, angle } => {
+            Some(Instruction::SetDocumentUnits { length: *length, angle: *angle })
+        }
+        Action::SetSketchUnits { sketch, length, angle } => Some(Instruction::SetSketchUnits {
+            sketch: *sketch,
+            length: *length,
+            angle: *angle,
+        }),
+        Action::CommitVertexTreatment { point, kind, amount } => {
+            Some(Instruction::VertexTreatment {
+                point: *point,
+                kind: *kind,
+                amount: *amount,
+            })
+        }
         _ => None,
     }
+}
+
+/// Build a replayable `Instruction::Extrude` for the extrusion the interactive Extrude tool
+/// just created (the last entry in `doc.extrusions`). Used by the command log instead of
+/// `instruction_from_action`, since `Action::CommitExtrusion` carries no fields to read the
+/// committed faces/distance/body choice from — only `doc`'s post-commit state has them (#59).
+pub fn instruction_for_new_extrusion(doc: &crate::model::Document) -> Option<Instruction> {
+    let ei = doc.extrusions.len().checked_sub(1)?;
+    let extrusion = doc.extrusions.get(ei)?;
+    let merge_into_body = crate::model::body_index_for_extrusion(doc, ei)
+        .and_then(|bi| doc.bodies.get(bi))
+        .is_some_and(|body| body.source.extrusion_indices().len() > 1);
+    Some(Instruction::Extrude {
+        sketch: extrusion.sketch,
+        faces: extrusion.faces.clone(),
+        distance: extrusion.distance,
+        merge_into_body,
+    })
+}
+
+/// Render an extrusion's faces as `bearcad.extrude{}` keyword arguments
+/// (`rect=`/`rects=`, `circle=`/`circles=`, `polygon=`). A single rect or circle uses the
+/// singular field to match how `bearcad.extrude` is normally called by hand; multiple of a
+/// kind use the plural array form. Only the first polygon face is kept — the Lua API has no
+/// way to extrude more than one closed-loop face alongside the others in one call.
+fn extrude_face_args(faces: &[crate::model::ExtrudeFace]) -> String {
+    use crate::model::ExtrudeFace;
+    let mut rects = Vec::new();
+    let mut circles = Vec::new();
+    let mut polygon = None;
+    for face in faces {
+        match face {
+            ExtrudeFace::Rect(i) => rects.push(*i),
+            ExtrudeFace::Circle(i) => circles.push(*i),
+            ExtrudeFace::Polygon(lines) => {
+                polygon.get_or_insert(lines);
+            }
+        };
+    }
+    let index_list = |indices: &[usize]| -> String {
+        indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+    };
+    let mut parts = Vec::new();
+    match rects.as_slice() {
+        [] => {}
+        [single] => parts.push(format!("rect = {single}")),
+        many => parts.push(format!("rects = {{{}}}", index_list(many))),
+    }
+    match circles.as_slice() {
+        [] => {}
+        [single] => parts.push(format!("circle = {single}")),
+        many => parts.push(format!("circles = {{{}}}", index_list(many))),
+    }
+    if let Some(lines) = polygon {
+        parts.push(format!("polygon = {{{}}}", index_list(lines)));
+    }
+    parts.join(", ")
 }
 
 fn view_script_name(view: StandardView) -> &'static str {
@@ -799,6 +984,8 @@ fn tool_lua_name(tool: Tool) -> &'static str {
         Tool::Dimension => "dimension",
         Tool::Constraint => "constraint",
         Tool::Extrude => "extrude",
+        Tool::Chamfer => "chamfer",
+        Tool::Fillet => "fillet",
     }
 }
 
@@ -866,7 +1053,8 @@ fn point_lua_fields(point: ConstraintPoint) -> String {
                 LineEnd::Start => "start",
                 LineEnd::End => "end",
             };
-            format!("kind = \"line\", index = {line}, end = \"{end_name}\"")
+            // `end` is a Lua reserved word, so it can't be a bareword table key; bracket it.
+            format!("kind = \"line\", index = {line}, [\"end\"] = \"{end_name}\"")
         }
         ConstraintPoint::RectCorner { rect, corner } => {
             format!("kind = \"rect\", index = {rect}, corner = {corner}")
@@ -1423,6 +1611,18 @@ impl ScriptRunner {
                 state.apply(Action::ExportStl { path, body });
                 StepResult::Continue
             }
+            Instruction::ExportStep { path, body } => {
+                state.apply(Action::ExportStep { path, body });
+                StepResult::Continue
+            }
+            Instruction::ImportStl { path } => {
+                state.apply(Action::ImportStl { path });
+                StepResult::Continue
+            }
+            Instruction::ImportStep { path } => {
+                state.apply(Action::ImportStep { path });
+                StepResult::Continue
+            }
             Instruction::Clear => {
                 state.apply(Action::Clear);
                 StepResult::Continue
@@ -1467,8 +1667,8 @@ impl ScriptRunner {
                 });
                 StepResult::Continue
             }
-            Instruction::CreateLine { x0, y0, x1, y1 } => {
-                state.apply(Action::CreateLineSegment { x0, y0, x1, y1 });
+            Instruction::CreateLine { x0, y0, x1, y1, bezier } => {
+                state.apply(Action::CreateLineSegment { x0, y0, x1, y1, bezier });
                 StepResult::Continue
             }
             Instruction::CreateCircle { cx, cy, r } => {
@@ -1479,12 +1679,18 @@ impl ScriptRunner {
                 sketch,
                 faces,
                 distance,
+                merge_into_body,
             } => {
                 state.apply(Action::CreateExtrusion {
                     sketch,
                     faces,
                     distance,
+                    merge_into_body,
                 });
+                StepResult::Continue
+            }
+            Instruction::VertexTreatment { point, kind, amount } => {
+                state.apply(Action::CommitVertexTreatment { point, kind, amount });
                 StepResult::Continue
             }
             Instruction::SetElementVisible { element, visible } => {
@@ -1523,6 +1729,14 @@ impl ScriptRunner {
             }
             Instruction::FocusElementName => {
                 state.apply(Action::FocusElementName);
+                StepResult::Continue
+            }
+            Instruction::SetDocumentUnits { length, angle } => {
+                let _ = state.apply(Action::SetDocumentUnits { length, angle });
+                StepResult::Continue
+            }
+            Instruction::SetSketchUnits { sketch, length, angle } => {
+                let _ = state.apply(Action::SetSketchUnits { sketch, length, angle });
                 StepResult::Continue
             }
             Instruction::SetDim { axis, value } => {
@@ -1685,6 +1899,10 @@ impl ScriptRunner {
             }
             Instruction::ToggleProjectionMode => {
                 state.apply(Action::ToggleProjectionMode);
+                StepResult::Continue
+            }
+            Instruction::ShadingMode(mode) => {
+                state.apply(Action::SetShadingMode(mode));
                 StepResult::Continue
             }
             Instruction::SetPane { pane, visible } => {
@@ -2038,6 +2256,61 @@ mod tests {
     use crate::model::ConstraintLine;
 
     #[test]
+    fn create_line_instruction_renders_bezier_when_present() {
+        let straight = Instruction::CreateLine { x0: 0.0, y0: 0.0, x1: 10.0, y1: 0.0, bezier: None };
+        assert_eq!(straight.as_lua(), "bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }");
+
+        let curved = Instruction::CreateLine {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 10.0,
+            y1: 0.0,
+            bezier: Some([(3.0, 4.0), (7.0, 4.0)]),
+        };
+        assert_eq!(
+            curved.as_lua(),
+            "bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0, bezier = { { 3, 4 }, { 7, 4 } } }"
+        );
+    }
+
+    #[test]
+    fn extrude_instruction_renders_replayable_face_args() {
+        use crate::model::ExtrudeFace;
+        let single_rect = Instruction::Extrude {
+            sketch: 0,
+            faces: vec![ExtrudeFace::Rect(2)],
+            distance: 5.0,
+            merge_into_body: false,
+        };
+        assert_eq!(
+            single_rect.as_lua(),
+            "bearcad.extrude{ rect = 2, distance = 5 }"
+        );
+
+        let many = Instruction::Extrude {
+            sketch: 0,
+            faces: vec![ExtrudeFace::Rect(0), ExtrudeFace::Circle(1), ExtrudeFace::Circle(2)],
+            distance: 3.5,
+            merge_into_body: true,
+        };
+        assert_eq!(
+            many.as_lua(),
+            "bearcad.extrude{ rect = 0, circles = {1, 2}, distance = 3.5, body = \"merge\" }"
+        );
+
+        let polygon = Instruction::Extrude {
+            sketch: 0,
+            faces: vec![ExtrudeFace::Polygon(vec![0, 1, 2])],
+            distance: 6.0,
+            merge_into_body: false,
+        };
+        assert_eq!(
+            polygon.as_lua(),
+            "bearcad.extrude{ polygon = {0, 1, 2}, distance = 6 }"
+        );
+    }
+
+    #[test]
     fn parse_key_names() {
         assert_eq!(parse_key("enter").unwrap(), Key::Enter);
         assert_eq!(parse_key("ESC").unwrap(), Key::Escape);
@@ -2084,6 +2357,68 @@ mod tests {
     fn parse_show_commands_flag() {
         let opts = parse_args(["bearcad", "--show-commands"]);
         assert!(opts.show_commands);
+    }
+
+    #[test]
+    fn instruction_from_action_preserves_a_curved_committed_line() {
+        let mut doc = crate::model::Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let mut line = crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0);
+        line.bezier = Some([(3.0, 4.0), (7.0, 4.0)]);
+        doc.lines.push(line);
+        let instruction = instruction_from_action(&Action::CommitLine, &doc).unwrap();
+        assert_eq!(
+            instruction,
+            Instruction::CreateLine {
+                x0: 0.0,
+                y0: 0.0,
+                x1: 10.0,
+                y1: 0.0,
+                bezier: Some([(3.0, 4.0), (7.0, 4.0)]),
+            }
+        );
+    }
+
+    #[test]
+    fn vertex_treatment_instruction_renders_as_the_matching_lua_call() {
+        let point = ConstraintPoint::LineEndpoint { line: 0, end: crate::model::LineEnd::End };
+        let chamfer = Instruction::VertexTreatment {
+            point,
+            kind: VertexTreatmentKind::Chamfer,
+            amount: 3.0,
+        };
+        assert_eq!(
+            chamfer.as_lua(),
+            "bearcad.chamfer_vertex{ point = { kind = \"line\", index = 0, [\"end\"] = \"end\" }, distance = 3 }"
+        );
+        let fillet = Instruction::VertexTreatment {
+            point,
+            kind: VertexTreatmentKind::Fillet,
+            amount: 2.5,
+        };
+        assert_eq!(
+            fillet.as_lua(),
+            "bearcad.fillet_vertex{ point = { kind = \"line\", index = 0, [\"end\"] = \"end\" }, radius = 2.5 }"
+        );
+    }
+
+    #[test]
+    fn instruction_from_action_maps_commit_vertex_treatment() {
+        let doc = crate::model::Document::default();
+        let point = ConstraintPoint::LineEndpoint { line: 2, end: crate::model::LineEnd::Start };
+        let action = Action::CommitVertexTreatment {
+            point,
+            kind: VertexTreatmentKind::Fillet,
+            amount: 4.0,
+        };
+        assert_eq!(
+            instruction_from_action(&action, &doc),
+            Some(Instruction::VertexTreatment {
+                point,
+                kind: VertexTreatmentKind::Fillet,
+                amount: 4.0,
+            })
+        );
     }
 
     #[test]
@@ -2214,6 +2549,7 @@ mod tests {
             user_edited: false,
             pending_focus: false,
             construction: false,
+            drag_path: Vec::new(),
         });
         state.apply(crate::actions::Action::CommitLine);
         while !runner.done {
@@ -2609,6 +2945,7 @@ mod tests {
             user_edited: false,
             pending_focus: false,
             construction: false,
+            drag_path: Vec::new(),
         });
 
         while !runner.done {

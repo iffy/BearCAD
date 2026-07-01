@@ -4,7 +4,8 @@
 //! same [`Action`] values so behaviour stays in sync.
 
 use crate::camera::{
-    Camera, ProjectionMode, StandardView, SKETCH_EDIT_FRAME_PADDING_PX, VIEW_TRANSITION_DURATION,
+    Camera, ProjectionMode, ShadingMode, StandardView, SKETCH_EDIT_FRAME_PADDING_PX,
+    VIEW_TRANSITION_DURATION,
 };
 use crate::construction::{
     apply_construction_plane_edit, definition_from_reference, plane_from_definition,
@@ -38,8 +39,9 @@ use crate::constraints::{
     find_distance_constraint, set_constraint_dim_offset, set_constraint_expression, ConstraintId,
 };
 use crate::model::{
-    Circle, ConstraintLine, ConstructionPlane, ConstraintPoint, DimensionTarget, DistanceTarget,
-    Document, ExtrudeFace, Extrusion, FaceId, Line, LineEnd, Rect, RectEdge, ShapeKind,
+    bezier_from_drag_path, vertex_treatment_geometry, Circle, ConstraintEntity, ConstraintLine,
+    ConstraintKind, ConstructionPlane, ConstraintPoint, DimensionTarget, DistanceTarget, Document,
+    ExtrudeFace, Extrusion, FaceId, Line, LineEnd, Rect, RectEdge, ShapeKind, VertexTreatmentKind,
 };
 use crate::vertex_drag;
 use crate::face::SketchFrame;
@@ -49,7 +51,7 @@ use crate::parameters::{
     try_commit_inline_parameter_definition,
     set_parameter_name, ParametersPaneState,
 };
-use crate::value::parse_positive_length_or_in_doc;
+use crate::value::{parse_positive_length_or_in_doc, AngleUnit, LengthUnit};
 use eframe::egui;
 use glam::Vec3;
 
@@ -78,6 +80,13 @@ pub enum Tool {
     Constraint,
     /// Click coplanar faces to include them, then set a distance to extrude a solid.
     Extrude,
+    /// Click a sketch vertex where exactly two plain lines meet, then set a straight-cut
+    /// distance via gizmo/text input to truncate and bridge them (#37). 2D sketch vertices
+    /// only — see SPEC §3.1/§3.4 for why there's no 3D solid-edge chamfer in this version.
+    Chamfer,
+    /// Same vertex-selection flow as [`Tool::Chamfer`], but bridges the truncated lines with a
+    /// rounded single-cubic-bezier arc instead of a straight cut (#38).
+    Fillet,
 }
 
 impl Tool {
@@ -94,6 +103,8 @@ impl Tool {
             "dimension" | "dim" => Some(Tool::Dimension),
             "constraint" | "constraints" => Some(Tool::Constraint),
             "extrude" => Some(Tool::Extrude),
+            "chamfer" => Some(Tool::Chamfer),
+            "fillet" => Some(Tool::Fillet),
             _ => None,
         }
     }
@@ -101,7 +112,13 @@ impl Tool {
     pub fn is_sketch_edit_tool(self) -> bool {
         matches!(
             self,
-            Tool::Rectangle | Tool::Line | Tool::Circle | Tool::Dimension | Tool::Constraint
+            Tool::Rectangle
+                | Tool::Line
+                | Tool::Circle
+                | Tool::Dimension
+                | Tool::Constraint
+                | Tool::Chamfer
+                | Tool::Fillet
         )
     }
 }
@@ -163,6 +180,10 @@ pub struct CreatingLine {
     pub pending_focus: bool,
     /// Committed line is construction geometry when true.
     pub construction: bool,
+    /// Local-space pointer samples recorded while the button has stayed held down since the
+    /// initial press. A click-click straight line never accumulates enough of these; a
+    /// click-drag-release gesture does, and its bulge shapes the committed line into a curve.
+    pub drag_path: Vec<(f32, f32)>,
 }
 
 /// State for the in-progress (pre-Enter) circle creation.
@@ -221,6 +242,13 @@ impl CreatingCircle {
     }
 }
 
+/// Whether a committed extrusion creates a new body row or merges into an existing one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtrudeBodyMode {
+    NewBody,
+    MergeInto(usize),
+}
+
 /// In-progress (or being-edited) extrusion: selected faces + live signed distance.
 #[derive(Clone, Debug)]
 pub struct CreatingExtrusion {
@@ -237,6 +265,11 @@ pub struct CreatingExtrusion {
     pub target: Option<crate::model::ExtrudeTarget>,
     /// `Some` when editing an existing extrusion rather than creating one.
     pub edit_index: Option<usize>,
+    /// How this extrusion should attach to the document's bodies on commit.
+    pub body_mode: ExtrudeBodyMode,
+    /// Body that `body_mode` can merge into (the other option always being `NewBody`); `None`
+    /// when there's no candidate body, in which case the context pane hides the choice.
+    pub merge_candidate: Option<usize>,
 }
 
 impl CreatingExtrusion {
@@ -248,6 +281,36 @@ impl CreatingExtrusion {
             magnitude * sign
         } else {
             self.distance
+        }
+    }
+}
+
+/// Default gizmo-driven chamfer distance / fillet radius when starting a new vertex treatment.
+pub const DEFAULT_VERTEX_TREATMENT_AMOUNT: f32 = 2.0;
+
+/// In-progress (pre-commit) chamfer/fillet: the vertex picked, which kind, and the live
+/// gizmo-driven amount (chamfer distance or fillet radius). Mirrors [`CreatingExtrusion`]'s
+/// shape closely — same click-to-grab gizmo drag and floating text-input pattern.
+#[derive(Clone, Debug)]
+pub struct CreatingVertexTreatment {
+    pub point: ConstraintPoint,
+    pub kind: VertexTreatmentKind,
+    /// Live amount (mm), gizmo-driven; always clamped non-negative.
+    pub amount_live: f32,
+    /// Amount input text; the sign is always positive (chamfer/fillet can't go negative).
+    pub text: String,
+    pub user_edited: bool,
+    pub pending_focus: bool,
+}
+
+impl CreatingVertexTreatment {
+    /// Evaluated amount: typed magnitude (if edited), otherwise the live gizmo-driven value.
+    /// Always non-negative.
+    pub fn evaluated_amount(&self, doc: &Document) -> f32 {
+        if self.user_edited {
+            parse_positive_length_or_in_doc(&self.text, doc, self.amount_live.max(0.0))
+        } else {
+            self.amount_live.max(0.0)
         }
     }
 }
@@ -345,6 +408,14 @@ pub enum Action {
     /// Export a single body (by index) to an STL file — used by the body row's context menu,
     /// which has the index in hand and works for unnamed bodies too.
     ExportStlBody { path: String, body: usize },
+    /// Export bodies to a STEP file. `body` names a single body; `None` exports all bodies.
+    ExportStep { path: String, body: Option<String> },
+    /// Export a single body (by index) to a STEP file — used by the body row's context menu.
+    ExportStepBody { path: String, body: usize },
+    /// Import an STL file (ASCII or binary, #70) as a new body.
+    ImportStl { path: String },
+    /// Import a STEP file's `FACETED_BREP` geometry (#71) as a new body.
+    ImportStep { path: String },
     Clear,
     UndoLast,
     SetTool(Tool),
@@ -408,6 +479,7 @@ pub enum Action {
     SetHomeView,
     SetProjectionMode(ProjectionMode),
     ToggleProjectionMode,
+    SetShadingMode(ShadingMode),
     SetPaneVisible { pane: Pane, visible: bool },
     TogglePane(Pane),
     AddParameter { name: String, expression: String },
@@ -440,6 +512,19 @@ pub enum Action {
         name: String,
     },
     FocusElementName,
+    /// Set the document-wide default length/angle units (context pane, nothing selected; #52).
+    /// Storage/display only for now — see [`crate::model::Document::default_length_unit`].
+    SetDocumentUnits {
+        length: LengthUnit,
+        angle: AngleUnit,
+    },
+    /// Set (or clear, via `None`) a per-sketch length/angle unit override (context pane, sketch
+    /// selected; #52). `None` means "follow the document default".
+    SetSketchUnits {
+        sketch: SketchId,
+        length: Option<LengthUnit>,
+        angle: Option<AngleUnit>,
+    },
     /// Apply a geometric constraint type to the current selection (constraint tool).
     AddGeometricConstraint(crate::geometric_constraints::GeometricConstraintType),
     /// Apply the enabled constraint matching its mnemonic shortcut key (A/T/I/M/V/H).
@@ -460,6 +545,30 @@ pub enum Action {
     DragLine { u: f32, v: f32 },
     /// Finish an interactive line drag.
     EndLineDrag,
+    /// Move a curved line's tangent handle (`near_start` selects the one near `(x0,y0)` vs.
+    /// `(x1,y1)`) to sketch-local `(u, v)`. No-op-turned-error on a straight line.
+    SetBezierHandle {
+        line: usize,
+        near_start: bool,
+        u: f32,
+        v: f32,
+    },
+    /// Right-click "convert to bezier curve": smooths the joint at `point` into a matched pair
+    /// of tangent-continuous curves. Errors unless exactly two plain lines meet there.
+    ConvertVertexToBezier { point: ConstraintPoint },
+    /// Right-click "straighten curve": clears a curved line's tangent handles.
+    StraightenLine { line: usize },
+    /// Chamfer or fillet a sketch vertex where exactly two plain lines meet (#37/#38):
+    /// truncates both lines back from the vertex and bridges them with a new `Line` (straight
+    /// for a chamfer, single-cubic-bezier arc for a fillet — see
+    /// [`crate::model::vertex_treatment_geometry`]). `amount` is the chamfer distance or fillet
+    /// radius depending on `kind`. Atomic and declarative: usable directly from Lua as well as
+    /// from the interactive gizmo tool.
+    CommitVertexTreatment {
+        point: ConstraintPoint,
+        kind: VertexTreatmentKind,
+        amount: f32,
+    },
     /// Create a rectangle directly in the active sketch (face-local mm) with locked dimensions.
     CreateRectangle {
         x: f32,
@@ -468,11 +577,13 @@ pub enum Action {
         height: f32,
     },
     /// Create a line directly in the active sketch (face-local mm) with a locked length.
+    /// `bezier` (#54) makes it a curve: `[handle near (x0,y0), handle near (x1,y1)]`.
     CreateLineSegment {
         x0: f32,
         y0: f32,
         x1: f32,
         y1: f32,
+        bezier: Option<[(f32, f32); 2]>,
     },
     /// Create a circle directly in the active sketch (face-local mm) with a locked diameter.
     CreateCircle {
@@ -485,6 +596,9 @@ pub enum Action {
         sketch: SketchId,
         faces: Vec<ExtrudeFace>,
         distance: f32,
+        /// Join the body of the face being extruded from, if any, instead of creating a new
+        /// body (#32) — mirrors the context pane's "Add to body" choice for the GUI flow.
+        merge_into_body: bool,
     },
     /// Add/remove a face from the in-progress extrusion (starts one if needed).
     ToggleExtrudeFace { face: ExtrudeFace },
@@ -498,6 +612,7 @@ pub enum Action {
     EditExtrusion { index: usize },
     /// Finalize the in-progress extrusion (create or update).
     CommitExtrusion,
+    SetExtrudeBodyMode { mode: ExtrudeBodyMode },
     /// Enable or disable snapping while drawing/dragging.
     SetSnapping(bool),
     /// Add the constraint implied by leaving `point` on a snap target.
@@ -879,6 +994,8 @@ pub struct AppState {
     pub creating_circle: Option<CreatingCircle>,
     /// In-progress (or being-edited) extrusion: selected faces + live distance.
     pub creating_extrusion: Option<CreatingExtrusion>,
+    /// In-progress chamfer/fillet: picked vertex + live gizmo-driven amount.
+    pub creating_vertex_treatment: Option<CreatingVertexTreatment>,
     /// Shared construction draw mode for rectangle, line, and circle tools.
     pub draw_construction: bool,
     pub creating_plane: Option<CreatingConstructionPlane>,
@@ -933,6 +1050,7 @@ impl Default for AppState {
             creating_line: None,
             creating_circle: None,
             creating_extrusion: None,
+            creating_vertex_treatment: None,
             draw_construction: false,
             creating_plane: None,
             panes: PaneVisibility::default(),
@@ -962,9 +1080,119 @@ impl Default for AppState {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MeshExportFormat {
+    Stl,
+    Step,
+}
+
+impl MeshExportFormat {
+    fn label(self) -> &'static str {
+        match self {
+            MeshExportFormat::Stl => "STL",
+            MeshExportFormat::Step => "STEP",
+        }
+    }
+}
+
 impl AppState {
     pub fn refresh_document_health(&mut self) {
         self.document_health = recompute_document_health(&self.doc);
+    }
+
+    /// Move extrusion `ei` to wherever `mode` says it should live, used when editing an
+    /// extrusion's body choice in the context pane (#32). The extrusion always already has a
+    /// home (every committed extrusion gets one), so this only needs to detach it from there
+    /// when the new home differs and attach it to the new one.
+    fn apply_extrude_body_mode(&mut self, ei: usize, mode: ExtrudeBodyMode) {
+        let current = crate::model::body_index_for_extrusion(&self.doc, ei);
+        let solely_owns = |doc: &Document, bi: usize| {
+            doc.bodies
+                .get(bi)
+                .is_some_and(|b| b.source.extrusion_indices() == [ei])
+        };
+        let already_there = match (current, mode) {
+            (Some(bi), ExtrudeBodyMode::MergeInto(target)) => bi == target,
+            (Some(bi), ExtrudeBodyMode::NewBody) => solely_owns(&self.doc, bi),
+            (None, _) => true,
+        };
+        if already_there {
+            return;
+        }
+        if let Some(bi) = current {
+            if solely_owns(&self.doc, bi) {
+                crate::document_lifecycle::tombstone_element(
+                    &mut self.doc,
+                    SceneElement::Body(bi),
+                );
+            } else if let Some(body) = self.doc.bodies.get_mut(bi) {
+                body.source.remove_extrusion(ei);
+            }
+        }
+        match mode {
+            ExtrudeBodyMode::NewBody => {
+                self.doc.bodies.push(crate::model::Body {
+                    source: crate::model::BodySource::single(ei),
+                    name: None,
+                    deleted: false,
+                });
+                self.doc.shape_order.push(ShapeKind::Body);
+            }
+            ExtrudeBodyMode::MergeInto(bi) => {
+                if let Some(body) = self.doc.bodies.get_mut(bi).filter(|b| !b.deleted) {
+                    body.source.append_extrusion(ei);
+                } else {
+                    self.doc.bodies.push(crate::model::Body {
+                        source: crate::model::BodySource::single(ei),
+                        name: None,
+                        deleted: false,
+                    });
+                    self.doc.shape_order.push(ShapeKind::Body);
+                }
+            }
+        }
+    }
+
+    /// Attach freshly-created extrusion `ei` (just pushed, owned by no body yet) to a body
+    /// per `mode`, creating a new body if needed. Returns the resulting body's index.
+    fn attach_new_extrusion_to_body(&mut self, ei: usize, mode: ExtrudeBodyMode) -> usize {
+        if let ExtrudeBodyMode::MergeInto(bi) = mode {
+            if let Some(body) = self.doc.bodies.get_mut(bi).filter(|b| !b.deleted) {
+                body.source.append_extrusion(ei);
+                return bi;
+            }
+        }
+        self.doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::single(ei),
+            name: None,
+            deleted: false,
+        });
+        self.doc.shape_order.push(ShapeKind::Body);
+        self.doc.bodies.len() - 1
+    }
+
+    /// Add `triangles` from an imported file as a new body named after `path`'s file stem
+    /// (shared by STL and STEP import, #70/#71).
+    fn import_mesh_body(&mut self, path: &str, triangles: Vec<[Vec3; 3]>) -> ActionResult {
+        let source_name = std::path::Path::new(path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "import".to_string());
+        let tri_count = triangles.len();
+        self.doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles,
+            source_name: source_name.clone(),
+        });
+        let mesh_index = self.doc.imported_meshes.len() - 1;
+        self.doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(mesh_index),
+            name: Some(source_name),
+            deleted: false,
+        });
+        self.doc.shape_order.push(ShapeKind::Body);
+        self.refresh_document_health();
+        self.status = format!("Imported {tri_count} triangle(s) from {path}");
+        ActionResult::Ok
     }
 
     /// Write `mesh` to `path` as an ASCII STL named `name`, setting `self.status`.
@@ -974,13 +1202,40 @@ impl AppState {
         name: &str,
         mesh: Option<crate::extrude::SolidMesh>,
     ) -> ActionResult {
+        self.write_mesh_file(path, name, mesh, MeshExportFormat::Stl)
+    }
+
+    /// Write `mesh` to `path` as a STEP FACETED_BREP named `name`, setting `self.status`.
+    fn write_step_file(
+        &mut self,
+        path: &str,
+        name: &str,
+        mesh: Option<crate::extrude::SolidMesh>,
+    ) -> ActionResult {
+        self.write_mesh_file(path, name, mesh, MeshExportFormat::Step)
+    }
+
+    fn write_mesh_file(
+        &mut self,
+        path: &str,
+        name: &str,
+        mesh: Option<crate::extrude::SolidMesh>,
+        format: MeshExportFormat,
+    ) -> ActionResult {
         match mesh {
             Some(m) if !m.is_empty() => {
-                let stl = crate::stl::write_ascii_stl(name, &m);
-                match std::fs::write(path, stl) {
+                let contents = match format {
+                    MeshExportFormat::Stl => crate::stl::write_ascii_stl(name, &m),
+                    MeshExportFormat::Step => crate::step::write_step(name, &m),
+                };
+                match std::fs::write(path, contents) {
                     Ok(()) => {
-                        self.status =
-                            format!("Exported {} triangle(s) to {}", m.triangles.len(), path);
+                        self.status = format!(
+                            "Exported {} triangle(s) to {} ({})",
+                            m.triangles.len(),
+                            path,
+                            format.label()
+                        );
                         ActionResult::Ok
                     }
                     Err(e) => {
@@ -1007,6 +1262,18 @@ fn extrude_face_sketch(doc: &Document, face: &ExtrudeFace) -> Option<SketchId> {
         ExtrudeFace::Circle(i) => doc.circles.get(*i).map(|c| c.sketch),
         ExtrudeFace::Polygon(lines) => lines.first().and_then(|&i| doc.lines.get(i)).map(|l| l.sketch),
     }
+}
+
+/// The body that a fresh extrusion on `sketch` would join by default, if `sketch` lies on an
+/// existing body's face (sketching on a face of a body continues that body unless the user
+/// chooses otherwise in the context pane, #32).
+fn extrude_merge_candidate(doc: &Document, sketch: SketchId) -> Option<usize> {
+    let face = doc.sketch_face(sketch)?;
+    let extrusion = match face {
+        FaceId::ExtrudeCap { extrusion, .. } | FaceId::ExtrudeSide { extrusion, .. } => extrusion,
+        _ => return None,
+    };
+    crate::model::body_index_for_extrusion(doc, extrusion)
 }
 
 /// Corner index (0–3) of `rect` nearest to local point `(u, v)`.
@@ -1212,7 +1479,7 @@ impl AppState {
     pub fn apply(&mut self, action: Action) -> ActionResult {
         let logged_action = self.command_log.is_some().then(|| action.clone());
         if let Some(log) = &self.command_log {
-            log.borrow_mut().before_apply(&action, &self.cam);
+            log.borrow_mut().before_apply(&action, &self.doc, &self.cam);
         }
         let result = match action {
             Action::NewDocument => {
@@ -1296,6 +1563,75 @@ impl AppState {
                 let mesh = crate::extrude::body_solid_mesh(&self.doc, body);
                 self.write_stl_file(&path, &name, mesh)
             }
+            Action::ExportStep { path, body } => {
+                let (name, mesh) = match &body {
+                    Some(name) => {
+                        match self.doc.bodies.iter().position(|b| {
+                            !b.deleted && b.name.as_deref() == Some(name.as_str())
+                        }) {
+                            Some(bi) => {
+                                (name.clone(), crate::extrude::body_solid_mesh(&self.doc, bi))
+                            }
+                            None => {
+                                self.status = format!("Export failed: no body named '{name}'");
+                                return ActionResult::Err(self.status.clone());
+                            }
+                        }
+                    }
+                    None => (
+                        "bearcad".to_string(),
+                        Some(crate::extrude::document_solid_mesh(&self.doc)),
+                    ),
+                };
+                self.write_step_file(&path, &name, mesh)
+            }
+            Action::ExportStepBody { path, body } => {
+                let Some(b) = self.doc.bodies.get(body).filter(|b| !b.deleted) else {
+                    self.status = format!("Export failed: no body {body}");
+                    return ActionResult::Err(self.status.clone());
+                };
+                let name = b
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("body-{body}"));
+                let mesh = crate::extrude::body_solid_mesh(&self.doc, body);
+                self.write_step_file(&path, &name, mesh)
+            }
+            Action::ImportStl { path } => {
+                let bytes = match std::fs::read(&path) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        self.status = format!("Import failed: {e}");
+                        return ActionResult::Err(self.status.clone());
+                    }
+                };
+                match crate::stl::parse_stl(&bytes) {
+                    Ok(tris) => self.import_mesh_body(
+                        &path,
+                        tris.into_iter().map(|t| t.vertices).collect(),
+                    ),
+                    Err(e) => {
+                        self.status = format!("Import failed: {e}");
+                        ActionResult::Err(self.status.clone())
+                    }
+                }
+            }
+            Action::ImportStep { path } => {
+                let text = match std::fs::read_to_string(&path) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        self.status = format!("Import failed: {e}");
+                        return ActionResult::Err(self.status.clone());
+                    }
+                };
+                match crate::step::parse_step_mesh(&text) {
+                    Ok(triangles) => self.import_mesh_body(&path, triangles),
+                    Err(e) => {
+                        self.status = format!("Import failed: {e}");
+                        ActionResult::Err(self.status.clone())
+                    }
+                }
+            }
             Action::Clear => {
                 self.doc = Document::default();
                 self.sketch_session = None;
@@ -1355,12 +1691,13 @@ impl AppState {
                     }
                     Some(ShapeKind::Body) => {
                         let body = self.doc.bodies.pop();
-                        // A body is always created in lockstep with the extrusion that
-                        // produced it (CreateExtrusion/CommitExtrusion push Extrusion then
-                        // Body together), so undo must remove both as one step, not just
-                        // the body (#64).
-                        let crate::model::BodySource::Extrusion(ei) =
-                            body.map(|b| b.source).unwrap_or(crate::model::BodySource::Extrusion(usize::MAX));
+                        // A body created fresh by an extrusion always wraps exactly that one
+                        // extrusion (CreateExtrusion/CommitExtrusion's new-body path pushes
+                        // Extrusion then Body together), so undo must remove both as one step,
+                        // not just the body (#64).
+                        let ei = body
+                            .and_then(|b| b.source.extrusion_indices().first().copied())
+                            .unwrap_or(usize::MAX);
                         if self.doc.shape_order.last() == Some(&ShapeKind::Extrusion)
                             && ei == self.doc.extrusions.len().wrapping_sub(1)
                         {
@@ -1373,6 +1710,19 @@ impl AppState {
                         undone = true;
                     }
                     Some(ShapeKind::Extrusion) => {
+                        // An extrusion merged into an existing body (#32) has no paired Body
+                        // shape-order entry, so undo here must also drop it from whichever
+                        // body's source absorbed it — otherwise that body is left pointing at
+                        // a now-removed extrusion index.
+                        let ei = self.doc.extrusions.len().saturating_sub(1);
+                        if let Some(body) = self
+                            .doc
+                            .bodies
+                            .iter_mut()
+                            .find(|b| !b.deleted && b.source.owns_extrusion(ei))
+                        {
+                            body.source.remove_extrusion(ei);
+                        }
                         self.doc.extrusions.pop();
                         self.status = "Undid last extrusion".to_string();
                         undone = true;
@@ -1438,6 +1788,11 @@ impl AppState {
                 if self.creating_extrusion.is_some() && tool != Tool::Extrude {
                     self.creating_extrusion = None;
                 }
+                if self.creating_vertex_treatment.is_some()
+                    && !matches!(tool, Tool::Chamfer | Tool::Fillet)
+                {
+                    self.creating_vertex_treatment = None;
+                }
                 // Extruding acts on the 3D model, not sketch geometry: leave sketch
                 // editing when the extrude tool is picked from inside a sketch.
                 if tool == Tool::Extrude && self.sketch_session.is_some() {
@@ -1475,6 +1830,10 @@ impl AppState {
                     Tool::Extrude => {
                         "Extrude tool — click coplanar faces, then set a distance".to_string()
                     }
+                    Tool::Chamfer if self.sketch_session.is_some() => "Chamfer tool".to_string(),
+                    Tool::Chamfer => "Chamfer tool — open a sketch first".to_string(),
+                    Tool::Fillet if self.sketch_session.is_some() => "Fillet tool".to_string(),
+                    Tool::Fillet => "Fillet tool — open a sketch first".to_string(),
                 };
                 if tool == Tool::Dimension {
                     self.try_begin_dimension_from_selection();
@@ -1498,6 +1857,7 @@ impl AppState {
                     || self.creating_line.take().is_some()
                     || self.creating_circle.take().is_some()
                     || self.creating_plane.take().is_some()
+                    || self.creating_vertex_treatment.take().is_some()
                 {
                     self.status = "Cancelled".to_string();
                 } else if self.sketch_session.is_some() {
@@ -1722,6 +2082,8 @@ impl AppState {
                 let (u1, v1) = world_to_local(&frame, end);
                 let mut line = Line::from_local_endpoints(session.sketch, u0, v0, u1, v1);
                 line.construction = cl.construction;
+                // A click-drag-release gesture (rather than click-click) shapes a curve.
+                line.bezier = bezier_from_drag_path((u0, v0), (u1, v1), &cl.drag_path);
                 if line.length() > 0.5 {
                     self.doc.lines.push(line);
                     self.doc.shape_order.push(ShapeKind::Line);
@@ -1788,6 +2150,7 @@ impl AppState {
                             user_edited: false,
                             pending_focus: true,
                             construction: cl.construction,
+                            drag_path: Vec::new(),
                         });
                         self.status =
                             format!("Added line ({:.1} mm) • click for next point • Esc to finish", len);
@@ -2279,6 +2642,11 @@ impl AppState {
                 self.status = format!("Projection: {:?}", self.cam.projection_mode());
                 ActionResult::Ok
             }
+            Action::SetShadingMode(mode) => {
+                self.cam.set_shading_mode(mode);
+                self.status = format!("Shading: {:?}", mode);
+                ActionResult::Ok
+            }
             Action::AddParameter { name, expression } => {
                 match add_parameter(&mut self.doc, name.clone(), expression.clone()) {
                     Ok(_) => {
@@ -2496,6 +2864,178 @@ impl AppState {
                 self.line_drag_session = None;
                 ActionResult::Ok
             }
+            Action::SetBezierHandle { line, near_start, u, v } => {
+                if let Err(e) =
+                    require_element_editable(&self.document_health, SceneElement::Line(line))
+                {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let Some(l) = self.doc.lines.get_mut(line) else {
+                    return ActionResult::Err("Line no longer exists".to_string());
+                };
+                let Some(handles) = l.bezier.as_mut() else {
+                    return ActionResult::Err("Line is not curved".to_string());
+                };
+                handles[if near_start { 0 } else { 1 }] = (u, v);
+                ActionResult::Ok
+            }
+            Action::ConvertVertexToBezier { point } => {
+                let Some(sketch) = crate::construction::point_sketch(&self.doc, point) else {
+                    return ActionResult::Err("Vertex no longer exists".to_string());
+                };
+                let Some([(line1, end1), (line2, end2)]) =
+                    vertex_drag::incident_two_lines(&self.doc, sketch, point)
+                else {
+                    return ActionResult::Err(
+                        "Vertex must join exactly two lines to become a curve".to_string(),
+                    );
+                };
+                for &li in &[line1, line2] {
+                    if let Err(e) =
+                        require_element_editable(&self.document_health, SceneElement::Line(li))
+                    {
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                }
+                let Some(l1) = self.doc.lines.get(line1) else {
+                    return ActionResult::Err("Line no longer exists".to_string());
+                };
+                let (v, a) = match end1 {
+                    LineEnd::Start => ((l1.x0, l1.y0), (l1.x1, l1.y1)),
+                    LineEnd::End => ((l1.x1, l1.y1), (l1.x0, l1.y0)),
+                };
+                let Some(l2) = self.doc.lines.get(line2) else {
+                    return ActionResult::Err("Line no longer exists".to_string());
+                };
+                let b = match end2 {
+                    LineEnd::Start => (l2.x1, l2.y1),
+                    LineEnd::End => (l2.x0, l2.y0),
+                };
+                let ([h1_far, h1_near], [h2_near, h2_far]) =
+                    crate::model::smooth_joint_bezier(a, v, b);
+                if let Some(l1) = self.doc.lines.get_mut(line1) {
+                    l1.bezier = Some(match end1 {
+                        LineEnd::Start => [h1_near, h1_far],
+                        LineEnd::End => [h1_far, h1_near],
+                    });
+                }
+                if let Some(l2) = self.doc.lines.get_mut(line2) {
+                    l2.bezier = Some(match end2 {
+                        LineEnd::Start => [h2_near, h2_far],
+                        LineEnd::End => [h2_far, h2_near],
+                    });
+                }
+                self.status = "Converted to curve".to_string();
+                ActionResult::Ok
+            }
+            Action::StraightenLine { line } => {
+                if let Err(e) =
+                    require_element_editable(&self.document_health, SceneElement::Line(line))
+                {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let Some(l) = self.doc.lines.get_mut(line) else {
+                    return ActionResult::Err("Line no longer exists".to_string());
+                };
+                if !l.is_curved() {
+                    return ActionResult::Err("Line is already straight".to_string());
+                }
+                l.bezier = None;
+                self.status = "Straightened line".to_string();
+                ActionResult::Ok
+            }
+            Action::CommitVertexTreatment { point, kind, amount } => {
+                if !(amount > 0.0) {
+                    let e = "Amount must be positive".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let Some(sketch) = crate::construction::point_sketch(&self.doc, point) else {
+                    return ActionResult::Err("Vertex no longer exists".to_string());
+                };
+                let Some([(line1, end1), (line2, end2)]) =
+                    vertex_drag::incident_two_lines(&self.doc, sketch, point)
+                else {
+                    return ActionResult::Err(
+                        "Vertex must join exactly two lines to chamfer/fillet".to_string(),
+                    );
+                };
+                for &li in &[line1, line2] {
+                    if let Err(e) =
+                        require_element_editable(&self.document_health, SceneElement::Line(li))
+                    {
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                }
+                let Some(l1) = self.doc.lines.get(line1) else {
+                    return ActionResult::Err("Line no longer exists".to_string());
+                };
+                let (v, a) = match end1 {
+                    LineEnd::Start => ((l1.x0, l1.y0), (l1.x1, l1.y1)),
+                    LineEnd::End => ((l1.x1, l1.y1), (l1.x0, l1.y0)),
+                };
+                let Some(l2) = self.doc.lines.get(line2) else {
+                    return ActionResult::Err("Line no longer exists".to_string());
+                };
+                let b = match end2 {
+                    LineEnd::Start => (l2.x1, l2.y1),
+                    LineEnd::End => (l2.x0, l2.y0),
+                };
+                let Some(geom) = vertex_treatment_geometry(v, a, b, kind, amount) else {
+                    let e = "Cannot treat this vertex: corner is degenerate".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+
+                if let Some(l1) = self.doc.lines.get_mut(line1) {
+                    match end1 {
+                        LineEnd::Start => (l1.x0, l1.y0) = geom.p1,
+                        LineEnd::End => (l1.x1, l1.y1) = geom.p1,
+                    }
+                }
+                if let Some(l2) = self.doc.lines.get_mut(line2) {
+                    match end2 {
+                        LineEnd::Start => (l2.x0, l2.y0) = geom.p2,
+                        LineEnd::End => (l2.x1, l2.y1) = geom.p2,
+                    }
+                }
+
+                // The two treated endpoints are no longer coincident — a new line now bridges
+                // them — so drop the constraint directly between them. Other constraints that
+                // may have referenced the old vertex position are intentionally left alone
+                // (documented limitation, see SPEC §3.1).
+                let p_a = ConstraintPoint::LineEndpoint { line: line1, end: end1 };
+                let p_b = ConstraintPoint::LineEndpoint { line: line2, end: end2 };
+                if let Some(idx) = self.doc.constraints.iter().position(|c| {
+                    !c.deleted
+                        && c.sketch == sketch
+                        && matches!(
+                            c.kind,
+                            ConstraintKind::Coincident { a, b }
+                                if (a == ConstraintEntity::Point(p_a) && b == ConstraintEntity::Point(p_b))
+                                    || (a == ConstraintEntity::Point(p_b) && b == ConstraintEntity::Point(p_a))
+                        )
+                }) {
+                    tombstone_elements(&mut self.doc, &[SceneElement::Constraint(idx)]);
+                }
+
+                let mut bridge =
+                    Line::from_local_endpoints(sketch, geom.p1.0, geom.p1.1, geom.p2.0, geom.p2.1);
+                bridge.bezier = geom.bezier;
+                self.doc.lines.push(bridge);
+                self.doc.shape_order.push(ShapeKind::Line);
+
+                self.refresh_document_health();
+                self.status = match kind {
+                    VertexTreatmentKind::Chamfer => "Added chamfer".to_string(),
+                    VertexTreatmentKind::Fillet => "Added fillet".to_string(),
+                };
+                ActionResult::Ok
+            }
             Action::CreateRectangle {
                 x,
                 y,
@@ -2564,7 +3104,7 @@ impl AppState {
                 self.status = format!("Added circle (⌀{:.1} mm)", r * 2.0);
                 ActionResult::Ok
             }
-            Action::CreateLineSegment { x0, y0, x1, y1 } => {
+            Action::CreateLineSegment { x0, y0, x1, y1, bezier } => {
                 let Some(session) = self.sketch_session else {
                     return ActionResult::Err("Not in sketch mode".to_string());
                 };
@@ -2574,6 +3114,7 @@ impl AppState {
                     return ActionResult::Err("Line is too short".to_string());
                 }
                 line.construction = self.draw_construction;
+                line.bezier = bezier;
                 self.doc.lines.push(line);
                 self.doc.shape_order.push(ShapeKind::Line);
                 let line_index = self.doc.lines.len() - 1;
@@ -2596,10 +3137,16 @@ impl AppState {
                 sketch,
                 faces,
                 distance,
+                merge_into_body,
             } => {
                 if faces.is_empty() {
                     return ActionResult::Err("Extrusion needs at least one face".to_string());
                 }
+                let body_mode = merge_into_body
+                    .then(|| extrude_merge_candidate(&self.doc, sketch))
+                    .flatten()
+                    .map(ExtrudeBodyMode::MergeInto)
+                    .unwrap_or(ExtrudeBodyMode::NewBody);
                 self.doc.extrusions.push(Extrusion {
                     sketch,
                     faces,
@@ -2611,13 +3158,7 @@ impl AppState {
                 });
                 self.doc.shape_order.push(ShapeKind::Extrusion);
                 let extrusion_index = self.doc.extrusions.len() - 1;
-                // The extrusion produces a solid body that depends on it.
-                self.doc.bodies.push(crate::model::Body {
-                    source: crate::model::BodySource::Extrusion(extrusion_index),
-                    name: None,
-                    deleted: false,
-                });
-                self.doc.shape_order.push(ShapeKind::Body);
+                self.attach_new_extrusion_to_body(extrusion_index, body_mode);
                 self.refresh_document_health();
                 self.status = format!("Added extrusion ({distance:.1} mm)");
                 ActionResult::Ok
@@ -2636,6 +3177,7 @@ impl AppState {
                     }
                     // A face on a different plane starts a fresh extrusion.
                     _ => {
+                        let merge_candidate = extrude_merge_candidate(&self.doc, sketch);
                         self.creating_extrusion = Some(CreatingExtrusion {
                             sketch,
                             faces: vec![face],
@@ -2645,6 +3187,10 @@ impl AppState {
                             pending_focus: true,
                             target: None,
                             edit_index: None,
+                            body_mode: merge_candidate
+                                .map(ExtrudeBodyMode::MergeInto)
+                                .unwrap_or(ExtrudeBodyMode::NewBody),
+                            merge_candidate,
                         });
                     }
                 }
@@ -2670,6 +3216,22 @@ impl AppState {
                 }
                 ActionResult::Ok
             }
+            Action::SetExtrudeBodyMode { mode } => {
+                let Some(ce) = &mut self.creating_extrusion else {
+                    return ActionResult::Err("No extrusion in progress".to_string());
+                };
+                // Only the precomputed candidate (or plain NewBody) is a valid choice — an
+                // arbitrary body index could point at an unrelated or deleted body.
+                let allowed = match mode {
+                    ExtrudeBodyMode::NewBody => true,
+                    ExtrudeBodyMode::MergeInto(bi) => ce.merge_candidate == Some(bi),
+                };
+                if !allowed {
+                    return ActionResult::Err("Not a valid body for this extrusion".to_string());
+                }
+                ce.body_mode = mode;
+                ActionResult::Ok
+            }
             Action::EditExtrusion { index } => {
                 let Some(extrusion) = self.doc.extrusions.get(index) else {
                     return ActionResult::Err("Extrusion not found".to_string());
@@ -2677,6 +3239,10 @@ impl AppState {
                 if extrusion.deleted {
                     return ActionResult::Err("Extrusion was deleted".to_string());
                 }
+                let merge_candidate = crate::model::body_index_for_extrusion(&self.doc, index);
+                let body_mode = merge_candidate
+                    .map(ExtrudeBodyMode::MergeInto)
+                    .unwrap_or(ExtrudeBodyMode::NewBody);
                 self.creating_extrusion = Some(CreatingExtrusion {
                     sketch: extrusion.sketch,
                     faces: extrusion.faces.clone(),
@@ -2686,6 +3252,8 @@ impl AppState {
                     pending_focus: true,
                     target: extrusion.target.clone(),
                     edit_index: Some(index),
+                    body_mode,
+                    merge_candidate,
                 });
                 self.tool = Tool::Extrude;
                 self.status = format!("Editing extrusion {index}");
@@ -2710,6 +3278,7 @@ impl AppState {
                         extrusion.distance = distance;
                         extrusion.target = ce.target;
                     }
+                    self.apply_extrude_body_mode(idx, ce.body_mode);
                     self.status = format!("Updated extrusion ({distance:.1} mm)");
                 } else {
                     self.doc.extrusions.push(Extrusion {
@@ -2723,12 +3292,7 @@ impl AppState {
                     });
                     self.doc.shape_order.push(ShapeKind::Extrusion);
                     let ei = self.doc.extrusions.len() - 1;
-                    self.doc.bodies.push(crate::model::Body {
-                        source: crate::model::BodySource::Extrusion(ei),
-                        name: None,
-                        deleted: false,
-                    });
-                    self.doc.shape_order.push(ShapeKind::Body);
+                    self.attach_new_extrusion_to_body(ei, ce.body_mode);
                     self.status = format!("Added extrusion ({distance:.1} mm)");
                 }
                 self.refresh_document_health();
@@ -2981,6 +3545,25 @@ impl AppState {
                 self.context_pane.name_draft =
                     element_name(&self.doc, element).unwrap_or_default().to_string();
                 self.status = "Rename element".to_string();
+                ActionResult::Ok
+            }
+            Action::SetDocumentUnits { length, angle } => {
+                self.doc.default_length_unit = length;
+                self.doc.default_angle_unit = angle;
+                self.status = format!(
+                    "Default units set to {} / {}",
+                    length.label(),
+                    angle.label()
+                );
+                ActionResult::Ok
+            }
+            Action::SetSketchUnits { sketch, length, angle } => {
+                let Some(s) = self.doc.sketches.get_mut(sketch) else {
+                    return ActionResult::Err(format!("Sketch {sketch} not found"));
+                };
+                s.length_unit = length;
+                s.angle_unit = angle;
+                self.status = "Sketch units updated".to_string();
                 ActionResult::Ok
             }
         };
@@ -3310,6 +3893,162 @@ mod tests {
         assert_eq!(state.doc.bodies.len(), 1);
     }
 
+    /// Extrude a 10x5 rect, then start a fresh extrusion sketched on top of the resulting
+    /// body's top cap face. Returns `(state, face_sketch)`.
+    fn extrude_then_sketch_on_top_cap(state: &mut AppState) -> SketchId {
+        let base_sketch = begin_default_sketch(state);
+        state.doc.rects.push(Rect::from_local_corners(base_sketch, 0.0, 0.0, 10.0, 5.0));
+        state.doc.shape_order.push(ShapeKind::Rect);
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace { face: ExtrudeFace::Rect(0) });
+        state.apply(Action::SetExtrudeDistance { distance: 7.0 });
+        state.apply(Action::CommitExtrusion);
+        assert_eq!(state.doc.bodies.len(), 1);
+
+        state.apply(Action::BeginSketch {
+            face: FaceId::ExtrudeCap {
+                extrusion: 0,
+                profile: ExtrudeFace::Rect(0),
+                top: true,
+            },
+            viewport: None,
+        });
+        state.sketch_session.unwrap().sketch
+    }
+
+    #[test]
+    fn extrude_on_body_face_defaults_to_merging_into_that_body() {
+        let mut state = AppState::default();
+        let face_sketch = extrude_then_sketch_on_top_cap(&mut state);
+        state.doc.rects.push(Rect::from_local_corners(face_sketch, 1.0, 1.0, 4.0, 2.0));
+        state.doc.shape_order.push(ShapeKind::Rect);
+
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace { face: ExtrudeFace::Rect(1) });
+        let ce = state.creating_extrusion.as_ref().unwrap();
+        assert_eq!(ce.merge_candidate, Some(0));
+        assert_eq!(ce.body_mode, ExtrudeBodyMode::MergeInto(0));
+
+        state.apply(Action::SetExtrudeDistance { distance: 3.0 });
+        state.apply(Action::CommitExtrusion);
+
+        assert_eq!(state.doc.extrusions.len(), 2);
+        assert_eq!(state.doc.bodies.len(), 1);
+        assert_eq!(state.doc.bodies[0].source.extrusion_indices(), [0, 1]);
+    }
+
+    #[test]
+    fn set_extrude_body_mode_to_new_body_creates_separate_body() {
+        let mut state = AppState::default();
+        let face_sketch = extrude_then_sketch_on_top_cap(&mut state);
+        state.doc.rects.push(Rect::from_local_corners(face_sketch, 1.0, 1.0, 4.0, 2.0));
+        state.doc.shape_order.push(ShapeKind::Rect);
+
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace { face: ExtrudeFace::Rect(1) });
+        state.apply(Action::SetExtrudeDistance { distance: 3.0 });
+        assert_eq!(
+            state.apply(Action::SetExtrudeBodyMode { mode: ExtrudeBodyMode::NewBody }),
+            ActionResult::Ok
+        );
+        state.apply(Action::CommitExtrusion);
+
+        assert_eq!(state.doc.bodies.len(), 2);
+        assert_eq!(state.doc.bodies[0].source.extrusion_indices(), [0]);
+        assert_eq!(state.doc.bodies[1].source.extrusion_indices(), [1]);
+    }
+
+    #[test]
+    fn set_extrude_body_mode_rejects_an_unrelated_body() {
+        let mut state = AppState::default();
+        let face_sketch = extrude_then_sketch_on_top_cap(&mut state);
+        state.doc.rects.push(Rect::from_local_corners(face_sketch, 1.0, 1.0, 4.0, 2.0));
+        state.doc.shape_order.push(ShapeKind::Rect);
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace { face: ExtrudeFace::Rect(1) });
+
+        let result = state.apply(Action::SetExtrudeBodyMode {
+            mode: ExtrudeBodyMode::MergeInto(99),
+        });
+        assert!(matches!(result, ActionResult::Err(_)));
+        assert_eq!(
+            state.creating_extrusion.as_ref().unwrap().body_mode,
+            ExtrudeBodyMode::MergeInto(0)
+        );
+    }
+
+    #[test]
+    fn undo_after_merged_extrusion_removes_only_that_extrusion_from_the_body() {
+        let mut state = AppState::default();
+        let face_sketch = extrude_then_sketch_on_top_cap(&mut state);
+        state.doc.rects.push(Rect::from_local_corners(face_sketch, 1.0, 1.0, 4.0, 2.0));
+        state.doc.shape_order.push(ShapeKind::Rect);
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace { face: ExtrudeFace::Rect(1) });
+        state.apply(Action::SetExtrudeDistance { distance: 3.0 });
+        state.apply(Action::CommitExtrusion);
+        assert_eq!(state.doc.bodies[0].source.extrusion_indices(), [0, 1]);
+
+        state.apply(Action::UndoLast);
+
+        assert_eq!(state.doc.extrusions.len(), 1);
+        assert_eq!(state.doc.bodies.len(), 1);
+        assert!(!state.doc.bodies[0].deleted);
+        assert_eq!(
+            state.doc.bodies[0].source,
+            crate::model::BodySource::Extrusion(0)
+        );
+    }
+
+    #[test]
+    fn deleting_one_extrusion_of_a_merged_body_keeps_the_body() {
+        let mut state = AppState::default();
+        let face_sketch = extrude_then_sketch_on_top_cap(&mut state);
+        state.doc.rects.push(Rect::from_local_corners(face_sketch, 1.0, 1.0, 4.0, 2.0));
+        state.doc.shape_order.push(ShapeKind::Rect);
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace { face: ExtrudeFace::Rect(1) });
+        state.apply(Action::SetExtrudeDistance { distance: 3.0 });
+        state.apply(Action::CommitExtrusion);
+
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Extrusion(1),
+            additive: false,
+        });
+        state.apply(Action::DeleteSelection);
+
+        assert!(state.doc.extrusions[1].deleted);
+        assert!(!state.doc.bodies[0].deleted, "the body still has extrusion 0");
+        assert_eq!(state.doc.bodies[0].source.extrusion_indices(), [0]);
+    }
+
+    #[test]
+    fn editing_an_extrusion_can_split_it_into_a_new_body() {
+        let mut state = AppState::default();
+        let face_sketch = extrude_then_sketch_on_top_cap(&mut state);
+        state.doc.rects.push(Rect::from_local_corners(face_sketch, 1.0, 1.0, 4.0, 2.0));
+        state.doc.shape_order.push(ShapeKind::Rect);
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace { face: ExtrudeFace::Rect(1) });
+        state.apply(Action::SetExtrudeDistance { distance: 3.0 });
+        state.apply(Action::CommitExtrusion);
+        assert_eq!(state.doc.bodies.len(), 1);
+
+        state.apply(Action::EditExtrusion { index: 1 });
+        assert_eq!(
+            state.creating_extrusion.as_ref().unwrap().body_mode,
+            ExtrudeBodyMode::MergeInto(0)
+        );
+        state.apply(Action::SetExtrudeBodyMode { mode: ExtrudeBodyMode::NewBody });
+        state.apply(Action::CommitExtrusion);
+
+        assert_eq!(state.doc.bodies.len(), 2);
+        assert_eq!(state.doc.bodies[0].source.extrusion_indices(), [0]);
+        assert_eq!(state.doc.bodies[1].source.extrusion_indices(), [1]);
+        assert!(!state.doc.bodies[0].deleted);
+        assert!(!state.doc.bodies[1].deleted);
+    }
+
     #[test]
     fn export_stl_writes_a_parseable_file() {
         let mut state = AppState::default();
@@ -3386,6 +4125,171 @@ mod tests {
     }
 
     #[test]
+    fn export_step_writes_a_valid_faceted_brep_file() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state
+            .doc
+            .rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 10.0, 5.0));
+        state.doc.shape_order.push(ShapeKind::Rect);
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace {
+            face: ExtrudeFace::Rect(0),
+        });
+        state.apply(Action::SetExtrudeDistance { distance: 7.0 });
+        state.apply(Action::CommitExtrusion);
+        assert_eq!(state.doc.bodies.len(), 1);
+
+        let path = std::env::temp_dir().join(format!("bearcad_export_{}.step", std::process::id()));
+        let path_str = path.to_string_lossy().to_string();
+        let result = state.apply(Action::ExportStep {
+            path: path_str.clone(),
+            body: None,
+        });
+        assert_eq!(result, ActionResult::Ok, "status: {}", state.status);
+        let text = std::fs::read_to_string(&path).expect("read exported step");
+        let summary = crate::step::validate_step(&text).expect("validate exported step");
+        assert_eq!(summary.face_surfaces, 12, "a box has 12 triangles");
+
+        let missing = state.apply(Action::ExportStep {
+            path: path_str.clone(),
+            body: Some("Nope".into()),
+        });
+        assert!(matches!(missing, ActionResult::Err(_)));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn export_step_body_by_index_writes_a_valid_faceted_brep_file() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state
+            .doc
+            .rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 10.0, 5.0));
+        state.doc.shape_order.push(ShapeKind::Rect);
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace {
+            face: ExtrudeFace::Rect(0),
+        });
+        state.apply(Action::SetExtrudeDistance { distance: 7.0 });
+        state.apply(Action::CommitExtrusion);
+        assert_eq!(state.doc.bodies.len(), 1);
+
+        let path =
+            std::env::temp_dir().join(format!("bearcad_export_idx_{}.step", std::process::id()));
+        let path_str = path.to_string_lossy().to_string();
+        let result = state.apply(Action::ExportStepBody {
+            path: path_str.clone(),
+            body: 0,
+        });
+        assert_eq!(result, ActionResult::Ok, "status: {}", state.status);
+        let text = std::fs::read_to_string(&path).expect("read exported step");
+        let summary = crate::step::validate_step(&text).expect("validate exported step");
+        assert_eq!(summary.face_surfaces, 12, "a box has 12 triangles");
+
+        let missing = state.apply(Action::ExportStepBody {
+            path: path_str.clone(),
+            body: 9,
+        });
+        assert!(matches!(missing, ActionResult::Err(_)));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn import_stl_adds_a_body_from_ascii_stl() {
+        let mut state = AppState::default();
+        let stl = "solid tri\n  facet normal 0 0 1\n    outer loop\n      vertex 0 0 0\n      vertex 1 0 0\n      vertex 0 1 0\n    endloop\n  endfacet\nendsolid tri\n";
+        let path = std::env::temp_dir().join(format!("bearcad_import_{}.stl", std::process::id()));
+        std::fs::write(&path, stl).unwrap();
+        let path_str = path.to_string_lossy().to_string();
+
+        let result = state.apply(Action::ImportStl { path: path_str.clone() });
+        assert_eq!(result, ActionResult::Ok, "status: {}", state.status);
+        assert_eq!(state.doc.imported_meshes.len(), 1);
+        assert_eq!(state.doc.imported_meshes[0].triangles.len(), 1);
+        assert_eq!(state.doc.bodies.len(), 1);
+        assert_eq!(state.doc.bodies[0].source, crate::model::BodySource::Imported(0));
+        assert_eq!(
+            state.doc.bodies[0].name.as_deref(),
+            path.file_stem().unwrap().to_str()
+        );
+
+        let mesh = crate::extrude::body_solid_mesh(&state.doc, 0).expect("imported mesh");
+        assert_eq!(mesh.triangles.len(), 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn import_stl_reports_error_for_missing_file() {
+        let mut state = AppState::default();
+        let result = state.apply(Action::ImportStl {
+            path: "/nonexistent/path/does-not-exist.stl".to_string(),
+        });
+        assert!(matches!(result, ActionResult::Err(_)));
+        assert!(state.doc.imported_meshes.is_empty());
+        assert!(state.doc.bodies.is_empty());
+    }
+
+    #[test]
+    fn undo_after_import_stl_removes_the_body() {
+        let mut state = AppState::default();
+        let stl = "solid tri\n  facet normal 0 0 1\n    outer loop\n      vertex 0 0 0\n      vertex 1 0 0\n      vertex 0 1 0\n    endloop\n  endfacet\nendsolid tri\n";
+        let path = std::env::temp_dir().join(format!("bearcad_import_undo_{}.stl", std::process::id()));
+        std::fs::write(&path, stl).unwrap();
+        state.apply(Action::ImportStl { path: path.to_string_lossy().to_string() });
+        assert_eq!(state.doc.bodies.len(), 1);
+
+        state.apply(Action::UndoLast);
+        assert!(state.doc.bodies.is_empty());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn import_step_adds_a_body_from_bearcads_own_export() {
+        // Round-trip: extrude a box, export it to STEP, then import that STEP file back in
+        // as a fresh body in a new document.
+        let mut exporter = AppState::default();
+        let sketch = begin_default_sketch(&mut exporter);
+        exporter
+            .doc
+            .rects
+            .push(Rect::from_local_corners(sketch, 0.0, 0.0, 10.0, 5.0));
+        exporter.doc.shape_order.push(ShapeKind::Rect);
+        exporter.apply(Action::SetTool(Tool::Extrude));
+        exporter.apply(Action::ToggleExtrudeFace { face: ExtrudeFace::Rect(0) });
+        exporter.apply(Action::SetExtrudeDistance { distance: 7.0 });
+        exporter.apply(Action::CommitExtrusion);
+        let path = std::env::temp_dir().join(format!("bearcad_import_{}.step", std::process::id()));
+        let path_str = path.to_string_lossy().to_string();
+        exporter.apply(Action::ExportStepBody { path: path_str.clone(), body: 0 });
+
+        let mut state = AppState::default();
+        let result = state.apply(Action::ImportStep { path: path_str.clone() });
+        assert_eq!(result, ActionResult::Ok, "status: {}", state.status);
+        assert_eq!(state.doc.imported_meshes.len(), 1);
+        assert_eq!(state.doc.imported_meshes[0].triangles.len(), 12, "a box has 12 triangles");
+        assert_eq!(state.doc.bodies.len(), 1);
+        assert_eq!(state.doc.bodies[0].source, crate::model::BodySource::Imported(0));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn import_step_rejects_a_file_that_is_not_step() {
+        let mut state = AppState::default();
+        let path = std::env::temp_dir().join(format!("bearcad_bad_import_{}.step", std::process::id()));
+        std::fs::write(&path, "not a step file").unwrap();
+        let result = state.apply(Action::ImportStep { path: path.to_string_lossy().to_string() });
+        assert!(matches!(result, ActionResult::Err(_)));
+        assert!(state.doc.bodies.is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn picking_extrude_tool_from_within_a_sketch_exits_sketch_editing() {
         let mut state = AppState::default();
         let _sketch = begin_default_sketch(&mut state);
@@ -3409,6 +4313,7 @@ mod tests {
             sketch,
             faces: vec![ExtrudeFace::Rect(0)],
             distance: 6.0,
+            merge_into_body: false,
         });
 
         state.apply(Action::EditExtrusion { index: 0 });
@@ -3757,6 +4662,7 @@ mod tests {
             sketch,
             faces: vec![ExtrudeFace::Rect(0)],
             distance: 6.0,
+            merge_into_body: false,
         });
         assert_eq!(state.doc.extrusions.len(), 1);
         assert_eq!(state.doc.bodies.len(), 1);
@@ -3774,6 +4680,130 @@ mod tests {
         assert_eq!(state.doc.rects.len(), 1);
         state.apply(Action::UndoLast);
         assert!(state.doc.rects.is_empty());
+    }
+
+    fn recording_state() -> AppState {
+        let mut state = AppState::default();
+        state.command_log = Some(std::cell::RefCell::new(
+            crate::command_log::CommandLog::new_recording(false),
+        ));
+        state
+    }
+
+    #[test]
+    fn interactive_rect_line_circle_commits_are_logged_for_replay() {
+        let mut state = recording_state();
+        begin_default_sketch(&mut state);
+        state.creating_rect = Some(CreatingRect {
+            origin: Vec3::new(0.0, 0.0, 0.0),
+            texts: ["".to_string(), "".to_string()],
+            focused: 0,
+            last_mouse: Vec3::new(10.0, 5.0, 0.0),
+            user_edited: [false, false],
+            pending_focus: false,
+            construction: false,
+        });
+        state.apply(Action::CommitRectangle);
+        state.creating_line = Some(CreatingLine {
+            origin: Vec3::new(0.0, 0.0, 0.0),
+            text: String::new(),
+            last_mouse: Vec3::new(20.0, 0.0, 0.0),
+            user_edited: false,
+            pending_focus: false,
+            construction: false,
+            drag_path: Vec::new(),
+        });
+        state.apply(Action::CommitLine);
+        state.creating_circle = Some(CreatingCircle {
+            origin: Vec3::new(0.0, 0.0, 0.0),
+            text: String::new(),
+            last_mouse: Vec3::new(8.0, 0.0, 0.0),
+            user_edited: false,
+            pending_focus: false,
+            construction: false,
+        });
+        state.apply(Action::CommitCircle);
+
+        let lua: Vec<String> = state
+            .command_log
+            .as_ref()
+            .unwrap()
+            .borrow()
+            .session_lua_script("ts")
+            .lines()
+            .filter(|l| l.starts_with("bearcad."))
+            .map(|l| l.to_string())
+            .collect();
+        assert!(lua.iter().any(|l| l.starts_with("bearcad.rect")), "{lua:?}");
+        assert!(lua.iter().any(|l| l.starts_with("bearcad.line")), "{lua:?}");
+        assert!(lua.iter().any(|l| l.starts_with("bearcad.circle")), "{lua:?}");
+    }
+
+    #[test]
+    fn interactive_extrude_commit_is_logged_but_edits_are_not() {
+        let mut state = recording_state();
+        let sketch = begin_default_sketch(&mut state);
+        state.doc.rects.push(Rect::from_local_corners(sketch, 0.0, 0.0, 10.0, 5.0));
+        state.doc.shape_order.push(ShapeKind::Rect);
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace { face: ExtrudeFace::Rect(0) });
+        state.apply(Action::SetExtrudeDistance { distance: 7.0 });
+        state.apply(Action::CommitExtrusion);
+        // Re-open and re-commit (an edit, not a creation) — should not log a second extrude.
+        state.apply(Action::EditExtrusion { index: 0 });
+        state.apply(Action::SetExtrudeDistance { distance: 9.0 });
+        state.apply(Action::CommitExtrusion);
+
+        let log = state.command_log.as_ref().unwrap().borrow();
+        let extrude_calls = log
+            .session_lua_script("ts")
+            .lines()
+            .filter(|l| l.starts_with("bearcad.extrude"))
+            .count();
+        assert_eq!(extrude_calls, 1, "edits shouldn't double-log an extrude call");
+    }
+
+    #[test]
+    fn exported_session_script_replays_to_the_same_geometry() {
+        let mut state = recording_state();
+        let sketch = begin_default_sketch(&mut state);
+        state.creating_rect = Some(CreatingRect {
+            origin: Vec3::new(0.0, 0.0, 0.0),
+            texts: ["".to_string(), "".to_string()],
+            focused: 0,
+            last_mouse: Vec3::new(10.0, 5.0, 0.0),
+            user_edited: [false, false],
+            pending_focus: false,
+            construction: false,
+        });
+        state.apply(Action::CommitRectangle);
+        let _ = sketch;
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace { face: ExtrudeFace::Rect(0) });
+        state.apply(Action::SetExtrudeDistance { distance: 7.0 });
+        state.apply(Action::CommitExtrusion);
+
+        let script = state
+            .command_log
+            .as_ref()
+            .unwrap()
+            .borrow()
+            .session_lua_script("ts");
+        let mut runner = crate::script::ScriptRunner::from_lua_source(&script).unwrap();
+        runner.verbose = false;
+        let mut replayed = AppState::default();
+        let mut synthetic = crate::script::SyntheticInput::default();
+        let ctx = egui::Context::default();
+        while !runner.done {
+            runner.tick(&mut replayed, &mut synthetic, None, &ctx);
+        }
+
+        assert_eq!(replayed.doc.rects.len(), 1);
+        assert!((replayed.doc.rects[0].w - state.doc.rects[0].w).abs() < 1e-3);
+        assert!((replayed.doc.rects[0].h - state.doc.rects[0].h).abs() < 1e-3);
+        assert_eq!(replayed.doc.extrusions.len(), 1);
+        assert_eq!(replayed.doc.extrusions[0].distance, state.doc.extrusions[0].distance);
+        assert_eq!(replayed.doc.bodies.len(), 1);
     }
 
     #[test]
@@ -4137,6 +5167,7 @@ mod tests {
             user_edited: true,
             pending_focus: false,
             construction: false,
+            drag_path: Vec::new(),
         });
         state.apply(Action::CommitLine);
         assert_eq!(state.doc.lines.len(), 1);
@@ -4144,6 +5175,295 @@ mod tests {
         assert_eq!(state.doc.constraints.len(), 1);
         assert!(state.doc.lines[0].length_locked);
         assert!(state.creating_line.is_none());
+    }
+
+    #[test]
+    fn commit_line_with_a_meaningful_drag_path_creates_a_curve() {
+        let mut state = AppState::default();
+        begin_default_sketch(&mut state);
+        state.creating_line = Some(CreatingLine {
+            origin: Vec3::ZERO,
+            text: String::new(),
+            last_mouse: Vec3::new(10.0, 0.0, 0.0),
+            user_edited: false,
+            pending_focus: false,
+            construction: false,
+            drag_path: vec![(0.0, 0.0), (5.0, 3.0), (10.0, 0.0)],
+        });
+        state.apply(Action::CommitLine);
+        assert_eq!(state.doc.lines.len(), 1);
+        assert!(state.doc.lines[0].is_curved());
+    }
+
+    #[test]
+    fn commit_line_without_a_meaningful_drag_stays_straight() {
+        let mut state = AppState::default();
+        begin_default_sketch(&mut state);
+        state.creating_line = Some(CreatingLine {
+            origin: Vec3::ZERO,
+            text: String::new(),
+            last_mouse: Vec3::new(10.0, 0.0, 0.0),
+            user_edited: false,
+            pending_focus: false,
+            construction: false,
+            drag_path: Vec::new(),
+        });
+        state.apply(Action::CommitLine);
+        assert_eq!(state.doc.lines.len(), 1);
+        assert!(!state.doc.lines[0].is_curved());
+    }
+
+    #[test]
+    fn set_bezier_handle_moves_the_control_point() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines[0].bezier = Some([(3.0, 0.0), (7.0, 0.0)]);
+        let result = state.apply(Action::SetBezierHandle {
+            line: 0,
+            near_start: true,
+            u: 3.0,
+            v: 5.0,
+        });
+        assert!(matches!(result, ActionResult::Ok));
+        assert_eq!(state.doc.lines[0].bezier, Some([(3.0, 5.0), (7.0, 0.0)]));
+    }
+
+    #[test]
+    fn set_bezier_handle_errors_on_a_straight_line() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        let result = state.apply(Action::SetBezierHandle {
+            line: 0,
+            near_start: true,
+            u: 3.0,
+            v: 5.0,
+        });
+        assert!(matches!(result, ActionResult::Err(_)));
+    }
+
+    #[test]
+    fn convert_vertex_to_bezier_smooths_two_coincident_lines() {
+        use crate::model::{Constraint, ConstraintEntity, ConstraintKind, Line, LineEnd};
+
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 20.0, 0.0));
+        state.doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line]);
+        state.doc.constraints.push(Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                    line: 0,
+                    end: LineEnd::End,
+                }),
+                b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                    line: 1,
+                    end: LineEnd::Start,
+                }),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+        let point = ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End };
+        let result = state.apply(Action::ConvertVertexToBezier { point });
+        assert!(matches!(result, ActionResult::Ok));
+        assert!(state.doc.lines[0].is_curved());
+        assert!(state.doc.lines[1].is_curved());
+    }
+
+    #[test]
+    fn convert_vertex_to_bezier_rejects_an_endpoint_with_only_one_line() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        let point = ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::Start };
+        let result = state.apply(Action::ConvertVertexToBezier { point });
+        assert!(matches!(result, ActionResult::Err(_)));
+        assert!(!state.doc.lines[0].is_curved());
+    }
+
+    #[test]
+    fn straighten_line_clears_bezier() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines[0].bezier = Some([(3.0, 1.0), (7.0, 1.0)]);
+        let result = state.apply(Action::StraightenLine { line: 0 });
+        assert!(matches!(result, ActionResult::Ok));
+        assert!(!state.doc.lines[0].is_curved());
+    }
+
+    /// A 90-degree corner: line 0 from (0,0) to (10,0), line 1 from (10,0) to (10,10),
+    /// coincident at the shared vertex (10,0). Returns `(sketch, point)` for that vertex.
+    fn two_coincident_lines_at_a_right_angle(state: &mut AppState) -> (SketchId, ConstraintPoint) {
+        use crate::model::{Constraint, ConstraintEntity, ConstraintKind, LineEnd};
+
+        let sketch = begin_default_sketch(state);
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 10.0));
+        state.doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line]);
+        state.doc.constraints.push(Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                    line: 0,
+                    end: LineEnd::End,
+                }),
+                b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                    line: 1,
+                    end: LineEnd::Start,
+                }),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+        state.doc.shape_order.push(ShapeKind::Constraint);
+        let point = ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End };
+        (sketch, point)
+    }
+
+    #[test]
+    fn commit_vertex_treatment_chamfer_truncates_and_bridges_with_a_straight_line() {
+        let mut state = AppState::default();
+        let (_, point) = two_coincident_lines_at_a_right_angle(&mut state);
+        let result = state.apply(Action::CommitVertexTreatment {
+            point,
+            kind: VertexTreatmentKind::Chamfer,
+            amount: 3.0,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        // Line 0's End truncated back from (10,0) toward (0,0) by 3mm.
+        assert!((state.doc.lines[0].x1 - 7.0).abs() < 1e-3);
+        assert!(state.doc.lines[0].y1.abs() < 1e-3);
+        // Line 1's Start truncated back from (10,0) toward (10,10) by 3mm.
+        assert!((state.doc.lines[1].x0 - 10.0).abs() < 1e-3);
+        assert!((state.doc.lines[1].y0 - 3.0).abs() < 1e-3);
+        // A new straight bridging line was appended.
+        assert_eq!(state.doc.lines.len(), 3);
+        assert!(!state.doc.lines[2].is_curved());
+        assert_eq!(state.doc.shape_order.last(), Some(&ShapeKind::Line));
+    }
+
+    #[test]
+    fn commit_vertex_treatment_fillet_bridges_with_a_curved_line() {
+        let mut state = AppState::default();
+        let (_, point) = two_coincident_lines_at_a_right_angle(&mut state);
+        let result = state.apply(Action::CommitVertexTreatment {
+            point,
+            kind: VertexTreatmentKind::Fillet,
+            amount: 3.0,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert_eq!(state.doc.lines.len(), 3);
+        assert!(state.doc.lines[2].is_curved());
+    }
+
+    #[test]
+    fn commit_vertex_treatment_removes_the_treated_coincident_constraint() {
+        let mut state = AppState::default();
+        let (sketch, point) = two_coincident_lines_at_a_right_angle(&mut state);
+        assert!(state
+            .doc
+            .constraints
+            .iter()
+            .any(|c| !c.deleted && c.sketch == sketch));
+        state.apply(Action::CommitVertexTreatment {
+            point,
+            kind: VertexTreatmentKind::Chamfer,
+            amount: 3.0,
+        });
+        assert!(state
+            .doc
+            .constraints
+            .iter()
+            .all(|c| c.deleted || c.sketch != sketch));
+    }
+
+    #[test]
+    fn commit_vertex_treatment_rejects_a_vertex_with_only_one_line() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        let point = ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::Start };
+        let result = state.apply(Action::CommitVertexTreatment {
+            point,
+            kind: VertexTreatmentKind::Chamfer,
+            amount: 3.0,
+        });
+        assert!(matches!(result, ActionResult::Err(_)));
+        assert_eq!(state.doc.lines.len(), 1);
+    }
+
+    #[test]
+    fn commit_vertex_treatment_rejects_a_degenerate_corner() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        // Two collinear lines meeting at (10,0): not a real corner.
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 20.0, 0.0));
+        state.doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line]);
+        state.doc.constraints.push(crate::model::Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                    line: 0,
+                    end: LineEnd::End,
+                }),
+                b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                    line: 1,
+                    end: LineEnd::Start,
+                }),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+        let point = ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End };
+        let result = state.apply(Action::CommitVertexTreatment {
+            point,
+            kind: VertexTreatmentKind::Chamfer,
+            amount: 3.0,
+        });
+        assert!(matches!(result, ActionResult::Err(_)));
+        assert_eq!(state.doc.lines.len(), 2);
+    }
+
+    #[test]
+    fn commit_vertex_treatment_rejects_non_positive_amount() {
+        let mut state = AppState::default();
+        let (_, point) = two_coincident_lines_at_a_right_angle(&mut state);
+        let result = state.apply(Action::CommitVertexTreatment {
+            point,
+            kind: VertexTreatmentKind::Fillet,
+            amount: 0.0,
+        });
+        assert!(matches!(result, ActionResult::Err(_)));
+        assert_eq!(state.doc.lines.len(), 2);
+    }
+
+    #[test]
+    fn undo_after_commit_vertex_treatment_removes_the_bridging_line() {
+        let mut state = AppState::default();
+        let (_, point) = two_coincident_lines_at_a_right_angle(&mut state);
+        state.apply(Action::CommitVertexTreatment {
+            point,
+            kind: VertexTreatmentKind::Chamfer,
+            amount: 3.0,
+        });
+        assert_eq!(state.doc.lines.len(), 3);
+        let result = state.apply(Action::UndoLast);
+        assert!(matches!(result, ActionResult::Ok));
+        // Undo is best-effort here: it pops the new bridging line back off, but doesn't
+        // restore the two truncated lines' original endpoints (documented limitation).
+        assert_eq!(state.doc.lines.len(), 2);
     }
 
     #[test]
@@ -4158,6 +5478,7 @@ mod tests {
             user_edited: true,
             pending_focus: false,
             construction: false,
+            drag_path: Vec::new(),
         });
         state.apply(Action::CommitLine);
 
@@ -4211,6 +5532,7 @@ mod tests {
             user_edited: true,
             pending_focus: false,
             construction: false,
+            drag_path: Vec::new(),
         });
         // The end latched onto the existing vertex at (10, 0).
         state.line_end_snap = Some(crate::snapping::SnapTarget::Vertex(
@@ -4432,6 +5754,7 @@ mod tests {
             user_edited: true,
             pending_focus: false,
             construction: false,
+            drag_path: Vec::new(),
         };
         let frame = xy_frame();
         let doc = Document::default();
@@ -4470,6 +5793,7 @@ mod tests {
             user_edited: true,
             pending_focus: false,
             construction: false,
+            drag_path: Vec::new(),
         };
         let frame = xy_frame();
         let doc = Document::default();
@@ -4489,6 +5813,7 @@ mod tests {
             user_edited: true,
             pending_focus: false,
             construction: false,
+            drag_path: Vec::new(),
         };
         let frame = xy_frame();
         let doc = Document::default();
@@ -5358,6 +6683,7 @@ mod tests {
             user_edited: true,
             pending_focus: false,
             construction: true,
+            drag_path: Vec::new(),
         });
         state.apply(Action::CommitLine);
         assert!(state.doc.lines[0].construction);
@@ -5400,6 +6726,7 @@ mod tests {
             user_edited: false,
             pending_focus: false,
             construction: false,
+            drag_path: Vec::new(),
         });
         state.apply(Action::FocusLineLength);
         assert!(state.creating_line.as_ref().unwrap().pending_focus);

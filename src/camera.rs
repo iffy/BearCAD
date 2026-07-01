@@ -105,6 +105,58 @@ impl ProjectionMode {
     }
 }
 
+/// How committed bodies are rendered in the 3D viewport (#33). A viewport display
+/// preference, not model data — stored alongside [`ProjectionMode`] on [`Camera`], the
+/// existing home for this kind of per-session view state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShadingMode {
+    /// Edges only, no fill.
+    Wireframe,
+    /// Translucent fill with edges visible through it.
+    TransparentSolid,
+    /// Opaque fill, no edge overlay (today's existing look — the default).
+    Solid,
+    /// Opaque fill plus an edge overlay that stays visible through the body.
+    SolidWireframe,
+}
+
+impl Default for ShadingMode {
+    fn default() -> Self {
+        Self::Solid
+    }
+}
+
+/// All shading modes, in the order they should list in the HUD popup.
+pub const SHADING_MODES: [ShadingMode; 4] = [
+    ShadingMode::Wireframe,
+    ShadingMode::TransparentSolid,
+    ShadingMode::Solid,
+    ShadingMode::SolidWireframe,
+];
+
+impl ShadingMode {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "wireframe" | "wire" => Some(Self::Wireframe),
+            "transparent" | "transparent_solid" | "translucent" => Some(Self::TransparentSolid),
+            "solid" => Some(Self::Solid),
+            "solid_wireframe" | "solid+wireframe" | "shaded_wireframe" => {
+                Some(Self::SolidWireframe)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn script_name(self) -> &'static str {
+        match self {
+            Self::Wireframe => "wireframe",
+            Self::TransparentSolid => "transparent",
+            Self::Solid => "solid",
+            Self::SolidWireframe => "solid_wireframe",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct ViewTransition {
     from_yaw: f32,
@@ -144,6 +196,8 @@ pub struct Camera {
     /// Vertical field of view, radians (used for perspective and ortho framing).
     pub fov_y: f32,
     pub projection: ProjectionMode,
+    /// How committed bodies are drawn (#33). Viewport preference, not model data.
+    pub shading: ShadingMode,
     /// When set, overrides world Z as the look-at up vector (sketch mode).
     view_up: Option<Vec3>,
     /// Accumulated trackball rotation relative to [`orbit_base_offset`].
@@ -167,6 +221,7 @@ impl Default for Camera {
             distance: HOME_DISTANCE,
             fov_y: 45f32.to_radians(),
             projection: ProjectionMode::Natural,
+            shading: ShadingMode::default(),
             view_up: None,
             orbit_quat: None,
             orbit_base_offset: None,
@@ -341,6 +396,14 @@ impl Camera {
 
     pub fn toggle_projection_mode(&mut self) {
         self.projection = self.projection.opposite();
+    }
+
+    pub fn shading_mode(&self) -> ShadingMode {
+        self.shading
+    }
+
+    pub fn set_shading_mode(&mut self, mode: ShadingMode) {
+        self.shading = mode;
     }
 
     /// Half-width/height of the view frustum at the look-at target (world units).
@@ -1297,6 +1360,28 @@ mod tests {
         assert_eq!(cam.projection_mode(), ProjectionMode::Orthographic);
         cam.toggle_projection_mode();
         assert_eq!(cam.projection_mode(), ProjectionMode::Natural);
+    }
+
+    #[test]
+    fn default_shading_mode_is_solid() {
+        assert_eq!(Camera::default().shading_mode(), ShadingMode::Solid);
+    }
+
+    #[test]
+    fn set_shading_mode_updates_camera() {
+        let mut cam = Camera::default();
+        cam.set_shading_mode(ShadingMode::Wireframe);
+        assert_eq!(cam.shading_mode(), ShadingMode::Wireframe);
+        cam.set_shading_mode(ShadingMode::SolidWireframe);
+        assert_eq!(cam.shading_mode(), ShadingMode::SolidWireframe);
+    }
+
+    #[test]
+    fn shading_mode_from_name_round_trips_script_names() {
+        for mode in SHADING_MODES {
+            assert_eq!(ShadingMode::from_name(mode.script_name()), Some(mode));
+        }
+        assert_eq!(ShadingMode::from_name("nonsense"), None);
     }
 
     #[test]

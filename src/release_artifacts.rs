@@ -24,6 +24,19 @@ mod tests {
     }
 
     #[test]
+    fn prune_script_tolerates_missing_release_tags() {
+        let script = include_str!("../scripts/prune-draft-releases.sh");
+        assert!(
+            !script.contains("--cleanup-tag"),
+            "prune script should not use --cleanup-tag; draft releases may lack tag refs"
+        );
+        assert!(
+            script.contains("git/refs/tags"),
+            "prune script should best-effort delete orphaned tags"
+        );
+    }
+
+    #[test]
     fn ci_publishes_draft_releases_and_prunes_old_drafts() {
         let workflow = include_str!("../.github/workflows/ci.yml");
         assert!(

@@ -56,6 +56,13 @@ pub const SOLID_FILL: Color32 = Color32::from_rgb(150, 168, 196);
 pub const SOLID_PREVIEW_FILL: Color32 = Color32::from_rgb(120, 215, 230);
 /// Opacity of the in-progress extrusion preview body (before it is committed).
 pub const SOLID_PREVIEW_OPACITY: f32 = 0.4;
+/// Fill opacity for committed bodies in `ShadingMode::TransparentSolid` (#33).
+pub const TRANSPARENT_SOLID_OPACITY: f32 = 0.45;
+/// Edge-overlay color for `ShadingMode::Wireframe` and `ShadingMode::SolidWireframe` (#33).
+/// Bright against both the dark viewport background (pure wireframe) and the mid-tone
+/// `SOLID_FILL` body color (solid+wireframe).
+pub const WIREFRAME_LINE_COLOR: Color32 = Color32::from_rgb(230, 235, 242);
+const WIREFRAME_LINE_WIDTH_PX: f32 = 1.2;
 pub const SHAPE_FILL_DEPTH_BIAS_BASE: f32 = 0.04;
 /// Per-shape increment so coplanar overlaps resolve stably (higher index wins).
 pub const SHAPE_FILL_DEPTH_BIAS_STEP: f32 = 0.008;
@@ -115,6 +122,9 @@ pub struct ViewportScene {
     /// Manipulation gizmos (plane/extrude offset+angle handles). Drawn last with the
     /// depth test disabled so handles stay visible even when behind a body (#36).
     pub gizmo_indices: Vec<u32>,
+    /// Body edge-wireframe overlay (#33). Drawn depth-test-disabled, same as gizmos, so
+    /// edges stay visible "through" a solid body in solid+wireframe shading mode.
+    pub wireframe_indices: Vec<u32>,
     pub text_vertices: Vec<GpuTextVertex>,
     pub text_indices: Vec<u32>,
     pub view_proj: Mat4,
@@ -216,6 +226,9 @@ pub struct ViewportSceneInput<'a> {
     pub dim_label_view: Option<PlanarLabelView>,
     pub plane_gizmo: Option<ViewportPlaneGizmo>,
     pub extrude_gizmo: Option<ViewportExtrudeGizmo>,
+    /// Push/pull gizmo for the in-progress chamfer/fillet tool; reuses the same offset-gizmo
+    /// mesh as [`ViewportSceneInput::extrude_gizmo`] (#37/#38).
+    pub vertex_treatment_gizmo: Option<ViewportExtrudeGizmo>,
     pub hover_highlight: Option<ViewportHoverHighlight>,
     pub hover_color: Color32,
     pub document_health: &'a DocumentHealth,
@@ -357,21 +370,51 @@ impl ViewportScene {
             {
                 continue;
             }
-            let crate::model::BodySource::Extrusion(ei) = body.source;
-            // While editing an extrusion, hide its committed body so only the
-            // translucent ghost preview is visible.
-            if input.editing_extrusion == Some(ei) {
-                continue;
+            if let Some(editing) = input.editing_extrusion {
+                if body.source.owns_extrusion(editing) {
+                    continue;
+                }
             }
-            let Some(extrusion) = input.doc.extrusions.get(ei) else {
+            let Some(solid) = crate::extrude::body_solid_mesh(input.doc, bi) else {
                 continue;
             };
-            if extrusion.deleted {
-                continue;
-            }
-            if let Some(solid) = crate::extrude::extrusion_mesh(input.doc, extrusion) {
-                let cap_plane = crate::extrude::target_top_plane(input.doc, extrusion);
-                mesh.push_solid(&solid, SOLID_FILL, input.cam, cap_plane);
+            let cap_plane = body
+                .source
+                .extrusion_indices()
+                .first()
+                .and_then(|&ei| input.doc.extrusions.get(ei))
+                .and_then(|ext| crate::extrude::target_top_plane(input.doc, ext));
+            // Shading mode (#33) picks how the committed body renders: `Solid` (today's
+            // existing look) is opaque fill only; `Wireframe` is edges only, no fill;
+            // `TransparentSolid` is translucent fill, no edges; `SolidWireframe` is opaque
+            // fill plus an edge overlay that stays visible "through" the body (mirrors how
+            // gizmos draw through bodies — depth-test disabled, see `MeshIndexLayer::Wireframe`).
+            match input.cam.shading_mode() {
+                crate::camera::ShadingMode::Solid => {
+                    mesh.push_solid(&solid, SOLID_FILL, input.cam, cap_plane);
+                }
+                crate::camera::ShadingMode::TransparentSolid => {
+                    mesh.push_solid_translucent(&solid, SOLID_FILL, TRANSPARENT_SOLID_OPACITY);
+                }
+                crate::camera::ShadingMode::Wireframe => {
+                    mesh.push_solid_wireframe(
+                        &solid,
+                        WIREFRAME_LINE_COLOR,
+                        input.cam,
+                        input.viewport,
+                        &vp,
+                    );
+                }
+                crate::camera::ShadingMode::SolidWireframe => {
+                    mesh.push_solid(&solid, SOLID_FILL, input.cam, cap_plane);
+                    mesh.push_solid_wireframe(
+                        &solid,
+                        WIREFRAME_LINE_COLOR,
+                        input.cam,
+                        input.viewport,
+                        &vp,
+                    );
+                }
             }
         }
         // Live preview of the in-progress extrusion (semi-transparent until committed).
@@ -426,11 +469,10 @@ impl ViewportScene {
                 sketch_color(input.palette.rect_line, dim)
             };
             let color = health_tint_color(base, input.document_health.element_status(element));
-            if let Some((a, b)) = line_world_endpoints(input.doc, line) {
+            if let Some(points) = line_world_polyline(input.doc, line) {
                 if line.construction {
-                    mesh.push_dashed_line_segment(
-                        a,
-                        b,
+                    mesh.push_dashed_polyline_segment(
+                        &points,
                         color,
                         2.0,
                         input.cam,
@@ -438,8 +480,34 @@ impl ViewportScene {
                         &vp,
                     );
                 } else {
-                    mesh.push_line_segment(a, b, color, 2.0, input.cam, input.viewport, &vp);
+                    mesh.push_polyline_segment(&points, color, 2.0, input.cam, input.viewport, &vp);
                 }
+            }
+        }
+
+        // Draggable tangent-handle markers for curved lines in the active sketch (#54): a
+        // dashed guide from each endpoint to its handle, plus a disc at the handle itself.
+        if let Some(session) = input.sketch_session {
+            mesh.set_index_layer(MeshIndexLayer::Gizmo);
+            let handle_color = input.palette.preview;
+            for line in input.doc.lines.iter() {
+                if line.deleted || line.sketch != session.sketch {
+                    continue;
+                }
+                let Some([c0, c1]) = line.bezier else {
+                    continue;
+                };
+                let Some(frame) = sketch_geometry_frame(input.doc, line.sketch) else {
+                    continue;
+                };
+                let p0 = crate::face::local_to_world(&frame, line.x0, line.y0);
+                let p1 = crate::face::local_to_world(&frame, line.x1, line.y1);
+                let h0 = crate::face::local_to_world(&frame, c0.0, c0.1);
+                let h1 = crate::face::local_to_world(&frame, c1.0, c1.1);
+                mesh.push_dashed_line_segment(p0, h0, handle_color, 1.5, input.cam, input.viewport, &vp);
+                mesh.push_dashed_line_segment(p1, h1, handle_color, 1.5, input.cam, input.viewport, &vp);
+                mesh.push_point_marker(h0, handle_color, 5.0, input.cam, input.viewport, &vp);
+                mesh.push_point_marker(h1, handle_color, 5.0, input.cam, input.viewport, &vp);
             }
         }
 
@@ -623,6 +691,20 @@ impl ViewportScene {
                 &project,
             );
         }
+        if let Some(gizmo) = input.vertex_treatment_gizmo.as_ref() {
+            let project = |w: Vec3| input.cam.project(w, input.viewport, &vp);
+            mesh.push_offset_gizmo(
+                gizmo.origin,
+                gizmo.normal,
+                gizmo.offset,
+                gizmo.color,
+                gizmo.hovered,
+                input.cam,
+                input.viewport,
+                &vp,
+                &project,
+            );
+        }
         mesh.set_index_layer(MeshIndexLayer::Overlay);
 
         if let Some(hover) = input.hover_highlight.as_ref() {
@@ -680,6 +762,8 @@ enum MeshIndexLayer {
     Overlay,
     /// Manipulation gizmos, drawn last with the depth test disabled (#36).
     Gizmo,
+    /// Body edge-wireframe overlay, drawn depth-test-disabled like [`Self::Gizmo`] (#33).
+    Wireframe,
 }
 
 pub(crate) struct SceneMesh<'a> {
@@ -706,6 +790,7 @@ impl<'a> SceneMesh<'a> {
             MeshIndexLayer::PlaneFill => &mut self.scene.plane_fill_indices,
             MeshIndexLayer::Overlay => &mut self.scene.overlay_indices,
             MeshIndexLayer::Gizmo => &mut self.scene.gizmo_indices,
+            MeshIndexLayer::Wireframe => &mut self.scene.wireframe_indices,
         }
     }
 
@@ -784,6 +869,26 @@ impl<'a> SceneMesh<'a> {
         self.set_index_layer(prev);
     }
 
+    /// Push a solid mesh's unique edges as camera-facing line-quads into the
+    /// [`MeshIndexLayer::Wireframe`] layer (#33). Used for `ShadingMode::Wireframe` (in
+    /// place of the fill) and `ShadingMode::SolidWireframe` (as an overlay on top of the
+    /// fill) — see [`solid_mesh_unique_edges`] for how shared edges are deduplicated.
+    fn push_solid_wireframe(
+        &mut self,
+        solid: &crate::extrude::SolidMesh,
+        color: Color32,
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+    ) {
+        let prev = self.index_layer;
+        self.set_index_layer(MeshIndexLayer::Wireframe);
+        for (a, b) in solid_mesh_unique_edges(solid) {
+            self.push_line_segment(a, b, color, WIREFRAME_LINE_WIDTH_PX, cam, viewport, view_proj);
+        }
+        self.set_index_layer(prev);
+    }
+
     #[allow(dead_code)]
     fn push_quad(
         &mut self,
@@ -855,6 +960,36 @@ impl<'a> SceneMesh<'a> {
             view_proj,
             STROKE_DEPTH_BIAS,
         );
+    }
+
+    /// Draws a connected polyline (e.g. a sampled bezier curve) as a chain of solid segments.
+    pub(crate) fn push_polyline_segment(
+        &mut self,
+        points: &[Vec3],
+        color: Color32,
+        width_px: f32,
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+    ) {
+        for pair in points.windows(2) {
+            self.push_line_segment(pair[0], pair[1], color, width_px, cam, viewport, view_proj);
+        }
+    }
+
+    /// Draws a connected polyline (e.g. a sampled bezier curve) as a chain of dashed segments.
+    pub(crate) fn push_dashed_polyline_segment(
+        &mut self,
+        points: &[Vec3],
+        color: Color32,
+        width_px: f32,
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+    ) {
+        for pair in points.windows(2) {
+            self.push_dashed_line_segment(pair[0], pair[1], color, width_px, cam, viewport, view_proj);
+        }
     }
 
     fn push_point_marker(
@@ -1081,8 +1216,7 @@ impl<'a> SceneMesh<'a> {
         }
     }
 
-    /// Fill for a closed loop of plain lines (#66), fanned from its first vertex — matches
-    /// the convex-fan triangulation `extrude::extrude_profile` uses for the same loop.
+    /// Fill for a closed loop of plain lines (#66), ear-clipped for concave boundaries.
     fn push_polygon_fill(
         &mut self,
         profile: &[Vec3],
@@ -1106,8 +1240,8 @@ impl<'a> SceneMesh<'a> {
             .iter()
             .map(|&p| offset_toward_camera(p, normal, eye, fill_depth_bias))
             .collect();
-        for i in 1..lifted.len() - 1 {
-            self.push_triangle(lifted[0], lifted[i], lifted[i + 1], fill);
+        for [a, b, c] in crate::polygon::triangulate_planar(profile, normal) {
+            self.push_triangle(lifted[a], lifted[b], lifted[c], fill);
         }
     }
 
@@ -1275,13 +1409,13 @@ impl<'a> SceneMesh<'a> {
                         continue;
                     }
                     if let Some(line) = doc.lines.get(index) {
-                        if let Some((a, b)) = line_world_endpoints(doc, line) {
+                        if let Some(points) = line_world_polyline(doc, line) {
                             if dashed {
-                                self.push_dashed_line_segment(
-                                    a, b, color, 3.0, cam, viewport, view_proj,
+                                self.push_dashed_polyline_segment(
+                                    &points, color, 3.0, cam, viewport, view_proj,
                                 );
                             } else {
-                                self.push_line_segment(a, b, color, 3.0, cam, viewport, view_proj);
+                                self.push_polyline_segment(&points, color, 3.0, cam, viewport, view_proj);
                             }
                         }
                     }
@@ -1719,8 +1853,8 @@ impl<'a> SceneMesh<'a> {
             }
             PickTargetKind::Line(index) => {
                 if let Some(line) = doc.lines.get(*index) {
-                    if let Some((a, b)) = line_world_endpoints(doc, line) {
-                        self.push_segment_hover(a, b, color, cam, viewport, view_proj, project);
+                    if let Some(points) = line_world_polyline(doc, line) {
+                        self.push_polyline_hover(&points, color, cam, viewport, view_proj, project);
                     }
                 }
             }
@@ -1791,6 +1925,27 @@ impl<'a> SceneMesh<'a> {
         self.push_line_segment(a, b, color, 4.0, cam, viewport, view_proj);
         for p in [a, b] {
             push_screen_disc(self, p, 5.0, color, cam, viewport, view_proj, project);
+        }
+    }
+
+    /// Hover highlight for a (possibly curved) polyline: the sampled path plus discs at its
+    /// two true endpoints only (not at every interior sample).
+    fn push_polyline_hover(
+        &mut self,
+        points: &[Vec3],
+        color: Color32,
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    ) {
+        for pair in points.windows(2) {
+            self.push_line_segment(pair[0], pair[1], color, 4.0, cam, viewport, view_proj);
+        }
+        if let (Some(&a), Some(&b)) = (points.first(), points.last()) {
+            for p in [a, b] {
+                push_screen_disc(self, p, 5.0, color, cam, viewport, view_proj, project);
+            }
         }
     }
 
@@ -1899,6 +2054,41 @@ fn triangle_on_plane(tri: &[Vec3; 3], origin: Vec3, normal: Vec3) -> bool {
         return false;
     }
     tri.iter().all(|p| (*p - origin).dot(n).abs() < 1e-3)
+}
+
+/// Quantize a world position to a hashable key so coincident vertices (within a tight
+/// tolerance) compare equal, letting [`solid_mesh_unique_edges`] dedupe the edge shared by
+/// two adjacent triangles even though `SolidMesh` stores triangles as raw positions rather
+/// than an indexed vertex buffer.
+fn quantize_vertex(v: Vec3) -> (i64, i64, i64) {
+    const SCALE: f32 = 1000.0; // 0.001 world-unit precision.
+    (
+        (v.x * SCALE).round() as i64,
+        (v.y * SCALE).round() as i64,
+        (v.z * SCALE).round() as i64,
+    )
+}
+
+/// Extract every unique edge of a triangle-soup solid mesh, deduplicating the edge shared
+/// by two adjacent triangles (#33). Performance: this walks all triangles once per frame,
+/// which is fine at this app's scale (small CAD models, not high-poly meshes) — not worth
+/// caching for a first cut.
+fn solid_mesh_unique_edges(solid: &crate::extrude::SolidMesh) -> Vec<(Vec3, Vec3)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut edges = Vec::new();
+    for tri in &solid.triangles {
+        for &(i, j) in &[(0usize, 1usize), (1, 2), (2, 0)] {
+            let a = tri[i];
+            let b = tri[j];
+            let ka = quantize_vertex(a);
+            let kb = quantize_vertex(b);
+            let key = if ka <= kb { (ka, kb) } else { (kb, ka) };
+            if seen.insert(key) {
+                edges.push((a, b));
+            }
+        }
+    }
+    edges
 }
 
 pub fn offset_toward_camera(pos: Vec3, normal: Vec3, eye: Vec3, bias: f32) -> Vec3 {
@@ -2484,6 +2674,18 @@ fn line_world_endpoints(doc: &Document, line: &Line) -> Option<(Vec3, Vec3)> {
     Some((a, b))
 }
 
+/// World-space polyline approximation of a line, sampled with [`crate::model::BEZIER_SEGMENTS`]
+/// segments for a curved line, or just its two endpoints for a straight one.
+fn line_world_polyline(doc: &Document, line: &Line) -> Option<Vec<Vec3>> {
+    let frame = sketch_geometry_frame(doc, line.sketch)?;
+    Some(
+        line.sample_local(crate::model::BEZIER_SEGMENTS)
+            .into_iter()
+            .map(|(u, v)| crate::face::local_to_world(&frame, u, v))
+            .collect(),
+    )
+}
+
 fn rect_edge_segments(doc: &Document, rect: &ModelRect) -> [(Vec3, Vec3); 4] {
     let corners = rect_world_corners_resolved(doc, rect);
     [
@@ -2673,6 +2875,7 @@ mod tests {
                 dim_label_view: None,
                 plane_gizmo: None,
                 extrude_gizmo: None,
+                vertex_treatment_gizmo: None,
                 hover_highlight: None,
                 hover_color: Color32::WHITE,
                 document_health: &DocumentHealth::default(),
@@ -2691,6 +2894,184 @@ mod tests {
             editing.vertices.len(),
             with_body.vertices.len()
         );
+    }
+
+    /// Commits a single 10x5x7 extruded box body (#33 shading-mode tests below reuse this).
+    fn state_with_one_body() -> AppState {
+        use crate::actions::{Action, Tool};
+        use crate::model::ExtrudeFace;
+
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        state.creating_rect = Some(crate::actions::CreatingRect {
+            origin: glam::Vec3::ZERO,
+            texts: ["10".into(), "5".into()],
+            focused: 0,
+            last_mouse: glam::Vec3::new(10.0, 5.0, 0.0),
+            user_edited: [true, true],
+            pending_focus: false,
+            construction: false,
+        });
+        state.apply(Action::CommitRectangle);
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace {
+            face: ExtrudeFace::Rect(0),
+        });
+        state.apply(Action::SetExtrudeDistance { distance: 7.0 });
+        state.apply(Action::CommitExtrusion);
+        assert_eq!(state.doc.bodies.len(), 1);
+        state
+    }
+
+    fn build_scene_with_shading(
+        state: &AppState,
+        mode: crate::camera::ShadingMode,
+    ) -> ViewportScene {
+        let mut cam = state.cam.clone();
+        cam.set_shading_mode(mode);
+        ViewportScene::build(&ViewportSceneInput {
+            doc: &state.doc,
+            cam: &cam,
+            viewport: test_viewport(),
+            palette: ViewportPalette::default(),
+            sketch_session: None,
+            selection: &state.scene_selection,
+            element_visibility: &state.element_visibility,
+            preview_rect: None,
+            preview_line: None,
+            preview_circle: None,
+            preview_extrusion: None,
+            editing_extrusion: None,
+            plane_preview: None,
+            active_sketch_face: None,
+            dimension_labels: &[],
+            dim_label_view: None,
+            plane_gizmo: None,
+            extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
+            hover_highlight: None,
+            hover_color: Color32::WHITE,
+            document_health: &DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
+        })
+    }
+
+    #[test]
+    fn solid_shading_fills_body_with_no_wireframe_overlay() {
+        use crate::camera::ShadingMode;
+
+        let state = state_with_one_body();
+        let scene = build_scene_with_shading(&state, ShadingMode::Solid);
+        assert!(
+            scene.wireframe_indices.is_empty(),
+            "solid mode should not populate the wireframe overlay layer"
+        );
+    }
+
+    #[test]
+    fn wireframe_shading_skips_fill_and_populates_wireframe_layer() {
+        use crate::camera::ShadingMode;
+
+        let state = state_with_one_body();
+        let solid = build_scene_with_shading(&state, ShadingMode::Solid);
+        let wireframe = build_scene_with_shading(&state, ShadingMode::Wireframe);
+
+        assert!(
+            !wireframe.wireframe_indices.is_empty(),
+            "wireframe mode should populate the wireframe overlay layer"
+        );
+        assert!(
+            wireframe.indices.len() < solid.indices.len(),
+            "wireframe mode ({}) should skip the body's fill triangles present in solid mode ({})",
+            wireframe.indices.len(),
+            solid.indices.len()
+        );
+    }
+
+    #[test]
+    fn solid_wireframe_shading_keeps_fill_and_adds_wireframe_overlay() {
+        use crate::camera::ShadingMode;
+
+        let state = state_with_one_body();
+        let solid = build_scene_with_shading(&state, ShadingMode::Solid);
+        let solid_wireframe = build_scene_with_shading(&state, ShadingMode::SolidWireframe);
+
+        assert_eq!(
+            solid_wireframe.indices.len(),
+            solid.indices.len(),
+            "solid+wireframe should keep the same opaque fill as solid mode"
+        );
+        assert!(
+            !solid_wireframe.wireframe_indices.is_empty(),
+            "solid+wireframe mode should also populate the wireframe overlay layer"
+        );
+    }
+
+    #[test]
+    fn transparent_solid_shading_moves_body_into_the_translucent_layer() {
+        use crate::camera::ShadingMode;
+
+        let state = state_with_one_body();
+        let solid = build_scene_with_shading(&state, ShadingMode::Solid);
+        let transparent = build_scene_with_shading(&state, ShadingMode::TransparentSolid);
+
+        assert!(
+            transparent.plane_fill_indices.len() > solid.plane_fill_indices.len(),
+            "transparent solid mode should push the body into the translucent (plane-fill) layer"
+        );
+        assert!(
+            transparent.indices.len() < solid.indices.len(),
+            "transparent solid mode should not also push the body into the opaque base layer"
+        );
+        assert!(transparent.wireframe_indices.is_empty());
+    }
+
+    #[test]
+    fn solid_mesh_unique_edges_dedupes_the_shared_diagonal() {
+        // Two triangles forming a unit-square quad, split along one diagonal: 3 + 3 edges
+        // with the diagonal counted once should leave 5 unique edges, not 6.
+        let solid = crate::extrude::SolidMesh {
+            triangles: vec![
+                [
+                    Vec3::new(0.0, 0.0, 0.0),
+                    Vec3::new(1.0, 0.0, 0.0),
+                    Vec3::new(1.0, 1.0, 0.0),
+                ],
+                [
+                    Vec3::new(0.0, 0.0, 0.0),
+                    Vec3::new(1.0, 1.0, 0.0),
+                    Vec3::new(0.0, 1.0, 0.0),
+                ],
+            ],
+        };
+        let edges = solid_mesh_unique_edges(&solid);
+        assert_eq!(edges.len(), 5, "expected 5 unique edges, got {edges:?}");
+    }
+
+    #[test]
+    fn solid_mesh_unique_edges_ignores_triangle_winding() {
+        // The same shared edge traversed in opposite directions by its two triangles
+        // (the normal case for a closed mesh) must still dedupe to one edge.
+        let solid = crate::extrude::SolidMesh {
+            triangles: vec![
+                [
+                    Vec3::new(0.0, 0.0, 0.0),
+                    Vec3::new(1.0, 0.0, 0.0),
+                    Vec3::new(0.0, 1.0, 0.0),
+                ],
+                [
+                    Vec3::new(1.0, 0.0, 0.0),
+                    Vec3::new(0.0, 0.0, 0.0),
+                    Vec3::new(1.0, 1.0, 0.0),
+                ],
+            ],
+        };
+        let edges = solid_mesh_unique_edges(&solid);
+        assert_eq!(edges.len(), 5, "expected 5 unique edges, got {edges:?}");
     }
 
     #[test]
@@ -2717,6 +3098,7 @@ mod tests {
             dim_label_view: None,
             plane_gizmo: None,
             extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -2747,6 +3129,7 @@ mod tests {
             dim_label_view: None,
             plane_gizmo: None,
             extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -2783,6 +3166,7 @@ mod tests {
             dim_label_view: None,
             plane_gizmo: None,
             extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
             hover_highlight: None,
             hover_color: crate::construction::PICK_HOVER_RGBA,
             document_health: &DocumentHealth::default(),
@@ -2808,6 +3192,7 @@ mod tests {
             dim_label_view: None,
             plane_gizmo: None,
             extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
             hover_highlight: Some(ViewportHoverHighlight::SketchFace(
                 FaceId::ConstructionPlane(0),
             )),
@@ -2850,6 +3235,7 @@ mod tests {
             dim_label_view: None,
             plane_gizmo: None,
             extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -2887,6 +3273,7 @@ mod tests {
 
             plane_gizmo: Some(gizmo),
             extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -2923,6 +3310,7 @@ mod tests {
             dim_label_view: None,
             plane_gizmo: None,
             extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -2966,6 +3354,7 @@ mod tests {
             dim_label_view: None,
             plane_gizmo: None,
             extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -3012,6 +3401,7 @@ mod tests {
             dim_label_view: None,
             plane_gizmo: None,
             extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -3047,6 +3437,7 @@ mod tests {
             y0: 0.0,
             x1: 10.0,
             y1: 0.0,
+            bezier: None,
         });
     }
 
@@ -3063,18 +3454,21 @@ mod tests {
             y0: 0.0,
             x1: 10.0,
             y1: 0.0,
+            bezier: None,
         });
         state.apply(crate::actions::Action::CreateLineSegment {
             x0: 10.0,
             y0: 0.0,
             x1: 5.0,
             y1: 8.0,
+            bezier: None,
         });
         state.apply(crate::actions::Action::CreateLineSegment {
             x0: 5.0,
             y0: 8.0,
             x1: 0.0,
             y1: 0.0,
+            bezier: None,
         });
         let sketch = state.sketch_session.unwrap().sketch;
         let coincident = |a, b| Constraint {
@@ -3198,6 +3592,7 @@ mod tests {
             sketch,
             faces: vec![crate::model::ExtrudeFace::Rect(0)],
             distance: 8.0,
+            merge_into_body: false,
         });
 
         let scene = build_scene_for_doc(&state);
@@ -3229,6 +3624,7 @@ mod tests {
             sketch,
             faces: vec![crate::model::ExtrudeFace::Rect(0)],
             distance: 6.0,
+            merge_into_body: false,
         });
         state.doc.extrusions[0].target = Some(crate::model::ExtrudeTarget::Plane(1));
 
@@ -3336,6 +3732,7 @@ mod tests {
             dim_label_view: None,
             plane_gizmo: None,
             extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -3404,6 +3801,7 @@ mod tests {
             dim_label_view: None,
             plane_gizmo: None,
             extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -3450,6 +3848,7 @@ mod tests {
             dim_label_view: None,
             plane_gizmo: None,
             extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -3653,6 +4052,7 @@ mod tests {
             dim_label_view: None,
             plane_gizmo: None,
             extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -3678,6 +4078,7 @@ mod tests {
             dim_label_view: None,
             plane_gizmo: None,
             extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -3771,6 +4172,7 @@ mod tests {
             dim_label_view: None,
             plane_gizmo: None,
             extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -3796,6 +4198,7 @@ mod tests {
             dim_label_view: None,
             plane_gizmo: None,
             extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -3885,6 +4288,7 @@ mod tests {
             dim_label_view: None,
             plane_gizmo: None,
             extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
             hover_highlight: Some(ViewportHoverHighlight::SketchFace(FaceId::Rect(0))),
             hover_color: crate::construction::PICK_HOVER_RGBA,
             document_health: &DocumentHealth::default(),
@@ -3996,6 +4400,7 @@ mod tests {
             plane_gizmo: None,
 
             extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -4025,6 +4430,7 @@ mod tests {
             plane_gizmo: None,
 
             extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -4120,6 +4526,7 @@ mod tests {
             dim_label_view: None,
             plane_gizmo: None,
             extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -4147,6 +4554,7 @@ mod tests {
             dim_label_view: None,
             plane_gizmo: None,
             extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
@@ -4172,6 +4580,7 @@ mod tests {
             dim_label_view: None,
             plane_gizmo: None,
             extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
