@@ -1609,97 +1609,88 @@ mod tests {
     /// invariants — volume ≈ (2D outline area) × depth, bounding box, and a sane triangle
     /// count — rather than a brittle golden mesh. Kernel-agnostic on purpose (plain polygon
     /// extrusion needs no OCCT), so it must pass with and without the `occt` feature.
-    #[test]
-    fn letter_b_outline_extrudes_to_the_expected_solid() {
-        use crate::model::{Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, Line, LineEnd};
+    const LETTER_B_DEPTH: f32 = 12.0;
 
-        // Outer silhouette of the "B", in natural letter coordinates (x = width, y = height),
-        // traced clockwise from the bottom-left. Must match pts[] in
-        // docs-site/screenshots/letter-b.lua.
-        const B: [(f32, f32); 8] = [
-            (0.0, 0.0),
-            (0.0, 72.0),
-            (44.0, 72.0),
-            (44.0, 44.0),
-            (22.0, 44.0),
-            (22.0, 28.0),
-            (48.0, 28.0),
-            (48.0, 0.0),
-        ];
-        const DEPTH: f32 = 12.0;
-
-        let (mut doc, sketch) = sketch_doc();
-        let n = B.len();
-        for i in 0..n {
-            let (u0, v0) = B[i];
-            let (u1, v1) = B[(i + 1) % n];
-            doc.lines.push(Line::from_local_endpoints(sketch, u0, v0, u1, v1));
-        }
-        let coincident = |a, b| Constraint {
-            sketch,
-            kind: ConstraintKind::Coincident {
-                a: ConstraintEntity::Point(a),
-                b: ConstraintEntity::Point(b),
-            },
-            expression: String::new(),
-            dim_offset: None,
-            name: None,
-            deleted: false,
+    /// Build the letter-B outer silhouette from `docs-site/screenshots/letter-b.lua`: a
+    /// straight left spine and two rounded lobes formed by **bezier curves** (#54), with a
+    /// waist notch, traced with the Line tool (letter coords: x = width, y = height) and
+    /// closed into one loop with `Coincident` constraints. Returns the closed loop's ordered
+    /// line indices. Shape must match `segs[]` in the script (the script also rotates it into
+    /// the sketch's (u, v) for the top view, which doesn't change area/volume).
+    fn push_letter_b_outline(doc: &mut Document, sketch: crate::model::SketchId) -> Vec<usize> {
+        use crate::model::{
+            Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, Line, LineEnd,
         };
+        // (start, end, optional bezier handles [near start, near end]) in letter coords.
+        let segs: [((f32, f32), (f32, f32), Option<[(f32, f32); 2]>); 5] = [
+            ((0.0, 0.0), (0.0, 72.0), None),
+            ((0.0, 72.0), (18.0, 40.0), Some([(54.0, 74.0), (54.0, 40.0)])),
+            ((18.0, 40.0), (18.0, 32.0), None),
+            ((18.0, 32.0), (14.0, 0.0), Some([(58.0, 32.0), (58.0, -2.0)])),
+            ((14.0, 0.0), (0.0, 0.0), None),
+        ];
+        let n = segs.len();
+        for (a, b, bez) in segs {
+            let mut line = Line::from_local_endpoints(sketch, a.0, a.1, b.0, b.1);
+            line.bezier = bez;
+            doc.lines.push(line);
+        }
         let point = |line, end| ConstraintPoint::LineEndpoint { line, end };
         for i in 0..n {
-            doc.constraints
-                .push(coincident(point(i, LineEnd::End), point((i + 1) % n, LineEnd::Start)));
+            doc.constraints.push(Constraint {
+                sketch,
+                kind: ConstraintKind::Coincident {
+                    a: ConstraintEntity::Point(point(i, LineEnd::End)),
+                    b: ConstraintEntity::Point(point((i + 1) % n, LineEnd::Start)),
+                },
+                expression: String::new(),
+                dim_offset: None,
+                name: None,
+                deleted: false,
+            });
         }
-
-        // The line tool + coincident constraints yield exactly one closed loop (the B).
-        let loops = crate::polygon::closed_line_loops(&doc, sketch);
+        let loops = crate::polygon::closed_line_loops(doc, sketch);
         assert_eq!(loops.len(), 1, "the B outline should be a single closed loop");
-        assert_eq!(loops[0].len(), n, "loop should use all {n} line segments");
+        assert_eq!(loops[0].len(), n, "loop should use all {n} segments");
+        loops[0].clone()
+    }
 
-        let ext = extrusion(sketch, vec![ExtrudeFace::Polygon(loops[0].clone())], DEPTH);
+    /// The letter-B outline extrudes to a valid solid. Kernel-agnostic (plain polygon
+    /// extrusion needs no OCCT), so it must pass with and without the `occt` feature. The
+    /// bezier lobes make an exact area fiddly, so this locks the docs example with robust
+    /// invariants — one closed loop, a non-empty watertight solid, and a bounded volume /
+    /// bounding box — rather than a brittle golden number.
+    #[test]
+    fn letter_b_outline_extrudes_to_the_expected_solid() {
+        let (mut doc, sketch) = sketch_doc();
+        let loop_ = push_letter_b_outline(&mut doc, sketch);
+
+        let ext = extrusion(sketch, vec![ExtrudeFace::Polygon(loop_)], LETTER_B_DEPTH);
         let mesh = extrusion_mesh(&doc, &ext).expect("B extrudes to a solid mesh");
         assert!(!mesh.is_empty(), "extruded B mesh must be non-empty");
 
-        // Self-checking expected volume: shoelace area of the outline × extrude depth (no
-        // magic numbers — derived straight from the coordinates above).
-        let area = {
-            let mut s = 0.0f32;
-            for i in 0..n {
-                let (x0, y0) = B[i];
-                let (x1, y1) = B[(i + 1) % n];
-                s += x0 * y1 - x1 * y0;
-            }
-            s.abs() / 2.0
-        };
-        assert!((area - 2928.0).abs() < 1e-3, "B outline area {area}, expected 2928");
-        let expected_volume = area * DEPTH; // 2928 * 12 = 35_136 mm^3
         let volume = mesh_signed_volume(&mesh).abs();
-        assert!(
-            (volume - expected_volume).abs() < expected_volume * 1e-3,
-            "extruded B volume {volume}, expected ~{expected_volume} (area {area} x depth {DEPTH})"
-        );
+        assert!(volume.is_finite() && volume > 0.0, "B volume {volume}");
 
-        // Bounding box: the B's 2D extent (48 wide, 72 tall) extruded DEPTH into z.
+        // The bezier lobes bulge beyond the straight chords, so the true area exceeds the
+        // chord polygon's (944 mm^2) yet stays within the bounding box — bound the volume
+        // between those, times depth.
         let (min, max) = mesh.bounds().unwrap();
-        assert!((max.x - min.x - 48.0).abs() < 1e-3, "x span {}", max.x - min.x);
-        assert!((max.y - min.y - 72.0).abs() < 1e-3, "y span {}", max.y - min.y);
+        let bbox_area = (max.x - min.x) * (max.y - min.y);
+        assert!(volume > 944.0 * LETTER_B_DEPTH, "B volume {volume} below chord lower bound");
+        assert!(volume < bbox_area * LETTER_B_DEPTH, "B volume {volume} exceeds bbox");
+
+        // Full letter height (~72, with a little bezier overshoot) extruded DEPTH into z; the
+        // lobes give a sane width. z is an exact straight prism.
+        assert!((70.0..=76.0).contains(&(max.y - min.y)), "y span {}", max.y - min.y);
+        assert!((40.0..=60.0).contains(&(max.x - min.x)), "x span {}", max.x - min.x);
         assert!(
-            min.z.abs() < 1e-3 && (max.z - DEPTH).abs() < 1e-3,
+            min.z.abs() < 1e-3 && (max.z - LETTER_B_DEPTH).abs() < 1e-3,
             "z span [{}, {}]",
             min.z,
             max.z
         );
-
-        // A sane triangle-count range: a closed prism over an 8-vertex loop needs at least the
-        // two side triangles per wall (2 * n); the exact count differs between the hand mesher
-        // (two ear-clipped caps of n-2 each + 2n walls = 28) and the OCCT tessellator, so this
-        // stays a range to remain kernel-agnostic.
-        let tris = mesh.triangles.len();
-        assert!(
-            (2 * n..=64).contains(&tris),
-            "triangle count {tris} outside sane range for the extruded B"
-        );
+        assert!(mesh.triangles.len() >= 10, "triangle count {}", mesh.triangles.len());
     }
 
     /// The `docs-site/screenshots/letter-b.lua` full geometry: the outer "B" silhouette
@@ -1708,97 +1699,51 @@ mod tests {
     /// #35). Needs the kernel to perform the boolean subtraction, so it's `occt`-only. The
     /// expected volume is self-checked: (outer_area − upper_hole − lower_hole) × depth, every
     /// area computed by shoelace from the same coordinates the script draws.
+    /// The full letter-B: the curved outer silhouette extruded to a solid, then the two
+    /// counter holes punched clean through as **cut** extrusions (`BodySource::Solid { add,
+    /// cut }`, #35). Needs the kernel for the boolean subtraction, so it's `occt`-only. The
+    /// curved outer area is fiddly to compute exactly, so this isolates the holes: compare the
+    /// no-cut solid to the cut solid and assert the removed volume equals the two rectangular
+    /// holes' area × depth (the curved outer area cancels between the two).
     #[cfg(feature = "occt")]
     #[test]
     fn occt_letter_b_with_two_counters_cuts_to_the_expected_volume() {
-        use crate::model::{Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, Line, LineEnd};
-
-        // Outer silhouette (letter coords), identical to the kernel-agnostic test above and to
-        // pts[] in docs-site/screenshots/letter-b.lua.
-        const B: [(f32, f32); 8] = [
-            (0.0, 0.0),
-            (0.0, 72.0),
-            (44.0, 72.0),
-            (44.0, 44.0),
-            (22.0, 44.0),
-            (22.0, 28.0),
-            (48.0, 28.0),
-            (48.0, 0.0),
-        ];
-        // The two counter holes, inside the upper and lower bowls (letter coords: x, y, w, h).
-        // Fully enclosed in the silhouette so they carve real holes (see the script).
-        const UPPER: (f32, f32, f32, f32) = (12.0, 50.0, 20.0, 16.0);
-        const LOWER: (f32, f32, f32, f32) = (12.0, 6.0, 22.0, 16.0);
-        const DEPTH: f32 = 12.0;
+        // Counter holes inside the upper/lower bowls (letter coords: x, y, w, h) — must match
+        // upper_hole/lower_hole in docs-site/screenshots/letter-b.lua.
+        const UPPER: (f32, f32, f32, f32) = (10.0, 48.0, 26.0, 16.0);
+        const LOWER: (f32, f32, f32, f32) = (10.0, 8.0, 28.0, 16.0);
 
         let (mut doc, sketch) = sketch_doc();
-        let n = B.len();
-        for i in 0..n {
-            let (u0, v0) = B[i];
-            let (u1, v1) = B[(i + 1) % n];
-            doc.lines.push(Line::from_local_endpoints(sketch, u0, v0, u1, v1));
-        }
-        let coincident = |a, b| Constraint {
-            sketch,
-            kind: ConstraintKind::Coincident {
-                a: ConstraintEntity::Point(a),
-                b: ConstraintEntity::Point(b),
-            },
-            expression: String::new(),
-            dim_offset: None,
-            name: None,
-            deleted: false,
-        };
-        let point = |line, end| ConstraintPoint::LineEndpoint { line, end };
-        for i in 0..n {
-            doc.constraints
-                .push(coincident(point(i, LineEnd::End), point((i + 1) % n, LineEnd::Start)));
-        }
-        let loops = crate::polygon::closed_line_loops(&doc, sketch);
-        assert_eq!(loops.len(), 1, "the B outline should be a single closed loop");
-        let outer = ExtrudeFace::Polygon(loops[0].clone());
+        let loop_ = push_letter_b_outline(&mut doc, sketch);
+        let outer = ExtrudeFace::Polygon(loop_);
 
-        // Two hole profiles in the same sketch, extruded the same depth/direction so each
-        // overlaps the solid through its full thickness (a clean through-hole).
+        // No-cut solid volume (curved outer × depth) — the isolation baseline.
+        let outer_only = extrusion(sketch, vec![outer.clone()], LETTER_B_DEPTH);
+        let outer_vol =
+            mesh_signed_volume(&extrusion_mesh(&doc, &outer_only).expect("outer B mesh")).abs();
+
+        // Two hole profiles cut through the full thickness.
         let upper = rect_profile(&mut doc, sketch, UPPER.0, UPPER.1, UPPER.2, UPPER.3);
         let lower = rect_profile(&mut doc, sketch, LOWER.0, LOWER.1, LOWER.2, LOWER.3);
-
-        doc.extrusions.push(extrusion(sketch, vec![outer], DEPTH)); // 0: the B
-        doc.extrusions.push(extrusion(sketch, vec![upper], DEPTH)); // 1: upper counter cut
-        doc.extrusions.push(extrusion(sketch, vec![lower], DEPTH)); // 2: lower counter cut
+        doc.extrusions.push(extrusion(sketch, vec![outer], LETTER_B_DEPTH)); // 0: the B
+        doc.extrusions.push(extrusion(sketch, vec![upper], LETTER_B_DEPTH)); // 1: upper cut
+        doc.extrusions.push(extrusion(sketch, vec![lower], LETTER_B_DEPTH)); // 2: lower cut
         doc.bodies.push(crate::model::Body {
-            source: crate::model::BodySource::Solid {
-                add: vec![0],
-                cut: vec![1, 2],
-            },
+            source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1, 2] },
             name: Some("B".to_string()),
             deleted: false,
         });
+        let cut_vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("occt B mesh")).abs();
 
-        // Self-checking expected volume: (outer area − the two hole areas) × depth.
-        let shoelace = |pts: &[(f32, f32)]| {
-            let mut s = 0.0f32;
-            for i in 0..pts.len() {
-                let (x0, y0) = pts[i];
-                let (x1, y1) = pts[(i + 1) % pts.len()];
-                s += x0 * y1 - x1 * y0;
-            }
-            s.abs() / 2.0
-        };
-        let outer_area = shoelace(&B);
-        let upper_area = UPPER.2 * UPPER.3;
-        let lower_area = LOWER.2 * LOWER.3;
-        assert!((outer_area - 2928.0).abs() < 1e-3, "outer area {outer_area}");
-        let expected_volume = (outer_area - upper_area - lower_area) * DEPTH; // 2256 * 12 = 27_072
-        assert!((expected_volume - 27_072.0).abs() < 1e-3, "expected volume {expected_volume}");
-
-        let mesh = body_solid_mesh(&doc, 0).expect("occt B-with-counters mesh");
-        let volume = mesh_signed_volume(&mesh).abs();
+        // The two cuts remove exactly their rectangular footprint × depth (fully enclosed in
+        // the bowls => clean through-holes), independent of the curved outer area.
+        let removed = outer_vol - cut_vol;
+        let expected_removed = (UPPER.2 * UPPER.3 + LOWER.2 * LOWER.3) * LETTER_B_DEPTH; // 864*12
         assert!(
-            (volume - expected_volume).abs() < expected_volume * 0.01,
-            "B-with-two-counters volume {volume}, expected ~{expected_volume} \
-             (outer {outer_area} − upper {upper_area} − lower {lower_area}) x depth {DEPTH}"
+            (removed - expected_removed).abs() < expected_removed * 0.02,
+            "counters removed {removed} mm^3, expected ~{expected_removed} (two holes × depth)"
         );
+        assert!(cut_vol > 0.0 && cut_vol < outer_vol, "cut {cut_vol}, outer {outer_vol}");
     }
 
     #[cfg(not(feature = "occt"))]
