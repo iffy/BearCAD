@@ -882,17 +882,20 @@ the deployed site. This reuses §9.3's determinism guarantees (fixed view, no an
   an extrusion-backed body can (#32).
 - **STEP export/import (#65/#71):** **File → Export STEP…** / **Import STEP…** (and the
   per-body Elements-pane export). With the OCCT kernel compiled in (`--features occt`, §10),
-  a single-body STEP export writes **real BREP** (planar *and* curved surfaces) straight from
-  the body's OCCT solid via `STEPControl_Writer`, and import reads **real BREP incl.
+  a single-body STEP export — including the whole-document export when the document holds
+  exactly one live body (#106) — writes **real BREP** (planar *and* curved surfaces) straight
+  from the body's OCCT solid via `STEPControl_Writer`, and import reads **real BREP incl.
   curved/NURBS surfaces** via `STEPControl_Reader`, tessellating the result into a new **Body**
   (nests under the Document root, named after the file). Scriptable via `bearcad.import_step`
-  / `bearcad.export_step`.
-  - **No-kernel fallback:** builds without OCCT (and the whole-document/multi-body export path,
-    plus any body whose geometry isn't kernel-representable) use the hand-rolled `step.rs`
-    path — export writes an AP203 `FACETED_BREP` (tessellated triangles), and import reads only
-    that same `POLY_LOOP`-bounded planar `FACE_SURFACE` subset. In this mode, STEP files using
-    full BREP geometry (`ADVANCED_FACE` with curved/NURBS surfaces, as most CAD tools export)
-    are rejected with a clear error rather than approximated. Imported bodies behave like STL
+  / `bearcad.export_step`; import/export/open/save failures raise catchable Lua errors (#106).
+  - **No-kernel fallback:** builds without OCCT (and the multi-body export path, plus any body
+    whose geometry isn't kernel-representable) use the hand-rolled `step.rs` path — export
+    writes a conformant AP203 `FACETED_BREP` with full product scaffolding (parenthesized
+    complex context entity, `SHAPE_DEFINITION_REPRESENTATION` anchoring; OCCT and third-party
+    readers can parse *and transfer* it, #106), and import reads only that same
+    `POLY_LOOP`-bounded planar `FACE_SURFACE` subset. In this mode, STEP files using full BREP
+    geometry (`ADVANCED_FACE` with curved/NURBS surfaces, as most CAD tools export) are
+    rejected with a clear error rather than approximated. Imported bodies behave like STL
     imports (no analytic face/edge structure to sketch or edit against).
 - **Export session commands:** **Help → Export Session Commands…** (also a command-palette
   entry, "Export Session Commands…") writes everything done since the app opened as a

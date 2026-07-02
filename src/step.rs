@@ -19,29 +19,26 @@ pub fn write_step(name: &str, mesh: &SolidMesh) -> String {
     out.push_str("DATA;\n");
 
     let mut id = 1usize;
+    // A complex (multi-supertype) entity instance must be wrapped in parentheses per
+    // Part 21, and the unit list must reference the three unit instances below —
+    // OCCT's reader rejected the previous unwrapped form ("Incorrect Syntax", #106).
     let context = id;
+    let length_unit = id + 1;
+    let angle_unit = id + 2;
+    let solid_angle_unit = id + 3;
     out.push_str(&format!(
-        "#{context}=GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#{},{},#{}))REPRESENTATION_CONTEXT('{name}','MODEL');\n",
-        id + 1,
-        id + 2,
-        id + 3,
+        "#{context}=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#{length_unit},#{angle_unit},#{solid_angle_unit}))REPRESENTATION_CONTEXT('{name}','MODEL'));\n"
     ));
-    id += 4;
-    let length_unit = id;
     out.push_str(&format!(
         "#{length_unit}=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.));\n"
     ));
-    id += 1;
-    let angle_unit = id;
     out.push_str(&format!(
         "#{angle_unit}=(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.));\n"
     ));
-    id += 1;
-    let solid_angle_unit = id;
     out.push_str(&format!(
         "#{solid_angle_unit}=(NAMED_UNIT(*)SI_UNIT($,.STERADIAN.)SOLID_ANGLE_UNIT());\n"
     ));
-    id += 1;
+    id += 4;
 
     let mut face_ids = Vec::with_capacity(mesh.triangles.len());
     for tri in &mesh.triangles {
@@ -64,7 +61,57 @@ pub fn write_step(name: &str, mesh: &SolidMesh) -> String {
         out,
         "#{shape}=ADVANCED_BREP_SHAPE_REPRESENTATION('{name}',(#{brep}),#{context});"
     );
-    let _ = id;
+    id += 1;
+
+    // AP203 product scaffolding (#106): readers (OCCT included) only *transfer*
+    // geometry that is anchored to a product via SHAPE_DEFINITION_REPRESENTATION —
+    // a bare shape representation parses but yields no shapes. This chain makes
+    // BearCAD's faceted export consumable by the kernel and third-party CAD.
+    let app_ctx = id;
+    let _ = writeln!(
+        out,
+        "#{app_ctx}=APPLICATION_CONTEXT('configuration controlled 3d designs of mechanical parts and assemblies');"
+    );
+    let _ = writeln!(
+        out,
+        "#{}=APPLICATION_PROTOCOL_DEFINITION('international standard','config_control_design',1994,#{app_ctx});",
+        id + 1
+    );
+    let product_ctx = id + 2;
+    let _ = writeln!(
+        out,
+        "#{product_ctx}=MECHANICAL_CONTEXT('',#{app_ctx},'mechanical');"
+    );
+    let product = id + 3;
+    let _ = writeln!(
+        out,
+        "#{product}=PRODUCT('{name}','{name}','',(#{product_ctx}));"
+    );
+    let formation = id + 4;
+    let _ = writeln!(
+        out,
+        "#{formation}=PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE('','',#{product},.NOT_KNOWN.);"
+    );
+    let def_ctx = id + 5;
+    let _ = writeln!(
+        out,
+        "#{def_ctx}=PRODUCT_DEFINITION_CONTEXT('part definition',#{app_ctx},'design');"
+    );
+    let definition = id + 6;
+    let _ = writeln!(
+        out,
+        "#{definition}=PRODUCT_DEFINITION('design','',#{formation},#{def_ctx});"
+    );
+    let def_shape = id + 7;
+    let _ = writeln!(
+        out,
+        "#{def_shape}=PRODUCT_DEFINITION_SHAPE('','',#{definition});"
+    );
+    let _ = writeln!(
+        out,
+        "#{}=SHAPE_DEFINITION_REPRESENTATION(#{def_shape},#{shape});",
+        id + 8
+    );
 
     out.push_str("ENDSEC;\n");
     out.push_str("END-ISO-10303-21;\n");
@@ -425,6 +472,42 @@ mod tests {
                 ],
             ],
         }
+    }
+
+    /// #106: the representation-context is a complex (multi-supertype) entity and
+    /// must be parenthesized per Part 21, with the unit list referencing the three
+    /// unit instances — the earlier unwrapped form (with dangling `#2`/`#4` refs)
+    /// made OCCT's reader reject BearCAD's own files as "Incorrect Syntax".
+    #[test]
+    fn write_step_emits_a_conformant_complex_context_entity() {
+        let text = write_step("part", &box_mesh());
+        assert!(
+            text.contains("#1=(GEOMETRIC_REPRESENTATION_CONTEXT(3)"),
+            "context entity must be wrapped in parentheses"
+        );
+        assert!(
+            text.contains("GLOBAL_UNIT_ASSIGNED_CONTEXT((#2,#3,#4))"),
+            "unit list must reference the three unit instances"
+        );
+        assert!(text.contains("#2=(LENGTH_UNIT()"));
+        assert!(text.contains("#3=(NAMED_UNIT(*)PLANE_ANGLE_UNIT()"));
+        assert!(text.contains("#4=(NAMED_UNIT(*)SI_UNIT($,.STERADIAN.)"));
+    }
+
+    /// #106: OCCT's STEP reader must accept BearCAD's own faceted export (the
+    /// end-to-end conformance check the unit test above approximates).
+    #[cfg(feature = "occt")]
+    #[test]
+    fn occt_reader_accepts_write_step_output() {
+        let text = write_step("part", &box_mesh());
+        let path = std::env::temp_dir().join("bearcad_step_conformance.step");
+        std::fs::write(&path, &text).expect("write temp step");
+        let shape = crate::kernel::Shape::read_step(&path);
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            shape.is_some(),
+            "OCCT must parse BearCAD's own faceted STEP output"
+        );
     }
 
     #[test]

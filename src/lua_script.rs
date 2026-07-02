@@ -2548,6 +2548,52 @@ mod tests {
         );
     }
 
+    /// #106: file-I/O failures surface as catchable Lua errors instead of silent
+    /// success (previously `import_step` on a missing file "succeeded" with an
+    /// empty document).
+    #[test]
+    fn lua_import_step_missing_file_raises() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            local ok = pcall(function() bearcad.import_step("/nonexistent/nope.step") end)
+            assert(not ok, "importing a missing STEP file must raise")
+            assert(bearcad.count("body") == 0)
+        "#,
+        );
+    }
+
+    /// #106: a single-body document exports real BREP STEP in kernel builds, and a
+    /// curved fillet survives the export → import round-trip.
+    #[cfg(feature = "occt")]
+    #[test]
+    fn lua_step_roundtrip_preserves_curved_brep() {
+        let path = std::env::temp_dir().join("bearcad_lua_rt.step");
+        let path_str = path.to_str().unwrap();
+        run_lua_expect_ok(&format!(
+            r#"
+            bearcad.new()
+            bearcad.rect{{ width = 40, height = 30 }}
+            bearcad.extrude{{ polygon = {{0,1,2,3}}, distance = 20 }}
+            bearcad.fillet_edge{{ extrusion = 0, edge = {{ kind = "vertical", face = 0, edge = 1 }}, radius = 8 }}
+            local v0 = bearcad.body_stats(0).volume
+            bearcad.export_step("{path_str}")
+            bearcad.new()
+            bearcad.import_step("{path_str}")
+            assert(bearcad.count("body") == 1, "round-trip must import one body")
+            local v1 = bearcad.body_stats(0).volume
+            assert(math.abs(v1 - v0) < v0 * 0.005,
+                   "curved fillet must survive: " .. v0 .. " -> " .. v1)
+        "#
+        ));
+        let text = std::fs::read_to_string(&path).expect("exported file");
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            text.contains("ADVANCED_FACE"),
+            "single-body export must be real BREP, not the faceted fallback"
+        );
+    }
+
     /// #105: legacy documents (no recorded boundaries) keep the old per-entry undo.
     #[test]
     fn undo_without_boundaries_pops_a_single_entry() {

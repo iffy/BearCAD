@@ -2050,9 +2050,9 @@ impl ScriptRunner {
         }
     }
 
-    /// Stashes a rejected declarative-modeling action's message in
+    /// Stashes a rejected declarative-modeling or file-I/O action's message in
     /// [`ScriptRunner::last_action_error`] so `ScriptTickData::exec` can raise it as a Lua
-    /// error (#104/#109/#110/#112).
+    /// error (#104/#109/#110/#112, #106 for open/save/import/export).
     fn record_action_error(&mut self, result: ActionResult) {
         if let ActionResult::Err(e) = result {
             self.last_action_error = Some(e);
@@ -2073,27 +2073,33 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::Open(path) => {
-                state.apply(Action::Open { path });
+                let r = state.apply(Action::Open { path });
+                self.record_action_error(r);
                 StepResult::Continue
             }
             Instruction::Save(path) => {
-                state.apply(Action::Save { path });
+                let r = state.apply(Action::Save { path });
+                self.record_action_error(r);
                 StepResult::Continue
             }
             Instruction::ExportStl { path, body } => {
-                state.apply(Action::ExportStl { path, body });
+                let r = state.apply(Action::ExportStl { path, body });
+                self.record_action_error(r);
                 StepResult::Continue
             }
             Instruction::ExportStep { path, body } => {
-                state.apply(Action::ExportStep { path, body });
+                let r = state.apply(Action::ExportStep { path, body });
+                self.record_action_error(r);
                 StepResult::Continue
             }
             Instruction::ImportStl { path } => {
-                state.apply(Action::ImportStl { path });
+                let r = state.apply(Action::ImportStl { path });
+                self.record_action_error(r);
                 StepResult::Continue
             }
             Instruction::ImportStep { path } => {
-                state.apply(Action::ImportStep { path });
+                let r = state.apply(Action::ImportStep { path });
+                self.record_action_error(r);
                 StepResult::Continue
             }
             Instruction::Clear => {

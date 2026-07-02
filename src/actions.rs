@@ -1913,11 +1913,31 @@ impl AppState {
                         }
                     }
                 }
-                // Whole-document export concatenates every body; keep the hand-rolled faceted
-                // path (OCCT export is per single body — see `write_step_body_file`).
+                // Whole-document export: when the document holds exactly one live body,
+                // route it through the per-body path so kernel builds write real BREP
+                // (curved surfaces survive the round-trip, #106). Multi-body documents
+                // keep the hand-rolled faceted concatenation (OCCT export is per single
+                // body — see `write_step_body_file`).
                 None => {
-                    let mesh = Some(crate::extrude::document_solid_mesh(&self.doc));
-                    self.write_step_file(&path, "bearcad", mesh)
+                    let mut live = self
+                        .doc
+                        .bodies
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, b)| !b.deleted);
+                    match (live.next(), live.next()) {
+                        (Some((bi, b)), None) => {
+                            let name = b
+                                .name
+                                .clone()
+                                .unwrap_or_else(|| format!("body-{bi}"));
+                            self.write_step_body_file(&path, &name, bi)
+                        }
+                        _ => {
+                            let mesh = Some(crate::extrude::document_solid_mesh(&self.doc));
+                            self.write_step_file(&path, "bearcad", mesh)
+                        }
+                    }
                 }
             },
             Action::ExportStepBody { path, body } => {
