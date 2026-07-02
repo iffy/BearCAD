@@ -699,6 +699,18 @@ pub enum Action {
         /// How the extrusion attaches to bodies (#32/#35) — mirrors the context pane's
         /// New / Add-to-body / Cut choice for the GUI flow.
         body: ExtrudeBodyChoice,
+        /// Extrude up to this object's extended plane instead of a fixed distance —
+        /// the scripted equivalent of pulling the gizmo and snapping to a surface
+        /// (#114). `distance` becomes the cached/fallback value.
+        target: Option<crate::model::ExtrudeTarget>,
+    },
+    /// Semantic push/pull of an existing extrusion (#114): set a new fixed distance
+    /// (clears any snap target — a plain typed distance is a blind extrude) and/or
+    /// snap to a new target, re-evaluating the parametric geometry.
+    UpdateExtrusion {
+        extrusion: usize,
+        distance: Option<f32>,
+        target: Option<crate::model::ExtrudeTarget>,
     },
     /// Add/remove a face from the in-progress extrusion (starts one if needed).
     ToggleExtrudeFace { face: ExtrudeFace },
@@ -1437,6 +1449,31 @@ pub(crate) fn extrude_face_sketch(doc: &Document, face: &ExtrudeFace) -> Option<
 /// The body that a fresh extrusion on `sketch` would join by default, if `sketch` lies on an
 /// existing body's face (sketching on a face of a body continues that body unless the user
 /// chooses otherwise in the context pane, #32).
+/// Validate a scripted extrude snap target (#114): the referenced plane/face/vertex
+/// must resolve to real geometry, mirroring how #112 validates faces at commit.
+fn validate_extrude_target(
+    doc: &Document,
+    target: &crate::model::ExtrudeTarget,
+) -> std::result::Result<(), String> {
+    use crate::model::ExtrudeTarget;
+    match target {
+        ExtrudeTarget::Plane(i) => doc
+            .construction_planes
+            .get(*i)
+            .filter(|p| !p.deleted)
+            .map(|_| ())
+            .ok_or_else(|| format!("Extrude target: no construction plane {i}")),
+        ExtrudeTarget::Face(face) => crate::extrude::face_profile_world(doc, face)
+            .map(|_| ())
+            .ok_or_else(|| "Extrude target face does not exist".to_string()),
+        ExtrudeTarget::Vertex(point) => {
+            crate::extrude::constraint_point_world(doc, point.clone())
+                .map(|_| ())
+                .ok_or_else(|| "Extrude target vertex does not exist".to_string())
+        }
+    }
+}
+
 fn extrude_merge_candidate(doc: &Document, sketch: SketchId) -> Option<usize> {
     let face = doc.sketch_face(sketch)?;
     let extrusion = match face {
@@ -3646,16 +3683,24 @@ impl AppState {
                 faces,
                 distance,
                 body,
+                target,
             } => {
                 if faces.is_empty() {
                     return ActionResult::Err("Extrusion needs at least one face".to_string());
                 }
                 // #104: a zero-distance extrusion would be an invisible dead entity; reject it
-                // like the interactive tool ([`Action::CommitExtrusion`]) does.
-                if distance.abs() < 1e-3 {
+                // like the interactive tool ([`Action::CommitExtrusion`]) does. With a snap
+                // target the effective distance derives from the target instead (#114).
+                if target.is_none() && distance.abs() < 1e-3 {
                     let e = "Extrusion distance must be non-zero".to_string();
                     self.status = e.clone();
                     return ActionResult::Err(e);
+                }
+                if let Some(t) = &target {
+                    if let Err(e) = validate_extrude_target(&self.doc, t) {
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
                 }
                 // #112: every face must resolve to a real profile — for a `Polygon`, all line
                 // indices must be live lines forming a closed loop; for a `Circle`, the circle
@@ -3684,7 +3729,7 @@ impl AppState {
                     sketch,
                     faces,
                     distance,
-                    target: None,
+                    target,
                     expression: String::new(),
                     name: None,
                     deleted: false,
@@ -3701,6 +3746,53 @@ impl AppState {
                         crate::model::effective_length_unit(&self.doc, sketch)
                     )
                 );
+                ActionResult::Ok
+            }
+            Action::UpdateExtrusion {
+                extrusion,
+                distance,
+                target,
+            } => {
+                if distance.is_none() && target.is_none() {
+                    return ActionResult::Err(
+                        "Extrusion update needs a distance or a target".to_string(),
+                    );
+                }
+                if let Some(d) = distance {
+                    if target.is_none() && d.abs() < 1e-3 {
+                        let e = "Extrusion distance must be non-zero".to_string();
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                }
+                if let Some(t) = &target {
+                    if let Err(e) = validate_extrude_target(&self.doc, t) {
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                }
+                let Some(ext) = self
+                    .doc
+                    .extrusions
+                    .get_mut(extrusion)
+                    .filter(|e| !e.deleted)
+                else {
+                    return ActionResult::Err(format!("No extrusion {extrusion}"));
+                };
+                if let Some(d) = distance {
+                    ext.distance = d;
+                    ext.expression = String::new();
+                    // A plain typed distance is a blind extrude: it replaces any snap
+                    // target unless a new one is set in the same update.
+                    if target.is_none() {
+                        ext.target = None;
+                    }
+                }
+                if target.is_some() {
+                    ext.target = target;
+                }
+                self.refresh_document_health();
+                self.status = format!("Updated extrusion {extrusion}");
                 ActionResult::Ok
             }
             Action::ToggleExtrudeFace { face } => {
@@ -5930,6 +6022,7 @@ mod tests {
             faces: vec![ExtrudeFace::Polygon(rect_lines.to_vec())],
             distance: 5.0,
             body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
         });
         state
     }
@@ -6168,6 +6261,7 @@ mod tests {
             faces: vec![ExtrudeFace::Circle(0)],
             distance: 6.0,
             body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
         });
         let result = state.apply(Action::CommitEdgeTreatment {
             extrusion: 0,

@@ -255,7 +255,14 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     **Body** (the solid result) that depends on it: the body nests under the extrusion in the
     Elements pane and is removed if the extrusion is deleted.
     Created in script via
-    `bearcad.extrude{ circle|polygon|circles, distance, name?, body? }`.
+    `bearcad.extrude{ circle|polygon|circles, distance?, name?, body?, to? }`.
+    **Extrude to object (#114):** instead of a fixed distance, `to = { plane = i }` /
+    `{ face = <face spec> }` / `{ vertex = <point> }` snaps the extrusion to that object's
+    extended plane, and the link is parametric — the snapped extrusion follows when the
+    target moves. **Semantic push/pull (#114):** `bearcad.edit_extrusion{ extrusion, distance?,
+    by?, to? }` edits a committed extrusion like dragging its gizmo — `by` nudges from the
+    current effective depth, `distance` sets an absolute depth (clearing any snap target),
+    `to` (re)snaps.
   - Implemented: the data model (Extrusion + Body) with `.bearcad` persistence; mesh generation;
     both hierarchy elements; depth-tested flat-shaded rendering; and the interactive **Extrude
     tool** (`E`): click coplanar faces to toggle inclusion (hover-highlighted), drag the normal
@@ -676,9 +683,17 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   palette, and viewport drags — lives under the `bearcad.ui.*` sub-namespace
   (`bearcad.ui.move`, `bearcad.ui.click`, `bearcad.ui.key`, `bearcad.ui.type`,
   `bearcad.ui.orbit`, `bearcad.ui.pan`, `bearcad.ui.wheel`, `bearcad.ui.view`,
-  `bearcad.ui.tool`, `bearcad.ui.pane`, `bearcad.ui.palette`, `bearcad.ui.drag_vertex`,
+  `bearcad.ui.tool`, `bearcad.ui.pane`, `bearcad.ui.palette`,
   `bearcad.ui.wait`, `bearcad.ui.screenshot`, …). Examples and documentation should model
   with the top-level API and avoid `bearcad.ui.*` except where a UI interaction is the point.
+- **Semantic gizmo manipulation (#114).** `bearcad.drag_vertex` and `bearcad.drag_line` take
+  sketch-local (not viewport) coordinates, so they are top-level modeling calls (with
+  back-compat aliases under `bearcad.ui.*`). Besides the positional absolute forms, each has
+  a table delta form that moves things like a mouse drag would without knowing coordinates:
+  `bearcad.drag_vertex{ point = <point>, du?, dv? }` nudges a vertex from wherever it
+  currently is, and `bearcad.drag_line{ line = <line>, du?, dv? }` translates a line. Both
+  respect constraints — attempting to drag a fully constrained vertex/line raises a
+  catchable Lua error, like the GUI refusing the drag.
 - `bearcad.ui.screenshot([path], [whole_window])` captures the 3D viewport only by default (the
   view-cube HUD is suppressed for that frame); passing `whole_window = true` captures the
   entire window. With no `path`, the image is written to `screenshot-bearcad.png`.

@@ -315,8 +315,10 @@ Pass a table `{ kind = "rect", index = 0, edge = "bottom" }` when an edge is nee
 | `bearcad.edit_dim("width")` / `bearcad.commit_dim()` | Edit a committed dimension label |
 | `bearcad.add_constraint({ kind="line", index=0 }, "25mm")` | Add a distance constraint |
 | `bearcad.add_geometric_constraint("parallel")` | Add a geometric constraint |
-| `bearcad.ui.drag_vertex({ kind="line", index=0, end="end" }, u, v)` | Drag a constrained point — UI |
-| `bearcad.ui.drag_line({ kind="line", index=0 }, au, av, u, v)` | Drag a line segment — UI |
+| `bearcad.drag_vertex({ kind="line", index=0, end="end" }, u, v)` | Drag a point to a sketch-local spot |
+| `bearcad.drag_vertex{ point = {...}, du = 5, dv = 3 }` | Nudge a point by a delta (constraint-checked) |
+| `bearcad.drag_line({ kind="line", index=0 }, au, av, u, v)` | Drag a line segment |
+| `bearcad.drag_line{ line = {...}, du = 0, dv = 4 }` | Translate a line by a delta |
 
 ### Parameters
 

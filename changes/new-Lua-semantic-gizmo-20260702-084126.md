@@ -1,0 +1,1 @@
+Lua semantic gizmo commands (#114): drag_vertex/drag_line delta table forms (constraint-checked, catchable errors), extrude{ to = plane/face/vertex } snap targets, and edit_extrusion{ distance|by|to } push/pull of committed extrusions

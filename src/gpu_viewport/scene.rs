@@ -2866,6 +2866,7 @@ mod tests {
             faces: vec![ExtrudeFace::Polygon(rect_lines.to_vec())],
             distance: 7.0,
             body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
         });
         assert_eq!(state.doc.bodies.len(), 1);
         state
@@ -3655,6 +3656,7 @@ mod tests {
             faces: vec![crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
             distance: 8.0,
             body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
         });
 
         let scene = build_scene_for_doc(&state);
@@ -3685,6 +3687,7 @@ mod tests {
             faces: vec![crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
             distance: 6.0,
             body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
         });
         state.doc.extrusions[0].target = Some(crate::model::ExtrudeTarget::Plane(1));
 

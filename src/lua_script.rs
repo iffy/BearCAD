@@ -319,6 +319,28 @@ fn parse_boolean_face_table(table: &Table) -> mlua::Result<crate::model::Extrude
     })
 }
 
+/// An `ExtrudeTarget` from a `to = {...}` table (#114): `{plane = i}` (construction plane),
+/// `{face = <face spec>}` (a face's extended plane), or `{vertex = <point table>}` (the plane
+/// through that vertex). Mirrors `extrude_target_lua_table` in src/script.rs.
+fn parse_extrude_target_table(table: &Table) -> mlua::Result<crate::model::ExtrudeTarget> {
+    if let Some(i) = table.get::<Option<usize>>("plane")? {
+        return Ok(crate::model::ExtrudeTarget::Plane(i));
+    }
+    if let Some(face) = table.get::<Option<Table>>("face")? {
+        return Ok(crate::model::ExtrudeTarget::Face(parse_extrude_face_table(
+            &face,
+        )?));
+    }
+    if let Some(point) = table.get::<Option<Table>>("vertex")? {
+        return Ok(crate::model::ExtrudeTarget::Vertex(
+            parse_constraint_point_table(point)?,
+        ));
+    }
+    Err(mlua::Error::external(
+        "extrude target requires one of plane/face/vertex",
+    ))
+}
+
 fn parse_constraint_line_table(table: Table) -> mlua::Result<ConstraintLine> {
     let kind: String = table.get("kind").or_else(|_| table.get("type"))?;
     if kind.eq_ignore_ascii_case("face") {
@@ -1118,21 +1140,79 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Two forms: positional `drag_vertex(point, u, v)` moves to an absolute sketch-local
+    // spot, and the semantic-gizmo table form `drag_vertex{ point = ..., du = 1, dv = 0 }`
+    // (#114) nudges by a delta from the vertex's current position. Both respect
+    // constraints and raise (catchable via pcall) when the vertex is fully constrained.
     api.set(
         "drag_vertex",
-        lua.create_function(|lua, (point, u, v): (Table, f32, f32)| {
-            let point = parse_constraint_point_table(point)?;
+        lua.create_function(|lua, (first, u, v): (Table, Option<f32>, Option<f32>)| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let (point, u, v) = match (u, v) {
+                (Some(u), Some(v)) => (parse_constraint_point_table(first)?, u, v),
+                _ => {
+                    let point_table: Table = first.get("point")?;
+                    let point = parse_constraint_point_table(point_table)?;
+                    let du: Option<f32> = first.get("du")?;
+                    let dv: Option<f32> = first.get("dv")?;
+                    if du.is_none() && dv.is_none() {
+                        return Err(mlua::Error::external(
+                            "drag_vertex table form requires `du` and/or `dv`",
+                        ));
+                    }
+                    let (cur_u, cur_v) = unsafe {
+                        let state = tick.state();
+                        let sketch = state
+                            .sketch_session
+                            .map(|s| s.sketch)
+                            .ok_or_else(|| mlua::Error::external("Not in sketch mode"))?;
+                        crate::geometric_constraints::point_uv(&state.doc, sketch, point.clone())
+                            .map_err(mlua::Error::external)?
+                    };
+                    (
+                        point,
+                        cur_u + du.unwrap_or(0.0),
+                        cur_v + dv.unwrap_or(0.0),
+                    )
+                }
+            };
             unsafe { tick.exec(Instruction::DragVertex { point, u, v }) }
         })?,
     )?;
 
+    // Two forms: positional `drag_line(line, anchor_u, anchor_v, u, v)` replays a raw
+    // grab-here-drop-there gesture, and the semantic-gizmo table form
+    // `drag_line{ line = ..., du = 0, dv = 2 }` (#114) translates the line by a delta
+    // (line drags are pure translations from the anchor, so the anchor is arbitrary).
     api.set(
         "drag_line",
         lua.create_function(
-            |lua, (target, anchor_u, anchor_v, u, v): (Table, f32, f32, f32, f32)| {
-                let target = parse_constraint_line_table(target)?;
+            |lua,
+             (first, anchor_u, anchor_v, u, v): (
+                Table,
+                Option<f32>,
+                Option<f32>,
+                Option<f32>,
+                Option<f32>,
+            )| {
                 let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+                let (target, anchor_u, anchor_v, u, v) = match (anchor_u, anchor_v, u, v) {
+                    (Some(anchor_u), Some(anchor_v), Some(u), Some(v)) => {
+                        (parse_constraint_line_table(first)?, anchor_u, anchor_v, u, v)
+                    }
+                    _ => {
+                        let line_table: Table = first.get("line")?;
+                        let target = parse_constraint_line_table(line_table)?;
+                        let du: Option<f32> = first.get("du")?;
+                        let dv: Option<f32> = first.get("dv")?;
+                        if du.is_none() && dv.is_none() {
+                            return Err(mlua::Error::external(
+                                "drag_line table form requires `du` and/or `dv`",
+                            ));
+                        }
+                        (target, 0.0, 0.0, du.unwrap_or(0.0), dv.unwrap_or(0.0))
+                    }
+                };
                 unsafe {
                     tick.exec(Instruction::DragLineSegment {
                             target,
@@ -1767,7 +1847,18 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "extrude",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let distance: f32 = opts.get("distance")?;
+            // `to = { plane = i } | { face = <face spec> } | { vertex = <point> }` snaps the
+            // extrusion to that object's extended plane (#114) — the scripted equivalent of
+            // pulling the gizmo onto a surface. With a target, `distance` may be omitted.
+            let target = match opts.get::<Option<Table>>("to")? {
+                Some(t) => Some(parse_extrude_target_table(&t)?),
+                None => None,
+            };
+            let distance: f32 = match opts.get::<Option<f32>>("distance")? {
+                Some(d) => d,
+                None if target.is_some() => 0.0,
+                None => return Err(mlua::Error::external("extrude requires a `distance` or `to`")),
+            };
             // Faces: `circle` (single) and/or `circles` (array of indices), a `polygon` loop
             // (#66 — a rectangle is four lines forming such a loop), or a `boolean` region.
             let mut faces: Vec<crate::model::ExtrudeFace> = Vec::new();
@@ -1814,12 +1905,62 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     faces,
                     distance,
                     body,
+                    target,
                 })?;
             }
             let element = SceneElement::Extrusion(unsafe {
                 tick.state().doc.extrusions.len().saturating_sub(1)
             });
             apply_optional_name(lua, element, Some(opts))
+        })?,
+    )?;
+
+    // Semantic push/pull of an existing extrusion (#114) — the scripted extrusion gizmo.
+    // `distance = d` sets an absolute depth (clearing any snap target), `by = d` pulls the
+    // handle by a delta from the current effective depth, and `to = {...}` snaps to a
+    // plane/face/vertex (same table shape as `extrude`'s `to`).
+    api.set(
+        "edit_extrusion",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let extrusion: usize = opts.get("extrusion")?;
+            let mut distance: Option<f32> = opts.get("distance")?;
+            let by: Option<f32> = opts.get("by")?;
+            let target = match opts.get::<Option<Table>>("to")? {
+                Some(t) => Some(parse_extrude_target_table(&t)?),
+                None => None,
+            };
+            if let Some(by) = by {
+                if distance.is_some() {
+                    return Err(mlua::Error::external(
+                        "edit_extrusion takes `distance` or `by`, not both",
+                    ));
+                }
+                let current = unsafe {
+                    let doc = &tick.state().doc;
+                    let ext = doc
+                        .extrusions
+                        .get(extrusion)
+                        .filter(|e| !e.deleted)
+                        .ok_or_else(|| {
+                            mlua::Error::external(format!("no extrusion {extrusion}"))
+                        })?;
+                    crate::extrude::effective_distance(doc, ext)
+                };
+                distance = Some(current + by);
+            }
+            if distance.is_none() && target.is_none() {
+                return Err(mlua::Error::external(
+                    "edit_extrusion requires `distance`, `by`, or `to`",
+                ));
+            }
+            unsafe {
+                tick.exec(Instruction::UpdateExtrusion {
+                    extrusion,
+                    distance,
+                    target,
+                })
+            }
         })?,
     )?;
 
@@ -1937,7 +2078,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading",
             "camera", "zoom_fit", "elements_view",
             "move", "click", "move_ground", "click_ground",
-            "drag", "right_drag", "right_drag_pan", "drag_vertex", "drag_line",
+            "drag", "right_drag", "right_drag_pan",
             "key", "keydown", "keyup", "type",
             "_view", "_view_home", "_wait", "_wait_ms", "_screenshot",
         }
@@ -1945,6 +2086,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             bearcad.ui[name] = bearcad[name]
             bearcad[name] = nil
         end
+        -- Sketch-local (not viewport) manipulation, so it stays in the modeling namespace
+        -- (#114); the ui aliases keep older scripts working.
+        bearcad.ui.drag_vertex = bearcad.drag_vertex
+        bearcad.ui.drag_line = bearcad.drag_line
 
         local function yielding(name, native_name)
             local native = bearcad.ui[native_name or name]
@@ -2053,9 +2198,15 @@ mod tests {
             r#"
             assert(bearcad.ui ~= nil, "bearcad.ui table missing")
             for _, name in ipairs({ "move", "click", "tool", "view", "orbit", "pan",
-                                    "key", "type", "pane", "palette", "drag_vertex", "wait" }) do
+                                    "key", "type", "pane", "palette", "wait" }) do
                 assert(type(bearcad.ui[name]) == "function", "bearcad.ui." .. name .. " missing")
                 assert(bearcad[name] == nil, "bearcad." .. name .. " should move to bearcad.ui")
+            end
+            -- drag_vertex/drag_line take sketch-local coordinates, so they live in the
+            -- modeling namespace (#114) with back-compat aliases under bearcad.ui.
+            for _, name in ipairs({ "drag_vertex", "drag_line" }) do
+                assert(type(bearcad[name]) == "function", "bearcad." .. name .. " missing")
+                assert(bearcad.ui[name] == bearcad[name], "bearcad.ui." .. name .. " alias missing")
             end
             -- declarative modeling stays at the top level
             for _, name in ipairs({ "rect", "line", "circle", "extrude", "new", "select",
@@ -3199,5 +3350,175 @@ mod tests {
         );
         assert_eq!(state.cam.target, default_cam.target);
         assert_eq!(state.cam.distance, default_cam.distance);
+    }
+    /// #114: the semantic-gizmo table form of `drag_vertex` nudges a vertex by a
+    /// sketch-local delta from wherever it currently is.
+    #[test]
+    fn lua_drag_vertex_delta_moves_endpoint() {
+        let state = run_lua(
+            r#"
+            bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
+            local p = { kind = "line", index = 0, ["end"] = "end" }
+            bearcad.drag_vertex{ point = p, du = 5, dv = 3 }
+            local l = bearcad.get{ kind = "line", index = 0 }
+            assert(math.abs(l.x1 - 15) < 1e-3 and math.abs(l.y1 - 3) < 1e-3,
+                   string.format("endpoint at (%g, %g), want (15, 3)", l.x1, l.y1))
+        "#,
+        );
+        assert!((state.doc.lines[0].x1 - 15.0).abs() < 1e-3);
+        assert!((state.doc.lines[0].y1 - 3.0).abs() < 1e-3);
+    }
+
+    /// #114: the table form of `drag_line` translates the whole line by a delta.
+    #[test]
+    fn lua_drag_line_delta_translates_line() {
+        let state = run_lua(
+            r#"
+            bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
+            bearcad.drag_line{ line = { kind = "line", index = 0 }, dv = 4 }
+            local l = bearcad.get{ kind = "line", index = 0 }
+            assert(math.abs(l.y0 - 4) < 1e-3 and math.abs(l.y1 - 4) < 1e-3,
+                   string.format("line at y %g..%g, want 4..4", l.y0, l.y1))
+        "#,
+        );
+        assert!((state.doc.lines[0].y0 - 4.0).abs() < 1e-3);
+        assert!((state.doc.lines[0].x1 - 10.0).abs() < 1e-3);
+    }
+
+    /// #114: attempting to drag a fully constrained vertex raises a catchable error and
+    /// leaves the geometry untouched (a locked `rect` corner is fully constrained).
+    #[test]
+    fn lua_drag_vertex_fully_constrained_raises() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            local ok, err = pcall(function()
+                bearcad.drag_vertex{
+                    point = { kind = "line", index = 0, ["end"] = "end" },
+                    du = 3,
+                }
+            end)
+            assert(not ok, "dragging a locked rect corner should raise")
+            assert(tostring(err):find("constrained"), "unexpected error: " .. tostring(err))
+        "#,
+        );
+        assert!((state.doc.lines[0].x1 - 10.0).abs() < 1e-3, "corner must not move");
+    }
+
+    /// #114: `edit_extrusion` push/pulls an existing extrusion — `by` nudges from the
+    /// current effective depth, `distance` sets an absolute one.
+    #[test]
+    fn lua_edit_extrusion_push_pull_updates_distance() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 8 }
+            bearcad.edit_extrusion{ extrusion = 0, by = 2 }
+            bearcad.edit_extrusion{ extrusion = 0, by = -4 }
+            local ok = pcall(function()
+                bearcad.edit_extrusion{ extrusion = 0, distance = 0 }
+            end)
+            assert(not ok, "zero distance should raise")
+        "#,
+        );
+        assert!((state.doc.extrusions[0].distance - 6.0).abs() < 1e-3);
+    }
+
+    /// #114: `extrude{ to = { vertex = ... } }` snaps the new extrusion to another
+    /// body's surface, and the snap is parametric — resizing the target body moves the
+    /// snapped extrusion with it. A plain `edit_extrusion` distance clears the target.
+    #[test]
+    fn lua_extrude_to_vertex_snaps_and_follows_target() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 8 }
+            bearcad.exit_sketch()
+            bearcad.begin_sketch("construction_plane", 0)
+            bearcad.rect{ x = 20, y = 20, width = 5, height = 5 }
+            local cap = {
+                kind = "extrude_cap", extrusion = 0,
+                profile = "polygon", lines = {0, 1, 2, 3}, top = true,
+            }
+            bearcad.extrude{
+                polygon = {4, 5, 6, 7},
+                to = { vertex = { kind = "face", face = cap, index = 0 } },
+            }
+            bearcad.edit_extrusion{ extrusion = 0, distance = 12 }
+        "#,
+        );
+        let snapped = &state.doc.extrusions[1];
+        assert!(snapped.target.is_some(), "extrusion 1 should keep its snap target");
+        let depth = crate::extrude::effective_distance(&state.doc, snapped);
+        assert!(
+            (depth - 12.0).abs() < 1e-3,
+            "snapped extrusion should follow the resized target, got {depth}"
+        );
+
+        // A plain typed distance is a blind extrude again: it drops the snap target.
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 8 }
+            bearcad.exit_sketch()
+            bearcad.begin_sketch("construction_plane", 0)
+            bearcad.rect{ x = 20, y = 20, width = 5, height = 5 }
+            local cap = {
+                kind = "extrude_cap", extrusion = 0,
+                profile = "polygon", lines = {0, 1, 2, 3}, top = true,
+            }
+            bearcad.extrude{
+                polygon = {4, 5, 6, 7},
+                to = { vertex = { kind = "face", face = cap, index = 0 } },
+            }
+            bearcad.edit_extrusion{ extrusion = 1, distance = 3 }
+        "#,
+        );
+        assert!(state.doc.extrusions[1].target.is_none());
+        assert!((state.doc.extrusions[1].distance - 3.0).abs() < 1e-3);
+    }
+
+    /// #114: `extrude{ to = { plane = i } }` (no distance needed) reaches exactly the
+    /// construction plane's offset.
+    #[test]
+    fn lua_extrude_to_plane_matches_plane_offset() {
+        use crate::construction::{
+            definition_from_reference, plane_from_definition, PlaneReference,
+        };
+        use crate::model::ConstructionPlaneParent;
+
+        let mut runner = ScriptRunner::from_lua_source(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, to = { plane = 1 } }
+        "#,
+        )
+        .unwrap();
+        runner.verbose = false;
+        let mut state = AppState::default();
+        state.doc.construction_planes.push(plane_from_definition(
+            &definition_from_reference(
+                &PlaneReference::Face {
+                    origin: glam::Vec3::ZERO,
+                    normal: glam::Vec3::Z,
+                    label: "Ground".to_string(),
+                },
+                5.0,
+                0.0,
+            ),
+            ConstructionPlaneParent::Root,
+        ));
+        let mut synthetic = SyntheticInput::default();
+        let ctx = egui::Context::default();
+        let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
+        while !runner.done {
+            runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
+        }
+        assert!(runner.error.is_none(), "script error: {:?}", runner.error);
+
+        let ext = &state.doc.extrusions[0];
+        assert_eq!(ext.target, Some(crate::model::ExtrudeTarget::Plane(1)));
+        let depth = crate::extrude::effective_distance(&state.doc, ext);
+        assert!((depth - 5.0).abs() < 1e-3, "depth should match the plane offset, got {depth}");
     }
 }

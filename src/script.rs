@@ -78,6 +78,16 @@ pub enum Instruction {
         /// How the extrusion attaches to bodies (#32/#35): new body, add to the extruded
         /// face's body, or cut it from that body.
         body: crate::actions::ExtrudeBodyChoice,
+        /// Extrude up to this object's extended plane instead of the fixed distance —
+        /// the scripted "pull the gizmo and snap to a surface" (#114).
+        target: Option<crate::model::ExtrudeTarget>,
+    },
+    /// Semantic push/pull of an existing extrusion (#114): a new fixed distance
+    /// (clearing any snap target) and/or a new snap target.
+    UpdateExtrusion {
+        extrusion: usize,
+        distance: Option<f32>,
+        target: Option<crate::model::ExtrudeTarget>,
     },
     SetElementVisible {
         element: SceneElement,
@@ -280,6 +290,7 @@ impl Instruction {
                 faces,
                 distance,
                 body,
+                target,
                 ..
             } => {
                 let body = match body {
@@ -287,10 +298,24 @@ impl Instruction {
                     crate::actions::ExtrudeBodyChoice::Merge => ", body = \"merge\"",
                     crate::actions::ExtrudeBodyChoice::Cut => ", body = \"cut\"",
                 };
+                let to = target
+                    .as_ref()
+                    .map(|t| format!(", to = {}", extrude_target_lua_table(t)))
+                    .unwrap_or_default();
                 format!(
-                    "bearcad.extrude{{ {}, distance = {distance}{body} }}",
+                    "bearcad.extrude{{ {}, distance = {distance}{body}{to} }}",
                     extrude_face_args(faces)
                 )
+            }
+            Instruction::UpdateExtrusion { extrusion, distance, target } => {
+                let d = distance
+                    .map(|d| format!(", distance = {d}"))
+                    .unwrap_or_default();
+                let to = target
+                    .as_ref()
+                    .map(|t| format!(", to = {}", extrude_target_lua_table(t)))
+                    .unwrap_or_default();
+                format!("bearcad.edit_extrusion{{ extrusion = {extrusion}{d}{to} }}")
             }
             Instruction::SetElementVisible { element, visible } => {
                 let target = element_lua_ref(element);
@@ -709,6 +734,13 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         }),
         Action::ImportStl { path } => Some(Instruction::ImportStl { path: path.clone() }),
         Action::ImportStep { path } => Some(Instruction::ImportStep { path: path.clone() }),
+        Action::UpdateExtrusion { extrusion, distance, target } => {
+            Some(Instruction::UpdateExtrusion {
+                extrusion: *extrusion,
+                distance: *distance,
+                target: target.clone(),
+            })
+        }
         Action::Clear => Some(Instruction::Clear),
         Action::UndoLast => Some(Instruction::Undo),
         Action::SetTool(tool) => Some(Instruction::Tool(*tool)),
@@ -920,6 +952,7 @@ pub fn instruction_for_new_extrusion(doc: &crate::model::Document) -> Option<Ins
         faces: extrusion.faces.clone(),
         distance: extrusion.distance,
         body,
+        target: extrusion.target.clone(),
     })
 }
 
@@ -997,6 +1030,19 @@ fn extrude_face_spec_table(face: &crate::model::ExtrudeFace) -> String {
         }
         ExtrudeFace::Boolean { op, a, b } => {
             format!("{{boolean = {}}}", boolean_face_lua_table(*op, a, b))
+        }
+    }
+}
+
+/// Render an [`crate::model::ExtrudeTarget`] as the `to = {...}` table
+/// `bearcad.extrude`/`bearcad.edit_extrusion` accept (#114).
+fn extrude_target_lua_table(target: &crate::model::ExtrudeTarget) -> String {
+    use crate::model::ExtrudeTarget;
+    match target {
+        ExtrudeTarget::Plane(i) => format!("{{ plane = {i} }}"),
+        ExtrudeTarget::Face(face) => format!("{{ face = {} }}", extrude_face_spec_table(face)),
+        ExtrudeTarget::Vertex(point) => {
+            format!("{{ vertex = {} }}", constraint_point_lua_ref(point))
         }
     }
 }
@@ -2162,13 +2208,20 @@ impl ScriptRunner {
                 faces,
                 distance,
                 body,
+                target,
             } => {
                 let result = state.apply(Action::CreateExtrusion {
                     sketch,
                     faces,
                     distance,
                     body,
+                    target,
                 });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::UpdateExtrusion { extrusion, distance, target } => {
+                let result = state.apply(Action::UpdateExtrusion { extrusion, distance, target });
                 self.record_action_error(result);
                 StepResult::Continue
             }
@@ -2277,7 +2330,8 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::DragVertex { point, u, v } => {
-                let _ = state.apply(Action::DragVertex { point, u, v });
+                let result = state.apply(Action::DragVertex { point, u, v });
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::DragLineSegment {
@@ -2287,11 +2341,12 @@ impl ScriptRunner {
                 u,
                 v,
             } => {
-                let _ = state.apply(Action::BeginLineDrag {
+                let result = state.apply(Action::BeginLineDrag {
                     target,
                     anchor_u,
                     anchor_v,
                 });
+                self.record_action_error(result);
                 let _ = state.apply(Action::DragLine { u, v });
                 let _ = state.apply(Action::EndLineDrag);
                 StepResult::Continue
