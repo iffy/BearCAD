@@ -1089,6 +1089,17 @@ pub struct AppState {
     /// Camera pose captured when entering a sketch, restored when exiting it.
     pub pre_sketch_pose: Option<crate::camera::HomeView>,
     pub document_health: DocumentHealth,
+    /// #103 part 2: `Some` while a cut-bearing body can't be built by the kernel, so the
+    /// viewport is rendering the additive-only fallback with the cuts silently missing.
+    /// Recomputed alongside `document_health` at every document mutation point; re-asserted
+    /// into `status` at the end of every mutating [`AppState::apply`] so the warning stays
+    /// visible for as long as the document is in that state. Always `None` without the
+    /// kernel (`--no-default-features`): there the limitation is inherent and documented.
+    pub kernel_fallback_warning: Option<String>,
+    /// Whether `refresh_document_health` ran during the current `apply` call (i.e. the
+    /// document just mutated) — consumed by `apply`'s tail to decide when to re-assert
+    /// `kernel_fallback_warning` into `status`.
+    pub(crate) kernel_fallback_warning_pending: bool,
     pub line_drag_session: Option<crate::vertex_drag::LineDragSession>,
     /// Snap a moved/drawn point to nearby geometry (and add a constraint when left there).
     pub snapping_enabled: bool,
@@ -1151,6 +1162,8 @@ impl Default for AppState {
             sketch_reframe_pending: false,
             pre_sketch_pose: None,
             document_health: DocumentHealth::default(),
+            kernel_fallback_warning: None,
+            kernel_fallback_warning_pending: false,
             line_drag_session: None,
             snapping_enabled: true,
             active_snap: None,
@@ -1185,6 +1198,16 @@ impl MeshExportFormat {
 impl AppState {
     pub fn refresh_document_health(&mut self) {
         self.document_health = recompute_document_health(&self.doc);
+        // #103 part 2: this is the one seam every document mutation already goes through
+        // (commits, open, undo, imports — never per-frame drags), so the "kernel fallback is
+        // silently dropping this body's cuts" check lives here rather than being replicated
+        // across every extrusion/treatment/cut action arm. `apply`'s tail turns the result
+        // into a status-bar warning once the arm has finished writing its own status.
+        #[cfg(feature = "occt")]
+        {
+            self.kernel_fallback_warning = crate::extrude::kernel_fallback_cut_warning(&self.doc);
+            self.kernel_fallback_warning_pending = true;
+        }
     }
 
     /// Move extrusion `ei` to wherever `mode` says it should live, used when editing an
@@ -3354,6 +3377,27 @@ impl AppState {
                 else {
                     return ActionResult::Err("Extrusion no longer exists".to_string());
                 };
+                // #103: kernel feasibility trial. If the kernel builds this extrusion today
+                // but can't build it with the new treatment (an impossible fillet radius /
+                // chamfer distance), storing it would silently knock the whole body onto the
+                // additive-only mesh fallback — deleting its cut holes from the render — so
+                // reject at commit instead. Runs only here (the final commit path shared by
+                // the gizmo, the amount input, and scripting), never per-frame: the live drag
+                // preview is a separate ghost mesh that doesn't go through this action. In a
+                // no-kernel build there's nothing to consult; the mesh-bevel clamp stands.
+                #[cfg(feature = "occt")]
+                if !crate::extrude::occt_edge_treatments_feasible(&self.doc, extrusion, &updated) {
+                    let (noun, param) = match kind {
+                        VertexTreatmentKind::Chamfer => ("chamfer", "distance"),
+                        VertexTreatmentKind::Fillet => ("fillet", "radius"),
+                    };
+                    let e = format!(
+                        "{noun} of {amount:.1} mm doesn't fit this edge (kernel can't build \
+                         it) — try a smaller {param}"
+                    );
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
                 self.doc.extrusions[extrusion] = updated;
                 self.refresh_document_health();
                 self.status = match kind {
@@ -4126,6 +4170,17 @@ impl AppState {
         if matches!(result, ActionResult::Ok) {
             if let (Some(log), Some(action)) = (&self.command_log, logged_action) {
                 log.borrow_mut().after_apply(action, &self.doc);
+            }
+        }
+        // #103 part 2: the document just mutated (refresh_document_health ran) and some
+        // cut-bearing body is rendering the additive-only kernel fallback — override the
+        // arm's success status with the warning so the silent-wrong-geometry state is
+        // visible the moment it's entered, and stays visible across further edits.
+        if std::mem::take(&mut self.kernel_fallback_warning_pending)
+            && matches!(result, ActionResult::Ok)
+        {
+            if let Some(warning) = &self.kernel_fallback_warning {
+                self.status = warning.clone();
             }
         }
         result
@@ -5868,6 +5923,125 @@ mod tests {
         });
         assert!(matches!(out_of_range, ActionResult::Err(_)));
         assert!(state.doc.extrusions[0].edge_treatments.is_empty());
+    }
+
+    /// #103: an edge treatment the OCCT kernel can't actually build (e.g. a fillet radius
+    /// far larger than the solid) must be rejected at commit with an actionable error, not
+    /// stored — storing it silently knocked the whole body onto the additive-only mesh
+    /// fallback, deleting its cut holes from the render.
+    #[cfg(feature = "occt")]
+    #[test]
+    fn commit_edge_treatment_rejects_a_kernel_infeasible_amount() {
+        let mut state = box_extrusion_state();
+        let result = state.apply(Action::CommitEdgeTreatment {
+            extrusion: 0,
+            edge: crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 },
+            kind: VertexTreatmentKind::Fillet,
+            amount: 500.0,
+        });
+        assert!(matches!(result, ActionResult::Err(_)), "{result:?}");
+        assert!(
+            state.doc.extrusions[0].edge_treatments.is_empty(),
+            "infeasible treatment must not be stored"
+        );
+        assert!(
+            state.status.contains("doesn't fit") && state.status.contains("radius"),
+            "status should explain the rejection: {}",
+            state.status
+        );
+    }
+
+    /// #103 part 2: a document that *already* contains a kernel-infeasible treatment on a
+    /// cut-bearing body (created before the commit-time trial existed) renders the additive
+    /// fallback — the status bar must warn that the cuts are not shown, both right after
+    /// loading the document and after any later document mutation.
+    #[cfg(feature = "occt")]
+    #[test]
+    fn kernel_fallback_on_a_cut_bearing_body_warns_on_open_and_mutation() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        let outer = crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch,
+            0.0,
+            0.0,
+            10.0,
+            10.0,
+            [false; 4],
+        );
+        let inner = crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch,
+            3.0,
+            3.0,
+            4.0,
+            4.0,
+            [false; 4],
+        );
+        for face in [
+            ExtrudeFace::Polygon(outer.to_vec()),
+            ExtrudeFace::Polygon(inner.to_vec()),
+        ] {
+            state.doc.extrusions.push(Extrusion {
+                sketch,
+                faces: vec![face],
+                distance: 5.0,
+                target: None,
+                expression: String::new(),
+                name: None,
+                deleted: false,
+                edge_treatments: Vec::new(),
+            });
+            state.doc.shape_order.push(ShapeKind::Extrusion);
+        }
+        state.doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
+            name: None,
+            deleted: false,
+        });
+        state.doc.shape_order.push(ShapeKind::Body);
+        assert!(
+            crate::extrude::occt_body_shape(&state.doc, 0).is_some(),
+            "sanity: the untreated cut body builds in the kernel"
+        );
+        // Bypass commit validation: splice the impossible fillet straight into the document.
+        state.doc.extrusions[0].edge_treatments.push(EdgeTreatment {
+            edge: crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 },
+            kind: VertexTreatmentKind::Fillet,
+            amount: 500.0,
+        });
+        // The fallback still renders something (additive-only)...
+        assert!(crate::extrude::body_solid_mesh(&state.doc, 0).is_some());
+
+        // ...and reopening the document surfaces the warning in the status bar.
+        let path = std::env::temp_dir().join("bearcad_103_cut_fallback_warning.bearcad");
+        let path = path.to_string_lossy().to_string();
+        crate::storage::save(&path, &state.doc).unwrap();
+        let mut reopened = AppState::default();
+        let result = reopened.apply(Action::Open { path: path.clone() });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert!(
+            reopened.status.contains("cuts are not shown"),
+            "open should warn: {}",
+            reopened.status
+        );
+
+        // Any later document mutation re-asserts the warning while the state persists. (A
+        // valid chamfer on a far edge commits fine: the kernel trial only rejects when the
+        // *base* shape builds, and this document's base is already kernel-infeasible.)
+        let result = reopened.apply(Action::CommitEdgeTreatment {
+            extrusion: 0,
+            edge: crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 2 },
+            kind: VertexTreatmentKind::Chamfer,
+            amount: 1.0,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert!(
+            reopened.status.contains("cuts are not shown"),
+            "mutation should re-warn: {}",
+            reopened.status
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

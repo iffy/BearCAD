@@ -1,0 +1,1 @@
+Impossible 3D fillet/chamfer amounts are now rejected at commit with a clear error (kernel trial-build, #103) instead of silently knocking the body onto the additive-only fallback; if a cut-bearing body ever does fall back (e.g. an old document), the status bar warns that its cuts are not shown.

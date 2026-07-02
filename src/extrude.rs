@@ -351,6 +351,66 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
     )
 }
 
+/// Commit-time kernel feasibility trial for a 3D edge treatment (#103). `candidate` is the
+/// would-be extrusion (built by [`extrusion_with_edge_treatment`], the treatment already
+/// spliced in); `extrusion` indexes its current, committed source in `doc`.
+///
+/// Returns `false` only when the kernel builds the *current* extrusion fine but can't build
+/// the candidate — i.e. the new treatment itself is what breaks it (an impossible fillet
+/// radius / chamfer distance), which would silently knock the whole body onto the additive-
+/// only mesh fallback and delete its cut holes from the render. Returns `true` whenever the
+/// kernel has no say: the current extrusion isn't kernel-representable anyway (the mesh-bevel
+/// fallback governs before *and* after, nothing to validate against), or it's missing/
+/// degenerate (other commit checks own those rejections).
+#[cfg(feature = "occt")]
+pub fn occt_edge_treatments_feasible(
+    doc: &Document,
+    extrusion: usize,
+    candidate: &Extrusion,
+) -> bool {
+    let Some(base) = doc.extrusions.get(extrusion) else {
+        return true;
+    };
+    let distance = effective_distance(doc, base);
+    if base.faces.is_empty() || distance.abs() < 1e-4 {
+        return true;
+    }
+    if occt_extrusion_shape(doc, base, distance).is_none() {
+        return true;
+    }
+    occt_extrusion_shape(doc, candidate, distance).is_some()
+}
+
+/// #103 part 2: a status-bar warning when some body would render *wrong* geometry — it has
+/// cut extrusions, the kernel is compiled in, but [`occt_body_shape`] can't build it (e.g. a
+/// pre-existing kernel-infeasible edge treatment), so [`body_solid_mesh`] falls back to the
+/// hand-rolled additive-only mesher and the cuts silently vanish from the render. `None` when
+/// every cut-bearing body builds (or there are none). Recomputed by
+/// [`crate::actions::AppState::refresh_document_health`] at every document mutation point
+/// (and on open), never per-frame.
+#[cfg(feature = "occt")]
+pub fn kernel_fallback_cut_warning(doc: &Document) -> Option<String> {
+    for (i, body) in doc.bodies.iter().enumerate() {
+        if body.deleted
+            || body.source.imported_mesh_index().is_some()
+            || body.source.cut_extrusion_indices().is_empty()
+        {
+            continue;
+        }
+        if occt_body_shape(doc, i).is_none() {
+            let label = body
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("body {i}"));
+            return Some(format!(
+                "Warning: {label} couldn't be built by the kernel — cuts are not shown \
+                 (falling back to approximate geometry)"
+            ));
+        }
+    }
+    None
+}
+
 /// Linear tessellation deflection (mm) for OCCT meshing (#86). Flat prism faces
 /// triangulate exactly regardless; this only bounds the chord error on curved
 /// faces once those go through the kernel.
@@ -2291,5 +2351,65 @@ mod tests {
         assert_eq!(twice.edge_treatments.len(), 1);
         assert_eq!(twice.edge_treatments[0].kind, VertexTreatmentKind::Fillet);
         assert_eq!(twice.edge_treatments[0].amount, 3.0);
+    }
+
+    /// #103: the commit-time kernel trial — a fillet the kernel can build passes, an
+    /// oversized one (radius >> the 10x10x5 box) fails, and a base extrusion the kernel
+    /// can't represent at all (here: two faces) is left to the mesh-bevel fallback (trial
+    /// passes, it has nothing to validate against).
+    #[cfg(feature = "occt")]
+    #[test]
+    fn occt_edge_treatments_feasible_rejects_only_what_the_kernel_cannot_build() {
+        let (mut doc, sketch, ext) = box_doc();
+        doc.extrusions.push(ext);
+        let edge = ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
+        let small = extrusion_with_edge_treatment(
+            &doc,
+            0,
+            EdgeTreatment { edge, kind: VertexTreatmentKind::Fillet, amount: 2.0 },
+        )
+        .unwrap();
+        assert!(occt_edge_treatments_feasible(&doc, 0, &small));
+        let oversized = extrusion_with_edge_treatment(
+            &doc,
+            0,
+            EdgeTreatment { edge, kind: VertexTreatmentKind::Fillet, amount: 500.0 },
+        )
+        .unwrap();
+        assert!(!occt_edge_treatments_feasible(&doc, 0, &oversized));
+
+        // A two-face extrusion isn't kernel-representable (occt_extrusion_shape wants exactly
+        // one face), so the trial abstains: the mesh-bevel fallback governs either way.
+        let second = rect_profile(&mut doc, sketch, 20.0, 20.0, 10.0, 10.0);
+        let extra_face = second.clone();
+        doc.extrusions[0].faces.push(extra_face);
+        let candidate = extrusion_with_edge_treatment(
+            &doc,
+            0,
+            EdgeTreatment { edge, kind: VertexTreatmentKind::Fillet, amount: 500.0 },
+        )
+        .unwrap();
+        assert!(occt_edge_treatments_feasible(&doc, 0, &candidate));
+    }
+
+    /// #103 part 2: [`kernel_fallback_cut_warning`] fires exactly when a cut-bearing body
+    /// can't be built by the kernel (so the additive-only fallback would silently drop the
+    /// cuts), and stays quiet for healthy bodies or bodies without cuts.
+    #[cfg(feature = "occt")]
+    #[test]
+    fn kernel_fallback_cut_warning_fires_only_for_kernel_infeasible_cut_bodies() {
+        let mut doc = cut_body_doc();
+        assert_eq!(kernel_fallback_cut_warning(&doc), None, "healthy cut body: no warning");
+        doc.extrusions[0].edge_treatments.push(EdgeTreatment {
+            edge: ExtrusionEdgeRef::Vertical { face: 0, edge: 0 },
+            kind: VertexTreatmentKind::Fillet,
+            amount: 500.0,
+        });
+        let warning = kernel_fallback_cut_warning(&doc).expect("infeasible cut body warns");
+        assert!(warning.contains("cuts are not shown"), "{warning}");
+        // Without cuts there's nothing to silently drop: no warning even though the body
+        // still falls back to the mesh-bevel path.
+        doc.bodies[0].source = crate::model::BodySource::Solid { add: vec![0], cut: vec![] };
+        assert_eq!(kernel_fallback_cut_warning(&doc), None);
     }
 }

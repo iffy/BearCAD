@@ -44,7 +44,10 @@ on the `Extrusion` and re-evaluated every frame, not baked into the mesh once.
 Scoped to bodies sourced from `Extrusion`s with a `Rect` or `Polygon` profile — `Circle` profiles
 and STL/STEP-imported meshes have no analytic edge to bevel and are out of scope. A **vertex
 miter**, where 3+ treated edges would meet at a shared corner, is rejected at commit time rather
-than blended.
+than blended. In an OCCT-kernel build, a radius the kernel can't actually build (e.g. larger than
+the solid) is also **rejected at commit** — committing it would silently drop the body to
+approximate fallback geometry without its cuts. If a document already contains such a treatment,
+the status bar warns that the body's cuts are not shown.
 
 ![A box with its four vertical edges rounded by a mesh-bevel fillet](/img/screenshots/fillet.png)
 

@@ -344,7 +344,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   curved surface, correct face trimming, or vertex-miter blending where 3+ edges meet; it
   directly reshapes the extrusion's own triangle mesh. If the kernel can't place a treatment (an
   edge it can't match, or an OCCT error) that extrusion falls back to the mesh-bevel path, so
-  broken geometry never ships. Both paths are scoped to bodies whose source is one or more
+  broken geometry never ships. A treatment the kernel can't build at all (e.g. a fillet radius
+  larger than the solid) is **rejected at commit time** via a kernel trial-build (#103), and if
+  a cut-bearing body ever does render the additive-only fallback (e.g. a pre-existing infeasible
+  treatment in an old document), the status bar warns that its cuts are not shown. Both paths are scoped to bodies whose source is one or more
   `Extrusion`s with a `Polygon` profile (a rectangle being a four-line polygon), and to the two
   edge families that have a clean
   analytic definition there (see `crate::extrude::side_quad_world`/`cap_polygon_world`):
