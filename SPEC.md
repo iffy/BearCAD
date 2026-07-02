@@ -816,8 +816,9 @@ the deployed site. This reuses §9.3's determinism guarantees (fixed view, no an
   A dedicated CI job builds OCCT once (cached on the pinned submodule + build-script hash) and
   runs the default (kernel) test suite; the `ci` job separately tests `--no-default-features`,
   so both paths stay green. **macOS and Linux release binaries ship with the kernel** (default
-  build); **Windows lags** — a static OCCT/MSVC build isn't wired up yet, so Windows ships the
-  `--no-default-features` fallback build for now.
+  build); **Windows lags** — a static OCCT/MSVC build is being stood up via an experimental,
+  non-blocking `windows-occt` CI job (#96); the Windows release still ships the
+  `--no-default-features` fallback build until that build is proven.
 - **Migration status**: extrusions (prism/loft), multi-body union, solid booleans (incl.
   extrude cut), 3D edge fillet/chamfer, and STEP I/O are switched onto OCCT in `occt` builds,
   each with a hand-rolled fallback retained for the no-kernel build and for cases OCCT doesn't

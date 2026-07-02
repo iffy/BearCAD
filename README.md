@@ -159,7 +159,8 @@ both code paths stay green.
 
 The **macOS and Linux release binaries ship with the kernel** (the default build).
 **Windows currently ships the no-kernel fallback build** (`--no-default-features`)
-— a static OCCT/MSVC build isn't wired up yet (see issue #89), so on Windows the
+— a static OCCT/MSVC build is being scaffolded via the experimental, non-blocking
+`windows-occt` CI job (see issue #96), so on Windows the
 kernel-only features (real BREP fillets/chamfers, solid booleans/cut,
 curved-surface STEP) fall back to hand-rolled mesh geometry (or are hidden) until
 that lands.

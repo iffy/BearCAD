@@ -29,10 +29,12 @@ fn main() {
 /// The OCCT install prefix is resolved from, in order:
 ///   1. the `OCCT_DIR` env var (point this at *your own* OCCT to rebuild against a
 ///      different version — see README.md), or
-///   2. the default location produced by `scripts/build-occt.sh`
-///      (`third_party/OCCT/occt-install`).
+///   2. the default location produced by `scripts/build-occt.sh` (or
+///      `scripts/build-occt.ps1` on Windows): `third_party/OCCT/occt-install`.
 ///
-/// The prefix must contain `include/opencascade/*.hxx` and `lib/libTK*.a`.
+/// The prefix must contain `include/opencascade/*.hxx` and `lib/libTK*.a`
+/// (`lib/TK*.lib` on Windows — `cargo:rustc-link-lib=static=TK...` resolves
+/// either naming per platform).
 fn build_occt_shim() {
     use std::path::PathBuf;
 
@@ -50,8 +52,9 @@ fn build_occt_shim() {
     if !include.is_dir() || !libdir.is_dir() {
         panic!(
             "OCCT not found under {}\n(expected {} and {}).\n\
-             Build it first: `scripts/build-occt.sh`, or set OCCT_DIR to your own \
-             OCCT install prefix. See README.md \"Building with the OCCT kernel\".",
+             Build it first: `scripts/build-occt.sh` (or `scripts/build-occt.ps1` on \
+             Windows), or set OCCT_DIR to your own OCCT install prefix. See README.md \
+             \"Building with the OCCT kernel\".",
             occt_dir.display(),
             include.display(),
             libdir.display(),
@@ -66,8 +69,15 @@ fn build_occt_shim() {
         .include(&include)
         // Split every function/data item into its own section so the linker's
         // dead-code stripping (below) can drop the ones this binary never calls.
+        // GCC/Clang spell it -ffunction-sections/-fdata-sections; MSVC spells it
+        // /Gy. flag_if_supported drops whichever the active compiler rejects.
         .flag_if_supported("-ffunction-sections")
         .flag_if_supported("-fdata-sections")
+        .flag_if_supported("/Gy")
+        // The shim catches OCCT C++ exceptions at the FFI boundary, so MSVC needs
+        // /EHsc exception semantics. cc enables /EHsc for C++ by default; keep it
+        // explicit here so that behavior is load-bearing, not incidental.
+        .flag_if_supported("/EHsc")
         .compile("bearcad_kernel");
 
     println!("cargo:rustc-link-search=native={}", libdir.display());
@@ -99,6 +109,19 @@ fn build_occt_shim() {
             println!("cargo:rustc-link-lib=dylib=stdc++");
             // GNU ld / lld: garbage-collect unreferenced sections.
             println!("cargo:rustc-link-arg=-Wl,--gc-sections");
+        }
+        "windows" => {
+            // MSVC link.exe: drop unreferenced functions/data (/OPT:REF) and fold
+            // identical COMDATs (/OPT:ICF) — the /Gy analogue of --gc-sections.
+            // No explicit C++ stdlib line: MSVC pulls in the CRT automatically.
+            println!("cargo:rustc-link-arg=/OPT:REF");
+            println!("cargo:rustc-link-arg=/OPT:ICF");
+            // Windows system libs OCCT's toolkits reference (TKernel uses Win32
+            // registry/session and Winsock APIs). First-pass list (#96) — tune it
+            // from real linker errors once the windows-occt CI job produces logs.
+            println!("cargo:rustc-link-lib=dylib=user32");
+            println!("cargo:rustc-link-lib=dylib=advapi32");
+            println!("cargo:rustc-link-lib=dylib=ws2_32");
         }
         _ => {}
     }
