@@ -1,0 +1,1 @@
+Interactive Lua REPL (`bearcad --repl`): drive the live app from the terminal with the full scripting API — persistent globals across entries, expression echo, error recovery, multi-line continuation prompts, and yielding calls (waits/screenshots) working exactly as in scripts. Ctrl-D ends the session; --exit then closes the app.

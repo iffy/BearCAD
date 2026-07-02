@@ -1370,6 +1370,90 @@ struct LuaRunner {
     finished: bool,
 }
 
+/// Interactive Lua REPL state (`--repl`): one persistent `Lua` for the whole session (so
+/// globals survive between entries, like a normal Lua REPL), fed complete input chunks over a
+/// channel by a stdin reader thread, each chunk run as a coroutine through the same per-frame
+/// tick machinery scripts use (so `bearcad.ui.wait`/screenshots work from the REPL too).
+///
+/// The reader thread and the app hand off with a ready/prompt protocol: the app sends the
+/// prompt to print when it's ready for input ([`REPL_PROMPT`], or [`REPL_CONT_PROMPT`] while a
+/// multi-line entry is incomplete), the reader prints it, blocks on a line, sends it back, and
+/// nudges the event loop awake via the installed `egui::Context`.
+struct ReplRunner {
+    lua: Lua,
+    /// The coroutine for the entry currently executing, if any.
+    active: Option<mlua::Thread>,
+    /// Accumulated multi-line input (kept until it parses as a complete chunk).
+    buffer: String,
+    lines_rx: std::sync::mpsc::Receiver<String>,
+    ready_tx: std::sync::mpsc::Sender<&'static str>,
+    /// Wakes the winit event loop when input arrives while the app is idle; installed once
+    /// the eframe context exists (see [`ScriptRunner::install_repaint_context`]).
+    repaint_ctx: std::sync::Arc<std::sync::OnceLock<egui::Context>>,
+}
+
+/// Primary REPL prompt.
+pub const REPL_PROMPT: &str = "bearcad> ";
+/// Continuation prompt while a multi-line entry is syntactically incomplete.
+pub const REPL_CONT_PROMPT: &str = "    ...> ";
+
+/// What the REPL's accumulated input buffer parses to.
+enum ChunkOutcome {
+    /// A complete chunk, ready to execute as a coroutine.
+    Ready(mlua::Thread),
+    /// Syntactically incomplete (e.g. an unclosed `function`): keep buffering lines.
+    Incomplete,
+    /// A real syntax error: report it and reset the buffer.
+    SyntaxError(String),
+}
+
+impl ReplRunner {
+    /// Compile the buffered input. Tries `return <input>` first (so a bare expression like
+    /// `1 + 2` or `bearcad.find("Main box")` echoes its value, as in the standalone Lua
+    /// REPL), then the plain chunk. Lua reports unfinished constructs distinctly
+    /// (`incomplete_input`), which is what drives multi-line entry.
+    fn load_buffered_chunk(&self) -> ChunkOutcome {
+        let as_expression = format!("return {}", self.buffer);
+        let func = match self.lua.load(&as_expression).into_function() {
+            Ok(f) => Ok(f),
+            Err(_) => self.lua.load(&self.buffer).into_function(),
+        };
+        match func {
+            Ok(f) => match self.lua.create_thread(f) {
+                Ok(t) => ChunkOutcome::Ready(t),
+                Err(e) => ChunkOutcome::SyntaxError(e.to_string()),
+            },
+            Err(mlua::Error::SyntaxError {
+                incomplete_input: true,
+                ..
+            }) => ChunkOutcome::Incomplete,
+            Err(e) => ChunkOutcome::SyntaxError(e.to_string()),
+        }
+    }
+
+    /// Echo an entry's returned values, `tostring`-rendered and tab-separated (nothing for
+    /// statements, which return no values).
+    fn print_values(&self, values: &mlua::MultiValue) {
+        if values.is_empty() {
+            return;
+        }
+        let tostring: mlua::Function = match self.lua.globals().get("tostring") {
+            Ok(f) => f,
+            Err(_) => return,
+        };
+        let rendered: Vec<String> = values
+            .iter()
+            .map(|v| {
+                tostring
+                    .call::<mlua::String>(v.clone())
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| format!("{v:?}"))
+            })
+            .collect();
+        println!("{}", rendered.join("\t"));
+    }
+}
+
 /// A pending screenshot request, resolved when egui delivers the captured frame.
 struct ScreenshotRequest {
     path: String,
@@ -1388,6 +1472,7 @@ struct ScreenshotCrop {
 pub struct ScriptRunner {
     instructions: Vec<Instruction>,
     lua: Option<LuaRunner>,
+    repl: Option<ReplRunner>,
     pc: usize,
     wait_until: Option<Instant>,
     wait_frames_remaining: u32,
@@ -1406,6 +1491,7 @@ impl ScriptRunner {
         Self {
             instructions,
             lua: None,
+            repl: None,
             pc: 0,
             wait_until: None,
             wait_frames_remaining: 0,
@@ -1466,6 +1552,95 @@ impl ScriptRunner {
         Ok(runner)
     }
 
+    /// Interactive Lua REPL on stdin against the live app (`--repl`). Spawns the stdin
+    /// reader thread; entries evaluate in one persistent Lua state (globals survive between
+    /// entries), errors print and the session continues, and EOF (Ctrl-D) ends it.
+    pub fn repl() -> Result<Self, ScriptError> {
+        let (lines_tx, lines_rx) = std::sync::mpsc::channel::<String>();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<&'static str>();
+        let runner = Self::repl_from_channels(lines_rx, ready_tx)?;
+        let repaint_ctx = runner
+            .repl
+            .as_ref()
+            .expect("repl_from_channels sets repl")
+            .repaint_ctx
+            .clone();
+
+        std::thread::spawn(move || {
+            use std::io::{BufRead, Write};
+            let stdin = std::io::stdin();
+            let mut input = stdin.lock();
+            // The app sends the prompt to print whenever it's ready for the next line.
+            while let Ok(prompt) = ready_rx.recv() {
+                print!("{prompt}");
+                let _ = std::io::stdout().flush();
+                let mut line = String::new();
+                match input.read_line(&mut line) {
+                    // EOF (Ctrl-D): drop `lines_tx` by leaving the loop, which the app sees
+                    // as a disconnect and ends the REPL.
+                    Ok(0) | Err(_) => {
+                        println!();
+                        break;
+                    }
+                    Ok(_) => {
+                        if lines_tx.send(line).is_err() {
+                            break;
+                        }
+                        // The app may be idle (no repaints scheduled); wake it to evaluate.
+                        if let Some(ctx) = repaint_ctx.get() {
+                            ctx.request_repaint();
+                        }
+                    }
+                }
+            }
+            if let Some(ctx) = repaint_ctx.get() {
+                ctx.request_repaint();
+            }
+        });
+
+        println!("BearCAD Lua REPL — the `bearcad` API is available; globals persist between");
+        println!("entries; Ctrl-D ends the session.");
+        Ok(runner)
+    }
+
+    /// REPL core without the stdin thread: complete lines arrive on `lines_rx`, and the
+    /// runner sends the next prompt on `ready_tx` whenever it's ready for input. Split out
+    /// so tests can drive a REPL session without a terminal.
+    pub fn repl_from_channels(
+        lines_rx: std::sync::mpsc::Receiver<String>,
+        ready_tx: std::sync::mpsc::Sender<&'static str>,
+    ) -> Result<Self, ScriptError> {
+        let lua = Lua::new();
+        crate::lua_script::register_api(&lua).map_err(|e| ScriptError {
+            message: e.to_string(),
+        })?;
+        // First prompt: the reader prints it as soon as it starts.
+        let _ = ready_tx.send(REPL_PROMPT);
+        let mut runner = Self::from_instructions(vec![]);
+        runner.repl = Some(ReplRunner {
+            lua,
+            active: None,
+            buffer: String::new(),
+            lines_rx,
+            ready_tx,
+            repaint_ctx: std::sync::Arc::new(std::sync::OnceLock::new()),
+        });
+        Ok(runner)
+    }
+
+    /// Whether this runner is an interactive REPL session.
+    pub fn is_repl(&self) -> bool {
+        self.repl.is_some()
+    }
+
+    /// Give the REPL's stdin reader thread a way to wake the event loop when input arrives
+    /// while the app is idle. Called once the eframe context exists; a no-op for scripts.
+    pub fn install_repaint_context(&self, ctx: egui::Context) {
+        if let Some(repl) = &self.repl {
+            let _ = repl.repaint_ctx.set(ctx);
+        }
+    }
+
     fn log_instruction(&mut self, instr: &Instruction) {
         if self.verbose && self.logged_pc != Some(self.pc) {
             println!("{}", instr.as_lua());
@@ -1502,10 +1677,112 @@ impl ScriptRunner {
         viewport: Option<egui::Rect>,
         ctx: &egui::Context,
     ) -> bool {
+        if self.repl.is_some() {
+            return self.tick_repl_mode(state, synthetic, viewport, ctx);
+        }
         if self.lua.is_some() {
             return self.tick_lua_mode(state, synthetic, viewport, ctx);
         }
         self.tick_instructions(state, synthetic, viewport, ctx)
+    }
+
+    fn tick_repl_mode(
+        &mut self,
+        state: &mut AppState,
+        synthetic: &mut SyntheticInput,
+        viewport: Option<egui::Rect>,
+        ctx: &egui::Context,
+    ) -> bool {
+        if self.done {
+            return false;
+        }
+
+        // Same wait handling as scripts (`bearcad.ui.wait`, view transitions, screenshots),
+        // so an in-flight REPL entry can use every yielding API.
+        if let Some(until) = self.wait_until {
+            if Instant::now() < until {
+                return true;
+            }
+            self.wait_until = None;
+        }
+        if self.wait_frames_remaining > 0 {
+            self.wait_frames_remaining -= 1;
+            return true;
+        }
+        if self.waiting_view_transition {
+            if state.cam.is_transitioning() {
+                return true;
+            }
+            self.waiting_view_transition = false;
+        }
+        if self.screenshot_pending.is_some() {
+            return true;
+        }
+
+        let runner_ptr = self as *mut ScriptRunner;
+        let repl = self.repl.as_mut().unwrap();
+
+        // An entry is executing: resume its coroutine one step.
+        if let Some(thread) = repl.active.clone() {
+            repl.lua.set_app_data(ScriptTickData {
+                runner: runner_ptr,
+                state: state as *mut AppState,
+                synthetic: synthetic as *mut SyntheticInput,
+                viewport,
+                ctx: ctx as *const egui::Context as *mut egui::Context,
+            });
+            match thread.resume::<mlua::MultiValue>(()) {
+                Ok(values) => match thread.status() {
+                    mlua::ThreadStatus::Resumable | mlua::ThreadStatus::Running => true,
+                    mlua::ThreadStatus::Finished | mlua::ThreadStatus::Error => {
+                        // Entry finished: echo any returned values (expression results),
+                        // then hand the prompt back. Errors were surfaced by resume::Err.
+                        repl.print_values(&values);
+                        repl.active = None;
+                        let _ = repl.ready_tx.send(REPL_PROMPT);
+                        false
+                    }
+                },
+                Err(e) => {
+                    // A REPL survives errors: report and hand the prompt back.
+                    println!("error: {e}");
+                    repl.active = None;
+                    let _ = repl.ready_tx.send(REPL_PROMPT);
+                    false
+                }
+            }
+        } else {
+            // Idle: look for the next complete input chunk.
+            match repl.lines_rx.try_recv() {
+                Ok(line) => {
+                    repl.buffer.push_str(&line);
+                    match repl.load_buffered_chunk() {
+                        ChunkOutcome::Ready(thread) => {
+                            repl.buffer.clear();
+                            repl.active = Some(thread);
+                            // Start executing on the next tick.
+                            true
+                        }
+                        ChunkOutcome::Incomplete => {
+                            let _ = repl.ready_tx.send(REPL_CONT_PROMPT);
+                            false
+                        }
+                        ChunkOutcome::SyntaxError(msg) => {
+                            println!("error: {msg}");
+                            repl.buffer.clear();
+                            let _ = repl.ready_tx.send(REPL_PROMPT);
+                            false
+                        }
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => false,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // Stdin closed (Ctrl-D): the session is over.
+                    self.done = true;
+                    false
+                }
+            }
+        }
     }
 
     fn tick_lua_mode(
@@ -2271,6 +2548,8 @@ pub struct ScriptOptions {
     /// Force-exit (non-zero) if the app hasn't closed on its own within this many
     /// seconds — a watchdog for unattended/CI launches. See #61.
     pub timeout_secs: Option<u64>,
+    /// Run an interactive Lua REPL on stdin against the live app (`--repl`).
+    pub repl: bool,
 }
 
 /// Parsed command-line outcome.
@@ -2301,6 +2580,8 @@ Commands:
 
 Options:
   --script <path>       Run a Lua script
+  --repl                Interactive Lua REPL on stdin against the live app
+                        (globals persist between entries; Ctrl-D ends it)
   --exit, --exit-on-complete
                         Exit after startup, or after the script finishes
   --show-commands       Print each user action as a script line on stdout
@@ -2314,6 +2595,7 @@ Examples:
   bearcad drawing.bearcad --exit
   bearcad --script demo.lua
   bearcad demo.lua --exit
+  bearcad --repl
   bearcad --exit --timeout 30
   bearcad install-cli
 "
@@ -2365,6 +2647,9 @@ fn parse_args_from_vec(args: &[String]) -> ScriptOptions {
             "--exit" | "--exit-on-complete" => {
                 opts.exit_on_complete = true;
             }
+            "--repl" => {
+                opts.repl = true;
+            }
             "--show-commands" => {
                 opts.show_commands = true;
             }
@@ -2398,6 +2683,163 @@ fn parse_args_from_vec(args: &[String]) -> ScriptOptions {
 mod tests {
     use super::*;
     use crate::model::ConstraintLine;
+
+    /// Set up a channel-driven REPL session (no terminal): returns the runner, the sender
+    /// that plays the role of stdin lines, and the receiver for ready-prompt handoffs. The
+    /// initial [`REPL_PROMPT`] handoff is consumed here.
+    fn repl_session() -> (
+        ScriptRunner,
+        std::sync::mpsc::Sender<String>,
+        std::sync::mpsc::Receiver<&'static str>,
+    ) {
+        let (lines_tx, lines_rx) = std::sync::mpsc::channel::<String>();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<&'static str>();
+        let runner = ScriptRunner::repl_from_channels(lines_rx, ready_tx).expect("repl runner");
+        assert_eq!(ready_rx.try_recv(), Ok(REPL_PROMPT), "initial prompt handoff");
+        (runner, lines_tx, ready_rx)
+    }
+
+    /// Tick the REPL until it hands the next prompt back (i.e. the pending entry finished),
+    /// returning that prompt. Panics if it never does.
+    fn drive_to_prompt(
+        runner: &mut ScriptRunner,
+        state: &mut AppState,
+        synthetic: &mut SyntheticInput,
+        ctx: &egui::Context,
+        ready_rx: &std::sync::mpsc::Receiver<&'static str>,
+    ) -> &'static str {
+        for _ in 0..100 {
+            runner.tick(state, synthetic, None, ctx);
+            if let Ok(prompt) = ready_rx.try_recv() {
+                return prompt;
+            }
+        }
+        panic!("REPL never handed the prompt back");
+    }
+
+    #[test]
+    fn repl_runs_entries_and_persists_globals_between_them() {
+        let (mut runner, lines_tx, ready_rx) = repl_session();
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        let ctx = egui::Context::default();
+
+        // First entry sets a global; second uses it to draw. If `x` didn't persist, the
+        // rect call would error out with a nil width and create nothing.
+        lines_tx.send("x = 4\n".to_string()).unwrap();
+        assert_eq!(
+            drive_to_prompt(&mut runner, &mut state, &mut synthetic, &ctx, &ready_rx),
+            REPL_PROMPT
+        );
+        lines_tx
+            .send("bearcad.rect{ width = x * 10, height = x }\n".to_string())
+            .unwrap();
+        assert_eq!(
+            drive_to_prompt(&mut runner, &mut state, &mut synthetic, &ctx, &ready_rx),
+            REPL_PROMPT
+        );
+
+        // A rectangle is 4 lines (#56); its width came from the persisted global.
+        assert_eq!(state.doc.lines.len(), 4, "rect should have created 4 lines");
+        let max_x = state
+            .doc
+            .lines
+            .iter()
+            .flat_map(|l| [l.x0, l.x1])
+            .fold(f32::MIN, f32::max);
+        let min_x = state
+            .doc
+            .lines
+            .iter()
+            .flat_map(|l| [l.x0, l.x1])
+            .fold(f32::MAX, f32::min);
+        assert!((max_x - min_x - 40.0).abs() < 1e-3, "width {}", max_x - min_x);
+        assert!(!runner.done, "REPL stays alive between entries");
+    }
+
+    #[test]
+    fn repl_buffers_multiline_input_until_complete() {
+        let (mut runner, lines_tx, ready_rx) = repl_session();
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        let ctx = egui::Context::default();
+
+        lines_tx.send("function add(a, b)\n".to_string()).unwrap();
+        assert_eq!(
+            drive_to_prompt(&mut runner, &mut state, &mut synthetic, &ctx, &ready_rx),
+            REPL_CONT_PROMPT,
+            "unclosed function should ask for more input"
+        );
+        lines_tx.send("  return a + b\n".to_string()).unwrap();
+        assert_eq!(
+            drive_to_prompt(&mut runner, &mut state, &mut synthetic, &ctx, &ready_rx),
+            REPL_CONT_PROMPT
+        );
+        lines_tx.send("end\n".to_string()).unwrap();
+        assert_eq!(
+            drive_to_prompt(&mut runner, &mut state, &mut synthetic, &ctx, &ready_rx),
+            REPL_PROMPT,
+            "closing the function completes the entry"
+        );
+
+        // The function defined across three lines is callable in a later entry.
+        lines_tx.send("sum = add(2, 3)\n".to_string()).unwrap();
+        assert_eq!(
+            drive_to_prompt(&mut runner, &mut state, &mut synthetic, &ctx, &ready_rx),
+            REPL_PROMPT
+        );
+        lines_tx
+            .send("bearcad.rect{ width = sum, height = sum }\n".to_string())
+            .unwrap();
+        assert_eq!(
+            drive_to_prompt(&mut runner, &mut state, &mut synthetic, &ctx, &ready_rx),
+            REPL_PROMPT
+        );
+        assert_eq!(state.doc.lines.len(), 4);
+    }
+
+    #[test]
+    fn repl_survives_errors_and_ends_on_disconnect() {
+        let (mut runner, lines_tx, ready_rx) = repl_session();
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        let ctx = egui::Context::default();
+
+        // A runtime error is reported and the session continues.
+        lines_tx.send("error('boom')\n".to_string()).unwrap();
+        assert_eq!(
+            drive_to_prompt(&mut runner, &mut state, &mut synthetic, &ctx, &ready_rx),
+            REPL_PROMPT
+        );
+        assert!(!runner.done, "an error must not end the REPL");
+        assert!(runner.error.is_none(), "REPL errors are not fatal script errors");
+
+        // A syntax error likewise.
+        lines_tx.send("this is not lua ][\n".to_string()).unwrap();
+        assert_eq!(
+            drive_to_prompt(&mut runner, &mut state, &mut synthetic, &ctx, &ready_rx),
+            REPL_PROMPT
+        );
+        assert!(!runner.done);
+
+        // Dropping the sender (stdin EOF / Ctrl-D) ends the session.
+        drop(lines_tx);
+        for _ in 0..10 {
+            runner.tick(&mut state, &mut synthetic, None, &ctx);
+            if runner.done {
+                break;
+            }
+        }
+        assert!(runner.done, "REPL ends when stdin closes");
+        assert!(runner.error.is_none());
+    }
+
+    #[test]
+    fn parse_args_recognizes_repl_flag() {
+        let opts = parse_args(["bearcad", "--repl"]);
+        assert!(opts.repl);
+        assert!(parse_args(["bearcad"]).repl == false);
+    }
 
     #[test]
     fn create_line_instruction_renders_bezier_when_present() {
@@ -2617,6 +3059,7 @@ mod tests {
                 exit_on_complete: true,
                 show_commands: false,
                 timeout_secs: None,
+                repl: false,
             })
         );
     }

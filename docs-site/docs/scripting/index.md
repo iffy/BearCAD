@@ -71,6 +71,36 @@ Other useful flags:
   app, useful for turning an interactive session into a script. The GUI's **Help → Export Session
   Commands…** does the same thing into a timestamped, replayable `.lua` file.
 
+## Interactive REPL
+
+`bearcad --repl` runs the same Lua API as an interactive session on stdin, against the live app —
+the GUI stays fully usable while you type, so you can mix commands with mouse work and watch each
+entry take effect in the viewport:
+
+```
+$ bearcad --repl
+bearcad> x = 15
+bearcad> bearcad.rect{ width = x * 2, height = x }
+bearcad> 1 + 2
+3
+bearcad> bearcad.save("drawing.bearcad")
+```
+
+REPL semantics match the standalone `lua` interpreter's:
+
+- **Globals persist between entries** (one Lua state for the whole session; `local`s are
+  entry-scoped as usual).
+- **Bare expressions echo their value** (rendered with `tostring`).
+- **Errors print and the session continues** — a typo doesn't end the REPL.
+- **Multi-line constructs** (an unclosed `function`, `do`, `if`…) buffer under a `...>`
+  continuation prompt until the entry is syntactically complete.
+- **Yielding calls work**: `bearcad.ui.wait`, camera transitions, and `bearcad.ui.screenshot`
+  behave exactly as in scripts.
+- **Ctrl-D** (EOF) ends the session; with `--exit` it also closes the app.
+
+`--repl` and `--script` are mutually exclusive. Piping works too — `echo 'bearcad.rect{ width =
+30, height = 20 }' | bearcad --repl --exit` behaves like a one-off script.
+
 :::note CLI scope
 `SPEC.md` §9 describes a longer-term `bearcad run script.lua`-style subcommand surface (`export`,
 `run`, `render`, `set`, `import`/`convert`) as the CLI grows toward full GUI parity. As of this

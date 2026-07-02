@@ -178,6 +178,27 @@ cargo run -- --script examples/rectangle.lua --exit
 cargo run -- examples/rectangle.lua --exit
 ```
 
+**Interactive REPL** — drive the live app from your terminal, entry by entry:
+
+```sh
+cargo run -- --repl
+```
+
+```
+bearcad> x = 15
+bearcad> bearcad.rect{ width = x * 2, height = x }
+bearcad> 1 + 2
+3
+bearcad> bearcad.save("drawing.bearcad")
+```
+
+The GUI stays fully interactive while the REPL runs — each entry executes against the
+live document, so you can mix typing commands with using the mouse. Globals persist
+between entries (like the standalone `lua` REPL), bare expressions echo their value,
+errors print and the session continues, multi-line constructs (an unclosed `function`,
+etc.) get a `...>` continuation prompt, and **Ctrl-D** ends the session (with `--exit`
+it also closes the app).
+
 **Minimal script** — the primary API is *declarative* (OpenSCAD-style): describe geometry
 directly instead of simulating clicks. An 80×50 mm rectangle is a single call:
 

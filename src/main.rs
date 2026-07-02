@@ -222,15 +222,27 @@ fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
     }
     let options = native_options();
 
-    let script = script_opts
-        .script_path
-        .as_ref()
-        .map(|p| ScriptRunner::from_file(Path::new(p)))
-        .transpose()
-        .map_err(|e| eframe::Error::AppCreation(Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            e.to_string(),
-        ))))?;
+    let script = if script_opts.repl {
+        // Interactive Lua REPL on stdin against the live app; mutually exclusive with a
+        // script file (the REPL *is* the script source).
+        if script_opts.script_path.is_some() {
+            return Err(eframe::Error::AppCreation(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "--repl and --script are mutually exclusive",
+            ))));
+        }
+        Some(ScriptRunner::repl()).transpose()
+    } else {
+        script_opts
+            .script_path
+            .as_ref()
+            .map(|p| ScriptRunner::from_file(Path::new(p)))
+            .transpose()
+    }
+    .map_err(|e| eframe::Error::AppCreation(Box::new(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        e.to_string(),
+    ))))?;
 
     eframe::run_native(
         "BearCAD",
@@ -409,7 +421,9 @@ impl App {
         show_commands: bool,
         native_menu: NativeMenu,
     ) -> Self {
-        let status = if script.is_some() {
+        let status = if script.as_ref().is_some_and(|r| r.is_repl()) {
+            "Lua REPL — enter commands in the terminal".to_string()
+        } else if script.is_some() {
             "Running script…".to_string()
         } else {
             String::new()
@@ -430,6 +444,11 @@ impl App {
             state.command_log = Some(std::cell::RefCell::new(
                 command_log::CommandLog::new_recording(show_commands),
             ));
+        }
+        // Let the REPL's stdin reader thread wake the event loop when input arrives while
+        // the app is idle (no repaints scheduled).
+        if let Some(runner) = &script {
+            runner.install_repaint_context(cc.egui_ctx.clone());
         }
         let exit_after_startup = exit_on_script_complete && script.is_none();
         Self {
@@ -1573,15 +1592,16 @@ impl App {
         }
         let needs_repaint = if let Some(runner) = &mut self.script {
             if runner.done {
+                let complete_status = if runner.is_repl() { "REPL ended" } else { "Script complete" };
                 if let Some(err) = &runner.error {
                     self.state.status = format!("Script error: {err}");
                 } else if runner.should_quit {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 } else if self.exit_on_script_complete {
-                    self.state.status = "Script complete".to_string();
+                    self.state.status = complete_status.to_string();
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 } else {
-                    self.state.status = "Script complete".to_string();
+                    self.state.status = complete_status.to_string();
                 }
                 false
             } else {

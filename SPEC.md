@@ -735,6 +735,13 @@ The application must be fully scriptable via a file containing a sequence of ins
 - When a script is provided the app shall open, sequentially execute every instruction in order,
   and apply the effects exactly as a user would (updating document, tools, camera, in-progress
   interactions, UI state, etc.).
+- **Interactive REPL** (`bearcad --repl`): the same Lua API, driven line-by-line from stdin
+  against the live app while the GUI stays fully interactive. One persistent Lua state for the
+  session (globals survive between entries), bare expressions echo their value (`tostring`),
+  errors report and the session continues, syntactically incomplete entries (unclosed
+  `function`/`do`) buffer under a continuation prompt, and EOF (Ctrl-D) ends the session
+  (combined with `--exit`, it also closes the app). Yielding instructions (waits, screenshots)
+  work from the REPL exactly as from scripts. `--repl` and `--script` are mutually exclusive.
 - One supported instruction must be screenshot/export of the app's current visual appearance:
   `screenshot <output-path>` (PNG or other common image format). The captured image must be a
   faithful rendering of the full window (or primary viewport + overlays) at the moment the
