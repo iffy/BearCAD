@@ -55,9 +55,18 @@ Write-Host '>> Configuring OCCT (static, modeling-only, MSVC) ...'
 #   * The generator is CMake's default (Visual Studio on windows-latest), which is
 #     multi-config — hence `-A x64` at configure time and `--config Release` on
 #     both the build and install steps below.
+#   * INSTALL_DIR_LAYOUT=Unix (#96): OCCT's own CMakeLists.txt defaults this to
+#     "Windows" on WIN32, which installs libs under
+#     `<prefix>/<os>/<compiler>/lib` and headers under `<prefix>/inc` — a
+#     different layout than build.rs's cross-platform `include/opencascade` +
+#     `lib` expectation (which macOS/Linux already get, since OCCT's default
+#     layout there is "Unix"). Forcing "Unix" here gives Windows the same flat
+#     layout build.rs looks for, without needing a Windows-specific path branch
+#     there.
 cmake -S "$occtSrc" -B "$occtBuild" `
     -A x64 `
     -DCMAKE_INSTALL_PREFIX="$occtInstall" `
+    -DINSTALL_DIR_LAYOUT=Unix `
     -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL `
     -DCMAKE_CXX_FLAGS="/Gy /EHsc" `
     -DCMAKE_C_FLAGS="/Gy" `
