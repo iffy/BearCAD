@@ -538,6 +538,8 @@ pub enum Action {
     SetProjectionMode(ProjectionMode),
     ToggleProjectionMode,
     SetShadingMode(ShadingMode),
+    /// Switch the Elements pane's layout (List/Tree/Graph, #34/#108).
+    SetElementsViewMode { mode: crate::hierarchy::HierarchyViewMode },
     SetPaneVisible { pane: Pane, visible: bool },
     TogglePane(Pane),
     AddParameter { name: String, expression: String },
@@ -1112,6 +1114,10 @@ pub struct AppState {
     /// `UndoLast` can revert the edit. Kept in lockstep with `ShapeKind::ConstructionPlaneEdit`
     /// markers in `shape_order` (one payload per marker, same LIFO order).
     pub construction_plane_edit_undo: Vec<Vec<ConstructionPlane>>,
+    /// Elements-pane layout (List/Tree/Graph, #34). Ephemeral UI view state like
+    /// `extension_anchors` — never persisted; lives here (not on `App`) so scripts can
+    /// drive it via `bearcad.ui.elements_view` (#108).
+    pub hierarchy_view_mode: crate::hierarchy::HierarchyViewMode,
 }
 
 impl Default for AppState {
@@ -1156,6 +1162,7 @@ impl Default for AppState {
             extension_anchors: Vec::new(),
             normal_inference_anchor: None,
             construction_plane_edit_undo: Vec::new(),
+            hierarchy_view_mode: crate::hierarchy::HierarchyViewMode::default(),
         }
     }
 }
@@ -2928,6 +2935,11 @@ impl AppState {
             Action::SetShadingMode(mode) => {
                 self.cam.set_shading_mode(mode);
                 self.status = format!("Shading: {:?}", mode);
+                ActionResult::Ok
+            }
+            Action::SetElementsViewMode { mode } => {
+                self.hierarchy_view_mode = mode;
+                self.status = format!("Elements view: {}", mode.script_name());
                 ActionResult::Ok
             }
             Action::AddParameter { name, expression } => {

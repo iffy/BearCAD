@@ -6,8 +6,8 @@ use crate::construction::PlaneDim;
 use crate::geometric_constraints::GeometricConstraintType;
 use crate::hierarchy::SceneElement;
 use crate::model::{
-    ConstraintLine, ConstraintPoint, DistanceTarget, ExtrusionEdgeRef, FaceId, LineEnd,
-    SketchId, VertexTreatmentKind,
+    ConstraintKind, ConstraintLine, ConstraintPoint, DistanceTarget, ExtrusionEdgeRef, FaceId,
+    LineEnd, SketchId, VertexTreatmentKind,
 };
 use crate::names::find_element_by_name;
 use crate::script::{parse_key, Instruction, ScriptRunner, SyntheticInput};
@@ -405,6 +405,42 @@ fn parse_distance_target(table: Table) -> mlua::Result<DistanceTarget> {
         other => Err(mlua::Error::external(format!(
             "unknown constraint target '{other}'"
         ))),
+    }
+}
+
+/// A world-space vector as a positional Lua triple `{x, y, z}` (for `bearcad.get`'s plane
+/// origin/normal, `bearcad.body_stats`' bbox corners, and `bearcad.ui.camera{}`'s target).
+fn vec3_lua(lua: &Lua, v: glam::Vec3) -> mlua::Result<Table> {
+    let t = lua.create_table()?;
+    t.set(1, v.x)?;
+    t.set(2, v.y)?;
+    t.set(3, v.z)?;
+    Ok(t)
+}
+
+/// Short script name for the face a sketch is hosted on (`bearcad.get`, #107).
+fn face_kind_name(face: &FaceId) -> &'static str {
+    match face {
+        FaceId::Circle(_) => "circle",
+        FaceId::Polygon(_) => "polygon",
+        FaceId::ConstructionPlane(_) => "construction_plane",
+        FaceId::ExtrudeCap { .. } => "extrude_cap",
+        FaceId::ExtrudeSide { .. } => "extrude_side",
+    }
+}
+
+/// Short script name for a constraint's kind (`bearcad.get`, #107).
+fn constraint_kind_name(kind: &ConstraintKind) -> &'static str {
+    match kind {
+        ConstraintKind::Distance { .. } => "distance",
+        ConstraintKind::Parallel { .. } => "parallel",
+        ConstraintKind::Perpendicular { .. } => "perpendicular",
+        ConstraintKind::Equal { .. } => "equal",
+        ConstraintKind::Coincident { .. } => "coincident",
+        ConstraintKind::Midpoint { .. } => "midpoint",
+        ConstraintKind::Horizontal { .. } => "horizontal",
+        ConstraintKind::Vertical { .. } => "vertical",
+        ConstraintKind::Angle { .. } => "angle",
     }
 }
 
@@ -815,6 +851,229 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // ----- Read-back / introspection getters (#107). Pure reads of the live state, like
+    // `sketch_dof` above — not `Instruction`s, so they never appear in recorded scripts. -----
+
+    api.set(
+        "count",
+        lua.create_function(|lua, kind: String| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let doc = unsafe { &tick.state().doc };
+            let count = match kind.to_ascii_lowercase().as_str() {
+                "line" => doc.lines.iter().filter(|e| !e.deleted).count(),
+                "circle" => doc.circles.iter().filter(|e| !e.deleted).count(),
+                "sketch" => doc.sketches.iter().filter(|e| !e.deleted).count(),
+                "constraint" => doc.constraints.iter().filter(|e| !e.deleted).count(),
+                "construction_plane" | "plane" => {
+                    doc.construction_planes.iter().filter(|e| !e.deleted).count()
+                }
+                "extrusion" => doc.extrusions.iter().filter(|e| !e.deleted).count(),
+                "body" => doc.bodies.iter().filter(|e| !e.deleted).count(),
+                "parameter" => doc.parameters.iter().filter(|e| !e.deleted).count(),
+                other => {
+                    return Err(mlua::Error::external(format!(
+                        "unknown count kind '{other}' (valid kinds: line, circle, sketch, \
+                         constraint, construction_plane, extrusion, body, parameter)"
+                    )))
+                }
+            };
+            Ok(count)
+        })?,
+    )?;
+
+    api.set(
+        "get",
+        lua.create_function(|lua, opts: Table| {
+            let kind: String = opts.get("kind")?;
+            let index: usize = opts.get("index")?;
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let doc = unsafe { &tick.state().doc };
+            let t = lua.create_table()?;
+            match kind.to_ascii_lowercase().as_str() {
+                "line" => {
+                    let Some(line) = doc.lines.get(index).filter(|e| !e.deleted) else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("x0", line.x0)?;
+                    t.set("y0", line.y0)?;
+                    t.set("x1", line.x1)?;
+                    t.set("y1", line.y1)?;
+                    t.set("construction", line.construction)?;
+                    t.set("curved", line.is_curved())?;
+                    if let Some([c0, c1]) = line.bezier {
+                        let handles = lua.create_table()?;
+                        for (i, (hx, hy)) in [c0, c1].into_iter().enumerate() {
+                            let h = lua.create_table()?;
+                            h.set(1, hx)?;
+                            h.set(2, hy)?;
+                            handles.set(i + 1, h)?;
+                        }
+                        t.set("bezier", handles)?;
+                    }
+                    t.set("length", line.length())?;
+                    if let Some(name) = &line.name {
+                        t.set("name", name.as_str())?;
+                    }
+                    t.set("sketch", line.sketch)?;
+                }
+                "circle" => {
+                    let Some(circle) = doc.circles.get(index).filter(|e| !e.deleted) else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("x", circle.cx)?;
+                    t.set("y", circle.cy)?;
+                    t.set("r", circle.r)?;
+                    t.set("diameter", circle.diameter())?;
+                    t.set("construction", circle.construction)?;
+                    if let Some(name) = &circle.name {
+                        t.set("name", name.as_str())?;
+                    }
+                    t.set("sketch", circle.sketch)?;
+                }
+                "sketch" => {
+                    let Some(sketch) = doc.sketches.get(index).filter(|e| !e.deleted) else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("face", face_kind_name(&sketch.face))?;
+                    if let Some(name) = &sketch.name {
+                        t.set("name", name.as_str())?;
+                    }
+                }
+                "constraint" => {
+                    let Some(constraint) = doc.constraints.get(index).filter(|e| !e.deleted)
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("kind", constraint_kind_name(&constraint.kind))?;
+                    t.set("expression", constraint.expression.as_str())?;
+                    if let Some(name) = &constraint.name {
+                        t.set("name", name.as_str())?;
+                    }
+                    t.set("sketch", constraint.sketch)?;
+                }
+                "construction_plane" | "plane" => {
+                    let Some(plane) =
+                        doc.construction_planes.get(index).filter(|e| !e.deleted)
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("origin", vec3_lua(lua, plane.origin)?)?;
+                    t.set("normal", vec3_lua(lua, plane.normal)?)?;
+                    if let Some(name) = &plane.name {
+                        t.set("name", name.as_str())?;
+                    }
+                }
+                "extrusion" => {
+                    let Some(extrusion) = doc.extrusions.get(index).filter(|e| !e.deleted)
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("distance", extrusion.distance)?;
+                    t.set("sketch", extrusion.sketch)?;
+                    t.set("faces", extrusion.faces.len())?;
+                    if let Some(name) = &extrusion.name {
+                        t.set("name", name.as_str())?;
+                    }
+                }
+                "body" => {
+                    let Some(body) = doc.bodies.get(index).filter(|e| !e.deleted) else {
+                        return Ok(Value::Nil);
+                    };
+                    if let Some(name) = &body.name {
+                        t.set("name", name.as_str())?;
+                    }
+                    let add = lua.create_table()?;
+                    for (i, ei) in body.source.extrusion_indices().iter().enumerate() {
+                        add.set(i + 1, *ei)?;
+                    }
+                    t.set("add", add)?;
+                    let cut = lua.create_table()?;
+                    for (i, ei) in body.source.cut_extrusion_indices().iter().enumerate() {
+                        cut.set(i + 1, *ei)?;
+                    }
+                    t.set("cut", cut)?;
+                }
+                "parameter" => {
+                    let Some(param) = doc.parameters.get(index).filter(|e| !e.deleted) else {
+                        return Ok(Value::Nil);
+                    };
+                    t.set("name", param.name.as_str())?;
+                    t.set("expression", param.expression.as_str())?;
+                }
+                other => {
+                    return Err(mlua::Error::external(format!(
+                        "unknown get kind '{other}' (valid kinds: line, circle, sketch, \
+                         constraint, construction_plane, extrusion, body, parameter)"
+                    )))
+                }
+            }
+            Ok(Value::Table(t))
+        })?,
+    )?;
+
+    api.set(
+        "body_stats",
+        lua.create_function(|lua, index: usize| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let doc = unsafe { &tick.state().doc };
+            if !doc.bodies.get(index).is_some_and(|b| !b.deleted) {
+                return Ok(Value::Nil);
+            }
+            let Some(mesh) = crate::extrude::body_solid_mesh(doc, index) else {
+                return Ok(Value::Nil);
+            };
+            let Some((min, max)) = mesh.bounds() else {
+                return Ok(Value::Nil);
+            };
+            let t = lua.create_table()?;
+            t.set("volume", crate::extrude::mesh_signed_volume(&mesh).abs())?;
+            t.set("triangles", mesh.triangles.len())?;
+            let bbox = lua.create_table()?;
+            bbox.set("min", vec3_lua(lua, min)?)?;
+            bbox.set("max", vec3_lua(lua, max)?)?;
+            t.set("bbox", bbox)?;
+            Ok(Value::Table(t))
+        })?,
+    )?;
+
+    api.set(
+        "status",
+        lua.create_function(|lua, ()| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            Ok(unsafe { tick.state().status.clone() })
+        })?,
+    )?;
+
+    api.set(
+        "selection",
+        lua.create_function(|lua, ()| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let state = unsafe { tick.state() };
+            let out = lua.create_table()?;
+            for (i, element) in state.scene_selection.iter().enumerate() {
+                let entry = lua.create_table()?;
+                entry.set("kind", element_kind_name(element.clone()))?;
+                // Point/FaceEdge selections have no flat (kind, index) mapping (they name a
+                // vertex/edge of another element); report just their kind and leave `index` nil.
+                if !matches!(element, SceneElement::Point(_) | SceneElement::FaceEdge(_)) {
+                    entry.set("index", element_index(element))?;
+                }
+                out.set(i + 1, entry)?;
+            }
+            Ok(out)
+        })?,
+    )?;
+
     api.set(
         "add_constraint",
         lua.create_function(|lua, (target, expression): (Table, String)| {
@@ -1002,6 +1261,78 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #108: absolute camera control. `bearcad.ui.camera{}` (no args / no pose keys) is a pure
+    // read of the live pose; passing any subset of `yaw`/`pitch`/`distance`/`target = {x, y, z}`
+    // sets those fields instantly (no transition animation — deterministic for screenshots).
+    api.set(
+        "camera",
+        lua.create_function(|lua, opts: Option<Table>| {
+            let tick = lua
+                .app_data_ref::<ScriptTickData>()
+                .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
+            let (yaw, pitch, distance, target) = match &opts {
+                Some(t) => (
+                    t.get::<Option<f32>>("yaw")?,
+                    t.get::<Option<f32>>("pitch")?,
+                    t.get::<Option<f32>>("distance")?,
+                    match t.get::<Option<Table>>("target")? {
+                        Some(v) => Some((v.get(1)?, v.get(2)?, v.get(3)?)),
+                        None => None,
+                    },
+                ),
+                None => (None, None, None, None),
+            };
+            if yaw.is_none() && pitch.is_none() && distance.is_none() && target.is_none() {
+                let cam = unsafe { &tick.state().cam };
+                let t = lua.create_table()?;
+                t.set("yaw", cam.yaw)?;
+                t.set("pitch", cam.pitch)?;
+                t.set("distance", cam.distance)?;
+                t.set("target", vec3_lua(lua, cam.target)?)?;
+                t.set(
+                    "projection",
+                    match cam.projection_mode() {
+                        ProjectionMode::Natural => "perspective",
+                        ProjectionMode::Orthographic => "orthographic",
+                    },
+                )?;
+                return Ok(Value::Table(t));
+            }
+            unsafe {
+                tick.exec(Instruction::SetCamera {
+                    yaw,
+                    pitch,
+                    distance,
+                    target,
+                })?;
+            }
+            Ok(Value::Nil)
+        })?,
+    )?;
+
+    // #108: frame the whole document (bodies + sketch geometry) instantly.
+    api.set(
+        "zoom_fit",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::ZoomFit) }
+        })?,
+    )?;
+
+    // #34/#94/#108: switch the Elements pane's layout ("list" | "tree" | "graph").
+    api.set(
+        "elements_view",
+        lua.create_function(|lua, name: String| {
+            let mode = crate::hierarchy::HierarchyViewMode::from_name(&name).ok_or_else(|| {
+                mlua::Error::external(format!(
+                    "unknown elements view '{name}' (expected 'list', 'tree', or 'graph')"
+                ))
+            })?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::SetElementsView { mode }) }
+        })?,
+    )?;
+
     api.set(
         "pane",
         lua.create_function(|lua, (pane, visible): (String, Value)| {
@@ -1037,8 +1368,37 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         }
                     };
                     unsafe {
-                        tick.exec(Instruction::AddParameter { name, expression },
-                        )
+                        tick.exec(Instruction::AddParameter { name, expression })?;
+                    }
+                    Ok(Value::Nil)
+                }
+                // Pure reads (#107): `parameter("get", name)` evaluates the named parameter
+                // to its canonical numeric value (mm for lengths, radians for angles) or nil;
+                // `parameter("get_expression", name)` returns the raw expression string.
+                "get" | "get_expression" => {
+                    let name = match args.get(1) {
+                        Some(Value::String(s)) => s.to_str()?.to_string(),
+                        _ => {
+                            return Err(mlua::Error::external(
+                                "parameter get requires a parameter name",
+                            ))
+                        }
+                    };
+                    let doc = unsafe { &tick.state().doc };
+                    let Some(param) =
+                        doc.parameters.iter().find(|p| !p.deleted && p.name == name)
+                    else {
+                        return Ok(Value::Nil);
+                    };
+                    if action == "get_expression" {
+                        return Ok(Value::String(lua.create_string(&param.expression)?));
+                    }
+                    match crate::value::eval_parameter_in_doc(&param.expression, doc) {
+                        Some(crate::value::EvaluatedParameter::LengthMm(v))
+                        | Some(crate::value::EvaluatedParameter::AngleRad(v)) => {
+                            Ok(Value::Number(v as f64))
+                        }
+                        None => Ok(Value::Nil),
                     }
                 }
                 "from_line_length" => {
@@ -1061,8 +1421,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         }
                     };
                     unsafe {
-                        tick.exec(Instruction::CreateParameterFromLineLength { line_index, name })
+                        tick.exec(Instruction::CreateParameterFromLineLength {
+                            line_index,
+                            name,
+                        })?;
                     }
+                    Ok(Value::Nil)
                 }
                 "value" | "expression" => {
                     let index = match args.get(1) {
@@ -1079,9 +1443,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         }
                     };
                     unsafe {
-                        tick.exec(Instruction::SetParameterExpression { index, expression },
-                        )
+                        tick.exec(Instruction::SetParameterExpression { index, expression })?;
                     }
+                    Ok(Value::Nil)
                 }
                 "name" => {
                     let index = match args.get(1) {
@@ -1094,8 +1458,9 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         _ => return Err(mlua::Error::external("parameter name requires name")),
                     };
                     unsafe {
-                        tick.exec(Instruction::SetParameterName { index, name })
+                        tick.exec(Instruction::SetParameterName { index, name })?;
                     }
+                    Ok(Value::Nil)
                 }
                 "delete" => {
                     let index = match args.get(1) {
@@ -1103,7 +1468,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         Some(Value::Number(n)) => n.round() as usize,
                         _ => return Err(mlua::Error::external("parameter delete requires index")),
                     };
-                    unsafe { tick.exec(Instruction::DeleteParameter { index }) }
+                    unsafe {
+                        tick.exec(Instruction::DeleteParameter { index })?;
+                    }
+                    Ok(Value::Nil)
                 }
                 other => Err(mlua::Error::external(format!(
                     "unknown parameter action '{other}'"
@@ -1360,10 +1728,18 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let cx: f32 = opts.get("x").unwrap_or(0.0);
             let cy: f32 = opts.get("y").unwrap_or(0.0);
-            // Accept either a radius or a diameter.
-            let r: f32 = match opts.get::<Option<f32>>("r")? {
-                Some(r) => r,
-                None => opts.get::<f32>("diameter")? * 0.5,
+            // Accept a radius (`r` or its `radius` alias, #108) or a `diameter`, in that
+            // precedence order; none at all is a clear error rather than a nil-conversion one.
+            let r: f32 = if let Some(r) = opts.get::<Option<f32>>("r")? {
+                r
+            } else if let Some(radius) = opts.get::<Option<f32>>("radius")? {
+                radius
+            } else if let Some(diameter) = opts.get::<Option<f32>>("diameter")? {
+                diameter * 0.5
+            } else {
+                return Err(mlua::Error::external(
+                    "circle requires a size: one of `r`, `radius`, or `diameter`",
+                ));
             };
             unsafe {
                 if tick.state().sketch_session.is_none() {
@@ -1551,6 +1927,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         local ui_funcs = {
             "tool", "focus_name", "focus_dim", "pane", "palette",
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading",
+            "camera", "zoom_fit", "elements_view",
             "move", "click", "move_ground", "click_ground",
             "drag", "right_drag", "right_drag_pan", "drag_vertex", "drag_line",
             "key", "keydown", "keyup", "type",
@@ -2289,5 +2666,233 @@ mod tests {
             runner.tick(&mut state, &mut synthetic, None, &ctx);
         }
         assert_eq!(state.tool, Tool::Select);
+    }
+
+    /// #107: `bearcad.count(kind)` counts only non-deleted entities of that kind.
+    #[test]
+    fn lua_count_reports_non_deleted_entities() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 40, height = 30 }
+            bearcad.circle{ x = 100, y = 0, r = 5 }
+            assert(bearcad.count("line") == 4, "line count " .. bearcad.count("line"))
+            assert(bearcad.count("circle") == 1)
+            assert(bearcad.count("sketch") == 1)
+            assert(bearcad.count("construction_plane") == 1)
+            assert(bearcad.count("extrusion") == 0)
+            assert(bearcad.count("body") == 0)
+            assert(bearcad.count("parameter") == 0)
+        "#,
+        );
+    }
+
+    #[test]
+    fn lua_count_rejects_unknown_kind_naming_valid_kinds() {
+        run_lua_expect_ok(
+            r#"
+            local ok, err = pcall(bearcad.count, "widget")
+            assert(not ok, "unknown kind should error")
+            err = tostring(err)
+            assert(err:find("construction_plane") and err:find("parameter"),
+                   "error should name the valid kinds: " .. err)
+        "#,
+        );
+    }
+
+    /// #107: `bearcad.get{ kind, index }` returns a table of the entity's fields, or nil
+    /// when the index is out of range (or the entity is deleted).
+    #[test]
+    fn lua_get_returns_entity_fields_and_nil_out_of_range() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.line{ x = 1, y = 2, x1 = 11, y1 = 2, name = "Edge" }
+            bearcad.circle{ x = 10, y = 5, r = 12 }
+            local l = bearcad.get{ kind = "line", index = 0 }
+            assert(math.abs(l.x0 - 1) < 1e-4 and math.abs(l.y0 - 2) < 1e-4)
+            assert(math.abs(l.x1 - 11) < 1e-4 and math.abs(l.y1 - 2) < 1e-4)
+            assert(l.curved == false and l.construction == false)
+            assert(l.bezier == nil)
+            assert(math.abs(l.length - 10) < 1e-3)
+            assert(l.name == "Edge")
+            assert(l.sketch == 0)
+            local c = bearcad.get{ kind = "circle", index = 0 }
+            assert(math.abs(c.x - 10) < 1e-4 and math.abs(c.y - 5) < 1e-4)
+            assert(math.abs(c.r - 12) < 1e-4 and math.abs(c.diameter - 24) < 1e-4)
+            assert(c.construction == false and c.name == nil)
+            local s = bearcad.get{ kind = "sketch", index = 0 }
+            assert(s.face == "construction_plane")
+            local p = bearcad.get{ kind = "construction_plane", index = 0 }
+            assert(p.origin[3] == 0 and p.normal[3] == 1)
+            assert(bearcad.get{ kind = "line", index = 99 } == nil)
+            assert(bearcad.get{ kind = "body", index = 0 } == nil)
+        "#,
+        );
+    }
+
+    /// #107: `bearcad.body_stats(index)` reports volume (divergence-theorem), triangle count,
+    /// and world bbox for a body's solid mesh; nil for missing bodies.
+    #[test]
+    fn lua_body_stats_reports_volume_triangles_and_bbox() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 40, height = 30 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            local s = bearcad.body_stats(0)
+            assert(s ~= nil, "body_stats should return a table for body 0")
+            assert(math.abs(s.volume - 12000) < 120, "volume " .. tostring(s.volume))
+            assert(s.triangles > 0)
+            assert(math.abs((s.bbox.max[1] - s.bbox.min[1]) - 40) < 0.1)
+            assert(math.abs((s.bbox.max[2] - s.bbox.min[2]) - 30) < 0.1)
+            assert(math.abs((s.bbox.max[3] - s.bbox.min[3]) - 10) < 0.1)
+            assert(bearcad.body_stats(5) == nil)
+        "#,
+        );
+    }
+
+    /// #107: `bearcad.status()` exposes the status-bar text.
+    #[test]
+    fn lua_status_returns_a_string() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            assert(type(bearcad.status()) == "string")
+        "#,
+        );
+    }
+
+    /// #107: `bearcad.selection()` lists the current scene selection as {kind, index} entries.
+    #[test]
+    fn lua_selection_reports_selected_elements() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
+            assert(#bearcad.selection() == 0)
+            bearcad.select{ kind = "line", index = 0 }
+            local sel = bearcad.selection()
+            assert(#sel == 1)
+            assert(sel[1].kind == "line")
+            assert(sel[1].index == 0)
+        "#,
+        );
+    }
+
+    /// #107: `bearcad.parameter("get"/"get_expression", name)` reads a parameter back.
+    #[test]
+    fn lua_parameter_get_returns_value_and_expression() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.parameter("add", "A", "5mm")
+            local v = bearcad.parameter("get", "A")
+            assert(math.abs(v - 5) < 1e-4, "A should evaluate to 5mm, got " .. tostring(v))
+            assert(bearcad.parameter("get_expression", "A") == "5mm")
+            assert(bearcad.parameter("get", "missing") == nil)
+        "#,
+        );
+    }
+
+    /// #108: `circle{ radius = 12 }` is an alias of `r`; omitting all size keys is a clear
+    /// error naming the accepted keys.
+    #[test]
+    fn lua_circle_accepts_radius_alias_and_errors_without_a_size() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.circle{ radius = 12 }
+            local c = bearcad.get{ kind = "circle", index = 0 }
+            assert(math.abs(c.r - 12) < 1e-4)
+            local ok, err = pcall(bearcad.circle, { x = 0, y = 0 })
+            assert(not ok, "circle without a size should error")
+            err = tostring(err)
+            assert(err:find("radius") and err:find("diameter"),
+                   "error should name the accepted keys: " .. err)
+        "#,
+        );
+    }
+
+    /// #108: `bearcad.ui.elements_view(...)` drives the Elements pane's layout mode.
+    #[test]
+    fn lua_elements_view_sets_hierarchy_view_mode() {
+        let state = run_lua(r#"bearcad.ui.elements_view("graph")"#);
+        assert_eq!(
+            state.hierarchy_view_mode,
+            crate::hierarchy::HierarchyViewMode::Graph
+        );
+    }
+
+    #[test]
+    fn lua_elements_view_rejects_unknown_mode() {
+        run_lua_expect_ok(
+            r#"
+            local ok = pcall(bearcad.ui.elements_view, "spiral")
+            assert(not ok, "unknown elements view should error")
+        "#,
+        );
+    }
+
+    /// #108: `bearcad.ui.camera{...}` sets the pose instantly and `bearcad.ui.camera{}`
+    /// reads it back.
+    #[test]
+    fn lua_camera_set_and_get_round_trips() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.ui.camera{ yaw = 1.0, distance = 200, target = {1, 2, 3} }
+            local c = bearcad.ui.camera{}
+            assert(math.abs(c.yaw - 1.0) < 1e-4, "yaw " .. c.yaw)
+            assert(math.abs(c.distance - 200) < 1e-3, "distance " .. c.distance)
+            assert(math.abs(c.target[1] - 1) < 1e-4)
+            assert(math.abs(c.target[2] - 2) < 1e-4)
+            assert(math.abs(c.target[3] - 3) < 1e-4)
+            assert(type(c.pitch) == "number")
+            assert(c.projection == "perspective")
+            -- a partial set leaves the other fields alone
+            bearcad.ui.camera{ pitch = 0.5 }
+            local c2 = bearcad.ui.camera{}
+            assert(math.abs(c2.pitch - 0.5) < 1e-4)
+            assert(math.abs(c2.yaw - 1.0) < 1e-4)
+            assert(math.abs(c2.distance - 200) < 1e-3)
+        "#,
+        );
+    }
+
+    /// #108: `bearcad.ui.zoom_fit()` frames the document — the camera target lands on the
+    /// body's bbox center, instantly (no transition).
+    #[test]
+    fn lua_zoom_fit_targets_the_document_center() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 40, height = 30 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            bearcad.ui.zoom_fit()
+        "#,
+        );
+        let expected = glam::Vec3::new(20.0, 15.0, 5.0);
+        assert!(
+            (state.cam.target - expected).length() < 0.5,
+            "zoom_fit should center the target on the body, got {:?}",
+            state.cam.target
+        );
+        assert!(!state.cam.is_transitioning(), "zoom_fit applies instantly");
+        assert!(state.cam.distance > 0.0 && state.cam.distance.is_finite());
+    }
+
+    /// #108: an empty document leaves the camera alone.
+    #[test]
+    fn lua_zoom_fit_on_empty_document_is_a_no_op() {
+        let default_cam = crate::camera::Camera::default();
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.ui.zoom_fit()
+        "#,
+        );
+        assert_eq!(state.cam.target, default_cam.target);
+        assert_eq!(state.cam.distance, default_cam.distance);
     }
 }

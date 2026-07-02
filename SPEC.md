@@ -667,8 +667,19 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   entire window. With no `path`, the image is written to `screenshot-bearcad.png`.
 - Geometry-creation helpers are single calls that create the thing directly (no simulated
   mouse/keyboard) and enter a ground-plane sketch if none is open: `bearcad.rect{ width, height,
-  x?, y?, name? }` and `bearcad.line{ length, angle?, x?, y?, name? }` (or explicit endpoints
-  `bearcad.line{ x, y, x1, y1 }`).
+  x?, y?, name? }`, `bearcad.line{ length, angle?, x?, y?, name? }` (or explicit endpoints
+  `bearcad.line{ x, y, x1, y1 }`), and `bearcad.circle{ r|radius|diameter, x?, y?, name? }`.
+- **Read-back / introspection (#107):** the API is not write-only — pure read getters (never
+  recorded as instructions) let scripts assert what they built: `bearcad.count(kind)` /
+  `bearcad.get{ kind, index }` over lines, circles, sketches, constraints, construction
+  planes, extrusions, bodies, and parameters; `bearcad.body_stats(i)` (mesh
+  volume/triangles/bbox); `bearcad.status()`; `bearcad.selection()`; and
+  `bearcad.parameter("get"|"get_expression", name)`.
+- **Absolute camera control (#108):** `bearcad.ui.camera{}` reads the pose
+  (yaw/pitch/distance/target/projection); `bearcad.ui.camera{ … }` sets any subset instantly
+  (no transition animation — deterministic screenshots); `bearcad.ui.zoom_fit()` frames the
+  whole document (bodies + sketch geometry); `bearcad.ui.elements_view("list"|"tree"|"graph")`
+  drives the Elements pane's layout (#34/#94).
 - `bearcad.begin_sketch{ … }` starts a sketch on any face. Besides `kind = "circle"|"plane"`
   with `index`, it accepts **3D body faces**: `kind = "extrude_cap", extrusion, profile =
   "circle"|"polygon" (with `profile_lines = {..}` for polygons), profile_index, top?` and

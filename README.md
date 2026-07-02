@@ -262,6 +262,21 @@ Scripts run in a coroutine; calls that need to wait (`bearcad.ui.wait`, `bearcad
 | `bearcad.undo()` | Undo the last committed shape |
 | `bearcad.quit()` | Close the app when the script ends |
 
+### Reading state back (introspection)
+
+Pure reads of the live document — they never appear in recorded scripts. Together with
+`bearcad.sketch_dof()`/`bearcad.sketch_conflicts()` they let a script assert what it built.
+
+| Function | Description |
+|---|---|
+| `bearcad.count("line")` | Non-deleted entity count (`line`, `circle`, `sketch`, `constraint`, `construction_plane`, `extrusion`, `body`, `parameter`) |
+| `bearcad.get{ kind="line", index=0 }` | Table of the entity's fields (`x0/y0/x1/y1`, `length`, `name`, …), or `nil` if out of range/deleted |
+| `bearcad.body_stats(0)` | `{ volume, triangles, bbox = { min = {x,y,z}, max = {x,y,z} } }` for a body's solid mesh, or `nil` |
+| `bearcad.status()` | The current status-bar text |
+| `bearcad.selection()` | Array of `{ kind, index }` for the current scene selection |
+| `bearcad.parameter("get", "A")` | A parameter's evaluated value (mm/radians), or `nil` |
+| `bearcad.parameter("get_expression", "A")` | A parameter's raw expression string, or `nil` |
+
 ### Tools and sketching
 
 | Function | Description |
@@ -284,6 +299,7 @@ Scripts run in a coroutine; calls that need to wait (`bearcad.ui.wait`, `bearcad
 | `bearcad.set_construction(element, true)` | Mark element or edge as construction |
 | `bearcad.rect({ width=80, height=50, name="Box" })` | Create a rectangle (optional `name`) |
 | `bearcad.line({ length=80, name="Guide" })` | Create a line (optional `name`) |
+| `bearcad.circle({ r=12, name="Hole" })` | Create a circle (`r`, its alias `radius`, or `diameter`) |
 
 Element kinds: `construction_plane`, `sketch`, `rect`, `line`, `circle`, `constraint`.
 Pass a table `{ kind = "rect", index = 0, edge = "bottom" }` when an edge is needed.
@@ -320,6 +336,10 @@ All GUI/UI manipulation is under the `bearcad.ui` sub-namespace.
 | `bearcad.ui.view("front")` | Standard view (waits for animation) |
 | `bearcad.ui.view("edge", "front_top")` | View-cube edge |
 | `bearcad.ui.view_home()` | Return to home view |
+| `bearcad.ui.camera{}` | Read the pose: `{ yaw, pitch, distance, target = {x,y,z}, projection }` |
+| `bearcad.ui.camera{ yaw=1.0, distance=200 }` | Set any subset of the pose instantly (no animation) |
+| `bearcad.ui.zoom_fit()` | Frame the whole document (bodies + sketch geometry) instantly |
+| `bearcad.ui.elements_view("graph")` | Elements-pane layout: `list`, `tree`, or `graph` |
 | `bearcad.ui.pane("hierarchy", "hide")` | Show / hide / toggle a pane |
 | `bearcad.ui.palette("run", "view top")` | Run a palette command |
 | `bearcad.ui.click(x, y)` / `bearcad.ui.move(x, y)` | Synthetic viewport input |

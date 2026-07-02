@@ -54,7 +54,7 @@ is open — no simulated mouse/keyboard required:
 bearcad.rect{ width = 80, height = 50, x = 0, y = 0, name = "Box" }
 bearcad.line{ length = 80, angle = 45, name = "Diagonal" }
 bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 } -- explicit endpoints
-bearcad.circle{ x = 10, y = 5, r = 12, name = "Hole" }
+bearcad.circle{ x = 10, y = 5, r = 12, name = "Hole" } -- `radius` and `diameter` also accepted
 ```
 
 To sketch on a specific plane instead of the default ground plane:
@@ -110,6 +110,39 @@ bearcad.add_constraint({ kind = "line", index = 0 }, "25mm")
 bearcad.parameter("add", "A", "5mm")
 bearcad.parameter("value", 0, "A + 5in")
 ```
+
+## Reading state back
+
+The API isn't write-only: a set of pure read-back getters lets a script assert what it built —
+handy for regression tests written entirely in Lua. Reads never appear in recorded scripts.
+
+```lua
+bearcad.new()
+bearcad.rect{ width = 40, height = 30 }
+bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+
+assert(bearcad.count("line") == 4)             -- non-deleted entities per kind
+local l = bearcad.get{ kind = "line", index = 0 }
+assert(l.x0 == 0 and math.abs(l.length - 40) < 1e-3)
+
+local s = bearcad.body_stats(0)                -- volume / triangles / bbox of a body's mesh
+assert(math.abs(s.volume - 40 * 30 * 10) < 120)
+assert(s.bbox.max[3] - s.bbox.min[3] == 10)
+
+bearcad.select{ kind = "line", index = 0 }
+assert(bearcad.selection()[1].kind == "line")  -- current scene selection
+print(bearcad.status())                        -- the status-bar text
+
+bearcad.parameter("add", "A", "5mm")
+assert(bearcad.parameter("get", "A") == 5)     -- evaluated value (mm / radians)
+assert(bearcad.parameter("get_expression", "A") == "5mm")
+```
+
+`bearcad.count`/`bearcad.get` accept the kinds `line`, `circle`, `sketch`, `constraint`,
+`construction_plane`, `extrusion`, `body`, and `parameter`; `get` returns `nil` for an index
+that is out of range or deleted. See also `bearcad.sketch_dof()` and `bearcad.sketch_conflicts()`
+for constraint-solver introspection, and [`bearcad.ui.camera{}`](./ui-namespace#camera) for
+reading the camera pose.
 
 ## Visibility and construction geometry
 

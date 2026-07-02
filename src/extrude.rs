@@ -42,6 +42,60 @@ impl SolidMesh {
     }
 }
 
+/// Signed volume of a closed mesh via the divergence theorem
+/// (`sum(dot(a, cross(b, c))) / 6`). Negative when the winding is inward; callers that want
+/// a physical volume take the absolute value. Used by the treatment tests as an independent
+/// sanity check and by `bearcad.body_stats` (#107).
+pub(crate) fn mesh_signed_volume(mesh: &SolidMesh) -> f32 {
+    mesh.triangles
+        .iter()
+        .map(|[a, b, c]| a.dot(b.cross(*c)) / 6.0)
+        .sum()
+}
+
+/// World-space bounding box of everything visible in the document (#108's
+/// `bearcad.ui.zoom_fit()`): every non-deleted body's solid mesh, plus every non-deleted
+/// line/circle's world-space extent on its sketch plane (curved lines use their sampled
+/// polyline; circles use the plane-local bounding square of the perimeter). Construction
+/// planes are not included — an empty document returns `None`.
+pub(crate) fn document_world_bounds(doc: &Document) -> Option<(Vec3, Vec3)> {
+    let mut bounds: Option<(Vec3, Vec3)> = None;
+    let mut extend = |p: Vec3| {
+        bounds = Some(match bounds {
+            Some((min, max)) => (min.min(p), max.max(p)),
+            None => (p, p),
+        });
+    };
+    for (i, body) in doc.bodies.iter().enumerate() {
+        if body.deleted {
+            continue;
+        }
+        if let Some((min, max)) = body_solid_mesh(doc, i).and_then(|m| m.bounds()) {
+            extend(min);
+            extend(max);
+        }
+    }
+    for line in doc.lines.iter().filter(|l| !l.deleted) {
+        if let Some(frame) = sketch_geometry_frame(doc, line.sketch) {
+            for (u, v) in line.sample_local(crate::model::BEZIER_SEGMENTS) {
+                extend(local_to_world(&frame, u, v));
+            }
+        }
+    }
+    for circle in doc.circles.iter().filter(|c| !c.deleted) {
+        if let Some(frame) = sketch_geometry_frame(doc, circle.sketch) {
+            for (du, dv) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                extend(local_to_world(
+                    &frame,
+                    circle.cx + du * circle.r,
+                    circle.cy + dv * circle.r,
+                ));
+            }
+        }
+    }
+    bounds
+}
+
 /// Build the solid mesh for an extrusion, or `None` if it has no faces or zero distance.
 pub fn extrusion_mesh(doc: &Document, extrusion: &Extrusion) -> Option<SolidMesh> {
     let distance = effective_distance(doc, extrusion);
@@ -1964,17 +2018,6 @@ mod tests {
             + 4 * 2 // the 4 original-edge main walls (unchanged count)
             + m * 2; // the fillet's own faceted bevel wall
         assert_eq!(mesh.triangles.len(), expected);
-    }
-
-    /// Signed volume of a closed mesh via the divergence theorem
-    /// (`sum(dot(a, cross(b, c))) / 6`) — an independent, end-to-end sanity check that a
-    /// treated mesh removes (or adds, for a hypothetical future outward bevel) roughly the
-    /// expected amount of material, complementing `assert_watertight`'s purely topological check.
-    fn mesh_signed_volume(mesh: &SolidMesh) -> f32 {
-        mesh.triangles
-            .iter()
-            .map(|[a, b, c]| a.dot(b.cross(*c)) / 6.0)
-            .sum()
     }
 
     #[cfg(not(feature = "occt"))]

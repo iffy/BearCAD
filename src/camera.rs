@@ -699,6 +699,44 @@ impl Camera {
         }
     }
 
+    /// Set any subset of the camera pose instantly — no transition animation — for
+    /// deterministic scripted camera control (`bearcad.ui.camera{}`, #108). Cancels any
+    /// in-flight transition and bakes/clears the trackball state first (like the view
+    /// presets do via `resolve_orbit_state`) so a stale orbit quaternion can't override
+    /// the requested pose. Pitch is clamped the same way the view presets clamp it.
+    pub fn set_pose_instant(
+        &mut self,
+        yaw: Option<f32>,
+        pitch: Option<f32>,
+        distance: Option<f32>,
+        target: Option<Vec3>,
+    ) {
+        self.cancel_transition();
+        self.resolve_orbit_state();
+        if let Some(yaw) = yaw {
+            self.yaw = yaw;
+        }
+        if let Some(pitch) = pitch {
+            self.pitch = pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        }
+        if let Some(distance) = distance {
+            self.distance = distance.clamp(2.0, 50_000.0);
+        }
+        if let Some(target) = target {
+            self.target = target;
+        }
+    }
+
+    /// Instantly frame an axis-aligned world bounding box (`bearcad.ui.zoom_fit()`, #108):
+    /// center the target on the box and set the distance so the box's largest half-extent
+    /// fits the vertical field of view, with a small margin. Orientation is left alone.
+    pub fn frame_bounds_instant(&mut self, min: Vec3, max: Vec3) {
+        let center = (min + max) * 0.5;
+        let half_extent = ((max - min) * 0.5).max_element().max(0.5);
+        let distance = half_extent / (self.fov_y * 0.5).tan() * 1.2;
+        self.set_pose_instant(None, None, Some(distance), Some(center));
+    }
+
     /// Advance an in-flight view transition. Returns `true` while animating.
     pub fn tick_transition(&mut self, dt: f32) -> bool {
         let Some(transition) = self.transition.take() else {

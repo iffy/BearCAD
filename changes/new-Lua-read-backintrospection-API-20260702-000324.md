@@ -1,0 +1,1 @@
+Lua read-back/introspection API (#107) — bearcad.count/get/body_stats/status/selection and parameter get/get_expression as pure reads — plus #108: circle{ radius = } alias with a clear missing-size error, bearcad.ui.elements_view("list"|"tree"|"graph"), instant absolute camera control via bearcad.ui.camera{} (get/set), and bearcad.ui.zoom_fit()

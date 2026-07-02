@@ -173,6 +173,18 @@ pub enum Instruction {
     ProjectionMode(ProjectionMode),
     ToggleProjectionMode,
     ShadingMode(ShadingMode),
+    /// Set any subset of the camera pose instantly — no transition animation, for
+    /// deterministic scripted screenshots (`bearcad.ui.camera{...}`, #108).
+    SetCamera {
+        yaw: Option<f32>,
+        pitch: Option<f32>,
+        distance: Option<f32>,
+        target: Option<(f32, f32, f32)>,
+    },
+    /// Frame the whole document (bodies + sketch geometry) in the viewport, instantly (#108).
+    ZoomFit,
+    /// Switch the Elements pane's layout (`bearcad.ui.elements_view(...)`, #34/#108).
+    SetElementsView { mode: crate::hierarchy::HierarchyViewMode },
     /// Show/hide a UI pane. `None` toggles.
     SetPane { pane: Pane, visible: Option<bool> },
     AddParameter { name: String, expression: String },
@@ -446,6 +458,31 @@ impl Instruction {
             Instruction::ToggleProjectionMode => "bearcad.ui.toggle_projection()".to_string(),
             Instruction::ShadingMode(mode) => {
                 format!("bearcad.ui.shading({:?})", mode.script_name())
+            }
+            Instruction::SetCamera {
+                yaw,
+                pitch,
+                distance,
+                target,
+            } => {
+                let mut parts = Vec::new();
+                if let Some(yaw) = yaw {
+                    parts.push(format!("yaw = {yaw}"));
+                }
+                if let Some(pitch) = pitch {
+                    parts.push(format!("pitch = {pitch}"));
+                }
+                if let Some(distance) = distance {
+                    parts.push(format!("distance = {distance}"));
+                }
+                if let Some((x, y, z)) = target {
+                    parts.push(format!("target = {{{x}, {y}, {z}}}"));
+                }
+                format!("bearcad.ui.camera{{ {} }}", parts.join(", "))
+            }
+            Instruction::ZoomFit => "bearcad.ui.zoom_fit()".to_string(),
+            Instruction::SetElementsView { mode } => {
+                format!("bearcad.ui.elements_view({:?})", mode.script_name())
             }
             Instruction::SetPane { pane, visible } => {
                 let verb = match visible {
@@ -766,6 +803,9 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             visible: None,
         }),
         Action::SetHomeView => Some(Instruction::SetHomeView),
+        Action::SetElementsViewMode { mode } => {
+            Some(Instruction::SetElementsView { mode: *mode })
+        }
         Action::SetPaneVisible { pane, visible } => Some(Instruction::SetPane {
             pane: *pane,
             visible: Some(*visible),
@@ -2324,6 +2364,30 @@ impl ScriptRunner {
             }
             Instruction::ShadingMode(mode) => {
                 state.apply(Action::SetShadingMode(mode));
+                StepResult::Continue
+            }
+            Instruction::SetCamera {
+                yaw,
+                pitch,
+                distance,
+                target,
+            } => {
+                state.cam.set_pose_instant(
+                    yaw,
+                    pitch,
+                    distance,
+                    target.map(|(x, y, z)| Vec3::new(x, y, z)),
+                );
+                StepResult::Continue
+            }
+            Instruction::ZoomFit => {
+                if let Some((min, max)) = crate::extrude::document_world_bounds(&state.doc) {
+                    state.cam.frame_bounds_instant(min, max);
+                }
+                StepResult::Continue
+            }
+            Instruction::SetElementsView { mode } => {
+                state.apply(Action::SetElementsViewMode { mode });
                 StepResult::Continue
             }
             Instruction::SetPane { pane, visible } => {

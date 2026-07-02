@@ -201,8 +201,9 @@ pub struct HierarchyEntry {
 }
 
 /// Which layout the Elements pane renders its nodes in (#issue 34). This is an ephemeral UI
-/// preference, not document data — it's stored on `App` (see `selected_bezier_handle` in
-/// main.rs for the same convention) and threaded into [`show_pane`], never persisted.
+/// preference, not document data — it lives on `AppState` (alongside the other never-persisted
+/// view state) so scripts can drive it via `bearcad.ui.elements_view` (#108), and is threaded
+/// into [`show_pane`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum HierarchyViewMode {
     /// Flat, topologically-sorted list (the pre-existing default view).
@@ -212,6 +213,27 @@ pub enum HierarchyViewMode {
     Tree,
     /// A 2D node-link diagram: column = depth, row = position within that column.
     Graph,
+}
+
+impl HierarchyViewMode {
+    /// Parse a script name (`bearcad.ui.elements_view("list"|"tree"|"graph")`, #108);
+    /// mirrors `ShadingMode::from_name`.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "list" => Some(Self::List),
+            "tree" => Some(Self::Tree),
+            "graph" => Some(Self::Graph),
+            _ => None,
+        }
+    }
+
+    pub fn script_name(self) -> &'static str {
+        match self {
+            Self::List => "list",
+            Self::Tree => "tree",
+            Self::Graph => "graph",
+        }
+    }
 }
 
 /// One node's position in the graph-node view's deterministic column/row layout — pure data,

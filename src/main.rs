@@ -403,12 +403,8 @@ struct App {
     launch_maximize_frames_remaining: u8,
     gpu_viewport: bool,
     gpu_view_cube: bool,
-    /// Elements pane layout (List/Tree/Graph, #34) — an ephemeral view preference, not
-    /// document data, so it lives here alongside `selected_bezier_handle` rather than on
-    /// `AppState`.
-    hierarchy_view_mode: hierarchy::HierarchyViewMode,
     /// Persistent physics state for the Elements pane's force-directed Graph view (#94).
-    /// Ephemeral view state (never persisted), same as `hierarchy_view_mode`.
+    /// Ephemeral view state (never persisted), like `AppState::hierarchy_view_mode`.
     graph_layout: hierarchy::GraphLayout,
 }
 
@@ -474,7 +470,6 @@ impl App {
             launch_maximize_frames_remaining: initial_launch_maximize_frames(),
             gpu_viewport: gpu_viewport::install(cc),
             gpu_view_cube: gpu_view_cube::install(cc),
-            hierarchy_view_mode: hierarchy::HierarchyViewMode::default(),
             graph_layout: hierarchy::GraphLayout::default(),
         }
     }
@@ -1859,7 +1854,7 @@ impl eframe::App for App {
                         &mut self.state.element_visibility,
                         &self.state.scene_selection,
                         &self.state.document_health,
-                        &mut self.hierarchy_view_mode,
+                        &mut self.state.hierarchy_view_mode,
                         &mut self.graph_layout,
                         &mut queue_edit_sketch,
                         &mut queue_edit_plane,

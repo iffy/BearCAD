@@ -36,6 +36,17 @@ bearcad.ui.toggle_projection()
 bearcad.ui.shading("solid_wireframe")   -- "wireframe" | "transparent" | "solid" | "solid_wireframe"
 ```
 
+Absolute camera control sets the pose **instantly** (no transition animation), which keeps
+scripted screenshots deterministic; with no pose fields, `camera{}` is a pure read:
+
+```lua
+local c = bearcad.ui.camera{}           -- { yaw, pitch, distance, target = {x, y, z},
+                                        --   projection = "perspective" | "orthographic" }
+bearcad.ui.camera{ yaw = 1.0, distance = 200 }        -- set any subset of the pose
+bearcad.ui.camera{ target = {20, 15, 5}, pitch = 0.6 }
+bearcad.ui.zoom_fit()                   -- frame the whole document (bodies + sketch geometry)
+```
+
 See [Navigation](/docs/tools/navigation) for what these correspond to in the GUI, including the
 view-cube HUD's gear/shading-modes popup.
 
@@ -44,6 +55,7 @@ view-cube HUD's gear/shading-modes popup.
 ```lua
 bearcad.ui.pane("hierarchy", "hide")    -- show / hide / toggle a pane
 bearcad.ui.palette("run", "view top")   -- run a command palette entry by name
+bearcad.ui.elements_view("graph")       -- Elements-pane layout: "list" | "tree" | "graph"
 ```
 
 ## Dragging constrained geometry
