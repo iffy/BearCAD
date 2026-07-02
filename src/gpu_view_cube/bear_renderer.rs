@@ -107,7 +107,7 @@ impl BearGpuResources {
             layout: Some(&bear_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_bear",
+                entry_point: Some("vs_bear"),
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<crate::view_cube::GpuBearVertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
@@ -128,7 +128,7 @@ impl BearGpuResources {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs_bear",
+                entry_point: Some("fs_bear"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: target_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -188,13 +188,13 @@ impl BearGpuResources {
             layout: Some(&blit_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_blit",
+                entry_point: Some("vs_blit"),
                 buffers: &[],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs_blit",
+                entry_point: Some("fs_blit"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: target_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),

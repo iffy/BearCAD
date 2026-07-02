@@ -1730,7 +1730,7 @@ fn show_row(
                 response.context_menu(|ui| {
                     if ui.button("Edit sketch").clicked() {
                         on_edit_sketch(sketch);
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
             }
@@ -1742,7 +1742,7 @@ fn show_row(
                 response.context_menu(|ui| {
                     if ui.button("Edit plane").clicked() {
                         on_edit_plane(index);
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
             }
@@ -1756,7 +1756,7 @@ fn show_row(
                 response.context_menu(|ui| {
                     if ui.button("Edit extrusion").clicked() {
                         on_edit_extrusion(index);
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
             }
@@ -1768,11 +1768,11 @@ fn show_row(
                 response.context_menu(|ui| {
                     if ui.button("Export STL…").clicked() {
                         on_export_body(index);
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui.button("Export STEP…").clicked() {
                         on_export_body_step(index);
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
             }

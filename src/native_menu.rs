@@ -35,6 +35,8 @@ pub enum MenuCommand {
     /// Install the `bearcad` CLI symlink onto PATH (Help menu). See #49.
     InstallCli,
     ToggleCommandPalette,
+    /// Toggle first-person (FPS) mode (#91, #118).
+    ToggleFpsMode,
     SetPaneVisible { pane: Pane, visible: bool },
 }
 
@@ -57,6 +59,7 @@ pub struct MenuIds {
     pub licenses: MenuId,
     pub install_cli: MenuId,
     pub command_palette: MenuId,
+    pub fps_mode: MenuId,
     pub pane_checks: Vec<(Pane, MenuId)>,
 }
 
@@ -65,6 +68,7 @@ pub struct NativeMenu {
     #[allow(dead_code)]
     menu: Menu,
     ids: MenuIds,
+    fps_mode: CheckMenuItem,
     pane_checks: Vec<(Pane, CheckMenuItem)>,
 }
 
@@ -136,6 +140,9 @@ pub fn command_for_id(
     if ids.command_palette == id {
         return Some(MenuCommand::ToggleCommandPalette);
     }
+    if ids.fps_mode == id {
+        return Some(MenuCommand::ToggleFpsMode);
+    }
     for &(pane, ref check_id) in &ids.pane_checks {
         if check_id == id {
             return Some(MenuCommand::SetPaneVisible {
@@ -185,6 +192,7 @@ impl MenuCommand {
             // Performs filesystem side effects + status reporting in the app frame loop.
             MenuCommand::InstallCli => None,
             MenuCommand::ToggleCommandPalette => Some(Action::ToggleCommandPalette),
+            MenuCommand::ToggleFpsMode => Some(Action::ToggleFpsMode),
             MenuCommand::SetPaneVisible { pane, visible } => {
                 Some(Action::SetPaneVisible { pane, visible })
             }
@@ -282,6 +290,7 @@ impl NativeMenu {
             true,
             Some(Accelerator::new(Some(primary), Code::KeyP)),
         );
+        let fps_mode = CheckMenuItem::with_id("fps_mode", "FPS Mode", true, false, None);
         let about = MenuItem::with_id("about", "About BearCAD", true, None);
         let licenses = MenuItem::with_id("licenses", "Licenses", true, None);
         let install_cli = MenuItem::with_id(
@@ -335,6 +344,7 @@ impl NativeMenu {
             .collect();
         panes_menu.append_items(&pane_item_refs)?;
         view_menu.append(&command_palette)?;
+        view_menu.append(&fps_mode)?;
         view_menu.append(&PredefinedMenuItem::separator())?;
         view_menu.append(&panes_menu)?;
         help_menu.append(&export_session_commands)?;
@@ -367,12 +377,14 @@ impl NativeMenu {
             licenses: licenses.id().clone(),
             install_cli: install_cli.id().clone(),
             command_palette: command_palette.id().clone(),
+            fps_mode: fps_mode.id().clone(),
             pane_checks: pane_ids,
         };
 
         Ok(Self {
             menu,
             ids,
+            fps_mode,
             pane_checks,
         })
     }
@@ -388,6 +400,11 @@ impl NativeMenu {
         for &(pane, ref check) in &self.pane_checks {
             let _ = check.set_checked(is_visible(pane));
         }
+    }
+
+    /// Keep the View ▸ FPS Mode checkmark aligned with whether FPS mode is active (#118).
+    pub fn sync_fps_mode(&self, active: bool) {
+        let _ = self.fps_mode.set_checked(active);
     }
 }
 
@@ -458,6 +475,7 @@ mod tests {
             licenses: MenuId::new("licenses"),
             install_cli: MenuId::new("install_cli"),
             command_palette: MenuId::new("command_palette"),
+            fps_mode: MenuId::new("fps_mode"),
             pane_checks: vec![(Pane::ViewCube, pane_menu_id.clone())],
         };
         (ids, pane_menu_id)
@@ -510,6 +528,19 @@ mod tests {
         assert_eq!(
             MenuCommand::ToggleCommandPalette.to_action(),
             Some(Action::ToggleCommandPalette)
+        );
+    }
+
+    #[test]
+    fn maps_fps_mode_menu_item() {
+        let ids = ids_with_pane("view_cube").0;
+        assert_eq!(
+            command_for_id(&ids.fps_mode, &ids, |_| true),
+            Some(MenuCommand::ToggleFpsMode)
+        );
+        assert_eq!(
+            MenuCommand::ToggleFpsMode.to_action(),
+            Some(Action::ToggleFpsMode)
         );
     }
 

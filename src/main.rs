@@ -675,6 +675,7 @@ impl App {
 
         self.native_menu
             .sync_pane_checks(|pane| self.state.panes.is_visible(pane));
+        self.native_menu.sync_fps_mode(self.state.fps.is_some());
     }
 
     fn dispatch_palette_outcome(&mut self, outcome: PaletteOutcome) {
@@ -702,11 +703,23 @@ impl App {
             } else {
                 egui::viewport::CursorGrab::None
             }));
+            // On macOS, winit builds its hidden-cursor image by decoding a static GIF through
+            // ImageIO the first time the view resets its cursor rects; that decode has been
+            // observed to SIGBUS on entering FPS mode (#119). `CursorGrab::Locked` already
+            // freezes the OS cursor in place and disconnects it from mouse deltas, so skip
+            // `CursorVisible` there and instead pin the frozen arrow to the crosshair below —
+            // everywhere else the cursor is genuinely hidden as SPEC promises.
+            #[cfg(not(target_os = "macos"))]
             ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(!active));
             self.fps_cursor_grabbed = active;
         }
         if !active {
             return;
+        }
+
+        #[cfg(target_os = "macos")]
+        if let Some(viewport) = self.last_viewport {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CursorPosition(viewport.center()));
         }
 
         if !keyboard_shortcuts_suppressed(ctx) {
@@ -733,6 +746,20 @@ impl App {
                     if let Some(tool) = fps::TOOL_SLOTS.get(slot) {
                         self.state.apply(Action::SetTool(*tool));
                     }
+                }
+            }
+
+            // `[`/`]` shrink/grow the player (#120): eye height, move/jump speed, and
+            // gravity all scale together, so mm-detail work and building-scale walkthroughs
+            // are both comfortable without leaving FPS mode.
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::OpenBracket)) {
+                if let Some(player) = self.state.fps.as_mut() {
+                    player.scale_by(1.0 / fps::SCALE_STEP);
+                }
+            }
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::CloseBracket)) {
+                if let Some(player) = self.state.fps.as_mut() {
+                    player.scale_by(fps::SCALE_STEP);
                 }
             }
 
@@ -1891,7 +1918,7 @@ impl eframe::App for App {
                 .frame(
                     egui::Frame::default()
                         .fill(theme::palette_console_fill())
-                        .inner_margin(egui::Margin::symmetric(12.0, 8.0)),
+                        .inner_margin(egui::Margin::symmetric(12, 8)),
                 )
                 .show(ctx, |ui| {
                     outcome = show_palette(ui, &mut self.state.command_palette, &matches);
@@ -2100,7 +2127,7 @@ impl eframe::App for App {
 
         let render_state = frame.wgpu_render_state();
         egui::CentralPanel::default()
-            .frame(egui::Frame::none())
+            .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
                 self.draw_viewport(ui, render_state);
             });
@@ -2945,8 +2972,8 @@ fn show_sketch_dimension_field(
                 col::DIM_INPUT_BORDER
             },
         ))
-        .inner_margin(egui::Margin::symmetric(5.0, 3.0))
-        .rounding(3.0);
+        .inner_margin(egui::Margin::symmetric(5, 3))
+        .corner_radius(3);
 
     let computed = if has_errors {
         None
@@ -4885,14 +4912,14 @@ impl App {
                     if ui.button("Convert to bezier curve").clicked() {
                         self.state.apply(Action::ConvertVertexToBezier { point });
                         self.viewport_context_menu = None;
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
                 Some(ViewportContextMenu::StraightenLine(line)) => {
                     if ui.button("Straighten curve").clicked() {
                         self.state.apply(Action::StraightenLine { line });
                         self.viewport_context_menu = None;
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
                 Some(ViewportContextMenu::DeleteBezierHandle(line)) => {
@@ -4900,7 +4927,7 @@ impl App {
                         self.state.apply(Action::StraightenLine { line });
                         self.selected_bezier_handle = None;
                         self.viewport_context_menu = None;
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
                 None => {}
@@ -6904,6 +6931,7 @@ impl App {
                 viewport,
                 0.0,
                 egui::Stroke::new(SKETCH_MODE_BORDER_WIDTH, col::SKETCH_MODE_BORDER),
+                egui::StrokeKind::Middle,
             );
         }
     }

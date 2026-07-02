@@ -303,6 +303,7 @@ fn rasterize_bear(triangles: &[ProjectedBearTriangle], rect: Rect) -> ColorImage
 
     ColorImage {
         size: [width, height],
+        source_size: eframe::egui::Vec2::new(width as f32, height as f32),
         pixels,
     }
 }
@@ -1162,6 +1163,7 @@ fn paint_icon_toggle_button(ui: &Ui, rect: Rect, hovered: bool, pressed: bool) {
         rect,
         4.0,
         Stroke::new(1.0, Color32::from_gray(if hovered { 110 } else { 72 })),
+        eframe::egui::StrokeKind::Middle,
     );
 }
 
@@ -1212,17 +1214,9 @@ fn show_view_settings_button(
         Color32::from_gray(210),
     );
 
-    let popup_id = ui.make_persistent_id("view_cube_settings_popup");
-    if response.clicked() {
-        ui.memory_mut(|m| m.toggle_popup(popup_id));
-    }
-
-    egui::popup::popup_below_widget(
-        ui,
-        popup_id,
-        &response,
-        egui::popup::PopupCloseBehavior::CloseOnClickOutside,
-        |ui| {
+    egui::Popup::from_toggle_button_response(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
             ui.set_min_width(88.0);
             ui.label(egui::RichText::new("Projection").small().weak());
             ui.horizontal(|ui| {
@@ -1267,8 +1261,7 @@ fn show_view_settings_button(
                     }
                 }
             });
-        },
-    );
+        });
 }
 
 fn show_home_button(
@@ -1302,7 +1295,7 @@ fn show_home_button(
             if let Some(log) = command_log {
                 log.note_view_instruction(crate::script::Instruction::SetHomeView);
             }
-            ui.close_menu();
+            ui.close();
         }
     });
 
@@ -1411,7 +1404,12 @@ fn show(
     {
         let painter = ui.painter();
         painter.rect_filled(pad_rect, 6.0, Color32::from_rgba_unmultiplied(18, 20, 26, 200));
-        painter.rect_stroke(pad_rect, 6.0, Stroke::new(1.0, Color32::from_gray(70)));
+        painter.rect_stroke(
+            pad_rect,
+            6.0,
+            Stroke::new(1.0, Color32::from_gray(70)),
+            eframe::egui::StrokeKind::Middle,
+        );
     }
 
     let axes = project_axes(cam, center, scale);

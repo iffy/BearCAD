@@ -169,6 +169,8 @@ pub enum Instruction {
     CommitConstructionPlane,
     SetPlaneOffset { value: String },
     SetPlaneAngle { value: String },
+    /// Declaratively add a new construction plane offset from plane `from` (#116).
+    CreatePlane { offset: f32, from: usize },
     FocusDim(RectAxis),
     FocusLineLength,
     FocusCircleDiameter,
@@ -189,6 +191,9 @@ pub enum Instruction {
     FpsFly { on: Option<bool> },
     /// Integrate FPS physics for this many seconds with no keys held (lands jumps).
     FpsAdvance { seconds: f32 },
+    /// Set the FPS player's scale directly (#120), clamped to
+    /// [`crate::fps::MIN_SCALE`, `crate::fps::MAX_SCALE`].
+    FpsScale { scale: f32 },
     View(StandardView),
     ViewEdge(CubeEdgeId),
     ViewCorner(CubeCornerId),
@@ -470,6 +475,9 @@ impl Instruction {
             Instruction::SetPlaneAngle { value } => {
                 format!("bearcad.set_dim(\"angle\", {value:?})")
             }
+            Instruction::CreatePlane { offset, from } => {
+                format!("bearcad.plane{{ offset = {offset}, from = {from} }}")
+            }
             Instruction::FocusDim(axis) => {
                 format!("bearcad.ui.focus_dim({:?})", rect_axis_lua_name(*axis))
             }
@@ -494,6 +502,7 @@ impl Instruction {
             Instruction::FpsAdvance { seconds } => {
                 format!("bearcad.ui.fps_advance({seconds})")
             }
+            Instruction::FpsScale { scale } => format!("bearcad.ui.fps_scale({scale})"),
             Instruction::Orbit { dx, dy } => format!("bearcad.ui.orbit({dx}, {dy})"),
             Instruction::Pan { dx, dy } => format!("bearcad.ui.pan({dx}, {dy})"),
             Instruction::Zoom { scroll } => format!("bearcad.ui.wheel({scroll})"),
@@ -2405,6 +2414,11 @@ impl ScriptRunner {
                 let _ = state.apply(Action::SetPlaneAngle { value });
                 StepResult::Continue
             }
+            Instruction::CreatePlane { offset, from } => {
+                let result = state.apply(Action::AddConstructionPlane { from, offset_mm: offset });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
             Instruction::FocusDim(axis) => {
                 let _ = state.apply(Action::FocusRectDimension { axis });
                 StepResult::Continue
@@ -2497,6 +2511,18 @@ impl ScriptRunner {
                             player.tick(dt, crate::fps::FpsInput::default());
                             remaining -= dt;
                         }
+                        player.clone().apply_to_camera(&mut state.cam);
+                    }
+                    None => self.record_action_error(crate::actions::ActionResult::Err(
+                        "Not in FPS mode".to_string(),
+                    )),
+                }
+                StepResult::Continue
+            }
+            Instruction::FpsScale { scale } => {
+                match state.fps.as_mut() {
+                    Some(player) => {
+                        player.set_scale(scale);
                         player.clone().apply_to_camera(&mut state.cam);
                     }
                     None => self.record_action_error(crate::actions::ActionResult::Err(
@@ -2735,7 +2761,7 @@ impl ScriptRunner {
                     })
                 };
                 self.screenshot_pending = Some(ScreenshotRequest { path, crop });
-                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
                 StepResult::Wait
             }
             Instruction::Quit => {

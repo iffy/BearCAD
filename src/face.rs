@@ -670,6 +670,36 @@ fn consider_face_pick(
     }
 }
 
+/// The exact face a sketch profile candidate (`Circle`/`Polygon`) was drawn on, if any.
+fn sketch_host_face(doc: &Document, face: &FaceId) -> Option<FaceId> {
+    let sketch = match face {
+        FaceId::Circle(i) => doc.circles.get(*i)?.sketch,
+        FaceId::Polygon(lines) => doc.lines.get(lines.first().copied()?)?.sketch,
+        FaceId::ConstructionPlane(_) | FaceId::ExtrudeCap { .. } | FaceId::ExtrudeSide { .. } => {
+            return None
+        }
+    };
+    doc.sketches.get(sketch).map(|s| s.face.clone())
+}
+
+/// True when `best` is a sketch profile drawn directly on `candidate`, at essentially the
+/// same screen distance (#117): a rectangle sketched on a solid's face is coincident with
+/// that face, so its centroid can be farther from the eye than the (larger) host face's —
+/// the depth tie-break in [`consider_face_pick`] would then wrongly let the plain face win
+/// the pick, silently discarding the sketch (`Extrude` only picks `Circle`/`Polygon` faces).
+/// A sketch drawn on a face is always meant to be picked over the bare face beneath it, so
+/// skip the depth compare entirely once we know — by construction, not by geometry — that
+/// they're the same surface.
+fn sketch_shadows(best: &Option<(FaceId, f32, f32)>, candidate: &FaceId, dist: f32, doc: &Document) -> bool {
+    let Some((best_face, best_dist, _)) = best else {
+        return false;
+    };
+    if (dist - best_dist).abs() > FACE_PICK_DEPTH_TIE_PX {
+        return false;
+    }
+    sketch_host_face(doc, best_face).as_ref() == Some(candidate)
+}
+
 fn centroid(points: &[Vec3]) -> Vec3 {
     if points.is_empty() {
         return Vec3::ZERO;
@@ -734,16 +764,14 @@ pub fn pick_sketch_face(
                 if let Some((dist, c)) =
                     cap_face_pick_distance(screen, project, doc, ei, profile.clone(), top)
                 {
-                    consider_face_pick(
-                        &mut best,
-                        FaceId::ExtrudeCap {
-                            extrusion: ei,
-                            profile: profile.clone(),
-                            top,
-                        },
-                        dist,
-                        depth(c),
-                    );
+                    let candidate = FaceId::ExtrudeCap {
+                        extrusion: ei,
+                        profile: profile.clone(),
+                        top,
+                    };
+                    if !sketch_shadows(&best, &candidate, dist, doc) {
+                        consider_face_pick(&mut best, candidate, dist, depth(c));
+                    }
                 }
             }
             // Flat side walls (rectangular profiles) are sketchable too.
@@ -751,16 +779,14 @@ pub fn pick_sketch_face(
                 if let Some((dist, c)) =
                     side_face_pick_distance(screen, project, doc, ei, profile.clone(), edge)
                 {
-                    consider_face_pick(
-                        &mut best,
-                        FaceId::ExtrudeSide {
-                            extrusion: ei,
-                            profile: profile.clone(),
-                            edge: edge as u8,
-                        },
-                        dist,
-                        depth(c),
-                    );
+                    let candidate = FaceId::ExtrudeSide {
+                        extrusion: ei,
+                        profile: profile.clone(),
+                        edge: edge as u8,
+                    };
+                    if !sketch_shadows(&best, &candidate, dist, doc) {
+                        consider_face_pick(&mut best, candidate, dist, depth(c));
+                    }
                 }
             }
         }
@@ -769,7 +795,10 @@ pub fn pick_sketch_face(
     for (i, plane) in doc.construction_planes.iter().enumerate().rev() {
         let corners = crate::construction::plane_corners(plane, crate::construction::PLANE_DISPLAY_HALF);
         if let Some((dist, c)) = quad_face_pick_distance(screen, project, corners) {
-            consider_face_pick(&mut best, FaceId::ConstructionPlane(i), dist, depth(c));
+            let candidate = FaceId::ConstructionPlane(i);
+            if !sketch_shadows(&best, &candidate, dist, doc) {
+                consider_face_pick(&mut best, candidate, dist, depth(c));
+            }
         }
     }
 
@@ -1049,6 +1078,59 @@ mod tests {
         assert!(
             matches!(face, Some(FaceId::ExtrudeSide { extrusion: 0, .. })),
             "clicking a side wall should pick it, got {face:?}"
+        );
+    }
+
+    #[test]
+    fn pick_prefers_a_sketch_profile_over_the_solid_face_it_sits_on() {
+        // #117: drawing a rectangle on a solid's face and then trying to hover/extrude it
+        // silently failed. Root cause: a sketch profile coincident with its host face ties
+        // on screen distance (both "inside" at the click), and the old depth tie-break
+        // compared each shape's own centroid distance to the eye — which diverges from the
+        // wall's centroid whenever the sketch isn't centered on its host face, letting the
+        // (unextrudable) bare face win the pick outright.
+        let mut doc = doc_with_extruded_box();
+        let profile = crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3]);
+        let host = FaceId::ExtrudeSide {
+            extrusion: 0,
+            profile: profile.clone(),
+            edge: 0,
+        };
+        let wall = crate::extrude::side_quad_world(&doc, 0, &profile, 0).expect("wall face exists");
+        let (a, b, d) = (wall[0], wall[1], wall[3]);
+        let world_pt = |s: f32, t: f32| a + (b - a) * s + (d - a) * t;
+
+        // A small sketch tucked in one corner of the wall (s,t in [0.05, 0.25]) — off-center
+        // from the wall's own centroid (s = t = 0.5).
+        let child_sketch = doc.add_sketch(host);
+        let frame = sketch_geometry_frame(&doc, child_sketch).expect("frame for child sketch");
+        let (u0, v0) = world_to_local(&frame, world_pt(0.05, 0.05));
+        let (u1, v1) = world_to_local(&frame, world_pt(0.25, 0.25));
+        let child_lines = crate::construction::add_line_rectangle(
+            &mut doc,
+            child_sketch,
+            u0.min(u1),
+            v0.min(v1),
+            (u1 - u0).abs(),
+            (v1 - v0).abs(),
+            [false; 4],
+        )
+        .to_vec();
+
+        // Project world -> screen by dropping y (the wall's constant coordinate) so both
+        // the wall and the child sketch project into a consistent 2D layout.
+        let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.z));
+        let click = project(world_pt(0.15, 0.15)).unwrap();
+
+        // Eye near the wall's own centroid, not the sketch's corner: this is what made the
+        // bare wall look "closer" than the sketch under the old centroid-depth compare.
+        let eye = world_pt(0.5, 0.5) + Vec3::new(0.0, -100.0, 0.0);
+
+        let face = pick_sketch_face(click, &project, &doc, eye);
+        assert_eq!(
+            face,
+            Some(FaceId::Polygon(child_lines)),
+            "clicking a sketch drawn on a solid's face must pick the sketch, not the bare face, got {face:?}"
         );
     }
 

@@ -701,6 +701,12 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   mouse/keyboard) and enter a ground-plane sketch if none is open: `bearcad.rect{ width, height,
   x?, y?, name? }`, `bearcad.line{ length, angle?, x?, y?, name? }` (or explicit endpoints
   `bearcad.line{ x, y, x1, y1 }`), and `bearcad.circle{ r|radius|diameter, x?, y?, name? }`.
+- `bearcad.plane{ offset?, from?, name? }` (#116) declaratively adds a new construction plane
+  offset along the normal of an existing one (`from`, a construction-plane index — defaults to
+  plane 0 / Ground), the scripted equivalent of picking a plane in the viewport and typing an
+  offset. There is no scripted way yet to anchor a new plane on an axis (which also takes an
+  angle) — only `edit_plane`/`commit_plane`/`set_dim("offset"|"angle")` reach that, and only for
+  an already-existing plane.
 - **Invalid input fails loudly (#104/#109/#110/#112):** when a declarative modeling call's
   underlying action is rejected — degenerate input (zero-size rect/circle/line, zero-distance
   extrude), an extrude face that doesn't exist or isn't a closed loop, a chamfer/fillet vertex
@@ -1030,13 +1036,17 @@ the deployed site. This reuses §9.3's determinism guarantees (fixed view, no an
 ### 11.6 First-person (FPS) mode (#91)
 
 A completely different control scheme for walking around (and inside) models like a
-first-person game, toggled via the command palette ("Toggle FPS Mode"), `Action::ToggleFpsMode`,
-or `bearcad.ui.fps()`. The document is millimeters, so the player is person-scale: eye height
+first-person game, toggled via the command palette ("Toggle FPS Mode"), the View menu
+("FPS Mode", checked while active), `Action::ToggleFpsMode`, or `bearcad.ui.fps()`. The
+document is millimeters, so the player is person-scale: eye height
 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
 
 - **Movement:** WASD walks/strafes on the ground plane (heading follows the view yaw, but
   walking never leaves the ground); the mouse looks (raw pointer motion; the OS cursor is
-  locked and hidden). **Space** jumps (ballistic, gravity 9.81&nbsp;m/s²); **double-tap
+  locked and hidden). On macOS the cursor is locked but stays visible, pinned to the
+  crosshair each frame instead of hidden — winit's hidden-cursor image on that platform
+  decodes a GIF through ImageIO on first use, which has been observed to crash (#119); the
+  visible-but-pinned cursor sidesteps that path. **Space** jumps (ballistic, gravity 9.81&nbsp;m/s²); **double-tap
   Space** toggles Minecraft-style flying (no gravity; Space ascends, Shift descends; flying
   into the ground lands and resumes walking). **Esc** leaves FPS mode.
 - **Weapon-style tool switching:** number keys **1–9** pick tool slots (Select, Sketch,
@@ -1051,10 +1061,17 @@ or `bearcad.ui.fps()`. The document is millimeters, so the player is person-scal
   text field has focus (e.g. typing a dimension) movement keys stand down, like an FPS with
   a menu open. Bare-letter shortcuts are suspended (WASD would collide), but Delete still
   removes the selection.
+- **Scale (#120):** **`[`**/**`]`** shrink/grow the player by 2× per press (clamped to
+  1/100×–100× human scale, i.e. eye height 17&nbsp;mm–170&nbsp;m), so mm-detail work and
+  building/meter-scale walkthroughs are both comfortable without leaving FPS mode. Eye
+  height, walk/fly speed, jump speed, and gravity all scale together (an intentionally
+  smaller/larger person, not a world zoom); look sensitivity and `fps_move`'s explicit mm
+  offsets are unaffected.
 - **Scripting:** `bearcad.ui.fps(on?)`, `fps_look(dx, dy)` (degrees; positive dx looks
   right, dy up), `fps_move{ forward?, strafe? }` (mm along the ground), `fps_jump()`,
-  `fps_fly(on?)`, and `fps_advance(seconds)` (integrates physics with no keys held, e.g. to
-  land a jump). Outside FPS mode these raise catchable errors.
+  `fps_fly(on?)`, `fps_advance(seconds)` (integrates physics with no keys held, e.g. to
+  land a jump), and `fps_scale(value)` (sets the player scale directly, clamped as above).
+  Outside FPS mode these raise catchable errors.
 
 ---
 

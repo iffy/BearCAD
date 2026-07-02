@@ -9,3 +9,7 @@ Run `cargo test` to make sure tests pass. Fix warnings from `cargo build` as the
 We're in pre-alpha right now, so don't worry about defining schema migrations at this point -- just alter the initial schema. And don't mind backward compatibility. Feel free to make breaking compatibility changes.
 
 For every completed task/feature/fix, record the change with `changer add ...` (see `changer add --help` for more info)
+
+When writing docs, I really *really* **REALLY** prefer brevity. Be as succinct as possible in the docs, but also thorough.
+
+Unless I explicitly tell you, you should not be using git to commit or branch. Work in the branch you're already in.

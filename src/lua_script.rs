@@ -1316,6 +1316,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             unsafe { tick.exec(Instruction::FpsAdvance { seconds }) }
         })?,
     )?;
+    api.set(
+        "fps_scale",
+        lua.create_function(|lua, scale: f32| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::FpsScale { scale }) }
+        })?,
+    )?;
 
     api.set(
         "_view",
@@ -1893,6 +1900,26 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #116: declaratively add a new construction plane offset from an existing one — the
+    // scripted equivalent of picking a face/plane in the viewport and typing an offset.
+    // `from` defaults to plane 0 (Ground); there is no scripted way yet to create one
+    // anchored on an axis (which also takes an `angle`).
+    api.set(
+        "plane",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let offset: f32 = opts.get::<Option<f32>>("offset")?.unwrap_or(0.0);
+            let from: usize = opts.get::<Option<usize>>("from")?.unwrap_or(0);
+            unsafe {
+                tick.exec(Instruction::CreatePlane { offset, from })?;
+            }
+            let element = SceneElement::ConstructionPlane(unsafe {
+                tick.state().doc.construction_planes.len().saturating_sub(1)
+            });
+            apply_optional_name(lua, element, Some(opts))
+        })?,
+    )?;
+
     api.set(
         "extrude",
         lua.create_function(|lua, opts: Table| {
@@ -2126,7 +2153,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         local ui_funcs = {
             "tool", "focus_name", "focus_dim", "pane", "palette",
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading",
-            "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance",
+            "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",
             "camera", "zoom_fit", "elements_view",
             "move", "click", "move_ground", "click_ground",
             "drag", "right_drag", "right_drag_pan",
@@ -3533,44 +3560,64 @@ mod tests {
     /// construction plane's offset.
     #[test]
     fn lua_extrude_to_plane_matches_plane_offset() {
-        use crate::construction::{
-            definition_from_reference, plane_from_definition, PlaneReference,
-        };
-        use crate::model::ConstructionPlaneParent;
-
-        let mut runner = ScriptRunner::from_lua_source(
+        let state = run_lua(
             r#"
+            bearcad.plane{ offset = 5 }
             bearcad.rect{ width = 10, height = 10 }
             bearcad.extrude{ polygon = {0, 1, 2, 3}, to = { plane = 1 } }
         "#,
-        )
-        .unwrap();
-        runner.verbose = false;
-        let mut state = AppState::default();
-        state.doc.construction_planes.push(plane_from_definition(
-            &definition_from_reference(
-                &PlaneReference::Face {
-                    origin: glam::Vec3::ZERO,
-                    normal: glam::Vec3::Z,
-                    label: "Ground".to_string(),
-                },
-                5.0,
-                0.0,
-            ),
-            ConstructionPlaneParent::Root,
-        ));
-        let mut synthetic = SyntheticInput::default();
-        let ctx = egui::Context::default();
-        let vp = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0));
-        while !runner.done {
-            runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
-        }
-        assert!(runner.error.is_none(), "script error: {:?}", runner.error);
+        );
 
         let ext = &state.doc.extrusions[0];
         assert_eq!(ext.target, Some(crate::model::ExtrudeTarget::Plane(1)));
         let depth = crate::extrude::effective_distance(&state.doc, ext);
         assert!((depth - 5.0).abs() < 1e-3, "depth should match the plane offset, got {depth}");
+    }
+
+    /// #116: `bearcad.plane{}` declaratively adds a construction plane offset along the
+    /// normal of an existing one (plane 0 / Ground by default) — the scripted equivalent of
+    /// picking a plane in the viewport and typing an offset.
+    #[test]
+    fn lua_plane_adds_offset_construction_plane() {
+        let state = run_lua("bearcad.plane{ offset = 5 }");
+        assert_eq!(state.doc.construction_planes.len(), 2);
+        let plane = &state.doc.construction_planes[1];
+        assert!(
+            (plane.origin.z - 5.0).abs() < 1e-3,
+            "origin should sit 5mm above Ground along its normal, got {:?}",
+            plane.origin
+        );
+        assert!((plane.normal - glam::Vec3::Z).length() < 1e-3);
+    }
+
+    #[test]
+    fn lua_plane_offsets_from_an_explicit_from_index() {
+        let state = run_lua(
+            r#"
+            bearcad.plane{ offset = 5 }
+            bearcad.plane{ offset = 3, from = 1 }
+        "#,
+        );
+        assert_eq!(state.doc.construction_planes.len(), 3);
+        assert!(
+            (state.doc.construction_planes[2].origin.z - 8.0).abs() < 1e-3,
+            "plane 2 should stack a further 3mm on top of plane 1's 5mm, got {:?}",
+            state.doc.construction_planes[2].origin
+        );
+    }
+
+    #[test]
+    fn lua_plane_rejects_unknown_from_index() {
+        let mut runner = ScriptRunner::from_lua_source("bearcad.plane{ offset = 5, from = 9 }").unwrap();
+        runner.verbose = false;
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        let ctx = egui::Context::default();
+        while !runner.done {
+            runner.tick(&mut state, &mut synthetic, None, &ctx);
+        }
+        let err = runner.error.expect("unknown plane index should error");
+        assert!(err.contains("Unknown construction plane 9"), "unexpected error: {err}");
     }
     /// #91: `bearcad.ui.fps()` toggles first-person mode; entering stands the player on
     /// the ground plane at person eye height, exiting leaves the mode.
@@ -3663,6 +3710,7 @@ mod tests {
                 function() bearcad.ui.fps_move{ forward = 100 } end,
                 function() bearcad.ui.fps_fly() end,
                 function() bearcad.ui.fps_advance(1) end,
+                function() bearcad.ui.fps_scale(0.5) end,
             }) do
                 local ok, err = pcall(f)
                 assert(not ok, "fps command should raise outside FPS mode")
@@ -3670,5 +3718,69 @@ mod tests {
             end
         "#,
         );
+    }
+
+    /// #120: `bearcad.ui.fps_scale(value)` shrinks/grows the player, scaling eye height and
+    /// movement/jump speed together so mm-detail and building-scale work are both usable.
+    #[test]
+    fn lua_fps_scale_resizes_the_player_and_their_movement() {
+        let state = run_lua(
+            r#"
+            bearcad.ui.fps()
+            bearcad.ui.fps_scale(0.1)
+        "#,
+        );
+        let player = state.fps.as_ref().unwrap();
+        assert!(
+            (player.scale - 0.1).abs() < 1e-4,
+            "scale should be set directly, got {}",
+            player.scale
+        );
+        assert!(
+            (player.eye.z - crate::fps::EYE_HEIGHT * 0.1).abs() < 1e-2,
+            "eye height should scale down with the player, z={}",
+            player.eye.z
+        );
+
+        let state = run_lua(
+            r#"
+            bearcad.ui.fps()
+            bearcad.ui.fps_scale(0.1)
+            bearcad.ui.fps_move{ forward = 100 }
+        "#,
+        );
+        let small_x = state.fps.as_ref().unwrap().eye.x;
+
+        let state = run_lua(
+            r#"
+            bearcad.ui.fps()
+            bearcad.ui.fps_move{ forward = 100 }
+        "#,
+        );
+        let normal_x = state.fps.as_ref().unwrap().eye.x;
+        assert!(
+            (small_x - normal_x).abs() < 1e-3,
+            "fps_move is an absolute mm offset, unaffected by player scale: small={small_x} normal={normal_x}"
+        );
+    }
+
+    /// #120: out-of-range scales are clamped, not rejected.
+    #[test]
+    fn lua_fps_scale_is_clamped_to_the_documented_range() {
+        let state = run_lua(
+            r#"
+            bearcad.ui.fps()
+            bearcad.ui.fps_scale(1e9)
+        "#,
+        );
+        assert_eq!(state.fps.as_ref().unwrap().scale, crate::fps::MAX_SCALE);
+
+        let state = run_lua(
+            r#"
+            bearcad.ui.fps()
+            bearcad.ui.fps_scale(-5)
+        "#,
+        );
+        assert_eq!(state.fps.as_ref().unwrap().scale, crate::fps::MIN_SCALE);
     }
 }

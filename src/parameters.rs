@@ -406,7 +406,7 @@ pub fn show_computed_line_length_context_menu(
     response.context_menu(|ui| {
         if ui.button("Create parameter from length").clicked() {
             on_create(line_index);
-            ui.close_menu();
+            ui.close();
         }
     });
 }

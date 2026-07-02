@@ -29,6 +29,14 @@ const PITCH_RANGE: f32 = 1.53;
 /// non-degenerate; also the natural "focus" distance for plane/face picking.
 const LOOK_TARGET_DISTANCE: f32 = 1000.0;
 
+/// Smallest player [`FpsController::scale`] (#120): eye height 17 mm, small enough to work
+/// at mm-detail scale.
+pub const MIN_SCALE: f32 = 0.01;
+/// Largest player scale (#120): eye height 170 m, for walking building-sized models.
+pub const MAX_SCALE: f32 = 100.0;
+/// Each `[`/`]` keypress multiplies or divides the current scale by this factor.
+pub const SCALE_STEP: f32 = 2.0;
+
 /// Per-frame movement intent, decoded from held keys by the caller.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FpsInput {
@@ -59,6 +67,12 @@ pub struct FpsController {
     pub flying: bool,
     /// Seconds since the previous Space press, while within the double-tap window.
     space_tap_age: Option<f32>,
+    /// Uniform scale on the player's spatial constants — eye height, movement/jump speed,
+    /// gravity, and look-target distance (#120): shrink to work at mm-detail scale, grow to
+    /// cover building/meter-scale models quickly. 1.0 is the human-scale baseline the other
+    /// constants in this module are tuned for; angular quantities (yaw/pitch/sensitivity)
+    /// are unaffected. Clamped to [`MIN_SCALE`, `MAX_SCALE`].
+    pub scale: f32,
 }
 
 impl FpsController {
@@ -76,7 +90,25 @@ impl FpsController {
             vertical_speed: 0.0,
             flying: false,
             space_tap_age: None,
+            scale: 1.0,
         }
+    }
+
+    /// Set the player's scale directly (#120), clamped to [`MIN_SCALE`, `MAX_SCALE`]. Eye
+    /// height and vertical speed scale with it — by the same ratio — so a grounded player
+    /// stays exactly grounded and momentum stays proportional across the change.
+    pub fn set_scale(&mut self, scale: f32) {
+        let new_scale = scale.clamp(MIN_SCALE, MAX_SCALE);
+        let ratio = new_scale / self.scale;
+        self.eye.z *= ratio;
+        self.vertical_speed *= ratio;
+        self.scale = new_scale;
+    }
+
+    /// Multiply the current scale by `factor` (e.g. [`SCALE_STEP`] to grow, its reciprocal
+    /// to shrink); see [`Self::set_scale`].
+    pub fn scale_by(&mut self, factor: f32) {
+        self.set_scale(self.scale * factor);
     }
 
     /// Unit look direction.
@@ -100,7 +132,7 @@ impl FpsController {
 
     /// Standing on the ground (not flying, not mid-jump).
     pub fn on_ground(&self) -> bool {
-        !self.flying && self.eye.z <= EYE_HEIGHT + 1e-3 && self.vertical_speed <= 0.0
+        !self.flying && self.eye.z <= EYE_HEIGHT * self.scale + 1e-3 && self.vertical_speed <= 0.0
     }
 
     /// Mouse-look by a raw pointer delta in pixels (right/down positive).
@@ -117,6 +149,11 @@ impl FpsController {
     /// Integrate one frame of movement.
     pub fn tick(&mut self, dt: f32, input: FpsInput) {
         let dt = dt.clamp(0.0, 0.1); // a hitched frame must not launch the player
+        let eye_height = EYE_HEIGHT * self.scale;
+        let walk_speed = WALK_SPEED * self.scale;
+        let fly_speed = FLY_SPEED * self.scale;
+        let jump_speed = JUMP_SPEED * self.scale;
+        let gravity = GRAVITY * self.scale;
         if input.jump_pressed {
             if self.space_tap_age.is_some() {
                 // Double-tap: toggle flying (landing resumes gravity from rest).
@@ -125,7 +162,7 @@ impl FpsController {
                 self.space_tap_age = None;
             } else {
                 if !self.flying && self.on_ground() {
-                    self.vertical_speed = JUMP_SPEED;
+                    self.vertical_speed = jump_speed;
                 }
                 self.space_tap_age = Some(0.0);
             }
@@ -139,25 +176,25 @@ impl FpsController {
         let axis = |pos: bool, neg: bool| (pos as i8 - neg as i8) as f32;
         let wish = self.ground_forward() * axis(input.forward, input.back)
             + self.ground_right() * axis(input.right, input.left);
-        let speed = if self.flying { FLY_SPEED } else { WALK_SPEED };
+        let speed = if self.flying { fly_speed } else { walk_speed };
         self.eye += wish.normalize_or_zero() * speed * dt;
 
         if self.flying {
-            self.eye.z += axis(input.ascend, input.descend) * FLY_SPEED * dt;
+            self.eye.z += axis(input.ascend, input.descend) * fly_speed * dt;
             // Flew into the ground: land and go back to walking. Strictly below, so
             // hovering exactly at eye height doesn't count as touching down.
-            if self.eye.z < EYE_HEIGHT {
-                self.eye.z = EYE_HEIGHT;
+            if self.eye.z < eye_height {
+                self.eye.z = eye_height;
                 self.flying = false;
                 self.vertical_speed = 0.0;
             }
         } else {
-            self.vertical_speed -= GRAVITY * dt;
+            self.vertical_speed -= gravity * dt;
             self.eye.z += self.vertical_speed * dt;
             // Land only while falling: a fresh jump starts at exactly ground height
             // with upward speed, and must not be clamped back down the same frame.
-            if self.eye.z <= EYE_HEIGHT && self.vertical_speed <= 0.0 {
-                self.eye.z = EYE_HEIGHT;
+            if self.eye.z <= eye_height && self.vertical_speed <= 0.0 {
+                self.eye.z = eye_height;
                 self.vertical_speed = 0.0;
             }
         }
@@ -165,7 +202,7 @@ impl FpsController {
 
     /// Write the player's view into the orbit camera (see module docs).
     pub fn apply_to_camera(&self, cam: &mut crate::camera::Camera) {
-        cam.set_first_person(self.eye, self.look_dir(), LOOK_TARGET_DISTANCE);
+        cam.set_first_person(self.eye, self.look_dir(), LOOK_TARGET_DISTANCE * self.scale);
     }
 }
 
@@ -207,6 +244,7 @@ mod tests {
             vertical_speed: 0.0,
             flying: false,
             space_tap_age: None,
+            scale: 1.0,
         }
     }
 
@@ -341,5 +379,83 @@ mod tests {
             tool = cycle_tool(tool, 1);
         }
         assert_eq!(tool, Tool::Select, "a full cycle returns to the start");
+    }
+
+    #[test]
+    fn scaling_up_keeps_a_grounded_player_grounded_at_the_new_eye_height() {
+        let mut p = grounded();
+        p.set_scale(10.0);
+        assert!((p.eye.z - EYE_HEIGHT * 10.0).abs() < 1e-2);
+        assert!(p.on_ground(), "rescaling a grounded player must leave them grounded");
+    }
+
+    #[test]
+    fn scaling_down_keeps_a_midair_player_proportionally_placed() {
+        let mut p = grounded();
+        p.eye.z = EYE_HEIGHT * 2.0; // twice normal eye height off the ground
+        p.set_scale(0.5);
+        // Halving scale should also halve the eye's height above ground.
+        assert!(
+            (p.eye.z - EYE_HEIGHT).abs() < 1e-2,
+            "eye.z should scale by the same ratio as scale, got {}",
+            p.eye.z
+        );
+    }
+
+    #[test]
+    fn scale_is_clamped_to_the_documented_range() {
+        let mut p = grounded();
+        p.set_scale(1e6);
+        assert_eq!(p.scale, MAX_SCALE);
+        p.set_scale(-5.0);
+        assert_eq!(p.scale, MIN_SCALE);
+    }
+
+    #[test]
+    fn scale_by_multiplies_the_current_scale() {
+        let mut p = grounded();
+        p.scale_by(SCALE_STEP);
+        assert!((p.scale - SCALE_STEP).abs() < 1e-4);
+        p.scale_by(1.0 / SCALE_STEP);
+        assert!((p.scale - 1.0).abs() < 1e-4, "growing then shrinking should round-trip");
+    }
+
+    #[test]
+    fn a_shrunk_player_walks_and_jumps_proportionally_slower() {
+        let mut small = grounded();
+        small.set_scale(0.1);
+        small.tick(0.1, FpsInput { forward: true, ..Default::default() });
+        let mut normal = grounded();
+        normal.tick(0.1, FpsInput { forward: true, ..Default::default() });
+        assert!(
+            (small.eye.x - normal.eye.x * 0.1).abs() < 1e-2,
+            "walking distance should scale with player size: small={} normal={}",
+            small.eye.x,
+            normal.eye.x
+        );
+    }
+
+    #[test]
+    fn a_grown_player_jump_apex_scales_with_size() {
+        let mut giant = grounded();
+        giant.set_scale(4.0);
+        giant.tick(0.01, FpsInput { jump_pressed: true, ..Default::default() });
+        let mut apex = giant.eye.z;
+        for _ in 0..400 {
+            giant.tick(0.01, FpsInput::default());
+            apex = apex.max(giant.eye.z);
+        }
+        let ground = EYE_HEIGHT * 4.0;
+        let jump_height = apex - ground;
+        // At normal scale the apex is JUMP_SPEED^2 / (2*GRAVITY) above the ground; since
+        // both jump speed and gravity scale by the same factor, apex height scales linearly.
+        let expected = 4.0 * JUMP_SPEED * JUMP_SPEED / (2.0 * GRAVITY);
+        // Euler-integrated physics (dt = 0.01) drifts a few percent from the closed-form
+        // ballistic apex even at scale 1 (see `jump_rises_then_gravity_brings_the_player_back_down`);
+        // a relative tolerance keeps this test about the *scaling*, not integrator error.
+        assert!(
+            (jump_height - expected).abs() / expected < 0.05,
+            "jump height should scale linearly with player size: got {jump_height}, expected {expected}"
+        );
     }
 }

@@ -1,6 +1,6 @@
 //! Application-wide dark theme, tuned to match the viewport drawing area.
 
-use eframe::egui::{self, style::WidgetVisuals, Color32, Rounding, Stroke, Theme, ThemePreference};
+use eframe::egui::{self, style::WidgetVisuals, Color32, CornerRadius, Stroke, Theme, ThemePreference};
 
 /// Viewport background (`main::col::BG`).
 pub const VIEWPORT_BG: Color32 = Color32::from_gray(28);
@@ -36,7 +36,7 @@ fn set_widget_visuals(
     w.bg_fill = bg;
     w.bg_stroke = Stroke::new(1.0, border);
     w.fg_stroke = Stroke::new(1.0, fg);
-    w.rounding = Rounding::same(rounding);
+    w.corner_radius = CornerRadius::same(rounding as u8);
     w.expansion = expansion;
 }
 
@@ -111,7 +111,7 @@ pub fn panel_frame() -> egui::Frame {
     egui::Frame {
         fill: PANEL_BG,
         stroke: Stroke::new(1.0, BORDER),
-        inner_margin: egui::Margin::symmetric(8.0, 6.0),
+        inner_margin: egui::Margin::symmetric(8, 6),
         ..Default::default()
     }
 }

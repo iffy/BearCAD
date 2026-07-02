@@ -124,8 +124,8 @@ fn length_expression_text_edit_frame(ui: &egui::Ui, id: Id, invalid: bool) -> Fr
             visuals.extreme_bg_color
         })
         .stroke(stroke)
-        .inner_margin(Margin::symmetric(4.0, 2.0))
-        .rounding(widget.rounding)
+        .inner_margin(Margin::symmetric(4, 2))
+        .corner_radius(widget.corner_radius)
 }
 
 fn is_identifier_part(c: char) -> bool {

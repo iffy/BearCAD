@@ -509,6 +509,13 @@ pub enum Action {
         index: usize,
     },
     CommitConstructionPlane,
+    /// Declaratively add a new construction plane offset from an existing one, without the
+    /// interactive begin/set-dim/commit flow (#116): the scripted equivalent of picking
+    /// plane `from` in the viewport and typing `offset_mm`.
+    AddConstructionPlane {
+        from: usize,
+        offset_mm: f32,
+    },
     SetPlaneOffset { value: String },
     SetPlaneAngle { value: String },
     FocusPlaneDim { dim: PlaneDim },
@@ -3011,26 +3018,24 @@ impl AppState {
                         }
                     }
                 } else {
-                    let plane = plane_from_definition(&definition, cp.parent);
-                    self.doc.construction_planes.push(plane);
-                    self.doc.shape_order.push(ShapeKind::ConstructionPlane);
-                    let index = self.doc.construction_planes.len() - 1;
-                    self.scene_selection.clear();
-                    click_scene_selection(
-                        &mut self.scene_selection,
-                        SceneElement::ConstructionPlane(index),
-                        false,
-                    );
-                    self.status = format!(
-                        "Added construction plane ({} from {})",
-                        crate::value::format_length_display_in(
-                            live_offset,
-                            self.doc.default_length_unit
-                        ),
-                        cp.reference.label()
-                    );
-                    ActionResult::Ok
+                    self.add_construction_plane(definition, cp.parent)
                 }
+            }
+            Action::AddConstructionPlane { from, offset_mm } => {
+                let Some(reference_plane) = self.doc.construction_planes.get(from) else {
+                    return ActionResult::Err(format!("Unknown construction plane {from}"));
+                };
+                let anchor = crate::model::PlaneAnchor::Face {
+                    origin: reference_plane.origin,
+                    normal: reference_plane.normal,
+                    label: "Construction plane".to_string(),
+                };
+                let definition = crate::model::PlaneDefinition {
+                    anchor,
+                    offset_mm,
+                    angle_deg: 0.0,
+                };
+                self.add_construction_plane(definition, ConstructionPlaneParent::Root)
             }
             Action::SetPlaneOffset { value } => {
                 let Some(cp) = &mut self.creating_plane else {
@@ -4697,6 +4702,34 @@ impl AppState {
             self.cam.set_transition_zoom(zoom_distance);
         }
         self.sketch_reframe_pending = false;
+    }
+
+    /// Push a brand-new construction plane (never edits an existing one) and select it.
+    /// Shared by the interactive commit flow (`Action::CommitConstructionPlane` with no
+    /// `edit_index`) and the declarative `Action::AddConstructionPlane` (#116).
+    fn add_construction_plane(
+        &mut self,
+        definition: crate::model::PlaneDefinition,
+        parent: ConstructionPlaneParent,
+    ) -> ActionResult {
+        let live_offset = definition.offset_mm;
+        let label = reference_from_definition(&definition).label().to_string();
+        let plane = plane_from_definition(&definition, parent);
+        self.doc.construction_planes.push(plane);
+        self.doc.shape_order.push(ShapeKind::ConstructionPlane);
+        let index = self.doc.construction_planes.len() - 1;
+        self.scene_selection.clear();
+        click_scene_selection(
+            &mut self.scene_selection,
+            SceneElement::ConstructionPlane(index),
+            false,
+        );
+        self.status = format!(
+            "Added construction plane ({} from {})",
+            crate::value::format_length_display_in(live_offset, self.doc.default_length_unit),
+            label
+        );
+        ActionResult::Ok
     }
 
     fn enter_sketch(
