@@ -28,7 +28,8 @@
 #include <BRepBndLib.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
-#include <TopTools_IndexedMapOfShape.hxx>
+#include <NCollection_IndexedMap.hxx>
+#include <TopTools_ShapeMapHasher.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
@@ -118,7 +119,7 @@ extern "C" BearcadShape* bearcad_shape_loft(const double* bottom_xyz, const doub
         }
         // isSolid = true (cap the ends), ruled = true (planar strips between
         // corresponding edges rather than a smooth interpolation).
-        BRepOffsetAPI_ThruSections gen(Standard_True, Standard_True);
+        BRepOffsetAPI_ThruSections gen(true, true);
         gen.AddWire(bottom.Wire());
         gen.AddWire(top.Wire());
         gen.Build();
@@ -279,7 +280,7 @@ TopoDS_Shape apply_edge_treatment(const TopoDS_Shape& shape, const double* edges
     }
 
     // Dedupe: TopExp::MapShapes visits each shared edge once.
-    TopTools_IndexedMapOfShape edgeMap;
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> edgeMap;
     TopExp::MapShapes(shape, TopAbs_EDGE, edgeMap);
 
     Maker maker(shape);
@@ -290,7 +291,7 @@ TopoDS_Shape apply_edge_treatment(const TopoDS_Shape& shape, const double* edges
     for (unsigned long i = 0; i < n; ++i) {
         const double* e = edges + 6 * i;
         bool matched = false;
-        for (Standard_Integer k = 1; k <= edgeMap.Extent(); ++k) {
+        for (int k = 1; k <= edgeMap.Extent(); ++k) {
             const TopoDS_Edge& edge = TopoDS::Edge(edgeMap(k));
             TopoDS_Vertex v1, v2;
             TopExp::Vertices(edge, v1, v2);
@@ -387,7 +388,7 @@ extern "C" double* bearcad_shape_tessellate(const BearcadShape* shape, double de
         // handle (cheap, shares the underlying TShape) so the const contract holds
         // at the Rust boundary while OCCT attaches its triangulation.
         TopoDS_Shape s = shape->shape;
-        BRepMesh_IncrementalMesh mesher(s, deflection, Standard_False, 0.5, Standard_True);
+        BRepMesh_IncrementalMesh mesher(s, deflection, false, 0.5, true);
         mesher.Perform();
 
         std::vector<double> tris;
@@ -400,13 +401,13 @@ extern "C" double* bearcad_shape_tessellate(const BearcadShape* shape, double de
             }
             const gp_Trsf& trsf = loc.Transformation();
             const bool reversed = face.Orientation() == TopAbs_REVERSED;
-            for (Standard_Integer t = 1; t <= tri->NbTriangles(); ++t) {
-                Standard_Integer n1, n2, n3;
+            for (int t = 1; t <= tri->NbTriangles(); ++t) {
+                int n1, n2, n3;
                 tri->Triangle(t).Get(n1, n2, n3);
                 if (reversed) {
                     std::swap(n2, n3);
                 }
-                const Standard_Integer idx[3] = {n1, n2, n3};
+                const int idx[3] = {n1, n2, n3};
                 for (int k = 0; k < 3; ++k) {
                     gp_Pnt p = tri->Node(idx[k]).Transformed(trsf);
                     tris.push_back(p.X());
