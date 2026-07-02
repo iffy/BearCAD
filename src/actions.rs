@@ -3496,6 +3496,26 @@ impl AppState {
                 if faces.is_empty() {
                     return ActionResult::Err("Extrusion needs at least one face".to_string());
                 }
+                // #104: a zero-distance extrusion would be an invisible dead entity; reject it
+                // like the interactive tool ([`Action::CommitExtrusion`]) does.
+                if distance.abs() < 1e-3 {
+                    let e = "Extrusion distance must be non-zero".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                // #112: every face must resolve to a real profile — for a `Polygon`, all line
+                // indices must be live lines forming a closed loop; for a `Circle`, the circle
+                // must exist; `Boolean` operands are checked recursively and must reduce to a
+                // single loop. `face_profile_world` is the same oracle the mesher uses, so
+                // anything it rejects here would have produced no geometry.
+                for face in &faces {
+                    if crate::extrude::face_profile_world(&self.doc, face).is_none() {
+                        let e =
+                            "Extrude face does not exist or is not a closed loop".to_string();
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                }
                 let candidate = extrude_merge_candidate(&self.doc, sketch);
                 let body_mode = match body {
                     ExtrudeBodyChoice::New => ExtrudeBodyMode::NewBody,
@@ -3656,6 +3676,19 @@ impl AppState {
                 if distance.abs() < 1e-3 {
                     self.creating_extrusion = Some(ce);
                     return ActionResult::Err("Extrusion distance must be non-zero".to_string());
+                }
+                // #112 defense-in-depth: interactively toggled faces come from picking real
+                // geometry, but an edit session's stored faces could have gone stale (e.g.
+                // their lines deleted since); reject rather than commit a dead extrusion.
+                if ce
+                    .faces
+                    .iter()
+                    .any(|f| crate::extrude::face_profile_world(&self.doc, f).is_none())
+                {
+                    self.creating_extrusion = Some(ce);
+                    return ActionResult::Err(
+                        "Extrude face does not exist or is not a closed loop".to_string(),
+                    );
                 }
                 if let Some(idx) = ce.edit_index {
                     if let Some(extrusion) = self.doc.extrusions.get_mut(idx) {

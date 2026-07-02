@@ -669,6 +669,13 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   mouse/keyboard) and enter a ground-plane sketch if none is open: `bearcad.rect{ width, height,
   x?, y?, name? }`, `bearcad.line{ length, angle?, x?, y?, name? }` (or explicit endpoints
   `bearcad.line{ x, y, x1, y1 }`), and `bearcad.circle{ r|radius|diameter, x?, y?, name? }`.
+- **Invalid input fails loudly (#104/#109/#110/#112):** when a declarative modeling call's
+  underlying action is rejected — degenerate input (zero-size rect/circle/line, zero-distance
+  extrude), an extrude face that doesn't exist or isn't a closed loop, a chamfer/fillet vertex
+  that doesn't join exactly two lines or whose corner is within ~1° of straight (§3.1), an
+  out-of-range 3D edge, … — the call raises a Lua error (catchable with `pcall`) instead of
+  silently succeeding with nothing created. The GUI surfaces the same rejection message
+  through the status bar.
 - **Read-back / introspection (#107):** the API is not write-only — pure read getters (never
   recorded as instructions) let scripts assert what they built: `bearcad.count(kind)` /
   `bearcad.get{ kind, index }` over lines, circles, sketches, constraints, construction

@@ -50,6 +50,7 @@ impl ScriptTickData {
 
     pub(crate) unsafe fn exec(&self, instr: Instruction) -> mlua::Result<()> {
         let runner = self.runner();
+        runner.last_action_error = None;
         let _ = runner.execute_instruction(
             instr,
             self.state(),
@@ -57,7 +58,14 @@ impl ScriptTickData {
             self.viewport,
             self.egui_ctx(),
         );
-        Ok(())
+        // Declarative modeling instructions record their action's rejection in
+        // `last_action_error` (#104/#109/#110/#112): raise it so invalid input fails the
+        // script (catchable with `pcall`) instead of silently succeeding with nothing
+        // created. The GUI sees the same message through the status bar.
+        match runner.last_action_error.take() {
+            Some(e) => Err(mlua::Error::external(e)),
+            None => Ok(()),
+        }
     }
 }
 
@@ -1982,6 +1990,10 @@ mod tests {
         while !runner.done {
             runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
         }
+        // Failed modeling actions now raise Lua errors (#104/#109/#110/#112); tests that
+        // exercise rejection paths catch them with `pcall`, so an uncaught error here is
+        // always a test bug.
+        assert!(runner.error.is_none(), "script error: {:?}", runner.error);
         state
     }
 
@@ -2155,11 +2167,12 @@ mod tests {
         );
     }
 
-    /// Builds a state with a 90-degree corner (two lines coincident at (10,0)) and runs `source`
-    /// against it. Pre-builds the coincident vertex directly in Rust (rather than via
-    /// `bearcad.select{..., end=...}` + `add_geometric_constraint("coincident")`, #68) for
-    /// brevity, then lets the script call `bearcad.chamfer_vertex`/`fillet_vertex` against it.
-    fn run_lua_against_a_right_angle_corner(source: &str) -> AppState {
+    /// Builds a state with a corner (two lines coincident at (10,0), the second running to
+    /// `b_far`) and runs `source` against it. Pre-builds the coincident vertex directly in Rust
+    /// (rather than via `bearcad.select{..., end=...}` + `add_geometric_constraint("coincident")`,
+    /// #68) for brevity, then lets the script call `bearcad.chamfer_vertex`/`fillet_vertex`
+    /// against it. Returns the final state and any script error.
+    fn run_lua_against_corner(source: &str, b_far: (f32, f32)) -> (AppState, Option<String>) {
         use crate::model::{Constraint, ConstraintEntity, ConstraintKind, Line, LineEnd, ShapeKind};
 
         let mut runner = ScriptRunner::from_lua_source(source).unwrap();
@@ -2167,7 +2180,10 @@ mod tests {
         let mut state = AppState::default();
         let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
         state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        state.doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 10.0));
+        state
+            .doc
+            .lines
+            .push(Line::from_local_endpoints(sketch, 10.0, 0.0, b_far.0, b_far.1));
         state.doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line]);
         state.doc.constraints.push(Constraint {
             sketch,
@@ -2191,6 +2207,13 @@ mod tests {
         while !runner.done {
             runner.tick(&mut state, &mut synthetic, None, &ctx);
         }
+        (state, runner.error)
+    }
+
+    /// [`run_lua_against_corner`] with a 90-degree corner and no script error expected.
+    fn run_lua_against_a_right_angle_corner(source: &str) -> AppState {
+        let (state, error) = run_lua_against_corner(source, (10.0, 10.0));
+        assert!(error.is_none(), "script error: {error:?}");
         state
     }
 
@@ -2220,6 +2243,153 @@ mod tests {
         );
         assert_eq!(state.doc.lines.len(), 3, "a bridging line should be added");
         assert!(state.doc.lines[2].is_curved(), "fillet bridges with a curved line");
+    }
+
+    /// #110: a corner within ~1° of straight (SPEC §3.1) must be *rejected at commit*, not
+    /// silently accepted into a micro-bridge. The second line here leaves the shared vertex
+    /// (10,0) toward (20, 0.01) — about 0.06° off dead-straight from the first line.
+    #[test]
+    fn lua_fillet_vertex_errors_on_a_near_straight_corner() {
+        let (state, error) = run_lua_against_corner(
+            r#"
+            local ok, err = pcall(bearcad.fillet_vertex, {
+                point = { kind = "line", index = 0, ["end"] = "end" },
+                radius = 3,
+            })
+            assert(not ok, "near-straight corner fillet should error")
+            assert(tostring(err):find("degenerate"), "unexpected error: " .. tostring(err))
+        "#,
+            (20.0, 0.01),
+        );
+        assert!(error.is_none(), "script error: {error:?}");
+        assert_eq!(state.doc.lines.len(), 2, "no bridging line should be created");
+    }
+
+    /// #109: fillet/chamfer at a vertex that only one line touches must error (previously a
+    /// silent no-op), and create nothing.
+    #[test]
+    fn lua_fillet_vertex_errors_on_a_one_line_vertex() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
+            local ok, err = pcall(bearcad.fillet_vertex, {
+                point = { kind = "line", index = 0, ["end"] = "end" },
+                radius = 3,
+            })
+            assert(not ok, "fillet at a one-line vertex should error")
+            assert(tostring(err):find("exactly two lines"), "unexpected error: " .. tostring(err))
+            assert(bearcad.count("line") == 1, "no bridging line should be created")
+            local ok2, err2 = pcall(bearcad.chamfer_vertex, {
+                point = { kind = "line", index = 0, ["end"] = "end" },
+                distance = 3,
+            })
+            assert(not ok2, "chamfer at a one-line vertex should error")
+            assert(bearcad.count("line") == 1, "no bridging line should be created")
+        "#,
+        );
+        assert_eq!(state.doc.lines.len(), 1);
+    }
+
+    /// #109: a vertex where three lines join is just as invalid for chamfer/fillet as one.
+    #[test]
+    fn lua_fillet_vertex_errors_on_a_three_line_vertex() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
+            bearcad.line{ x = 10, y = 0, x1 = 20, y1 = 5 }
+            bearcad.line{ x = 10, y = 0, x1 = 10, y1 = 10 }
+            bearcad.select{ kind = "line", index = 0, ["end"] = "end" }
+            bearcad.select({ kind = "line", index = 1, ["end"] = "start" }, true)
+            bearcad.add_geometric_constraint("coincident")
+            bearcad.select{ kind = "line", index = 0, ["end"] = "end" }
+            bearcad.select({ kind = "line", index = 2, ["end"] = "start" }, true)
+            bearcad.add_geometric_constraint("coincident")
+            local ok, err = pcall(bearcad.fillet_vertex, {
+                point = { kind = "line", index = 0, ["end"] = "end" },
+                radius = 3,
+            })
+            assert(not ok, "fillet at a three-line vertex should error")
+            assert(tostring(err):find("exactly two lines"), "unexpected error: " .. tostring(err))
+            assert(bearcad.count("line") == 3, "no bridging line should be created")
+        "#,
+        );
+        assert_eq!(state.doc.lines.len(), 3);
+    }
+
+    /// #104: degenerate (zero-size) rect/circle/line calls must raise Lua errors and create
+    /// nothing, instead of silently succeeding.
+    #[test]
+    fn lua_zero_size_shapes_error_and_create_nothing() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            local ok, err = pcall(bearcad.rect, { width = 0, height = 0 })
+            assert(not ok, "zero-size rect should error")
+            assert(tostring(err):find("width and height"), "unexpected error: " .. tostring(err))
+            local ok2, err2 = pcall(bearcad.circle, { r = 0 })
+            assert(not ok2, "zero-radius circle should error")
+            assert(tostring(err2):find("radius"), "unexpected error: " .. tostring(err2))
+            local ok3, err3 = pcall(bearcad.line, { x = 20, y = 0, x1 = 20, y1 = 0 })
+            assert(not ok3, "zero-length line should error")
+            assert(tostring(err3):find("too short"), "unexpected error: " .. tostring(err3))
+            assert(bearcad.count("line") == 0, "no lines should be created")
+            assert(bearcad.count("circle") == 0, "no circles should be created")
+        "#,
+        );
+        assert_eq!(state.doc.lines.len(), 0);
+        assert_eq!(state.doc.circles.len(), 0);
+    }
+
+    /// #104: a zero-distance extrude must error and create nothing (previously it created an
+    /// invisible extrusion).
+    #[test]
+    fn lua_zero_distance_extrude_errors_and_creates_nothing() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ x = 0, y = 0, width = 10, height = 10 }
+            local ok, err = pcall(bearcad.extrude, { polygon = {0, 1, 2, 3}, distance = 0 })
+            assert(not ok, "zero-distance extrude should error")
+            assert(tostring(err):find("non%-zero"), "unexpected error: " .. tostring(err))
+            assert(bearcad.count("extrusion") == 0, "no extrusion should be created")
+        "#,
+        );
+        assert_eq!(state.doc.extrusions.len(), 0);
+        assert_eq!(state.doc.bodies.len(), 0);
+    }
+
+    /// #112: extruding a polygon face whose line indices don't exist (or don't form a closed
+    /// loop) must error and create nothing, instead of creating a dead extrusion.
+    #[test]
+    fn lua_extrude_errors_on_a_missing_polygon_line() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ x = 0, y = 0, width = 10, height = 10 }
+            local ok, err = pcall(bearcad.extrude, {
+                polygon = {0, 1, 2, 99}, distance = 5, body = "merge",
+            })
+            assert(not ok, "extrude with a nonexistent line index should error")
+            assert(tostring(err):find("closed loop"), "unexpected error: " .. tostring(err))
+            assert(bearcad.count("extrusion") == 0, "extrusion count must be unchanged")
+        "#,
+        );
+        assert_eq!(state.doc.extrusions.len(), 0);
+    }
+
+    /// #112: line indices that all exist but don't form a closed loop are rejected too.
+    #[test]
+    fn lua_extrude_errors_on_a_non_loop_polygon() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ x = 0, y = 0, width = 10, height = 10 }
+            local ok, err = pcall(bearcad.extrude, { polygon = {0, 1, 2}, distance = 5 })
+            assert(not ok, "extrude with an open line set should error")
+            assert(tostring(err):find("closed loop"), "unexpected error: " .. tostring(err))
+            assert(bearcad.count("extrusion") == 0, "extrusion count must be unchanged")
+        "#,
+        );
+        assert_eq!(state.doc.extrusions.len(), 0);
     }
 
     /// #77: `bearcad.chamfer_edge`/`fillet_edge` chamfer/fillet an analytic edge of an
@@ -2274,18 +2444,20 @@ mod tests {
 
     #[test]
     fn lua_chamfer_edge_rejects_an_out_of_range_edge() {
-        // `tick.exec` (like the other declarative-modeling calls) doesn't turn an `ActionResult
-        // ::Err` into a Lua-level script error — it's reported through `AppState::status`
-        // instead, same as the interactive gizmo tool would see it.
+        // `tick.exec` turns a failed declarative-modeling action into a Lua error
+        // (#104/#109/#110/#112) — catchable with `pcall` — in addition to reporting it
+        // through `AppState::status` like the interactive gizmo tool would see it.
         let state = run_lua(
             r#"
             bearcad.rect{ x = 0, y = 0, width = 10, height = 10 }
             bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
-            bearcad.chamfer_edge{
+            local ok, err = pcall(bearcad.chamfer_edge, {
                 extrusion = 0,
                 edge = { kind = "vertical", face = 0, edge = 99 },
                 distance = 2,
-            }
+            })
+            assert(not ok, "an out-of-range edge should error")
+            assert(tostring(err):lower():find("edge"), "unexpected error: " .. tostring(err))
         "#,
         );
         assert!(
@@ -2430,12 +2602,20 @@ mod tests {
 
     #[test]
     fn lua_extrude_accepts_explicit_polygon_line_list() {
+        // The triangle's corners must actually be joined (coincident constraints, #68) for
+        // the line list to form a closed loop — since #112, extrude rejects a line set that
+        // merely touches by coordinates (it would produce no geometry).
         let state = run_lua(
             r#"
             bearcad.new()
             bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
             bearcad.line{ x = 10, y = 0, x1 = 5, y1 = 8 }
             bearcad.line{ x = 5, y = 8, x1 = 0, y1 = 0 }
+            for _, pair in ipairs({ {0, 1}, {1, 2}, {2, 0} }) do
+                bearcad.select{ kind = "line", index = pair[1], ["end"] = "end" }
+                bearcad.select({ kind = "line", index = pair[2], ["end"] = "start" }, true)
+                bearcad.add_geometric_constraint("coincident")
+            end
             bearcad.extrude{ polygon = {0, 1, 2}, distance = 6 }
         "#,
         );

@@ -4,7 +4,8 @@
 //! live UI via synthetic pointer/keyboard events and headless actions.
 
 use crate::actions::{
-    dim_label_target_in_sketch, Action, AppState, DimLabelAxis, Pane, RectAxis, Tool,
+    dim_label_target_in_sketch, Action, ActionResult, AppState, DimLabelAxis, Pane, RectAxis,
+    Tool,
 };
 use crate::command_palette::{best_match, commands_for_state, PaletteOutcome};
 use crate::constraints::add_distance_constraint;
@@ -1520,6 +1521,11 @@ pub struct ScriptRunner {
     waiting_view_transition: bool,
     /// Prevents re-printing an instruction while waiting (e.g. for viewport layout).
     logged_pc: Option<usize>,
+    /// Set when a declarative modeling instruction's underlying action is rejected
+    /// (#104/#109/#110/#112); the Lua bindings (`ScriptTickData::exec`) raise it as a
+    /// script error so invalid input fails loudly instead of silently doing nothing.
+    /// Instruction-list playback ignores it (the GUI status bar already reports it).
+    pub(crate) last_action_error: Option<String>,
     pub verbose: bool,
     pub done: bool,
     pub error: Option<String>,
@@ -1538,6 +1544,7 @@ impl ScriptRunner {
             screenshot_pending: None,
             waiting_view_transition: false,
             logged_pc: None,
+            last_action_error: None,
             verbose: true,
             done: false,
             error: None,
@@ -2043,6 +2050,15 @@ impl ScriptRunner {
         }
     }
 
+    /// Stashes a rejected declarative-modeling action's message in
+    /// [`ScriptRunner::last_action_error`] so `ScriptTickData::exec` can raise it as a Lua
+    /// error (#104/#109/#110/#112).
+    fn record_action_error(&mut self, result: ActionResult) {
+        if let ActionResult::Err(e) = result {
+            self.last_action_error = Some(e);
+        }
+    }
+
     fn execute_one(
         &mut self,
         instr: Instruction,
@@ -2116,20 +2132,23 @@ impl ScriptRunner {
                 width,
                 height,
             } => {
-                state.apply(Action::CreateRectangle {
+                let result = state.apply(Action::CreateRectangle {
                     x,
                     y,
                     width,
                     height,
                 });
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::CreateLine { x0, y0, x1, y1, bezier } => {
-                state.apply(Action::CreateLineSegment { x0, y0, x1, y1, bezier });
+                let result = state.apply(Action::CreateLineSegment { x0, y0, x1, y1, bezier });
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::CreateCircle { cx, cy, r } => {
-                state.apply(Action::CreateCircle { cx, cy, r });
+                let result = state.apply(Action::CreateCircle { cx, cy, r });
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::Extrude {
@@ -2138,20 +2157,24 @@ impl ScriptRunner {
                 distance,
                 body,
             } => {
-                state.apply(Action::CreateExtrusion {
+                let result = state.apply(Action::CreateExtrusion {
                     sketch,
                     faces,
                     distance,
                     body,
                 });
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::VertexTreatment { point, kind, amount } => {
-                state.apply(Action::CommitVertexTreatment { point, kind, amount });
+                let result = state.apply(Action::CommitVertexTreatment { point, kind, amount });
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::EdgeTreatment { extrusion, edge, kind, amount } => {
-                state.apply(Action::CommitEdgeTreatment { extrusion, edge, kind, amount });
+                let result =
+                    state.apply(Action::CommitEdgeTreatment { extrusion, edge, kind, amount });
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::SetElementVisible { element, visible } => {
