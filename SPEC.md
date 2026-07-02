@@ -943,10 +943,11 @@ the deployed site. This reuses §9.3's determinism guarantees (fixed view, no an
   the shape's face when the cursor is near the edge.
 - **3D body edges (#31):** any edge of any 3D body — not just 2D sketch geometry — is a valid
   axis reference for a construction plane, including STL/STEP-imported bodies. An edge here is
-  a *feature* edge of the body's triangle mesh (a mesh boundary, or a crease between two
-  non-coplanar triangles) — the same extraction `ShadingMode::Wireframe` uses to draw a body's
-  edges — so it works uniformly for any body regardless of how it was created, without needing
-  an analytic profile.
+  a *feature* edge of the body's triangle mesh (a mesh boundary, or a crease where adjacent
+  triangles' normals differ by more than ~15°, so flat-face triangulation diagonals *and* the
+  small seams between facets approximating a smooth curved surface are both excluded, #82/#101)
+  — the same extraction `ShadingMode::Wireframe` uses to draw a body's edges — so it works
+  uniformly for any body regardless of how it was created, without needing an analytic profile.
 - **Global axes:** the origin X/Y/Z triad is pickable as an axis reference when creating
   construction planes. Axis gizmo handles show a hover affordance (bright ring and thicker
   stroke) so the user can see which handle will be grabbed on click.
@@ -959,7 +960,10 @@ the deployed site. This reuses §9.3's determinism guarantees (fixed view, no an
   - **Projection** — the same orthographic/perspective choice the old button toggled
     directly; the active one is highlighted, click the other to switch.
   - **Shading** — how committed bodies render, one of:
-    - *Wireframe*: edges only, no fill.
+    - *Wireframe*: edges only, no fill. Draws *feature* edges only — mesh boundaries and
+      creases sharper than ~15° — so the internal triangulation of flat faces (#82) and the
+      facet seams of tessellated smooth surfaces like cylinder walls and fillets (#101) are
+      not drawn.
     - *Transparent solid*: translucent fill with edges visible through it.
     - *Solid*: opaque fill, no edge overlay (the default — today's existing look).
     - *Solid + wireframe*: opaque fill plus an edge overlay that stays visible through the
@@ -967,10 +971,13 @@ the deployed site. This reuses §9.3's determinism guarantees (fixed view, no an
       (above) so the far-side edges aren't occluded by the near faces.
     - *Realistic (#83)*: ambient + diffuse + specular (Blinn-Phong-ish) lighting instead of
       `Solid`'s flat/Lambert-ish term, giving bodies a matte/satin "painted object" look with a
-      camera-dependent specular highlight. Still flat-shaded per triangle (no shared vertex
-      normals exist on the mesh), so it reads as faceted rather than smoothly lit. No
-      materials/textures yet — every body renders with the same fixed gloss; per-body/per-face
-      materials are future work.
+      camera-dependent specular highlight. The diffuse term is the stronger of a fixed scene
+      light (above-ish, dominant, so form still reads) and a camera "headlight" (#102), so a
+      face square to the camera is always clearly lit — roughly as bright as `Solid` — instead
+      of dropping to the ambient floor when the fixed light misses it. Still flat-shaded per
+      triangle (no shared vertex normals exist on the mesh), so it reads as faceted rather than
+      smoothly lit. No materials/textures yet — every body renders with the same fixed gloss;
+      per-body/per-face materials are future work.
 
   Both rows are backed by `Camera` state (a viewport display preference, alongside
   projection mode — not saved model geometry) and are fully scriptable:

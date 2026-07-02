@@ -1986,10 +1986,20 @@ fn quantize_vertex(v: Vec3) -> (i64, i64, i64) {
 }
 
 /// Cosine of the smallest angle between two triangles' face normals that counts as a real
-/// feature edge (crease) between them, rather than an internal triangulation seam within a
-/// flat face (e.g. the diagonal splitting a square face into two triangles) — see
-/// [`solid_mesh_unique_edges`] (#82). ~1 degree of tolerance for floating-point noise.
-const WIREFRAME_CREASE_COS_THRESHOLD: f32 = 0.9998;
+/// feature edge (crease) between them, rather than an internal tessellation seam — either the
+/// diagonal splitting a flat face into triangles (#82) or the small angle between adjacent
+/// facets approximating a smooth curved surface (#101).
+///
+/// cos(15°): this app's curved-surface tessellations all facet finer than that — a
+/// `CIRCLE_SEGMENTS` (48-gon) cylinder wall meets at 7.5°, a `BEZIER_SEGMENTS` (24-segment)
+/// fillet/bezier arc at ~3.75° per 90°, and OCCT's `OCCT_DEFLECTION` (0.05) linear-deflection
+/// meshing stays under 15° for arc radii ≳ 6 — while genuine feature edges are far larger
+/// (box corners 90°, chamfer bevels ≥ ~30°). Trade-off: very small-radius OCCT fillets
+/// (r ≲ 6, where 0.05 deflection allows facet angles up to OCCT's 0.5 rad angular-deflection
+/// cap ≈ 28.6°) can still show a few seams. Shared deliberately with body-edge *picking*
+/// (#31, `construction.rs`): pickable edges stay exactly the edges wireframe draws, and facet
+/// seams were never stable references anyway (they move whenever tessellation changes).
+const WIREFRAME_CREASE_COS_THRESHOLD: f32 = 0.965_926; // cos(15°)
 
 /// Extract the *feature* edges of a triangle-soup solid mesh (#33/#82): an edge is kept only
 /// if it's a mesh boundary (used by just one triangle) or a real crease — shared by two or
@@ -2600,13 +2610,24 @@ const REALISTIC_AMBIENT: f32 = 0.30;
 const REALISTIC_DIFFUSE: f32 = 0.55;
 const REALISTIC_SPECULAR: f32 = 0.35;
 const REALISTIC_SHININESS: f32 = 24.0;
+/// Weight of the camera-attached "headlight" diffuse term (#102). The fixed light sits
+/// above-ish the scene, so from horizontal views a camera-facing wall got no diffuse at all
+/// and rendered at the ambient floor — nearly black, *less* readable than `Solid` mode. The
+/// headlight guarantees a face square to the camera reaches ambient + 0.7·diffuse ≈ 0.69
+/// total, on par with `Solid`'s ~0.67 for the same face. Combined with `max()` (not summed)
+/// so the fixed light still dominates wherever it lands, preserving per-face contrast/shape.
+const REALISTIC_HEADLIGHT: f32 = 0.70;
 
 /// Blinn-Phong-ish flat shading for one triangle face, two-sided (the normal is flipped to
 /// face the camera first, matching `push_solid`'s two-sided convention): ambient + diffuse +
 /// a camera-dependent specular highlight, instead of `push_solid`'s single Lambert-ish term.
+/// The diffuse term takes the stronger of the fixed scene light and a camera headlight
+/// (#102), so surfaces the user is looking at are always reasonably lit.
 fn realistic_shade(base: Color32, normal: Vec3, light: Vec3, view: Vec3) -> Color32 {
     let n = if normal.dot(view) < 0.0 { -normal } else { normal };
-    let diffuse = n.dot(light).max(0.0);
+    let fixed_diffuse = n.dot(light).max(0.0);
+    let headlight_diffuse = REALISTIC_HEADLIGHT * n.dot(view).max(0.0);
+    let diffuse = fixed_diffuse.max(headlight_diffuse);
     let half = (light + view).normalize_or_zero();
     let specular = n.dot(half).max(0.0).powf(REALISTIC_SHININESS);
     let intensity = REALISTIC_AMBIENT + REALISTIC_DIFFUSE * diffuse;
@@ -3046,6 +3067,73 @@ mod tests {
         assert!(
             edges.contains(&shared) || edges.contains(&(shared.1, shared.0)),
             "the shared crease edge should be kept, got {edges:?}"
+        );
+    }
+
+    #[test]
+    fn solid_mesh_unique_edges_drops_cylinder_wall_seams_but_keeps_the_rims() {
+        // A CIRCLE_SEGMENTS-gon prism approximating a cylinder (#101): adjacent wall facets
+        // meet at only 360/48 = 7.5° — tessellation smoothness, not a feature edge — so the
+        // vertical wall seams must be dropped, while the two rims (wall meets cap at 90°)
+        // must be kept. Every kept edge is therefore horizontal (constant z).
+        let n = crate::extrude::CIRCLE_SEGMENTS;
+        let (r, h) = (12.0f32, 10.0f32);
+        let pt = |i: usize, z: f32| {
+            let a = i as f32 / n as f32 * std::f32::consts::TAU;
+            Vec3::new(r * a.cos(), r * a.sin(), z)
+        };
+        let mut triangles = Vec::new();
+        for i in 0..n {
+            let j = (i + 1) % n;
+            // Wall quad split into two triangles, plus one fan triangle per cap.
+            triangles.push([pt(i, 0.0), pt(j, 0.0), pt(j, h)]);
+            triangles.push([pt(i, 0.0), pt(j, h), pt(i, h)]);
+            triangles.push([Vec3::new(0.0, 0.0, 0.0), pt(j, 0.0), pt(i, 0.0)]);
+            triangles.push([Vec3::new(0.0, 0.0, h), pt(i, h), pt(j, h)]);
+        }
+        let solid = crate::extrude::SolidMesh { triangles };
+        let edges = solid_mesh_unique_edges(&solid);
+        assert!(
+            edges.iter().all(|(a, b)| (a.z - b.z).abs() < 1e-6),
+            "wall seams (non-horizontal edges) should be dropped, got {edges:?}"
+        );
+        assert_eq!(edges.len(), 2 * n, "expected only the two {n}-segment rims");
+    }
+
+    #[test]
+    fn is_feature_edge_ignores_smooth_tessellation_angles_but_keeps_chamfer_angles() {
+        // The crease threshold (#101) must sit between the largest smooth-tessellation facet
+        // angle (48-gon cylinder wall: 7.5°) and the smallest genuine feature angle this app
+        // produces (shallow chamfer bevels: ~30°).
+        let tilted = |deg: f32| {
+            let r = deg.to_radians();
+            Vec3::new(r.sin(), 0.0, r.cos())
+        };
+        assert!(
+            !is_feature_edge(&[Vec3::Z, tilted(7.5)]),
+            "a 48-gon cylinder's 7.5° facet seam is not a feature edge"
+        );
+        assert!(
+            is_feature_edge(&[Vec3::Z, tilted(30.0)]),
+            "a 30° chamfer bevel crease is a feature edge"
+        );
+    }
+
+    #[test]
+    fn realistic_shade_headlights_a_camera_facing_face_the_fixed_light_misses() {
+        // #102: a face square to the camera but perpendicular to the fixed light used to sit
+        // at the ambient floor (nearly black head-on). The headlight term must lift it well
+        // above ambient.
+        let base = Color32::from_rgb(200, 200, 200);
+        let light = Vec3::Z;
+        let view = Vec3::new(0.0, -1.0, 0.0);
+        let facing_camera = realistic_shade(base, Vec3::new(0.0, -1.0, 0.0), light, view);
+        let ambient_only = scale_color(base, REALISTIC_AMBIENT);
+        assert!(
+            facing_camera.r() as i32 >= ambient_only.r() as i32 + 40,
+            "camera-facing face should be clearly brighter than the ambient floor: {} vs {}",
+            facing_camera.r(),
+            ambient_only.r()
         );
     }
 
