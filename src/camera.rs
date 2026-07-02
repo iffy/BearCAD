@@ -351,6 +351,29 @@ impl Camera {
         self.set_view_up(None);
     }
 
+    /// Pose the orbit camera as a first-person eye (#91): the eye sits at `eye`
+    /// looking along `look`, with `target` placed `target_distance` down the look ray.
+    /// Clears transitions, trackball state, and any custom view-up so `eye()`/`target`
+    /// derive purely from yaw/pitch/distance — every consumer (rendering, picking,
+    /// gizmos) then sees an ordinary camera.
+    pub fn set_first_person(&mut self, eye: Vec3, look: Vec3, target_distance: f32) {
+        let look = look.normalize_or_zero();
+        let look = if look.length_squared() < 0.5 { Vec3::X } else { look };
+        self.cancel_transition();
+        self.view_up = None;
+        self.orbit_quat = None;
+        self.orbit_base_offset = None;
+        self.orbit_base_up = None;
+        self.orbit_base_right = None;
+        self.distance = target_distance.max(1.0);
+        self.target = eye + look * self.distance;
+        // `eye() = target + distance * (cos p cos y, cos p sin y, sin p)`, so the
+        // offset direction is the reversed look vector.
+        let back = -look;
+        self.yaw = back.y.atan2(back.x);
+        self.pitch = back.z.clamp(-1.0, 1.0).asin().clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    }
+
     #[cfg(test)]
     pub fn has_orbit_trackball_state(&self) -> bool {
         self.orbit_quat.is_some()

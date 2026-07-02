@@ -1027,6 +1027,35 @@ the deployed site. This reuses §9.3's determinism guarantees (fixed view, no an
   projection, and `bearcad.ui.shading("wireframe" | "transparent" | "solid" |
   "solid_wireframe" | "realistic")` for shading.
 
+### 11.6 First-person (FPS) mode (#91)
+
+A completely different control scheme for walking around (and inside) models like a
+first-person game, toggled via the command palette ("Toggle FPS Mode"), `Action::ToggleFpsMode`,
+or `bearcad.ui.fps()`. The document is millimeters, so the player is person-scale: eye height
+1700&nbsp;mm, walking ~4.3&nbsp;m/s.
+
+- **Movement:** WASD walks/strafes on the ground plane (heading follows the view yaw, but
+  walking never leaves the ground); the mouse looks (raw pointer motion; the OS cursor is
+  locked and hidden). **Space** jumps (ballistic, gravity 9.81&nbsp;m/s²); **double-tap
+  Space** toggles Minecraft-style flying (no gravity; Space ascends, Shift descends; flying
+  into the ground lands and resumes walking). **Esc** leaves FPS mode.
+- **Weapon-style tool switching:** number keys **1–9** pick tool slots (Select, Sketch,
+  Rectangle, Line, Circle, Extrude, Dimension, Constraint, Plane) and the **mouse wheel
+  cycles** through all tools (including Chamfer/Fillet) — the wheel does not zoom and
+  right-drag does not orbit while in FPS mode.
+- **Everything still works:** the controller owns the player's eye/look and *writes* the
+  ordinary orbit camera every frame (`target = eye + look`), so rendering, picking, hover
+  highlighting, and every gizmo behave exactly as in normal mode. The locked cursor sits at
+  the viewport center (marked by a crosshair), so clicking interacts with whatever the
+  crosshair points at. Panes, the palette, and modifier shortcuts stay available; while a
+  text field has focus (e.g. typing a dimension) movement keys stand down, like an FPS with
+  a menu open. Bare-letter shortcuts are suspended (WASD would collide), but Delete still
+  removes the selection.
+- **Scripting:** `bearcad.ui.fps(on?)`, `fps_look(dx, dy)` (degrees; positive dx looks
+  right, dy up), `fps_move{ forward?, strafe? }` (mm along the ground), `fps_jump()`,
+  `fps_fly(on?)`, and `fps_advance(seconds)` (integrates physics with no keys held, e.g. to
+  land a jump). Outside FPS mode these raise catchable errors.
+
 ---
 
 ## 12. Technical drawings & printable schematics

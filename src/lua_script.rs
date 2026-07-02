@@ -1267,6 +1267,56 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // First-person mode (#91). `fps()` toggles (or `fps(true|false)` forces);
+    // `fps_look(dx, dy)` turns the head in degrees (positive dx right, dy up);
+    // `fps_move{ forward?, strafe? }` walks along the ground in mm;
+    // `fps_jump()` presses the jump key; `fps_fly(on?)` toggles/sets flying;
+    // `fps_advance(seconds)` runs physics with no keys held (lands a jump).
+    api.set(
+        "fps",
+        lua.create_function(|lua, on: Option<bool>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::FpsMode { on }) }
+        })?,
+    )?;
+    api.set(
+        "fps_look",
+        lua.create_function(|lua, (dx, dy): (f32, f32)| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::FpsLook { dx, dy }) }
+        })?,
+    )?;
+    api.set(
+        "fps_move",
+        lua.create_function(|lua, opts: Table| {
+            let forward: f32 = opts.get::<Option<f32>>("forward")?.unwrap_or(0.0);
+            let strafe: f32 = opts.get::<Option<f32>>("strafe")?.unwrap_or(0.0);
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::FpsMove { forward, strafe }) }
+        })?,
+    )?;
+    api.set(
+        "fps_jump",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::FpsJump) }
+        })?,
+    )?;
+    api.set(
+        "fps_fly",
+        lua.create_function(|lua, on: Option<bool>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::FpsFly { on }) }
+        })?,
+    )?;
+    api.set(
+        "fps_advance",
+        lua.create_function(|lua, seconds: f32| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::FpsAdvance { seconds }) }
+        })?,
+    )?;
+
     api.set(
         "_view",
         lua.create_function(|lua, args: MultiValue| {
@@ -2076,6 +2126,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         local ui_funcs = {
             "tool", "focus_name", "focus_dim", "pane", "palette",
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading",
+            "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance",
             "camera", "zoom_fit", "elements_view",
             "move", "click", "move_ground", "click_ground",
             "drag", "right_drag", "right_drag_pan",
@@ -3520,5 +3571,104 @@ mod tests {
         assert_eq!(ext.target, Some(crate::model::ExtrudeTarget::Plane(1)));
         let depth = crate::extrude::effective_distance(&state.doc, ext);
         assert!((depth - 5.0).abs() < 1e-3, "depth should match the plane offset, got {depth}");
+    }
+    /// #91: `bearcad.ui.fps()` toggles first-person mode; entering stands the player on
+    /// the ground plane at person eye height, exiting leaves the mode.
+    #[test]
+    fn lua_fps_mode_toggles_and_stands_on_ground() {
+        let state = run_lua("bearcad.ui.fps()");
+        let player = state.fps.as_ref().expect("fps mode should be active");
+        assert!((player.eye.z - crate::fps::EYE_HEIGHT).abs() < 1e-3);
+        assert!(
+            (state.cam.eye() - player.eye).length() < 1e-2,
+            "camera eye should sit at the player eye"
+        );
+
+        let state = run_lua("bearcad.ui.fps() bearcad.ui.fps()");
+        assert!(state.fps.is_none(), "second toggle should leave FPS mode");
+        let state = run_lua("bearcad.ui.fps(true) bearcad.ui.fps(true)");
+        assert!(state.fps.is_some(), "fps(true) is idempotent");
+    }
+
+    /// #91: `fps_move` walks on the ground plane and `fps_look` turns the head; the
+    /// orbit camera follows the player.
+    #[test]
+    fn lua_fps_move_and_look_drive_the_camera() {
+        let state = run_lua(
+            r#"
+            bearcad.ui.fps()
+            bearcad.ui.fps_look(90, 0)
+            bearcad.ui.fps_move{ forward = 1000, strafe = 500 }
+        "#,
+        );
+        let player = state.fps.as_ref().unwrap();
+        assert!((player.eye.z - crate::fps::EYE_HEIGHT).abs() < 1e-3, "walking stays grounded");
+        // Entering keeps the previous look heading (here the default isometric view),
+        // so the look direction is not level — only the walking is.
+        let look = player.look_dir();
+        assert!((state.cam.target - player.eye).length() > 1.0, "target sits ahead of the eye");
+        let cam_look = (state.cam.target - state.cam.eye()).normalize();
+        assert!((cam_look - look).length() < 1e-3, "camera look matches the player");
+    }
+
+    /// #91: Space jumps (ballistic rise and land) and double-tap flying holds altitude —
+    /// scripted via fps_jump/fps_fly/fps_advance.
+    #[test]
+    fn lua_fps_jump_and_fly_physics() {
+        let state = run_lua(
+            r#"
+            bearcad.ui.fps()
+            bearcad.ui.fps_jump()
+            bearcad.ui.fps_advance(0.2)
+        "#,
+        );
+        let z = state.fps.as_ref().unwrap().eye.z;
+        assert!(z > crate::fps::EYE_HEIGHT + 100.0, "mid-jump should be airborne, z={z}");
+
+        let state = run_lua(
+            r#"
+            bearcad.ui.fps()
+            bearcad.ui.fps_jump()
+            bearcad.ui.fps_advance(3)
+        "#,
+        );
+        let z = state.fps.as_ref().unwrap().eye.z;
+        assert!((z - crate::fps::EYE_HEIGHT).abs() < 1e-2, "gravity should land the jump, z={z}");
+
+        let state = run_lua(
+            r#"
+            bearcad.ui.fps()
+            bearcad.ui.fps_fly(true)
+            bearcad.ui.fps_jump()
+            bearcad.ui.fps_advance(3)
+        "#,
+        );
+        let player = state.fps.as_ref().unwrap();
+        assert!(player.flying, "fps_fly(true) should be flying");
+        assert!(
+            (player.eye.z - crate::fps::EYE_HEIGHT).abs() < 1e-2,
+            "flying holds altitude (no gravity), z={}",
+            player.eye.z
+        );
+    }
+
+    /// #91: FPS commands outside FPS mode raise catchable errors.
+    #[test]
+    fn lua_fps_commands_require_fps_mode() {
+        run_lua_expect_ok(
+            r#"
+            for _, f in ipairs({
+                function() bearcad.ui.fps_jump() end,
+                function() bearcad.ui.fps_look(10, 0) end,
+                function() bearcad.ui.fps_move{ forward = 100 } end,
+                function() bearcad.ui.fps_fly() end,
+                function() bearcad.ui.fps_advance(1) end,
+            }) do
+                local ok, err = pcall(f)
+                assert(not ok, "fps command should raise outside FPS mode")
+                assert(tostring(err):find("FPS"), "unexpected error: " .. tostring(err))
+            end
+        "#,
+        );
     }
 }

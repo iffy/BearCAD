@@ -176,6 +176,19 @@ pub enum Instruction {
     Orbit { dx: f32, dy: f32 },
     Pan { dx: f32, dy: f32 },
     Zoom { scroll: f32 },
+    /// First-person mode (#91): toggle (`None`) or force on/off.
+    FpsMode { on: Option<bool> },
+    /// Turn the FPS player's head, degrees: positive `dx` looks right, positive `dy` up.
+    FpsLook { dx: f32, dy: f32 },
+    /// Walk the FPS player along the ground, mm: `forward` along the view heading,
+    /// `strafe` to the right (instant, not physics-integrated).
+    FpsMove { forward: f32, strafe: f32 },
+    /// Press the FPS jump key once.
+    FpsJump,
+    /// Toggle (`None`) or set Minecraft-style flying.
+    FpsFly { on: Option<bool> },
+    /// Integrate FPS physics for this many seconds with no keys held (lands jumps).
+    FpsAdvance { seconds: f32 },
     View(StandardView),
     ViewEdge(CubeEdgeId),
     ViewCorner(CubeCornerId),
@@ -465,6 +478,22 @@ impl Instruction {
             Instruction::FocusPlaneDim(dim) => {
                 format!("bearcad.ui.focus_dim({:?})", plane_dim_lua_name(*dim))
             }
+            Instruction::FpsMode { on } => match on {
+                Some(on) => format!("bearcad.ui.fps({on})"),
+                None => "bearcad.ui.fps()".to_string(),
+            },
+            Instruction::FpsLook { dx, dy } => format!("bearcad.ui.fps_look({dx}, {dy})"),
+            Instruction::FpsMove { forward, strafe } => {
+                format!("bearcad.ui.fps_move{{ forward = {forward}, strafe = {strafe} }}")
+            }
+            Instruction::FpsJump => "bearcad.ui.fps_jump()".to_string(),
+            Instruction::FpsFly { on } => match on {
+                Some(on) => format!("bearcad.ui.fps_fly({on})"),
+                None => "bearcad.ui.fps_fly()".to_string(),
+            },
+            Instruction::FpsAdvance { seconds } => {
+                format!("bearcad.ui.fps_advance({seconds})")
+            }
             Instruction::Orbit { dx, dy } => format!("bearcad.ui.orbit({dx}, {dy})"),
             Instruction::Pan { dx, dy } => format!("bearcad.ui.pan({dx}, {dy})"),
             Instruction::Zoom { scroll } => format!("bearcad.ui.wheel({scroll})"),
@@ -741,6 +770,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 target: target.clone(),
             })
         }
+        Action::ToggleFpsMode => Some(Instruction::FpsMode { on: None }),
         Action::Clear => Some(Instruction::Clear),
         Action::UndoLast => Some(Instruction::Undo),
         Action::SetTool(tool) => Some(Instruction::Tool(*tool)),
@@ -2389,6 +2419,90 @@ impl ScriptRunner {
             }
             Instruction::FocusPlaneDim(dim) => {
                 let _ = state.apply(Action::FocusPlaneDim { dim });
+                StepResult::Continue
+            }
+            Instruction::FpsMode { on } => {
+                let active = state.fps.is_some();
+                if on.map_or(true, |want| want != active) {
+                    let result = state.apply(Action::ToggleFpsMode);
+                    self.record_action_error(result);
+                }
+                StepResult::Continue
+            }
+            Instruction::FpsLook { dx, dy } => {
+                match state.fps.as_mut() {
+                    Some(player) => {
+                        player.look_by_angles(-dx.to_radians(), dy.to_radians());
+                        player.clone().apply_to_camera(&mut state.cam);
+                    }
+                    None => self.record_action_error(crate::actions::ActionResult::Err(
+                        "Not in FPS mode".to_string(),
+                    )),
+                }
+                StepResult::Continue
+            }
+            Instruction::FpsMove { forward, strafe } => {
+                match state.fps.as_mut() {
+                    Some(player) => {
+                        let step = player.ground_forward() * forward
+                            + player.ground_right() * strafe;
+                        player.eye += step;
+                        player.clone().apply_to_camera(&mut state.cam);
+                    }
+                    None => self.record_action_error(crate::actions::ActionResult::Err(
+                        "Not in FPS mode".to_string(),
+                    )),
+                }
+                StepResult::Continue
+            }
+            Instruction::FpsJump => {
+                match state.fps.as_mut() {
+                    Some(player) => {
+                        player.tick(
+                            0.0,
+                            crate::fps::FpsInput {
+                                jump_pressed: true,
+                                ..Default::default()
+                            },
+                        );
+                        player.clone().apply_to_camera(&mut state.cam);
+                    }
+                    None => self.record_action_error(crate::actions::ActionResult::Err(
+                        "Not in FPS mode".to_string(),
+                    )),
+                }
+                StepResult::Continue
+            }
+            Instruction::FpsFly { on } => {
+                match state.fps.as_mut() {
+                    Some(player) => {
+                        let want = on.unwrap_or(!player.flying);
+                        if want != player.flying {
+                            player.flying = want;
+                            player.vertical_speed = 0.0;
+                        }
+                    }
+                    None => self.record_action_error(crate::actions::ActionResult::Err(
+                        "Not in FPS mode".to_string(),
+                    )),
+                }
+                StepResult::Continue
+            }
+            Instruction::FpsAdvance { seconds } => {
+                match state.fps.as_mut() {
+                    Some(player) => {
+                        let mut remaining = seconds.clamp(0.0, 60.0);
+                        while remaining > 0.0 {
+                            let dt = remaining.min(0.01);
+                            player.tick(dt, crate::fps::FpsInput::default());
+                            remaining -= dt;
+                        }
+                        player.clone().apply_to_camera(&mut state.cam);
+                    }
+                    None => self.record_action_error(crate::actions::ActionResult::Err(
+                        "Not in FPS mode".to_string(),
+                    )),
+                }
                 StepResult::Continue
             }
             Instruction::Orbit { dx, dy } => {

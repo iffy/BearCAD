@@ -320,6 +320,21 @@ Pass a table `{ kind = "rect", index = 0, edge = "bottom" }` when an edge is nee
 | `bearcad.drag_line({ kind="line", index=0 }, au, av, u, v)` | Drag a line segment |
 | `bearcad.drag_line{ line = {...}, du = 0, dv = 4 }` | Translate a line by a delta |
 
+### First-person mode
+
+Walk around your model like a game (#91): **Toggle FPS Mode** in the command palette, or
+`bearcad.ui.fps()`. WASD walks on the ground plane, the mouse looks, Space jumps,
+double-tap Space toggles flying (Space/Shift up/down), 1-9 and the mouse wheel switch
+tools weapon-style, and the center crosshair is your pointer. Esc exits.
+
+| Function | Description |
+|---|---|
+| `bearcad.ui.fps()` | Toggle FPS mode (`fps(true/false)` forces) |
+| `bearcad.ui.fps_look(20, 5)` | Turn the head (degrees right, up) |
+| `bearcad.ui.fps_move{ forward = 1000 }` | Walk along the ground (mm) |
+| `bearcad.ui.fps_jump()` / `bearcad.ui.fps_fly()` | Jump / toggle flying |
+| `bearcad.ui.fps_advance(2)` | Run physics (e.g. land a jump) |
+
 ### Parameters
 
 | Function | Description |

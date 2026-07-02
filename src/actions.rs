@@ -477,6 +477,9 @@ pub enum Action {
     Clear,
     UndoLast,
     SetTool(Tool),
+    /// Enter/leave first-person mode (#91): WASD walking on the ground plane, mouse
+    /// look, Space jump / double-tap fly, weapon-style tool slots. See [`crate::fps`].
+    ToggleFpsMode,
     CancelOperation,
     CommitRectangle,
     SetRectDimension { axis: RectAxis, value: String },
@@ -1134,6 +1137,9 @@ pub struct AppState {
     /// still undo as one gesture. Transient, never persisted; `pub` only so
     /// struct-update construction (`..AppState::default()`) works across modules.
     pub undo_group_depth: u8,
+    /// First-person mode player state (#91); `Some` while FPS mode is active.
+    /// Transient, never persisted.
+    pub fps: Option<crate::fps::FpsController>,
     /// Inference snap guide for #41: the line whose midpoint the cursor most recently touched
     /// while sketching. While set, pulling away from that midpoint snaps the point onto the
     /// infinite line normal to it, through its midpoint. Cleared on sketch exit.
@@ -1191,6 +1197,7 @@ impl Default for AppState {
             circle_center_snap: None,
             extension_anchors: Vec::new(),
             undo_group_depth: 0,
+            fps: None,
             normal_inference_anchor: None,
             construction_plane_edit_undo: Vec::new(),
             hierarchy_view_mode: crate::hierarchy::HierarchyViewMode::default(),
@@ -2200,6 +2207,19 @@ impl AppState {
                 }
                 if steps > 0 {
                     self.refresh_document_health();
+                }
+                ActionResult::Ok
+            }
+            Action::ToggleFpsMode => {
+                if self.fps.take().is_some() {
+                    self.status = "Left FPS mode".to_string();
+                } else {
+                    let player = crate::fps::FpsController::enter(&self.cam);
+                    player.apply_to_camera(&mut self.cam);
+                    self.fps = Some(player);
+                    self.status = "FPS mode — WASD walk, mouse look, Space jump \
+                                   (double-tap to fly), 1-9 tools, wheel cycles, Esc exits"
+                        .to_string();
                 }
                 ActionResult::Ok
             }

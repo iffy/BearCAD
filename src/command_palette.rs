@@ -50,6 +50,7 @@ pub enum PaletteCommandId {
     HidePaneViewCube,
     DeleteSelection,
     ExportSessionCommands,
+    ToggleFpsMode,
 }
 
 /// What happens when a palette entry is chosen.
@@ -134,6 +135,7 @@ impl PaletteCommand {
             PaletteCommandId::ToggleProjection => {
                 PaletteOutcome::Action(Action::ToggleProjectionMode)
             }
+            PaletteCommandId::ToggleFpsMode => PaletteOutcome::Action(Action::ToggleFpsMode),
             PaletteCommandId::ShowPaneHierarchy => PaletteOutcome::Action(Action::SetPaneVisible {
                 pane: Pane::Hierarchy,
                 visible: true,
@@ -424,6 +426,11 @@ const BASE_COMMANDS: &[PaletteCommand] = &[
         PaletteCommandId::ToggleProjection,
         "Toggle Projection Mode",
         "toggle projection orthographic natural perspective camera",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::ToggleFpsMode,
+        "Toggle FPS Mode",
+        "fps first person walk fly wasd shooter mode camera",
     ),
 ];
 

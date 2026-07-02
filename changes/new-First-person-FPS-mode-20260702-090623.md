@@ -1,0 +1,1 @@
+First-person (FPS) mode (#91): WASD walking on the ground plane with mouse look, Space jump, double-tap-Space flying, weapon-style tool switching (1-9 slots, wheel cycles), center-crosshair interaction with all gizmos intact; toggle via palette or bearcad.ui.fps(); fully scriptable (fps_look/fps_move/fps_jump/fps_fly/fps_advance)

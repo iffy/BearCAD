@@ -29,6 +29,7 @@ mod document_lifecycle;
 mod expression_input;
 mod extrude;
 mod face;
+mod fps;
 mod gpu_view_cube;
 mod gpu_viewport;
 mod hierarchy;
@@ -381,6 +382,9 @@ struct App {
     exit_after_startup_sent: bool,
     show_commands: bool,
     last_viewport: Option<egui::Rect>,
+    /// Whether we've asked the OS to lock+hide the cursor for FPS mode (#91), so
+    /// enter/exit sends the viewport commands exactly once per change.
+    fps_cursor_grabbed: bool,
     native_menu: NativeMenu,
     dim_label_drag: Option<DimLabelDrag>,
     angle_gizmo_drag: Option<AngleGizmoDrag>,
@@ -456,6 +460,7 @@ impl App {
             exit_after_startup_sent: false,
             show_commands,
             last_viewport: None,
+            fps_cursor_grabbed: false,
             native_menu,
             dim_label_drag: None,
             angle_gizmo_drag: None,
@@ -685,6 +690,98 @@ impl App {
         self.state.command_palette.close_palette();
     }
 
+    /// Drive first-person mode (#91): cursor lock, Esc to leave, weapon-style tool
+    /// switching (1-9 slots, wheel cycles), mouse look from raw pointer motion, and
+    /// WASD/Space/Shift movement physics. Runs before `handle_keyboard_shortcuts`,
+    /// which stands down on bare keys while FPS mode is active.
+    fn tick_fps_mode(&mut self, ctx: &egui::Context, dt: f32) {
+        let active = self.state.fps.is_some();
+        if active != self.fps_cursor_grabbed {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(if active {
+                egui::viewport::CursorGrab::Locked
+            } else {
+                egui::viewport::CursorGrab::None
+            }));
+            ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(!active));
+            self.fps_cursor_grabbed = active;
+        }
+        if !active {
+            return;
+        }
+
+        if !keyboard_shortcuts_suppressed(ctx) {
+            // Esc leaves FPS mode (consumed so it doesn't also cancel an operation).
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                self.state.apply(Action::ToggleFpsMode);
+                return;
+            }
+
+            // Weapon slots: 1-9 pick a tool directly.
+            const SLOT_KEYS: [egui::Key; 9] = [
+                egui::Key::Num1,
+                egui::Key::Num2,
+                egui::Key::Num3,
+                egui::Key::Num4,
+                egui::Key::Num5,
+                egui::Key::Num6,
+                egui::Key::Num7,
+                egui::Key::Num8,
+                egui::Key::Num9,
+            ];
+            for (slot, key) in SLOT_KEYS.iter().enumerate() {
+                if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, *key)) {
+                    if let Some(tool) = fps::TOOL_SLOTS.get(slot) {
+                        self.state.apply(Action::SetTool(*tool));
+                    }
+                }
+            }
+
+            // Delete still works so selections can be removed without leaving FPS mode.
+            let delete_pressed = ctx.input(|i| {
+                i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)
+            });
+            if delete_pressed && !self.state.scene_selection.is_empty() {
+                self.state.apply(Action::DeleteSelection);
+            }
+        }
+
+        // Wheel cycles tools (the viewport skips zoom while in FPS mode).
+        let scroll = ctx.input(|i| i.raw_scroll_delta.y);
+        if scroll.abs() >= 1.0 {
+            let step = if scroll < 0.0 { 1 } else { -1 };
+            self.state.apply(Action::SetTool(fps::cycle_tool(self.state.tool, step)));
+        }
+
+        // Mouse look from raw pointer motion (the cursor itself is locked at center,
+        // so clicks interact with whatever the crosshair points at).
+        if let Some(motion) = ctx.input(|i| i.pointer.motion()) {
+            if let Some(player) = self.state.fps.as_mut() {
+                player.look_by_pixels(motion.x, motion.y);
+            }
+        }
+
+        // Movement physics — while a text field has focus (typing a dimension), the
+        // player stands still, like an FPS with a menu open.
+        let mut input = fps::FpsInput::default();
+        if !keyboard_shortcuts_suppressed(ctx) {
+            ctx.input(|i| {
+                input.forward = i.key_down(egui::Key::W);
+                input.back = i.key_down(egui::Key::S);
+                input.left = i.key_down(egui::Key::A);
+                input.right = i.key_down(egui::Key::D);
+                input.jump_pressed = i.key_pressed(egui::Key::Space);
+                input.ascend = i.key_down(egui::Key::Space);
+                input.descend = i.modifiers.shift;
+            });
+        }
+        if let Some(player) = self.state.fps.as_mut() {
+            player.tick(dt, input);
+            player.clone().apply_to_camera(&mut self.state.cam);
+        }
+        // Physics needs steady frames even with no input events pending.
+        ctx.request_repaint();
+    }
+
     fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
         if self.state.command_palette.open {
             return;
@@ -692,7 +789,9 @@ impl App {
 
         // While any text field has focus, leave unmodified keys to the input (e.g. "bar" must not
         // switch tools on "r"). Modifier shortcuts (Cmd/Ctrl+P, etc.) use the OS menu layer.
-        if !keyboard_shortcuts_suppressed(ctx) {
+        // FPS mode (#91) owns the bare keys entirely: WASD move, Space jumps, digits switch
+        // tools — `tick_fps_mode` handles them before this runs.
+        if !keyboard_shortcuts_suppressed(ctx) && self.state.fps.is_none() {
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.state.apply(Action::CancelOperation);
             }
@@ -1640,6 +1739,7 @@ impl eframe::App for App {
         self.tick_exit_after_startup(ctx);
         self.synthetic.inject(ctx);
 
+        self.tick_fps_mode(ctx, dt);
         self.handle_keyboard_shortcuts(ctx);
 
         self.handle_native_menu(ctx);
@@ -2011,6 +2111,24 @@ impl eframe::App for App {
 /// is active.
 fn keyboard_shortcuts_suppressed(ctx: &egui::Context) -> bool {
     ctx.wants_keyboard_input()
+}
+
+/// FPS-mode crosshair (#91): the cursor is locked at the viewport center, so this marks
+/// where clicks land.
+fn draw_fps_crosshair(painter: &egui::Painter, viewport: egui::Rect) {
+    let c = viewport.center();
+    let arm = 7.0;
+    let gap = 2.5;
+    let stroke = egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200));
+    for (dx, dy) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0f32)] {
+        painter.line_segment(
+            [
+                c + egui::vec2(dx * gap, dy * gap),
+                c + egui::vec2(dx * arm, dy * arm),
+            ],
+            stroke,
+        );
+    }
 }
 
 fn next_rect_focus_axis(focused: usize) -> RectAxis {
@@ -4501,7 +4619,10 @@ impl App {
             }
         });
 
-        if response.dragged_by(egui::PointerButton::Secondary) {
+        // In FPS mode (#91) the mouse is the player's head and the wheel switches
+        // tools, so orbit/pan/zoom stand down (`tick_fps_mode` owns the camera).
+        let fps_active = self.state.fps.is_some();
+        if response.dragged_by(egui::PointerButton::Secondary) && !fps_active {
             if ui.input(|i| i.modifiers.shift) {
                 let delta = response.drag_delta();
                 self.state.cam.pan(delta, viewport.height());
@@ -4516,7 +4637,7 @@ impl App {
                 }
             }
         }
-        if response.hovered() {
+        if response.hovered() && !fps_active {
             let scroll = ui.input(|i| i.raw_scroll_delta.y);
             if scroll != 0.0 {
                 let focal = response.hover_pos().unwrap_or(viewport.center());
@@ -4525,6 +4646,9 @@ impl App {
                     log.borrow_mut().note_zoom(scroll);
                 }
             }
+        }
+        if fps_active {
+            draw_fps_crosshair(&painter, viewport);
         }
 
         let cam = self.state.cam.clone();
