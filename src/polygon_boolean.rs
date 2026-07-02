@@ -1,6 +1,11 @@
-//! Two-simple-polygon boolean operations (#16/#62): Weiler–Atherton clipping of two simple
+//! Two-simple-polygon boolean operations (#16/#62): combine two simple
 //! (non-self-intersecting), not-necessarily-convex closed polygon loops sharing the same 2D
 //! frame, producing `Intersection` or `Difference` (`a - b`).
+//!
+//! The app-facing entry point is [`face_boolean`]. In kernel builds it delegates to OCCT
+//! (`kernel::face_boolean_loop`, #88), unifying the 2D face booleans with the 3D solid ones
+//! already on OCCT; the hand-rolled Weiler–Atherton clipper below ([`polygon_boolean`]) is
+//! the `--no-default-features` fallback only, deletable once Windows ships the kernel (#96).
 //!
 //! Scope (deliberate — see SPEC.md): this only ever combines **two** shapes at a time, and
 //! only when the boolean result reduces to a **single simple polygon loop**. Multi-part
@@ -22,9 +27,38 @@ use std::collections::{HashMap, HashSet};
 
 type Pt = (f32, f32);
 
-/// Compute the boolean-combined region of two simple closed polygon loops (`a`, `b`), given
-/// in the same 2D frame. Returns `None` if the result isn't a single simple polygon loop —
+/// Boolean-combine two simple closed polygon loops (`a`, `b`) given in the same 2D frame —
+/// the single seam every caller goes through (#88). Kernel builds delegate to OCCT
+/// ([`crate::kernel::face_boolean_loop`]) and its result is authoritative (no silent
+/// fallback — a divergence from the clipper would mean one of them is wrong; see the parity
+/// tests); non-kernel builds use the hand-rolled [`polygon_boolean`] below. Same contract
+/// either way: `None` unless the result is one simple hole-free loop of non-negligible area;
+/// the returned loop is CCW (positive shoelace area).
+pub fn face_boolean(a: &[Pt], b: &[Pt], op: BooleanOp) -> Option<Vec<Pt>> {
+    #[cfg(feature = "occt")]
+    {
+        if a.len() < 3 || b.len() < 3 || !all_finite(a) || !all_finite(b) {
+            return None;
+        }
+        let scale = bbox_scale(a).max(bbox_scale(b)).max(1.0);
+        let raw = crate::kernel::face_boolean_loop(a, b, op)?;
+        // Same normalization as the fallback clipper: reject near-zero-area results
+        // (bbox-scaled threshold) and normalize winding to CCW.
+        finalize(raw, scale)
+    }
+    #[cfg(not(feature = "occt"))]
+    {
+        polygon_boolean(a, b, op)
+    }
+}
+
+/// Hand-rolled Weiler–Atherton clipper: the no-kernel (`--no-default-features`) backend of
+/// [`face_boolean`], kept `pub` for the OCCT parity tests. Slated for deletion once Windows
+/// ships the kernel (#96). Returns `None` if the result isn't a single simple polygon loop —
 /// see the module-level scope note for why this is a deliberate limitation, not a bug.
+// In kernel builds the clipper is only reached from the parity tests, hence dead in a
+// plain `cargo build --features occt` — allowed until its deletion with #96.
+#[cfg_attr(feature = "occt", allow(dead_code))]
 pub fn polygon_boolean(a: &[Pt], b: &[Pt], op: BooleanOp) -> Option<Vec<Pt>> {
     if a.len() < 3 || b.len() < 3 {
         return None;
@@ -650,5 +684,143 @@ mod tests {
         assert!(is_simple(&diff));
         // a (100) minus the lens overlap.
         assert_close(area(&diff), 100.0 - area(&inter), 1e-2);
+    }
+
+    /// OCCT parity (#88): in kernel builds [`face_boolean`] delegates to
+    /// `kernel::face_boolean_loop`, and its result is authoritative. These tests run the
+    /// same case matrix as the hand-rolled clipper's suite above through BOTH backends and
+    /// assert they agree: Some/None on every case, and |shoelace area| within 0.5% where
+    /// both succeed (vertex order/winding/count may legitimately differ — OCCT can emit
+    /// extra collinear vertices where input edges were split).
+    #[cfg(feature = "occt")]
+    mod occt_parity {
+        use super::*;
+
+        /// Run one case through both backends and assert agreement. Where both produce a
+        /// loop, also require the kernel's to be simple (non-self-intersecting).
+        fn assert_parity(name: &str, a: &[Pt], b: &[Pt], op: BooleanOp) {
+            let hand = polygon_boolean(a, b, op);
+            let kern = face_boolean(a, b, op);
+            match (&hand, &kern) {
+                (None, None) => {}
+                (Some(h), Some(k)) => {
+                    assert!(is_simple(k), "{name}: kernel loop not simple: {k:?}");
+                    let (ha, ka) = (area(h), area(k));
+                    let tol = ha.max(ka) * 0.005;
+                    assert!(
+                        (ha - ka).abs() <= tol,
+                        "{name}: area mismatch hand={ha} kernel={ka} (tol {tol})"
+                    );
+                }
+                _ => panic!(
+                    "{name}: Some/None divergence: hand={hand:?} kernel={kern:?}"
+                ),
+            }
+        }
+
+        #[test]
+        fn rect_rect_cases_agree() {
+            let a = rect(0.0, 0.0, 10.0, 10.0);
+            let b = rect(5.0, 5.0, 10.0, 10.0);
+            assert_parity("rect∩rect", &a, &b, Intersection);
+            assert_parity("rect−rect", &a, &b, Difference);
+            assert_parity("rect−rect reversed", &b, &a, Difference);
+            // The kernel's intersection is the exact (5,5)-(10,10) square: its vertex SET
+            // must contain all four corners (extra collinear vertices allowed).
+            let k = face_boolean(&a, &b, Intersection).expect("kernel rect overlap");
+            for corner in [(5.0, 5.0), (10.0, 5.0), (10.0, 10.0), (5.0, 10.0)] {
+                assert!(
+                    contains_point_near(&k, corner, 1e-3),
+                    "kernel rect∩rect missing corner {corner:?}: {k:?}"
+                );
+            }
+            assert_close(area(&k), 25.0, 1e-3);
+        }
+
+        #[test]
+        fn rect_circle_cases_agree() {
+            let c = circle(0.0, 0.0, 10.0, 48);
+            let r = rect(0.0, -20.0, 20.0, 40.0);
+            assert_parity("circle∩half-plane-rect", &c, &r, Intersection);
+            assert_parity("circle−half-plane-rect", &c, &r, Difference);
+            let q = rect(0.0, 0.0, 20.0, 20.0);
+            assert_parity("circle∩quadrant-rect", &c, &q, Intersection);
+            // And the analytic half-disk area holds for the kernel loop specifically.
+            let k = face_boolean(&c, &r, Intersection).expect("kernel half-disk");
+            let expected = std::f32::consts::PI * 100.0 / 2.0;
+            assert_close(area(&k), expected, expected * 0.01);
+        }
+
+        #[test]
+        fn disjoint_cases_agree() {
+            let a = rect(0.0, 0.0, 5.0, 5.0);
+            let b = rect(100.0, 100.0, 5.0, 5.0);
+            assert_parity("disjoint∩", &a, &b, Intersection);
+            assert_parity("disjoint−", &a, &b, Difference);
+        }
+
+        #[test]
+        fn containment_cases_agree() {
+            let outer = rect(0.0, 0.0, 20.0, 20.0);
+            let inner = rect(5.0, 5.0, 4.0, 4.0);
+            assert_parity("contained∩ (inner shape)", &outer, &inner, Intersection);
+            assert_parity("contained− (annulus → None)", &outer, &inner, Difference);
+            assert_parity("contained− (consumed → None)", &inner, &outer, Difference);
+        }
+
+        #[test]
+        fn boundary_touching_containment_agrees() {
+            let a = rect(0.0, 0.0, 10.0, 10.0);
+            let b = vec![(5.0, 0.0), (7.0, 3.0), (5.0, 6.0), (3.0, 3.0)];
+            assert_parity("kite touching bottom edge ∩", &a, &b, Intersection);
+        }
+
+        #[test]
+        fn tangent_cases_agree_or_reject_consistently() {
+            // Edge-tangent rectangles (zero-area overlap): both backends must claim no
+            // significant intersection area; difference keeps `a` (area 100).
+            let a = rect(0.0, 0.0, 10.0, 10.0);
+            let b = rect(10.0, 0.0, 10.0, 10.0);
+            if let Some(k) = face_boolean(&a, &b, Intersection) {
+                assert!(area(&k) < 1e-2, "tangent ∩ claimed area {}", area(&k));
+            }
+            let kd = face_boolean(&a, &b, Difference).expect("tangent difference keeps a");
+            assert_close(area(&kd), 100.0, 1.0);
+
+            // Corner-tangent rectangles.
+            let c = rect(10.0, 10.0, 10.0, 10.0);
+            if let Some(k) = face_boolean(&a, &c, Intersection) {
+                assert!(area(&k) < 1e-2, "corner-tangent ∩ claimed area {}", area(&k));
+            }
+            let kd = face_boolean(&a, &c, Difference).expect("corner-tangent difference keeps a");
+            assert_close(area(&kd), 100.0, 1.0);
+        }
+
+        #[test]
+        fn rotated_square_cases_agree() {
+            let a = rect(0.0, 0.0, 10.0, 10.0);
+            // Big diamond slicing all the way through: ∩ is one octagon-ish loop; − is 4
+            // disjoint corner pieces, rejected by both backends.
+            let b = vec![(5.0, -2.0), (12.0, 5.0), (5.0, 12.0), (-2.0, 5.0)];
+            assert_parity("diamond∩", &a, &b, Intersection);
+            assert_parity("diamond− (4 pieces → None)", &a, &b, Difference);
+
+            // Smaller diamond biting a notch out of the right edge: both ops single loops.
+            let n = vec![(10.0, 1.0), (14.0, 5.0), (10.0, 9.0), (6.0, 5.0)];
+            assert_parity("notch∩", &a, &n, Intersection);
+            assert_parity("notch−", &a, &n, Difference);
+        }
+
+        #[test]
+        fn kernel_loop_winding_is_ccw() {
+            // face_boolean normalizes the kernel loop to CCW (positive shoelace area),
+            // matching the fallback clipper's post-condition.
+            let a = rect(0.0, 0.0, 10.0, 10.0);
+            let b = rect(5.0, 5.0, 10.0, 10.0);
+            for op in [Intersection, Difference] {
+                let k = face_boolean(&a, &b, op).expect("loop");
+                assert!(shoelace_area(&k) > 0.0, "{op:?} loop not CCW: {k:?}");
+            }
+        }
     }
 }

@@ -65,6 +65,20 @@ BearcadShape* bearcad_shape_fillet(const BearcadShape* s, const double* edges,
 BearcadShape* bearcad_shape_chamfer(const BearcadShape* s, const double* edges,
                                     const double* dists, unsigned long n);
 
+// Boolean-combine two planar faces given as closed 2D loops (`a_xy`/`b_xy` laid
+// out x,y,x,y,... on the z=0 plane; loops closed implicitly, first point not
+// repeated). `op`: 1 = cut (a − b), 2 = common (a ∩ b) — matching
+// bearcad_shape_boolean's codes. On success writes a freshly allocated flat
+// array of the RESULT's outer-loop 2D points (x,y pairs, in loop order; free
+// with bearcad_pts_free) and its point count into *out_n. Returns NULL when the
+// result is not exactly ONE face with NO holes (multi-part, annulus, empty) or
+// on any OCCT error — mirroring the strictness contract of the Rust fallback
+// clipper (#88). Either winding may be returned; the caller normalizes.
+double* bearcad_face_boolean_loop(const double* a_xy, unsigned long a_n,
+                                  const double* b_xy, unsigned long b_n,
+                                  int op, unsigned long* out_n);
+void bearcad_pts_free(double* pts);
+
 // Solid volume via BRepGProp mass properties. Negative on error.
 double bearcad_shape_volume(const BearcadShape* shape);
 

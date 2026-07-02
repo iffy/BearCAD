@@ -52,6 +52,15 @@ mod ffi {
             dists: *const f64,
             n: c_ulong,
         ) -> *mut BearcadShape;
+        pub fn bearcad_face_boolean_loop(
+            a_xy: *const f64,
+            a_n: c_ulong,
+            b_xy: *const f64,
+            b_n: c_ulong,
+            op: c_int,
+            out_n: *mut c_ulong,
+        ) -> *mut f64;
+        pub fn bearcad_pts_free(pts: *mut f64);
         pub fn bearcad_shape_volume(shape: *const BearcadShape) -> f64;
         pub fn bearcad_shape_tessellate(
             shape: *const BearcadShape,
@@ -140,6 +149,55 @@ pub enum BoolOp {
     Cut,
     /// `a ∩ b`.
     Common,
+}
+
+/// Boolean-combine two planar faces given as closed 2D loops (z=0 plane, first
+/// point not repeated) and return the result's outer loop, via OCCT
+/// (`bearcad_face_boolean_loop`, #88). Same strictness contract as the hand-rolled
+/// fallback [`crate::polygon_boolean::polygon_boolean`]: `None` unless the boolean
+/// result is exactly one hole-free face (multi-part, annulus, empty, or any OCCT
+/// error all reject). Winding of the returned loop is unspecified — the caller
+/// ([`crate::polygon_boolean::face_boolean`]) normalizes it.
+#[cfg(feature = "occt")]
+pub fn face_boolean_loop(
+    a: &[(f32, f32)],
+    b: &[(f32, f32)],
+    op: crate::model::BooleanOp,
+) -> Option<Vec<(f32, f32)>> {
+    if a.len() < 3 || b.len() < 3 {
+        return None;
+    }
+    let flat = |pts: &[(f32, f32)]| -> Vec<f64> {
+        pts.iter().flat_map(|&(x, y)| [x as f64, y as f64]).collect()
+    };
+    let fa = flat(a);
+    let fb = flat(b);
+    // Match bearcad_shape_boolean's op codes: 1 = cut (a − b), 2 = common (a ∩ b).
+    let code = match op {
+        crate::model::BooleanOp::Difference => 1,
+        crate::model::BooleanOp::Intersection => 2,
+    };
+    let mut count: std::os::raw::c_ulong = 0;
+    let ptr = unsafe {
+        ffi::bearcad_face_boolean_loop(
+            fa.as_ptr(),
+            a.len() as std::os::raw::c_ulong,
+            fb.as_ptr(),
+            b.len() as std::os::raw::c_ulong,
+            code,
+            &mut count,
+        )
+    };
+    if ptr.is_null() {
+        return None;
+    }
+    let n = count as usize;
+    let doubles = unsafe { std::slice::from_raw_parts(ptr, n * 2) };
+    let out: Vec<(f32, f32)> = (0..n)
+        .map(|i| (doubles[2 * i] as f32, doubles[2 * i + 1] as f32))
+        .collect();
+    unsafe { ffi::bearcad_pts_free(ptr) };
+    (out.len() >= 3).then_some(out)
 }
 
 /// An owned OCCT BREP solid. Real geometry, not a mesh: built from profiles,

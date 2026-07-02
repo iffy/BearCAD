@@ -625,10 +625,10 @@ pub fn face_profile_world(doc: &Document, face: &ExtrudeFace) -> Option<(Vec<Vec
 
 /// World-space boundary loop and outward normal of a `Boolean`-combined face (#16/#62):
 /// resolves `a`/`b`'s loops in their shared sketch's UV frame (recursively, in case they're
-/// themselves `Boolean`), runs [`crate::polygon_boolean::polygon_boolean`], and projects the
-/// resulting loop back to world space through that same frame. `None` if the sketch/frame
-/// can't be resolved, or the boolean result isn't a single simple polygon loop (see
-/// `polygon_boolean`'s module docs for the deliberate scope limits).
+/// themselves `Boolean`), runs [`crate::polygon_boolean::face_boolean`] (OCCT in kernel
+/// builds, #88), and projects the resulting loop back to world space through that same
+/// frame. `None` if the sketch/frame can't be resolved, or the boolean result isn't a single
+/// simple polygon loop (see `polygon_boolean`'s module docs for the deliberate scope limits).
 fn boolean_profile_world(doc: &Document, face: &ExtrudeFace) -> Option<(Vec<Vec3>, Vec3)> {
     let sketch = crate::actions::extrude_face_sketch(doc, face)?;
     let frame = sketch_geometry_frame(doc, sketch)?;
@@ -672,7 +672,7 @@ pub fn extrude_face_uv_loop(
         ExtrudeFace::Boolean { op, a, b } => {
             let loop_a = extrude_face_uv_loop(doc, sketch, a)?;
             let loop_b = extrude_face_uv_loop(doc, sketch, b)?;
-            crate::polygon_boolean::polygon_boolean(&loop_a, &loop_b, *op)
+            crate::polygon_boolean::face_boolean(&loop_a, &loop_b, *op)
         }
     }
 }
@@ -711,9 +711,9 @@ pub fn overlapping_partner(
         let Some(loop_b) = extrude_face_uv_loop(doc, sketch, &other) else {
             continue;
         };
-        // `polygon_boolean`'s own near-zero-area rejection means `Some` here already implies
+        // `face_boolean`'s own near-zero-area rejection means `Some` here already implies
         // genuine, nonzero-area overlap — no separate area check needed.
-        if crate::polygon_boolean::polygon_boolean(&loop_a, &loop_b, crate::model::BooleanOp::Intersection)
+        if crate::polygon_boolean::face_boolean(&loop_a, &loop_b, crate::model::BooleanOp::Intersection)
             .is_some()
         {
             overlaps.push(other);

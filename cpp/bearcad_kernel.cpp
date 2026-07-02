@@ -16,6 +16,7 @@
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
+#include <BRepTools_WireExplorer.hxx>
 #include <STEPControl_Writer.hxx>
 #include <STEPControl_Reader.hxx>
 #include <IFSelect_ReturnStatus.hxx>
@@ -34,6 +35,7 @@
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Solid.hxx>
 #include <TopoDS_Vertex.hxx>
+#include <TopoDS_Wire.hxx>
 #include <TopLoc_Location.hxx>
 #include <TopAbs_Orientation.hxx>
 #include <gp_Pnt.hxx>
@@ -150,6 +152,105 @@ extern "C" BearcadShape* bearcad_shape_boolean(const BearcadShape* a, const Bear
     } catch (...) {
         return nullptr;
     }
+}
+
+namespace {
+
+// Build a planar TopoDS_Face on z=0 from a closed 2D loop (x,y pairs, first
+// point not repeated). Returns a null face on failure.
+TopoDS_Face make_planar_face(const double* xy, unsigned long n) {
+    BRepBuilderAPI_MakePolygon poly;
+    for (unsigned long i = 0; i < n; ++i) {
+        poly.Add(gp_Pnt(xy[2 * i], xy[2 * i + 1], 0.0));
+    }
+    poly.Close();
+    if (!poly.IsDone()) {
+        return TopoDS_Face();
+    }
+    BRepBuilderAPI_MakeFace face(poly.Wire());
+    if (!face.IsDone()) {
+        return TopoDS_Face();
+    }
+    return face.Face();
+}
+
+}  // namespace
+
+extern "C" double* bearcad_face_boolean_loop(const double* a_xy, unsigned long a_n,
+                                             const double* b_xy, unsigned long b_n,
+                                             int op, unsigned long* out_n) {
+    if (out_n != nullptr) {
+        *out_n = 0;
+    }
+    if (a_xy == nullptr || b_xy == nullptr || a_n < 3 || b_n < 3 || out_n == nullptr) {
+        return nullptr;
+    }
+    try {
+        TopoDS_Face fa = make_planar_face(a_xy, a_n);
+        TopoDS_Face fb = make_planar_face(b_xy, b_n);
+        if (fa.IsNull() || fb.IsNull()) {
+            return nullptr;
+        }
+        TopoDS_Shape result;
+        switch (op) {
+            case 1: result = BRepAlgoAPI_Cut(fa, fb).Shape(); break;
+            case 2: result = BRepAlgoAPI_Common(fa, fb).Shape(); break;
+            default: return nullptr;
+        }
+        if (result.IsNull()) {
+            return nullptr;
+        }
+
+        // Strictness contract (#88, mirrors the Rust fallback clipper): the result
+        // must be exactly ONE face...
+        TopoDS_Face face;
+        int face_count = 0;
+        for (TopExp_Explorer ex(result, TopAbs_FACE); ex.More(); ex.Next()) {
+            face = TopoDS::Face(ex.Current());
+            ++face_count;
+        }
+        if (face_count != 1) {
+            return nullptr;  // empty (disjoint common, consumed cut) or multi-part
+        }
+        // ...with exactly ONE wire (no holes — e.g. an annulus from subtracting a
+        // strictly-interior shape has an outer and an inner wire).
+        TopoDS_Wire wire;
+        int wire_count = 0;
+        for (TopExp_Explorer wx(face, TopAbs_WIRE); wx.More(); wx.Next()) {
+            wire = TopoDS::Wire(wx.Current());
+            ++wire_count;
+        }
+        if (wire_count != 1) {
+            return nullptr;
+        }
+
+        // Walk the wire in connection order (BRepTools_WireExplorer yields edges in
+        // loop order, unlike TopExp_Explorer). All edges of a polygon-face boolean
+        // are straight lines, so one vertex per edge — CurrentVertex() is the vertex
+        // the current edge shares with the previous one, i.e. the current edge's
+        // start point in loop order — reproduces the boundary exactly.
+        std::vector<double> pts;
+        for (BRepTools_WireExplorer wex(wire, face); wex.More(); wex.Next()) {
+            gp_Pnt p = BRep_Tool::Pnt(wex.CurrentVertex());
+            pts.push_back(p.X());
+            pts.push_back(p.Y());
+        }
+        if (pts.size() < 6) {
+            return nullptr;  // degenerate (fewer than 3 vertices)
+        }
+        *out_n = static_cast<unsigned long>(pts.size() / 2);
+        double* out = new double[pts.size()];
+        std::copy(pts.begin(), pts.end(), out);
+        return out;
+    } catch (const Standard_Failure&) {
+        return nullptr;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+extern "C" void bearcad_pts_free(double* pts) {
+    delete[] pts;
 }
 
 namespace {

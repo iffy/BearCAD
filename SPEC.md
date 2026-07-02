@@ -298,11 +298,16 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     depth-1 combinations of two raw `Circle`/`Polygon` shapes) — toggled into
     `Extrusion::faces` exactly like any other face (multi-face selection already lets a union of
     two whole shapes be built by toggling both, so no separate `Union` variant is needed). The
-    region's boundary is computed on demand by `crate::polygon_boolean::polygon_boolean`, a
-    two-simple-polygon Weiler-Atherton clip (`Difference` reverses the clip polygon's winding —
-    the standard trick that turns the same intersection-walk into a subtraction); its resolved
-    loop feeds mesh generation, fill rendering, and hover-highlighting the same way a `Polygon`
-    face's loop already does. Scriptable via `bearcad.extrude{ boolean = { op = "intersection" |
+    region's boundary is computed on demand through the single seam
+    `crate::polygon_boolean::face_boolean` (#88): **kernel builds delegate to OCCT** (planar
+    faces on z=0, `BRepAlgoAPI_Cut`/`Common`, result accepted only as exactly one hole-free
+    face whose outer wire is walked in loop order), while `--no-default-features` builds use
+    the retained hand-rolled two-simple-polygon Weiler-Atherton clip (`Difference` reverses
+    the clip polygon's winding — the standard trick that turns the same intersection-walk into
+    a subtraction), which is slated for deletion once Windows ships the kernel (#96). Both
+    paths honor the same strictness contract and are held together by an occt-gated parity
+    test matrix; the resolved loop feeds mesh generation, fill rendering, and
+    hover-highlighting the same way a `Polygon` face's loop already does. Scriptable via `bearcad.extrude{ boolean = { op = "intersection" |
     "difference", a = <face spec>, b = <face spec> }, distance }`, where a face spec is
     `{circle=i}`/`{polygon={...}}` (a rectangle is a four-line polygon)/a nested `{boolean={...}}`.
     - **Scope (deliberate, not yet general N-way arrangements)**: only ever two shapes at a
