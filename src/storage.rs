@@ -22,6 +22,9 @@ const SCHEMA_VERSION: i64 = 1;
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CONSTRUCTION_PLANES_META_KEY: &str = "construction_planes";
 const SHAPE_ORDER_META_KEY: &str = "shape_order";
+/// Undo-group sizes (#105); files saved before this key existed load with none and
+/// are reconciled into per-entry groups on the first action.
+const UNDO_GROUPS_META_KEY: &str = "undo_groups";
 /// Document-level default length unit (#52); missing for files saved before this change,
 /// which fall back to [`LengthUnit::default`] (mm), matching their pre-existing behaviour.
 const DEFAULT_LENGTH_UNIT_META_KEY: &str = "default_length_unit";
@@ -89,6 +92,14 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     tx.execute(
         "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
         rusqlite::params![SHAPE_ORDER_META_KEY, shape_order_payload],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let undo_groups_payload =
+        serde_json::to_string(&doc.undo_groups).map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+        rusqlite::params![UNDO_GROUPS_META_KEY, undo_groups_payload],
     )
     .map_err(|e| e.to_string())?;
 
@@ -164,6 +175,19 @@ fn load_shape_order_meta(conn: &Connection) -> Option<Vec<ShapeKind>> {
         )
         .ok()?;
     serde_json::from_str(&payload).ok()
+}
+
+/// Undo-group sizes (#105); empty for files saved before the key existed (legacy
+/// content reconciles into per-entry groups).
+fn load_undo_groups_meta(conn: &Connection) -> Vec<usize> {
+    conn.query_row(
+        "SELECT value FROM meta WHERE key = ?1",
+        rusqlite::params![UNDO_GROUPS_META_KEY],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|payload| serde_json::from_str(&payload).ok())
+    .unwrap_or_default()
 }
 
 /// Load the document-level default length unit, falling back to mm for files saved before
@@ -382,6 +406,7 @@ pub fn open(path: &str) -> Result<Document> {
     let imported_meshes = load_indexed_entities(&conn, "imported_mesh")?;
     let default_length_unit = load_default_length_unit_meta(&conn);
     let default_angle_unit = load_default_angle_unit_meta(&conn);
+    let undo_groups = load_undo_groups_meta(&conn);
 
     let mut doc = Document {
         parameters,
@@ -394,6 +419,7 @@ pub fn open(path: &str) -> Result<Document> {
         bodies,
         imported_meshes,
         shape_order,
+        undo_groups,
         default_length_unit,
         default_angle_unit,
     };

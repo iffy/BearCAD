@@ -1117,6 +1117,11 @@ pub struct AppState {
     /// hovered while sketching. While these are active, pulling away from that vertex snaps
     /// the point onto the infinite extension of those edges (#21). Cleared on sketch exit.
     pub extension_anchors: Vec<crate::model::ConstraintLine>,
+    /// Recursion depth of [`AppState::apply`]: undo-group boundaries (#105) are only
+    /// recorded by the outermost call, so actions that delegate to other actions
+    /// still undo as one gesture. Transient, never persisted; `pub` only so
+    /// struct-update construction (`..AppState::default()`) works across modules.
+    pub undo_group_depth: u8,
     /// Inference snap guide for #41: the line whose midpoint the cursor most recently touched
     /// while sketching. While set, pulling away from that midpoint snaps the point onto the
     /// infinite line normal to it, through its midpoint. Cleared on sketch exit.
@@ -1173,6 +1178,7 @@ impl Default for AppState {
             rect_opposite_snap: None,
             circle_center_snap: None,
             extension_anchors: Vec::new(),
+            undo_group_depth: 0,
             normal_inference_anchor: None,
             construction_plane_edit_undo: Vec::new(),
             hierarchy_view_mode: crate::hierarchy::HierarchyViewMode::default(),
@@ -1754,6 +1760,59 @@ impl AppState {
     }
 
     pub fn apply(&mut self, action: Action) -> ActionResult {
+        // Undo-group bookkeeping (#105): the OUTERMOST apply of a user-level action
+        // records how much it grew `shape_order`; that growth becomes one undo group,
+        // so `UndoLast` reverts the whole gesture (a rectangle's 4 lines + constraints
+        // undo as a single step). Nested apply() calls — arms delegating to other
+        // actions — stay inside the outer group. Reconciliation keeps the sizes
+        // summing to `shape_order.len()` across legacy documents, out-of-band edits,
+        // and net-zero mutations (e.g. a chamfer replacing a constraint entry with a
+        // bridge-line entry), degrading gracefully to single-entry groups.
+        let outermost = self.undo_group_depth == 0;
+        let before = self.doc.shape_order.len();
+        if outermost {
+            self.reconcile_undo_groups_to(before);
+        }
+        self.undo_group_depth += 1;
+        let result = self.apply_inner(action);
+        self.undo_group_depth = self.undo_group_depth.saturating_sub(1);
+        if outermost {
+            let after = self.doc.shape_order.len();
+            if after > before {
+                self.doc.undo_groups.push(after - before);
+            } else {
+                // Shrunk or replaced (UndoLast consumed its own group; New/Open
+                // swapped the document): re-establish the sum invariant.
+                self.reconcile_undo_groups_to(after);
+            }
+        }
+        result
+    }
+
+    /// Make `undo_groups` sum to exactly `len` (#105): excess is trimmed from the
+    /// newest groups; any shortfall (legacy files, out-of-band `shape_order` pushes)
+    /// is padded as single-entry groups, which is precisely the pre-#105 per-entry
+    /// undo behavior for that content.
+    fn reconcile_undo_groups_to(&mut self, len: usize) {
+        let mut sum: usize = self.doc.undo_groups.iter().sum();
+        while sum > len {
+            let Some(last) = self.doc.undo_groups.last_mut() else { break };
+            let excess = sum - len;
+            if *last <= excess {
+                sum -= *last;
+                self.doc.undo_groups.pop();
+            } else {
+                *last -= excess;
+                sum = len;
+            }
+        }
+        while sum < len {
+            self.doc.undo_groups.push(1);
+            sum += 1;
+        }
+    }
+
+    fn apply_inner(&mut self, action: Action) -> ActionResult {
         let logged_action = self.command_log.is_some().then(|| action.clone());
         if let Some(log) = &self.command_log {
             log.borrow_mut().before_apply(&action, &self.doc, &self.cam);
@@ -1934,6 +1993,18 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::UndoLast => {
+                // Undo one whole user action (#105): pop as many entries as the last
+                // recorded group holds, so a gesture that created many entries (a
+                // rectangle's 4 lines + constraints) reverts as a single step.
+                // Ungrouped content (legacy documents) was reconciled into 1-entry
+                // groups by `apply`, keeping the old per-entry behavior. A refusal
+                // (e.g. a sketch that still has geometry) stops the walk with the
+                // refused entry pushed back and the unconsumed remainder re-grouped.
+                let start_len = self.doc.shape_order.len();
+                let group = self.doc.undo_groups.pop().unwrap_or(1).max(1);
+                let target_len = start_len.saturating_sub(group);
+                let mut steps = 0usize;
+                while self.doc.shape_order.len() > target_len {
                 let mut undone = false;
                 match self.doc.shape_order.pop() {
                     Some(ShapeKind::Sketch) => {
@@ -2052,6 +2123,25 @@ impl AppState {
                     None => self.status = "Nothing to undo".to_string(),
                 }
                 if undone {
+                    steps += 1;
+                } else {
+                    break;
+                }
+                }
+                // Entries the group still claims but that weren't consumed (a refusal
+                // pushed one back, or a Body pop removed two at once) stay grouped so
+                // the accounting keeps summing to shape_order's length.
+                let removed = start_len - self.doc.shape_order.len();
+                if removed < group && !self.doc.shape_order.is_empty() {
+                    self.doc.undo_groups.push(group - removed);
+                }
+                if steps == 0 && self.doc.shape_order.is_empty() {
+                    self.status = "Nothing to undo".to_string();
+                }
+                if steps > 1 {
+                    self.status = format!("Undid last action ({steps} steps)");
+                }
+                if steps > 0 {
                     self.refresh_document_health();
                 }
                 ActionResult::Ok

@@ -2503,6 +2503,71 @@ mod tests {
         );
     }
 
+    /// #105: one `undo()` reverts one whole user action — the entire rectangle
+    /// gesture (4 lines + its coincident/H/V/dimension constraints), not a single
+    /// shape_order entry at a time.
+    #[test]
+    fn lua_undo_reverts_a_whole_rectangle_gesture() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 40, height = 30 }
+            bearcad.circle{ x = 60, y = 0, r = 8 }
+            -- First undo removes only the circle gesture...
+            bearcad.undo()
+            assert(bearcad.count("circle") == 0, "circle should be undone first")
+            assert(bearcad.count("line") == 4, "rect must survive the circle undo")
+            -- ...second undo removes the whole rectangle in ONE step.
+            bearcad.undo()
+            assert(bearcad.count("line") == 0, "one undo must revert all 4 rect lines")
+            assert(bearcad.count("constraint") == 0, "and every rect constraint")
+        "#,
+        );
+    }
+
+    /// #105: a cut extrusion undoes as one gesture — the cut extrusion disappears
+    /// and the target body's volume is restored.
+    #[cfg(feature = "occt")]
+    #[test]
+    fn lua_undo_reverts_a_cut_extrusion_gesture() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 40, height = 30 }
+            bearcad.extrude{ polygon = {0,1,2,3}, distance = 20 }
+            bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 0,
+                                  profile = "polygon", profile_lines = {0,1,2,3}, top = true }
+            bearcad.circle{ x = 10, y = 10, r = 5 }
+            bearcad.extrude{ circle = 0, distance = -25, body = "cut" }
+            assert(bearcad.body_stats(0).volume < 23999, "cut should remove volume")
+            bearcad.undo()
+            local v = bearcad.body_stats(0).volume
+            assert(math.abs(v - 24000) < 1, "cut undo must restore the body, got " .. v)
+            assert(bearcad.count("extrusion") == 1, "cut extrusion removed from the doc")
+        "#,
+        );
+    }
+
+    /// #105: legacy documents (no recorded boundaries) keep the old per-entry undo.
+    #[test]
+    fn undo_without_boundaries_pops_a_single_entry() {
+        let mut state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 40, height = 30 }
+        "#,
+        );
+        // Simulate a pre-#105 file: entries exist but no groups were recorded.
+        state.doc.undo_groups.clear();
+        let before = state.doc.shape_order.len();
+        state.apply(crate::actions::Action::UndoLast);
+        assert_eq!(
+            state.doc.shape_order.len(),
+            before - 1,
+            "legacy undo removes exactly one entry"
+        );
+    }
+
     #[test]
     fn lua_circle_creates_circle_on_ground_plane() {
         let state = run_lua(

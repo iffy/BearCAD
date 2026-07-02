@@ -430,6 +430,10 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
 ### 4.3 Undo / redo / time travel
 - Undo is **infinite and persistent** — it survives closing and reopening the file
   (the full history lives in the `.bearcad`; see §7).
+- *Implemented today* (pre-DAG): **Undo last** reverts one whole user action (#105) — the
+  creation-order list groups every entry a single action created (a rectangle's four lines
+  plus constraints undo as one step), with the group sizes persisted in the file; legacy
+  files degrade to per-entry undo.
 - The history is a **commit graph**: each user-visible change creates a new state. Undo
   moves to the parent state; redo moves forward. Because history is a graph (branches
   allowed) rather than a line, redo may present multiple forward branches; the UI MUST

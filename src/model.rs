@@ -925,6 +925,14 @@ pub struct Document {
     #[serde(default)]
     pub imported_meshes: Vec<ImportedMesh>,
     pub shape_order: Vec<ShapeKind>,
+    /// Undo-group sizes (#105): entry k is how many [`shape_order`](Self::shape_order)
+    /// entries the k-th user-level action created, maintained by `AppState::apply` under
+    /// the invariant `undo_groups.iter().sum() == shape_order.len()` (drift from legacy
+    /// files or out-of-band edits is reconciled into single-entry groups). **Undo last**
+    /// pops one whole group, so a gesture that creates many entries (a rectangle = 4
+    /// lines + their constraints) undoes as a single step.
+    #[serde(default)]
+    pub undo_groups: Vec<usize>,
     /// Document-wide default length unit (context pane, nothing selected; #52).
     ///
     /// Drives dimension-label and Elements-pane display formatting via
@@ -951,6 +959,7 @@ impl Default for Document {
             bodies: Vec::new(),
             imported_meshes: Vec::new(),
             shape_order: Vec::new(),
+            undo_groups: Vec::new(),
             default_length_unit: LengthUnit::default(),
             default_angle_unit: AngleUnit::default(),
         }

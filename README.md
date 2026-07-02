@@ -89,7 +89,8 @@ cargo run
 - **Escape** cancels an in-progress draw; press again to exit sketch mode or return to
   Select.
 - **Save / Save As…** writes a `.bearcad` SQLite file; **Open…** loads one back.
-- **Clear** resets the document; **Undo last** removes the most recently committed shape.
+- **Clear** resets the document; **Undo last** reverts the most recent action as a whole
+  (e.g. an entire rectangle — its lines and constraints — in one step).
 
 ```sh
 cargo run -- --help    # usage and exit
