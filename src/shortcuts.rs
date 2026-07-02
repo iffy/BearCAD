@@ -91,7 +91,9 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
 
 pub const TOGGLE_CONSTRUCTION: ShortcutHint = ShortcutHint::plain("X");
 /// Curve-mode toggle for the line tool (#73): the next point drawn gets bezier handles.
-pub const TOGGLE_CURVE_MODE: ShortcutHint = ShortcutHint::plain("B");
+/// A primary-modifier shortcut (#127), not a plain letter — a bare `B` collided with typing
+/// into the in-progress line's length field (its expression syntax accepts letters).
+pub const TOGGLE_CURVE_MODE: ShortcutHint = ShortcutHint::primary("B");
 /// Tangent-constraint toggle for the line tool (#73): keep curve handles mirrored/smooth.
 pub const TOGGLE_TANGENT_CONSTRAINT: ShortcutHint = ShortcutHint::plain("T");
 pub const FOCUS_ELEMENT_NAME: ShortcutHint = ShortcutHint::plain("N");
@@ -195,6 +197,14 @@ mod tests {
         let formatted = format_shortcut(ShortcutHint::primary("Z"));
         assert!(formatted.ends_with("+Z"));
         assert!(formatted.contains(primary_modifier_label()));
+    }
+
+    /// #127: curve mode is a primary-modifier shortcut, not a plain `B` — a bare letter
+    /// collided with typing into the in-progress line's length field.
+    #[test]
+    fn curve_mode_shortcut_uses_a_modifier_not_a_bare_letter() {
+        assert_eq!(TOGGLE_CURVE_MODE.modifiers, ShortcutModifiers::Primary);
+        assert!(format_shortcut(TOGGLE_CURVE_MODE).contains(primary_modifier_label()));
     }
 
     #[test]

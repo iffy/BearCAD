@@ -19,7 +19,7 @@ This is `examples/export_step.lua` end to end:
 bearcad.new()
 
 bearcad.rect{ width = 80, height = 50, name = "Base" }
-bearcad.extrude{ rect = 0, distance = 20, name = "Block" }
+bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20, name = "Block" }
 
 bearcad.export_step("block.step")
 
@@ -62,6 +62,23 @@ To sketch on a specific plane instead of the default ground plane:
 ```lua
 bearcad.begin_sketch("construction_plane", 0)
 bearcad.rect{ width = 80, height = 50, name = "Main box" }
+```
+
+`begin_sketch` also accepts a 3D body face — an extrusion's own cap or side wall — so sketching
+on an existing solid is scriptable too:
+
+```lua
+bearcad.begin_sketch{
+  kind = "extrude_cap", extrusion = 0,
+  profile = "polygon", profile_lines = {0, 1, 2, 3}, top = true,
+}
+```
+
+Re-open an existing sketch, or leave the active one, without drawing anything:
+
+```lua
+bearcad.open_sketch(0)   -- re-enter sketch 0 to add more geometry to it
+bearcad.exit_sketch()    -- leave the active sketch
 ```
 
 ## A closed polygon from plain lines, extruded
@@ -109,6 +126,32 @@ bearcad.add_constraint({ kind = "line", index = 0 }, "25mm")
 
 bearcad.parameter("add", "A", "5mm")
 bearcad.parameter("value", 0, "A + 5in")
+bearcad.parameter("name", 0, "Len")     -- rename parameter 0
+bearcad.parameter("delete", 0)
+```
+
+## Editing dimensions while drawing
+
+`bearcad.set_dim(axis, value)` sets a dimension field while a rectangle/line/circle/plane is
+being drawn — `axis` is `"width"`/`"height"` (rect), `"length"` (line), `"diameter"` (circle), or
+`"offset"`/`"angle"` (construction plane):
+
+```lua
+bearcad.ui.tool("rectangle")
+bearcad.ui.click_ground(0, 0)
+bearcad.set_dim("width", "80")
+bearcad.set_dim("height", "50")
+bearcad.ui.key("enter")
+```
+
+To change a dimension on an **already-committed** shape, re-open its label, then commit —
+`edit_dim` accepts `"width"`/`"height"`/`"length"` (a rectangle's own width/height dimensions
+aren't independently re-editable this way, only a plain line's length):
+
+```lua
+bearcad.edit_dim("length")
+bearcad.set_dim("length", "100")
+bearcad.commit_dim()
 ```
 
 ## Reading state back

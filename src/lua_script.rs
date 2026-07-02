@@ -320,13 +320,23 @@ fn parse_boolean_face_table(table: &Table) -> mlua::Result<crate::model::Extrude
 }
 
 /// An `ExtrudeTarget` from a `to = {...}` table (#114): `{plane = i}` (construction plane),
-/// `{face = <face spec>}` (a face's extended plane), or `{vertex = <point table>}` (the plane
-/// through that vertex). Mirrors `extrude_target_lua_table` in src/script.rs.
+/// `{face = <face spec>}` (a flat sketch profile's extended plane), `{face = <FaceId table>}`
+/// (a 3D body's cap/side wall, #126 — the same `{kind = "extrude_cap"|"extrude_side", ...}`
+/// shape `parse_face_id_table`/`begin_sketch` use, distinguished from the flat-profile shape
+/// by the presence of a `kind`/`type` key), or `{vertex = <point table>}` (the plane through
+/// that vertex). Mirrors `extrude_target_lua_table` in src/script.rs.
 fn parse_extrude_target_table(table: &Table) -> mlua::Result<crate::model::ExtrudeTarget> {
     if let Some(i) = table.get::<Option<usize>>("plane")? {
         return Ok(crate::model::ExtrudeTarget::Plane(i));
     }
     if let Some(face) = table.get::<Option<Table>>("face")? {
+        let is_face_id_ref = face.get::<Option<String>>("kind")?.is_some()
+            || face.get::<Option<String>>("type")?.is_some();
+        if is_face_id_ref {
+            return Ok(crate::model::ExtrudeTarget::BodyFace(parse_face_id_table(
+                face,
+            )?));
+        }
         return Ok(crate::model::ExtrudeTarget::Face(parse_extrude_face_table(
             &face,
         )?));
@@ -2798,7 +2808,7 @@ mod tests {
     #[test]
     fn lua_step_roundtrip_preserves_curved_brep() {
         let path = std::env::temp_dir().join("bearcad_lua_rt.step");
-        let path_str = path.to_str().unwrap();
+        let path_str = path.to_string_lossy().replace('\\', "\\\\");
         run_lua_expect_ok(&format!(
             r#"
             bearcad.new()
@@ -3572,6 +3582,59 @@ mod tests {
         assert_eq!(ext.target, Some(crate::model::ExtrudeTarget::Plane(1)));
         let depth = crate::extrude::effective_distance(&state.doc, ext);
         assert!((depth - 5.0).abs() < 1e-3, "depth should match the plane offset, got {depth}");
+    }
+
+    /// #126: `extrude{ to = { face = { kind = "extrude_cap", ... } } }` snaps an extrusion's
+    /// depth to another (already-built) extrusion's cap face — not just a construction plane.
+    #[test]
+    fn lua_extrude_to_body_face_matches_that_faces_height() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10, name = "Base" }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 8, name = "Tall" }
+
+            bearcad.rect{ width = 10, height = 10, x = 20, name = "Second base" }
+            bearcad.extrude{
+                polygon = {4, 5, 6, 7},
+                to = { face = { kind = "extrude_cap", extrusion = 0, profile = "polygon",
+                                profile_lines = {0, 1, 2, 3}, top = true } },
+            }
+        "#,
+        );
+        let ext = &state.doc.extrusions[1];
+        assert!(
+            matches!(ext.target, Some(crate::model::ExtrudeTarget::BodyFace(crate::model::FaceId::ExtrudeCap { extrusion: 0, top: true, .. }))),
+            "unexpected target: {:?}",
+            ext.target
+        );
+        let depth = crate::extrude::effective_distance(&state.doc, ext);
+        assert!((depth - 8.0).abs() < 1e-3, "should reach the first extrusion's 8mm cap, got {depth}");
+    }
+
+    /// #126: a body-face target must actually be a cap/side wall — a `kind` that resolves to
+    /// some other `FaceId` (e.g. a plain circle) is rejected rather than silently misused.
+    #[test]
+    fn lua_extrude_to_body_face_rejects_non_cap_side_face_kinds() {
+        let mut runner = ScriptRunner::from_lua_source(
+            r#"
+            bearcad.circle{ r = 5, name = "Hole" }
+            bearcad.rect{ width = 10, height = 10, x = 20, name = "Base" }
+            bearcad.extrude{
+                polygon = {0, 1, 2, 3},
+                to = { face = { kind = "circle", index = 0 } },
+            }
+        "#,
+        )
+        .unwrap();
+        runner.verbose = false;
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        let ctx = egui::Context::default();
+        while !runner.done {
+            runner.tick(&mut state, &mut synthetic, None, &ctx);
+        }
+        let err = runner.error.expect("non-cap/side body face target should error");
+        assert!(err.contains("cap or side wall"), "unexpected error: {err}");
     }
 
     /// #116: `bearcad.plane{}` declaratively adds a construction plane offset along the

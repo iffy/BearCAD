@@ -724,6 +724,10 @@ pub enum Action {
     },
     /// Add/remove a face from the in-progress extrusion (starts one if needed).
     ToggleExtrudeFace { face: ExtrudeFace },
+    /// Extrude a bare 3D body face directly, no separate sketch (#122): creates an implicit
+    /// sketch mirroring `face_id`'s exact boundary and starts a fresh single-face extrusion
+    /// from it (a body face is never grouped with other faces into one multi-face extrusion).
+    ExtrudeBodyFace { face_id: FaceId },
     /// Set the live (gizmo-driven) extrusion distance.
     SetExtrudeDistance { distance: f32 },
     /// Constrain (or unconstrain) the in-progress extrusion to an object's extended plane.
@@ -1460,6 +1464,57 @@ pub(crate) fn extrude_face_sketch(doc: &Document, face: &ExtrudeFace) -> Option<
     }
 }
 
+/// Extrude a bare 3D body face directly, no separate sketch (#122) — the way many CAD tools
+/// let you drag a face straight off a solid. Creates an implicit sketch hosted on `face_id`
+/// (an `ExtrudeCap`/`ExtrudeSide` — anything else is rejected) and mirrors that face's exact
+/// boundary into it: a circular cap gets a real `Circle` (same radius) rather than a
+/// tessellated approximation, everything else (side walls, polygon caps) gets a
+/// [`crate::construction::add_line_polygon`] loop matching
+/// [`crate::extrude::face_boundary_loop_world`] point-for-point. Returns the new profile as
+/// an `ExtrudeFace`.
+fn create_implicit_extrude_sketch(
+    doc: &mut Document,
+    face_id: FaceId,
+) -> Result<ExtrudeFace, String> {
+    if !matches!(face_id, FaceId::ExtrudeCap { .. } | FaceId::ExtrudeSide { .. }) {
+        return Err("Not a body face".to_string());
+    }
+    let frame = crate::face::sketch_frame(doc, face_id.clone())
+        .ok_or_else(|| "Body face does not exist".to_string())?;
+
+    // A circular cap keeps its exact circle, not a many-sided polygon approximation.
+    if let FaceId::ExtrudeCap { profile: ExtrudeFace::Circle(i), .. } = &face_id {
+        let radius = doc
+            .circles
+            .get(*i)
+            .ok_or_else(|| "Source circle no longer exists".to_string())?
+            .r;
+        let world_loop = crate::extrude::face_boundary_loop_world(doc, &face_id)
+            .ok_or_else(|| "Body face has no boundary".to_string())?;
+        let center_world =
+            world_loop.iter().copied().sum::<Vec3>() / world_loop.len().max(1) as f32;
+        let (cx, cy) = crate::face::world_to_local(&frame, center_world);
+        let sketch = doc.add_sketch(face_id);
+        doc.circles
+            .push(crate::model::Circle::from_local_center_radius(sketch, cx, cy, radius, 0.0));
+        doc.shape_order.push(ShapeKind::Circle);
+        return Ok(ExtrudeFace::Circle(doc.circles.len() - 1));
+    }
+
+    let world_loop = crate::extrude::face_boundary_loop_world(doc, &face_id)
+        .ok_or_else(|| "Body face has no boundary".to_string())?;
+    if world_loop.len() < 3 {
+        return Err("Body face has no boundary".to_string());
+    }
+    let local_points: Vec<(f32, f32)> = world_loop
+        .iter()
+        .map(|&p| crate::face::world_to_local(&frame, p))
+        .collect();
+    let sketch = doc.add_sketch(face_id);
+    let lines = crate::construction::add_line_polygon(doc, sketch, &local_points);
+    Ok(ExtrudeFace::Polygon(lines))
+}
+
 /// The body that a fresh extrusion on `sketch` would join by default, if `sketch` lies on an
 /// existing body's face (sketching on a face of a body continues that body unless the user
 /// chooses otherwise in the context pane, #32).
@@ -1484,6 +1539,19 @@ fn validate_extrude_target(
             crate::extrude::constraint_point_world(doc, point.clone())
                 .map(|_| ())
                 .ok_or_else(|| "Extrude target vertex does not exist".to_string())
+        }
+        ExtrudeTarget::BodyFace(face_id) => {
+            if !matches!(
+                face_id,
+                crate::model::FaceId::ExtrudeCap { .. } | crate::model::FaceId::ExtrudeSide { .. }
+            ) {
+                return Err(
+                    "Extrude target: body face must be an extrusion cap or side wall".to_string(),
+                );
+            }
+            crate::face::sketch_frame(doc, face_id.clone())
+                .map(|_| ())
+                .ok_or_else(|| "Extrude target body face does not exist".to_string())
         }
     }
 }
@@ -3856,6 +3924,39 @@ impl AppState {
                 }
                 ActionResult::Ok
             }
+            Action::ExtrudeBodyFace { face_id } => {
+                let face = match create_implicit_extrude_sketch(&mut self.doc, face_id) {
+                    Ok(face) => face,
+                    Err(e) => {
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                };
+                let Some(sketch) = extrude_face_sketch(&self.doc, &face) else {
+                    return ActionResult::Err("Face not found".to_string());
+                };
+                // A body face always starts a fresh single-face extrusion, never grouped
+                // with whatever else was in progress (#122).
+                let merge_candidate = extrude_merge_candidate(&self.doc, sketch);
+                self.creating_extrusion = Some(CreatingExtrusion {
+                    sketch,
+                    faces: vec![face],
+                    distance: DEFAULT_EXTRUDE_DISTANCE,
+                    text: crate::value::format_length_display_in(
+                        DEFAULT_EXTRUDE_DISTANCE,
+                        crate::model::effective_length_unit(&self.doc, sketch),
+                    ),
+                    user_edited: false,
+                    pending_focus: true,
+                    target: None,
+                    edit_index: None,
+                    body_mode: merge_candidate
+                        .map(ExtrudeBodyMode::MergeInto)
+                        .unwrap_or(ExtrudeBodyMode::NewBody),
+                    merge_candidate,
+                });
+                ActionResult::Ok
+            }
             Action::SetExtrudeDistance { distance } => {
                 if let Some(ce) = &mut self.creating_extrusion {
                     ce.distance = distance;
@@ -6078,6 +6179,91 @@ mod tests {
             target: None,
         });
         state
+    }
+
+    /// #122: pushing/pulling a bare side wall (no separate sketch) creates an implicit
+    /// sketch on that exact face and starts extruding from it.
+    #[test]
+    fn extrude_body_face_pushes_a_box_side_wall_directly() {
+        let mut state = box_extrusion_state();
+        let profile = state.doc.extrusions[0].faces[0].clone();
+        let sketches_before = state.doc.sketches.len();
+        let face_id = FaceId::ExtrudeSide {
+            extrusion: 0,
+            profile,
+            edge: 0,
+        };
+
+        let result = state.apply(Action::ExtrudeBodyFace { face_id });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert_eq!(
+            state.doc.sketches.len(),
+            sketches_before + 1,
+            "should create exactly one implicit sketch"
+        );
+        let ce = state
+            .creating_extrusion
+            .as_ref()
+            .expect("should start a fresh in-progress extrusion");
+        assert_eq!(ce.faces.len(), 1);
+        assert!(matches!(ce.faces[0], ExtrudeFace::Polygon(_)));
+
+        state.apply(Action::CommitExtrusion);
+        assert_eq!(state.doc.extrusions.len(), 2, "should commit as a second extrusion");
+        // Sketching on an existing body's face merges into that body by default (#32) — the
+        // push extends the original box rather than creating a separate one, so the merged
+        // mesh's bounds are the union of the original box (y: 0..10) and the new slab
+        // pushed out from the y=0 wall by the default 10mm (y: -10..0).
+        let merged = crate::extrude::body_solid_mesh(&state.doc, 0).unwrap();
+        let (min, max) = merged.bounds().unwrap();
+        assert!((max.x - min.x - 10.0).abs() < 1e-3, "box width, got {min:?}..{max:?}");
+        assert!((max.z - min.z - 5.0).abs() < 1e-3, "box height, got {min:?}..{max:?}");
+        assert!((max.y - min.y - 20.0).abs() < 1e-3, "box + push, got {min:?}..{max:?}");
+        assert!(min.y < -9.0, "push should extend past the original box, got {min:?}");
+    }
+
+    /// #122: a circular cap gets a real `Circle` in the implicit sketch, not a tessellated
+    /// polygon approximation.
+    #[test]
+    fn extrude_body_face_on_a_circular_cap_creates_a_real_circle() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state.doc.circles.push(crate::model::Circle::from_local_center_radius(
+            sketch, 0.0, 0.0, 6.0, 0.0,
+        ));
+        let profile = ExtrudeFace::Circle(0);
+        state.apply(Action::CreateExtrusion {
+            sketch,
+            faces: vec![profile.clone()],
+            distance: 4.0,
+            body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
+        });
+        let circles_before = state.doc.circles.len();
+        let face_id = FaceId::ExtrudeCap {
+            extrusion: 0,
+            profile,
+            top: true,
+        };
+
+        let result = state.apply(Action::ExtrudeBodyFace { face_id });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert_eq!(state.doc.circles.len(), circles_before + 1);
+        let new_circle = state.doc.circles.last().unwrap();
+        assert!((new_circle.r - 6.0).abs() < 1e-3, "should mirror the source radius exactly");
+        let ce = state.creating_extrusion.as_ref().unwrap();
+        assert!(matches!(ce.faces[0], ExtrudeFace::Circle(_)));
+    }
+
+    /// #122: only a real body face (cap/side) can be extruded this way — anything else is a
+    /// clear error, not a silent no-op.
+    #[test]
+    fn extrude_body_face_rejects_a_construction_plane() {
+        let mut state = AppState::default();
+        let result = state.apply(Action::ExtrudeBodyFace {
+            face_id: FaceId::ConstructionPlane(0),
+        });
+        assert!(matches!(result, ActionResult::Err(_)), "{result:?}");
     }
 
     #[test]

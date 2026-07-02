@@ -1802,8 +1802,7 @@ impl<'a> SceneMesh<'a> {
                     self.push_segment_hover_ring(doc, circle, color, cam, viewport, view_proj);
                 }
             }
-            PickTargetKind::PlaneEdge { a, b }
-            | PickTargetKind::BodyEdge { a, b, .. } => {
+            PickTargetKind::BodyEdge { a, b, .. } => {
                 self.push_segment_hover(*a, *b, color, cam, viewport, view_proj, project);
             }
             PickTargetKind::GlobalAxis(axis) => {

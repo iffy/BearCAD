@@ -5,7 +5,7 @@
 // The mesh API is exercised by tests and consumed by the (next-stage) GPU renderer.
 #![allow(dead_code)]
 
-use crate::face::{local_to_world, sketch_geometry_frame, SketchFrame};
+use crate::face::{local_to_world, sketch_frame, sketch_geometry_frame, SketchFrame};
 use crate::geometric_constraints::point_uv;
 use crate::model::{
     vertex_treatment_geometry, Document, EdgeTreatment, ExtrudeFace, ExtrudeTarget, Extrusion,
@@ -482,8 +482,17 @@ pub fn target_top_plane(doc: &Document, extrusion: &Extrusion) -> Option<(Vec3, 
             let plane = doc.construction_planes.get(*index)?;
             Some((plane.origin, plane.normal))
         }
+        ExtrudeTarget::BodyFace(face_id) => body_face_plane(doc, face_id),
         ExtrudeTarget::Vertex(_) => None,
     }
+}
+
+/// The `(point, normal)` plane of a 3D body face target (#126) — another (or the same)
+/// extrusion's cap or side wall, unlike [`face_plane`] which only handles flat sketch
+/// profiles. `sketch_frame` already resolves the plane of any `FaceId`, cap/side included.
+fn body_face_plane(doc: &Document, face_id: &crate::model::FaceId) -> Option<(Vec3, Vec3)> {
+    let frame = sketch_frame(doc, face_id.clone())?;
+    Some((frame.origin, frame.normal))
 }
 
 /// Where a base profile vertex `v` lands when extruded along `dir`. With a target plane each
@@ -535,6 +544,10 @@ pub fn target_distance(
         ExtrudeTarget::Plane(index) => {
             let plane = doc.construction_planes.get(*index)?;
             plane_axis_distance(base, normal, plane.origin, plane.normal)
+        }
+        ExtrudeTarget::BodyFace(face_id) => {
+            let (p, n) = body_face_plane(doc, face_id)?;
+            plane_axis_distance(base, normal, p, n)
         }
     }
 }
@@ -1647,6 +1660,48 @@ mod tests {
         let profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
         let ext = extrusion(sketch, vec![profile], 5.0);
         (doc, sketch, ext)
+    }
+
+    /// #126: an extrusion can target another (already-committed) extrusion's cap face —
+    /// not just a construction plane or a flat sketch profile.
+    #[test]
+    fn body_face_target_reaches_another_extrusions_cap() {
+        let (mut doc, sketch) = sketch_doc();
+        let base_profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
+        doc.extrusions.push(extrusion(sketch, vec![base_profile.clone()], 8.0));
+
+        let second_profile = rect_profile(&mut doc, sketch, 20.0, 0.0, 10.0, 10.0);
+        let mut second = extrusion(sketch, vec![second_profile], 3.0);
+        second.target = Some(ExtrudeTarget::BodyFace(FaceId::ExtrudeCap {
+            extrusion: 0,
+            profile: base_profile,
+            top: true,
+        }));
+        doc.extrusions.push(second);
+
+        let depth = effective_distance(&doc, &doc.extrusions[1]);
+        assert!(
+            (depth - 8.0).abs() < 1e-3,
+            "should reach extrusion 0's top cap at z=8, got {depth}"
+        );
+    }
+
+    /// A body-face target that doesn't resolve (unknown extrusion index) must not silently
+    /// fall back to the typed distance's *wrong* value — `target_distance` returns `None` so
+    /// `effective_distance` falls back to the plain `distance` field.
+    #[test]
+    fn body_face_target_with_unknown_extrusion_falls_back_to_typed_distance() {
+        let (mut doc, sketch) = sketch_doc();
+        let profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
+        let mut ext = extrusion(sketch, vec![profile.clone()], 3.0);
+        ext.target = Some(ExtrudeTarget::BodyFace(FaceId::ExtrudeCap {
+            extrusion: 99,
+            profile,
+            top: true,
+        }));
+        doc.extrusions.push(ext);
+        let depth = effective_distance(&doc, &doc.extrusions[0]);
+        assert!((depth - 3.0).abs() < 1e-3, "should fall back to distance=3, got {depth}");
     }
 
     #[test]

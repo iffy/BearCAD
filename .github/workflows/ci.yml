@@ -93,7 +93,10 @@ jobs:
           fi
           for script in "${scripts[@]}"; do
             echo "Running $script"
-            xvfb-run -a ./target/debug/bearcad --script "$script" --exit
+            # --timeout force-exits (code 1) if the app hasn't finished on its own —
+            # a hung script (e.g. headless GPU/EGL issues under Xvfb) must fail the
+            # job instead of hanging it indefinitely.
+            xvfb-run -a ./target/debug/bearcad --script "$script" --exit --timeout 30
           done
 
   # Builds BearCAD with the statically-linked OpenCASCADE kernel (#86/#89). The

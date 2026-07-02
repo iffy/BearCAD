@@ -1,14 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <!-- filled L-shaped corner plate with a large, unmistakable diagonal chamfer cut across the
-       outer corner (#72: bigger/bolder than a thin single-stroke profile), plus a light shade
-       on the two far (bottom/right) end faces for a touch of depth (mirrors body.svg's
-       per-face opacity) — the shaded strips are separate non-overlapping regions, not an
-       overlay on top of the already-opaque main fill, so the shade is actually visible -->
+  <!-- A square with one corner chamfered (#131): a light fill covers the whole square minus
+       the cut corner, and the outline is drawn only on the two edges leading into the
+       chamfer (top, left) plus the diagonal cut itself — the far edges (bottom, right) are
+       left unstroked, reading as the soft edge of the fill rather than a hard border, so the
+       cut corner is the clear focal point. -->
   <path
-    d="M 6 25 L 6 20 L 20 6 L 25 6 L 25 13 L 13 13 L 13 25 Z"
+    d="M 19 6 L 26 6 L 26 26 L 6 26 L 6 19 Z"
     fill="currentColor"
+    fill-opacity="0.35"
     stroke="none"
   />
-  <path d="M 6 25 L 6 28 L 13 28 L 13 25 Z" fill="currentColor" fill-opacity="0.45" stroke="none" />
-  <path d="M 25 6 L 28 6 L 28 13 L 25 13 Z" fill="currentColor" fill-opacity="0.45" stroke="none" />
+  <path d="M 19 6 L 26 6" />
+  <path d="M 6 26 L 6 19" />
+  <path d="M 6 19 L 19 6" />
 </svg>

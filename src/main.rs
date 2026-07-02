@@ -245,7 +245,9 @@ fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
         e.to_string(),
     ))))?;
 
-    eframe::run_native(
+    let script_failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let script_failed_for_app = script_failed.clone();
+    let result = eframe::run_native(
         "BearCAD",
         options,
         Box::new(move |cc| {
@@ -263,9 +265,16 @@ fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
                 script_opts.exit_on_complete,
                 script_opts.show_commands,
                 native_menu,
+                script_failed_for_app,
             )) as Box<dyn eframe::App>)
         }),
-    )
+    );
+    // A script that errored under `--exit` closed the window cleanly (#125) — that must
+    // still fail the process, e.g. so CI catches a broken script instead of a green run.
+    if script_failed.load(std::sync::atomic::Ordering::SeqCst) {
+        std::process::exit(1);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -410,6 +419,10 @@ struct App {
     /// Persistent physics state for the Elements pane's force-directed Graph view (#94).
     /// Ephemeral view state (never persisted), like `AppState::hierarchy_view_mode`.
     graph_layout: hierarchy::GraphLayout,
+    /// Set just before closing on an uncaught script error with `--exit` (#125), so
+    /// `run_app` can translate it into a non-zero process exit code after the eframe
+    /// event loop returns — a script failure must fail the process, not just the UI.
+    script_failed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl App {
@@ -420,6 +433,7 @@ impl App {
         exit_on_script_complete: bool,
         show_commands: bool,
         native_menu: NativeMenu,
+        script_failed: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Self {
         let status = if script.as_ref().is_some_and(|r| r.is_repl()) {
             "Lua REPL — enter commands in the terminal".to_string()
@@ -476,6 +490,7 @@ impl App {
             gpu_viewport: gpu_viewport::install(cc),
             gpu_view_cube: gpu_view_cube::install(cc),
             graph_layout: hierarchy::GraphLayout::default(),
+            script_failed,
         }
     }
 
@@ -814,6 +829,16 @@ impl App {
             return;
         }
 
+        // Cmd/Ctrl+B toggles curve mode (#127) even while the in-progress line's inline
+        // length field has keyboard focus — unlike the plain-letter shortcuts below, which
+        // intentionally stand down during text entry. Plain `B` used to double as this
+        // shortcut, but that collided with typing a length expression containing the
+        // letter b (e.g. a variable name), so it silently just typed "b" instead of
+        // toggling. The modifier disambiguates it from ordinary typing.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::B)) {
+            self.state.apply(Action::ToggleCurveMode);
+        }
+
         // While any text field has focus, leave unmodified keys to the input (e.g. "bar" must not
         // switch tools on "r"). Modifier shortcuts (Cmd/Ctrl+P, etc.) use the OS menu layer.
         // FPS mode (#91) owns the bare keys entirely: WASD move, Space jumps, digits switch
@@ -942,13 +967,8 @@ impl App {
             // handled separately below), so curve-mode/tangent-constraint shortcuts are scoped
             // to everywhere else — while drawing/selected with the line tool, or a sketch
             // vertex selection in Select tool (#73).
-            if self.state.tool != Tool::Constraint {
-                if ctx.input(|i| i.key_pressed(egui::Key::B)) {
-                    self.state.apply(Action::ToggleCurveMode);
-                }
-                if ctx.input(|i| i.key_pressed(egui::Key::T)) {
-                    self.state.apply(Action::ToggleTangentConstraint);
-                }
+            if self.state.tool != Tool::Constraint && ctx.input(|i| i.key_pressed(egui::Key::T)) {
+                self.state.apply(Action::ToggleTangentConstraint);
             }
 
             if ctx.input(|i| i.key_pressed(egui::Key::N)) {
@@ -1104,6 +1124,7 @@ impl App {
                             normal,
                             faces,
                             self.state.cam.eye(),
+                            self.state.creating_extrusion.as_ref().and_then(|ce| ce.edit_index),
                         ) {
                             self.pending_extrude_target = Some(target);
                             self.state.apply(Action::SetExtrudeDistance { distance: dist });
@@ -1150,6 +1171,11 @@ impl App {
                     vp,
                 ) {
                     self.state.apply(Action::ToggleExtrudeFace { face });
+                } else if let Some(face_id) =
+                    pick_extrude_body_face(pp, project, &self.state.doc, self.state.cam.eye())
+                {
+                    // A bare body face (#122): push/pull it directly, no separate sketch.
+                    self.state.apply(Action::ExtrudeBodyFace { face_id });
                 }
             }
         }
@@ -1713,16 +1739,22 @@ impl App {
         }
         let needs_repaint = if let Some(runner) = &mut self.script {
             if runner.done {
-                let complete_status = if runner.is_repl() { "REPL ended" } else { "Script complete" };
                 if let Some(err) = &runner.error {
                     self.state.status = format!("Script error: {err}");
-                } else if runner.should_quit {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                } else if self.exit_on_script_complete {
+                } else if !runner.should_quit {
+                    let complete_status = if runner.is_repl() { "REPL ended" } else { "Script complete" };
                     self.state.status = complete_status.to_string();
+                }
+                let action = script_finished_close_action(
+                    runner.error.is_some(),
+                    runner.should_quit,
+                    self.exit_on_script_complete,
+                );
+                if action.fail_process {
+                    self.script_failed.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                if action.close {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                } else {
-                    self.state.status = complete_status.to_string();
                 }
                 false
             } else {
@@ -2138,6 +2170,38 @@ impl eframe::App for App {
 /// is active.
 fn keyboard_shortcuts_suppressed(ctx: &egui::Context) -> bool {
     ctx.wants_keyboard_input()
+}
+
+/// What to do once a script/REPL run has finished, decided independent of the live `egui`
+/// context and process so it's unit-testable (#125).
+struct ScriptFinishedAction {
+    /// Send `ViewportCommand::Close`.
+    close: bool,
+    /// Also fail the process (non-zero exit) once the event loop returns — an uncaught
+    /// script error under `--exit` must fail CI, not hang or silently exit 0.
+    fail_process: bool,
+}
+
+/// A script/REPL run just finished; `error` is whether it ended on an uncaught error,
+/// `should_quit` is whether the script itself called `bearcad.quit()`, and
+/// `exit_on_script_complete` is whether `--exit` was passed on the command line.
+fn script_finished_close_action(
+    error: bool,
+    should_quit: bool,
+    exit_on_script_complete: bool,
+) -> ScriptFinishedAction {
+    if error {
+        // An uncaught error must not leave the app running forever under `--exit`
+        // (previously it would: only the success/`quit()` paths below closed the window).
+        ScriptFinishedAction {
+            close: exit_on_script_complete,
+            fail_process: exit_on_script_complete,
+        }
+    } else if should_quit {
+        ScriptFinishedAction { close: true, fail_process: false }
+    } else {
+        ScriptFinishedAction { close: exit_on_script_complete, fail_process: false }
+    }
 }
 
 /// FPS-mode crosshair (#91): the cursor is locked at the viewport center, so this marks
@@ -3758,6 +3822,21 @@ fn pick_extrude_face(
     Some(base)
 }
 
+/// The bare 3D body face (cap or side wall — never a sketch profile) under the cursor, if
+/// any (#122): the fallback the Extrude tool tries when [`pick_extrude_face`] finds nothing,
+/// so a solid's own face can be pushed/pulled directly, no separate sketch needed.
+fn pick_extrude_body_face(
+    pp: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &model::Document,
+    eye: Vec3,
+) -> Option<FaceId> {
+    match pick_sketch_face(pp, project, doc, eye)? {
+        face_id @ (FaceId::ExtrudeCap { .. } | FaceId::ExtrudeSide { .. }) => Some(face_id),
+        _ => None,
+    }
+}
+
 /// If `face`'s sketch has exactly one other shape overlapping it, and `pp` (in screen space)
 /// lands within their combined footprint, the atomic boolean region the click landed in.
 fn resolve_boolean_extrude_face(
@@ -3875,6 +3954,7 @@ fn pick_extrude_target(
     normal: Vec3,
     exclude: &[model::ExtrudeFace],
     eye: Vec3,
+    editing: Option<usize>,
 ) -> Option<(model::ExtrudeTarget, f32)> {
     use model::ExtrudeTarget;
     const VERTEX_RADIUS_PX: f32 = 12.0;
@@ -3900,6 +3980,14 @@ fn pick_extrude_target(
                 ExtrudeTarget::Face(model::ExtrudeFace::Circle(i))
             }
             FaceId::ConstructionPlane(i) => ExtrudeTarget::Plane(i),
+            // Another (or, unless it's the extrusion being edited, the same) body's cap/side
+            // wall is a valid snap target (#126) — excluded only when it belongs to the
+            // extrusion currently being pulled, which would be a meaningless self-reference.
+            face_id @ (FaceId::ExtrudeCap { extrusion, .. } | FaceId::ExtrudeSide { extrusion, .. })
+                if editing != Some(extrusion) =>
+            {
+                ExtrudeTarget::BodyFace(face_id)
+            }
             _ => return None,
         }
     };
@@ -4543,6 +4631,9 @@ fn draw_extrude_target_highlight(
         }
         model::ExtrudeTarget::Plane(index) => {
             draw_face_highlight(painter, project, doc, FaceId::ConstructionPlane(index), color);
+        }
+        model::ExtrudeTarget::BodyFace(face_id) => {
+            draw_face_highlight(painter, project, doc, face_id, color);
         }
     }
 }
@@ -5679,6 +5770,13 @@ impl App {
                         } else {
                             Some(gpu_viewport::ViewportHoverHighlight::SketchFace(extrude_face_id(f)))
                         }
+                    })
+                    .or_else(|| {
+                        // A bare body face (#122): no sketch profile, but still highlighted so
+                        // it's clear clicking will push/pull it directly.
+                        let pp = pointer_screen?;
+                        let face_id = pick_extrude_body_face(pp, &project, doc, cam.eye())?;
+                        Some(gpu_viewport::ViewportHoverHighlight::SketchFace(face_id))
                     });
             }
             if let Some(ce) = self.state.creating_extrusion.as_ref() {
@@ -7532,9 +7630,9 @@ mod tests {
     use super::actions::CreatingRect;
     use super::{
         build_viewport_scene_input, clip_segment_to_rect, col, initial_launch_maximize_frames,
-        native_options, should_commit_sketch_on_click, should_select_all_rect_value,
-        side_panel_resize_active, tick_launch_maximize, uses_deferred_launch_maximize,
-        vertex_treatment_preview_points, ConstraintPoint, Line,
+        native_options, script_finished_close_action, should_commit_sketch_on_click,
+        should_select_all_rect_value, side_panel_resize_active, tick_launch_maximize,
+        uses_deferred_launch_maximize, vertex_treatment_preview_points, ConstraintPoint, Line,
         MACOS_LAUNCH_MAXIMIZE_DELAY_FRAMES, GRID_EXTENT, ORBIT_PIVOT_GROUND_RADIUS,
         ORBIT_PIVOT_RADIUS,
     };
@@ -7557,6 +7655,48 @@ mod tests {
         use super::{next_rect_focus_axis, RectAxis};
         assert_eq!(next_rect_focus_axis(0), RectAxis::Height);
         assert_eq!(next_rect_focus_axis(1), RectAxis::Width);
+    }
+
+    /// #125: an uncaught script error under `--exit` must close (so CI doesn't hang) and
+    /// fail the process (so CI doesn't silently pass a broken script).
+    #[test]
+    fn script_error_with_exit_flag_closes_and_fails_the_process() {
+        let action = script_finished_close_action(true, false, true);
+        assert!(action.close, "must close so the process isn't left hanging");
+        assert!(action.fail_process, "must fail so CI catches the broken script");
+    }
+
+    /// Without `--exit`, an error leaves the app open for interactive inspection — only the
+    /// `--timeout` watchdog (a separate mechanism) should ever force it closed.
+    #[test]
+    fn script_error_without_exit_flag_stays_open() {
+        let action = script_finished_close_action(true, false, false);
+        assert!(!action.close);
+        assert!(!action.fail_process);
+    }
+
+    /// `bearcad.quit()` always closes the window, whether or not `--exit` was passed — but
+    /// a clean quit (no error) must never fail the process.
+    #[test]
+    fn explicit_quit_closes_without_failing_the_process() {
+        for exit_flag in [false, true] {
+            let action = script_finished_close_action(false, true, exit_flag);
+            assert!(action.close);
+            assert!(!action.fail_process);
+        }
+    }
+
+    /// A script that finishes cleanly only closes if `--exit` was requested; either way it
+    /// never fails the process.
+    #[test]
+    fn clean_completion_closes_only_when_exit_flag_is_set() {
+        let stays_open = script_finished_close_action(false, false, false);
+        assert!(!stays_open.close);
+        assert!(!stays_open.fail_process);
+
+        let closes = script_finished_close_action(false, false, true);
+        assert!(closes.close);
+        assert!(!closes.fail_process);
     }
 
     #[test]

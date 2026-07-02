@@ -445,10 +445,9 @@ pub fn sketch_from_pick_target(doc: &Document, kind: PickTargetKind) -> Option<S
             }
         }),
         PickTargetKind::Point(point) => point_sketch(doc, point),
-        PickTargetKind::PlaneEdge { .. }
-        | PickTargetKind::BodyEdge { .. }
-        | PickTargetKind::GlobalAxis(_)
-        | PickTargetKind::Ground(_) => None,
+        PickTargetKind::BodyEdge { .. } | PickTargetKind::GlobalAxis(_) | PickTargetKind::Ground(_) => {
+            None
+        }
     }
 }
 
@@ -552,13 +551,16 @@ pub fn axis_normal(direction: Vec3, angle_deg: f32) -> Vec3 {
     (Quat::from_axis_angle(axis, angle_deg.to_radians()) * perp).normalize_or_zero()
 }
 
-/// Minimum visual offset for the gizmo arrow when the live offset is near zero.
+/// Minimum visual offset for the gizmo arrow when the live offset is near zero. Keeps the
+/// handle clear of the anchor vertex/face (chamfer/fillet amounts are often smaller than this
+/// floor) so it never renders on top of — or is hard to grab apart from — the geometry it's
+/// anchored to.
 pub fn gizmo_display_offset(offset: f32) -> f32 {
-    if offset.abs() < 2.0 {
+    if offset.abs() < 4.0 {
         if offset == 0.0 {
-            2.0
+            4.0
         } else {
-            offset.signum() * 2.0
+            offset.signum() * 4.0
         }
     } else {
         offset
@@ -862,11 +864,6 @@ pub enum PickTargetKind {
     Line(usize),
     /// A sketch circle (picked on its perimeter).
     Circle(usize),
-    /// One edge of a construction-plane quad.
-    PlaneEdge {
-        a: Vec3,
-        b: Vec3,
-    },
     /// One feature edge of a 3D body's solid mesh (#31) — a mesh boundary or crease between
     /// two non-coplanar triangles, the same edges `ShadingMode::Wireframe` draws, extracted via
     /// `solid_mesh_unique_edges`. Works for any body (extrusion-sourced or STL/STEP-imported),
@@ -975,19 +972,6 @@ pub fn resolve_pick_target(
         });
     }
 
-    if let Some((a, b, dist)) = nearest_construction_plane_edge(screen, project, doc) {
-        consider(PickTarget {
-            kind: PickTargetKind::PlaneEdge { a, b },
-            reference: PlaneReference::Axis {
-                origin: segment_midpoint(a, b),
-                direction: segment_direction(a, b),
-                label: "Construction plane edge".to_string(),
-            },
-            distance_px: dist,
-            priority: 2,
-        });
-    }
-
     if let Some((index, dist)) = nearest_construction_plane(screen, project, &doc.construction_planes)
     {
         let plane = &doc.construction_planes[index];
@@ -1066,9 +1050,6 @@ pub fn draw_pick_highlight(
             if let Some(circle) = doc.circles.get(index) {
                 draw_circle_highlight(painter, project, doc, circle, color);
             }
-        }
-        PickTargetKind::PlaneEdge { a, b } => {
-            draw_segment_highlight(painter, project, a, b, color);
         }
         PickTargetKind::BodyEdge { a, b, .. } => {
             draw_segment_highlight(painter, project, a, b, color);
@@ -1252,12 +1233,6 @@ fn dist_point_to_segment_px(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 
     }
     let t = ((p - a).dot(ab) / ab.length_sq()).clamp(0.0, 1.0);
     (p - (a + ab * t)).length()
-}
-
-/// Edges of a construction-plane quad as world-space segment pairs.
-pub fn construction_plane_edge_segments(plane: &ConstructionPlane) -> [(Vec3, Vec3); 4] {
-    let c = plane_corners(plane, PLANE_DISPLAY_HALF);
-    [(c[0], c[1]), (c[1], c[2]), (c[2], c[3]), (c[3], c[0])]
 }
 
 fn segment_pick_distance(
@@ -1625,27 +1600,6 @@ fn draw_circle_highlight(
     }
 }
 
-fn nearest_construction_plane_edge(
-    screen: egui::Pos2,
-    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
-    doc: &Document,
-) -> Option<(Vec3, Vec3, f32)> {
-    let mut best: Option<(Vec3, Vec3, f32)> = None;
-
-    for plane in &doc.construction_planes {
-        for (a, b) in construction_plane_edge_segments(plane) {
-            let Some(dist) = segment_pick_distance(screen, project, a, b) else {
-                continue;
-            };
-            if best.as_ref().is_none_or(|(_, _, d)| dist < *d) {
-                best = Some((a, b, dist));
-            }
-        }
-    }
-
-    best
-}
-
 fn nearest_global_axis(
     screen: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
@@ -1694,6 +1648,47 @@ fn dist_point_to_quad_edges(p: egui::Pos2, quad: [egui::Pos2; 4]) -> f32 {
         .iter()
         .map(|&(i, j)| dist_point_to_segment_px(p, quad[i], quad[j]))
         .fold(f32::MAX, f32::min)
+}
+
+/// Drop a closed loop of plain `Line`s from local (u, v) points, joined at their shared
+/// corners by `Coincident` constraints — the general (not-necessarily-axis-aligned) form of
+/// [`add_line_rectangle`], e.g. for mirroring an arbitrary body face's exact boundary into a
+/// new implicit sketch (#122). No Horizontal/Vertical constraints (those only make sense for
+/// an axis-aligned rectangle); `points.len()` must be at least 3.
+///
+/// Returns the line indices in the same order as `points`.
+pub fn add_line_polygon(doc: &mut Document, sketch: SketchId, points: &[(f32, f32)]) -> Vec<usize> {
+    use crate::model::{Constraint, ConstraintEntity, ConstraintKind, ShapeKind};
+    let n = points.len();
+    let base = doc.lines.len();
+    for i in 0..n {
+        let (u0, v0) = points[i];
+        let (u1, v1) = points[(i + 1) % n];
+        doc.lines.push(Line::from_local_endpoints(sketch, u0, v0, u1, v1));
+        doc.shape_order.push(ShapeKind::Line);
+    }
+    let idx: Vec<usize> = (base..base + n).collect();
+    for i in 0..n {
+        doc.constraints.push(Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                    line: idx[i],
+                    end: LineEnd::End,
+                }),
+                b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                    line: idx[(i + 1) % n],
+                    end: LineEnd::Start,
+                }),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+        doc.shape_order.push(ShapeKind::Constraint);
+    }
+    idx
 }
 
 /// Drop a rectangle as four plain `Line`s forming a closed loop (bottom → right → top →
@@ -2002,9 +1997,9 @@ mod tests {
 
     #[test]
     fn gizmo_display_offset_never_collapses_to_zero() {
-        assert!((gizmo_display_offset(0.0) - 2.0).abs() < 1e-4);
-        assert!((gizmo_display_offset(0.5) - 2.0).abs() < 1e-4);
-        assert!((gizmo_display_offset(-0.5) + 2.0).abs() < 1e-4);
+        assert!((gizmo_display_offset(0.0) - 4.0).abs() < 1e-4);
+        assert!((gizmo_display_offset(0.5) - 4.0).abs() < 1e-4);
+        assert!((gizmo_display_offset(-0.5) + 4.0).abs() < 1e-4);
         assert!((gizmo_display_offset(12.0) - 12.0).abs() < 1e-4);
     }
 
@@ -2092,6 +2087,23 @@ mod tests {
             0.0,
         );
         assert_eq!(hit, Some(AxisGizmoHit::Offset));
+    }
+
+    /// #124: a construction plane extends infinitely — its rendered border is a display
+    /// artifact, not real geometry, so clicking right on that border must still resolve to
+    /// the plane's *face* (an infinite-plane reference), never a fake edge/axis.
+    #[test]
+    fn pick_near_a_construction_planes_border_resolves_to_its_face_not_an_edge() {
+        let doc = Document::default();
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        // Plane 0 is the default XY ground plane; its rendered quad corners sit at
+        // (±PLANE_DISPLAY_HALF, ±PLANE_DISPLAY_HALF, 0). Pick a point on the top edge away
+        // from x=0/y=0 so it can't coincidentally land on the (legitimately pickable) global
+        // X/Y axes instead.
+        let on_the_border = Pos2::new(30.0, PLANE_DISPLAY_HALF);
+        let target = resolve_pick_target(on_the_border, &project, None, &doc).unwrap();
+        assert_eq!(target.kind, PickTargetKind::ConstructionPlane(0));
+        assert!(matches!(target.reference, PlaneReference::Face { .. }));
     }
 
     #[test]

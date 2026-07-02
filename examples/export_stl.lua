@@ -7,7 +7,7 @@ bearcad.new()
 bearcad.rect{ width = 80, height = 50, name = "Base" }
 
 -- ...extruded 20 mm into a solid body.
-bearcad.extrude{ rect = 0, distance = 20, name = "Block" }
+bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20, name = "Block" }
 
 -- Export every body in the document to an STL file.
 bearcad.export_stl("block.stl")

@@ -4,7 +4,7 @@
 bearcad.new()
 
 bearcad.rect{ width = 80, height = 50, name = "Base" }
-bearcad.extrude{ rect = 0, distance = 20, name = "Block" }
+bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20, name = "Block" }
 
 bearcad.export_step("block.step")
 

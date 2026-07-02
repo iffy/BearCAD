@@ -159,8 +159,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   - **Curve-mode toggle with the Line tool (#73):** the Line tool always places points with
     plain click-click (no click-drag gesture). Two independent toggles, shown as checkboxes in
     the Context pane (above Construction) while the Line tool is active and bound to keyboard
-    shortcuts `B`/`T`, control what happens at each shared vertex of a drawn polyline:
-    - **Curve mode (`B`, default off):** when on, the *next* point placed gets bezier handles on
+    shortcuts Cmd/Ctrl+`B` and `T`, control what happens at each shared vertex of a drawn
+    polyline:
+    - **Curve mode (Cmd/Ctrl+`B` — a primary-modifier shortcut, #127, unlike the plain-letter
+      toggles elsewhere, since a bare `B` collided with typing a length expression containing
+      the letter b; default off):** when on, the *next* point placed gets bezier handles on
       both sides of it (or just the outgoing side, if it's a fresh chain's starting point, since
       there's no previous segment to derive a tangent from yet). Concretely: committing the
       *n*-th point of a chain (n ≥ 3) retroactively smooths the shared vertex between the
@@ -178,7 +181,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
       vertex — the previous segment's end visibly bends to stay smooth/corner-consistent with it,
       updating every frame.
     - Both toggles also work retroactively: with the Select tool, in sketch mode, with one or
-      more vertices selected, `B` toggles the selected vertex(es) between curved and straight
+      more vertices selected, Cmd/Ctrl+`B` toggles the selected vertex(es) between curved and straight
       (straightens both incident lines if either is already curved, else smooths them — see
       `Action::SetVertexTangent`/`ConvertVertexToBezier`/`StraightenLine`) and `T` toggles
       between tangent-continuous (re-smoothed) and independent handles at the vertex. Vertices
@@ -259,7 +262,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     **Extrude to object (#114):** instead of a fixed distance, `to = { plane = i }` /
     `{ face = <face spec> }` / `{ vertex = <point> }` snaps the extrusion to that object's
     extended plane, and the link is parametric — the snapped extrusion follows when the
-    target moves. **Semantic push/pull (#114):** `bearcad.edit_extrusion{ extrusion, distance?,
+    target moves. `face` accepts either a flat sketch profile (`{circle=i}`/`{polygon={..}}`/
+    `{boolean={..}}`) or, for a 3D body's cap/side wall (#126) — including another body
+    entirely, not just the extrusion's own sketch — the same `{kind = "extrude_cap" |
+    "extrude_side", extrusion, profile, top?/edge?}` shape `begin_sketch` uses.
+    **Semantic push/pull (#114):** `bearcad.edit_extrusion{ extrusion, distance?,
     by?, to? }` edits a committed extrusion like dragging its gizmo — `by` nudges from the
     current effective depth, `distance` sets an absolute depth (clearing any snap target),
     `to` (re)snaps.
@@ -274,8 +281,20 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     in-progress edit). The gizmo handle floats a little above the solid's top face (rather than
     sitting on it), and typing a digit while the tool is active focuses the distance field and
     overwrites its value. The extrusion (and its body) nests under the sketch it was built from.
+  - **Push/pull a bare body face directly (#122):** the Extrude tool also accepts a click
+    directly on an existing body's own cap or side wall (an `ExtrudeCap`/`ExtrudeSide`), no
+    separate sketch needed — "drag a face straight off a solid," like many CAD tools. This
+    creates an implicit sketch hosted on that exact face and mirrors its boundary into it (a
+    circular cap gets a real circle, not a tessellated approximation), then starts a fresh
+    single-face extrusion from it — a body face is never grouped with other faces into one
+    multi-face extrusion, unlike coplanar sketch profiles. Sketching on an existing body's
+    face merges into that body by default (§3.2's `body?` choice, #32), so pushing/pulling a
+    face this way naturally extends the solid rather than creating a disjoint one.
   - **Extrude-to-object**: during a gizmo drag, hovering a vertex/face/plane snaps the depth to
-    that object and, on release, constrains the extrusion to it (`ExtrudeTarget`). The effective
+    that object and, on release, constrains the extrusion to it (`ExtrudeTarget`). This includes
+    another body's cap/side wall (#126), not just a construction plane or flat sketch profile —
+    except the cap/side faces of the extrusion currently being dragged itself, which would be a
+    meaningless self-reference and are excluded from the snap candidates. The effective
     depth is then derived from the target's extended plane — to a vertex's perpendicular plane,
     or where the extrusion axis meets a face/construction-plane — and recomputes if that geometry
     moves. A free gizmo drag (no object) leaves a plain unconstrained distance. The live ghost
@@ -986,9 +1005,11 @@ the deployed site. This reuses §9.3's determinism guarantees (fixed view, no an
   use a margin around their projected edges. Hover resolution and click picking share the
   same resolver so feedback matches what a click would select.
 - **Shape edges:** when a tool accepts a line or axis reference (e.g. construction-plane
-  creation), standalone sketch lines and individual edges of shapes (rectangle sides,
-  construction-plane borders, etc.) are all valid picks. Shape edges take precedence over
-  the shape's face when the cursor is near the edge.
+  creation), standalone sketch lines and individual edges of shapes (rectangle sides, etc.)
+  are all valid picks. Shape edges take precedence over the shape's face when the cursor is
+  near the edge. Construction planes are the one exception (#124): they extend infinitely,
+  so their rendered border is a display artifact, not real geometry — it isn't pickable as
+  an edge/axis reference, only the plane's face is.
 - **3D body edges (#31):** any edge of any 3D body — not just 2D sketch geometry — is a valid
   axis reference for a construction plane, including STL/STEP-imported bodies. An edge here is
   a *feature* edge of the body's triangle mesh (a mesh boundary, or a crease where adjacent

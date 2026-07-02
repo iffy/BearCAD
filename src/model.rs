@@ -719,6 +719,11 @@ pub enum ExtrudeTarget {
     Face(ExtrudeFace),
     /// Up to a construction plane.
     Plane(usize),
+    /// Up to the extended plane of a 3D body face — another (or the same) extrusion's cap
+    /// or side wall (#126), not a flat sketch profile. Always `FaceId::ExtrudeCap` or
+    /// `FaceId::ExtrudeSide`; other `FaceId` kinds don't reach this variant (they already
+    /// have their own — `Face`/`Plane` above).
+    BodyFace(FaceId),
 }
 
 /// An extrusion of one or more coplanar sketch faces into a 3D solid.

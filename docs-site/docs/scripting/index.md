@@ -137,3 +137,5 @@ yield until the next frame rather than blocking.
   synthetic input.
 - **[Point-level selection](/docs/scripting/point-selection)** — selecting a single vertex instead of a
   whole element, for scripted constraint authoring.
+- **[First-person mode](/docs/scripting/first-person-mode)** — walking, flying, and scale, from a
+  script.

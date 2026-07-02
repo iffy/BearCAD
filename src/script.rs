@@ -1080,6 +1080,7 @@ fn extrude_target_lua_table(target: &crate::model::ExtrudeTarget) -> String {
     match target {
         ExtrudeTarget::Plane(i) => format!("{{ plane = {i} }}"),
         ExtrudeTarget::Face(face) => format!("{{ face = {} }}", extrude_face_spec_table(face)),
+        ExtrudeTarget::BodyFace(face_id) => format!("{{ face = {} }}", face_id_lua_ref(face_id)),
         ExtrudeTarget::Vertex(point) => {
             format!("{{ vertex = {} }}", constraint_point_lua_ref(point))
         }
