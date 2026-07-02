@@ -34,6 +34,15 @@ impl StandardView {
     }
 
     /// Spherical camera parameters that place the eye on this side of `target`.
+    ///
+    /// Orientations follow the mainstream CAD convention (#100): front = +X right / +Z up,
+    /// top = +X right / +Y up, right = +Y right / +Z up; back/left/bottom mirrored. The
+    /// top/bottom yaw matters even though the view is (almost) straight down/up: the eye
+    /// keeps a tiny horizontal offset (`PITCH_LIMIT` is ~88°), and that offset direction —
+    /// `(cos yaw, sin yaw)`, which ends up screen-*down* via the world-Z up hint — is what
+    /// sets the plan view's roll. Top uses the front yaw (tilt the front view up onto the
+    /// model: +Y becomes screen-up) and bottom uses the back yaw (tilt the front view down:
+    /// +Y becomes screen-down).
     pub fn yaw_pitch(self) -> (f32, f32) {
         use std::f32::consts::{FRAC_PI_2, PI};
         match self {
@@ -41,8 +50,8 @@ impl StandardView {
             Self::Back => (FRAC_PI_2, 0.0),
             Self::Right => (0.0, 0.0),
             Self::Left => (PI, 0.0),
-            Self::Top => (0.0, PITCH_LIMIT),
-            Self::Bottom => (0.0, -PITCH_LIMIT),
+            Self::Top => (-FRAC_PI_2, PITCH_LIMIT),
+            Self::Bottom => (FRAC_PI_2, -PITCH_LIMIT),
         }
     }
 }
@@ -391,6 +400,23 @@ impl Camera {
     pub fn start_view_transition(&mut self, view: StandardView, duration: f32) {
         let (yaw, pitch) = view.yaw_pitch();
         self.start_transition_to_yaw_pitch(yaw, pitch, duration);
+        self.world_up_on_complete();
+    }
+
+    /// Standard/world view transitions must not inherit a lingering sketch-mode
+    /// `view_up` (#100): a preset chosen after sketching would land rolled by the
+    /// sketch frame. Animate the roll back to the world up and drop the override
+    /// when the transition completes. (The pitch clamp keeps top/bottom ~2° off
+    /// the pole, so `Vec3::Z` stays a valid look-at up hint there.)
+    fn world_up_on_complete(&mut self) {
+        if self.view_up.is_none() {
+            return;
+        }
+        if let Some(t) = self.transition.as_mut() {
+            t.to_view_up = Vec3::Z;
+            t.animate_view_up = true;
+            t.clear_view_up_on_complete = true;
+        }
     }
 
     pub fn projection_mode(&self) -> ProjectionMode {
@@ -453,9 +479,12 @@ impl Camera {
     }
 
     /// Animate to a view that looks from `direction` (outward from `target`).
+    /// Used by view-cube face/edge/corner clicks — world-frame views, so any
+    /// sketch-mode `view_up` is cleared on completion like the presets (#100).
     pub fn start_view_transition_to_direction(&mut self, direction: Vec3, duration: f32) {
         let (yaw, pitch) = Self::view_direction_to_yaw_pitch(direction);
         self.start_transition_to_yaw_pitch(yaw, pitch, duration);
+        self.world_up_on_complete();
     }
 
     pub fn start_transition_to_yaw_pitch(&mut self, to_yaw: f32, to_pitch: f32, duration: f32) {
@@ -799,25 +828,21 @@ impl Camera {
         self.orbit_trackball(delta);
     }
 
-    fn capture_orbit_base_right(
-        forward: Vec3,
-        up: Vec3,
-        yaw: f32,
-        sketch_pitch_at_pole: bool,
-    ) -> Vec3 {
+    fn capture_orbit_base_right(forward: Vec3, up: Vec3, yaw: f32) -> Vec3 {
         let forward = forward.normalize_or_zero();
-        // World top/bottom: `forward × world_up` is non-zero but is the wrong pitch
-        // axis near the pole; keep the yaw-aligned fallback. Sketch views pass a
-        // plane-axis `up` that matches screen-right even at the pole.
-        if !sketch_pitch_at_pole && forward.z.abs() > 0.95 {
-            return Vec3::new(yaw.cos(), yaw.sin(), 0.0).normalize_or_zero();
-        }
+        // The pitch (vertical-drag) axis is camera screen-right = forward × up. This stays
+        // well-conditioned even at the top/bottom presets (`PITCH_LIMIT` keeps ~2° off the
+        // pole), so a vertical drag from a plan view is a true trackball tilt about
+        // screen-right — e.g. dragging down from the top view tips the eye toward +Y/back
+        // (#100). Previously the near-pole axis was the eye's horizontal offset direction,
+        // which is screen-*down*, so vertical drags at the poles read as sideways spins.
         let mut right = forward.cross(up);
         if right.length_squared() < 1e-8 {
-            if forward.z.abs() > 0.95 {
-                return Vec3::new(yaw.cos(), yaw.sin(), 0.0).normalize_or_zero();
-            }
-            right = Vec3::new(yaw.cos(), yaw.sin(), 0.0);
+            // Exactly at a pole with a parallel up hint: reconstruct screen-right from yaw.
+            // Looking down, screen-down is the eye-offset direction (cos yaw, sin yaw), so
+            // screen-right is that rotated -90°; flip when looking up.
+            let sign = if forward.z <= 0.0 { 1.0 } else { -1.0 };
+            right = Vec3::new(-yaw.sin(), yaw.cos(), 0.0) * sign;
         }
         if right.length_squared() < 1e-8 {
             right = Vec3::X;
@@ -844,10 +869,8 @@ impl Camera {
         if self.orbit_quat.is_none() {
             let forward = (self.target - self.eye()).normalize_or_zero();
             let up = self.view_up_hint();
-            let sketch_pitch = self.view_up.is_some();
             let pitch_up = self.orbit_pitch_up_hint(forward);
-            let right =
-                Self::capture_orbit_base_right(forward, pitch_up, self.yaw, sketch_pitch);
+            let right = Self::capture_orbit_base_right(forward, pitch_up, self.yaw);
             self.orbit_base_offset = Some(self.spherical_offset());
             self.orbit_base_up = Some(up);
             self.orbit_base_right = Some(right);
@@ -863,9 +886,8 @@ impl Camera {
             }
         }
         let forward = (self.target - self.eye()).normalize_or_zero();
-        let sketch_pitch = self.view_up.is_some();
         let pitch_up = self.orbit_pitch_up_hint(forward);
-        Self::capture_orbit_base_right(forward, pitch_up, self.yaw, sketch_pitch)
+        Self::capture_orbit_base_right(forward, pitch_up, self.yaw)
     }
 
     /// Trackball-style orbit: rotates the eye around `target` using camera-local
@@ -1262,13 +1284,95 @@ mod tests {
                 "{view:?}: expected {expected:?}, got {offset:?}"
             );
         }
-        cam.yaw = 0.0;
-        cam.pitch = PITCH_LIMIT;
+        let (yaw, pitch) = StandardView::Top.yaw_pitch();
+        cam.yaw = yaw;
+        cam.pitch = pitch;
         let top = (cam.eye() - cam.target).normalize();
         assert!(top.z > 0.95, "top view should look from +Z, got {top:?}");
-        cam.pitch = -PITCH_LIMIT;
+        let (yaw, pitch) = StandardView::Bottom.yaw_pitch();
+        cam.yaw = yaw;
+        cam.pitch = pitch;
         let bottom = (cam.eye() - cam.target).normalize();
         assert!(bottom.z < -0.95, "bottom view should look from -Z, got {bottom:?}");
+    }
+
+    /// #100: every standard view must match the mainstream CAD screen convention.
+    /// Encoded by projecting world points: `right`/`up` name the world axis that must
+    /// point screen-right/up (negative = the opposite direction).
+    #[test]
+    fn standard_views_follow_cad_screen_convention() {
+        let cases = [
+            (StandardView::Top, Vec3::X, Vec3::Y),
+            (StandardView::Bottom, Vec3::X, -Vec3::Y),
+            (StandardView::Front, Vec3::X, Vec3::Z),
+            (StandardView::Back, -Vec3::X, Vec3::Z),
+            (StandardView::Right, Vec3::Y, Vec3::Z),
+            (StandardView::Left, -Vec3::Y, Vec3::Z),
+        ];
+        let viewport = test_viewport();
+        for (view, world_right, world_up) in cases {
+            let mut cam = Camera::default();
+            cam.set_projection_mode(ProjectionMode::Orthographic);
+            let (yaw, pitch) = view.yaw_pitch();
+            cam.yaw = yaw;
+            cam.pitch = pitch;
+            let vp = cam.view_proj(viewport);
+            let origin = cam.project(Vec3::ZERO, viewport, &vp).expect("origin visible");
+            let r = cam
+                .project(world_right * 50.0, viewport, &vp)
+                .expect("right probe visible");
+            let u = cam
+                .project(world_up * 50.0, viewport, &vp)
+                .expect("up probe visible");
+            // Screen +x is right, screen +y is down.
+            assert!(
+                r.x > origin.x + 10.0,
+                "{view:?}: {world_right:?} should project screen-right, origin={origin:?} r={r:?}"
+            );
+            assert!(
+                (r.y - origin.y).abs() < 3.0,
+                "{view:?}: {world_right:?} should stay level on screen, origin={origin:?} r={r:?}"
+            );
+            assert!(
+                u.y < origin.y - 10.0,
+                "{view:?}: {world_up:?} should project screen-up, origin={origin:?} u={u:?}"
+            );
+            assert!(
+                (u.x - origin.x).abs() < 3.0,
+                "{view:?}: {world_up:?} should stay centred on screen, origin={origin:?} u={u:?}"
+            );
+        }
+    }
+
+    /// #100 regression: a standard-view preset chosen while a sketch-mode
+    /// `view_up` override is active must clear the override when it lands —
+    /// otherwise the preset stays rolled by the sketch frame (the original bug:
+    /// top view with +X screen-down after any sketching).
+    #[test]
+    fn view_preset_clears_stale_sketch_view_up() {
+        let viewport = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let mut cam = Camera::default();
+        cam.set_projection_mode(ProjectionMode::Orthographic);
+        // Simulate leftover sketch state: a custom up that would roll a plan view.
+        cam.set_view_up(Some(Vec3::new(-1.0, 0.0, 0.0)));
+        assert!(cam.has_custom_view_up());
+
+        cam.start_view_transition(StandardView::Top, 0.05);
+        for _ in 0..20 {
+            cam.tick_transition(0.02);
+        }
+
+        assert!(
+            !cam.has_custom_view_up(),
+            "preset transition must drop the sketch view_up override"
+        );
+        // And the landed view obeys the CAD convention: +X screen-right, +Y screen-up.
+        let vp = cam.view_proj(viewport);
+        let origin = cam.project(Vec3::ZERO, viewport, &vp).expect("origin visible");
+        let r = cam.project(Vec3::X * 50.0, viewport, &vp).expect("x probe");
+        let u = cam.project(Vec3::Y * 50.0, viewport, &vp).expect("y probe");
+        assert!(r.x > origin.x + 10.0, "+X should land screen-right: {origin:?} {r:?}");
+        assert!(u.y < origin.y - 10.0, "+Y should land screen-up: {origin:?} {u:?}");
     }
 
     #[test]

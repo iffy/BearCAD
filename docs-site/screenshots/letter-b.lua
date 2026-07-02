@@ -36,10 +36,10 @@ local segs = {
 local upper_d = { lx = 10, cy = 54, w = 24, hh = 9 }
 local lower_d = { lx = 10, cy = 16, w = 26, hh = 9 }
 
--- Top view maps world +x to screen-down and +y to screen-right, so rotate each letter point
--- into sketch (u, v) as (H/2 - y, x - W/2) to show it upright, centred on the origin.
-local function u(y) return H / 2 - y end
-local function v(x) return x - W / 2 end
+-- The top view shows sketch +x screen-right and +y screen-up (#100), so letter coordinates
+-- map straight through — just centre the letter on the origin.
+local function u(x) return x - W / 2 end
+local function v(y) return y - H / 2 end
 
 bearcad.new()
 
@@ -47,9 +47,9 @@ bearcad.new()
 local n = #segs
 for i = 1, n do
   local s = segs[i]
-  local line = { x = u(s[2]), y = v(s[1]), x1 = u(s[4]), y1 = v(s[3]) }
+  local line = { x = u(s[1]), y = v(s[2]), x1 = u(s[3]), y1 = v(s[4]) }
   if s.bez then
-    line.bezier = { { u(s.bez[2]), v(s.bez[1]) }, { u(s.bez[4]), v(s.bez[3]) } }
+    line.bezier = { { u(s.bez[1]), v(s.bez[2]) }, { u(s.bez[3]), v(s.bez[4]) } }
   end
   bearcad.line(line)
 end
@@ -67,8 +67,8 @@ local outline = { 0, 1, 2, 3 }
 bearcad.extrude{ polygon = outline, distance = 12, name = "B" }
 
 -- The cap sketch shares the ground plane's (u, v) axes but is anchored at the profile loop's
--- first vertex (the outline's (0, 0)), so a letter point (lx, ly) maps to cap-local (-ly, lx).
-local function cap(lx, ly) return -ly, lx end
+-- first vertex (the outline's (0, 0)), so a letter point (lx, ly) is already cap-local.
+local function cap(lx, ly) return lx, ly end
 
 -- Draw one "D" counter (flat left + rounded right) as three Line-tool segments on the current
 -- sketch, starting at line index `first`; kappa is the standard circle/ellipse control offset.
