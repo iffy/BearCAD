@@ -170,10 +170,31 @@ impl Line {
         }
     }
 
-    pub fn length(&self) -> f32 {
+    /// Straight-line distance between the two endpoints. For a curved line this is the
+    /// chord, which is what a length dimension constrains (the sketch solver moves
+    /// endpoints, not bezier handles).
+    pub fn chord_length(&self) -> f32 {
         let du = self.x1 - self.x0;
         let dv = self.y1 - self.y0;
         (du * du + dv * dv).sqrt()
+    }
+
+    /// True length of the segment: the chord for straight lines, the bezier arc length
+    /// for curved ones. Arc length sums the [`BEZIER_SEGMENTS`] tessellation from
+    /// [`Self::sample_local`] so labels, introspection, and the rendered/extruded mesh
+    /// all agree on the same discretization.
+    pub fn length(&self) -> f32 {
+        if !self.is_curved() {
+            return self.chord_length();
+        }
+        self.sample_local(BEZIER_SEGMENTS)
+            .windows(2)
+            .map(|w| {
+                let du = w[1].0 - w[0].0;
+                let dv = w[1].1 - w[0].1;
+                (du * du + dv * dv).sqrt()
+            })
+            .sum()
     }
 
     pub fn is_curved(&self) -> bool {
@@ -1023,6 +1044,57 @@ mod tests {
         // Bulges away from the straight chord partway through.
         assert!(pts[BEZIER_SEGMENTS / 2].1 > 1.0);
         assert!(line.is_curved());
+    }
+
+    #[test]
+    fn straight_line_arc_length_equals_chord_exactly() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let line = Line::from_local_endpoints(sketch, 0.0, 0.0, 3.0, 4.0);
+        assert_eq!(line.length(), line.chord_length());
+    }
+
+    #[test]
+    fn curved_line_length_is_the_arc_not_the_chord() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let mut line = Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0);
+        // Extreme handles far off the chord (todoer #111): a 10 mm chord with a huge bulge.
+        line.bezier = Some([(200.0, 300.0), (-190.0, 300.0)]);
+        assert!((line.chord_length() - 10.0).abs() < 1e-4);
+        assert!(
+            line.length() > line.chord_length() * 10.0,
+            "arc {} should dwarf the 10 mm chord",
+            line.length()
+        );
+    }
+
+    #[test]
+    fn kappa_quarter_circle_arc_length_matches_analytic_value() {
+        // The standard cubic-bezier circle approximation: start (r, 0), end (0, r),
+        // handles at (r, r*kappa) and (r*kappa, r). Its arc length must match (pi/2)*r
+        // to within ~0.1% at BEZIER_SEGMENTS resolution.
+        const KAPPA: f32 = 0.552_284_7;
+        let r = 10.0_f32;
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let mut line = Line::from_local_endpoints(sketch, r, 0.0, 0.0, r);
+        line.bezier = Some([(r, r * KAPPA), (r * KAPPA, r)]);
+        let expected = std::f32::consts::FRAC_PI_2 * r;
+        let arc = line.length();
+        let rel_err = (arc - expected).abs() / expected;
+        assert!(rel_err < 1e-3, "arc {arc} vs {expected}: relative error {rel_err}");
+        assert!(arc > line.chord_length());
+    }
+
+    #[test]
+    fn degenerate_bezier_with_handles_on_endpoints_has_arc_equal_to_chord() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let mut line = Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0);
+        line.bezier = Some([(0.0, 0.0), (10.0, 0.0)]);
+        assert!(line.is_curved());
+        assert!((line.length() - line.chord_length()).abs() < 1e-4);
     }
 
     #[test]

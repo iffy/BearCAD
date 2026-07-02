@@ -92,6 +92,10 @@ edge are correspondingly multi-faceted rather than a single flat quad; sketching
 of a curved extrusion edge is not currently supported. Inference/extension snapping onto a curved
 line still uses its straight chord, not the true curve.
 
+A curved line's reported length is its true arc length (Elements-pane label, computed
+parameters, `bearcad.get{}.length`), but a length dimension on it constrains the endpoint
+(chord) distance — the solver moves endpoints, not bezier handles.
+
 ## Scripting
 
 ```lua

@@ -330,7 +330,10 @@ pub fn constraint_evaluated_angle(doc: &Document, index: ConstraintId) -> Option
 
 fn measured_distance(doc: &Document, sketch: SketchId, target: DistanceTarget) -> Option<f32> {
     match target {
-        DistanceTarget::LineLength(i) => doc.lines.get(i).map(|l| l.length()),
+        // A length dimension on a line constrains the endpoint (chord) distance — the
+        // sketch solver moves endpoints, not bezier handles — so measure the chord here
+        // even for curved lines. Arc length (`Line::length`) is display/introspection only.
+        DistanceTarget::LineLength(i) => doc.lines.get(i).map(|l| l.chord_length()),
         DistanceTarget::CircleDiameter(i) => doc.circles.get(i).map(|c| c.diameter()),
         DistanceTarget::LineLineDistance { line_a, line_b, .. } => {
             measured_line_line_distance(doc, sketch, line_a, line_b)
@@ -952,7 +955,8 @@ pub fn migrate_legacy_dimensions(doc: &mut Document) {
     for (i, line) in doc.lines.iter().enumerate() {
         if line.length_locked {
             let expr = line.length_expr.clone().unwrap_or_else(|| {
-                format_length_display_in(line.length(), effective_length_unit(doc, line.sketch))
+                // Chord, not arc: the migrated constraint solves endpoint distance.
+                format_length_display_in(line.chord_length(), effective_length_unit(doc, line.sketch))
             });
             if find_distance_constraint(doc, DistanceTarget::LineLength(i)).is_none() {
                 pending.push((
@@ -1397,6 +1401,29 @@ mod tests {
         assert_eq!(id, 0);
         assert!((doc.lines[0].length() - 5.0).abs() < 1e-3);
         assert!(doc.lines[0].length_locked);
+    }
+
+    #[test]
+    fn length_dimension_on_curved_line_measures_the_chord_not_the_arc() {
+        let (mut doc, sketch) = sketch_doc();
+        let mut line = Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0);
+        line.bezier = Some([(3.0, 4.0), (7.0, 4.0)]);
+        doc.lines.push(line);
+        doc.shape_order.push(ShapeKind::Line);
+        // The default dimension expression is the measured chord (10 mm), even though
+        // the arc length shown in labels/introspection is longer.
+        assert!(doc.lines[0].length() > 10.5);
+        let expr = default_distance_expression(&doc, sketch, DistanceTarget::LineLength(0));
+        assert_eq!(expr, "10.0 mm");
+        // Solving the dimension moves the endpoints so the chord matches.
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::LineLength(0),
+            "5mm".to_string(),
+        )
+        .unwrap();
+        assert!((doc.lines[0].chord_length() - 5.0).abs() < 1e-3);
     }
 
     fn push_coincident(doc: &mut Document, sketch: SketchId, kind: ConstraintKind) -> usize {

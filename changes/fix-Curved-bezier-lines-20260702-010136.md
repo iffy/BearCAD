@@ -1,0 +1,1 @@
+Curved (bezier) lines report their true arc length everywhere lengths are shown or introspected (Elements-pane labels, computed parameters, Lua get{}.length); a length dimension still constrains the endpoint (chord) distance (#111)

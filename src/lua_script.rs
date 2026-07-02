@@ -2490,6 +2490,20 @@ mod tests {
     }
 
     #[test]
+    fn lua_get_line_length_reports_arc_length_for_curves() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0, bezier = { {3, 4}, {7, 4} } }
+            local l = bearcad.get{ kind = "line", index = 0 }
+            assert(l.curved == true)
+            -- Arc length of the curve, not the 10 mm endpoint chord.
+            assert(l.length > 10.5, "expected arc length > chord, got " .. l.length)
+        "#,
+        );
+    }
+
+    #[test]
     fn lua_circle_creates_circle_on_ground_plane() {
         let state = run_lua(
             r#"

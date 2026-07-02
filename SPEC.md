@@ -202,6 +202,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     an extrusion's side-wall face) are not curve-aware — sketching on the side wall of a curved
     extrusion edge is not currently supported. Inference/extension snapping onto a curved line
     still uses its straight chord (not the true curve) for the midpoint/on-line snap targets.
+  - **Length semantics (#111):** a curved line's reported length is its true **arc length**
+    (summed over the same `BEZIER_SEGMENTS` tessellation) everywhere it's displayed or
+    introspected — Elements-pane labels, computed parameters, `bearcad.get{}.length` — but a
+    length **dimension** on a curved line constrains the endpoint (**chord**) distance, since
+    the sketch solver moves endpoints, not bezier handles.
   - Scriptable via `bearcad.line{ x=, y=, x1=, y1=, bezier = { {cx0, cy0}, {cx1, cy1} } }`.
 - **Chamfer and fillet (#37/#38), 2D sketch vertices only:** both are tools ("push/pull" gizmo
   + text-entry input, mirroring the extrude tool) that operate on a sketch vertex where exactly
