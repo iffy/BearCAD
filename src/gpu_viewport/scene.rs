@@ -122,16 +122,21 @@ const BODY_SILHOUETTE_OFFSET_PX: f32 = 5.0;
 
 const GIZMO_OFFSET_STROKE_PX: f32 = 2.5;
 const GIZMO_OFFSET_STROKE_HOVER_PX: f32 = 4.0;
-const GIZMO_ARROW_HEAD_PX: f32 = 8.0;
-const GIZMO_ARROW_WING_PX: f32 = 4.0;
+/// Direction cones on gizmo handles: solid cones pointing along each direction the handle
+/// can move, with a small gap between the handle disc and the cone base. Sizes are screen
+/// px so the cones hold a constant on-screen size like the disc handle itself.
+const GIZMO_CONE_GAP_PX: f32 = 9.0;
+const GIZMO_CONE_LENGTH_PX: f32 = 11.0;
+const GIZMO_CONE_RADIUS_PX: f32 = 4.5;
 const GIZMO_HANDLE_RADIUS_PX: f32 = 6.0;
 const GIZMO_HOVER_INNER_RADIUS_PX: f32 = 9.0;
 const GIZMO_HOVER_OUTER_RADIUS_PX: f32 = 14.0;
 const GIZMO_ANGLE_CIRCLE_SEGMENTS: usize = 48;
 const GIZMO_ANGLE_STROKE_PX: f32 = 1.5;
 const GIZMO_ANGLE_STROKE_HOVER_PX: f32 = 2.5;
-const GIZMO_ANGLE_ARROW_PX: f32 = 5.0;
-const GIZMO_ANGLE_WING_PX: f32 = 3.0;
+const GIZMO_ANGLE_CONE_GAP_PX: f32 = 7.0;
+const GIZMO_ANGLE_CONE_LENGTH_PX: f32 = 8.0;
+const GIZMO_ANGLE_CONE_RADIUS_PX: f32 = 3.5;
 const GIZMO_HANDLE_RING_STROKE_PX: f32 = 1.5;
 
 #[repr(C)]
@@ -3458,19 +3463,20 @@ impl<'a> SceneMesh<'a> {
         };
         if project(origin).is_some() && project(tip).is_some() {
             self.push_line_segment(origin, tip, stroke_color, stroke, cam, viewport, view_proj);
-            push_gizmo_arrowhead(
-                self,
-                tip,
-                n,
-                GIZMO_ARROW_HEAD_PX,
-                GIZMO_ARROW_WING_PX,
-                stroke,
-                stroke_color,
-                cam,
-                viewport,
-                view_proj,
-                project,
-            );
+            // The handle drags along both normal directions: one cone each way,
+            // slightly offset from the handle disc.
+            for sign in [1.0f32, -1.0] {
+                push_gizmo_cone(
+                    self,
+                    tip,
+                    n * sign,
+                    GIZMO_CONE_GAP_PX,
+                    GIZMO_CONE_LENGTH_PX,
+                    GIZMO_CONE_RADIUS_PX,
+                    stroke_color,
+                    project,
+                );
+            }
         }
         if hovered {
             push_gizmo_handle_hover(self, tip, GIZMO_HANDLE_HOVER_RGBA, cam, viewport, view_proj, project);
@@ -3550,77 +3556,73 @@ impl<'a> SceneMesh<'a> {
         } else {
             push_gizmo_handle(self, handle, color, cam, viewport, view_proj, project);
         }
-        let tangent_len = pixels_to_world_distance(project, handle, tangent, GIZMO_ANGLE_ARROW_PX);
-        if tangent_len > 1e-6 {
-            for sign in [-1.0f32, 1.0] {
-                let along = tangent * sign;
-                let tip = handle + along * tangent_len;
-                push_gizmo_arrowhead(
-                    self,
-                    tip,
-                    along,
-                    GIZMO_ANGLE_ARROW_PX,
-                    GIZMO_ANGLE_WING_PX,
-                    2.0,
-                    angle_color,
-                    cam,
-                    viewport,
-                    view_proj,
-                    project,
-                );
-            }
+        // The angle handle drags along the circle both ways: one cone along each
+        // tangent direction, slightly offset from the handle disc.
+        for sign in [-1.0f32, 1.0] {
+            push_gizmo_cone(
+                self,
+                handle,
+                tangent * sign,
+                GIZMO_ANGLE_CONE_GAP_PX,
+                GIZMO_ANGLE_CONE_LENGTH_PX,
+                GIZMO_ANGLE_CONE_RADIUS_PX,
+                angle_color,
+                project,
+            );
         }
     }
 }
 
-fn push_gizmo_arrowhead(
+/// Solid direction cone for a gizmo handle: base circle at `handle + dir * gap`, apex at
+/// `handle + dir * (gap + length)`, pointing away from the handle along a direction it can
+/// be dragged. Sized in screen px (converted to world units at the handle) and lightly
+/// Lambert-shaded per triangle so it reads as a small solid, not a flat silhouette.
+fn push_gizmo_cone(
     mesh: &mut SceneMesh<'_>,
-    tip: Vec3,
-    along_world: Vec3,
-    head_px: f32,
-    wing_px: f32,
-    stroke_px: f32,
+    handle: Vec3,
+    dir_world: Vec3,
+    gap_px: f32,
+    length_px: f32,
+    radius_px: f32,
     color: Color32,
-    cam: &Camera,
-    viewport: UiRect,
-    view_proj: &Mat4,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
 ) {
-    let along = along_world.normalize_or_zero();
-    if along.length_squared() < 1e-8 {
+    let dir = dir_world.normalize_or_zero();
+    if dir.length_squared() < 1e-8 {
         return;
     }
-    let eye = cam.eye();
-    let to_cam = (eye - tip).normalize_or_zero();
-    let mut side = along.cross(to_cam);
-    if side.length_squared() < 1e-8 {
-        side = along.cross(cam.view_up_hint());
-    }
-    if side.length_squared() < 1e-8 {
+    let gap = pixels_to_world_distance(project, handle, dir, gap_px);
+    let length = pixels_to_world_distance(project, handle, dir, length_px);
+    if length < 1e-6 {
         return;
     }
-    side = side.normalize();
-    let arrow_len = pixels_to_world_distance(project, tip, along, head_px);
-    let arrow_wing = pixels_to_world_distance(project, tip, side, wing_px);
-    let base = tip - along * arrow_len;
-    mesh.push_line_segment(
-        tip,
-        base + side * arrow_wing,
-        color,
-        stroke_px,
-        cam,
-        viewport,
-        view_proj,
-    );
-    mesh.push_line_segment(
-        tip,
-        base - side * arrow_wing,
-        color,
-        stroke_px,
-        cam,
-        viewport,
-        view_proj,
-    );
+    let mut u = dir.cross(Vec3::Z);
+    if u.length_squared() < 1e-6 {
+        u = dir.cross(Vec3::X);
+    }
+    let u = u.normalize_or_zero();
+    let v = dir.cross(u);
+    let base_center = handle + dir * gap;
+    let apex = base_center + dir * length;
+    let radius = pixels_to_world_distance(project, base_center, u, radius_px);
+    if radius < 1e-6 {
+        return;
+    }
+    // Same fixed light as `push_solid`, so gizmo cones match the scene's shading.
+    let light = Vec3::new(0.35, 0.45, 0.82).normalize_or_zero();
+    const SEGMENTS: usize = 16;
+    let cap_shade = 0.4 + 0.6 * dir.dot(light).abs();
+    let cap_color = scale_color(color, cap_shade);
+    for i in 0..SEGMENTS {
+        let a0 = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+        let a1 = (i + 1) as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+        let p0 = base_center + (u * a0.cos() + v * a0.sin()) * radius;
+        let p1 = base_center + (u * a1.cos() + v * a1.sin()) * radius;
+        let normal = (p1 - p0).cross(apex - p0).normalize_or_zero();
+        let shade = 0.4 + 0.6 * normal.dot(light).abs();
+        mesh.push_triangle(p0, p1, apex, scale_color(color, shade));
+        mesh.push_triangle(base_center, p1, p0, cap_color);
+    }
 }
 
 fn push_gizmo_handle(

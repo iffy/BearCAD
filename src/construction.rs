@@ -750,18 +750,13 @@ pub fn draw_offset_gizmo(
         painter.line_segment([base, end], egui::Stroke::new(offset_stroke, offset_color));
         let shaft = end - base;
         if shaft.length_sq() > 1.0 {
+            // Direction cones (filled triangles in this 2D fallback), one along each way
+            // the handle can drag, slightly offset from the handle disc — mirrors the GPU
+            // path's `push_gizmo_cone`.
             let dir = shaft.normalized();
-            let perp = egui::vec2(-dir.y, dir.x);
-            let head = 8.0;
-            let wing = 4.0;
-            painter.line_segment(
-                [end, end - dir * head + perp * wing],
-                egui::Stroke::new(offset_stroke, offset_color),
-            );
-            painter.line_segment(
-                [end, end - dir * head - perp * wing],
-                egui::Stroke::new(offset_stroke, offset_color),
-            );
+            for sign in [1.0f32, -1.0] {
+                draw_gizmo_cone_2d(painter, end, dir * sign, 9.0, 11.0, 4.5, offset_color);
+            }
         }
         if hovered {
             draw_gizmo_handle_hover(painter, end, GIZMO_HANDLE_HOVER_RGBA);
@@ -770,6 +765,28 @@ pub fn draw_offset_gizmo(
             painter.circle_stroke(end, 6.0, egui::Stroke::new(1.5, color.gamma_multiply(0.5)));
         }
     }
+}
+
+/// Screen-space direction cone for the 2D painter gizmo fallback: a filled triangle
+/// pointing along `dir`, its base `gap` px from the handle center (the 2D silhouette of
+/// the GPU path's solid cone).
+fn draw_gizmo_cone_2d(
+    painter: &egui::Painter,
+    handle: egui::Pos2,
+    dir: egui::Vec2,
+    gap: f32,
+    length: f32,
+    radius: f32,
+    color: egui::Color32,
+) {
+    let base = handle + dir * gap;
+    let apex = handle + dir * (gap + length);
+    let side = egui::vec2(-dir.y, dir.x) * radius;
+    painter.add(egui::Shape::convex_polygon(
+        vec![apex, base + side, base - side],
+        color,
+        egui::Stroke::NONE,
+    ));
 }
 
 /// Draw offset arrow and angle circle handles for an axis-referenced plane.
@@ -838,19 +855,8 @@ pub fn draw_axis_plane_gizmo(
         ) {
             let t_screen = (ta - tb).normalized();
             if t_screen.length_sq() > 1e-4 {
-                let arrow = 5.0;
-                let wing = 3.0;
                 for sign in [-1.0f32, 1.0] {
-                    let tip = sp + t_screen * sign * arrow;
-                    let side = egui::vec2(-t_screen.y, t_screen.x) * wing * sign;
-                    painter.line_segment(
-                        [tip, tip - t_screen * sign * arrow + side],
-                        egui::Stroke::new(2.0, angle_color),
-                    );
-                    painter.line_segment(
-                        [tip, tip - t_screen * sign * arrow - side],
-                        egui::Stroke::new(2.0, angle_color),
-                    );
+                    draw_gizmo_cone_2d(painter, sp, t_screen * sign, 7.0, 8.0, 3.5, angle_color);
                 }
             }
         }
