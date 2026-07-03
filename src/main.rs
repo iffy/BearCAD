@@ -1549,6 +1549,55 @@ impl App {
     /// amount. Mirrors [`Self::handle_vertex_treatment_tool`] closely; active precisely when
     /// that one isn't (no sketch open), since the Chamfer/Fillet tool is shared between the 2D
     /// sketch-vertex case and this 3D solid-edge case.
+    /// Loft tool (SPEC §3.5): click closed sketch profiles (circles or line loops) to
+    /// collect cross sections; Enter blends them into a lofted solid. The picked set shows
+    /// in the context-pane selection picker (#167), where rows can be removed.
+    fn handle_loft_tool(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+        pick_occlusion: Option<&construction::PickOcclusion>,
+    ) {
+        if self.state.sketch_session.is_some() {
+            return;
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+            && self
+                .state
+                .creating_loft
+                .as_ref()
+                .is_some_and(|cl| cl.sections.len() >= 2)
+        {
+            self.state.apply(Action::CommitLoft);
+            return;
+        }
+        if !ui.input(|i| i.pointer.primary_pressed()) {
+            return;
+        }
+        let Some(pp) = pointer_screen else {
+            return;
+        };
+        let gp = cam.ground_point(pp, viewport, vp);
+        let Some(target) = resolve_pick_target(pp, project, gp, &self.state.doc, pick_occlusion)
+        else {
+            return;
+        };
+        let element = match target.kind {
+            construction::PickTargetKind::Circle(ci) => Some(SceneElement::Circle(ci)),
+            construction::PickTargetKind::Line(li) => Some(SceneElement::Line(li)),
+            _ => None,
+        };
+        if let Some(section) =
+            element.and_then(|el| extrude::loft_section_from_element(&self.state.doc, el))
+        {
+            self.state.apply(Action::ToggleLoftSection { section });
+        }
+    }
+
     fn handle_edge_treatment_tool(
         &mut self,
         ui: &egui::Ui,
@@ -1958,6 +2007,16 @@ impl eframe::App for App {
                 }
                 if icons::selectable_icon_button(
                     ui,
+                    icons::IconId::Loft,
+                    self.state.tool == Tool::Loft,
+                    shortcuts::compact_label("Loft", shortcuts::tool_shortcut(Tool::Loft)),
+                )
+                .clicked()
+                {
+                    self.state.apply(Action::SetTool(Tool::Loft));
+                }
+                if icons::selectable_icon_button(
+                    ui,
                     icons::IconId::Dimension,
                     self.state.tool == Tool::Dimension,
                     shortcuts::compact_label(
@@ -2157,6 +2216,21 @@ impl eframe::App for App {
                         })
                         .unwrap_or_default()
                 }),
+                // Loft tool: one picker row per picked cross section.
+                loft_rows: (self.state.tool == Tool::Loft
+                    && self.state.sketch_session.is_none())
+                .then(|| {
+                    self.state
+                        .creating_loft
+                        .as_ref()
+                        .map(|cl| {
+                            cl.sections
+                                .iter()
+                                .map(|sec| context::loft_section_row_label(&self.state.doc, sec))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                }),
                 // #171: "Calibrate scale" shows when exactly one tracing image and one
                 // line (on the image's host plane) are selected — the line is the
                 // reference segment drawn over a known image feature.
@@ -2252,20 +2326,33 @@ impl eframe::App for App {
                 }
             }
             if let Some(edit) = edge_picker_edit {
-                // Remove one row (or clear the set) from the in-progress treatment (#167);
-                // dropping the last edge cancels the treatment entirely.
-                match edit {
-                    Some(index) => {
-                        if let Some(cet) = self.state.creating_edge_treatment.as_mut() {
-                            if index < cet.edges.len() {
-                                cet.edges.remove(index);
-                            }
-                            if cet.edges.is_empty() {
-                                self.state.creating_edge_treatment = None;
+                // Remove one row (or clear the set) from the active tool's picked set
+                // (#167); dropping the last edge cancels the treatment entirely.
+                if self.state.tool == Tool::Loft {
+                    match edit {
+                        Some(index) => {
+                            if let Some(cl) = self.state.creating_loft.as_mut() {
+                                if index < cl.sections.len() {
+                                    cl.sections.remove(index);
+                                }
                             }
                         }
+                        None => self.state.creating_loft = None,
                     }
-                    None => self.state.creating_edge_treatment = None,
+                } else {
+                    match edit {
+                        Some(index) => {
+                            if let Some(cet) = self.state.creating_edge_treatment.as_mut() {
+                                if index < cet.edges.len() {
+                                    cet.edges.remove(index);
+                                }
+                                if cet.edges.is_empty() {
+                                    self.state.creating_edge_treatment = None;
+                                }
+                            }
+                        }
+                        None => self.state.creating_edge_treatment = None,
+                    }
                 }
             }
             if let Some(enabled) = snapping_change {
@@ -5623,6 +5710,10 @@ impl App {
             self.show_extrude_distance_input(ui, &project);
         }
 
+        if self.state.tool == Tool::Loft {
+            self.handle_loft_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
+        }
+
         if matches!(self.state.tool, Tool::Chamfer | Tool::Fillet) {
             self.handle_vertex_treatment_tool(ui, &project, pointer_screen);
             self.show_vertex_treatment_amount_input(ui, &project);
@@ -7168,6 +7259,18 @@ impl App {
             }
             Tool::Sketch => {
                 "s: sketch  •  Click a rectangle or construction plane face  •  Esc: cancel"
+            }
+            Tool::Loft => {
+                if self
+                    .state
+                    .creating_loft
+                    .as_ref()
+                    .is_some_and(|cl| cl.sections.len() >= 2)
+                {
+                    "Loft — click more profiles to add sections • Enter: create loft • Esc: cancel"
+                } else {
+                    "Loft — click two or more closed profiles (circles or loops) • Enter: create loft • Esc: cancel"
+                }
             }
             Tool::Rectangle => {
                 if self.state.creating_rect.is_some() {

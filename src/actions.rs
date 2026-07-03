@@ -88,6 +88,9 @@ pub enum Tool {
     /// Same vertex-selection flow as [`Tool::Chamfer`], but bridges the truncated lines with a
     /// rounded single-cubic-bezier arc instead of a straight cut (#38).
     Fillet,
+    /// Pick two or more closed sketch profiles (circles or line loops) as cross sections,
+    /// then Enter blends them into a lofted solid (SPEC §3.5 Loft).
+    Loft,
 }
 
 impl Tool {
@@ -106,6 +109,7 @@ impl Tool {
             "extrude" => Some(Tool::Extrude),
             "chamfer" => Some(Tool::Chamfer),
             "fillet" => Some(Tool::Fillet),
+            "loft" => Some(Tool::Loft),
             _ => None,
         }
     }
@@ -348,6 +352,13 @@ impl CreatingVertexTreatment {
 /// [`CreatingVertexTreatment`] — kept as a parallel, separate state rather than folded into it,
 /// since resolving the target/geometry is entirely different (an extrusion's own analytic
 /// side/cap edge, via `ExtrusionEdgeRef`, not a sketch vertex).
+/// State for the in-progress (pre-Enter) loft: the cross sections picked so far.
+/// Committing (Enter, >= 2 sections) creates a [`crate::model::Loft`] plus its body.
+#[derive(Clone, Debug, Default)]
+pub struct CreatingLoft {
+    pub sections: Vec<crate::model::LoftSection>,
+}
+
 #[derive(Clone, Debug)]
 pub struct CreatingEdgeTreatment {
     /// The analytic edges being treated together (#166): one shared amount/gizmo applies to
@@ -783,6 +794,10 @@ pub enum Action {
     EditExtrusion { index: usize },
     /// Finalize the in-progress extrusion (create or update).
     CommitExtrusion,
+    /// Add/remove a cross section from the in-progress loft (starts one if needed).
+    ToggleLoftSection { section: crate::model::LoftSection },
+    /// Finalize the in-progress loft: blend the picked sections into a new body.
+    CommitLoft,
     SetExtrudeBodyMode { mode: ExtrudeBodyMode },
     /// Enable or disable snapping while drawing/dragging.
     SetSnapping(bool),
@@ -1135,6 +1150,9 @@ pub struct AppState {
     /// gizmo-driven amount. Parallel to `creating_vertex_treatment` — see
     /// [`CreatingEdgeTreatment`].
     pub creating_edge_treatment: Option<CreatingEdgeTreatment>,
+    /// In-progress loft (Loft tool): the picked cross sections, shown in the context-pane
+    /// selection picker.
+    pub creating_loft: Option<CreatingLoft>,
     /// Shared construction draw mode for rectangle, line, and circle tools.
     pub draw_construction: bool,
     /// Persisted "next point gets bezier handles" toggle for the line tool (`B`, #73); mirrors
@@ -1232,6 +1250,7 @@ impl Default for AppState {
             creating_extrusion: None,
             creating_vertex_treatment: None,
             creating_edge_treatment: None,
+            creating_loft: None,
             draw_construction: false,
             draw_curve_mode: false,
             draw_tangent_constraint: true,
@@ -2401,6 +2420,22 @@ impl AppState {
                         self.status = "Undid image import".to_string();
                         undone = true;
                     }
+                    Some(ShapeKind::Loft) => {
+                        // CommitLoft pushes the loft and its body under one marker, so
+                        // undo removes both together.
+                        let li = self.doc.lofts.len().wrapping_sub(1);
+                        if self
+                            .doc
+                            .bodies
+                            .last()
+                            .is_some_and(|b| b.source == crate::model::BodySource::Loft(li))
+                        {
+                            self.doc.bodies.pop();
+                        }
+                        self.doc.lofts.pop();
+                        self.status = "Undid loft".to_string();
+                        undone = true;
+                    }
                     Some(ShapeKind::EdgeTreatmentEdit) => {
                         match self.edge_treatment_undo.pop() {
                             Some((extrusion, previous)) => {
@@ -2498,6 +2533,9 @@ impl AppState {
                 {
                     self.creating_edge_treatment = None;
                 }
+                if self.creating_loft.is_some() && tool != Tool::Loft {
+                    self.creating_loft = None;
+                }
                 // #157/#166: switching to Chamfer/Fillet with body edges already selected
                 // preloads them (filtered to treatable edges) so the gizmo shows right away.
                 if matches!(tool, Tool::Chamfer | Tool::Fillet)
@@ -2523,10 +2561,19 @@ impl AppState {
                         });
                     }
                 }
-                // Extruding acts on the 3D model, not sketch geometry: leave sketch
-                // editing when the extrude tool is picked from inside a sketch.
-                if tool == Tool::Extrude && self.sketch_session.is_some() {
+                // Extruding/lofting act on the 3D model, not sketch geometry: leave
+                // sketch editing when either tool is picked from inside a sketch.
+                if matches!(tool, Tool::Extrude | Tool::Loft) && self.sketch_session.is_some() {
                     self.exit_sketch_session();
+                }
+                // Switching to Loft with profiles already selected preloads them as
+                // sections (mirrors the Chamfer/Fillet preload above).
+                if tool == Tool::Loft && self.creating_loft.is_none() {
+                    let sections = crate::extrude::loft_sections_from_selection(
+                        &self.doc,
+                        &self.scene_selection,
+                    );
+                    self.creating_loft = Some(CreatingLoft { sections });
                 }
                 if !matches!(tool, Tool::Select | Tool::Dimension | Tool::Constraint) {
                     self.editing_committed_dim = None;
@@ -2568,6 +2615,9 @@ impl AppState {
                         "Fillet tool — click a sketch vertex".to_string()
                     }
                     Tool::Fillet => "Fillet tool — click a body edge".to_string(),
+                    Tool::Loft => {
+                        "Loft tool — click two or more closed profiles".to_string()
+                    }
                 };
                 if tool == Tool::Dimension {
                     self.try_begin_dimension_from_selection();
@@ -2588,6 +2638,8 @@ impl AppState {
                     self.status = "Cancelled".to_string();
                 } else if self.creating_extrusion.take().is_some() {
                     self.status = "Cancelled extrusion".to_string();
+                } else if self.creating_loft.take().is_some() {
+                    self.status = "Cancelled loft".to_string();
                 } else if self.creating_rect.take().is_some()
                     || self.discard_creating_line()
                     || self.creating_circle.take().is_some()
@@ -4427,6 +4479,56 @@ impl AppState {
                 self.refresh_document_health();
                 ActionResult::Ok
             }
+            Action::ToggleLoftSection { section } => {
+                if crate::extrude::face_profile_world(&self.doc, &section.face).is_none() {
+                    return ActionResult::Err(
+                        "Loft section is not a closed profile".to_string(),
+                    );
+                }
+                let cl = self.creating_loft.get_or_insert_with(CreatingLoft::default);
+                if let Some(pos) = cl.sections.iter().position(|sec| *sec == section) {
+                    cl.sections.remove(pos);
+                } else {
+                    cl.sections.push(section);
+                }
+                self.status = format!("Loft: {} section(s)", cl.sections.len());
+                ActionResult::Ok
+            }
+            Action::CommitLoft => {
+                let Some(cl) = self.creating_loft.take() else {
+                    return ActionResult::Err("No loft in progress".to_string());
+                };
+                if cl.sections.len() < 2 {
+                    self.creating_loft = Some(cl);
+                    return ActionResult::Err(
+                        "Pick at least two cross sections to loft".to_string(),
+                    );
+                }
+                let loft = crate::model::Loft {
+                    sections: crate::extrude::order_loft_sections(&self.doc, cl.sections.clone()),
+                    name: None,
+                    deleted: false,
+                };
+                if crate::extrude::loft_mesh(&self.doc, &loft).is_none() {
+                    self.creating_loft = Some(cl);
+                    return ActionResult::Err(
+                        "Loft sections must be closed profiles".to_string(),
+                    );
+                }
+                let count = loft.sections.len();
+                self.doc.lofts.push(loft);
+                self.doc.bodies.push(crate::model::Body {
+                    source: crate::model::BodySource::Loft(self.doc.lofts.len() - 1),
+                    name: None,
+                    deleted: false,
+                });
+                // One shape-order marker for the pair; undo pops the body with the loft.
+                self.doc.shape_order.push(ShapeKind::Loft);
+                self.tool = Tool::Select;
+                self.status = format!("Added loft ({count} sections)");
+                self.refresh_document_health();
+                ActionResult::Ok
+            }
             Action::SetSnapping(enabled) => {
                 self.snapping_enabled = enabled;
                 self.active_snap = None;
@@ -5627,6 +5729,81 @@ mod tests {
         let mut state = AppState::default();
         state.apply(Action::SetTool(Tool::ConstructionPlane));
         assert_eq!(state.tool, Tool::ConstructionPlane);
+    }
+
+    /// Loft (SPEC §3.5): toggling two circle sections and committing creates a loft plus
+    /// its body under one undo marker; undo removes both together.
+    #[test]
+    fn commit_loft_creates_body_and_undo_removes_both() {
+        let mut state = AppState::default();
+        let bottom = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        state
+            .doc
+            .circles
+            .push(crate::model::Circle::from_local_center_radius(bottom, 0.0, 0.0, 5.0, 0.0));
+        state.doc.construction_planes.push(plane_from_definition(
+            &definition_from_reference(
+                &PlaneReference::Face {
+                    origin: Vec3::ZERO,
+                    normal: Vec3::Z,
+                    label: "Ground".to_string(),
+                },
+                10.0,
+                0.0,
+            ),
+            ConstructionPlaneParent::Root,
+        ));
+        let top = state.doc.add_sketch(FaceId::ConstructionPlane(1));
+        state
+            .doc
+            .circles
+            .push(crate::model::Circle::from_local_center_radius(top, 0.0, 0.0, 2.0, 0.0));
+
+        for (sketch, ci) in [(bottom, 0), (top, 1)] {
+            let result = state.apply(Action::ToggleLoftSection {
+                section: crate::model::LoftSection {
+                    sketch,
+                    face: crate::model::ExtrudeFace::Circle(ci),
+                },
+            });
+            assert!(matches!(result, ActionResult::Ok));
+        }
+        assert!(matches!(state.apply(Action::CommitLoft), ActionResult::Ok));
+        assert_eq!(state.doc.lofts.len(), 1);
+        assert_eq!(state.doc.lofts[0].sections.len(), 2);
+        assert_eq!(
+            state.doc.bodies.last().map(|b| b.source.clone()),
+            Some(crate::model::BodySource::Loft(0))
+        );
+        assert_eq!(state.doc.shape_order.last(), Some(&ShapeKind::Loft));
+        assert!(state.creating_loft.is_none());
+        assert!(crate::extrude::body_solid_mesh(&state.doc, state.doc.bodies.len() - 1).is_some());
+
+        state.apply(Action::UndoLast);
+        assert!(state.doc.lofts.is_empty());
+        assert!(state.doc.bodies.is_empty());
+        assert!(!state.doc.shape_order.contains(&ShapeKind::Loft));
+    }
+
+    /// A loft needs at least two sections; a single-section commit is rejected and the
+    /// in-progress state survives for the user to keep picking.
+    #[test]
+    fn commit_loft_rejects_fewer_than_two_sections() {
+        let mut state = AppState::default();
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        state
+            .doc
+            .circles
+            .push(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
+        state.apply(Action::ToggleLoftSection {
+            section: crate::model::LoftSection {
+                sketch,
+                face: crate::model::ExtrudeFace::Circle(0),
+            },
+        });
+        assert!(matches!(state.apply(Action::CommitLoft), ActionResult::Err(_)));
+        assert!(state.doc.lofts.is_empty());
+        assert_eq!(state.creating_loft.as_ref().map(|cl| cl.sections.len()), Some(1));
     }
 
     #[test]

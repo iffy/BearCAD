@@ -21,6 +21,7 @@ pub struct CommandLog {
     print_stdout: bool,
     history: Vec<Instruction>,
     extrusion_count_before: usize,
+    loft_count_before: usize,
     constraint_count_before: usize,
 }
 
@@ -104,6 +105,11 @@ impl CommandLog {
         if matches!(action, Action::CommitExtrusion) {
             self.extrusion_count_before = doc.extrusions.len();
         }
+        // Same new-vs-noop split for CommitLoft: only a commit that actually appended a
+        // loft is replayable as `bearcad.loft{}`.
+        if matches!(action, Action::CommitLoft) {
+            self.loft_count_before = doc.lofts.len();
+        }
         if Self::can_add_snap_constraint(action) {
             self.constraint_count_before = doc.constraints.len();
         }
@@ -126,6 +132,10 @@ impl CommandLog {
         let instruction = if matches!(action, Action::CommitExtrusion) {
             (doc.extrusions.len() > self.extrusion_count_before)
                 .then(|| crate::script::instruction_for_new_extrusion(doc))
+                .flatten()
+        } else if matches!(action, Action::CommitLoft) {
+            (doc.lofts.len() > self.loft_count_before)
+                .then(|| crate::script::instruction_for_new_loft(doc))
                 .flatten()
         } else {
             instruction_from_action(&action, doc)

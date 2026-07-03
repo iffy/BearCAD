@@ -98,6 +98,9 @@ pub enum Instruction {
         distance: Option<f32>,
         target: Option<crate::model::ExtrudeTarget>,
     },
+    /// Loft a solid through two or more closed cross-section profiles (SPEC §3.5).
+    /// Each face's owning sketch is inferred at execution time, like `bearcad.extrude`.
+    Loft { faces: Vec<crate::model::ExtrudeFace> },
     SetElementVisible {
         element: SceneElement,
         visible: Option<bool>,
@@ -353,6 +356,38 @@ impl Instruction {
                     .map(|t| format!(", to = {}", extrude_target_lua_table(t)))
                     .unwrap_or_default();
                 format!("bearcad.edit_extrusion{{ extrusion = {extrusion}{d}{to} }}")
+            }
+            Instruction::Loft { faces } => {
+                use crate::model::ExtrudeFace;
+                let index_list = |indices: &[usize]| -> String {
+                    indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+                };
+                let mut circles = Vec::new();
+                let mut polygons = Vec::new();
+                for face in faces {
+                    match face {
+                        ExtrudeFace::Circle(i) => circles.push(*i),
+                        ExtrudeFace::Polygon(lines) => polygons.push(lines),
+                        // Boolean regions aren't loftable sections (no interactive path
+                        // constructs one), so nothing to render.
+                        ExtrudeFace::Boolean { .. } => {}
+                    }
+                }
+                let mut parts = Vec::new();
+                if !circles.is_empty() {
+                    parts.push(format!("circles = {{{}}}", index_list(&circles)));
+                }
+                if !polygons.is_empty() {
+                    parts.push(format!(
+                        "polygons = {{{}}}",
+                        polygons
+                            .iter()
+                            .map(|lines| format!("{{{}}}", index_list(lines)))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                format!("bearcad.loft{{ {} }}", parts.join(", "))
             }
             Instruction::SetElementVisible { element, visible } => {
                 let target = element_lua_ref(element);
@@ -1090,6 +1125,16 @@ pub fn instruction_for_new_extrusion(doc: &crate::model::Document) -> Option<Ins
     })
 }
 
+/// Build a replayable `Instruction::Loft` for the loft the interactive Loft tool just
+/// created (the last entry in `doc.lofts`) — `Action::CommitLoft` carries no fields, so
+/// like `instruction_for_new_extrusion` the sections come from post-commit state.
+pub fn instruction_for_new_loft(doc: &crate::model::Document) -> Option<Instruction> {
+    let loft = doc.lofts.last()?;
+    Some(Instruction::Loft {
+        faces: loft.sections.iter().map(|sec| sec.face.clone()).collect(),
+    })
+}
+
 /// Render an extrusion's faces as `bearcad.extrude{}` keyword arguments
 /// (`rect=`/`rects=`, `circle=`/`circles=`, `polygon=`). A single rect or circle uses the
 /// singular field to match how `bearcad.extrude` is normally called by hand; multiple of a
@@ -1295,6 +1340,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
         Tool::Extrude => "extrude",
         Tool::Chamfer => "chamfer",
         Tool::Fillet => "fillet",
+        Tool::Loft => "loft",
     }
 }
 
@@ -2367,6 +2413,27 @@ impl ScriptRunner {
             }
             Instruction::UpdateExtrusion { extrusion, distance, target } => {
                 let result = state.apply(Action::UpdateExtrusion { extrusion, distance, target });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::Loft { faces } => {
+                // Rebuild sections from the faces (sketch inferred per face), then drive the
+                // same action pair the interactive tool uses.
+                state.creating_loft = None;
+                for face in faces {
+                    let Some(sketch) = crate::actions::extrude_face_sketch(&state.doc, &face)
+                    else {
+                        self.record_action_error(crate::actions::ActionResult::Err(
+                            "loft section face does not exist".to_string(),
+                        ));
+                        continue;
+                    };
+                    let result = state.apply(Action::ToggleLoftSection {
+                        section: crate::model::LoftSection { sketch, face },
+                    });
+                    self.record_action_error(result);
+                }
+                let result = state.apply(Action::CommitLoft);
                 self.record_action_error(result);
                 StepResult::Continue
             }

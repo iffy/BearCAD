@@ -2055,6 +2055,42 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Loft a solid through two or more closed cross-section profiles (SPEC §3.5).
+    // `circles = {i, ...}` and/or `polygons = {{line, ...}, ...}` list the sections
+    // (singular `circle`/`polygon` also accepted); each face's sketch is inferred like
+    // `extrude`'s. Section order along the loft is recovered from the geometry.
+    api.set(
+        "loft",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let mut faces: Vec<crate::model::ExtrudeFace> = Vec::new();
+            if let Some(i) = opts.get::<Option<usize>>("circle")? {
+                faces.push(crate::model::ExtrudeFace::Circle(i));
+            }
+            if let Some(list) = opts.get::<Option<Vec<usize>>>("circles")? {
+                faces.extend(list.into_iter().map(crate::model::ExtrudeFace::Circle));
+            }
+            if let Some(lines) = opts.get::<Option<Vec<usize>>>("polygon")? {
+                faces.push(crate::model::ExtrudeFace::Polygon(lines));
+            }
+            if let Some(loops) = opts.get::<Option<Vec<Vec<usize>>>>("polygons")? {
+                faces.extend(loops.into_iter().map(crate::model::ExtrudeFace::Polygon));
+            }
+            if faces.len() < 2 {
+                return Err(mlua::Error::external(
+                    "loft requires at least two sections (`circles`/`polygons`)",
+                ));
+            }
+            unsafe {
+                tick.exec(Instruction::Loft { faces })?;
+            }
+            let element = SceneElement::Body(unsafe {
+                tick.state().doc.bodies.len().saturating_sub(1)
+            });
+            apply_optional_name(lua, element, Some(opts))
+        })?,
+    )?;
+
     // Semantic push/pull of an existing extrusion (#114) — the scripted extrusion gizmo.
     // `distance = d` sets an absolute depth (clearing any snap target), `by = d` pulls the
     // handle by a delta from the current effective depth, and `to = {...}` snaps to a
@@ -3688,6 +3724,45 @@ mod tests {
         }
         let err = runner.error.expect("non-cap/side body face target should error");
         assert!(err.contains("cap or side wall"), "unexpected error: {err}");
+    }
+
+    /// SPEC §3.5 Loft: `bearcad.loft{ circles = {...} }` blends circle sections on two
+    /// planes into a new loft-sourced body with a solid mesh.
+    #[test]
+    fn lua_loft_creates_body_from_two_circle_sections() {
+        let state = run_lua(
+            r#"
+            bearcad.circle{ r = 5 }
+            bearcad.plane{ offset = 10 }
+            bearcad.begin_sketch{ kind = "plane", index = 1 }
+            bearcad.circle{ r = 2 }
+            bearcad.exit_sketch()
+            bearcad.loft{ circles = {0, 1}, name = "Horn" }
+        "#,
+        );
+        assert_eq!(state.doc.lofts.len(), 1);
+        assert_eq!(state.doc.lofts[0].sections.len(), 2);
+        let bi = state.doc.bodies.len() - 1;
+        assert_eq!(
+            state.doc.bodies[bi].source,
+            crate::model::BodySource::Loft(0)
+        );
+        assert_eq!(state.doc.bodies[bi].name.as_deref(), Some("Horn"));
+        let mesh = crate::extrude::body_solid_mesh(&state.doc, bi).expect("loft mesh");
+        assert!(!mesh.triangles.is_empty());
+    }
+
+    /// Lofting fewer than two sections is a scripting error, not a silent no-op.
+    #[test]
+    fn lua_loft_rejects_single_section() {
+        run_lua_expect_ok(
+            r#"
+            bearcad.circle{ r = 5 }
+            local ok, err = pcall(bearcad.loft, { circle = 0 })
+            assert(not ok)
+            assert(tostring(err):find("two sections"), tostring(err))
+        "#,
+        );
     }
 
     /// #116: `bearcad.plane{}` declaratively adds a construction plane offset along the

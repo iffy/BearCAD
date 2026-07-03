@@ -120,7 +120,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     .map_err(|e| e.to_string())?;
 
     tx.execute(
-        "DELETE FROM dag_nodes WHERE kind IN ('sketch', 'line', 'circle', 'parameter', 'constraint', 'construction_plane', 'extrusion', 'body', 'imported_mesh', 'tracing_image')",
+        "DELETE FROM dag_nodes WHERE kind IN ('sketch', 'line', 'circle', 'parameter', 'constraint', 'construction_plane', 'extrusion', 'body', 'imported_mesh', 'tracing_image', 'loft')",
         [],
     )
     .map_err(|e| e.to_string())?;
@@ -135,6 +135,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "body", &doc.bodies)?;
     save_indexed_nodes(&tx, &mut row_id, "imported_mesh", &doc.imported_meshes)?;
     save_indexed_nodes(&tx, &mut row_id, "tracing_image", &doc.tracing_images)?;
+    save_indexed_nodes(&tx, &mut row_id, "loft", &doc.lofts)?;
     if doc.construction_planes.len() > 1 {
         save_indexed_nodes(
             &tx,
@@ -406,6 +407,7 @@ pub fn open(path: &str) -> Result<Document> {
     let bodies = load_indexed_entities(&conn, "body")?;
     let imported_meshes = load_indexed_entities(&conn, "imported_mesh")?;
     let tracing_images = load_indexed_entities(&conn, "tracing_image")?;
+    let lofts = load_indexed_entities(&conn, "loft")?;
     let default_length_unit = load_default_length_unit_meta(&conn);
     let default_angle_unit = load_default_angle_unit_meta(&conn);
     let undo_groups = load_undo_groups_meta(&conn);
@@ -421,6 +423,7 @@ pub fn open(path: &str) -> Result<Document> {
         bodies,
         imported_meshes,
         tracing_images,
+        lofts,
         shape_order,
         undo_groups,
         default_length_unit,

@@ -782,6 +782,8 @@ pub enum BodySource {
     /// A mesh body brought in via STL import (#70); indexes `Document::imported_meshes`
     /// rather than depending on a sketch-based feature.
     Imported(usize),
+    /// A lofted solid; indexes `Document::lofts`.
+    Loft(usize),
     /// Additive extrusions with one or more extrusions **subtracted** (cut) from them (#35).
     /// Purely-additive bodies stay in the `Extrusion`/`Extrusions` forms; a body only takes
     /// this shape once it has a cut. `cut` is `#[serde(default)]` so any future add-only
@@ -805,6 +807,7 @@ impl BodySource {
             Self::Extrusion(index) => std::slice::from_ref(index),
             Self::Extrusions(indices) => indices.as_slice(),
             Self::Solid { add, .. } => add.as_slice(),
+            Self::Loft(_) => &[],
             Self::Imported(_) => &[],
         }
     }
@@ -813,14 +816,14 @@ impl BodySource {
     pub fn cut_extrusion_indices(&self) -> &[usize] {
         match self {
             Self::Solid { cut, .. } => cut.as_slice(),
-            Self::Extrusion(_) | Self::Extrusions(_) | Self::Imported(_) => &[],
+            Self::Extrusion(_) | Self::Extrusions(_) | Self::Imported(_) | Self::Loft(_) => &[],
         }
     }
 
     pub fn imported_mesh_index(&self) -> Option<usize> {
         match self {
             Self::Imported(index) => Some(*index),
-            Self::Extrusion(_) | Self::Extrusions(_) | Self::Solid { .. } => None,
+            Self::Extrusion(_) | Self::Extrusions(_) | Self::Solid { .. } | Self::Loft(_) => None,
         }
     }
 
@@ -839,7 +842,7 @@ impl BodySource {
             Self::Solid { add, .. } => add.push(extrusion),
             // An imported mesh body has no extrusion to merge into; unreachable in practice
             // since merge candidates only ever come from extrusion-backed bodies.
-            Self::Imported(_) => {}
+            Self::Imported(_) | Self::Loft(_) => {}
         }
     }
 
@@ -861,7 +864,7 @@ impl BodySource {
             }
             Self::Solid { cut, .. } => cut.push(extrusion),
             // An imported mesh body has no solid feature to cut; unreachable in practice.
-            Self::Imported(_) => {}
+            Self::Imported(_) | Self::Loft(_) => {}
         }
     }
 
@@ -888,7 +891,7 @@ impl BodySource {
                     };
                 }
             }
-            Self::Extrusion(_) | Self::Imported(_) => {}
+            Self::Extrusion(_) | Self::Imported(_) | Self::Loft(_) => {}
         }
     }
 }
@@ -908,6 +911,27 @@ pub struct Body {
     pub name: Option<String>,
     #[serde(default)]
     pub deleted: bool,
+}
+
+/// A loft: a solid blended through two or more cross-section profiles on (usually)
+/// different planes. Parametric like everything else — the mesh is rebuilt from the live
+/// section profiles on every geometry recompute, so editing a section reshapes the loft.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Loft {
+    /// The cross sections, in blend order (sorted along the loft's principal direction at
+    /// commit time). Each names a closed profile the same way `Extrusion::faces` does.
+    pub sections: Vec<LoftSection>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+/// One loft cross section: a closed profile (`ExtrudeFace`) plus the sketch it lives in.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LoftSection {
+    pub sketch: SketchId,
+    pub face: ExtrudeFace,
 }
 
 /// A reference image imported for tracing (#163/#169), hosted on a construction plane.
@@ -986,6 +1010,8 @@ pub enum ShapeKind {
     Body,
     /// A tracing image import (#169).
     Image,
+    /// A loft feature (its body is a separate `Body` entry).
+    Loft,
     /// An in-place edit of an existing construction plane (undo restores the prior planes).
     /// Transient: never persisted (storage rebuilds `shape_order` from created shapes only).
     ConstructionPlaneEdit,
@@ -1013,6 +1039,9 @@ pub struct Document {
     /// Reference images imported for tracing (#163/#169).
     #[serde(default)]
     pub tracing_images: Vec<TracingImage>,
+    /// Loft features (solids blended through cross sections).
+    #[serde(default)]
+    pub lofts: Vec<Loft>,
     pub shape_order: Vec<ShapeKind>,
     /// Undo-group sizes (#105): entry k is how many [`shape_order`](Self::shape_order)
     /// entries the k-th user-level action created, maintained by `AppState::apply` under
@@ -1048,6 +1077,7 @@ impl Default for Document {
             bodies: Vec::new(),
             imported_meshes: Vec::new(),
             tracing_images: Vec::new(),
+            lofts: Vec::new(),
             shape_order: Vec::new(),
             undo_groups: Vec::new(),
             default_length_unit: LengthUnit::default(),

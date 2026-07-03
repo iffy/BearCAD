@@ -85,6 +85,8 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
         // K/F: no conflict with any other tool letter or constraint mnemonic (A/T/I/M/V/H).
         Tool::Chamfer => Some(ShortcutHint::plain("K")),
         Tool::Fillet => Some(ShortcutHint::plain("F")),
+        // No plain-letter shortcut yet; toolbar/palette only.
+        Tool::Loft => None,
         Tool::Select => None,
     }
 }

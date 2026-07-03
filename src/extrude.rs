@@ -419,7 +419,201 @@ pub fn kernel_fallback_cut_warning(doc: &Document) -> Option<String> {
 #[cfg(feature = "occt")]
 pub const OCCT_DEFLECTION: f32 = 0.05;
 
-/// World bounds of the current selection (#164): union of every selected element's own
+/// Ruled loft mesh through the given cross sections (in order): each section's boundary is
+/// resampled to a common ring size, rings are aligned (consistent winding, twist-minimizing
+/// start offset), consecutive rings are stitched with wall quads, and the end sections are
+/// capped. A hand-rolled mesh like the no-kernel edge-treatment fallback — the OCCT
+/// `ThruSections` surface loft is a documented follow-up.
+pub fn loft_mesh(doc: &Document, loft: &crate::model::Loft) -> Option<SolidMesh> {
+    const RING: usize = CIRCLE_SEGMENTS;
+    let mut rings: Vec<Vec<Vec3>> = Vec::new();
+    for section in &loft.sections {
+        let (profile, _normal) = face_profile_world(doc, &section.face)?;
+        if profile.len() < 3 {
+            return None;
+        }
+        rings.push(resample_loop(&profile, RING));
+    }
+    if rings.len() < 2 {
+        return None;
+    }
+
+    // Consistent winding: orient every ring so its area normal points along the direction
+    // to the next ring's centroid (the loft's local axis).
+    let centroid = |ring: &Vec<Vec3>| ring.iter().copied().sum::<Vec3>() / ring.len() as f32;
+    for i in 0..rings.len() {
+        let c = centroid(&rings[i]);
+        let axis = if i + 1 < rings.len() {
+            centroid(&rings[i + 1]) - c
+        } else {
+            c - centroid(&rings[i - 1])
+        };
+        let normal: Vec3 = (0..rings[i].len())
+            .map(|k| {
+                let a = rings[i][k] - c;
+                let b = rings[i][(k + 1) % rings[i].len()] - c;
+                a.cross(b)
+            })
+            .sum();
+        if normal.dot(axis) < 0.0 {
+            rings[i].reverse();
+        }
+    }
+
+    // Twist minimization: rotate each ring's start index to best match the previous ring.
+    for i in 1..rings.len() {
+        let prev = rings[i - 1].clone();
+        let ring = &mut rings[i];
+        let n = ring.len();
+        let best = (0..n)
+            .min_by(|&a, &b| {
+                let cost = |offset: usize| -> f32 {
+                    (0..n).map(|k| (ring[(k + offset) % n] - prev[k]).length_squared()).sum()
+                };
+                cost(a).partial_cmp(&cost(b)).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .unwrap_or(0);
+        ring.rotate_left(best);
+    }
+
+    let interior = rings.iter().map(|r| centroid(r)).sum::<Vec3>() / rings.len() as f32;
+    let mut triangles = Vec::new();
+    for w in rings.windows(2) {
+        let (a, b) = (&w[0], &w[1]);
+        let n = a.len();
+        for k in 0..n {
+            let k1 = (k + 1) % n;
+            push_oriented(&mut triangles, [a[k], a[k1], b[k1]], interior);
+            push_oriented(&mut triangles, [a[k], b[k1], b[k]], interior);
+        }
+    }
+    triangulate_cap(rings.first()?, interior, &mut triangles);
+    triangulate_cap(rings.last()?, interior, &mut triangles);
+    (!triangles.is_empty()).then_some(SolidMesh { triangles })
+}
+
+/// Resample a closed loop to exactly `count` points, evenly spaced by arc length.
+fn resample_loop(points: &[Vec3], count: usize) -> Vec<Vec3> {
+    let n = points.len();
+    let mut lengths = Vec::with_capacity(n);
+    let mut total = 0.0f32;
+    for i in 0..n {
+        let seg = (points[(i + 1) % n] - points[i]).length();
+        lengths.push(seg);
+        total += seg;
+    }
+    if total < 1e-9 {
+        return vec![points[0]; count];
+    }
+    let mut out = Vec::with_capacity(count);
+    let mut seg = 0usize;
+    let mut seg_start = 0.0f32;
+    for k in 0..count {
+        let target = total * k as f32 / count as f32;
+        while seg + 1 < n && seg_start + lengths[seg] < target {
+            seg_start += lengths[seg];
+            seg += 1;
+        }
+        let t = if lengths[seg] < 1e-9 {
+            0.0
+        } else {
+            ((target - seg_start) / lengths[seg]).clamp(0.0, 1.0)
+        };
+        out.push(points[seg] + (points[(seg + 1) % n] - points[seg]) * t);
+    }
+    out
+}
+
+/// The loft cross sections the current selection resolves to (in blend order): a selected
+/// circle is its own section; a selected line contributes the closed loop containing it.
+/// Sections are ordered along the principal direction through their centroids so the blend
+/// sequence matches the geometry, not the selection click order.
+pub fn loft_sections_from_selection(
+    doc: &Document,
+    selection: &crate::selection::SceneSelection,
+) -> Vec<crate::model::LoftSection> {
+    let mut sections: Vec<crate::model::LoftSection> = Vec::new();
+    for element in selection.iter() {
+        if let Some(section) = loft_section_from_element(doc, element) {
+            if !sections.contains(&section) {
+                sections.push(section);
+            }
+        }
+    }
+    order_loft_sections(doc, sections)
+}
+
+/// The loft cross section a picked scene element resolves to: a circle is its own
+/// section; a line contributes the closed loop containing it. `None` for anything
+/// else (construction geometry, open chains, non-sketch elements).
+pub fn loft_section_from_element(
+    doc: &Document,
+    element: crate::hierarchy::SceneElement,
+) -> Option<crate::model::LoftSection> {
+    use crate::hierarchy::SceneElement;
+    match element {
+        SceneElement::Circle(ci) => {
+            let circle = doc.circles.get(ci).filter(|c| !c.deleted && !c.construction)?;
+            Some(crate::model::LoftSection {
+                sketch: circle.sketch,
+                face: ExtrudeFace::Circle(ci),
+            })
+        }
+        SceneElement::Line(li) => {
+            let line = doc.lines.get(li).filter(|l| !l.deleted && !l.construction)?;
+            crate::polygon::closed_line_loops(doc, line.sketch)
+                .into_iter()
+                .find(|lines| lines.contains(&li))
+                .map(|lines| crate::model::LoftSection {
+                    sketch: line.sketch,
+                    face: ExtrudeFace::Polygon(lines),
+                })
+        }
+        _ => None,
+    }
+}
+
+/// Order loft sections along the principal direction (the vector between the two
+/// most-distant section centroids), so the loft blends through space monotonically
+/// regardless of pick order.
+pub fn order_loft_sections(
+    doc: &Document,
+    sections: Vec<crate::model::LoftSection>,
+) -> Vec<crate::model::LoftSection> {
+    let centroids: Vec<Option<Vec3>> = sections
+        .iter()
+        .map(|s| {
+            face_profile_world(doc, &s.face)
+                .map(|(p, _)| p.iter().copied().sum::<Vec3>() / p.len().max(1) as f32)
+        })
+        .collect();
+    let mut axis = None;
+    let mut best = 0.0f32;
+    for i in 0..centroids.len() {
+        for j in (i + 1)..centroids.len() {
+            if let (Some(a), Some(b)) = (centroids[i], centroids[j]) {
+                let d = (b - a).length_squared();
+                if d > best {
+                    best = d;
+                    axis = Some((a, (b - a).normalize_or_zero()));
+                }
+            }
+        }
+    }
+    if let Some((origin, dir)) = axis {
+        let mut keyed: Vec<(f32, crate::model::LoftSection)> = sections
+            .into_iter()
+            .zip(centroids)
+            .map(|(s, c)| (c.map(|c| (c - origin).dot(dir)).unwrap_or(0.0), s))
+            .collect();
+        keyed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        keyed.into_iter().map(|(_, s)| s).collect()
+    } else {
+        sections
+    }
+}
+
+/// World bounds of the current selection (#164):/// World bounds of the current selection (#164): union of every selected element's own
 /// geometry (a body's solid, an extrusion's solid, a line/circle's sampled points, a point's
 /// position). `None` when nothing in the selection has world extent (then zoom-to-fit falls
 /// back to the whole document).
@@ -583,6 +777,10 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
         return (!imported.triangles.is_empty()).then(|| SolidMesh {
             triangles: imported.triangles.clone(),
         });
+    }
+    if let crate::model::BodySource::Loft(li) = body.source {
+        let loft = doc.lofts.get(li).filter(|l| !l.deleted)?;
+        return loft_mesh(doc, loft);
     }
     // Fuse the body's added extrusions into one real solid via OCCT and subtract its cut
     // extrusions (#86/#35) when they're all kernel-representable; otherwise fall back to
@@ -2066,6 +2264,114 @@ mod tests {
         assert!((max.x - min.x - 10.0).abs() < 1e-4);
         assert!((max.y - min.y - 4.0).abs() < 1e-4);
         assert!((max.z - min.z - 6.0).abs() < 1e-4);
+    }
+
+    /// Two equal circles on planes 10mm apart loft into a closed prism whose signed
+    /// volume matches the swept n-gon (~pi*r^2*h), proving the walls and caps close up.
+    #[test]
+    fn loft_mesh_between_two_circles_closes_with_expected_volume() {
+        let mut doc = Document::default();
+        let bottom = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.circles.push(Circle::from_local_center_radius(bottom, 0.0, 0.0, 5.0, 0.0));
+        doc.construction_planes.push(crate::construction::plane_from_definition(
+            &crate::construction::definition_from_reference(
+                &crate::construction::PlaneReference::Face {
+                    origin: glam::Vec3::ZERO,
+                    normal: glam::Vec3::Z,
+                    label: "Ground".to_string(),
+                },
+                10.0,
+                0.0,
+            ),
+            crate::model::ConstructionPlaneParent::Root,
+        ));
+        let top = doc.add_sketch(FaceId::ConstructionPlane(1));
+        doc.circles.push(Circle::from_local_center_radius(top, 0.0, 0.0, 5.0, 0.0));
+
+        let loft = crate::model::Loft {
+            sections: vec![
+                crate::model::LoftSection { sketch: bottom, face: ExtrudeFace::Circle(0) },
+                crate::model::LoftSection { sketch: top, face: ExtrudeFace::Circle(1) },
+            ],
+            name: None,
+            deleted: false,
+        };
+        let mesh = loft_mesh(&doc, &loft).expect("two closed sections should loft");
+        // Cross section is the inscribed n-gon of the r=5 circle, so slightly under pi*25.
+        let ngon_area = 0.5 * CIRCLE_SEGMENTS as f32 * 25.0
+            * (2.0 * std::f32::consts::PI / CIRCLE_SEGMENTS as f32).sin();
+        let expected = ngon_area * 10.0;
+        let vol = mesh_signed_volume(&mesh).abs();
+        assert!(
+            (vol - expected).abs() < expected * 0.01,
+            "expected ~{expected}, got {vol}"
+        );
+    }
+
+    /// A single section (or an open profile) can't loft.
+    #[test]
+    fn loft_mesh_requires_two_sections() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
+        let loft = crate::model::Loft {
+            sections: vec![crate::model::LoftSection {
+                sketch,
+                face: ExtrudeFace::Circle(0),
+            }],
+            name: None,
+            deleted: false,
+        };
+        assert!(loft_mesh(&doc, &loft).is_none());
+    }
+
+    /// Sections are re-ordered along the loft's principal direction, so pick order
+    /// (here: top, bottom, middle) doesn't tangle the blend.
+    #[test]
+    fn order_loft_sections_sorts_along_principal_direction() {
+        let mut doc = Document::default();
+        let mut sketches = Vec::new();
+        for (i, z) in [(0usize, 0.0f32), (1, 10.0), (2, 5.0)] {
+            let plane_idx = if z == 0.0 {
+                0
+            } else {
+                doc.construction_planes.push(crate::construction::plane_from_definition(
+                    &crate::construction::definition_from_reference(
+                        &crate::construction::PlaneReference::Face {
+                            origin: glam::Vec3::ZERO,
+                            normal: glam::Vec3::Z,
+                            label: "Ground".to_string(),
+                        },
+                        z,
+                        0.0,
+                    ),
+                    crate::model::ConstructionPlaneParent::Root,
+                ));
+                doc.construction_planes.len() - 1
+            };
+            let sketch = doc.add_sketch(FaceId::ConstructionPlane(plane_idx));
+            doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
+            sketches.push((i, sketch));
+        }
+        // Pick order: top (z=10), bottom (z=0), middle (z=5).
+        let sections = vec![
+            crate::model::LoftSection { sketch: sketches[1].1, face: ExtrudeFace::Circle(1) },
+            crate::model::LoftSection { sketch: sketches[0].1, face: ExtrudeFace::Circle(0) },
+            crate::model::LoftSection { sketch: sketches[2].1, face: ExtrudeFace::Circle(2) },
+        ];
+        let ordered = order_loft_sections(&doc, sections);
+        let order: Vec<_> = ordered
+            .iter()
+            .map(|s| match s.face {
+                ExtrudeFace::Circle(ci) => ci,
+                _ => usize::MAX,
+            })
+            .collect();
+        // Circle i sits at z = [0, 10, 5][i]; either monotonic direction is fine.
+        assert!(
+            order == vec![0, 2, 1] || order == vec![1, 2, 0],
+            "expected monotonic order along z, got {order:?}"
+        );
     }
 
     fn extrusion(sketch: crate::model::SketchId, faces: Vec<ExtrudeFace>, distance: f32) -> Extrusion {

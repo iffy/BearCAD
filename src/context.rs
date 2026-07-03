@@ -40,6 +40,9 @@ pub struct ContextInput<'a> {
     /// collects a selection set (Chamfer/Fillet outside a sketch — one row per edge in the
     /// in-progress treatment, empty while nothing is picked yet), `None` for other tools.
     pub edge_treatment_rows: Option<Vec<String>>,
+    /// Selection-picker rows for the Loft tool (#loft): one row per picked cross section,
+    /// `Some` (possibly empty) whenever the Loft tool is active outside a sketch.
+    pub loft_rows: Option<Vec<String>>,
     /// Image scale calibration (#171): `Some` when the selection is exactly one tracing
     /// image plus one line on the image's host plane (the reference segment).
     pub calibrate_image: Option<CalibrateImageControl>,
@@ -68,6 +71,20 @@ pub fn edge_treatment_row_label(
         crate::model::ExtrusionEdgeRef::Vertical { edge, .. } => format!("vertical {edge}"),
         crate::model::ExtrusionEdgeRef::Cap { edge, top: true, .. } => format!("top {edge}"),
         crate::model::ExtrusionEdgeRef::Cap { edge, top: false, .. } => format!("base {edge}"),
+    };
+    format!("{owner} — {which}")
+}
+
+/// One selection-picker row for a loft cross section: the owning sketch's display name
+/// plus what kind of profile it is.
+pub fn loft_section_row_label(doc: &Document, section: &crate::model::LoftSection) -> String {
+    let owner = element_name(doc, SceneElement::Sketch(section.sketch))
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| format!("Sketch {}", section.sketch));
+    let which = match &section.face {
+        crate::model::ExtrudeFace::Circle(ci) => format!("circle {ci}"),
+        crate::model::ExtrudeFace::Polygon(lines) => format!("loop ({} lines)", lines.len()),
+        crate::model::ExtrudeFace::Boolean { .. } => "combined region".to_string(),
     };
     format!("{owner} — {which}")
 }
@@ -117,6 +134,10 @@ pub struct ContextPaneContent {
 /// picker shows a pick hint instead.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EdgePickerControl {
+    /// Set-count heading, e.g. "Edges" or "Sections".
+    pub heading: &'static str,
+    /// Hint shown while the set is empty.
+    pub hint: &'static str,
     pub rows: Vec<String>,
 }
 
@@ -201,7 +222,18 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let edge_picker = input
         .edge_treatment_rows
         .clone()
-        .map(|rows| EdgePickerControl { rows });
+        .map(|rows| EdgePickerControl {
+            heading: "Edges",
+            hint: "Click an edge — Shift+click adds more",
+            rows,
+        })
+        .or_else(|| {
+            input.loft_rows.clone().map(|rows| EdgePickerControl {
+                heading: "Sections",
+                hint: "Click a closed profile (circle or loop)",
+                rows,
+            })
+        });
     let calibrate_image = input.calibrate_image;
 
     if let Some(construction) = input.draw_rect_construction {
@@ -686,11 +718,11 @@ pub fn show_pane(
         any_control = true;
         ui.separator();
         ui.label(
-            egui::RichText::new(format!("Edges ({})", picker.rows.len())).strong(),
+            egui::RichText::new(format!("{} ({})", picker.heading, picker.rows.len())).strong(),
         );
         if picker.rows.is_empty() {
             ui.label(
-                egui::RichText::new("Click an edge — Shift+click adds more")
+                egui::RichText::new(picker.hint)
                     .color(egui::Color32::from_gray(140))
                     .size(11.0),
             );
@@ -874,6 +906,7 @@ mod tests {
             extrude_merge_candidate: None,
             extrude_body_mode: None,
             edge_treatment_rows: None,
+            loft_rows: None,
             calibrate_image: None,
         }
     }
@@ -898,18 +931,24 @@ mod tests {
             extrude_merge_candidate: None,
             extrude_body_mode: None,
             edge_treatment_rows: Some(vec!["Block — vertical 0".to_string()]),
+            loft_rows: None,
             calibrate_image: None,
         };
         let content = context_pane_content(&base);
+        let edges_picker = |rows: Vec<String>| EdgePickerControl {
+            heading: "Edges",
+            hint: "Click an edge — Shift+click adds more",
+            rows,
+        };
         assert_eq!(
             content.edge_picker,
-            Some(EdgePickerControl { rows: vec!["Block — vertical 0".to_string()] })
+            Some(edges_picker(vec!["Block — vertical 0".to_string()]))
         );
 
         let empty = ContextInput { edge_treatment_rows: Some(Vec::new()), ..base };
         assert_eq!(
             context_pane_content(&empty).edge_picker,
-            Some(EdgePickerControl { rows: Vec::new() })
+            Some(edges_picker(Vec::new()))
         );
         let off = ContextInput { edge_treatment_rows: None, ..empty };
         assert_eq!(context_pane_content(&off).edge_picker, None);
@@ -981,6 +1020,7 @@ mod tests {
             extrude_merge_candidate: None,
             extrude_body_mode: None,
             edge_treatment_rows: None,
+            loft_rows: None,
             calibrate_image: None,
         });
         assert_eq!(
@@ -1028,6 +1068,7 @@ mod tests {
             extrude_merge_candidate: None,
             extrude_body_mode: None,
             edge_treatment_rows: None,
+            loft_rows: None,
             calibrate_image: None,
         });
         assert_eq!(content.curve_mode, Some(true));
@@ -1135,6 +1176,7 @@ mod tests {
             extrude_merge_candidate: None,
             extrude_body_mode: None,
             edge_treatment_rows: None,
+            loft_rows: None,
             calibrate_image: None,
         });
         assert_eq!(
@@ -1164,6 +1206,7 @@ mod tests {
             extrude_merge_candidate: None,
             extrude_body_mode: None,
             edge_treatment_rows: None,
+            loft_rows: None,
             calibrate_image: None,
         });
         assert_eq!(
@@ -1205,6 +1248,7 @@ mod tests {
             extrude_merge_candidate: None,
             extrude_body_mode: None,
             edge_treatment_rows: None,
+            loft_rows: None,
             calibrate_image: None,
         });
         assert_eq!(
