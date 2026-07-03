@@ -44,10 +44,23 @@ yet, so there is no selected state.
 |---|---|
 | ![](/img/screenshots/styles/face-normal.png) | ![](/img/screenshots/styles/face-hovered.png) |
 
+## Dimensions
+
+Committed dimensions — linear (extension lines, an arrowed dimension line, and the value
+label) and angle (a measured arc between the two lines) — draw in the annotation grey.
+Hovering a dimension (to drag its label or double-click into editing) recolors it with the
+edit accent.
+
+| Kind | Normal | Hovered |
+|---|---|---|
+| **Linear** | ![](/img/screenshots/styles/dim-linear.png) | ![](/img/screenshots/styles/dim-linear-hovered.png) |
+| **Angle** | ![](/img/screenshots/styles/dim-angle.png) | ![](/img/screenshots/styles/dim-angle-hovered.png) |
+
 ## Bodies
 
-A selected body (or one hovered in the Elements pane) gets an **aura**: a solid outline
-offset a few pixels *outside* its screen-space silhouette. The aura is blue for selection
+A selected body fills in a more saturated blue and gets an **aura**: a solid outline
+offset a few pixels *outside* its screen-space silhouette (a body hovered in the Elements
+pane gets the aura in the hover color). The aura is blue for selection
 and uses the hover color for pane hover; bodies in front of the silhouette occlude it, and
 the auras of nearby selected bodies join.
 

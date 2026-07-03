@@ -61,6 +61,9 @@ pub const PLANE_FILL_DEPTH_BIAS: f32 = 0.02;
 /// Base depth lift for sketch shape fills toward the camera.
 /// Base fill color for extruded solid bodies (shaded per triangle).
 pub const SOLID_FILL: Color32 = Color32::from_rgb(150, 168, 196);
+/// Fill for a **selected** body (#174): a more saturated blue than the neutral body grey,
+/// so selection reads on the body itself, not just its aura outline.
+pub const SOLID_FILL_SELECTED: Color32 = Color32::from_rgb(112, 152, 224);
 /// Highlighted fill for the in-progress extrusion preview.
 pub const SOLID_PREVIEW_FILL: Color32 = Color32::from_rgb(120, 215, 230);
 /// Opacity of the in-progress extrusion preview body (before it is committed).
@@ -515,6 +518,13 @@ impl ViewportScene {
             let Some(solid) = body_meshes[bi].as_ref() else {
                 continue;
             };
+            // A selected body fills in the saturated selection blue (#174); the aura
+            // outline still draws on top via `push_selection`.
+            let fill = if input.selection.is_selected(SceneElement::Body(bi)) {
+                SOLID_FILL_SELECTED
+            } else {
+                SOLID_FILL
+            };
             let cap_plane = body
                 .source
                 .extrusion_indices()
@@ -528,10 +538,10 @@ impl ViewportScene {
             // gizmos draw through bodies — depth-test disabled, see `MeshIndexLayer::Wireframe`).
             match input.cam.shading_mode() {
                 crate::camera::ShadingMode::Solid => {
-                    mesh.push_solid(&solid, SOLID_FILL, input.cam, cap_plane);
+                    mesh.push_solid(&solid, fill, input.cam, cap_plane);
                 }
                 crate::camera::ShadingMode::TransparentSolid => {
-                    mesh.push_solid_translucent(&solid, SOLID_FILL, TRANSPARENT_SOLID_OPACITY);
+                    mesh.push_solid_translucent(&solid, fill, TRANSPARENT_SOLID_OPACITY);
                 }
                 crate::camera::ShadingMode::Wireframe => {
                     mesh.push_solid_wireframe(
@@ -543,7 +553,7 @@ impl ViewportScene {
                     );
                 }
                 crate::camera::ShadingMode::SolidWireframe => {
-                    mesh.push_solid(&solid, SOLID_FILL, input.cam, cap_plane);
+                    mesh.push_solid(&solid, fill, input.cam, cap_plane);
                     mesh.push_solid_wireframe(
                         &solid,
                         WIREFRAME_LINE_COLOR,
@@ -553,7 +563,7 @@ impl ViewportScene {
                     );
                 }
                 crate::camera::ShadingMode::Realistic => {
-                    mesh.push_solid_realistic(&solid, SOLID_FILL, input.cam, cap_plane);
+                    mesh.push_solid_realistic(&solid, fill, input.cam, cap_plane);
                 }
             }
         }
@@ -5813,6 +5823,66 @@ mod tests {
             ),
             "a pane-hovered body must draw its aura in the hover color"
         );
+    }
+
+    /// #174: a selected body's fill shifts to the saturated selection blue — some base-layer
+    /// vertex carries the selected hue (flat shading preserves channel ratios), and none does
+    /// when unselected.
+    #[test]
+    fn selected_body_fill_uses_saturated_blue() {
+        let state = state_with_one_body();
+        let mut selected = SceneSelection::default();
+        crate::selection::click_scene_selection(
+            &mut selected,
+            crate::hierarchy::SceneElement::Body(0),
+            false,
+        );
+        let has_selected_hue = |scene: &ViewportScene| {
+            scene.vertices.iter().any(|v| {
+                let [r, g, b, _] = v.color;
+                // scale_color multiplies all channels by one shade factor, so the ratios of
+                // SOLID_FILL_SELECTED (112:152:224) survive shading.
+                b > 0.05
+                    && (r / b - 112.0 / 224.0).abs() < 0.02
+                    && (g / b - 152.0 / 224.0).abs() < 0.02
+            })
+        };
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let build = |sel: &SceneSelection| {
+            ViewportScene::build(&ViewportSceneInput {
+                doc: &state.doc,
+                cam: &cam,
+                viewport,
+                palette: ViewportPalette::default(),
+                sketch_session: None,
+                selection: sel,
+                element_visibility: &state.element_visibility,
+                preview_rect: None,
+                preview_line: None,
+                preview_circle: None,
+                preview_extrusion: None,
+                preview_cut_body: None,
+                editing_extrusion: None,
+                plane_preview: None,
+                active_sketch_face: None,
+                dimension_labels: &[],
+                dim_label_view: None,
+                plane_gizmo: None,
+                extrude_gizmo: None,
+                vertex_treatment_gizmo: None,
+                vertex_treatment_preview: None,
+                hover_highlight: None,
+                hover_color: Color32::WHITE,
+                document_health: &DocumentHealth::default(),
+                constraint_graphics: None,
+                constraint_connector_color: None,
+            })
+        };
+        let base = build(&SceneSelection::default());
+        let with_selection = build(&selected);
+        assert!(!has_selected_hue(&base), "unselected body must keep the neutral fill");
+        assert!(has_selected_hue(&with_selection), "selected body must use the saturated blue");
     }
 
     /// #145: selecting a body draws a glowing blue silhouette outline in the overlay layer.

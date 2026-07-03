@@ -98,6 +98,92 @@ impl Canvas {
         self.fill_rect(x1 - thickness, y0, x1, y1, color);
     }
 
+    /// Arbitrary-angle stroke: discs stamped along the segment (dash/gap in px arc length;
+    /// dash = 0 draws solid).
+    fn line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, thickness: f32, color: Color32, dash: f32, gap: f32) {
+        let len = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt().max(1e-3);
+        let steps = (len * 2.0) as i32;
+        for i in 0..=steps {
+            let t = i as f32 / steps as f32;
+            let travelled = t * len;
+            if dash > 0.0 && travelled % (dash + gap) >= dash {
+                continue;
+            }
+            self.disc(
+                (x0 + (x1 - x0) * t).round() as i32,
+                (y0 + (y1 - y0) * t).round() as i32,
+                thickness / 2.0,
+                color,
+            );
+        }
+    }
+
+    /// Circular arc stroke between `a0` and `a1` radians (counter-clockwise in image space).
+    fn arc(&mut self, cx: f32, cy: f32, radius: f32, a0: f32, a1: f32, thickness: f32, color: Color32) {
+        let steps = ((a1 - a0).abs() * radius * 2.0).max(8.0) as i32;
+        for i in 0..=steps {
+            let a = a0 + (a1 - a0) * i as f32 / steps as f32;
+            self.disc(
+                (cx + radius * a.cos()).round() as i32,
+                (cy + radius * a.sin()).round() as i32,
+                thickness / 2.0,
+                color,
+            );
+        }
+    }
+
+    /// Filled arrowhead: tip at (`tx`, `ty`), pointing along (`dx`, `dy`).
+    fn arrowhead(&mut self, tx: f32, ty: f32, dx: f32, dy: f32, size: f32, color: Color32) {
+        let len = (dx * dx + dy * dy).sqrt().max(1e-3);
+        let (dx, dy) = (dx / len, dy / len);
+        let (px, py) = (-dy, dx);
+        let base = (tx - dx * size, ty - dy * size);
+        let steps = (size * 2.0) as i32;
+        for i in 0..=steps {
+            let t = i as f32 / steps as f32;
+            let half = size * 0.4 * (1.0 - t);
+            let (cx, cy) = (tx + (base.0 - tx) * t, ty + (base.1 - ty) * t);
+            self.line(cx - px * half, cy - py * half, cx + px * half, cy + py * half, 1.5, color, 0.0, 0.0);
+        }
+    }
+
+    /// Minimal 5x7 pixel text (digits, '.', 'm', '°', space) at 2x scale — just enough for
+    /// dimension value labels; the app itself uses a real font atlas.
+    fn text(&mut self, x: i32, y: i32, text: &str, color: Color32) {
+        let mut cx = x;
+        for ch in text.chars() {
+            let glyph: [u8; 7] = match ch {
+                '0' => [0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E],
+                '1' => [0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E],
+                '2' => [0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F],
+                '3' => [0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E],
+                '4' => [0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02],
+                '5' => [0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E],
+                '6' => [0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E],
+                '7' => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08],
+                '8' => [0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E],
+                '9' => [0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C],
+                '.' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C],
+                'm' => [0x00, 0x00, 0x1A, 0x15, 0x15, 0x15, 0x15],
+                '°' => [0x0C, 0x12, 0x12, 0x0C, 0x00, 0x00, 0x00],
+                _ => [0; 7],
+            };
+            for (row, bits) in glyph.iter().enumerate() {
+                for col in 0..5 {
+                    if bits & (1 << (4 - col)) != 0 {
+                        // 2x scale.
+                        for dy in 0..2 {
+                            for dx in 0..2 {
+                                self.blend(cx + col * 2 + dx, y + row as i32 * 2 + dy, color);
+                            }
+                        }
+                    }
+                }
+            }
+            cx += 12;
+        }
+    }
+
     fn save(self, dir: &std::path::Path, name: &str) {
         self.img
             .save(dir.join(format!("{name}.png")))
@@ -193,7 +279,13 @@ pub fn generate(dir: &std::path::Path) {
         ("body-selected", crate::gpu_viewport::BODY_SILHOUETTE_COLOR),
     ] {
         let mut canvas = Canvas::new();
-        canvas.fill_rect(body_rect.0, body_rect.1, body_rect.2, body_rect.3, face);
+        // A selected body also fills in the saturated selection blue (#174).
+        let body_fill = if name == "body-selected" {
+            crate::gpu_viewport::SOLID_FILL_SELECTED
+        } else {
+            face
+        };
+        canvas.fill_rect(body_rect.0, body_rect.1, body_rect.2, body_rect.3, body_fill);
         // The aura sits offset *outside* the silhouette (#145).
         canvas.rect_outline(
             body_rect.0 - 6,
@@ -204,6 +296,69 @@ pub fn generate(dir: &std::path::Path) {
             aura,
         );
         canvas.save(dir, name);
+    }
+
+    // Dimensions (#173): linear (extension lines + arrowed dimension line + value label)
+    // and angle (arc + label), in the committed-annotation grey; the hover/edit accent is
+    // the focused-input orange the app uses for dimension edges.
+    for (suffix, color) in [
+        ("", crate::col::DIM_ANNOTATION),
+        ("-hovered", crate::col::DIM_EDGE_HIGHLIGHT),
+    ] {
+        // Linear: a measured line (blue) with the annotation offset below it.
+        let mut canvas = Canvas::new();
+        let (lx0, lx1, ly, dy) = (40.0, 200.0, 16.0, 38.0);
+        canvas.line(lx0, ly, lx1, ly, 2.0, palette.rect_line, 0.0, 0.0);
+        canvas.line(lx0, ly + 4.0, lx0, dy + 4.0, 1.5, color, 0.0, 0.0); // extension a
+        canvas.line(lx1, ly + 4.0, lx1, dy + 4.0, 1.5, color, 0.0, 0.0); // extension b
+        canvas.line(lx0, dy, lx1, dy, 1.5, color, 0.0, 0.0); // dimension line
+        canvas.arrowhead(lx0, dy, -1.0, 0.0, 8.0, color);
+        canvas.arrowhead(lx1, dy, 1.0, 0.0, 8.0, color);
+        canvas.text((lx0 + lx1) as i32 / 2 - 40, dy as i32 + 4, "50.0 mm", color);
+        canvas.save(dir, &format!("dim-linear{suffix}"));
+
+        // Angle: two rays from a vertex with the measured arc between them.
+        let mut canvas = Canvas::new();
+        let (vx, vy, ray) = (70.0f32, 46.0f32, 130.0f32);
+        let (a0, a1) = (-0.72f32, 0.0f32);
+        for a in [a0, a1] {
+            canvas.line(
+                vx,
+                vy,
+                vx + ray * a.cos(),
+                vy + ray * a.sin(),
+                2.0,
+                palette.rect_line,
+                0.0,
+                0.0,
+            );
+        }
+        let r = 56.0;
+        canvas.arc(vx, vy, r, a0, a1, 1.5, color);
+        canvas.arrowhead(
+            vx + r * a0.cos(),
+            vy + r * a0.sin(),
+            -a0.sin(),
+            a0.cos(),
+            7.0,
+            color,
+        );
+        canvas.arrowhead(
+            vx + r * a1.cos(),
+            vy + r * a1.sin(),
+            a1.sin(),
+            -a1.cos(),
+            7.0,
+            color,
+        );
+        let mid = (a0 + a1) / 2.0;
+        canvas.text(
+            (vx + (r + 16.0) * mid.cos()) as i32,
+            (vy + (r + 16.0) * mid.sin()) as i32 - 6,
+            "41°",
+            color,
+        );
+        canvas.save(dir, &format!("dim-angle{suffix}"));
     }
 }
 
