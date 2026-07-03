@@ -461,9 +461,50 @@ pub fn body_solid_mesh(doc: &Document, body_index: usize) -> Option<SolidMesh> {
     (!mesh.is_empty()).then_some(mesh)
 }
 
+/// Live preview mesh of `body_index`'s solid with `cut` additionally subtracted — what the
+/// body will look like once an in-progress cut extrusion is committed (#142). Clones the
+/// document to splice `cut` in as one more cut extrusion without mutating the real doc, so the
+/// caller can render the finished-cut shape translucently in place of the intact body. `None`
+/// (caller keeps the intact body and its additive-block preview) when the kernel is absent,
+/// the body is imported/deleted, the cut is degenerate, or the kernel can't build the result.
+pub fn preview_cut_body_mesh(doc: &Document, body_index: usize, cut: &Extrusion) -> Option<SolidMesh> {
+    #[cfg(feature = "occt")]
+    {
+        let body = doc.bodies.get(body_index)?;
+        if body.deleted || body.source.imported_mesh_index().is_some() {
+            return None;
+        }
+        if cut.faces.is_empty() || effective_distance(doc, cut).abs() < 1e-4 {
+            return None;
+        }
+        let mut clone = doc.clone();
+        let cut_index = clone.extrusions.len();
+        clone.extrusions.push(cut.clone());
+        let mut cut_indices = body.source.cut_extrusion_indices().to_vec();
+        cut_indices.push(cut_index);
+        occt_body_mesh(&clone, body.source.extrusion_indices(), &cut_indices)
+    }
+    #[cfg(not(feature = "occt"))]
+    {
+        let _ = (doc, body_index, cut);
+        None
+    }
+}
+
+
 /// Combined solid mesh of every non-deleted body in the document (the geometry an STL/OBJ
 /// export should contain). Bodies are concatenated into one triangle soup.
 pub fn document_solid_mesh(doc: &Document) -> SolidMesh {
+    // #146: fuse the kernel-representable bodies into one real union so that where bodies
+    // *intersect*, the overlap merges into a single watertight surface instead of exporting as
+    // two interpenetrating shells with internal walls. Disjoint bodies simply co-exist in the
+    // fused compound (identical output to concatenation for them). Imported meshes have no
+    // kernel shape, so they're concatenated on top; if any kernel body isn't representable the
+    // whole union is unreliable and we fall back to plain concatenation.
+    #[cfg(feature = "occt")]
+    if let Some(mesh) = occt_document_union_mesh(doc) {
+        return mesh;
+    }
     let mut mesh = SolidMesh::default();
     for bi in 0..doc.bodies.len() {
         if let Some(solid) = body_solid_mesh(doc, bi) {
@@ -471,6 +512,48 @@ pub fn document_solid_mesh(doc: &Document) -> SolidMesh {
         }
     }
     mesh
+}
+
+/// Fuse every kernel-representable body into one unioned solid and tessellate it, appending any
+/// imported-mesh bodies' triangles (they have no kernel shape). `None` — so the caller falls
+/// back to plain per-body concatenation — when a non-imported body isn't kernel-representable
+/// or the fuse fails to build/tessellate. See [`document_solid_mesh`] (#146).
+#[cfg(feature = "occt")]
+fn occt_document_union_mesh(doc: &Document) -> Option<SolidMesh> {
+    use crate::kernel::BoolOp;
+    let mut fused: Option<crate::kernel::Shape> = None;
+    let mut imported_triangles: Vec<[Vec3; 3]> = Vec::new();
+    let mut saw_kernel_body = false;
+    for (bi, body) in doc.bodies.iter().enumerate() {
+        if body.deleted {
+            continue;
+        }
+        if body.source.imported_mesh_index().is_some() {
+            if let Some(solid) = body_solid_mesh(doc, bi) {
+                imported_triangles.extend(solid.triangles);
+            }
+            continue;
+        }
+        // A non-imported body that the kernel can't represent means the union would silently
+        // drop or mangle it — bail so the caller concatenates instead.
+        let shape = occt_body_shape(doc, bi)?;
+        saw_kernel_body = true;
+        fused = Some(match fused {
+            None => shape,
+            Some(acc) => acc.boolean(&shape, BoolOp::Fuse)?,
+        });
+    }
+    let mut triangles = Vec::new();
+    if let Some(shape) = fused {
+        triangles = shape.tessellate(OCCT_DEFLECTION as f64);
+        // A fuse of real kernel bodies that tessellates to nothing is a kernel failure, not an
+        // empty document — fall back rather than exporting nothing.
+        if saw_kernel_body && triangles.is_empty() {
+            return None;
+        }
+    }
+    triangles.extend(imported_triangles);
+    Some(SolidMesh { triangles })
 }
 
 /// The `(point, normal)` plane an extrusion's top cap should lie in, when its target defines
@@ -1660,6 +1743,63 @@ mod tests {
         let profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
         let ext = extrusion(sketch, vec![profile], 5.0);
         (doc, sketch, ext)
+    }
+
+    /// #146: exporting a document with two *intersecting* bodies unions them, so the exported
+    /// mesh's volume is the union (no double-counted overlap), not the sum of the two.
+    #[test]
+    #[cfg(feature = "occt")]
+    fn document_solid_mesh_unions_intersecting_bodies() {
+        let (mut doc, sketch) = sketch_doc();
+        // Two 10x10x5 boxes overlapping in x∈[5,10]: union volume 500+500-250 = 750.
+        let a = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
+        let b = rect_profile(&mut doc, sketch, 5.0, 0.0, 10.0, 10.0);
+        doc.extrusions.push(extrusion(sketch, vec![a], 5.0));
+        doc.extrusions.push(extrusion(sketch, vec![b], 5.0));
+        for ei in 0..2 {
+            doc.bodies.push(crate::model::Body {
+                source: crate::model::BodySource::Extrusion(ei),
+                name: None,
+                deleted: false,
+            });
+        }
+        let vol = mesh_signed_volume(&document_solid_mesh(&doc)).abs();
+        assert!(
+            (vol - 750.0).abs() < 5.0,
+            "expected union volume ~750, got {vol} (concatenation would be ~1000)"
+        );
+    }
+
+
+    /// #142: the live cut preview meshes the target body with the in-progress extrusion already
+    /// subtracted, so its volume is less than the intact body's — i.e. it shows the finished
+    /// hole, not an additive block.
+    #[test]
+    #[cfg(feature = "occt")]
+    fn preview_cut_body_mesh_removes_material() {
+        let (mut doc, sketch) = sketch_doc();
+        let outer = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
+        doc.extrusions.push(extrusion(sketch, vec![outer], 5.0));
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(0),
+            name: None,
+            deleted: false,
+        });
+        let intact = body_solid_mesh(&doc, 0).expect("intact box");
+        let intact_vol = mesh_signed_volume(&intact).abs();
+
+        // A 4x4 column overlapping the box, extruded through it — the pending cut.
+        let hole = rect_profile(&mut doc, sketch, 3.0, 3.0, 4.0, 4.0);
+        let cut = extrusion(sketch, vec![hole], 5.0);
+        let preview = preview_cut_body_mesh(&doc, 0, &cut).expect("cut preview");
+        let preview_vol = mesh_signed_volume(&preview).abs();
+
+        assert!(
+            preview_vol < intact_vol - 1.0,
+            "cut preview should remove material: {preview_vol} vs {intact_vol}"
+        );
+        // The pending cut must not have been committed into the real document.
+        assert_eq!(doc.extrusions.len(), 1, "preview must not mutate the doc");
     }
 
     /// #126: an extrusion can target another (already-committed) extrusion's cap face —

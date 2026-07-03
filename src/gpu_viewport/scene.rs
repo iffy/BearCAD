@@ -75,6 +75,15 @@ const WIREFRAME_LINE_WIDTH_PX: f32 = 1.2;
 pub const SHAPE_FILL_DEPTH_BIAS_BASE: f32 = 0.04;
 /// Per-shape increment so coplanar overlaps resolve stably (higher index wins).
 pub const SHAPE_FILL_DEPTH_BIAS_STEP: f32 = 0.008;
+/// The per-shape index is taken modulo this before biasing, so the whole committed-fill band
+/// stays bounded (`BASE .. BASE + (MOD-1)*STEP + lane`) strictly below the hover-fill and
+/// stroke layers no matter how many shapes a sketch has (#143). Without it, the bias is keyed
+/// on the raw entity index (`lines[0]`/circle index) and climbs unbounded — a handful of
+/// shapes (each rectangle is four lines) push committed fills up past the fixed hover fill,
+/// which then z-fights along coplanar overlaps on hover. The wrap only re-collides two
+/// coplanar shapes whose indices differ by exactly a multiple of this modulus (rare, needs
+/// many overlapping coplanar shapes); the common adjacent-index overlap stays separated.
+pub const SHAPE_FILL_DEPTH_BIAS_MODULO: usize = 5;
 /// In-progress previews render above committed geometry.
 pub const PREVIEW_FILL_DEPTH_BIAS: f32 = 0.2;
 /// Ground grid lines are nudged slightly *away* from the camera (rather than sitting exactly
@@ -98,6 +107,15 @@ const HOVER_FILL_DEPTH_BIAS: f32 = 0.09;
 /// plane, so the solid wins over the (separately rendered) target plane's own fill instead
 /// of z-fighting with it at grazing camera angles (#29).
 const SOLID_CAP_DEPTH_BIAS: f32 = 0.02;
+/// Blue aura outline drawn around the selected bodies' screen-space silhouette (#145/#148):
+/// one solid-color mitered stroke (stacking a bright core over a dim halo read as splotchy
+/// wherever the two strokes' antialiased edges beat against each other).
+const BODY_SILHOUETTE_COLOR: Color32 = Color32::from_rgb(95, 165, 245);
+const BODY_SILHOUETTE_WIDTH: f32 = 4.0;
+/// How far the silhouette glow sits *outside* the body's edges, screen pixels — an aura around
+/// the shape rather than a line on it. Each segment is also extended by the same amount at both
+/// ends so the offset outlines still meet at corners.
+const BODY_SILHOUETTE_OFFSET_PX: f32 = 5.0;
 
 const GIZMO_OFFSET_STROKE_PX: f32 = 2.5;
 const GIZMO_OFFSET_STROKE_HOVER_PX: f32 = 4.0;
@@ -247,6 +265,12 @@ pub struct ViewportSceneInput<'a> {
     /// Index of the extrusion currently being edited, if any. Its committed body
     /// is suppressed so only the ghost preview is shown while editing.
     pub editing_extrusion: Option<usize>,
+    /// Target body when the in-progress extrusion is a **cut** (#142): its committed solid is
+    /// suppressed and replaced by a translucent preview of the *cut result* (that body with
+    /// `preview_extrusion` subtracted) rather than the additive block, so the preview looks
+    /// like the finished cut. `None` for add/new-body extrudes (block preview) or when the
+    /// kernel can't build the cut result.
+    pub preview_cut_body: Option<usize>,
     pub plane_preview: Option<ViewportPlanePreview>,
     pub active_sketch_face: Option<FaceId>,
     pub dimension_labels: &'a [ViewportDimLabel],
@@ -362,21 +386,47 @@ impl ViewportScene {
             }
         }
 
+        // Live cut preview (#142): when the in-progress extrusion cuts a body, mesh that body
+        // *with the cut subtracted* so the preview shows the finished result. Only when the
+        // kernel can actually build it — otherwise `None` and the intact body + additive-block
+        // preview are kept below.
+        let preview_cut = input.preview_cut_body.and_then(|bi| {
+            let preview = input.preview_extrusion.as_ref()?;
+            crate::extrude::preview_cut_body_mesh(input.doc, bi, preview).map(|mesh| (bi, mesh))
+        });
+
+        // Solid meshes are rebuilt from the kernel on every `body_solid_mesh` call (#86);
+        // compute each visible body's mesh once per frame and share it between the body
+        // render below and the selection aura (#145), which used to recompute every mesh a
+        // second time and visibly slowed frames while a body was selected.
+        let body_meshes: Vec<Option<crate::extrude::SolidMesh>> = (0..input.doc.bodies.len())
+            .map(|bi| {
+                let body = &input.doc.bodies[bi];
+                let visible = !body.deleted
+                    && input
+                        .element_visibility
+                        .effective_visible(input.doc, SceneElement::Body(bi));
+                if visible {
+                    crate::extrude::body_solid_mesh(input.doc, bi)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
         // Extruded solid bodies (3D, depth-tested, flat-shaded).
         for (bi, body) in input.doc.bodies.iter().enumerate() {
-            if body.deleted
-                || !input
-                    .element_visibility
-                    .effective_visible(input.doc, SceneElement::Body(bi))
-            {
-                continue;
-            }
             if let Some(editing) = input.editing_extrusion {
                 if body.source.owns_extrusion(editing) {
                     continue;
                 }
             }
-            let Some(solid) = crate::extrude::body_solid_mesh(input.doc, bi) else {
+            // The cut target is drawn as the translucent cut-result preview instead of its
+            // intact committed solid.
+            if preview_cut.as_ref().is_some_and(|(cut_bi, _)| *cut_bi == bi) {
+                continue;
+            }
+            let Some(solid) = body_meshes[bi].as_ref() else {
                 continue;
             };
             let cap_plane = body
@@ -421,8 +471,12 @@ impl ViewportScene {
                 }
             }
         }
-        // Live preview of the in-progress extrusion (semi-transparent until committed).
-        if let Some(preview) = input.preview_extrusion.as_ref() {
+        // Live preview of the in-progress extrusion (semi-transparent until committed). A cut
+        // (#142) previews the whole cut *result* solid — the target body with this extrusion
+        // subtracted — in place of the additive block, so it looks like the finished cut.
+        if let Some((_, solid)) = &preview_cut {
+            mesh.push_solid_translucent(solid, SOLID_PREVIEW_FILL, SOLID_PREVIEW_OPACITY);
+        } else if let Some(preview) = input.preview_extrusion.as_ref() {
             if let Some(solid) = crate::extrude::extrusion_mesh(input.doc, preview) {
                 mesh.push_solid_translucent(&solid, SOLID_PREVIEW_FILL, SOLID_PREVIEW_OPACITY);
             }
@@ -550,6 +604,7 @@ impl ViewportScene {
             input.doc,
             input.document_health,
             input.selection,
+            &body_meshes,
             input.cam,
             input.viewport,
             &vp,
@@ -1370,6 +1425,7 @@ impl<'a> SceneMesh<'a> {
         doc: &Document,
         health: &DocumentHealth,
         selection: &SceneSelection,
+        body_meshes: &[Option<crate::extrude::SolidMesh>],
         cam: &Camera,
         viewport: UiRect,
         view_proj: &Mat4,
@@ -1378,6 +1434,9 @@ impl<'a> SceneMesh<'a> {
         if selection.is_empty() {
             return;
         }
+        // Selected bodies (directly, or via a selected extrusion) get one combined
+        // screen-space aura (#145/#148), drawn after the per-element highlights below.
+        let mut aura_bodies: std::collections::HashSet<usize> = std::collections::HashSet::new();
         for element in selection.iter() {
             let color = health_tint_color(base_color, health.element_status(element.clone()));
             let dashed = selection_highlight_dashed(doc, element.clone()) == Some(true);
@@ -1445,8 +1504,217 @@ impl<'a> SceneMesh<'a> {
                         self.push_point_marker(world, color, 6.0, cam, viewport, view_proj);
                     }
                 }
+                // A selected body (or extrusion) gets a glowing blue outline traced around its
+                // camera-facing silhouette (#145).
+                SceneElement::Body(index) => {
+                    aura_bodies.insert(index);
+                }
+                SceneElement::Extrusion(index) => {
+                    if let Some(bi) = crate::model::body_index_for_extrusion(doc, index) {
+                        aura_bodies.insert(bi);
+                    }
+                }
                 _ => {}
             }
+        }
+        if !aura_bodies.is_empty() {
+            self.push_body_aura(&aura_bodies, body_meshes, cam, viewport, view_proj);
+        }
+    }
+
+    /// Draw the selection aura (#145/#148) around the selected bodies as a **2D screen-space
+    /// effect**: all selected bodies are rasterized into one projected footprint, the aura is
+    /// the iso-contour of that footprint's distance field at [`BODY_SILHOUETTE_OFFSET_PX`]
+    /// (see [`AuraField`]), and a contour stretch is dropped where a *non-selected* body sits
+    /// in front of the silhouette it outlines. Union-by-construction: overlapping bodies get
+    /// one outline, and bodies closer than twice the offset have their auras join. The
+    /// contour is unprojected onto the plane through `cam.target` facing the camera, where
+    /// the px-width line renderer is exact, and drawn glow-under-core.
+    fn push_body_aura(
+        &mut self,
+        bodies: &std::collections::HashSet<usize>,
+        body_meshes: &[Option<crate::extrude::SolidMesh>],
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+    ) {
+        let eye = cam.eye();
+        let project = |w: Vec3| cam.project(w, viewport, view_proj);
+
+        // Project every body once up front; the selected bodies' screen bounds (clipped to
+        // the viewport) define the field region, so grid work scales with the selection.
+        // `body_meshes` is the per-frame mesh list the body render already built — hidden
+        // bodies are `None` there, so they neither get an aura nor occlude one.
+        type ScreenTri = ([egui::Pos2; 3], [f32; 3]);
+        let mut sel_tris: Vec<ScreenTri> = Vec::new();
+        let mut other_tris: Vec<ScreenTri> = Vec::new();
+        let mut sel_bounds: Option<UiRect> = None;
+        for (bi, mesh) in body_meshes.iter().enumerate() {
+            let Some(mesh) = mesh else {
+                continue;
+            };
+            let selected = bodies.contains(&bi);
+            for tri in &mesh.triangles {
+                let (Some(a), Some(b), Some(c)) =
+                    (project(tri[0]), project(tri[1]), project(tri[2]))
+                else {
+                    continue;
+                };
+                if selected {
+                    let tri_rect = UiRect::from_min_max(
+                        egui::pos2(a.x.min(b.x).min(c.x), a.y.min(b.y).min(c.y)),
+                        egui::pos2(a.x.max(b.x).max(c.x), a.y.max(b.y).max(c.y)),
+                    );
+                    sel_bounds = Some(match sel_bounds {
+                        Some(r) => r.union(tri_rect),
+                        None => tri_rect,
+                    });
+                }
+                let depths = [
+                    (tri[0] - eye).length(),
+                    (tri[1] - eye).length(),
+                    (tri[2] - eye).length(),
+                ];
+                if selected {
+                    sel_tris.push(([a, b, c], depths));
+                } else {
+                    other_tris.push(([a, b, c], depths));
+                }
+            }
+        }
+        let Some(sel_bounds) = sel_bounds else {
+            return;
+        };
+        let region = sel_bounds.intersect(viewport.expand(AURA_MARGIN_PX));
+        let Some(mut field) = AuraField::new(region) else {
+            return;
+        };
+        for (pts, depths) in &sel_tris {
+            field.stamp_triangle(*pts, *depths, true);
+        }
+        field.finalize();
+        // Non-selected bodies only matter to the occlusion test, which reads their depth in
+        // the narrow band around the silhouette — stamp them band-restricted so a large
+        // unselected body doesn't pay for its whole projected area.
+        if !other_tris.is_empty() {
+            let mut band = vec![false; field.w * field.h];
+            for &i in &field.touched {
+                band[i] = true;
+            }
+            for (pts, depths) in &other_tris {
+                field.stamp_other_in_band(*pts, *depths, &band);
+            }
+        }
+        let contour = field.visible_contour(BODY_SILHOUETTE_OFFSET_PX);
+        if contour.is_empty() {
+            return;
+        }
+
+        // Unproject onto the camera-facing plane through the target: overlay lines there
+        // project at exactly the requested pixel width (`line_screen_quad`'s world-per-px
+        // conversion is anchored at the target distance).
+        let forward = (cam.target - eye).normalize_or_zero();
+        if forward.length_squared() < 0.5 {
+            return;
+        }
+        let unproject = |p: egui::Pos2| -> Option<Vec3> {
+            cam.ray_plane_hit(p, viewport, view_proj, cam.target, forward)
+        };
+        // Chain the raw marching-squares steps into polylines, smooth, and thin them out —
+        // then draw each as one solid mitered stroke, so the aura reads as a single clean line.
+        // Drawn through the depth-test-disabled layer: the aura's geometry sits on the
+        // camera-target plane, and depth testing it would let unrelated nearer geometry (the
+        // ground grid, bodies in front) clip it — occlusion by non-selected bodies is already
+        // decided per contour stretch above, and nothing else may cover the aura.
+        let restore_layer = self.index_layer;
+        self.set_index_layer(MeshIndexLayer::Wireframe);
+        for (points, closed) in chain_contour_segments(&contour) {
+            let smoothed = chaikin_smooth(&points, closed, 2);
+            let sparse = resample_polyline(&smoothed, AURA_DRAW_STEP_PX);
+            if sparse.len() >= 2 {
+                self.push_aura_stroke(
+                    &sparse,
+                    closed,
+                    BODY_SILHOUETTE_WIDTH,
+                    BODY_SILHOUETTE_COLOR,
+                    &unproject,
+                );
+            }
+        }
+        self.set_index_layer(restore_layer);
+    }
+
+    /// Draw a screen-space polyline as one continuous mitered stroke, unprojected onto the
+    /// camera-facing target plane. Unlike a chain of per-segment `push_line_segment` quads,
+    /// consecutive segments share their join vertices, so direction changes leave no notches
+    /// (where an under-layer would peek through) and no protruding corners.
+    fn push_aura_stroke(
+        &mut self,
+        points: &[egui::Pos2],
+        closed: bool,
+        width_px: f32,
+        color: Color32,
+        unproject: &impl Fn(egui::Pos2) -> Option<Vec3>,
+    ) {
+        // A closed chain arrives with its first point repeated at the end; drop the
+        // duplicate and wrap the neighbor lookups instead.
+        let pts = if closed && points.len() >= 2 && points.first() == points.last() {
+            &points[..points.len() - 1]
+        } else {
+            points
+        };
+        let n = pts.len();
+        if n < 2 {
+            return;
+        }
+        let half = width_px * 0.5;
+        let perp = |v: egui::Vec2| egui::vec2(-v.y, v.x);
+        let seg_dir = |i: usize| -> egui::Vec2 {
+            let a = pts[i];
+            let b = pts[(i + 1) % n];
+            let d = b - a;
+            let len = d.length();
+            if len < 1e-6 {
+                egui::Vec2::ZERO
+            } else {
+                d / len
+            }
+        };
+        // Left/right stroke border per vertex: offset along the miter (average of the two
+        // adjacent segment perpendiculars), scaled to keep the stroke width, clamped so
+        // near-reversals don't spike.
+        let mut left: Vec<Option<Vec3>> = Vec::with_capacity(n);
+        let mut right: Vec<Option<Vec3>> = Vec::with_capacity(n);
+        for i in 0..n {
+            let din = if i > 0 {
+                seg_dir(i - 1)
+            } else if closed {
+                seg_dir(n - 1)
+            } else {
+                seg_dir(0)
+            };
+            let dout = if i + 1 < n || closed { seg_dir(i) } else { seg_dir(i - 1) };
+            let mut tangent = din + dout;
+            if tangent.length() < 1e-6 {
+                tangent = dout;
+            }
+            let tangent = tangent.normalized();
+            let normal = perp(tangent);
+            // Miter length correction, clamped at 2x so sharp kinks bevel instead of spiking.
+            let cos_half = normal.dot(perp(dout)).abs().max(0.5);
+            let offset = normal * (half / cos_half);
+            left.push(unproject(pts[i] + offset));
+            right.push(unproject(pts[i] - offset));
+        }
+        let quads = if closed { n } else { n - 1 };
+        for i in 0..quads {
+            let j = (i + 1) % n;
+            let (Some(l0), Some(r0), Some(l1), Some(r1)) = (left[i], right[i], left[j], right[j])
+            else {
+                continue;
+            };
+            self.push_triangle(l0, r0, r1, color);
+            self.push_triangle(l0, r1, l1, color);
         }
     }
 
@@ -1805,6 +2073,23 @@ impl<'a> SceneMesh<'a> {
             PickTargetKind::BodyEdge { a, b, .. } => {
                 self.push_segment_hover(*a, *b, color, cam, viewport, view_proj, project);
             }
+            PickTargetKind::BodyFace {
+                triangles, normal, ..
+            } => {
+                let eye = cam.eye();
+                let fill = color.gamma_multiply(FACE_HOVER_FILL_MULTIPLIER);
+                let lift =
+                    |p: Vec3| offset_toward_camera(p, *normal, eye, HOVER_FILL_DEPTH_BIAS);
+                for tri in triangles {
+                    self.push_triangle(lift(tri[0]), lift(tri[1]), lift(tri[2]), fill);
+                }
+                for (a, b) in crate::construction::coplanar_face_boundary(triangles) {
+                    self.push_line_segment(a, b, color, 3.0, cam, viewport, view_proj);
+                }
+            }
+            PickTargetKind::BodyVertex { position, .. } => {
+                push_screen_disc(self, *position, 5.0, color, cam, viewport, view_proj, project);
+            }
             PickTargetKind::GlobalAxis(axis) => {
                 let (a, b) = global_axis_segment(*axis);
                 let axis_color = axis.color().gamma_multiply(1.25);
@@ -1938,7 +2223,7 @@ pub fn shape_fill_depth_bias(index: usize) -> f32 {
 /// depth and z-fight ("jaggies" where a circle sits inside a rectangle).
 pub fn shape_fill_depth_bias_laned(index: usize, lane: usize) -> f32 {
     SHAPE_FILL_DEPTH_BIAS_BASE
-        + index as f32 * SHAPE_FILL_DEPTH_BIAS_STEP
+        + (index % SHAPE_FILL_DEPTH_BIAS_MODULO) as f32 * SHAPE_FILL_DEPTH_BIAS_STEP
         + lane as f32 * SHAPE_FILL_DEPTH_BIAS_STEP * 0.5
 }
 
@@ -2032,6 +2317,507 @@ pub fn solid_mesh_unique_edges(solid: &crate::extrude::SolidMesh) -> Vec<(Vec3, 
         .filter(|(_, _, normals)| is_feature_edge(normals))
         .map(|(a, b, _)| (a, b))
         .collect()
+}
+
+/// Grid resolution of the aura's screen-space footprint field, pixels per cell. Small enough
+/// that the marching-squares contour (which interpolates on the distance field) stays smooth
+/// under the glow width; doubled automatically for huge extents via [`AURA_MAX_CELLS`].
+const AURA_CELL_PX: f32 = 1.5;
+/// Cap on the aura field's cell count; the cell size grows until the grid fits, so a
+/// selection filling the screen gets a slightly coarser (still smoothed) contour instead of
+/// a multi-million-cell field recomputed every frame.
+const AURA_MAX_CELLS: usize = 600_000;
+/// Extra field margin beyond the viewport so a silhouette cut off by the screen edge closes
+/// offscreen instead of drawing an aura line along the viewport border.
+const AURA_MARGIN_PX: f32 = BODY_SILHOUETTE_OFFSET_PX + 8.0;
+/// Relative depth slack for the aura's occlusion test — a non-selected surface must be
+/// meaningfully in front of the selected silhouette (not just touching it) to occlude.
+const AURA_OCCLUSION_DEPTH_SLACK: f32 = 2e-3;
+
+/// Scanline-rasterize a screen-space triangle over the aura grid's cell centers, calling
+/// `write(cell_index, depth)` for each covered center. Per grid row, the row's center line
+/// is intersected with the triangle edges to get the covered x-span and the depth at its
+/// ends (depth is affine across a triangle in screen space), then depth steps linearly —
+/// O(covered cells) with a couple of adds per cell, instead of a barycentric solve per cell.
+fn aura_scanline(
+    w: usize,
+    h: usize,
+    cell: f32,
+    origin: egui::Pos2,
+    p: [egui::Pos2; 3],
+    depth: [f32; 3],
+    mut write: impl FnMut(usize, f32),
+) {
+    let min_y = p[0].y.min(p[1].y).min(p[2].y);
+    let max_y = p[0].y.max(p[1].y).max(p[2].y);
+    let gy0 = ((min_y - origin.y) / cell).ceil().max(0.0) as usize;
+    let gy1 = (((max_y - origin.y) / cell).floor()).min(h as f32 - 1.0);
+    if gy1 < 0.0 {
+        return;
+    }
+    let gy1 = gy1 as usize;
+    let edges = [(0usize, 1usize), (1, 2), (2, 0)];
+    for gy in gy0..=gy1 {
+        let cy = origin.y + gy as f32 * cell;
+        // Crossings of the row's center line with the triangle edges: (x, depth) pairs.
+        let mut lo: Option<(f32, f32)> = None;
+        let mut hi: Option<(f32, f32)> = None;
+        for &(a, b) in &edges {
+            let (pa, pb) = (p[a], p[b]);
+            if (pa.y - cy) * (pb.y - cy) > 0.0 || (pa.y - pb.y).abs() < 1e-12 {
+                continue;
+            }
+            let t = ((cy - pa.y) / (pb.y - pa.y)).clamp(0.0, 1.0);
+            let x = pa.x + (pb.x - pa.x) * t;
+            let d = depth[a] + (depth[b] - depth[a]) * t;
+            if lo.is_none_or(|(lx, _)| x < lx) {
+                lo = Some((x, d));
+            }
+            if hi.is_none_or(|(hx, _)| x > hx) {
+                hi = Some((x, d));
+            }
+        }
+        let (Some((x_lo, d_lo)), Some((x_hi, d_hi))) = (lo, hi) else {
+            continue;
+        };
+        let gx0 = ((x_lo - origin.x) / cell).ceil().max(0.0) as usize;
+        let gx1f = ((x_hi - origin.x) / cell).floor();
+        if gx1f < 0.0 {
+            continue;
+        }
+        let gx1 = (gx1f as usize).min(w - 1);
+        if gx0 > gx1 {
+            continue;
+        }
+        let span = (x_hi - x_lo).max(1e-12);
+        let d_step = (d_hi - d_lo) / span * cell;
+        let mut d = d_lo + ((origin.x + gx0 as f32 * cell) - x_lo) / span * (d_hi - d_lo);
+        let row = gy * w;
+        for gx in gx0..=gx1 {
+            write(row + gx, d);
+            d += d_step;
+        }
+    }
+}
+
+/// Screen-space footprint field backing the selection aura (#145/#148): all selected bodies
+/// rasterized into one coarse grid (with per-cell depth), a chamfer distance transform of
+/// that mask, and the minimum depth of *non-selected* bodies per cell for occlusion. The
+/// aura is the marching-squares iso-contour of the distance field, drawn only where no
+/// non-selected body sits in front of the nearest selected silhouette.
+struct AuraField {
+    w: usize,
+    h: usize,
+    cell: f32,
+    /// Screen position of cell (0, 0)'s center.
+    origin: egui::Pos2,
+    /// Min depth (eye distance) of selected-body coverage per cell; +inf where uncovered.
+    sel_depth: Vec<f32>,
+    /// Min depth of non-selected-body coverage per cell; +inf where uncovered.
+    other_depth: Vec<f32>,
+    /// Distance (px) to the nearest selected-covered cell (0 inside), computed only within
+    /// the narrow band the aura contour can reach (+inf beyond it).
+    dist_px: Vec<f32>,
+    /// Depth of that nearest selected cell (the silhouette the aura outlines).
+    near_depth: Vec<f32>,
+    /// Cells with a finite `dist_px` (mask boundary + the band around it), filled by
+    /// [`Self::finalize`] — the only places the iso-contour can pass, so marching squares
+    /// visits just their incident squares instead of sweeping the grid.
+    touched: Vec<usize>,
+}
+
+impl AuraField {
+    /// Field over `region` (screen px) expanded by [`AURA_MARGIN_PX`] — pass the selected
+    /// bodies' projected bounds (clipped to the viewport), not the whole viewport, so the
+    /// per-frame grid work scales with the selection's on-screen size.
+    fn new(region: UiRect) -> Option<Self> {
+        if !region.is_positive() {
+            return None;
+        }
+        let mut cell = AURA_CELL_PX;
+        let (mut w, mut h);
+        loop {
+            w = ((region.width() + 2.0 * AURA_MARGIN_PX) / cell).ceil() as usize + 1;
+            h = ((region.height() + 2.0 * AURA_MARGIN_PX) / cell).ceil() as usize + 1;
+            if w.saturating_mul(h) <= AURA_MAX_CELLS {
+                break;
+            }
+            cell *= 1.25;
+        }
+        if w < 2 || h < 2 {
+            return None;
+        }
+        let n = w * h;
+        Some(Self {
+            w,
+            h,
+            cell,
+            origin: egui::pos2(
+                region.min.x - AURA_MARGIN_PX + cell * 0.5,
+                region.min.y - AURA_MARGIN_PX + cell * 0.5,
+            ),
+            sel_depth: vec![f32::INFINITY; n],
+            other_depth: vec![f32::INFINITY; n],
+            dist_px: vec![f32::INFINITY; n],
+            near_depth: vec![f32::INFINITY; n],
+            touched: Vec::new(),
+        })
+    }
+
+    fn cell_center(&self, x: usize, y: usize) -> egui::Pos2 {
+        egui::pos2(
+            self.origin.x + x as f32 * self.cell,
+            self.origin.y + y as f32 * self.cell,
+        )
+    }
+
+    /// Rasterize a projected triangle into the field: min-depth per covered cell center
+    /// (depth stepped linearly along each row — depth is affine across the triangle in
+    /// screen space), into the selected or non-selected layer.
+    fn stamp_triangle(&mut self, p: [egui::Pos2; 3], depth: [f32; 3], selected: bool) {
+        let layer = if selected {
+            &mut self.sel_depth
+        } else {
+            &mut self.other_depth
+        };
+        aura_scanline(self.w, self.h, self.cell, self.origin, p, depth, |i, d| {
+            if d < layer[i] {
+                layer[i] = d;
+            }
+        });
+    }
+
+    /// Rasterize a non-selected triangle's depth, but only into `band` cells (the narrow
+    /// band around the selected silhouette where the occlusion test reads `other_depth`) —
+    /// so unselected bodies never pay for their full projected area.
+    fn stamp_other_in_band(&mut self, p: [egui::Pos2; 3], depth: [f32; 3], band: &[bool]) {
+        let layer = &mut self.other_depth;
+        aura_scanline(self.w, self.h, self.cell, self.origin, p, depth, |i, d| {
+            if band[i] && d < layer[i] {
+                layer[i] = d;
+            }
+        });
+    }
+
+    /// Narrow-band distance transform of the selected mask: exact Euclidean cell-to-cell
+    /// distances seeded only from the mask's **boundary cells** and written only within the
+    /// band the aura contour can reach (`BODY_SILHOUETTE_OFFSET_PX` plus interpolation
+    /// slack). O(boundary × band²) instead of a full-grid chamfer sweep — for a typical
+    /// selection that's a few hundred thousand cheap updates rather than tens of millions.
+    /// Propagates the boundary cell's depth alongside the distance and records every cell
+    /// with a finite distance in `touched` (the marching-squares candidate band).
+    fn finalize(&mut self) {
+        let (w, h) = (self.w, self.h);
+        for i in 0..w * h {
+            if self.sel_depth[i].is_finite() {
+                self.dist_px[i] = 0.0;
+                self.near_depth[i] = self.sel_depth[i];
+            }
+        }
+        let band_px = BODY_SILHOUETTE_OFFSET_PX + 3.0 * self.cell;
+        let r = (band_px / self.cell).ceil() as i32;
+        let mut touched = Vec::new();
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
+                let i = y as usize * w + x as usize;
+                if self.dist_px[i] != 0.0 {
+                    continue; // not a mask cell
+                }
+                // Only boundary mask cells seed the band (a grid edge counts as boundary so
+                // an offscreen-cut silhouette still closes its contour there).
+                let boundary = [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)].iter().any(|(dx, dy)| {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                        return true;
+                    }
+                    self.dist_px[ny as usize * w + nx as usize] != 0.0
+                });
+                if !boundary {
+                    continue;
+                }
+                touched.push(i);
+                let depth = self.sel_depth[i];
+                for dy in -r..=r {
+                    let ny = y + dy;
+                    if ny < 0 || ny >= h as i32 {
+                        continue;
+                    }
+                    for dx in -r..=r {
+                        let nx = x + dx;
+                        if nx < 0 || nx >= w as i32 {
+                            continue;
+                        }
+                        let j = ny as usize * w + nx as usize;
+                        if self.dist_px[j] == 0.0 {
+                            continue; // inside the mask
+                        }
+                        let d = self.cell * ((dx * dx + dy * dy) as f32).sqrt();
+                        if d < self.dist_px[j] {
+                            if !self.dist_px[j].is_finite() {
+                                touched.push(j);
+                            }
+                            self.dist_px[j] = d;
+                            self.near_depth[j] = depth;
+                        }
+                    }
+                }
+            }
+        }
+        self.touched = touched;
+    }
+
+    /// The aura contour: marching squares over the distance field at `iso_px`, dropping the
+    /// stretches where a non-selected body is in front of the silhouette being outlined.
+    /// Only squares incident to `touched` cells are visited — the contour cannot pass
+    /// anywhere else. Returns screen-space segments.
+    fn visible_contour(&self, iso_px: f32) -> Vec<(egui::Pos2, egui::Pos2)> {
+        let mut out = Vec::new();
+        let (w, h) = (self.w, self.h);
+        let mut seen = vec![false; w * h];
+        for &cell in &self.touched {
+            let (cx, cy) = (cell % w, cell / w);
+            for (x, y) in [
+                (cx.wrapping_sub(1), cy.wrapping_sub(1)),
+                (cx, cy.wrapping_sub(1)),
+                (cx.wrapping_sub(1), cy),
+                (cx, cy),
+            ] {
+                // `wrapping_sub` underflow lands far above the grid bounds and is skipped.
+                if x >= w - 1 || y >= h - 1 {
+                    continue;
+                }
+                let i00 = y * w + x;
+                if seen[i00] {
+                    continue;
+                }
+                seen[i00] = true;
+                let (i10, i01, i11) = (i00 + 1, i00 + w, i00 + w + 1);
+                let v = [
+                    self.dist_px[i00],
+                    self.dist_px[i10],
+                    self.dist_px[i11],
+                    self.dist_px[i01],
+                ];
+                let inside = [v[0] <= iso_px, v[1] <= iso_px, v[2] <= iso_px, v[3] <= iso_px];
+                let case = (inside[0] as usize)
+                    | (inside[1] as usize) << 1
+                    | (inside[2] as usize) << 2
+                    | (inside[3] as usize) << 3;
+                if case == 0 || case == 15 {
+                    continue;
+                }
+                // Occlusion: the aura at this square outlines the nearest selected surface;
+                // a non-selected body covering the square *in front of* that surface hides it.
+                let near = self.near_depth[i00];
+                let other = self.other_depth[i00];
+                if other < near - near.abs() * AURA_OCCLUSION_DEPTH_SLACK {
+                    continue;
+                }
+                let p00 = self.cell_center(x, y);
+                let step = self.cell;
+                let lerp_t = |a: f32, b: f32| {
+                    if (b - a).abs() < 1e-12 {
+                        0.5
+                    } else {
+                        ((iso_px - a) / (b - a)).clamp(0.0, 1.0)
+                    }
+                };
+                // Edge crossing points: top (00→10), right (10→11), bottom (01→11), left (00→01).
+                let top = egui::pos2(p00.x + step * lerp_t(v[0], v[1]), p00.y);
+                let right = egui::pos2(p00.x + step, p00.y + step * lerp_t(v[1], v[2]));
+                let bottom = egui::pos2(p00.x + step * lerp_t(v[3], v[2]), p00.y + step);
+                let left = egui::pos2(p00.x, p00.y + step * lerp_t(v[0], v[3]));
+                let mut emit = |a: egui::Pos2, b: egui::Pos2| out.push((a, b));
+                match case {
+                    1 | 14 => emit(left, top),
+                    2 | 13 => emit(top, right),
+                    4 | 11 => emit(right, bottom),
+                    8 | 7 => emit(bottom, left),
+                    3 | 12 => emit(left, right),
+                    6 | 9 => emit(top, bottom),
+                    5 => {
+                        emit(left, top);
+                        emit(right, bottom);
+                    }
+                    10 => {
+                        emit(top, right);
+                        emit(bottom, left);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Chain unordered contour segments (as emitted by marching squares, whose shared endpoints
+/// are bitwise-identical across neighboring cells) into polylines. Returns each chain with
+/// whether it closed back on itself. Occlusion-filtered gaps naturally become open chains.
+fn chain_contour_segments(segments: &[(egui::Pos2, egui::Pos2)]) -> Vec<(Vec<egui::Pos2>, bool)> {
+    type Key = (i32, i32);
+    let key = |p: egui::Pos2| -> Key { ((p.x * 8.0).round() as i32, (p.y * 8.0).round() as i32) };
+    let mut adjacency: std::collections::HashMap<Key, Vec<usize>> = std::collections::HashMap::new();
+    for (i, (a, b)) in segments.iter().enumerate() {
+        adjacency.entry(key(*a)).or_default().push(i);
+        adjacency.entry(key(*b)).or_default().push(i);
+    }
+    let mut used = vec![false; segments.len()];
+    let mut chains = Vec::new();
+    // Walk from every unused segment; extend forward until the chain closes or dead-ends,
+    // then extend the other way for open chains.
+    for start in 0..segments.len() {
+        if used[start] {
+            continue;
+        }
+        used[start] = true;
+        let (a, b) = segments[start];
+        let mut points = vec![a, b];
+        let mut closed = false;
+        for reversed in [false, true] {
+            if closed {
+                break;
+            }
+            if reversed {
+                points.reverse();
+            }
+            loop {
+                let tip = *points.last().unwrap();
+                let Some(candidates) = adjacency.get(&key(tip)) else {
+                    break;
+                };
+                let Some(&next) = candidates.iter().find(|&&i| !used[i]) else {
+                    break;
+                };
+                used[next] = true;
+                let (na, nb) = segments[next];
+                let far = if key(na) == key(tip) { nb } else { na };
+                if key(far) == key(points[0]) {
+                    closed = true;
+                    break;
+                }
+                points.push(far);
+            }
+        }
+        chains.push((points, closed));
+    }
+    chains
+}
+
+/// Minimum spacing of drawn aura polyline vertices, px — comfortably above the glow stroke
+/// width so the per-segment screen quads read as one continuous stroke.
+const AURA_DRAW_STEP_PX: f32 = 7.0;
+
+/// Keep only points at least `step_px` apart (plus both endpoints), so the drawn stroke's
+/// segments stay longer than the stroke width.
+fn resample_polyline(points: &[egui::Pos2], step_px: f32) -> Vec<egui::Pos2> {
+    let Some((&first, rest)) = points.split_first() else {
+        return Vec::new();
+    };
+    let mut out = vec![first];
+    let mut since = 0.0;
+    for pair in points.windows(2) {
+        since += (pair[1] - pair[0]).length();
+        if since >= step_px {
+            out.push(pair[1]);
+            since = 0.0;
+        }
+    }
+    if let Some(&last) = rest.last() {
+        if out.last() != Some(&last) {
+            out.push(last);
+        }
+    }
+    out
+}
+
+/// One or more rounds of Chaikin corner-cutting. Closed chains smooth across the wrap; open
+/// chains keep their endpoints (so an occlusion-clipped aura still ends where it was cut).
+/// A closed result gets its first point repeated at the end, ready for `windows(2)` drawing.
+fn chaikin_smooth(points: &[egui::Pos2], closed: bool, iterations: usize) -> Vec<egui::Pos2> {
+    let mut pts = points.to_vec();
+    for _ in 0..iterations {
+        if pts.len() < 3 {
+            break;
+        }
+        let mut next = Vec::with_capacity(pts.len() * 2);
+        if !closed {
+            next.push(pts[0]);
+        }
+        let edges = if closed { pts.len() } else { pts.len() - 1 };
+        for i in 0..edges {
+            let p = pts[i];
+            let q = pts[(i + 1) % pts.len()];
+            next.push(p + (q - p) * 0.25);
+            next.push(p + (q - p) * 0.75);
+        }
+        if !closed {
+            next.push(*pts.last().unwrap());
+        }
+        pts = next;
+    }
+    if closed {
+        if let Some(&first) = pts.first() {
+            pts.push(first);
+        }
+    }
+    pts
+}
+
+/// Group a solid mesh's triangles into planar faces (#144): maximal sets of triangles connected
+/// through shared edges whose two adjacent triangles are coplanar (normals agree within
+/// [`WIREFRAME_CREASE_COS_THRESHOLD`], the same crease test [`solid_mesh_unique_edges`] uses).
+/// Each returned face is its list of world-space triangles, so the picker can hover-highlight a
+/// whole box side or cylinder cap as one face instead of a bare triangle.
+pub fn solid_mesh_coplanar_faces(solid: &crate::extrude::SolidMesh) -> Vec<Vec<[Vec3; 3]>> {
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+
+    let n = solid.triangles.len();
+    let normals: Vec<Vec3> = solid
+        .triangles
+        .iter()
+        .map(|t| (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero())
+        .collect();
+    let mut parent: Vec<usize> = (0..n).collect();
+
+    type EdgeKey = ((i64, i64, i64), (i64, i64, i64));
+    let mut by_edge: std::collections::HashMap<EdgeKey, Vec<usize>> = std::collections::HashMap::new();
+    for (ti, tri) in solid.triangles.iter().enumerate() {
+        for &(i, j) in &[(0usize, 1usize), (1, 2), (2, 0)] {
+            let ka = quantize_vertex(tri[i]);
+            let kb = quantize_vertex(tri[j]);
+            let key = if ka <= kb { (ka, kb) } else { (kb, ka) };
+            by_edge.entry(key).or_default().push(ti);
+        }
+    }
+    for tris in by_edge.values() {
+        for a in 0..tris.len() {
+            for b in (a + 1)..tris.len() {
+                // Two-sided shading (`push_solid`) means coplanar triangles can be wound
+                // oppositely, so compare normals by absolute dot — same as `is_feature_edge`.
+                if normals[tris[a]].dot(normals[tris[b]]).abs() >= WIREFRAME_CREASE_COS_THRESHOLD {
+                    let ra = find(&mut parent, tris[a]);
+                    let rb = find(&mut parent, tris[b]);
+                    if ra != rb {
+                        parent[ra] = rb;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut groups: std::collections::HashMap<usize, Vec<[Vec3; 3]>> = std::collections::HashMap::new();
+    for ti in 0..n {
+        let root = find(&mut parent, ti);
+        groups.entry(root).or_default().push(solid.triangles[ti]);
+    }
+    groups.into_values().collect()
 }
 
 /// An edge is a real feature edge if it's a mesh boundary (one adjacent triangle) or any pair
@@ -2824,6 +3610,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            preview_cut_body: None,
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -3101,6 +3888,80 @@ mod tests {
     }
 
     #[test]
+    fn solid_mesh_coplanar_faces_groups_a_split_quad_into_one_face() {
+        // The same diagonally-split square as the edge test: two coplanar triangles must merge
+        // into a single planar face (#144), not stay two separate triangle "faces".
+        let solid = crate::extrude::SolidMesh {
+            triangles: vec![
+                [
+                    Vec3::new(0.0, 0.0, 0.0),
+                    Vec3::new(1.0, 0.0, 0.0),
+                    Vec3::new(1.0, 1.0, 0.0),
+                ],
+                [
+                    Vec3::new(0.0, 0.0, 0.0),
+                    Vec3::new(1.0, 1.0, 0.0),
+                    Vec3::new(0.0, 1.0, 0.0),
+                ],
+            ],
+        };
+        let faces = solid_mesh_coplanar_faces(&solid);
+        assert_eq!(faces.len(), 1, "coplanar quad should be one face, got {faces:?}");
+        assert_eq!(faces[0].len(), 2, "the face keeps both of its triangles");
+    }
+
+    #[test]
+    fn solid_mesh_coplanar_faces_keeps_a_crease_as_two_faces() {
+        // Two triangles sharing an edge but meeting at a crease must stay two distinct faces.
+        let solid = crate::extrude::SolidMesh {
+            triangles: vec![
+                [
+                    Vec3::new(0.0, 0.0, 0.0),
+                    Vec3::new(1.0, 0.0, 0.0),
+                    Vec3::new(1.0, 0.0, 1.0),
+                ],
+                [
+                    Vec3::new(0.0, 0.0, 0.0),
+                    Vec3::new(1.0, 0.0, 1.0),
+                    Vec3::new(0.0, 1.0, 1.0),
+                ],
+            ],
+        };
+        assert_eq!(solid_mesh_coplanar_faces(&solid).len(), 2);
+    }
+
+    #[test]
+    fn solid_mesh_coplanar_faces_finds_six_faces_on_a_box() {
+        // A unit cube (12 triangles, two per side) must resolve to exactly its 6 planar faces.
+        let c = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(1.0, 0.0, 1.0),
+            Vec3::new(1.0, 1.0, 1.0),
+            Vec3::new(0.0, 1.0, 1.0),
+        ];
+        let quad = |a: usize, b: usize, d: usize, e: usize| {
+            vec![[c[a], c[b], c[d]], [c[a], c[d], c[e]]]
+        };
+        let mut triangles = Vec::new();
+        for face in [
+            quad(0, 1, 2, 3), // bottom
+            quad(4, 5, 6, 7), // top
+            quad(0, 1, 5, 4), // front
+            quad(1, 2, 6, 5), // right
+            quad(2, 3, 7, 6), // back
+            quad(3, 0, 4, 7), // left
+        ] {
+            triangles.extend(face);
+        }
+        let solid = crate::extrude::SolidMesh { triangles };
+        assert_eq!(solid_mesh_coplanar_faces(&solid).len(), 6);
+    }
+
+    #[test]
     fn is_feature_edge_ignores_smooth_tessellation_angles_but_keeps_chamfer_angles() {
         // The crease threshold (#101) must sit between the largest smooth-tessellation facet
         // angle (48-gon cylinder wall: 7.5°) and the smallest genuine feature angle this app
@@ -3154,6 +4015,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            preview_cut_body: None,
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -3182,6 +4044,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            preview_cut_body: None,
             editing_extrusion: None,
             plane_preview: Some(ViewportPlanePreview {
                 plane: preview_plane,
@@ -3224,6 +4087,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            preview_cut_body: None,
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -3251,6 +4115,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            preview_cut_body: None,
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -3295,6 +4160,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            preview_cut_body: None,
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -3333,6 +4199,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            preview_cut_body: None,
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -3372,6 +4239,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            preview_cut_body: None,
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -3417,6 +4285,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            preview_cut_body: None,
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -3465,6 +4334,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            preview_cut_body: None,
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -3616,6 +4486,7 @@ mod tests {
                 preview_line: None,
                 preview_circle: None,
                 preview_extrusion: None,
+                preview_cut_body: None,
                 editing_extrusion: editing,
                 plane_preview: None,
                 active_sketch_face: None,
@@ -3781,6 +4652,7 @@ mod tests {
             preview_circle: None,
             preview_extrusion: Some(preview.clone()),
             editing_extrusion: None,
+            preview_cut_body: None,
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
@@ -3899,6 +4771,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            preview_cut_body: None,
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4001,6 +4874,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            preview_cut_body: None,
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4049,6 +4923,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            preview_cut_body: None,
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4102,6 +4977,27 @@ mod tests {
     fn stroke_depth_bias_beats_shape_fill_bias() {
         assert!(STROKE_DEPTH_BIAS > shape_fill_depth_bias(0));
         assert!(STROKE_DEPTH_BIAS > plane_fill_depth_bias(0));
+    }
+
+    /// #143: the committed shape-fill band must stay strictly below both the hover fill and the
+    /// strokes for *every* shape index (not just low ones), so a hover over overlapping coplanar
+    /// faces never z-fights with a high-index committed fill and lines/strokes stay on top.
+    #[test]
+    fn committed_fill_band_stays_below_hover_and_strokes() {
+        for index in 0..64usize {
+            for lane in 0..3usize {
+                let bias = shape_fill_depth_bias_laned(index, lane);
+                assert!(
+                    bias < HOVER_FILL_DEPTH_BIAS,
+                    "shape fill (index {index}, lane {lane}) bias {bias} reaches the hover layer {HOVER_FILL_DEPTH_BIAS}"
+                );
+                assert!(
+                    bias < STROKE_DEPTH_BIAS,
+                    "shape fill (index {index}, lane {lane}) bias {bias} reaches the stroke layer {STROKE_DEPTH_BIAS}"
+                );
+            }
+        }
+        assert!(HOVER_FILL_DEPTH_BIAS < STROKE_DEPTH_BIAS);
     }
 
     fn mesh_z_closest_to(scene: &ViewportScene, target: Vec3) -> Option<f32> {
@@ -4186,6 +5082,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            preview_cut_body: None,
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4213,6 +5110,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            preview_cut_body: None,
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4256,6 +5154,184 @@ mod tests {
         assert!(
             selected_highlight > 0,
             "selected line should render with highlight color"
+        );
+    }
+
+    /// Test-sized aura field over a 100x100 px viewport at cell size [`AURA_CELL_PX`].
+    fn test_aura_field() -> AuraField {
+        AuraField::new(UiRect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 100.0)))
+            .expect("field")
+    }
+
+    /// Stamp an axis-aligned screen-space rectangle at a fixed depth.
+    fn stamp_rect(field: &mut AuraField, min: egui::Pos2, max: egui::Pos2, depth: f32, selected: bool) {
+        let (a, b, c, d) = (
+            min,
+            egui::pos2(max.x, min.y),
+            max,
+            egui::pos2(min.x, max.y),
+        );
+        field.stamp_triangle([a, b, c], [depth; 3], selected);
+        field.stamp_triangle([a, c, d], [depth; 3], selected);
+    }
+
+    /// #145: the aura contour rings the selected footprint at the offset distance — every
+    /// contour point sits close to `BODY_SILHOUETTE_OFFSET_PX` outside the stamped square,
+    /// none on its edges.
+    #[test]
+    fn aura_contour_rings_the_footprint_at_the_offset() {
+        let mut field = test_aura_field();
+        stamp_rect(&mut field, egui::pos2(40.0, 40.0), egui::pos2(60.0, 60.0), 100.0, true);
+        field.finalize();
+        let contour = field.visible_contour(BODY_SILHOUETTE_OFFSET_PX);
+        assert!(!contour.is_empty(), "a selected square must produce a contour");
+        for (a, b) in &contour {
+            for p in [a, b] {
+                // Signed distance of `p` to the square (positive outside).
+                let dx = (40.0 - p.x).max(p.x - 60.0).max(0.0);
+                let dy = (40.0 - p.y).max(p.y - 60.0).max(0.0);
+                let dist = (dx * dx + dy * dy).sqrt();
+                assert!(
+                    dist > BODY_SILHOUETTE_OFFSET_PX * 0.5 && dist < BODY_SILHOUETTE_OFFSET_PX * 1.6,
+                    "contour point should sit ~offset px outside the square, got {dist} at {p:?}"
+                );
+            }
+        }
+    }
+
+    /// #145: two selected squares closer than twice the offset merge into one aura — no
+    /// contour line passes through the gap between them.
+    #[test]
+    fn aura_joins_across_a_small_gap_between_selected_bodies() {
+        let mut field = test_aura_field();
+        // 4 px gap (x 48..52) between two squares; offset 5 px each side spans the gap.
+        stamp_rect(&mut field, egui::pos2(28.0, 40.0), egui::pos2(48.0, 60.0), 100.0, true);
+        stamp_rect(&mut field, egui::pos2(52.0, 40.0), egui::pos2(72.0, 60.0), 100.0, true);
+        field.finalize();
+        let contour = field.visible_contour(BODY_SILHOUETTE_OFFSET_PX);
+        assert!(!contour.is_empty());
+        for (a, b) in &contour {
+            for p in [a, b] {
+                assert!(
+                    !(p.x > 48.5 && p.x < 51.5 && p.y > 42.0 && p.y < 58.0),
+                    "auras should join across the gap — no contour inside it, got {p:?}"
+                );
+            }
+        }
+        // Sanity: the joined aura still exists above the gap (one shared outline).
+        assert!(
+            contour.iter().any(|(a, _)| a.x > 45.0 && a.x < 55.0 && a.y < 40.0),
+            "joined outline should bridge over the gap"
+        );
+    }
+
+    /// #145: a non-selected body in *front* of the silhouette occludes the aura there; the
+    /// same body behind it does not.
+    #[test]
+    fn aura_occluded_only_by_nearer_unselected_bodies() {
+        for (occluder_depth, expect_left_side) in [(50.0, false), (200.0, true)] {
+            let mut field = test_aura_field();
+            stamp_rect(&mut field, egui::pos2(40.0, 40.0), egui::pos2(60.0, 60.0), 100.0, true);
+            // Non-selected slab covering the square's left flank (where the left aura runs).
+            stamp_rect(
+                &mut field,
+                egui::pos2(20.0, 20.0),
+                egui::pos2(45.0, 80.0),
+                occluder_depth,
+                false,
+            );
+            field.finalize();
+            let contour = field.visible_contour(BODY_SILHOUETTE_OFFSET_PX);
+            let has_left = contour
+                .iter()
+                .any(|(a, b)| a.x < 38.0 && b.x < 38.0 && a.y > 42.0 && a.y < 58.0);
+            assert_eq!(
+                has_left, expect_left_side,
+                "occluder at depth {occluder_depth}: left aura present = {has_left}"
+            );
+            // The right flank is never covered by the occluder — always present.
+            assert!(
+                contour.iter().any(|(a, b)| a.x > 62.0 && b.x > 62.0),
+                "right aura must survive regardless of the occluder"
+            );
+        }
+    }
+
+    /// #145: selecting a body draws a glowing blue silhouette outline in the overlay layer.
+    #[test]
+    fn selected_body_draws_blue_silhouette_outline() {
+        use crate::model::{Body, BodySource, ExtrudeFace, FaceId};
+        use crate::selection::SceneSelection;
+
+        let mut state = AppState::default();
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let rect = crate::construction::add_line_rectangle(&mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
+        state.doc.extrusions.push(crate::model::Extrusion {
+            sketch,
+            faces: vec![ExtrudeFace::Polygon(rect.to_vec())],
+            distance: 5.0,
+            target: None,
+            expression: String::new(),
+            name: None,
+            deleted: false,
+            edge_treatments: Vec::new(),
+        });
+        state.doc.bodies.push(Body {
+            source: BodySource::Extrusion(0),
+            name: None,
+            deleted: false,
+        });
+
+        let palette = ViewportPalette::default();
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let mut selected = SceneSelection::default();
+        crate::selection::click_scene_selection(&mut selected, SceneElement::Body(0), false);
+
+        let build = |sel: &SceneSelection| {
+            ViewportScene::build(&ViewportSceneInput {
+                doc: &state.doc,
+                cam: &cam,
+                viewport,
+                palette,
+                sketch_session: None,
+                selection: sel,
+                element_visibility: &state.element_visibility,
+                preview_rect: None,
+                preview_line: None,
+                preview_circle: None,
+                preview_extrusion: None,
+                preview_cut_body: None,
+                editing_extrusion: None,
+                plane_preview: None,
+                active_sketch_face: None,
+                dimension_labels: &[],
+                dim_label_view: None,
+                plane_gizmo: None,
+                extrude_gizmo: None,
+                vertex_treatment_gizmo: None,
+                vertex_treatment_preview: None,
+                hover_highlight: None,
+                hover_color: Color32::WHITE,
+                document_health: &DocumentHealth::default(),
+                constraint_graphics: None,
+                constraint_connector_color: None,
+            })
+        };
+
+        let unselected = build(&SceneSelection::default());
+        let selected_scene = build(&selected);
+
+        assert_eq!(
+            count_indices_with_color(&unselected, &unselected.wireframe_indices, BODY_SILHOUETTE_COLOR),
+            0,
+            "no silhouette without a selected body"
+        );
+        // The aura draws in the depth-test-disabled (wireframe) layer so the ground grid and
+        // other nearer geometry can't clip it — its occlusion is decided CPU-side instead.
+        assert!(
+            count_indices_with_color(&selected_scene, &selected_scene.wireframe_indices, BODY_SILHOUETTE_COLOR) > 0,
+            "selected body should draw a blue silhouette outline in the depth-disabled layer"
         );
     }
 
@@ -4308,6 +5384,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            preview_cut_body: None,
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4335,6 +5412,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            preview_cut_body: None,
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4507,6 +5585,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            preview_cut_body: None,
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4538,6 +5617,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            preview_cut_body: None,
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4636,6 +5716,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            preview_cut_body: None,
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4665,6 +5746,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            preview_cut_body: None,
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4692,6 +5774,7 @@ mod tests {
             preview_line: None,
             preview_circle: None,
             preview_extrusion: None,
+            preview_cut_body: None,
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4728,5 +5811,78 @@ mod tests {
         .expect("visible segment");
         assert_ne!(quad[0], quad[1]);
         assert_ne!(quad[2], quad[3]);
+    }
+}
+/// Manual perf probe for the selection aura (#145): `cargo test aura_perf_probe -- --ignored
+/// --nocapture` prints scene-build times with and without a selected body. Ignored by
+/// default (timing-based, machine-dependent) — for eyeballing regressions, not CI.
+#[cfg(test)]
+mod perf_probe {
+    use super::*;
+    use crate::actions::{Action, AppState, Tool};
+    use crate::hierarchy::{ElementVisibility, SceneElement};
+    use crate::selection::SceneSelection;
+
+    #[test]
+    #[ignore]
+    fn aura_perf_probe() {
+        // A round body (many triangles) plus a second body, big viewport.
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch { face: crate::model::FaceId::ConstructionPlane(0), viewport: None });
+        let sketch = state.sketch_session.unwrap().sketch;
+        state.doc.circles.push(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 40.0, 0.0));
+        state.doc.shape_order.push(crate::model::ShapeKind::Circle);
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace { face: crate::model::ExtrudeFace::Circle(0) });
+        state.apply(Action::SetExtrudeDistance { distance: 60.0 });
+        state.apply(Action::CommitExtrusion);
+        state.apply(Action::ExitSketch);
+
+        let viewport = UiRect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1700.0, 1700.0));
+        let mut selection = SceneSelection::default();
+        crate::selection::click_scene_selection(&mut selection, SceneElement::Body(0), false);
+        let empty = SceneSelection::default();
+
+        let build = |sel: &SceneSelection| {
+            let input = ViewportSceneInput {
+                doc: &state.doc,
+                cam: &state.cam,
+                viewport,
+                sketch_session: None,
+                element_visibility: &ElementVisibility::default(),
+                selection: sel,
+                preview_rect: None,
+                preview_line: None,
+                preview_circle: None,
+                preview_extrusion: None,
+                editing_extrusion: None,
+                preview_cut_body: None,
+                plane_preview: None,
+                active_sketch_face: None,
+                palette: ViewportPalette::default(),
+                dimension_labels: &[],
+                dim_label_view: None,
+                plane_gizmo: None,
+                extrude_gizmo: None,
+                vertex_treatment_gizmo: None,
+                vertex_treatment_preview: None,
+                hover_highlight: None,
+                hover_color: Color32::WHITE,
+                document_health: &crate::document_health::DocumentHealth::default(),
+                constraint_graphics: None,
+                constraint_connector_color: None,
+            };
+            ViewportScene::build(&input)
+        };
+        // Warm up, then time.
+        for _ in 0..3 { build(&empty); build(&selection); }
+        let n = 20;
+        let t0 = std::time::Instant::now();
+        for _ in 0..n { build(&empty); }
+        let base = t0.elapsed() / n;
+        let t1 = std::time::Instant::now();
+        for _ in 0..n { build(&selection); }
+        let with_aura = t1.elapsed() / n;
+        println!("scene build: base {base:?}  with aura {with_aura:?}  aura delta {:?}", with_aura.saturating_sub(base));
     }
 }

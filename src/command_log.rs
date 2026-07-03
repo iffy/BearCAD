@@ -2,7 +2,7 @@
 
 use crate::actions::Action;
 use crate::model::Document;
-use crate::script::{instruction_from_action, Instruction};
+use crate::script::{instruction_from_action, instructions_for_snap_constraint, Instruction};
 use crate::camera::Camera;
 use egui::Vec2;
 
@@ -21,6 +21,7 @@ pub struct CommandLog {
     print_stdout: bool,
     history: Vec<Instruction>,
     extrusion_count_before: usize,
+    constraint_count_before: usize,
 }
 
 impl CommandLog {
@@ -82,6 +83,19 @@ impl CommandLog {
         )
     }
 
+    /// Actions that can silently add a constraint as a snapping side effect
+    /// (`AppState::add_snap_constraint`), bypassing the normal `Action::AddGeometricConstraint`
+    /// path the rest of the log relies on to hear about new constraints.
+    fn can_add_snap_constraint(action: &Action) -> bool {
+        matches!(
+            action,
+            Action::CommitRectangle
+                | Action::CommitLine
+                | Action::CommitCircle
+                | Action::ApplySnapConstraint { .. }
+        )
+    }
+
     pub fn before_apply(&mut self, action: &Action, doc: &Document, cam: &Camera) {
         // CommitExtrusion is reused for both creating a new extrusion and editing an
         // existing one (#59); only the former is replayable via the declarative
@@ -89,6 +103,9 @@ impl CommandLog {
         // in `after_apply`.
         if matches!(action, Action::CommitExtrusion) {
             self.extrusion_count_before = doc.extrusions.len();
+        }
+        if Self::can_add_snap_constraint(action) {
+            self.constraint_count_before = doc.constraints.len();
         }
         if Self::should_log(action) && !Self::is_camera_action(action) {
             self.flush_camera(cam);
@@ -115,6 +132,18 @@ impl CommandLog {
         };
         if let Some(instruction) = instruction {
             self.emit(instruction);
+        }
+        if Self::can_add_snap_constraint(&action) {
+            for constraint in &doc.constraints[self.constraint_count_before..] {
+                if constraint.deleted {
+                    continue;
+                }
+                if let Some(extra) = instructions_for_snap_constraint(&constraint.kind) {
+                    for instruction in extra {
+                        self.emit(instruction);
+                    }
+                }
+            }
         }
         if Self::is_automatic_camera_side_effect(&action) {
             self.defer_baseline = true;

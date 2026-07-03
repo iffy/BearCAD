@@ -254,10 +254,23 @@ pub fn sketch_vertices(doc: &Document, sketch: SketchId) -> Vec<ConstraintPoint>
         }
         points.push(ConstraintPoint::CircleCenter(index));
     }
+    // Corners of the body face the sketch sits on (#26/#27, #139): a sketch drawn on an
+    // extrusion cap/side wall can snap to and constrain against that face's own vertices.
+    // Construction planes have no analytic boundary, so `sketched_on_face_boundary_len`
+    // returns 0 and this adds nothing.
+    if let Some((face, count)) = sketched_on_face_boundary(doc, sketch) {
+        for index in 0..count {
+            points.push(ConstraintPoint::FaceVertex {
+                face: face.clone(),
+                index,
+            });
+        }
+    }
     points
 }
 
-/// All snap-able line segments in a sketch (lines).
+/// All snap-able line segments in a sketch (its own lines plus, when it sits on a body face,
+/// that face's own boundary edges — #26/#27, #139).
 pub fn sketch_lines(doc: &Document, sketch: SketchId) -> Vec<ConstraintLine> {
     let mut lines = Vec::new();
     for (index, line) in doc.lines.iter().enumerate() {
@@ -266,7 +279,24 @@ pub fn sketch_lines(doc: &Document, sketch: SketchId) -> Vec<ConstraintLine> {
         }
         lines.push(ConstraintLine::Line(index));
     }
+    if let Some((face, count)) = sketched_on_face_boundary(doc, sketch) {
+        for index in 0..count {
+            lines.push(ConstraintLine::FaceEdge {
+                face: face.clone(),
+                index,
+            });
+        }
+    }
     lines
+}
+
+/// The `FaceId` and boundary-loop length of the body face a sketch is drawn on, or `None` if
+/// the sketch sits on a construction plane (no analytic boundary) or the face no longer
+/// resolves. Backs referencing the sketched-on face's own vertices/edges (#139).
+fn sketched_on_face_boundary(doc: &Document, sketch: SketchId) -> Option<(crate::model::FaceId, usize)> {
+    let face = doc.sketch_face(sketch)?;
+    let boundary = crate::extrude::face_boundary_loop_world(doc, &face)?;
+    (!boundary.is_empty()).then_some((face, boundary.len()))
 }
 
 fn dist_sq(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -464,6 +494,51 @@ mod tests {
         let snap = find_snap(&doc, sketch, (2.0, 0.3), 1.0, &[]).unwrap();
         assert_eq!(snap.target, SnapTarget::OnLine(ConstraintLine::Line(0)));
         assert!((snap.uv.0 - 2.0).abs() < EPS && snap.uv.1.abs() < EPS);
+    }
+
+    /// #139: a sketch drawn on a body's own extrusion cap face can snap to, and constrain
+    /// against, that face's own boundary corners and edges — so they must appear as snap
+    /// candidates (`sketch_vertices`/`sketch_lines`) and be reachable via `find_snap`.
+    #[test]
+    fn sketched_on_face_boundary_is_snappable() {
+        use crate::model::{ExtrudeFace, Extrusion, FaceId};
+        let (mut doc, base) = sketch_doc();
+        let lines = crate::construction::add_line_rectangle(&mut doc, base, 0.0, 0.0, 10.0, 4.0, [false; 4]);
+        let profile = ExtrudeFace::Polygon(lines.to_vec());
+        doc.extrusions.push(Extrusion {
+            sketch: base,
+            faces: vec![profile.clone()],
+            distance: 6.0,
+            target: None,
+            expression: String::new(),
+            name: None,
+            deleted: false,
+            edge_treatments: Vec::new(),
+        });
+        let cap = doc.add_sketch(FaceId::ExtrudeCap {
+            extrusion: 0,
+            profile,
+            top: true,
+        });
+
+        let verts = sketch_vertices(&doc, cap);
+        let face_verts: Vec<_> = verts
+            .iter()
+            .filter(|p| matches!(p, ConstraintPoint::FaceVertex { .. }))
+            .cloned()
+            .collect();
+        assert_eq!(face_verts.len(), 4, "cap face should expose its 4 corners");
+        let face_edges = sketch_lines(&doc, cap)
+            .iter()
+            .filter(|l| matches!(l, ConstraintLine::FaceEdge { .. }))
+            .count();
+        assert_eq!(face_edges, 4, "cap face should expose its 4 edges");
+
+        // A cursor sitting on a face corner's projected location snaps onto that face vertex.
+        let fv = face_verts[0].clone();
+        let (u, v) = point_uv(&doc, cap, fv.clone()).unwrap();
+        let snap = find_snap(&doc, cap, (u, v), 1.0, &[]).unwrap();
+        assert_eq!(snap.target, SnapTarget::Vertex(fv));
     }
 
     #[test]

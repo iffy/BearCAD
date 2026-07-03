@@ -3682,22 +3682,48 @@ mod tests {
         let err = runner.error.expect("unknown plane index should error");
         assert!(err.contains("Unknown construction plane 9"), "unexpected error: {err}");
     }
-    /// #91: `bearcad.ui.fps()` toggles first-person mode; entering stands the player on
-    /// the ground plane at person eye height, exiting leaves the mode.
+    /// #91/#135: `bearcad.ui.fps()` toggles first-person mode; entering keeps the camera
+    /// exactly where it was (the player's eye starts at the camera eye, so the view doesn't
+    /// move), exiting leaves the mode.
     #[test]
-    fn lua_fps_mode_toggles_and_stands_on_ground() {
+    fn lua_fps_mode_toggles_and_keeps_the_camera_view() {
+        let before = crate::camera::Camera::default();
         let state = run_lua("bearcad.ui.fps()");
         let player = state.fps.as_ref().expect("fps mode should be active");
-        assert!((player.eye.z - crate::fps::EYE_HEIGHT).abs() < 1e-3);
+        assert!(
+            (player.eye - before.eye()).length() < 1e-2,
+            "entering FPS must not move the eye: camera was {:?}, player at {:?}",
+            before.eye(),
+            player.eye
+        );
         assert!(
             (state.cam.eye() - player.eye).length() < 1e-2,
             "camera eye should sit at the player eye"
+        );
+        let look_before = (before.target - before.eye()).normalize();
+        let look_after = (state.cam.target - state.cam.eye()).normalize();
+        assert!(
+            (look_before - look_after).length() < 1e-3,
+            "entering FPS must not change the look direction"
         );
 
         let state = run_lua("bearcad.ui.fps() bearcad.ui.fps()");
         assert!(state.fps.is_none(), "second toggle should leave FPS mode");
         let state = run_lua("bearcad.ui.fps(true) bearcad.ui.fps(true)");
         assert!(state.fps.is_some(), "fps(true) is idempotent");
+    }
+
+    /// #135: the default camera sits below standing eye height, so entering FPS there
+    /// shrinks the player (#120) to keep the view in place instead of popping it up.
+    #[test]
+    fn lua_fps_enter_below_eye_height_shrinks_the_player() {
+        let state = run_lua("bearcad.ui.fps()");
+        let player = state.fps.as_ref().unwrap();
+        assert!(player.scale < 1.0, "player should shrink, scale={}", player.scale);
+        assert!(
+            player.on_ground(),
+            "shrunk entry at the camera height should be standing"
+        );
     }
 
     /// #91: `fps_move` walks on the ground plane and `fps_look` turns the head; the
@@ -3707,6 +3733,7 @@ mod tests {
         let state = run_lua(
             r#"
             bearcad.ui.fps()
+            bearcad.ui.fps_scale(1)
             bearcad.ui.fps_look(90, 0)
             bearcad.ui.fps_move{ forward = 1000, strafe = 500 }
         "#,
@@ -3728,6 +3755,7 @@ mod tests {
         let state = run_lua(
             r#"
             bearcad.ui.fps()
+            bearcad.ui.fps_scale(1)
             bearcad.ui.fps_jump()
             bearcad.ui.fps_advance(0.2)
         "#,
@@ -3738,6 +3766,7 @@ mod tests {
         let state = run_lua(
             r#"
             bearcad.ui.fps()
+            bearcad.ui.fps_scale(1)
             bearcad.ui.fps_jump()
             bearcad.ui.fps_advance(3)
         "#,
@@ -3748,6 +3777,7 @@ mod tests {
         let state = run_lua(
             r#"
             bearcad.ui.fps()
+            bearcad.ui.fps_scale(1)
             bearcad.ui.fps_fly(true)
             bearcad.ui.fps_jump()
             bearcad.ui.fps_advance(3)
@@ -3758,6 +3788,44 @@ mod tests {
         assert!(
             (player.eye.z - crate::fps::EYE_HEIGHT).abs() < 1e-2,
             "flying holds altitude (no gravity), z={}",
+            player.eye.z
+        );
+    }
+
+    /// #135: leaving FPS mode mid-flight and re-entering resumes flying at the same
+    /// altitude, instead of dropping the player back to standing on the ground.
+    #[test]
+    fn lua_fps_reenter_resumes_flying_altitude() {
+        let state = run_lua(
+            r#"
+            bearcad.ui.fps()
+            bearcad.ui.fps_scale(1)
+            bearcad.ui.fps_jump()
+            bearcad.ui.fps_advance(0.2)
+            bearcad.ui.fps_fly(true)
+        "#,
+        );
+        let player = state.fps.as_ref().unwrap();
+        assert!(player.flying);
+        let z1 = player.eye.z;
+        assert!(z1 > crate::fps::EYE_HEIGHT + 100.0, "should be well above ground, z={z1}");
+
+        let state = run_lua(
+            r#"
+            bearcad.ui.fps()
+            bearcad.ui.fps_scale(1)
+            bearcad.ui.fps_jump()
+            bearcad.ui.fps_advance(0.2)
+            bearcad.ui.fps_fly(true)
+            bearcad.ui.fps(false)
+            bearcad.ui.fps(true)
+        "#,
+        );
+        let player = state.fps.as_ref().expect("should be back in fps mode");
+        assert!(player.flying, "re-entry should resume flying");
+        assert!(
+            (player.eye.z - z1).abs() < 1.0,
+            "re-entry should resume the same altitude: expected ~{z1}, got {}",
             player.eye.z
         );
     }

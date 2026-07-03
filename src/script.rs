@@ -967,6 +967,51 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
     }
 }
 
+/// Replay instructions for a constraint added as a side effect of committing sketch geometry
+/// (e.g. a line endpoint snapping onto an existing vertex/line while drawing, #37/#41) —
+/// `crate::actions::AppState::add_snap_constraint` mutates `doc.constraints` directly, without
+/// going through `Action::AddGeometricConstraint`, so the command log otherwise has nothing to
+/// replay it with. Mirrors the "select both, then apply" flow the constraint pane itself uses:
+/// `bearcad.select(...)` for each side (second call `additive`), then
+/// `bearcad.add_geometric_constraint(...)`. Best-effort — a `ConstraintEntity::Origin` side (the
+/// sketch origin, #21) isn't a selectable `SceneElement`, so that case (and any kind without a
+/// direct `GeometricConstraintType`) returns `None` rather than emitting an unreplayable stub.
+pub fn instructions_for_snap_constraint(kind: &crate::model::ConstraintKind) -> Option<Vec<Instruction>> {
+    use crate::geometric_constraints::GeometricConstraintType;
+    use crate::model::{ConstraintEntity, ConstraintKind};
+
+    fn element_for_entity(entity: &ConstraintEntity) -> Option<SceneElement> {
+        match entity {
+            ConstraintEntity::Point(point) => Some(SceneElement::Point(point.clone())),
+            ConstraintEntity::Line(ConstraintLine::Line(index)) => Some(SceneElement::Line(*index)),
+            ConstraintEntity::Line(line @ ConstraintLine::FaceEdge { .. }) => {
+                Some(SceneElement::FaceEdge(line.clone()))
+            }
+            ConstraintEntity::Circle(index) => Some(SceneElement::Circle(*index)),
+            ConstraintEntity::Origin => None,
+        }
+    }
+
+    let (a, b, geometric_kind) = match kind {
+        ConstraintKind::Coincident { a, b } => (
+            element_for_entity(a)?,
+            element_for_entity(b)?,
+            GeometricConstraintType::Coincident,
+        ),
+        ConstraintKind::Midpoint { point, line } => (
+            SceneElement::Point(point.clone()),
+            element_for_entity(&ConstraintEntity::Line(line.clone()))?,
+            GeometricConstraintType::Midpoint,
+        ),
+        _ => return None,
+    };
+    Some(vec![
+        Instruction::SelectSceneElement { element: a, additive: false },
+        Instruction::SelectSceneElement { element: b, additive: true },
+        Instruction::AddGeometricConstraint(geometric_kind),
+    ])
+}
+
 /// Build a replayable `Instruction::Extrude` for the extrusion the interactive Extrude tool
 /// just created (the last entry in `doc.extrusions`). Used by the command log instead of
 /// `instruction_from_action`, since `Action::CommitExtrusion` carries no fields to read the

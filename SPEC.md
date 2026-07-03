@@ -276,7 +276,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     gizmo or type a distance (expressions/variables) to set the depth (positive or negative),
     with a live **semi-transparent** preview solid that updates as you type; Enter commits, Esc
     cancels; double-click / right-click → Edit re-opens an extrusion for changing faces or
-    length. While an extrusion is being edited its committed body is hidden, so only the
+    length. **Cut preview (#142):** when the extrusion is a cut (see the body-mode choice
+    below, including the #141 auto-cut on backward drag), the preview isn't an additive block —
+    it's the target body *with the cut already subtracted*, rendered semi-transparently in
+    place of the intact body, so the ghost looks like the finished cut. This needs the kernel
+    to build the subtraction; if it can't, the intact body and the additive-block preview are
+    kept. While an extrusion is being edited its committed body is hidden, so only the
     semi-transparent ghost preview is shown (the preview, not the old solid, reflects the
     in-progress edit). The gizmo handle floats a little above the solid's top face (rather than
     sitting on it), and typing a digit while the tool is active focuses the distance field and
@@ -309,7 +314,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     extrusion — **New body**, **Add to `<body>`**, and **Cut `<body>`** — to override the choice
     (editing can also split a merged/cut extrusion back out into its own body). The **Cut** option
     is only offered when the OCCT kernel is compiled in, since a non-kernel build can't perform
-    the subtraction (see §3.3). Deleting one extrusion of a multi-extrusion body only drops that
+    the subtraction (see §3.3). **Auto-cut on backward drag (#141):** when the sketch sits on a
+    face of a body, that body lies on the negative-normal side, so dragging the extrude gizmo
+    *backward* (negative distance) drives the profile into it — the mode auto-switches to **Cut**
+    of that body; pulling forward again reverts to **Add to**. This only flips the cut toggle
+    (an explicit **New body** choice is left alone on forward drags) and, like the manual Cut
+    option, only engages when the OCCT kernel is present. Deleting one extrusion of a multi-extrusion body only drops that
     extrusion's contribution — the body survives as long as it still has at least one added
     extrusion. Scriptable via `bearcad.extrude{ ..., body = "merge" | "cut" }` (`"merge"` joins,
     `"cut"` subtracts from, the face's body if there is one; omitted or any other value always
@@ -577,6 +587,28 @@ modeled on SolveSpace (https://solvespace.com).
 - **Selection:** Sketch points (line endpoints — including a rectangle's corners — and circle
   centres), lines (a rectangle's four edges are plain lines), and circles are selectable in the
   viewport. Point picks take precedence near vertices within the point pick tolerance.
+- **3D body sub-element hover (#144):** with the Select tool, hovering a 3D body highlights the
+  **vertex, edge, or face** under the cursor — in that priority order (a corner beats an edge on
+  it, which beats the face they lie on), so it is always clear what a pick would grab. Edges are
+  the solid mesh's feature edges (`solid_mesh_unique_edges`, the same crease/boundary edges the
+  wireframe draws, so this works for any body — extrusion-sourced, boolean-cut, or imported);
+  vertices are the mesh corners; a face is the maximal edge-connected group of coplanar triangles
+  (`solid_mesh_coplanar_faces`), so a whole box side or cylinder cap highlights as one face, with
+  the nearer face winning when two project onto the cursor. The Chamfer/Fillet tool likewise
+  hover-highlights the treatable analytic edge under the cursor before it is clicked.
+- **Selected-body highlight / aura (#145/#148):** selecting one or more bodies (or extrusions)
+  — e.g. in the Elements pane — draws a blue **aura** around them: a purely **2D
+  screen-space effect**. All selected bodies are rasterized into one projected footprint, and
+  the aura is that footprint's outline pushed a few pixels outward (the iso-contour of the
+  footprint's screen-space distance field, traced by marching squares, smoothed, and drawn as
+  a single solid-color mitered stroke). Consequences of the 2D design, all intentional:
+  - The aura is one continuous non-overlapping outline around the union silhouette — no line
+    ever crosses a selected body (e.g. behind a boss standing on a selected cube).
+  - Multiple selected bodies whose footprints overlap on screen share one outline, and bodies
+    **closer than twice the offset join** into a single merged aura.
+  - A **non-selected body occludes the aura** where it stands in front of the selected
+    silhouette being outlined (depth-compared per contour stretch); a body behind the
+    selection does not.
 - **Context pane:** While the constraint tool is active, the context pane lists geometric
   constraint types as buttons (text labels for now; icons later).
   - **Always all types:** every constraint type is **always listed**, in fixed order.
@@ -799,6 +831,14 @@ should be added to the shared action layer so they become available headlessly b
 ### 9.2 Export formats (required)
 `.3mf`, `.stl`, `.obj`, `.amf`, `.step`/`.stp`. STEP via OCCT; mesh formats via OCCT
 tessellation + writers (or dedicated libraries — license-audited per §1).
+- **Whole-document export unions intersecting bodies (#146):** a whole-document export fuses
+  the kernel-representable bodies into one real union before writing, so where two or more
+  bodies **intersect** the overlap merges into a single watertight surface instead of exporting
+  as interpenetrating shells with internal walls. Disjoint bodies are unaffected (they co-exist
+  in the fused result). Imported (STL) mesh bodies have no kernel solid, so they're appended as
+  their own triangles; if any non-imported body isn't kernel-representable, or the kernel is
+  absent, the export falls back to plain per-body concatenation. Single-body and explicit
+  per-body exports are never unioned.
 
 ### 9.3 Instruction scripts (for automation & testing)
 
@@ -1062,6 +1102,15 @@ first-person game, toggled via the command palette ("Toggle FPS Mode"), the View
 document is millimeters, so the player is person-scale: eye height
 1700&nbsp;mm, walking ~4.3&nbsp;m/s.
 
+- **Seamless entry (#135):** toggling FPS mode on never moves the view — the player's eye
+  starts at the orbit camera's exact position and look direction, so the frame before and
+  after the switch is identical (in perspective projection). Above standing eye height the
+  player enters **flying** (gravity would otherwise yank the view to the ground); below it
+  the player is auto-shrunk (see Scale, #120) so their standing eye height matches the
+  camera and the first walking tick doesn't pop the view up (floored at minimum scale — a
+  camera at/below the ground still pops up to the 17&nbsp;mm minimum standing height).
+  Leaving FPS mode likewise keeps the camera where the player last stood; the player
+  *scale* (but not position) carries over to the next FPS entry in the same session.
 - **Movement:** WASD walks/strafes on the ground plane (heading follows the view yaw, but
   walking never leaves the ground); the mouse looks (raw pointer motion; the OS cursor is
   locked and hidden). On macOS the cursor is locked but stays visible, pinned to the

@@ -76,21 +76,33 @@ pub struct FpsController {
 }
 
 impl FpsController {
-    /// Enter FPS mode from wherever the orbit camera is looking: keep the horizontal
-    /// position and look direction, but stand on the ground plane.
-    pub fn enter(cam: &crate::camera::Camera) -> Self {
+    /// Enter FPS mode from wherever the orbit camera is (#135): the player's eye starts at
+    /// the camera's exact position and look direction, so toggling FPS on doesn't move the
+    /// view at all. Above standing eye height the player enters **flying** (gravity would
+    /// otherwise yank the view to the ground); below it the player is shrunk (#120) so their
+    /// standing eye height matches the camera and walking doesn't pop the view up. `previous`
+    /// is the player state from the last time FPS mode was active this session — only its
+    /// scale carries over (position always comes from the camera).
+    pub fn enter(cam: &crate::camera::Camera, previous: Option<&FpsController>) -> Self {
         let look = (cam.target - cam.eye()).normalize_or_zero();
         let look = if look.length_squared() < 0.5 { Vec3::X } else { look };
         let mut eye = cam.eye();
-        eye.z = EYE_HEIGHT;
+        let mut scale = previous.map(|prev| prev.scale).unwrap_or(1.0);
+        if eye.z < EYE_HEIGHT * scale {
+            // MIN_SCALE floors the shrink: a camera at/below the ground still pops up to
+            // the minimum standing eye height rather than entering underground.
+            scale = (eye.z / EYE_HEIGHT).clamp(MIN_SCALE, MAX_SCALE);
+            eye.z = eye.z.max(EYE_HEIGHT * scale);
+        }
+        let flying = eye.z > EYE_HEIGHT * scale + 1e-3;
         FpsController {
             eye,
             yaw: look.y.atan2(look.x),
             pitch: look.z.clamp(-1.0, 1.0).asin().clamp(-PITCH_RANGE, PITCH_RANGE),
             vertical_speed: 0.0,
-            flying: false,
+            flying,
             space_tap_age: None,
-            scale: 1.0,
+            scale,
         }
     }
 
@@ -246,6 +258,65 @@ mod tests {
             space_tap_age: None,
             scale: 1.0,
         }
+    }
+
+    /// #135: entering FPS mode must not move the view — the player eye starts exactly at
+    /// the camera eye, flying when above standing height so gravity doesn't yank it down.
+    #[test]
+    fn enter_keeps_the_camera_eye_and_flies_when_above_standing_height() {
+        let mut cam = crate::camera::Camera::default();
+        cam.target = Vec3::new(100.0, 200.0, 3000.0);
+        let eye_before = cam.eye();
+        assert!(eye_before.z > EYE_HEIGHT, "test wants a camera above standing height");
+        let look_before = (cam.target - eye_before).normalize();
+
+        let p = FpsController::enter(&cam, None);
+        assert!((p.eye - eye_before).length() < 1e-2, "eye must not move: {:?}", p.eye);
+        assert!((p.look_dir() - look_before).length() < 1e-3, "look must not change");
+        assert!(p.flying, "above standing height must enter flying");
+
+        // A parked tick (no input) must hold the view in place, not fall or pop.
+        let mut q = p.clone();
+        q.tick(0.1, FpsInput::default());
+        assert!((q.eye - eye_before).length() < 1e-3, "idle tick must not move the eye");
+    }
+
+    /// #135/#120: a camera below standing eye height shrinks the player to fit (so the
+    /// first walking tick doesn't pop the view up to person height).
+    #[test]
+    fn enter_below_standing_height_shrinks_the_player_and_stands() {
+        let mut cam = crate::camera::Camera::default();
+        cam.target = Vec3::new(0.0, 0.0, 200.0);
+        cam.distance = 300.0;
+        let eye_before = cam.eye();
+        assert!(eye_before.z > 0.0 && eye_before.z < EYE_HEIGHT);
+
+        let p = FpsController::enter(&cam, None);
+        assert!((p.eye - eye_before).length() < 1e-2, "eye must not move");
+        assert!(p.on_ground(), "shrunk entry is standing at the camera height");
+        assert!((p.scale - eye_before.z / EYE_HEIGHT).abs() < 1e-4);
+
+        let mut q = p.clone();
+        q.tick(0.1, FpsInput::default());
+        assert!((q.eye - eye_before).length() < 1e-3, "idle tick must not move the eye");
+    }
+
+    /// #135: re-entry resumes the previous session's player scale, but the position always
+    /// comes from the camera.
+    #[test]
+    fn enter_resumes_previous_scale_but_not_position() {
+        let mut prev = grounded();
+        prev.set_scale(4.0);
+        prev.eye = Vec3::new(9999.0, 9999.0, 9999.0);
+
+        let mut cam = crate::camera::Camera::default();
+        cam.target = Vec3::new(0.0, 0.0, EYE_HEIGHT * 8.0);
+        let p = FpsController::enter(&cam, Some(&prev));
+        assert_eq!(p.scale, 4.0, "scale carries over");
+        assert!(
+            (p.eye - cam.eye()).length() < 1e-2,
+            "position comes from the camera, not the previous session"
+        );
     }
 
     #[test]

@@ -1151,6 +1151,10 @@ pub struct AppState {
     /// First-person mode player state (#91); `Some` while FPS mode is active.
     /// Transient, never persisted.
     pub fps: Option<crate::fps::FpsController>,
+    /// The last active `fps` player state, kept after leaving FPS mode so the next entry
+    /// resumes its player scale (#120/#135; position always restarts from the camera).
+    /// Transient, never persisted.
+    pub fps_memory: Option<crate::fps::FpsController>,
     /// Inference snap guide for #41: the line whose midpoint the cursor most recently touched
     /// while sketching. While set, pulling away from that midpoint snaps the point onto the
     /// infinite line normal to it, through its midpoint. Cleared on sketch exit.
@@ -1209,6 +1213,7 @@ impl Default for AppState {
             extension_anchors: Vec::new(),
             undo_group_depth: 0,
             fps: None,
+            fps_memory: None,
             normal_inference_anchor: None,
             construction_plane_edit_undo: Vec::new(),
             hierarchy_view_mode: crate::hierarchy::HierarchyViewMode::default(),
@@ -2286,10 +2291,12 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::ToggleFpsMode => {
-                if self.fps.take().is_some() {
+                if let Some(exited) = self.fps.take() {
+                    self.fps_memory = Some(exited);
                     self.status = "Left FPS mode".to_string();
                 } else {
-                    let player = crate::fps::FpsController::enter(&self.cam);
+                    let player =
+                        crate::fps::FpsController::enter(&self.cam, self.fps_memory.as_ref());
                     player.apply_to_camera(&mut self.cam);
                     self.fps = Some(player);
                     self.status = "FPS mode — WASD walk, mouse look, Space jump \
@@ -3966,6 +3973,19 @@ impl AppState {
                             crate::model::effective_length_unit(&self.doc, ce.sketch),
                         );
                     }
+                    // #141: the sketch sits on a face of `merge_candidate`, whose body lies on
+                    // the negative-normal side. Extruding backward (negative distance) drives
+                    // the profile into that body, so auto-switch to a cut; pulling forward
+                    // again reverts to adding. A cut needs the kernel (see the pane's `occt`
+                    // gate), so a non-`occt` build stays additive. Leaves an explicit `NewBody`
+                    // choice untouched on forward drags — only the cut toggle is automatic.
+                    if let Some(bi) = ce.merge_candidate {
+                        if distance < 0.0 && cfg!(feature = "occt") {
+                            ce.body_mode = ExtrudeBodyMode::Cut(bi);
+                        } else if ce.body_mode == ExtrudeBodyMode::Cut(bi) {
+                            ce.body_mode = ExtrudeBodyMode::MergeInto(bi);
+                        }
+                    }
                 }
                 ActionResult::Ok
             }
@@ -5553,6 +5573,62 @@ mod tests {
         assert!(lua.iter().any(|l| l.starts_with("bearcad.circle")), "{lua:?}");
     }
 
+    /// #136: a line endpoint snapping onto an existing vertex while drawing (closing a
+    /// polyline loop) adds a `Coincident` constraint as a side effect of `CommitLine` — that
+    /// must show up in the replay log too, not just the raw `bearcad.line{}` call, or the
+    /// exported script silently drops the loop closure on replay.
+    #[test]
+    fn snap_closed_line_constraint_is_logged_for_replay() {
+        let mut state = recording_state();
+        let sketch = begin_default_sketch(&mut state);
+        state
+            .doc
+            .lines
+            .push(crate::model::Line::from_local_endpoints(sketch, 10.0, 0.0, 20.0, 0.0));
+        state.doc.shape_order.push(crate::model::ShapeKind::Line);
+        state.tool = Tool::Line;
+        state.creating_line = Some(CreatingLine {
+            origin: Vec3::ZERO,
+            text: "10".to_string(),
+            last_mouse: Vec3::new(10.0, 0.0, 0.0),
+            user_edited: true,
+            pending_focus: false,
+            construction: false,
+            curve_mode: false,
+            tangent_constraint: true,
+            chained_from: None,
+            chained_from_bezier: None,
+        });
+        state.line_end_snap = Some(crate::snapping::SnapTarget::Vertex(
+            ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::Start },
+        ));
+        state.apply(Action::CommitLine);
+        assert!(
+            state
+                .doc
+                .constraints
+                .iter()
+                .any(|c| !c.deleted && matches!(c.kind, crate::model::ConstraintKind::Coincident { .. })),
+            "commit should have added the snap coincident constraint"
+        );
+
+        let lua: Vec<String> = state
+            .command_log
+            .as_ref()
+            .unwrap()
+            .borrow()
+            .session_lua_script("ts")
+            .lines()
+            .filter(|l| l.starts_with("bearcad."))
+            .map(|l| l.to_string())
+            .collect();
+        assert!(lua.iter().any(|l| l.starts_with("bearcad.select")), "{lua:?}");
+        assert!(
+            lua.iter().any(|l| l.contains("add_geometric_constraint(\"coincident\")")),
+            "{lua:?}"
+        );
+    }
+
     #[test]
     fn create_parameter_from_line_length_action() {
         let mut state = AppState::default();
@@ -6255,6 +6331,46 @@ mod tests {
         assert!(matches!(ce.faces[0], ExtrudeFace::Circle(_)));
     }
 
+    /// #141: dragging a body-face extrusion backward (negative distance, into the body it sits
+    /// on) auto-switches it to a cut; pulling forward again reverts to adding.
+    #[test]
+    #[cfg(feature = "occt")]
+    fn extruding_backward_into_body_auto_switches_to_cut() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        let rect_lines =
+            crate::construction::add_line_rectangle(&mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
+        let profile = ExtrudeFace::Polygon(rect_lines.to_vec());
+        state.apply(Action::CreateExtrusion {
+            sketch,
+            faces: vec![profile.clone()],
+            distance: 5.0,
+            body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
+        });
+        state.apply(Action::ExtrudeBodyFace {
+            face_id: FaceId::ExtrudeCap { extrusion: 0, profile, top: true },
+        });
+        let bi = state.creating_extrusion.as_ref().unwrap().merge_candidate.unwrap();
+        // Default forward drag adds to the body.
+        assert_eq!(
+            state.creating_extrusion.as_ref().unwrap().body_mode,
+            ExtrudeBodyMode::MergeInto(bi)
+        );
+        // Backward drag → cut.
+        state.apply(Action::SetExtrudeDistance { distance: -3.0 });
+        assert_eq!(
+            state.creating_extrusion.as_ref().unwrap().body_mode,
+            ExtrudeBodyMode::Cut(bi)
+        );
+        // Forward again → back to adding.
+        state.apply(Action::SetExtrudeDistance { distance: 3.0 });
+        assert_eq!(
+            state.creating_extrusion.as_ref().unwrap().body_mode,
+            ExtrudeBodyMode::MergeInto(bi)
+        );
+    }
+
     /// #122: only a real body face (cap/side) can be extruded this way — anything else is a
     /// clear error, not a silent no-op.
     #[test]
@@ -6692,6 +6808,37 @@ mod tests {
         assert_eq!(state.doc.constraints.len(), 1);
         assert!(state.doc.circles[0].diameter_locked);
         assert!(state.creating_circle.is_none());
+    }
+
+    /// #138: typing `name=value` into a dimension text input (here a circle's diameter) creates
+    /// the variable and drives the dimension by it. `dia=30` makes a parameter `dia`=30 and a
+    /// diameter constraint whose expression is `dia`.
+    #[test]
+    fn commit_circle_with_inline_variable_creates_parameter() {
+        let mut state = AppState::default();
+        begin_default_sketch(&mut state);
+        state.creating_circle = Some(CreatingCircle {
+            origin: Vec3::ZERO,
+            text: "dia=30".to_string(),
+            last_mouse: Vec3::new(10.0, 0.0, 0.0),
+            user_edited: true,
+            pending_focus: false,
+            construction: false,
+        });
+        state.apply(Action::CommitCircle);
+        assert_eq!(state.doc.circles.len(), 1);
+        assert!((state.doc.circles[0].diameter() - 30.0).abs() < 1e-4);
+        let param = state
+            .doc
+            .parameters
+            .iter()
+            .find(|p| !p.deleted && p.name == "dia")
+            .expect("variable dia created");
+        assert_eq!(param.expression, "30");
+        assert_eq!(
+            state.doc.constraints.iter().find(|c| !c.deleted).unwrap().expression,
+            "dia"
+        );
     }
 
     #[test]

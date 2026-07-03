@@ -303,7 +303,7 @@ impl SketchBridge {
             }
             ConstraintKind::Parallel { line_a, line_b } => {
                 let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
-                self.hold_line(doc, reference.clone())?;
+                self.hold_line(doc, reference.clone(), GAUGE_HOLD_WEIGHT)?;
                 let a = self.line_vars(doc, reference)?;
                 let b = self.line_vars(doc, movable)?;
                 self.system.add_equation(Equation::Parallel {
@@ -320,7 +320,7 @@ impl SketchBridge {
             }
             ConstraintKind::Perpendicular { line_a, line_b } => {
                 let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
-                self.hold_line(doc, reference.clone())?;
+                self.hold_line(doc, reference.clone(), GAUGE_HOLD_WEIGHT)?;
                 let a = self.line_vars(doc, reference)?;
                 let b = self.line_vars(doc, movable)?;
                 self.system.add_equation(Equation::Perpendicular {
@@ -337,7 +337,7 @@ impl SketchBridge {
             }
             ConstraintKind::Equal { line_a, line_b } => {
                 let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
-                self.hold_line(doc, reference.clone())?;
+                self.hold_line(doc, reference.clone(), GAUGE_HOLD_WEIGHT)?;
                 let a = self.line_vars(doc, reference)?;
                 let b = self.line_vars(doc, movable)?;
                 self.system.add_equation(Equation::EqualLength {
@@ -354,7 +354,7 @@ impl SketchBridge {
             }
             ConstraintKind::Coincident { a, b } => self.add_coincident(doc, a, b)?,
             ConstraintKind::Midpoint { point, line } => {
-                self.hold_line(doc, line.clone())?;
+                self.hold_line(doc, line.clone(), REFERENCE_HOLD_WEIGHT)?;
                 let (pu, pv) = self.point_vars(doc, point)?;
                 let ((x0, y0), (x1, y1)) = self.line_vars(doc, line)?;
                 self.system.add_equation(Equation::MidpointU {
@@ -382,7 +382,7 @@ impl SketchBridge {
                     return Ok(());
                 }
                 let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
-                self.hold_line(doc, reference.clone())?;
+                self.hold_line(doc, reference.clone(), GAUGE_HOLD_WEIGHT)?;
                 let a = self.line_vars(doc, reference)?;
                 let b = self.line_vars(doc, movable)?;
                 self.system.add_equation(Equation::Angle {
@@ -455,7 +455,11 @@ impl SketchBridge {
                 side,
             } => {
                 let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
-                self.hold_line(doc, reference.clone())?;
+                // A line-line *distance* is a dimensional constraint between two typically
+                // separate parallel lines (not shared polygon corners), so its reference stays
+                // firm like a point-line distance — unlike the direction/equality relational
+                // constraints below, which share corners and must hold weakly (#137).
+                self.hold_line(doc, reference.clone(), REFERENCE_HOLD_WEIGHT)?;
                 let a = self.line_vars(doc, reference)?;
                 let b = self.line_vars(doc, movable)?;
                 self.system.add_equation(Equation::LineLineDistance {
@@ -495,7 +499,7 @@ impl SketchBridge {
                 line,
                 side,
             } => {
-                self.hold_line(doc, line.clone())?;
+                self.hold_line(doc, line.clone(), REFERENCE_HOLD_WEIGHT)?;
                 let (px, py) = self.point_vars(doc, point)?;
                 let ((x0, y0), (x1, y1)) = self.line_vars(doc, line)?;
                 self.system.add_equation(Equation::PointLineDistance {
@@ -514,17 +518,33 @@ impl SketchBridge {
         Ok(())
     }
 
-    /// Hold a relational constraint's reference line during a full solve (no-op during a drag),
-    /// so the dependent geometry moves to it rather than the reference moving. This must stay
-    /// strong (a relational constraint like coincident/parallel carries `DEFAULT_WEIGHT`, and
-    /// the reference must win so it stays put).
-    fn hold_line(&mut self, doc: &Document, line: ConstraintLine) -> Result<(), String> {
+    /// Hold a constraint's reference line during a full solve (no-op during a drag), so the
+    /// dependent geometry moves to it rather than the reference moving.
+    ///
+    /// `weight` selects how firmly. A metric/dimensional constraint whose reference is a
+    /// genuinely separate line the dependent geometry snaps onto (point-line distance,
+    /// midpoint, point-on-line coincident, line-line *distance*) passes
+    /// `REFERENCE_HOLD_WEIGHT`: the reference's endpoints aren't shared with another held line,
+    /// so a firm pin is safe and keeps "the dependent side moves, the reference stays"
+    /// predictable.
+    ///
+    /// A line-vs-line *direction/equality* relational constraint
+    /// (`Parallel`/`Perpendicular`/`Equal`/`Angle`) passes `GAUGE_HOLD_WEIGHT` instead (#137).
+    /// A firm per-constraint
+    /// pin over-constrains any sketch where two *different* relational constraints hold two
+    /// *different* lines that share a corner (e.g. `Perpendicular` holding one side of a quad
+    /// while `Equal` holds an adjacent one): each pin clamps its own line's copy of the shared
+    /// corner to a different place, and both beat the weak (`DEFAULT_WEIGHT`) `Coincident`
+    /// equation linking the copies, so the corner tears open at a genuine converged optimum of
+    /// an inconsistent weighted system. A weak gauge bias only breaks ties among
+    /// otherwise-free degrees of freedom, so the real `Coincident` constraints win and keep
+    /// every corner closed, while the reference still carries enough bias to stay put.
+    fn hold_line(&mut self, doc: &Document, line: ConstraintLine, weight: f64) -> Result<(), String> {
         if !self.hold_references {
             return Ok(());
         }
-        let ((u0, v0), (u1, v1)) = self.line_vars(doc, line)?;
-        for var in [u0, v0, u1, v1] {
-            self.hold_var(var, REFERENCE_HOLD_WEIGHT);
+        for endpoint in line_endpoint_points(doc, line.clone()) {
+            let _ = self.anchor_point(doc, endpoint, weight);
         }
         Ok(())
     }
@@ -579,7 +599,7 @@ impl SketchBridge {
             }
             (ConstraintEntity::Point(point), ConstraintEntity::Line(line))
             | (ConstraintEntity::Line(line), ConstraintEntity::Point(point)) => {
-                self.hold_line(doc, line.clone())?;
+                self.hold_line(doc, line.clone(), REFERENCE_HOLD_WEIGHT)?;
                 let (px, py) = self.point_vars(doc, point)?;
                 let ((x0, y0), (x1, y1)) = self.line_vars(doc, line)?;
                 self.system.add_equation(Equation::PointLineDistance {
@@ -908,6 +928,59 @@ mod tests {
 
     fn solve_bridge(doc: &mut Document, _sketch: SketchId) {
         solve_document_sketches(doc, &[]).expect("solve");
+    }
+
+    /// #137: chaining relational constraints across a closed quad (two `Equal` pairs plus a
+    /// `Perpendicular` between two lines that each act as a *different* constraint's held
+    /// reference) must not tear the shared corners open — every corner must stay closed after
+    /// each incremental solve, matching how the real UI solves after every constraint add.
+    #[test]
+    fn chained_relational_constraints_keep_quad_corners_closed() {
+        use crate::construction::add_line_polygon;
+        let (mut doc, sketch) = sketch_doc();
+        let idx = add_line_polygon(
+            &mut doc,
+            sketch,
+            &[
+                (62.863728, 70.923386),
+                (40.238636, 93.450745),
+                (67.94635, 115.119255),
+                (102.57943, 102.74624),
+            ],
+        );
+        let mut push = |kind: ConstraintKind| {
+            doc.constraints.push(Constraint {
+                sketch,
+                kind,
+                expression: String::new(),
+                dim_offset: None,
+                name: None,
+                deleted: false,
+            });
+            doc.shape_order.push(crate::model::ShapeKind::Constraint);
+            solve_document_sketches(&mut doc, &[]).unwrap();
+        };
+        push(ConstraintKind::Equal { line_a: ConstraintLine::Line(idx[3]), line_b: ConstraintLine::Line(idx[1]) });
+        push(ConstraintKind::Equal { line_a: ConstraintLine::Line(idx[2]), line_b: ConstraintLine::Line(idx[0]) });
+        push(ConstraintKind::Perpendicular { line_a: ConstraintLine::Line(idx[1]), line_b: ConstraintLine::Line(idx[2]) });
+
+        let mut bridge = SketchBridge::from_document(&doc, sketch, true).unwrap();
+        let _ = bridge.solve();
+
+        for i in 0..4 {
+            let a = &doc.lines[idx[i]];
+            let b = &doc.lines[idx[(i + 1) % 4]];
+            let gap = ((a.x1 - b.x0).powi(2) + (a.y1 - b.y0).powi(2)).sqrt();
+            assert!(gap < 0.1, "corner {i} opened up by {gap} units");
+        }
+        let a = &doc.lines[idx[1]];
+        let b = &doc.lines[idx[2]];
+        let adu = a.x1 - a.x0;
+        let adv = a.y1 - a.y0;
+        let bdu = b.x1 - b.x0;
+        let bdv = b.y1 - b.y0;
+        let cos = (adu * bdu + adv * bdv) / (adu.hypot(adv) * bdu.hypot(bdv));
+        assert!(cos.abs() < 0.05, "lines 1 and 2 should end up perpendicular, cos={cos}");
     }
 
     /// Dragging the movable line of a parallel pair must not drag the reference line.

@@ -805,6 +805,56 @@ pub fn pick_sketch_face(
     best.map(|(face, _, _)| face)
 }
 
+/// Nearest planar body face (#144) under the cursor across all 3D bodies, for 3D hover/selection.
+/// Mirrors [`pick_sketch_face`]'s screen-space containment test plus eye-depth ordering, but over
+/// a solid mesh's coplanar-triangle groups (`solid_mesh_coplanar_faces`) rather than sketch
+/// profiles — so any face of any body, including boolean-cut and imported ones, can be picked.
+pub fn pick_body_face(
+    screen: eframe::egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<eframe::egui::Pos2>,
+    doc: &Document,
+    eye: Vec3,
+) -> Option<crate::construction::PickTargetKind> {
+    let mut best: Option<(crate::construction::PickTargetKind, f32)> = None;
+    for (bi, body) in doc.bodies.iter().enumerate() {
+        if body.deleted {
+            continue;
+        }
+        let Some(solid) = crate::extrude::body_solid_mesh(doc, bi) else {
+            continue;
+        };
+        for triangles in crate::gpu_viewport::solid_mesh_coplanar_faces(&solid) {
+            let inside = triangles.iter().any(|tri| {
+                matches!(
+                    (project(tri[0]), project(tri[1]), project(tri[2])),
+                    (Some(a), Some(b), Some(c)) if point_in_tri(screen, a, b, c)
+                )
+            });
+            if !inside {
+                continue;
+            }
+            let count = (triangles.len() * 3).max(1) as f32;
+            let centroid =
+                triangles.iter().flat_map(|t| t.iter()).copied().sum::<Vec3>() / count;
+            let depth = (centroid - eye).length();
+            if best.as_ref().is_none_or(|(_, d)| depth < *d) {
+                let normal = (triangles[0][1] - triangles[0][0])
+                    .cross(triangles[0][2] - triangles[0][0])
+                    .normalize_or_zero();
+                best = Some((
+                    crate::construction::PickTargetKind::BodyFace {
+                        body: bi,
+                        triangles,
+                        normal,
+                    },
+                    depth,
+                ));
+            }
+        }
+    }
+    best.map(|(kind, _)| kind)
+}
+
 /// Screen-space pick distance to an extrusion cap polygon (0 inside).
 fn cap_face_pick_distance(
     screen: eframe::egui::Pos2,
@@ -1008,6 +1058,83 @@ mod tests {
             edge_treatments: Vec::new(),
         });
         doc
+    }
+
+    fn doc_with_imported_box() -> Document {
+        // A unit-scaled 10x10x10 box as an imported-mesh body (#144), so `pick_body_face` has a
+        // real body with coplanar faces to resolve without needing the extrusion kernel.
+        let c = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::new(10.0, 10.0, 0.0),
+            Vec3::new(0.0, 10.0, 0.0),
+            Vec3::new(0.0, 0.0, 10.0),
+            Vec3::new(10.0, 0.0, 10.0),
+            Vec3::new(10.0, 10.0, 10.0),
+            Vec3::new(0.0, 10.0, 10.0),
+        ];
+        let quad = |a: usize, b: usize, d: usize, e: usize| {
+            vec![[c[a], c[b], c[d]], [c[a], c[d], c[e]]]
+        };
+        let mut triangles = Vec::new();
+        for face in [
+            quad(0, 1, 2, 3),
+            quad(4, 5, 6, 7),
+            quad(0, 1, 5, 4),
+            quad(1, 2, 6, 5),
+            quad(2, 3, 7, 6),
+            quad(3, 0, 4, 7),
+        ] {
+            triangles.extend(face);
+        }
+        let mut doc = Document::default();
+        doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles,
+            source_name: "box".to_string(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: None,
+            deleted: false,
+        });
+        doc
+    }
+
+    #[test]
+    fn pick_body_face_prefers_the_camera_facing_face() {
+        // Top-down projection: the top (z=10) and bottom (z=0) faces both project onto the same
+        // square, so the cursor at the center is inside both. The visible top face must win.
+        let doc = doc_with_imported_box();
+        let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.y));
+        let kind = pick_body_face(
+            eframe::egui::pos2(5.0, 5.0),
+            &project,
+            &doc,
+            Vec3::new(5.0, 5.0, 100.0),
+        )
+        .expect("cursor over the box should pick a face");
+        match kind {
+            crate::construction::PickTargetKind::BodyFace { triangles, .. } => {
+                assert!(
+                    triangles.iter().flatten().all(|p| (p.z - 10.0).abs() < 1e-4),
+                    "should pick the near top face (z=10), got {triangles:?}"
+                );
+            }
+            other => panic!("expected a body face, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pick_body_face_misses_outside_the_body() {
+        let doc = doc_with_imported_box();
+        let project = |p: Vec3| Some(eframe::egui::Pos2::new(p.x, p.y));
+        assert!(pick_body_face(
+            eframe::egui::pos2(99.0, 99.0),
+            &project,
+            &doc,
+            Vec3::new(5.0, 5.0, 100.0),
+        )
+        .is_none());
     }
 
     #[test]

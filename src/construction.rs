@@ -445,9 +445,11 @@ pub fn sketch_from_pick_target(doc: &Document, kind: PickTargetKind) -> Option<S
             }
         }),
         PickTargetKind::Point(point) => point_sketch(doc, point),
-        PickTargetKind::BodyEdge { .. } | PickTargetKind::GlobalAxis(_) | PickTargetKind::Ground(_) => {
-            None
-        }
+        PickTargetKind::BodyEdge { .. }
+        | PickTargetKind::BodyFace { .. }
+        | PickTargetKind::BodyVertex { .. }
+        | PickTargetKind::GlobalAxis(_)
+        | PickTargetKind::Ground(_) => None,
     }
 }
 
@@ -873,6 +875,20 @@ pub enum PickTargetKind {
         a: Vec3,
         b: Vec3,
     },
+    /// A planar face of a 3D body's solid mesh (#144): the maximal edge-connected group of
+    /// coplanar triangles under the cursor (see `solid_mesh_coplanar_faces`), in world space.
+    /// Lets any face of any body — extrusion-sourced, boolean-cut, or imported — be hover-
+    /// highlighted and referenced in 3D. `normal` orients the highlight fill toward the camera.
+    BodyFace {
+        body: usize,
+        triangles: Vec<[Vec3; 3]>,
+        normal: Vec3,
+    },
+    /// A vertex (corner) of a 3D body's solid mesh (#144), for 3D hover/selection.
+    BodyVertex {
+        body: usize,
+        position: Vec3,
+    },
     GlobalAxis(GlobalAxis),
     ConstructionPlane(usize),
     Ground(Vec3),
@@ -1053,6 +1069,29 @@ pub fn draw_pick_highlight(
         }
         PickTargetKind::BodyEdge { a, b, .. } => {
             draw_segment_highlight(painter, project, a, b, color);
+        }
+        PickTargetKind::BodyFace { triangles, .. } => {
+            let fill = color.gamma_multiply(FACE_HOVER_FILL_MULTIPLIER);
+            for tri in &triangles {
+                if let (Some(a), Some(b), Some(c)) =
+                    (project(tri[0]), project(tri[1]), project(tri[2]))
+                {
+                    painter.add(egui::Shape::convex_polygon(
+                        vec![a, b, c],
+                        fill,
+                        egui::Stroke::NONE,
+                    ));
+                }
+            }
+            for (a, b) in coplanar_face_boundary(&triangles) {
+                draw_segment_highlight(painter, project, a, b, color);
+            }
+        }
+        PickTargetKind::BodyVertex { position, .. } => {
+            if let Some(sp) = project(position) {
+                painter.circle_filled(sp, 5.0, color);
+                painter.circle_stroke(sp, 5.0, egui::Stroke::new(2.0, color));
+            }
         }
         PickTargetKind::GlobalAxis(axis) => {
             let (a, b) = global_axis_segment(axis);
@@ -1558,6 +1597,65 @@ fn nearest_body_edge(
     best
 }
 
+/// Nearest solid-mesh vertex (#144) of any 3D body within the point pick radius, for 3D
+/// hover/selection — so any corner of any body (extrusion-sourced or imported) can be picked.
+pub fn nearest_body_vertex(
+    screen: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &Document,
+) -> Option<(PickTargetKind, f32)> {
+    let mut best: Option<(PickTargetKind, f32)> = None;
+    for (bi, body) in doc.bodies.iter().enumerate() {
+        if body.deleted {
+            continue;
+        }
+        let Some(solid) = crate::extrude::body_solid_mesh(doc, bi) else {
+            continue;
+        };
+        for tri in &solid.triangles {
+            for &p in tri {
+                let Some(sp) = project(p) else {
+                    continue;
+                };
+                let dist = (screen - sp).length();
+                if dist <= POINT_PICK_RADIUS_PX && best.as_ref().is_none_or(|(_, d)| dist < *d) {
+                    best = Some((PickTargetKind::BodyVertex { body: bi, position: p }, dist));
+                }
+            }
+        }
+    }
+    best
+}
+
+/// Boundary edges of a coplanar face group (#144): the edges of the group's triangles that belong
+/// to exactly one triangle. Interior edges (shared by two triangles, e.g. a quad's diagonal) are
+/// dropped, leaving the outline of the whole face for the hover highlight.
+pub fn coplanar_face_boundary(triangles: &[[Vec3; 3]]) -> Vec<(Vec3, Vec3)> {
+    type Key = ((i64, i64, i64), (i64, i64, i64));
+    let quant = |v: Vec3| {
+        (
+            (v.x * 1000.0).round() as i64,
+            (v.y * 1000.0).round() as i64,
+            (v.z * 1000.0).round() as i64,
+        )
+    };
+    let mut counts: std::collections::HashMap<Key, (Vec3, Vec3, u32)> =
+        std::collections::HashMap::new();
+    for tri in triangles {
+        for &(i, j) in &[(0usize, 1usize), (1, 2), (2, 0)] {
+            let (a, b) = (tri[i], tri[j]);
+            let (ka, kb) = (quant(a), quant(b));
+            let key = if ka <= kb { (ka, kb) } else { (kb, ka) };
+            counts.entry(key).or_insert((a, b, 0)).2 += 1;
+        }
+    }
+    counts
+        .into_values()
+        .filter(|(_, _, n)| *n == 1)
+        .map(|(a, b, _)| (a, b))
+        .collect()
+}
+
 /// Nearest currently-treatable analytic extrusion edge (#77): the chamfer/fillet tool's own
 /// picking path when no sketch is open, used instead of the generic [`nearest_body_edge`]
 /// (mesh-feature-edge) picking above since it needs the structured `ExtrusionEdgeRef`, not just
@@ -1959,6 +2057,61 @@ mod tests {
 
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
         assert!(nearest_treatable_edge(Pos2::new(5.0, 0.0), &project, &state.doc).is_none());
+    }
+
+    #[test]
+    fn coplanar_face_boundary_drops_the_shared_diagonal() {
+        // A split-quad face's two triangles share their diagonal; the boundary is the 4
+        // perimeter edges only (the interior diagonal, shared by both triangles, is dropped).
+        let triangles = [
+            [
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(1.0, 1.0, 0.0),
+            ],
+            [
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 1.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+            ],
+        ];
+        assert_eq!(coplanar_face_boundary(&triangles).len(), 4);
+    }
+
+    fn doc_with_imported_triangle_body() -> Document {
+        let mut doc = Document::default();
+        doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles: vec![[
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(10.0, 0.0, 0.0),
+                Vec3::new(0.0, 10.0, 0.0),
+            ]],
+            source_name: "tri".to_string(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: None,
+            deleted: false,
+        });
+        doc
+    }
+
+    #[test]
+    fn nearest_body_vertex_picks_a_mesh_corner() {
+        let doc = doc_with_imported_triangle_body();
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let (kind, _) = nearest_body_vertex(Pos2::new(10.0, 1.0), &project, &doc).unwrap();
+        assert!(matches!(
+            kind,
+            PickTargetKind::BodyVertex { body: 0, position } if (position - Vec3::new(10.0, 0.0, 0.0)).length() < 1e-4
+        ));
+    }
+
+    #[test]
+    fn nearest_body_vertex_misses_when_cursor_far_from_any_corner() {
+        let doc = doc_with_imported_triangle_body();
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        assert!(nearest_body_vertex(Pos2::new(50.0, 50.0), &project, &doc).is_none());
     }
 
     #[test]

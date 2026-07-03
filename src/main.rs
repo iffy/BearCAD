@@ -394,6 +394,11 @@ struct App {
     /// Whether we've asked the OS to lock+hide the cursor for FPS mode (#91), so
     /// enter/exit sends the viewport commands exactly once per change.
     fps_cursor_grabbed: bool,
+    /// Frames left to swallow mouse-look motion after entering FPS mode (#135): locking and
+    /// pinning the cursor to the crosshair can report the warp (from wherever the OS cursor
+    /// was, to the viewport center) as one huge pointer-motion delta, which would spin the
+    /// view on entry. Entry must not move the view, so the first frames' motion is dropped.
+    fps_look_warmup: u8,
     native_menu: NativeMenu,
     dim_label_drag: Option<DimLabelDrag>,
     angle_gizmo_drag: Option<AngleGizmoDrag>,
@@ -475,6 +480,7 @@ impl App {
             show_commands,
             last_viewport: None,
             fps_cursor_grabbed: false,
+            fps_look_warmup: 0,
             native_menu,
             dim_label_drag: None,
             angle_gizmo_drag: None,
@@ -713,6 +719,13 @@ impl App {
     fn tick_fps_mode(&mut self, ctx: &egui::Context, dt: f32) {
         let active = self.state.fps.is_some();
         if active != self.fps_cursor_grabbed {
+            if active {
+                // Entering: the cursor lock/pin below can surface the warp to the viewport
+                // center as one huge motion delta (possibly split across a few frames by
+                // pointer smoothing) — drop the first frames of mouse look so entry doesn't
+                // spin the view (#135; see `fps_look_warmup`).
+                self.fps_look_warmup = 10;
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(if active {
                 egui::viewport::CursorGrab::Locked
             } else {
@@ -796,7 +809,9 @@ impl App {
 
         // Mouse look from raw pointer motion (the cursor itself is locked at center,
         // so clicks interact with whatever the crosshair points at).
-        if let Some(motion) = ctx.input(|i| i.pointer.motion()) {
+        if self.fps_look_warmup > 0 {
+            self.fps_look_warmup -= 1;
+        } else if let Some(motion) = ctx.input(|i| i.pointer.motion()) {
             if let Some(player) = self.state.fps.as_mut() {
                 player.look_by_pixels(motion.x, motion.y);
             }
@@ -2464,10 +2479,20 @@ fn resolve_viewport_hover_highlight(
             if !editing_committed_dim && !over_committed_dim_label && !dim_label_drag =>
         {
             let gp = cam.ground_point(pp, viewport, vp);
-            resolve_pick_target(pp, project, gp, doc).and_then(|t| {
-                scene_element_from_pick(&t.kind)
-                    .map(|_| gpu_viewport::ViewportHoverHighlight::PickTarget(t.kind))
-            })
+            // 3D body sub-elements (#144): a vertex, edge, or face of any body highlights under
+            // the cursor, in that priority order (a corner beats an edge beats the face it's on).
+            if let Some((kind, _)) = construction::nearest_body_vertex(pp, project, doc) {
+                return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(kind));
+            }
+            if let Some(t) = resolve_pick_target(pp, project, gp, doc) {
+                if scene_element_from_pick(&t.kind).is_some()
+                    || matches!(t.kind, construction::PickTargetKind::BodyEdge { .. })
+                {
+                    return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(t.kind));
+                }
+            }
+            crate::face::pick_body_face(pp, project, doc, cam.eye())
+                .map(gpu_viewport::ViewportHoverHighlight::PickTarget)
         }
         _ => None,
     }
@@ -2648,6 +2673,14 @@ fn build_viewport_scene_input<'a>(
             )
         });
 
+    // #142: a cut extrusion previews the finished cut result over the target body, not an
+    // additive block. Only the extrude tool sets a `Cut` body mode (the edge-treatment path
+    // never does), so this reads straight off the in-progress extrusion.
+    let preview_cut_body = creating_extrusion.and_then(|ce| match ce.body_mode {
+        crate::actions::ExtrudeBodyMode::Cut(bi) => Some(bi),
+        _ => None,
+    });
+
     gpu_viewport::ViewportSceneInput {
         doc,
         cam,
@@ -2674,6 +2707,7 @@ fn build_viewport_scene_input<'a>(
         preview_circle,
         preview_extrusion,
         editing_extrusion,
+        preview_cut_body,
         plane_preview,
         active_sketch_face,
         dimension_labels,
@@ -5794,6 +5828,29 @@ impl App {
                         color: col::PREVIEW,
                         hovered,
                     });
+                }
+            }
+        }
+        // Chamfer/fillet tool (#144): before an edge is picked, highlight the treatable edge
+        // under the cursor so it's clear which one clicking will chamfer/fillet. Only in the 3D
+        // case (no sketch open) and while no treatment is in progress (else the gizmo shows).
+        if matches!(self.state.tool, Tool::Chamfer | Tool::Fillet)
+            && self.state.sketch_session.is_none()
+            && self.state.creating_edge_treatment.is_none()
+            && !suppress_hover_highlight
+        {
+            if let Some(pp) = pointer_screen {
+                if let Some((extrusion, _, a, b, _)) =
+                    construction::nearest_treatable_edge(pp, &project, doc)
+                {
+                    let body = doc
+                        .bodies
+                        .iter()
+                        .position(|body| body.source.extrusion_indices().contains(&extrusion))
+                        .unwrap_or(extrusion);
+                    hover_highlight = Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
+                        construction::PickTargetKind::BodyEdge { body, a, b },
+                    ));
                 }
             }
         }
