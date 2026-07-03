@@ -139,6 +139,26 @@ pub struct Line {
     /// pane (see [`crate::hierarchy`], #76). `None` for an ordinary line.
     #[serde(default)]
     pub chamfer_fillet_parent: Option<usize>,
+    /// Set when this line is an **associative projection** of external 3D geometry into its
+    /// sketch (#140): each geometry recompute re-resolves the source and rewrites the
+    /// endpoints (see `crate::projection`). Projected lines render dashed in their own color
+    /// (distinct from construction), are fixed (not draggable), and otherwise behave like
+    /// construction geometry.
+    #[serde(default)]
+    pub projection: Option<ProjectionSource>,
+}
+
+/// Source geometry an associative projection tracks (#140). Body mesh edges are identified
+/// by their quantized endpoints (the same geometry-keyed identity 3D selection uses, #156):
+/// there is no stable topological name for mesh edges, so if a rebuild moves the source the
+/// projection keeps its last resolved shape (a static fallback) rather than dangling.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ProjectionSource {
+    BodyEdge {
+        body: usize,
+        a: [i32; 3],
+        b: [i32; 3],
+    },
 }
 
 /// Number of straight sub-segments used to approximate a curved [`Line`] for rendering,
@@ -167,6 +187,7 @@ impl Line {
             deleted: false,
             bezier: None,
             chamfer_fillet_parent: None,
+            projection: None,
         }
     }
 
@@ -889,6 +910,60 @@ pub struct Body {
     pub deleted: bool,
 }
 
+/// A reference image imported for tracing (#163/#169), hosted on a construction plane.
+/// The encoded file bytes are embedded (base64 in the saved JSON) so documents stay
+/// self-contained, like imported meshes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TracingImage {
+    /// Original encoded file bytes (PNG or JPEG).
+    #[serde(with = "tracing_image_bytes")]
+    pub bytes: Vec<u8>,
+    /// Source file name (without extension), used as the default display name.
+    pub source_name: String,
+    /// Host construction plane index; the image lies in that plane.
+    pub plane: usize,
+    /// Image lower-left corner in plane-local mm.
+    pub origin: (f32, f32),
+    /// Displayed size in mm. Import seeds 1 px = 1 mm; calibration (#171) rescales.
+    pub width_mm: f32,
+    pub height_mm: f32,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
+    /// Last applied scale calibration (#171), kept for re-editing: the reference segment in
+    /// image-UV space (0..1 across the displayed quad) and the real length it was assigned.
+    #[serde(default)]
+    pub calibration: Option<ImageCalibration>,
+}
+
+/// A tracing image's scale calibration (#171).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ImageCalibration {
+    pub u0: f32,
+    pub v0: f32,
+    pub u1: f32,
+    pub v1: f32,
+    pub length_mm: f32,
+}
+
+/// Serde codec storing [`TracingImage::bytes`] as base64 (JSON documents would otherwise
+/// encode each byte as a number — 4x the size).
+mod tracing_image_bytes {
+    use base64::Engine as _;
+
+    pub fn serialize<S: serde::Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        let text: String = serde::Deserialize::deserialize(d)?;
+        base64::engine::general_purpose::STANDARD
+            .decode(text.as_bytes())
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 /// A solid mesh brought in via file import (STL, #70), stored as-is (no scaling/centering)
 /// in the document's coordinate space. Backs a `Body` via `BodySource::Imported`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -909,9 +984,15 @@ pub enum ShapeKind {
     ConstructionPlane,
     Extrusion,
     Body,
+    /// A tracing image import (#169).
+    Image,
     /// An in-place edit of an existing construction plane (undo restores the prior planes).
     /// Transient: never persisted (storage rebuilds `shape_order` from created shapes only).
     ConstructionPlaneEdit,
+    /// An in-place 3D chamfer/fillet commit (#168): undo restores the extrusion's prior
+    /// `edge_treatments` list from the snapshot stack. Transient, like
+    /// [`ShapeKind::ConstructionPlaneEdit`].
+    EdgeTreatmentEdit,
 }
 
 /// The whole document: sketches, sketch primitives, constraints, and construction planes.
@@ -929,6 +1010,9 @@ pub struct Document {
     pub bodies: Vec<Body>,
     #[serde(default)]
     pub imported_meshes: Vec<ImportedMesh>,
+    /// Reference images imported for tracing (#163/#169).
+    #[serde(default)]
+    pub tracing_images: Vec<TracingImage>,
     pub shape_order: Vec<ShapeKind>,
     /// Undo-group sizes (#105): entry k is how many [`shape_order`](Self::shape_order)
     /// entries the k-th user-level action created, maintained by `AppState::apply` under
@@ -963,6 +1047,7 @@ impl Default for Document {
             extrusions: Vec::new(),
             bodies: Vec::new(),
             imported_meshes: Vec::new(),
+            tracing_images: Vec::new(),
             shape_order: Vec::new(),
             undo_groups: Vec::new(),
             default_length_unit: LengthUnit::default(),

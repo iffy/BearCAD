@@ -1174,6 +1174,13 @@ fn projection_mode_tooltip(mode: ProjectionMode) -> &'static str {
     }
 }
 
+fn ground_display_tooltip(mode: crate::camera::GroundDisplay) -> &'static str {
+    match mode {
+        crate::camera::GroundDisplay::Grid => "Ground grid",
+        crate::camera::GroundDisplay::Solid => "Solid ground",
+    }
+}
+
 fn shading_mode_tooltip(mode: crate::camera::ShadingMode) -> &'static str {
     use crate::camera::ShadingMode;
     match mode {
@@ -1233,6 +1240,28 @@ fn show_view_settings_button(
                         cam.set_projection_mode(mode);
                         if let Some(log) = command_log.as_mut() {
                             log.note_view_instruction(crate::script::Instruction::ProjectionMode(
+                                mode,
+                            ));
+                        }
+                    }
+                }
+            });
+            ui.separator();
+            ui.label(egui::RichText::new("Ground").small().weak());
+            ui.horizontal(|ui| {
+                let active = cam.ground_display();
+                for mode in crate::camera::GROUND_DISPLAYS {
+                    let selected = active == mode;
+                    let resp = crate::icons::selectable_icon_button(
+                        ui,
+                        crate::icons::icon_for_ground_display(mode),
+                        selected,
+                        ground_display_tooltip(mode),
+                    );
+                    if resp.clicked() && !selected {
+                        cam.set_ground_display(mode);
+                        if let Some(log) = command_log.as_mut() {
+                            log.note_view_instruction(crate::script::Instruction::GroundDisplay(
                                 mode,
                             ));
                         }

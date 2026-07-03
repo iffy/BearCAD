@@ -17,7 +17,7 @@ use crate::model::{
 use crate::value::{AngleUnit, LengthUnit};
 
 use crate::construction::PlaneDim;
-use crate::camera::{ProjectionMode, ShadingMode, StandardView};
+use crate::camera::{GroundDisplay, ProjectionMode, ShadingMode, StandardView};
 use crate::view_cube::{CubeCornerId, CubeEdgeId};
 
 use crate::lua_script::{load_script, ScriptTickData};
@@ -40,6 +40,15 @@ pub enum Instruction {
     ExportStep { path: String, body: Option<String> },
     /// Import an STL file at `path` as a new body (#70).
     ImportStl { path: String },
+    /// Import a tracing image (#169).
+    ImportImage { path: String, plane: Option<usize> },
+    /// Calibrate a tracing image's scale (#171).
+    CalibrateImage {
+        image: usize,
+        a: (f32, f32),
+        b: (f32, f32),
+        length: f32,
+    },
     /// Import a STEP file at `path` as a new body (#71).
     ImportStep { path: String },
     Clear,
@@ -200,6 +209,8 @@ pub enum Instruction {
     ViewHome,
     SetHomeView,
     ProjectionMode(ProjectionMode),
+    /// Ground plane display (#159): grid lines or a solid plane.
+    GroundDisplay(GroundDisplay),
     ToggleProjectionMode,
     ShadingMode(ShadingMode),
     /// Set any subset of the camera pose instantly — no transition animation, for
@@ -276,6 +287,14 @@ impl Instruction {
                 body: Some(body),
             } => format!("bearcad.export_step({path:?}, {body:?})"),
             Instruction::ImportStl { path } => format!("bearcad.import_stl({path:?})"),
+            Instruction::ImportImage { path, plane } => match plane {
+                Some(p) => format!("bearcad.import_image{{ path = {path:?}, plane = {p} }}"),
+                None => format!("bearcad.import_image({path:?})"),
+            },
+            Instruction::CalibrateImage { image, a, b, length } => format!(
+                "bearcad.calibrate_image{{ image = {image}, from = {{ {}, {} }}, to = {{ {}, {} }}, length = {length} }}",
+                a.0, a.1, b.0, b.1
+            ),
             Instruction::ImportStep { path } => format!("bearcad.import_step({path:?})"),
             Instruction::Clear => "bearcad.clear()".to_string(),
             Instruction::Undo => "bearcad.undo()".to_string(),
@@ -523,6 +542,9 @@ impl Instruction {
             Instruction::ShadingMode(mode) => {
                 format!("bearcad.ui.shading({:?})", mode.script_name())
             }
+            Instruction::GroundDisplay(mode) => {
+                format!("bearcad.ui.ground({:?})", mode.script_name())
+            }
             Instruction::SetCamera {
                 yaw,
                 pitch,
@@ -737,6 +759,23 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: 0,
             point: None,
         },
+        // Geometry-keyed 3D sub-elements (#156): no stable scripting identity yet, so the
+        // recorded-script export falls back to a placeholder like `FaceEdge` does.
+        SceneElement::BodyEdge { .. } => ElementScriptTokens {
+            kind: "body_edge",
+            index: 0,
+            point: None,
+        },
+        SceneElement::BodyVertex { .. } => ElementScriptTokens {
+            kind: "body_vertex",
+            index: 0,
+            point: None,
+        },
+        SceneElement::Image(i) => ElementScriptTokens {
+            kind: "image",
+            index: i,
+            point: None,
+        },
     }
 }
 
@@ -771,6 +810,16 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             body: body.clone(),
         }),
         Action::ImportStl { path } => Some(Instruction::ImportStl { path: path.clone() }),
+        Action::ImportImage { path, plane } => Some(Instruction::ImportImage {
+            path: path.clone(),
+            plane: *plane,
+        }),
+        Action::CalibrateImage { image, a, b, length } => Some(Instruction::CalibrateImage {
+            image: *image,
+            a: *a,
+            b: *b,
+            length: *length,
+        }),
         Action::ImportStep { path } => Some(Instruction::ImportStep { path: path.clone() }),
         Action::UpdateExtrusion { extrusion, distance, target } => {
             Some(Instruction::UpdateExtrusion {
@@ -955,6 +1004,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 amount: *amount,
             })
         }
+        Action::ZoomToFit => Some(Instruction::ZoomFit),
         Action::CommitEdgeTreatment { extrusion, edge, kind, amount } => {
             Some(Instruction::EdgeTreatment {
                 extrusion: *extrusion,
@@ -2228,6 +2278,16 @@ impl ScriptRunner {
                 self.record_action_error(r);
                 StepResult::Continue
             }
+            Instruction::ImportImage { path, plane } => {
+                let r = state.apply(Action::ImportImage { path, plane });
+                self.record_action_error(r);
+                StepResult::Continue
+            }
+            Instruction::CalibrateImage { image, a, b, length } => {
+                let r = state.apply(Action::CalibrateImage { image, a, b, length });
+                self.record_action_error(r);
+                StepResult::Continue
+            }
             Instruction::ImportStep { path } => {
                 let r = state.apply(Action::ImportStep { path });
                 self.record_action_error(r);
@@ -2634,6 +2694,10 @@ impl ScriptRunner {
             }
             Instruction::ShadingMode(mode) => {
                 state.apply(Action::SetShadingMode(mode));
+                StepResult::Continue
+            }
+            Instruction::GroundDisplay(mode) => {
+                state.apply(Action::SetGroundDisplay(mode));
                 StepResult::Continue
             }
             Instruction::SetCamera {

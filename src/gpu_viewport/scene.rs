@@ -110,7 +110,7 @@ const SOLID_CAP_DEPTH_BIAS: f32 = 0.02;
 /// Blue aura outline drawn around the selected bodies' screen-space silhouette (#145/#148):
 /// one solid-color mitered stroke (stacking a bright core over a dim halo read as splotchy
 /// wherever the two strokes' antialiased edges beat against each other).
-const BODY_SILHOUETTE_COLOR: Color32 = Color32::from_rgb(95, 165, 245);
+pub const BODY_SILHOUETTE_COLOR: Color32 = Color32::from_rgb(95, 165, 245);
 const BODY_SILHOUETTE_WIDTH: f32 = 4.0;
 /// How far the silhouette glow sits *outside* the body's edges, screen pixels — an aura around
 /// the shape rather than a line on it. Each segment is also extended by the same amount at both
@@ -160,8 +160,53 @@ pub struct ViewportScene {
     pub wireframe_indices: Vec<u32>,
     pub text_vertices: Vec<GpuTextVertex>,
     pub text_indices: Vec<u32>,
+    /// Tracing images (#170): textured world-space quads, drawn after the opaque scene
+    /// (depth-tested, no depth write) so bodies in front occlude them.
+    pub images: Vec<ViewportImageQuad>,
     pub view_proj: Mat4,
     pub clear_color: [f32; 4],
+}
+
+/// One tracing image's draw data (#170). `id` keys the renderer's texture cache (stable for
+/// a given image's content); `rgba` carries the decoded pixels for the first upload.
+#[derive(Clone, Debug, Default)]
+pub struct ViewportImageQuad {
+    pub id: u64,
+    /// World corners in UV order: (0,0), (1,0), (1,1), (0,1).
+    pub corners: [Vec3; 4],
+    pub width_px: u32,
+    pub height_px: u32,
+    pub rgba: std::sync::Arc<Vec<u8>>,
+    pub opacity: f32,
+}
+
+/// Decode memo for tracing images (#170): decoding a PNG/JPEG every frame would dwarf the
+/// rest of the scene build. Keyed by a cheap content stamp (length + sampled bytes).
+fn decoded_tracing_image(image: &crate::model::TracingImage) -> Option<(u64, u32, u32, std::sync::Arc<Vec<u8>>)> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    image.bytes.len().hash(&mut hasher);
+    for chunk in image.bytes.chunks(4096).step_by(16) {
+        chunk.hash(&mut hasher);
+    }
+    let id = hasher.finish();
+    thread_local! {
+        static DECODED: std::cell::RefCell<std::collections::HashMap<u64, Option<(u32, u32, std::sync::Arc<Vec<u8>>)>>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+    DECODED.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let entry = cache.entry(id).or_insert_with(|| {
+            image::load_from_memory(&image.bytes).ok().map(|img| {
+                let rgba = img.to_rgba8();
+                let (w, h) = (rgba.width(), rgba.height());
+                (w, h, std::sync::Arc::new(rgba.into_raw()))
+            })
+        });
+        entry
+            .as_ref()
+            .map(|(w, h, rgba)| (id, *w, *h, rgba.clone()))
+    })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -174,8 +219,12 @@ pub struct ViewportPalette {
     pub z_axis: Color32,
     /// Shared stroke color for all solid sketch shape edges (lines, rect edges, circles).
     pub rect_line: Color32,
+    /// Fully-constrained solid lines (#172): no remaining degrees of freedom.
+    pub rect_line_constrained: Color32,
     pub preview: Color32,
     pub construction: Color32,
+    /// Associative projections (#140): dashed like construction, but their own color.
+    pub projection: Color32,
     pub dim_edge_highlight: Color32,
     pub construction_plane_fill: Color32,
     pub construction_plane_opacity: f32,
@@ -191,8 +240,10 @@ impl Default for ViewportPalette {
             y_axis: Color32::from_rgb(70, 190, 90),
             z_axis: Color32::from_rgb(80, 140, 230),
             rect_line: Color32::from_rgb(120, 170, 240),
+            rect_line_constrained: Color32::from_rgb(225, 228, 235),
             preview: Color32::from_rgb(240, 200, 120),
             construction: CONSTRUCTION_RGBA,
+            projection: Color32::from_rgb(70, 200, 190),
             dim_edge_highlight: Color32::from_rgb(255, 205, 88),
             construction_plane_fill: PLANE_FILL_RGBA,
             construction_plane_opacity: DEFAULT_CONSTRUCTION_PLANE_OPACITY,
@@ -205,6 +256,10 @@ impl Default for ViewportPalette {
 pub enum ViewportHoverHighlight {
     SketchFace(FaceId),
     PickTarget(PickTargetKind),
+    /// An elements-pane row under the cursor (#161): the viewport shows the row's element,
+    /// whatever its kind — bodies/extrusions get their aura in the hover color, sketch
+    /// entities their usual pick highlight.
+    Element(crate::hierarchy::SceneElement),
     /// A computed boolean-combined region (#16/#62): rendered as a filled/outlined polygon
     /// directly from its resolved world-space loop, since (unlike `SketchFace`) it has no
     /// `FaceId` of its own — it's not a stored shape, just `ExtrudeFace::Boolean`'s on-demand
@@ -300,6 +355,37 @@ impl ViewportScene {
             clear_color: color32_to_gpu(input.palette.background),
             ..Default::default()
         };
+        // Tracing images (#170): a textured quad per visible image on its host plane.
+        for (ii, img) in input.doc.tracing_images.iter().enumerate() {
+            if img.deleted
+                || !input
+                    .element_visibility
+                    .effective_visible(input.doc, SceneElement::Image(ii))
+            {
+                continue;
+            }
+            let Some(frame) =
+                crate::face::sketch_frame(input.doc, FaceId::ConstructionPlane(img.plane))
+            else {
+                continue;
+            };
+            let Some((id, w, h, rgba)) = decoded_tracing_image(img) else {
+                continue;
+            };
+            let at = |x: f32, y: f32| frame.origin + frame.u_axis * x + frame.v_axis * y;
+            let (x0, y0) = img.origin;
+            let (x1, y1) = (x0 + img.width_mm, y0 + img.height_mm);
+            scene.images.push(ViewportImageQuad {
+                id,
+                // UV v grows downward in image space; plane-local v grows up — flip v.
+                corners: [at(x0, y1), at(x1, y1), at(x1, y0), at(x0, y0)],
+                width_px: w,
+                height_px: h,
+                rgba,
+                opacity: 0.85,
+            });
+        }
+
         let mut mesh = SceneMesh::new(&mut scene);
         let sketch_dimmed = input.sketch_session.is_some();
         mesh.push_ground(
@@ -510,6 +596,9 @@ impl ViewportScene {
         }
         mesh.set_index_layer(MeshIndexLayer::Base);
 
+        // Fully-constrained lines (#172) draw in their own color; the set is memoized per
+        // document state inside the solver bridge.
+        let constrained_lines = crate::sketch_solver::fully_constrained_lines(input.doc);
         for (li, line) in input.doc.lines.iter().enumerate() {
             if !line_alive(input.doc, li)
                 || !input
@@ -521,8 +610,12 @@ impl ViewportScene {
             }
             let element = SceneElement::Line(li);
             let dim = input.sketch_session.is_some_and(|s| line.sketch != s.sketch);
-            let base = if line.construction {
+            let base = if line.projection.is_some() {
+                sketch_color(input.palette.projection, dim)
+            } else if line.construction {
                 sketch_color(input.palette.construction, dim)
+            } else if constrained_lines.contains(&li) {
+                sketch_color(input.palette.rect_line_constrained, dim)
             } else {
                 sketch_color(input.palette.rect_line, dim)
             };
@@ -752,6 +845,7 @@ impl ViewportScene {
                 input.doc,
                 hover,
                 input.hover_color,
+                &body_meshes,
                 input.cam,
                 input.viewport,
                 &vp,
@@ -959,6 +1053,11 @@ impl<'a> SceneMesh<'a> {
         for (a, b) in solid_mesh_unique_edges(solid) {
             self.push_line_segment(a, b, color, WIREFRAME_LINE_WIDTH_PX, cam, viewport, view_proj);
         }
+        // Smooth-surface silhouettes (#158): a cylinder's sides are invisible without the
+        // view-tangent lines (its wall seams are all sub-crease and rightly dropped above).
+        for (a, b) in solid_mesh_smooth_silhouette_edges(solid, cam.eye()) {
+            self.push_line_segment(a, b, color, WIREFRAME_LINE_WIDTH_PX, cam, viewport, view_proj);
+        }
         self.set_index_layer(prev);
     }
 
@@ -1123,8 +1222,24 @@ impl<'a> SceneMesh<'a> {
         palette: &ViewportPalette,
     ) {
         let e = GRID_EXTENT;
-        let mut t = -e;
-        while t <= e + 0.001 {
+        // Solid ground (#159): one filled plane in the grid's grey (darkened so bodies and
+        // sketches still read against it), pushed slightly away from the camera with the
+        // same bias the grid lines use so body bottoms resting on z = 0 never z-fight it.
+        // The axis lines below still draw on top for orientation.
+        if cam.ground_display() == crate::camera::GroundDisplay::Solid {
+            let eye = cam.eye();
+            let fill = sketch_ground_color(scale_color(palette.grid, 0.55), dim);
+            let corners = [
+                Vec3::new(-e, -e, 0.0),
+                Vec3::new(e, -e, 0.0),
+                Vec3::new(e, e, 0.0),
+                Vec3::new(-e, e, 0.0),
+            ];
+            let lifted = offset_corners_toward_camera(corners, Vec3::Z, eye, GRID_DEPTH_BIAS);
+            self.push_quad_fill(lifted, fill);
+        } else {
+            let mut t = -e;
+            while t <= e + 0.001 {
             let base = if t.abs() < 0.001 {
                 palette.grid_axis
             } else {
@@ -1151,7 +1266,8 @@ impl<'a> SceneMesh<'a> {
                 view_proj,
                 GRID_DEPTH_BIAS,
             );
-            t += GRID_STEP;
+                t += GRID_STEP;
+            }
         }
         self.push_line_segment_with_bias(
             Vec3::ZERO,
@@ -1434,9 +1550,11 @@ impl<'a> SceneMesh<'a> {
         if selection.is_empty() {
             return;
         }
-        // Selected bodies (directly, or via a selected extrusion) get one combined
-        // screen-space aura (#145/#148), drawn after the per-element highlights below.
+        // Selected bodies get one combined screen-space aura (#145/#148); a selected
+        // extrusion contributes only its own solid (#154), so picking an Extrude element
+        // outlines just the part it created rather than the whole body it merged into.
         let mut aura_bodies: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut aura_extrusions: std::collections::HashSet<usize> = std::collections::HashSet::new();
         for element in selection.iter() {
             let color = health_tint_color(base_color, health.element_status(element.clone()));
             let dashed = selection_highlight_dashed(doc, element.clone()) == Some(true);
@@ -1504,21 +1622,57 @@ impl<'a> SceneMesh<'a> {
                         self.push_point_marker(world, color, 6.0, cam, viewport, view_proj);
                     }
                 }
+                // Selected 3D body sub-elements (#156): drawn depth-test-disabled like their
+                // hover highlights (#153), so a concave joint can't bury the selection mark.
+                SceneElement::BodyEdge { a, b, .. } => {
+                    let restore = self.index_layer;
+                    self.set_index_layer(MeshIndexLayer::Wireframe);
+                    self.push_line_segment(
+                        crate::hierarchy::dequantize_body_point(a),
+                        crate::hierarchy::dequantize_body_point(b),
+                        color,
+                        4.0,
+                        cam,
+                        viewport,
+                        view_proj,
+                    );
+                    self.set_index_layer(restore);
+                }
+                SceneElement::BodyVertex { p, .. } => {
+                    let restore = self.index_layer;
+                    self.set_index_layer(MeshIndexLayer::Wireframe);
+                    self.push_point_marker(
+                        crate::hierarchy::dequantize_body_point(p),
+                        color,
+                        6.0,
+                        cam,
+                        viewport,
+                        view_proj,
+                    );
+                    self.set_index_layer(restore);
+                }
                 // A selected body (or extrusion) gets a glowing blue outline traced around its
                 // camera-facing silhouette (#145).
                 SceneElement::Body(index) => {
                     aura_bodies.insert(index);
                 }
                 SceneElement::Extrusion(index) => {
-                    if let Some(bi) = crate::model::body_index_for_extrusion(doc, index) {
-                        aura_bodies.insert(bi);
-                    }
+                    aura_extrusions.insert(index);
                 }
                 _ => {}
             }
         }
-        if !aura_bodies.is_empty() {
-            self.push_body_aura(&aura_bodies, body_meshes, cam, viewport, view_proj);
+        if !aura_bodies.is_empty() || !aura_extrusions.is_empty() {
+            self.push_body_aura(
+                doc,
+                &aura_bodies,
+                &aura_extrusions,
+                body_meshes,
+                BODY_SILHOUETTE_COLOR,
+                cam,
+                viewport,
+                view_proj,
+            );
         }
     }
 
@@ -1532,8 +1686,11 @@ impl<'a> SceneMesh<'a> {
     /// the px-width line renderer is exact, and drawn glow-under-core.
     fn push_body_aura(
         &mut self,
+        doc: &Document,
         bodies: &std::collections::HashSet<usize>,
+        extrusions: &std::collections::HashSet<usize>,
         body_meshes: &[Option<crate::extrude::SolidMesh>],
+        color: Color32,
         cam: &Camera,
         viewport: UiRect,
         view_proj: &Mat4,
@@ -1541,45 +1698,72 @@ impl<'a> SceneMesh<'a> {
         let eye = cam.eye();
         let project = |w: Vec3| cam.project(w, viewport, view_proj);
 
-        // Project every body once up front; the selected bodies' screen bounds (clipped to
-        // the viewport) define the field region, so grid work scales with the selection.
+        // Project every body once up front; the selected geometry's screen bounds (clipped
+        // to the viewport) define the field region, so grid work scales with the selection.
         // `body_meshes` is the per-frame mesh list the body render already built — hidden
         // bodies are `None` there, so they neither get an aura nor occlude one.
         type ScreenTri = ([egui::Pos2; 3], [f32; 3]);
         let mut sel_tris: Vec<ScreenTri> = Vec::new();
         let mut other_tris: Vec<ScreenTri> = Vec::new();
         let mut sel_bounds: Option<UiRect> = None;
+        let stamp = |tri: &[Vec3; 3],
+                         selected: bool,
+                         sel_tris: &mut Vec<ScreenTri>,
+                         other_tris: &mut Vec<ScreenTri>,
+                         sel_bounds: &mut Option<UiRect>| {
+            let (Some(a), Some(b), Some(c)) = (project(tri[0]), project(tri[1]), project(tri[2]))
+            else {
+                return;
+            };
+            if selected {
+                let tri_rect = UiRect::from_min_max(
+                    egui::pos2(a.x.min(b.x).min(c.x), a.y.min(b.y).min(c.y)),
+                    egui::pos2(a.x.max(b.x).max(c.x), a.y.max(b.y).max(c.y)),
+                );
+                *sel_bounds = Some(match *sel_bounds {
+                    Some(r) => r.union(tri_rect),
+                    None => tri_rect,
+                });
+            }
+            let depths = [
+                (tri[0] - eye).length(),
+                (tri[1] - eye).length(),
+                (tri[2] - eye).length(),
+            ];
+            if selected {
+                sel_tris.push(([a, b, c], depths));
+            } else {
+                other_tris.push(([a, b, c], depths));
+            }
+        };
         for (bi, mesh) in body_meshes.iter().enumerate() {
             let Some(mesh) = mesh else {
                 continue;
             };
             let selected = bodies.contains(&bi);
             for tri in &mesh.triangles {
-                let (Some(a), Some(b), Some(c)) =
-                    (project(tri[0]), project(tri[1]), project(tri[2]))
-                else {
-                    continue;
-                };
-                if selected {
-                    let tri_rect = UiRect::from_min_max(
-                        egui::pos2(a.x.min(b.x).min(c.x), a.y.min(b.y).min(c.y)),
-                        egui::pos2(a.x.max(b.x).max(c.x), a.y.max(b.y).max(c.y)),
-                    );
-                    sel_bounds = Some(match sel_bounds {
-                        Some(r) => r.union(tri_rect),
-                        None => tri_rect,
-                    });
-                }
-                let depths = [
-                    (tri[0] - eye).length(),
-                    (tri[1] - eye).length(),
-                    (tri[2] - eye).length(),
-                ];
-                if selected {
-                    sel_tris.push(([a, b, c], depths));
-                } else {
-                    other_tris.push(([a, b, c], depths));
-                }
+                stamp(tri, selected, &mut sel_tris, &mut other_tris, &mut sel_bounds);
+            }
+        }
+        // A selected extrusion contributes just its own analytic solid (#154): the aura then
+        // outlines the part that extrusion created, while the rest of its body (stamped as
+        // non-selected above) occludes the outline wherever it stands in front. Skip
+        // extrusions whose whole body is already selected — the body footprint covers them.
+        for &ei in extrusions {
+            let Some(ext) = doc.extrusions.get(ei) else {
+                continue;
+            };
+            if ext.deleted
+                || crate::model::body_index_for_extrusion(doc, ei)
+                    .is_some_and(|bi| bodies.contains(&bi))
+            {
+                continue;
+            }
+            let Some(mesh) = crate::extrude::extrusion_mesh(doc, ext) else {
+                continue;
+            };
+            for tri in &mesh.triangles {
+                stamp(tri, true, &mut sel_tris, &mut other_tris, &mut sel_bounds);
             }
         }
         let Some(sel_bounds) = sel_bounds else {
@@ -1636,7 +1820,7 @@ impl<'a> SceneMesh<'a> {
                     &sparse,
                     closed,
                     BODY_SILHOUETTE_WIDTH,
-                    BODY_SILHOUETTE_COLOR,
+                    color,
                     &unproject,
                 );
             }
@@ -1877,6 +2061,7 @@ impl<'a> SceneMesh<'a> {
         doc: &Document,
         hover: &ViewportHoverHighlight,
         color: Color32,
+        body_meshes: &[Option<crate::extrude::SolidMesh>],
         cam: &Camera,
         viewport: UiRect,
         view_proj: &Mat4,
@@ -1908,7 +2093,17 @@ impl<'a> SceneMesh<'a> {
                     );
                 }
             },
+            ViewportHoverHighlight::Element(element) => {
+                self.push_element_hover(doc, element.clone(), color, body_meshes, cam, viewport, view_proj);
+            }
             ViewportHoverHighlight::PickTarget(kind) => {
+                // Pick-target highlights draw depth-test-disabled (#153): a hovered edge or
+                // vertex in a concave joint would otherwise have a chunk of its highlight
+                // buried inside the adjoining faces (the small camera-ward bias can't clear
+                // a wall rising beside the edge). Hover means "this is what a click picks" —
+                // it must always be fully visible.
+                let restore_layer = self.index_layer;
+                self.set_index_layer(MeshIndexLayer::Wireframe);
                 self.push_pick_target_highlight(
                     doc,
                     kind,
@@ -1918,6 +2113,7 @@ impl<'a> SceneMesh<'a> {
                     view_proj,
                     &project,
                 );
+                self.set_index_layer(restore_layer);
             }
             ViewportHoverHighlight::BooleanRegion { world_loop } => {
                 if world_loop.len() >= 3 {
@@ -2031,6 +2227,157 @@ impl<'a> SceneMesh<'a> {
             }
             FaceId::ConstructionPlane(_) => {}
         }
+    }
+
+    /// Viewport highlight for an elements-pane hover (#161): per element kind, in `color`.
+    /// Drawn depth-test-disabled like other pick highlights (#153).
+    fn push_element_hover(
+        &mut self,
+        doc: &Document,
+        element: crate::hierarchy::SceneElement,
+        color: Color32,
+        body_meshes: &[Option<crate::extrude::SolidMesh>],
+        cam: &Camera,
+        viewport: UiRect,
+        view_proj: &Mat4,
+    ) {
+        use crate::hierarchy::SceneElement;
+        let project = |w: Vec3| cam.project(w, viewport, view_proj);
+        let restore = self.index_layer;
+        self.set_index_layer(MeshIndexLayer::Wireframe);
+        match element {
+            SceneElement::Line(index) => {
+                self.push_pick_target_highlight(
+                    doc,
+                    &PickTargetKind::Line(index),
+                    color,
+                    cam,
+                    viewport,
+                    view_proj,
+                    &project,
+                );
+            }
+            SceneElement::Circle(index) => {
+                self.push_pick_target_highlight(
+                    doc,
+                    &PickTargetKind::Circle(index),
+                    color,
+                    cam,
+                    viewport,
+                    view_proj,
+                    &project,
+                );
+            }
+            SceneElement::Point(point) => {
+                self.push_pick_target_highlight(
+                    doc,
+                    &PickTargetKind::Point(point),
+                    color,
+                    cam,
+                    viewport,
+                    view_proj,
+                    &project,
+                );
+            }
+            SceneElement::ConstructionPlane(index) => {
+                if let Some(plane) = doc.construction_planes.get(index) {
+                    self.push_construction_plane_hover_fill(
+                        plane,
+                        index,
+                        color,
+                        FACE_HOVER_FILL_MULTIPLIER,
+                        cam,
+                    );
+                }
+            }
+            // A sketch highlights as all of its entities.
+            SceneElement::Sketch(sketch) => {
+                for (li, line) in doc.lines.iter().enumerate() {
+                    if !line.deleted && line.sketch == sketch {
+                        self.push_pick_target_highlight(
+                            doc,
+                            &PickTargetKind::Line(li),
+                            color,
+                            cam,
+                            viewport,
+                            view_proj,
+                            &project,
+                        );
+                    }
+                }
+                for (ci, circle) in doc.circles.iter().enumerate() {
+                    if !circle.deleted && circle.sketch == sketch {
+                        self.push_pick_target_highlight(
+                            doc,
+                            &PickTargetKind::Circle(ci),
+                            color,
+                            cam,
+                            viewport,
+                            view_proj,
+                            &project,
+                        );
+                    }
+                }
+            }
+            SceneElement::Constraint(index) => {
+                if let Some((a, b)) = crate::constraints::constraint_segment_endpoints(doc, index)
+                {
+                    self.push_segment_hover(a, b, color, cam, viewport, view_proj, &project);
+                }
+            }
+            SceneElement::BodyEdge { a, b, .. } => {
+                self.push_segment_hover(
+                    crate::hierarchy::dequantize_body_point(a),
+                    crate::hierarchy::dequantize_body_point(b),
+                    color,
+                    cam,
+                    viewport,
+                    view_proj,
+                    &project,
+                );
+            }
+            SceneElement::BodyVertex { p, .. } => {
+                push_screen_disc(
+                    self,
+                    crate::hierarchy::dequantize_body_point(p),
+                    6.0,
+                    color,
+                    cam,
+                    viewport,
+                    view_proj,
+                    &project,
+                );
+            }
+            SceneElement::FaceEdge(_) | SceneElement::Image(_) => {}
+            // Bodies and extrusions get their aura, tinted with the hover color.
+            SceneElement::Body(index) => {
+                let bodies: std::collections::HashSet<usize> = [index].into_iter().collect();
+                self.push_body_aura(
+                    doc,
+                    &bodies,
+                    &std::collections::HashSet::new(),
+                    body_meshes,
+                    color,
+                    cam,
+                    viewport,
+                    view_proj,
+                );
+            }
+            SceneElement::Extrusion(index) => {
+                let extrusions: std::collections::HashSet<usize> = [index].into_iter().collect();
+                self.push_body_aura(
+                    doc,
+                    &std::collections::HashSet::new(),
+                    &extrusions,
+                    body_meshes,
+                    color,
+                    cam,
+                    viewport,
+                    view_proj,
+                );
+            }
+        }
+        self.set_index_layer(restore);
     }
 
     fn push_pick_target_highlight(
@@ -2818,6 +3165,60 @@ pub fn solid_mesh_coplanar_faces(solid: &crate::extrude::SolidMesh) -> Vec<Vec<[
         groups.entry(root).or_default().push(solid.triangles[ti]);
     }
     groups.into_values().collect()
+}
+
+/// View-dependent silhouette edges on *smooth* surfaces (#158): edges whose two adjacent
+/// triangles are tessellation-smooth (below the crease threshold, so [`solid_mesh_unique_edges`]
+/// drops them) but where the surface turns away from the camera — one triangle front-facing,
+/// the other back-facing. These are the lines "tangent to the sight of the camera" that make a
+/// cylinder's sides visible in wireframe; they move as the camera orbits, so they're rebuilt
+/// per frame with the rest of the wireframe overlay. Adjacent normals are sign-aligned before
+/// the facing comparison, so inconsistent triangle winding (this app's meshes are shaded
+/// two-sided) can't flip the test.
+pub fn solid_mesh_smooth_silhouette_edges(
+    solid: &crate::extrude::SolidMesh,
+    eye: Vec3,
+) -> Vec<(Vec3, Vec3)> {
+    type EdgeKey = ((i64, i64, i64), (i64, i64, i64));
+    struct EdgeFaces {
+        a: Vec3,
+        b: Vec3,
+        // (normal, centroid) of up to two adjacent triangles; more means non-manifold — skip.
+        faces: Vec<(Vec3, Vec3)>,
+    }
+    let mut by_edge: std::collections::HashMap<EdgeKey, EdgeFaces> = std::collections::HashMap::new();
+    for tri in &solid.triangles {
+        let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
+        let centroid = (tri[0] + tri[1] + tri[2]) / 3.0;
+        for &(i, j) in &[(0usize, 1usize), (1, 2), (2, 0)] {
+            let (a, b) = (tri[i], tri[j]);
+            let ka = quantize_vertex(a);
+            let kb = quantize_vertex(b);
+            let key = if ka <= kb { (ka, kb) } else { (kb, ka) };
+            by_edge
+                .entry(key)
+                .or_insert_with(|| EdgeFaces { a, b, faces: Vec::new() })
+                .faces
+                .push((normal, centroid));
+        }
+    }
+    by_edge
+        .into_values()
+        .filter_map(|edge| {
+            let [(n1, c1), (n2, c2)] = edge.faces.as_slice() else {
+                return None;
+            };
+            // Smooth pair only — creases are already drawn as permanent feature edges.
+            if n1.dot(*n2).abs() < WIREFRAME_CREASE_COS_THRESHOLD {
+                return None;
+            }
+            // Align the second normal with the first so winding doesn't flip the facing.
+            let n2_aligned = if n1.dot(*n2) < 0.0 { -*n2 } else { *n2 };
+            let f1 = n1.dot(eye - *c1);
+            let f2 = n2_aligned.dot(eye - *c2);
+            (f1 * f2 < 0.0).then_some((edge.a, edge.b))
+        })
+        .collect()
 }
 
 /// An edge is a real feature edge if it's a mesh boundary (one adjacent triangle) or any pair
@@ -3961,6 +4362,51 @@ mod tests {
         assert_eq!(solid_mesh_coplanar_faces(&solid).len(), 6);
     }
 
+    /// #158: a cylinder viewed from the side must expose its two view-tangent wall seams as
+    /// silhouette edges (its wall seams are smooth, so the permanent wireframe drops them all).
+    #[test]
+    fn cylinder_side_view_has_vertical_smooth_silhouette_edges() {
+        let n = crate::extrude::CIRCLE_SEGMENTS;
+        let (r, h) = (12.0f32, 10.0f32);
+        let pt = |i: usize, z: f32| {
+            let a = i as f32 / n as f32 * std::f32::consts::TAU;
+            Vec3::new(r * a.cos(), r * a.sin(), z)
+        };
+        let mut triangles = Vec::new();
+        for i in 0..n {
+            let j = (i + 1) % n;
+            triangles.push([pt(i, 0.0), pt(j, 0.0), pt(j, h)]);
+            triangles.push([pt(i, 0.0), pt(j, h), pt(i, h)]);
+            triangles.push([Vec3::new(0.0, 0.0, 0.0), pt(j, 0.0), pt(i, 0.0)]);
+            triangles.push([Vec3::new(0.0, 0.0, h), pt(i, h), pt(j, h)]);
+        }
+        let solid = crate::extrude::SolidMesh { triangles };
+
+        // Side view from +x: the tangent seams sit near y = ±r.
+        let eye = Vec3::new(1000.0, 0.0, h / 2.0);
+        let edges = solid_mesh_smooth_silhouette_edges(&solid, eye);
+        assert!(
+            (2..=4).contains(&edges.len()),
+            "expected the two view-tangent seams (plus at most grazing neighbors), got {}",
+            edges.len()
+        );
+        for (a, b) in &edges {
+            assert!(
+                (a.z - b.z).abs() > h * 0.9,
+                "silhouette edges on the wall are vertical seams, got {a:?}-{b:?}"
+            );
+            assert!(
+                a.y.abs() > r * 0.9,
+                "tangent seams sit near y = ±r for a +x view, got y = {}",
+                a.y
+            );
+        }
+
+        // Looking straight down the axis there is no wall silhouette (the rims cover it).
+        let edges = solid_mesh_smooth_silhouette_edges(&solid, Vec3::new(0.0, 0.0, 1000.0));
+        assert!(edges.is_empty(), "no smooth silhouette from head-on, got {}", edges.len());
+    }
+
     #[test]
     fn is_feature_edge_ignores_smooth_tessellation_angles_but_keeps_chamfer_angles() {
         // The crease threshold (#101) must sit between the largest smooth-tessellation facet
@@ -4138,6 +4584,63 @@ mod tests {
         assert_eq!(
             hover_indices, 6,
             "construction-plane hover should add only a biased fill quad"
+        );
+    }
+
+    /// #153: pick-target hovers (an edge/vertex/point about to be selected) draw in the
+    /// depth-test-disabled layer, so a concave joint's adjoining faces can never bury a
+    /// chunk of the highlight inside the body.
+    #[test]
+    fn pick_target_hover_draws_depth_test_disabled() {
+        let state = AppState::default();
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let build = |hover: Option<ViewportHoverHighlight>| {
+            ViewportScene::build(&ViewportSceneInput {
+                doc: &state.doc,
+                cam: &cam,
+                viewport,
+                palette: ViewportPalette::default(),
+                sketch_session: None,
+                selection: &state.scene_selection,
+                element_visibility: &state.element_visibility,
+                preview_rect: None,
+                preview_line: None,
+                preview_circle: None,
+                preview_extrusion: None,
+                preview_cut_body: None,
+                editing_extrusion: None,
+                plane_preview: None,
+                active_sketch_face: None,
+                dimension_labels: &[],
+                dim_label_view: None,
+                plane_gizmo: None,
+                extrude_gizmo: None,
+                vertex_treatment_gizmo: None,
+                vertex_treatment_preview: None,
+                hover_highlight: hover,
+                hover_color: crate::construction::PICK_HOVER_RGBA,
+                document_health: &DocumentHealth::default(),
+                constraint_graphics: None,
+                constraint_connector_color: None,
+            })
+        };
+        let base = build(None);
+        let hovered = build(Some(ViewportHoverHighlight::PickTarget(
+            crate::construction::PickTargetKind::BodyEdge {
+                body: 0,
+                a: Vec3::new(0.0, 0.0, 0.0),
+                b: Vec3::new(50.0, 0.0, 0.0),
+            },
+        )));
+        assert!(
+            hovered.wireframe_indices.len() > base.wireframe_indices.len(),
+            "edge hover must land in the depth-disabled (wireframe) layer"
+        );
+        assert_eq!(
+            hovered.overlay_indices.len(),
+            base.overlay_indices.len(),
+            "edge hover must not draw in the depth-tested overlay layer"
         );
     }
 
@@ -5255,6 +5758,61 @@ mod tests {
                 "right aura must survive regardless of the occluder"
             );
         }
+    }
+
+    /// #161: hovering an elements-pane row highlights that element in the viewport — a
+    /// hovered body draws its aura in the hover color (depth-disabled layer).
+    #[test]
+    fn pane_hover_element_highlights_body_in_viewport() {
+        let state = state_with_one_body();
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let build = |hover: Option<ViewportHoverHighlight>| {
+            ViewportScene::build(&ViewportSceneInput {
+                doc: &state.doc,
+                cam: &cam,
+                viewport,
+                palette: ViewportPalette::default(),
+                sketch_session: None,
+                selection: &state.scene_selection,
+                element_visibility: &state.element_visibility,
+                preview_rect: None,
+                preview_line: None,
+                preview_circle: None,
+                preview_extrusion: None,
+                preview_cut_body: None,
+                editing_extrusion: None,
+                plane_preview: None,
+                active_sketch_face: None,
+                dimension_labels: &[],
+                dim_label_view: None,
+                plane_gizmo: None,
+                extrude_gizmo: None,
+                vertex_treatment_gizmo: None,
+                vertex_treatment_preview: None,
+                hover_highlight: hover,
+                hover_color: crate::construction::PICK_HOVER_RGBA,
+                document_health: &DocumentHealth::default(),
+                constraint_graphics: None,
+                constraint_connector_color: None,
+            })
+        };
+        let base = build(None);
+        let hovered = build(Some(ViewportHoverHighlight::Element(
+            crate::hierarchy::SceneElement::Body(0),
+        )));
+        assert!(
+            count_indices_with_color(
+                &hovered,
+                &hovered.wireframe_indices,
+                crate::construction::PICK_HOVER_RGBA
+            ) > count_indices_with_color(
+                &base,
+                &base.wireframe_indices,
+                crate::construction::PICK_HOVER_RGBA
+            ),
+            "a pane-hovered body must draw its aura in the hover color"
+        );
     }
 
     /// #145: selecting a body draws a glowing blue silhouette outline in the overlay layer.

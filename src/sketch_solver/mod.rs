@@ -11,8 +11,9 @@ mod residuals;
 mod system;
 
 pub use bridge::{
-    sketch_conflicting_constraints, sketch_dof_remaining, sketch_line_vertex_drag_blocked,
-    sketch_point_movable, solve_document_sketches,
+    fully_constrained_lines, sketch_conflicting_constraints, sketch_dof_remaining,
+    sketch_fully_constrained_lines, sketch_line_vertex_drag_blocked, sketch_point_movable,
+    solve_document_sketches,
 };
 
 #[cfg(test)]

@@ -12,13 +12,28 @@
 local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/extrude.png"
 
 bearcad.new()
+-- Hide the side panes so the captured viewport is landscape (#150).
+bearcad.ui.pane("elements", "hide")
+bearcad.ui.pane("context", "hide")
+bearcad.ui.pane("parameters", "hide")
+
 bearcad.rect{ width = 80, height = 50, name = "Base" }
 -- Extrude the rectangle's four lines as an explicit closed loop. (The `rect = 0`
 -- shorthand builds the same body but currently wedges the screenshot render, so
 -- the docs harness uses the explicit polygon form.)
 bearcad.extrude{ polygon = { 0, 1, 2, 3 }, distance = 20, name = "Block" }
 
+bearcad.exit_sketch()
+-- Hide the ground plane's display quad; it reads as a stray tan patch behind the body.
+bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
+-- The OS cursor parks wherever the desktop left it (often mid-viewport) and would
+-- hover-highlight whatever face it sits on; the Dimension tool has no pick hover,
+-- keeping the capture deterministic.
+bearcad.ui.tool("dimension")
+
 bearcad.ui.view("corner", "front_right_top")
+bearcad.ui.wait(2)
+bearcad.ui.zoom_fit()
 bearcad.ui.wait(2)
 bearcad.ui.screenshot(out)
 

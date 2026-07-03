@@ -196,6 +196,35 @@ struct ViewTransition {
 /// Screen-space padding when framing existing sketch contents in the viewport.
 pub const SKETCH_EDIT_FRAME_PADDING_PX: f32 = 15.0;
 
+/// How the ground plane renders in the viewport (#159): the classic line grid, or a solid
+/// filled plane in the grid's grey.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GroundDisplay {
+    #[default]
+    Grid,
+    Solid,
+}
+
+/// All ground display modes, in the order they should list in the HUD popup.
+pub const GROUND_DISPLAYS: [GroundDisplay; 2] = [GroundDisplay::Grid, GroundDisplay::Solid];
+
+impl GroundDisplay {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "grid" | "ground_grid" | "lines" => Some(Self::Grid),
+            "solid" | "solid_ground" | "plane" => Some(Self::Solid),
+            _ => None,
+        }
+    }
+
+    pub fn script_name(self) -> &'static str {
+        match self {
+            Self::Grid => "grid",
+            Self::Solid => "solid",
+        }
+    }
+}
+
 /// A look-at orbit camera parameterised in spherical coordinates around a
 /// `target` point.
 #[derive(Clone, Debug)]
@@ -214,6 +243,8 @@ pub struct Camera {
     pub projection: ProjectionMode,
     /// How committed bodies are drawn (#33). Viewport preference, not model data.
     pub shading: ShadingMode,
+    /// How the ground plane renders (#159). Transient view state, like `shading`.
+    pub ground: GroundDisplay,
     /// When set, overrides world Z as the look-at up vector (sketch mode).
     view_up: Option<Vec3>,
     /// Accumulated trackball rotation relative to [`orbit_base_offset`].
@@ -238,6 +269,7 @@ impl Default for Camera {
             fov_y: 45f32.to_radians(),
             projection: ProjectionMode::Natural,
             shading: ShadingMode::default(),
+            ground: GroundDisplay::default(),
             view_up: None,
             orbit_quat: None,
             orbit_base_offset: None,
@@ -456,6 +488,14 @@ impl Camera {
 
     pub fn shading_mode(&self) -> ShadingMode {
         self.shading
+    }
+
+    pub fn ground_display(&self) -> GroundDisplay {
+        self.ground
+    }
+
+    pub fn set_ground_display(&mut self, mode: GroundDisplay) {
+        self.ground = mode;
     }
 
     pub fn set_shading_mode(&mut self, mode: ShadingMode) {

@@ -1,7 +1,7 @@
 //! Lua scripting API (`bearcad` global) for driving the live application.
 
 use crate::actions::{DimLabelAxis, Pane, RectAxis, Tool};
-use crate::camera::{ProjectionMode, ShadingMode, StandardView};
+use crate::camera::{GroundDisplay, ProjectionMode, ShadingMode, StandardView};
 use crate::construction::PlaneDim;
 use crate::geometric_constraints::GeometricConstraintType;
 use crate::hierarchy::SceneElement;
@@ -93,6 +93,9 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::Extrusion(_) => "extrusion",
         SceneElement::Body(_) => "body",
         SceneElement::FaceEdge(_) => "face_edge",
+        SceneElement::BodyEdge { .. } => "body_edge",
+        SceneElement::BodyVertex { .. } => "body_vertex",
+        SceneElement::Image(_) => "image",
     }
 }
 
@@ -104,8 +107,12 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::Circle(i)
         | SceneElement::Constraint(i)
         | SceneElement::Extrusion(i)
-        | SceneElement::Body(i) => i,
-        SceneElement::Point(_) | SceneElement::FaceEdge(_) => 0,
+        | SceneElement::Body(i)
+        | SceneElement::Image(i) => i,
+        SceneElement::Point(_)
+        | SceneElement::FaceEdge(_)
+        | SceneElement::BodyEdge { .. }
+        | SceneElement::BodyVertex { .. } => 0,
     }
 }
 
@@ -548,6 +555,41 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, path: String| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::ImportStl { path }) }
+        })?,
+    )?;
+
+    // #163/#169: import a PNG/JPEG as a tracing image. `import_image("p.png")` or
+    // `import_image{ path = "p.png", plane = 0 }`.
+    api.set(
+        "import_image",
+        lua.create_function(|lua, value: Value| {
+            let (path, plane) = match value {
+                Value::String(s) => (s.to_str()?.to_string(), None),
+                Value::Table(t) => (t.get::<String>("path")?, t.get::<Option<usize>>("plane")?),
+                _ => {
+                    return Err(mlua::Error::external(
+                        "import_image takes a path string or { path =, plane = }",
+                    ))
+                }
+            };
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::ImportImage { path, plane }) }
+        })?,
+    )?;
+
+    // #171: calibrate a tracing image's scale from a plane-local reference segment.
+    api.set(
+        "calibrate_image",
+        lua.create_function(|lua, opts: Table| {
+            let image: usize = opts.get("image")?;
+            let parse_point = |t: Table| -> mlua::Result<(f32, f32)> {
+                Ok((t.get(1)?, t.get(2)?))
+            };
+            let a = parse_point(opts.get::<Table>("from")?)?;
+            let b = parse_point(opts.get::<Table>("to")?)?;
+            let length: f32 = opts.get("length")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::CalibrateImage { image, a, b, length }) }
         })?,
     )?;
 
@@ -1416,6 +1458,17 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // #159: how the ground plane renders ("grid" | "solid").
+    api.set(
+        "ground",
+        lua.create_function(|lua, name: String| {
+            let mode = GroundDisplay::from_name(&name)
+                .ok_or_else(|| mlua::Error::external(format!("unknown ground display '{name}'")))?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::GroundDisplay(mode)) }
+        })?,
+    )?;
+
     // #108: absolute camera control. `bearcad.ui.camera{}` (no args / no pose keys) is a pure
     // read of the live pose; passing any subset of `yaw`/`pitch`/`distance`/`target = {x, y, z}`
     // sets those fields instantly (no transition animation — deterministic for screenshots).
@@ -2162,7 +2215,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         bearcad.ui = {}
         local ui_funcs = {
             "tool", "focus_name", "focus_dim", "pane", "palette",
-            "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading",
+            "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
             "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",
             "camera", "zoom_fit", "elements_view",
             "move", "click", "move_ground", "click_ground",

@@ -432,9 +432,12 @@ pub fn propagate_parameter_rename(doc: &mut Document, old: &str, new: &str) {
     propagate_parameter_rename_to_constraints(doc, old, new);
 }
 
-/// Re-evaluate sketch constraints and apply solved geometry.
+/// Re-evaluate sketch constraints and apply solved geometry, then re-resolve associative
+/// projections (#140) so they track their source bodies through the change.
 pub fn recompute_document_geometry(doc: &mut Document) -> Result<(), String> {
-    solve_document_constraints(doc)
+    let result = solve_document_constraints(doc);
+    crate::projection::refresh_projections(doc);
+    result
 }
 
 pub fn validate_new_parameter_name(doc: &Document, name: &str, except: Option<usize>) -> Result<(), String> {
@@ -611,17 +614,66 @@ pub fn parse_inline_parameter_definition(text: &str) -> Option<(String, String)>
     Some((name.to_string(), value.to_string()))
 }
 
-/// If `text` is `name=value`, create the parameter and replace `text` with `name`.
+/// What committing an inline `name=…` entry did (SPEC §5.1.1) — surfaced in the status bar
+/// so it's unambiguous whether the name was created, redefined, or merely reused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InlineParameterCommit {
+    /// `name=value` with a fresh name: the parameter was created.
+    Created(String),
+    /// `name=value` where `name` already existed: its expression was redefined to `value`.
+    Redefined(String),
+    /// Bare `name=` where `name` already exists: the field was bound to the parameter,
+    /// which is left unchanged.
+    Reused(String),
+}
+
+impl InlineParameterCommit {
+    /// Status-bar message describing the outcome.
+    pub fn status_message(&self) -> String {
+        match self {
+            Self::Created(name) => format!("Added parameter {name}"),
+            Self::Redefined(name) => format!("Redefined parameter {name}"),
+            Self::Reused(name) => format!("Using parameter {name}"),
+        }
+    }
+}
+
+/// Commit inline parameter syntax in a dimension field (SPEC §5.1.1): `name=value` creates
+/// the parameter — or **redefines** it when `name` already exists — and bare `name=` of an
+/// existing parameter **reuses** it. In every case `text` is replaced with `name` so the
+/// field is left bound to the parameter.
 pub fn try_commit_inline_parameter_definition(
     doc: &mut Document,
     text: &mut String,
-) -> Result<Option<String>, String> {
+) -> Result<Option<InlineParameterCommit>, String> {
+    // Bare `name=`: bind the field to the existing parameter, unchanged.
+    if let Some(name) = text.trim().strip_suffix('=') {
+        let name = name.trim().to_string();
+        if crate::value::is_valid_parameter_name(&name) {
+            if let Some(index) = parameter_index_by_name(doc, &name) {
+                if !doc.parameters[index].deleted {
+                    *text = name.clone();
+                    return Ok(Some(InlineParameterCommit::Reused(name)));
+                }
+            }
+        }
+    }
     let Some((name, value)) = parse_inline_parameter_definition(text) else {
         return Ok(None);
     };
+    // `name=value` on an existing (live) name redefines that parameter's expression; a
+    // deleted parameter still reserves its name, so it falls through to `add_parameter`'s
+    // duplicate-name error rather than silently editing an invisible row.
+    if let Some(index) = parameter_index_by_name(doc, &name) {
+        if !doc.parameters[index].deleted {
+            set_parameter_expression(doc, index, value)?;
+            *text = name.clone();
+            return Ok(Some(InlineParameterCommit::Redefined(name)));
+        }
+    }
     add_parameter(doc, name.clone(), value)?;
     *text = name.clone();
-    Ok(Some(name))
+    Ok(Some(InlineParameterCommit::Created(name)))
 }
 
 pub fn add_parameter(doc: &mut Document, name: String, expression: String) -> Result<usize, String> {
@@ -1085,11 +1137,44 @@ mod tests {
     fn try_commit_inline_parameter_definition_creates_parameter() {
         let mut doc = Document::default();
         let mut text = "width=10mm".to_string();
-        let name = try_commit_inline_parameter_definition(&mut doc, &mut text).unwrap();
-        assert_eq!(name.as_deref(), Some("width"));
+        let outcome = try_commit_inline_parameter_definition(&mut doc, &mut text).unwrap();
+        assert_eq!(outcome, Some(InlineParameterCommit::Created("width".to_string())));
         assert_eq!(text, "width");
         assert_eq!(doc.parameters[0].name, "width");
         assert_eq!(doc.parameters[0].expression, "10mm");
+    }
+
+    /// #147 / SPEC §5.1.1: `name=value` on an existing name **redefines** that parameter
+    /// (no duplicate-name error), and bare `name=` **reuses** it unchanged.
+    #[test]
+    fn inline_definition_redefines_or_reuses_an_existing_parameter() {
+        let mut doc = Document::default();
+        add_parameter(&mut doc, "dia".to_string(), "20mm".to_string()).unwrap();
+
+        let mut text = "dia=30".to_string();
+        let outcome = try_commit_inline_parameter_definition(&mut doc, &mut text).unwrap();
+        assert_eq!(outcome, Some(InlineParameterCommit::Redefined("dia".to_string())));
+        assert_eq!(text, "dia");
+        assert_eq!(doc.parameters[0].expression, "30");
+        assert_eq!(doc.parameters.len(), 1, "redefine must not add a second parameter");
+
+        let mut text = "dia=".to_string();
+        let outcome = try_commit_inline_parameter_definition(&mut doc, &mut text).unwrap();
+        assert_eq!(outcome, Some(InlineParameterCommit::Reused("dia".to_string())));
+        assert_eq!(text, "dia");
+        assert_eq!(doc.parameters[0].expression, "30", "reuse leaves the value unchanged");
+    }
+
+    /// A bare `name=` for a name that doesn't exist stays untouched (nothing to reuse) —
+    /// the field's normal unknown-variable handling takes over.
+    #[test]
+    fn inline_bare_equals_without_existing_parameter_is_left_alone() {
+        let mut doc = Document::default();
+        let mut text = "dia=".to_string();
+        let outcome = try_commit_inline_parameter_definition(&mut doc, &mut text).unwrap();
+        assert_eq!(outcome, None);
+        assert_eq!(text, "dia=");
+        assert!(doc.parameters.is_empty());
     }
 
     #[test]

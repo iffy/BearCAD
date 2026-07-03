@@ -13,6 +13,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod actions;
+mod projection;
+mod style_swatches;
 mod app_icon;
 mod camera;
 mod cli_install;
@@ -394,6 +396,10 @@ struct App {
     /// Whether we've asked the OS to lock+hide the cursor for FPS mode (#91), so
     /// enter/exit sends the viewport commands exactly once per change.
     fps_cursor_grabbed: bool,
+    /// Elements-pane row under the cursor this frame (#161): the viewport highlights it so
+    /// hovering a row shows what it is in 3D. Set while panes render, consumed by the
+    /// viewport pass in the same frame.
+    pane_hovered_element: Option<SceneElement>,
     /// Frames left to swallow mouse-look motion after entering FPS mode (#135): locking and
     /// pinning the cursor to the crosshair can report the warp (from wherever the OS cursor
     /// was, to the viewport center) as one huge pointer-motion delta, which would spin the
@@ -480,6 +486,7 @@ impl App {
             show_commands,
             last_viewport: None,
             fps_cursor_grabbed: false,
+            pane_hovered_element: None,
             fps_look_warmup: 0,
             native_menu,
             dim_label_drag: None,
@@ -541,6 +548,19 @@ impl App {
         if let Some(path) = picked {
             self.state.apply(Action::ImportStl {
                 path: path.to_string_lossy().to_string(),
+            });
+        }
+    }
+
+    /// Import a PNG/JPEG as a tracing image via an open dialog (File → Import Image…, #169).
+    fn import_image(&mut self) {
+        let picked = rfd::FileDialog::new()
+            .add_filter("Image", &["png", "jpg", "jpeg"])
+            .pick_file();
+        if let Some(path) = picked {
+            self.state.apply(Action::ImportImage {
+                path: path.to_string_lossy().to_string(),
+                plane: None,
             });
         }
     }
@@ -665,6 +685,7 @@ impl App {
                 MenuCommand::ExportStl => self.export_stl_all(),
                 MenuCommand::ExportStep => self.export_step_all(),
                 MenuCommand::ImportStl => self.import_stl(),
+                MenuCommand::ImportImage => self.import_image(),
                 MenuCommand::ImportStep => self.import_step(),
                 MenuCommand::ExportSessionCommands => self.export_session_commands(),
                 MenuCommand::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
@@ -842,6 +863,14 @@ impl App {
     fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
         if self.state.command_palette.open {
             return;
+        }
+
+        // Y projects the selected body edges into the open sketch (#140).
+        if self.state.sketch_session.is_some()
+            && !keyboard_shortcuts_suppressed(ctx)
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Y))
+        {
+            self.state.apply(Action::ProjectSelection);
         }
 
         // Cmd/Ctrl+B toggles curve mode (#127) even while the in-progress line's inline
@@ -1544,7 +1573,8 @@ impl App {
         }
 
         let anchor = self.state.creating_edge_treatment.as_ref().and_then(|cet| {
-            crate::extrude::extrusion_edge_anchor(&self.state.doc, cet.extrusion, cet.edge)
+            let (extrusion, edge) = cet.primary()?;
+            crate::extrude::extrusion_edge_anchor(&self.state.doc, extrusion, edge)
         });
 
         let following = self.edge_treatment_gizmo_drag.is_some();
@@ -1596,13 +1626,12 @@ impl App {
             }
         }
 
-        // A click while following commits the treatment.
+        // A click while following commits the treatment set.
         if following && primary_pressed {
             if let Some(cet) = self.state.creating_edge_treatment.take() {
                 let amount = cet.evaluated_amount(&self.state.doc);
-                self.state.apply(Action::CommitEdgeTreatment {
-                    extrusion: cet.extrusion,
-                    edge: cet.edge,
+                self.state.apply(Action::CommitEdgeTreatments {
+                    edges: cet.edges.clone(),
                     kind: cet.kind,
                     amount,
                 });
@@ -1614,23 +1643,30 @@ impl App {
             return;
         }
 
-        // Click a treatable analytic edge (vertical or side/cap) to begin.
-        if primary_pressed && self.state.creating_edge_treatment.is_none() {
+        // Click a treatable analytic edge (vertical or side/cap) to begin; with a treatment
+        // already in progress, shift/⌘+click toggles the edge in the set (#166) and a plain
+        // click on another edge restarts with just that edge.
+        if primary_pressed {
             if let Some(pp) = pointer_screen {
                 if let Some((extrusion, edge, _, _, _)) =
                     construction::nearest_treatable_edge(pp, project, &self.state.doc)
                 {
-                    self.state.creating_edge_treatment = Some(CreatingEdgeTreatment {
-                        extrusion,
-                        edge,
-                        kind,
-                        amount_live: DEFAULT_VERTEX_TREATMENT_AMOUNT,
-                        text: crate::value::format_length_display(
-                            DEFAULT_VERTEX_TREATMENT_AMOUNT,
-                        ),
-                        user_edited: false,
-                        pending_focus: true,
-                    });
+                    let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+                    match self.state.creating_edge_treatment.as_mut() {
+                        Some(cet) if additive => cet.toggle_edge((extrusion, edge)),
+                        _ => {
+                            self.state.creating_edge_treatment = Some(CreatingEdgeTreatment {
+                                edges: vec![(extrusion, edge)],
+                                kind,
+                                amount_live: DEFAULT_VERTEX_TREATMENT_AMOUNT,
+                                text: crate::value::format_length_display(
+                                    DEFAULT_VERTEX_TREATMENT_AMOUNT,
+                                ),
+                                user_edited: false,
+                                pending_focus: true,
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -1647,8 +1683,11 @@ impl App {
             let Some(cet) = self.state.creating_edge_treatment.as_ref() else {
                 return;
             };
+            let Some((extrusion, edge)) = cet.primary() else {
+                return;
+            };
             let Some((origin, normal)) =
-                crate::extrude::extrusion_edge_anchor(&self.state.doc, cet.extrusion, cet.edge)
+                crate::extrude::extrusion_edge_anchor(&self.state.doc, extrusion, edge)
             else {
                 return;
             };
@@ -1723,9 +1762,8 @@ impl App {
         if commit {
             if let Some(cet) = self.state.creating_edge_treatment.take() {
                 let amount = cet.evaluated_amount(&self.state.doc);
-                self.state.apply(Action::CommitEdgeTreatment {
-                    extrusion: cet.extrusion,
-                    edge: cet.edge,
+                self.state.apply(Action::CommitEdgeTreatments {
+                    edges: cet.edges.clone(),
                     kind: cet.kind,
                     amount,
                 });
@@ -1993,6 +2031,7 @@ impl eframe::App for App {
             let mut export_body: Option<usize> = None;
             let mut export_body_step: Option<usize> = None;
             let mut click_element: Option<(SceneElement, bool)> = None;
+            let mut pane_hovered_element: Option<SceneElement> = None;
             egui::SidePanel::left("tree")
                 .resizable(true)
                 .default_width(220.0)
@@ -2017,6 +2056,9 @@ impl eframe::App for App {
                     let mut queue_click = |element: SceneElement, additive: bool| {
                         click_element = Some((element, additive));
                     };
+                    let mut queue_hover = |element: SceneElement| {
+                        pane_hovered_element = Some(element);
+                    };
                     // Highlight the elements that use the variable focused in the Parameters pane.
                     let highlight_elements = parameters::focused_parameter_name(ctx, &self.state.doc)
                         .map(|name| parameters::elements_using_parameter(&self.state.doc, &name))
@@ -2037,9 +2079,11 @@ impl eframe::App for App {
                         &mut queue_export_body_step,
                         &mut noop_visibility,
                         &mut queue_click,
+                        &mut queue_hover,
                         &highlight_elements,
                     );
                 });
+            self.pane_hovered_element = pane_hovered_element;
             if let Some((element, additive)) = click_element {
                 self.state.apply(Action::ClickSceneElement { element, additive });
             }
@@ -2095,6 +2139,58 @@ impl eframe::App for App {
                     .creating_extrusion
                     .as_ref()
                     .map(|ce| ce.body_mode),
+                // #157/#167: the Chamfer/Fillet selection picker — rows for the in-progress
+                // edge set (empty rows still show the picker with its pick hint).
+                edge_treatment_rows: (matches!(self.state.tool, Tool::Chamfer | Tool::Fillet)
+                    && self.state.sketch_session.is_none())
+                .then(|| {
+                    self.state
+                        .creating_edge_treatment
+                        .as_ref()
+                        .map(|cet| {
+                            cet.edges
+                                .iter()
+                                .map(|(ei, edge)| {
+                                    context::edge_treatment_row_label(&self.state.doc, *ei, *edge)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                }),
+                // #171: "Calibrate scale" shows when exactly one tracing image and one
+                // line (on the image's host plane) are selected — the line is the
+                // reference segment drawn over a known image feature.
+                calibrate_image: {
+                    let mut image = None;
+                    let mut line = None;
+                    let mut extras = false;
+                    for element in self.state.scene_selection.iter() {
+                        match element {
+                            SceneElement::Image(i) if image.is_none() => image = Some(i),
+                            SceneElement::Line(li) if line.is_none() => line = Some(li),
+                            _ => extras = true,
+                        }
+                    }
+                    match (image, line, extras) {
+                        (Some(image), Some(li), false) => self
+                            .state
+                            .doc
+                            .tracing_images
+                            .get(image)
+                            .filter(|img| !img.deleted)
+                            .zip(self.state.doc.lines.get(li).filter(|l| !l.deleted))
+                            .filter(|(img, line)| {
+                                self.state.doc.sketch_face(line.sketch)
+                                    == Some(model::FaceId::ConstructionPlane(img.plane))
+                            })
+                            .map(|(_, line)| context::CalibrateImageControl {
+                                image,
+                                a: (line.x0, line.y0),
+                                b: (line.x1, line.y1),
+                            }),
+                        _ => None,
+                    }
+                },
             };
             let content = context::context_pane_content(&context_input);
             context::sync_name_draft(&mut self.state.context_pane, &self.state.doc, &content);
@@ -2107,6 +2203,8 @@ impl eframe::App for App {
             let mut snapping_change: Option<bool> = None;
             let mut extrude_body_mode_change: Option<actions::ExtrudeBodyMode> = None;
             let mut units_change: Option<context::UnitsChoice> = None;
+            let mut edge_picker_edit: Option<Option<usize>> = None;
+            let mut calibrate_apply: Option<(context::CalibrateImageControl, String)> = None;
             egui::SidePanel::right("context")
                 .resizable(true)
                 .default_width(200.0)
@@ -2134,8 +2232,42 @@ impl eframe::App for App {
                         &mut |enabled| snapping_change = Some(enabled),
                         &mut |mode| extrude_body_mode_change = Some(mode),
                         &mut |choice| units_change = Some(choice),
+                        &mut |edit| edge_picker_edit = Some(edit),
+                        &mut |control, text| calibrate_apply = Some((control, text)),
                     );
                 });
+            if let Some((control, text)) = calibrate_apply {
+                match crate::value::eval_parameter_in_doc(&text, &self.state.doc) {
+                    Some(crate::value::EvaluatedParameter::LengthMm(length)) if length > 0.0 => {
+                        self.state.apply(Action::CalibrateImage {
+                            image: control.image,
+                            a: control.a,
+                            b: control.b,
+                            length,
+                        });
+                    }
+                    _ => {
+                        self.state.status = format!("Not a usable length: {text}");
+                    }
+                }
+            }
+            if let Some(edit) = edge_picker_edit {
+                // Remove one row (or clear the set) from the in-progress treatment (#167);
+                // dropping the last edge cancels the treatment entirely.
+                match edit {
+                    Some(index) => {
+                        if let Some(cet) = self.state.creating_edge_treatment.as_mut() {
+                            if index < cet.edges.len() {
+                                cet.edges.remove(index);
+                            }
+                            if cet.edges.is_empty() {
+                                self.state.creating_edge_treatment = None;
+                            }
+                        }
+                    }
+                    None => self.state.creating_edge_treatment = None,
+                }
+            }
             if let Some(enabled) = snapping_change {
                 self.state.apply(Action::SetSnapping(enabled));
             }
@@ -2316,6 +2448,10 @@ mod col {
     pub const DIM_ANNOTATION: Color32 = Color32::from_rgb(180, 188, 204);
     /// All construction geometry (planes, etc.) shares this colour.
     pub const CONSTRUCTION: Color32 = crate::construction::CONSTRUCTION_RGBA;
+    /// Fully-constrained solid lines (#172): no remaining degrees of freedom.
+    pub const RECT_LINE_CONSTRAINED: Color32 = Color32::from_rgb(225, 228, 235);
+    /// Associative projections (#140): dashed like construction, in their own teal.
+    pub const PROJECTION: Color32 = Color32::from_rgb(70, 200, 190);
     /// Faded appearance for geometry outside the active sketch face.
     pub const SKETCH_DIMMED: f32 = crate::gpu_viewport::SKETCH_DIMMED;
 }
@@ -2458,6 +2594,7 @@ fn resolve_viewport_hover_highlight(
     vp: &glam::Mat4,
     doc: &model::Document,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    occlusion: Option<&construction::PickOcclusion>,
 ) -> Option<gpu_viewport::ViewportHoverHighlight> {
     if suppress_hover {
         return None;
@@ -2472,7 +2609,7 @@ fn resolve_viewport_hover_highlight(
         }
         Tool::ConstructionPlane if !creating_plane => {
             let gp = cam.ground_point(pp, viewport, vp);
-            resolve_pick_target(pp, project, gp, doc)
+            resolve_pick_target(pp, project, gp, doc, occlusion)
                 .map(|t| gpu_viewport::ViewportHoverHighlight::PickTarget(t.kind))
         }
         Tool::Select | Tool::Constraint
@@ -2481,10 +2618,20 @@ fn resolve_viewport_hover_highlight(
             let gp = cam.ground_point(pp, viewport, vp);
             // 3D body sub-elements (#144): a vertex, edge, or face of any body highlights under
             // the cursor, in that priority order (a corner beats an edge beats the face it's on).
-            if let Some((kind, _)) = construction::nearest_body_vertex(pp, project, doc) {
+            // A vertex hidden behind another body is not a candidate (#155).
+            if let Some((kind, _)) =
+                construction::nearest_body_vertex(pp, project, doc).filter(|(kind, _)| {
+                    match kind {
+                        construction::PickTargetKind::BodyVertex { position, .. } => {
+                            occlusion.is_none_or(|occ| !occ.occluded(*position))
+                        }
+                        _ => true,
+                    }
+                })
+            {
                 return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(kind));
             }
-            if let Some(t) = resolve_pick_target(pp, project, gp, doc) {
+            if let Some(t) = resolve_pick_target(pp, project, gp, doc, occlusion) {
                 if scene_element_from_pick(&t.kind).is_some()
                     || matches!(t.kind, construction::PickTargetKind::BodyEdge { .. })
                 {
@@ -2642,7 +2789,7 @@ fn build_viewport_scene_input<'a>(
     // there's no ambiguity about which one is "active".
     let editing_extrusion = creating_extrusion
         .and_then(|ce| ce.edit_index)
-        .or_else(|| creating_edge_treatment.map(|cet| cet.extrusion));
+        .or_else(|| creating_edge_treatment.and_then(|cet| Some(cet.primary()?.0)));
 
     let preview_extrusion = creating_extrusion
         .and_then(|ce| {
@@ -2666,11 +2813,18 @@ fn build_viewport_scene_input<'a>(
             if amount <= 0.0 {
                 return None;
             }
-            crate::extrude::extrusion_with_edge_treatment(
-                doc,
-                cet.extrusion,
-                model::EdgeTreatment { edge: cet.edge, kind: cet.kind, amount },
-            )
+            // Ghost-preview every in-progress edge on the primary (gizmo-anchoring)
+            // extrusion (#166). Edges of the set living on *other* extrusions still commit,
+            // but only the primary gets a ghost — the single-slot preview mechanism shows
+            // one extrusion at a time.
+            let (primary, _) = cet.primary()?;
+            let treatments: Vec<model::EdgeTreatment> = cet
+                .edges
+                .iter()
+                .filter(|(ei, _)| *ei == primary)
+                .map(|(_, edge)| model::EdgeTreatment { edge: *edge, kind: cet.kind, amount })
+                .collect();
+            crate::extrude::extrusion_with_edge_treatments(doc, primary, treatments)
         });
 
     // #142: a cut extrusion previews the finished cut result over the target body, not an
@@ -2693,8 +2847,10 @@ fn build_viewport_scene_input<'a>(
             y_axis: col::Y_AXIS,
             z_axis: col::Z_AXIS,
             rect_line: col::RECT_LINE,
+            rect_line_constrained: col::RECT_LINE_CONSTRAINED,
             preview: col::PREVIEW,
             construction: col::CONSTRUCTION,
+            projection: col::PROJECTION,
             dim_edge_highlight: col::DIM_EDGE_HIGHLIGHT,
             construction_plane_fill: construction::PLANE_FILL_RGBA,
             construction_plane_opacity: gpu_viewport::DEFAULT_CONSTRUCTION_PLANE_OPACITY,
@@ -2987,7 +3143,7 @@ struct SketchDimFieldResult {
     changed: bool,
     enter_commit: bool,
     lost_focus: bool,
-    inline_parameter_added: Option<String>,
+    inline_parameter_added: Option<crate::parameters::InlineParameterCommit>,
     inline_parameter_error: Option<String>,
 }
 
@@ -3179,7 +3335,7 @@ fn show_sketch_dimension_field(
     let mut inline_parameter_error = None;
     if enter_commit || lost_focus {
         match crate::parameters::try_commit_inline_parameter_definition(doc, text) {
-            Ok(Some(name)) => inline_parameter_added = Some(name),
+            Ok(Some(outcome)) => inline_parameter_added = Some(outcome),
             Ok(None) => {}
             Err(error) => inline_parameter_error = Some(error),
         }
@@ -3194,9 +3350,9 @@ fn show_sketch_dimension_field(
 }
 
 fn apply_dimension_field_feedback(state: &mut AppState, result: &SketchDimFieldResult) {
-    if let Some(name) = &result.inline_parameter_added {
+    if let Some(outcome) = &result.inline_parameter_added {
         state.refresh_document_health();
-        state.status = format!("Added parameter {name}");
+        state.status = outcome.status_message();
     } else if let Some(error) = &result.inline_parameter_error {
         state.status = error.clone();
     }
@@ -4808,6 +4964,23 @@ impl App {
         let cam_project = cam.clone();
         let project = move |w: Vec3| cam_project.project(w, viewport, &vp);
 
+        // Occlusion context for picking (#155): tools that pick scene geometry must not
+        // select things hidden behind a body. Built once per frame, only for those tools
+        // (it meshes every visible body).
+        let pick_occlusion = if matches!(
+            self.state.tool,
+            Tool::Select | Tool::Constraint | Tool::ConstructionPlane | Tool::Dimension
+        ) {
+            Some(construction::PickOcclusion::new(
+                &self.state.doc,
+                &self.state.element_visibility,
+                cam.eye(),
+            ))
+        } else {
+            None
+        };
+        let pick_occlusion = pick_occlusion.as_ref();
+
         let sketch_session = self.state.sketch_session;
         let planar_label_view = sketch_session.and_then(|session| {
             sketch_geometry_frame(&self.state.doc, session.sketch)
@@ -5079,6 +5252,17 @@ impl App {
                     // reaching here selects something else — clear the handle selection (#75).
                     self.selected_bezier_handle = None;
                     let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+                    // Body vertices outrank edges/other targets, mirroring the hover
+                    // priority in `resolve_viewport_hover_highlight` (#144/#156) — what the
+                    // hover shows is what the click selects.
+                    let body_vertex = construction::nearest_body_vertex(pp, &project, &self.state.doc)
+                        .filter(|(kind, _)| match kind {
+                            construction::PickTargetKind::BodyVertex { position, .. } => {
+                                pick_occlusion.is_none_or(|occ| !occ.occluded(*position))
+                            }
+                            _ => true,
+                        })
+                        .and_then(|(kind, _)| scene_element_from_pick(&kind));
                     if let Some(index) =
                         pointer_over_constraint_icon(&constraint_icon_hits, pp)
                     {
@@ -5086,8 +5270,11 @@ impl App {
                             element: SceneElement::Constraint(index),
                             additive,
                         });
+                    } else if let Some(element) = body_vertex {
+                        self.state
+                            .apply(Action::ClickSceneElement { element, additive });
                     } else if let Some(target) =
-                        resolve_pick_target(pp, &project, gp, &self.state.doc)
+                        resolve_pick_target(pp, &project, gp, &self.state.doc, pick_occlusion)
                     {
                         if let Some(element) = scene_element_from_pick(&target.kind) {
                             self.state
@@ -5099,7 +5286,7 @@ impl App {
                         self.state.apply(Action::ClearSceneSelection);
                     }
                 } else if !self.gpu_viewport && !suppress_hover_highlight {
-                    if let Some(target) = resolve_pick_target(pp, &project, gp, &self.state.doc) {
+                    if let Some(target) = resolve_pick_target(pp, &project, gp, &self.state.doc, pick_occlusion) {
                         if scene_element_from_pick(&target.kind).is_some() {
                             target.draw_highlight(&painter, &project, &self.state.doc);
                         }
@@ -5456,7 +5643,7 @@ impl App {
                         && !over_committed_dim_label
                     {
                         if let Some(target) =
-                            resolve_pick_target(pp, &project, Some(gp), &self.state.doc)
+                            resolve_pick_target(pp, &project, Some(gp), &self.state.doc, pick_occlusion)
                         {
                             if let Some(distance_target) = distance_target_from_pick(
                                 &self.state.doc,
@@ -5470,7 +5657,7 @@ impl App {
                         }
                     } else if self.state.editing_committed_dim.is_none() && !suppress_hover_highlight {
                         if let Some(target) =
-                            resolve_pick_target(pp, &project, Some(gp), &self.state.doc)
+                            resolve_pick_target(pp, &project, Some(gp), &self.state.doc, pick_occlusion)
                         {
                             if distance_target_from_pick(
                                 &self.state.doc,
@@ -5553,7 +5740,7 @@ impl App {
 
                 if !was_creating && primary_pressed {
                     if let Some(target) =
-                        resolve_pick_target(pp, &project, gp, &self.state.doc)
+                        resolve_pick_target(pp, &project, gp, &self.state.doc, pick_occlusion)
                     {
                         let parent = parent_from_pick_target(&self.state.doc, target.kind);
                         self.state.apply(Action::BeginConstructionPlane {
@@ -5783,7 +5970,13 @@ impl App {
             &vp,
             doc,
             &project,
+            pick_occlusion,
         );
+        // Elements-pane hover wins (#161): the mouse is over the pane, so no viewport pick
+        // is active anyway; show the hovered row's element instead.
+        if let Some(element) = self.pane_hovered_element.take() {
+            hover_highlight = Some(gpu_viewport::ViewportHoverHighlight::Element(element));
+        }
         // Extrude tool: highlight the face under the cursor and render the normal gizmo (same
         // arrow as the construction-plane offset gizmo) through the GPU scene.
         let mut extrude_gizmo = None;
@@ -5888,9 +6081,9 @@ impl App {
                 vertex_treatment_preview =
                     vertex_treatment_preview_points(doc, session.sketch, cvt);
             } else if let Some(cet) = self.state.creating_edge_treatment.as_ref() {
-                if let Some((origin, normal)) =
-                    crate::extrude::extrusion_edge_anchor(doc, cet.extrusion, cet.edge)
-                {
+                if let Some((origin, normal)) = cet.primary().and_then(|(extrusion, edge)| {
+                    crate::extrude::extrusion_edge_anchor(doc, extrusion, edge)
+                }) {
                     let handle_offset =
                         construction::gizmo_display_offset(cet.evaluated_amount(doc));
                     let hovered = self.edge_treatment_gizmo_drag.is_some()
@@ -5954,8 +6147,14 @@ impl App {
                     continue;
                 }
                 let dim = sketch_session.is_some_and(|s| line.sketch != s.sketch);
-                let base = if line.construction {
+                let base = if line.projection.is_some() {
+                    sketch_color(col::PROJECTION, dim)
+                } else if line.construction {
                     sketch_color(col::CONSTRUCTION, dim)
+                } else if crate::sketch_solver::sketch_fully_constrained_lines(&self.state.doc, line.sketch)
+                    .is_ok_and(|set| set.contains(&li))
+                {
+                    sketch_color(col::RECT_LINE_CONSTRAINED, dim)
                 } else {
                     sketch_color(col::RECT_LINE, dim)
                 };
@@ -6441,7 +6640,7 @@ impl App {
         {
             if let Some(pp) = response.hover_pos().or(response.interact_pointer_pos()) {
                 let gp = cam.ground_point(pp, viewport, &vp);
-                if let Some(target) = resolve_pick_target(pp, &project, gp, &self.state.doc) {
+                if let Some(target) = resolve_pick_target(pp, &project, gp, &self.state.doc, pick_occlusion) {
                     target.draw_highlight(&painter, &project, &self.state.doc);
                 }
             }
@@ -7838,8 +8037,7 @@ mod tests {
 
         let edge = ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
         state.creating_edge_treatment = Some(CreatingEdgeTreatment {
-            extrusion: 0,
-            edge,
+            edges: vec![(0, edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount_live: 2.0,
             text: "2".to_string(),
@@ -8328,6 +8526,7 @@ mod tests {
                 &vp,
                 &doc,
                 &project,
+                None,
             )
             .is_none()
         );

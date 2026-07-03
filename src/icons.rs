@@ -44,6 +44,8 @@ pub enum IconId {
     ShadingSolid,
     ShadingSolidWireframe,
     ShadingRealistic,
+    GroundGrid,
+    GroundSolid,
     ViewList,
     ViewTree,
     ViewGraph,
@@ -55,7 +57,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 37] = [
+    pub const ALL: [Self; 39] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -87,6 +89,8 @@ impl IconId {
         Self::ShadingSolid,
         Self::ShadingSolidWireframe,
         Self::ShadingRealistic,
+        Self::GroundGrid,
+        Self::GroundSolid,
         Self::ViewList,
         Self::ViewTree,
         Self::ViewGraph,
@@ -128,6 +132,8 @@ impl IconId {
             Self::ShadingSolid => include_str!("assets/icons/solid.svg"),
             Self::ShadingSolidWireframe => include_str!("assets/icons/solid_wireframe.svg"),
             Self::ShadingRealistic => include_str!("assets/icons/realistic.svg"),
+            Self::GroundGrid => include_str!("assets/icons/ground_grid.svg"),
+            Self::GroundSolid => include_str!("assets/icons/ground_solid.svg"),
             Self::ViewList => include_str!("assets/icons/view_list.svg"),
             Self::ViewTree => include_str!("assets/icons/view_tree.svg"),
             Self::ViewGraph => include_str!("assets/icons/view_graph.svg"),
@@ -170,6 +176,8 @@ impl IconId {
             Self::ShadingSolid => "Solid",
             Self::ShadingSolidWireframe => "Solid + wireframe",
             Self::ShadingRealistic => "Realistic",
+            Self::GroundGrid => "Ground grid",
+            Self::GroundSolid => "Solid ground",
             Self::ViewList => "List view",
             Self::ViewTree => "Tree view",
             Self::ViewGraph => "Graph view",
@@ -202,6 +210,13 @@ pub fn icon_for_shading_mode(mode: crate::camera::ShadingMode) -> IconId {
         crate::camera::ShadingMode::Solid => IconId::ShadingSolid,
         crate::camera::ShadingMode::SolidWireframe => IconId::ShadingSolidWireframe,
         crate::camera::ShadingMode::Realistic => IconId::ShadingRealistic,
+    }
+}
+
+pub fn icon_for_ground_display(mode: crate::camera::GroundDisplay) -> IconId {
+    match mode {
+        crate::camera::GroundDisplay::Grid => IconId::GroundGrid,
+        crate::camera::GroundDisplay::Solid => IconId::GroundSolid,
     }
 }
 

@@ -42,6 +42,11 @@ local function u(x) return x - W / 2 end
 local function v(y) return y - H / 2 end
 
 bearcad.new()
+-- Hide the side panes so the captured viewport is landscape (#150).
+bearcad.ui.pane("elements", "hide")
+bearcad.ui.pane("context", "hide")
+bearcad.ui.pane("parameters", "hide")
+
 
 -- Trace the outline with the Line tool (the first segment auto-enters a ground-plane sketch).
 local n = #segs

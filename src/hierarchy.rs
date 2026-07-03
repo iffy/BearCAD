@@ -38,6 +38,8 @@ pub enum HierarchyNode {
     Constraint(usize),
     Extrusion(usize),
     Body(usize),
+    /// A tracing image (#163/#169).
+    Image(usize),
 }
 
 /// Identifies an element whose visibility can be toggled.
@@ -60,6 +62,36 @@ pub enum SceneElement {
     /// enum; only ever constructed with `ConstraintLine::FaceEdge` (the `Line`
     /// variant already has its own dedicated `SceneElement::Line`).
     FaceEdge(ConstraintLine),
+    /// One feature edge of a body's solid mesh, selectable in 3D select mode (#156).
+    /// Identified by its quantized world endpoints (see [`quantize_body_point`]) — a
+    /// transient, geometry-keyed identity: if a rebuild moves the edge, the selection simply
+    /// drops, which is acceptable for ephemeral (never persisted) selection state.
+    BodyEdge {
+        body: usize,
+        a: [i32; 3],
+        b: [i32; 3],
+    },
+    /// A corner of a body's solid mesh, selectable in 3D select mode (#156); quantized like
+    /// [`SceneElement::BodyEdge`].
+    BodyVertex { body: usize, p: [i32; 3] },
+    /// A tracing image (#163/#169).
+    Image(usize),
+}
+
+/// Quantize a world position (mm) to the 0.01 mm grid used for body edge/vertex selection
+/// identity (#156) — fine enough that distinct vertices never collide, coarse enough that
+/// float noise across frames maps to the same key.
+pub fn quantize_body_point(p: glam::Vec3) -> [i32; 3] {
+    [
+        (p.x * 100.0).round() as i32,
+        (p.y * 100.0).round() as i32,
+        (p.z * 100.0).round() as i32,
+    ]
+}
+
+/// Invert [`quantize_body_point`] for rendering the selected edge/vertex highlight.
+pub fn dequantize_body_point(p: [i32; 3]) -> glam::Vec3 {
+    glam::Vec3::new(p[0] as f32 / 100.0, p[1] as f32 / 100.0, p[2] as f32 / 100.0)
 }
 
 /// The [`SceneElement`] a hierarchy node dispatches through for selection, visibility,
@@ -75,6 +107,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::Constraint(i) => SceneElement::Constraint(i),
         HierarchyNode::Extrusion(i) => SceneElement::Extrusion(i),
         HierarchyNode::Body(i) => SceneElement::Body(i),
+        HierarchyNode::Image(i) => SceneElement::Image(i),
     })
 }
 
@@ -135,9 +168,14 @@ impl ElementVisibility {
             SceneElement::Body(index) => {
                 self.is_visible(SceneElement::Body(index))
                     && doc.bodies.get(index).is_some_and(|body| {
-                        body.source.extrusion_indices().iter().any(|&ei| {
-                            self.effective_visible(doc, SceneElement::Extrusion(ei))
-                        })
+                        // An imported body has no source extrusions — `any()` over the empty
+                        // list must not read as "hidden" (it made STL/STEP bodies invisible
+                        // to every effective-visibility consumer).
+                        let extrusions = body.source.extrusion_indices();
+                        extrusions.is_empty()
+                            || extrusions.iter().any(|&ei| {
+                                self.effective_visible(doc, SceneElement::Extrusion(ei))
+                            })
                     })
             }
             // A face's own edge tracks the extrusion that produced its face, same as
@@ -152,6 +190,11 @@ impl ElementVisibility {
                     SceneElement::Extrusion(extrusion.unwrap_or(usize::MAX)),
                 )
             }
+            // A body's own edge/vertex (#156) is visible exactly when its body is.
+            SceneElement::BodyEdge { body, .. } | SceneElement::BodyVertex { body, .. } => {
+                self.effective_visible(doc, SceneElement::Body(body))
+            }
+            SceneElement::Image(index) => self.is_visible(SceneElement::Image(index)),
         }
     }
 }
@@ -386,11 +429,17 @@ fn step_graph_layout(
     dt: f32,
 ) -> f32 {
     const LAYER_STIFFNESS: f32 = 10.0;
-    const REPULSION: f32 = 5000.0;
+    // #151: repulsion must win against the edge springs at dot-diameter range or siblings
+    // pile up on their parent's x. The spring is deliberately weak *and capped* (it only
+    // keeps children loosely near their parent), its rest length sits above LAYER_HEIGHT so
+    // a child directly below its parent is in compression (pushed to fan out sideways), and
+    // the repulsion constant is sized to hold ~26 px spacing against the capped spring.
+    const REPULSION: f32 = 30_000.0;
     const MIN_DIST: f32 = 6.0;
-    const MAX_REPULSION_FORCE: f32 = 2000.0;
-    const EDGE_SPRING_K: f32 = 7.0;
-    const EDGE_REST_LENGTH: f32 = 58.0;
+    const MAX_REPULSION_FORCE: f32 = 300.0;
+    const EDGE_SPRING_K: f32 = 0.6;
+    const EDGE_SPRING_MAX_FORCE: f32 = 40.0;
+    const EDGE_REST_LENGTH: f32 = 84.0;
     const CONTAIN_STIFFNESS: f32 = 14.0;
     const DAMPING: f32 = 0.86;
 
@@ -441,7 +490,9 @@ fn step_graph_layout(
         let delta = nodes[child].pos - nodes[parent].pos;
         let dist = delta.length().max(MIN_DIST);
         let dir = delta / dist;
-        let f = dir * (-EDGE_SPRING_K * (dist - EDGE_REST_LENGTH));
+        let mag = (-EDGE_SPRING_K * (dist - EDGE_REST_LENGTH))
+            .clamp(-EDGE_SPRING_MAX_FORCE, EDGE_SPRING_MAX_FORCE);
+        let f = dir * mag;
         forces[ci] += f;
         forces[pi] -= f;
     }
@@ -471,8 +522,21 @@ fn step_graph_layout(
         }
         state.vel += force * dt;
         state.vel *= DAMPING;
+        // Speed cap: in an overcrowded pane the stiff close-range forces would otherwise
+        // orbit the equilibrium forever instead of settling into it.
+        const MAX_SPEED: f32 = 200.0;
+        if state.vel.length() > MAX_SPEED {
+            state.vel = state.vel.normalized() * MAX_SPEED;
+        }
         state.pos += state.vel * dt;
-        state.pos.x = state.pos.x.clamp(lo, hi);
+        // The hard x-clamp is a wall collision: also kill the velocity component pushing
+        // into the wall, or a crowded row pins nodes at the margin with an ever-pumping
+        // velocity (sustained kinetic energy) and the layout never registers as settled.
+        let clamped_x = state.pos.x.clamp(lo, hi);
+        if clamped_x != state.pos.x {
+            state.pos.x = clamped_x;
+            state.vel.x = 0.0;
+        }
         if !state.pos.x.is_finite() {
             state.pos.x = lo;
         }
@@ -573,8 +637,11 @@ fn build_creation_ranks(doc: &Document) -> CreationRanks {
                 body_n += 1;
             }
             ShapeKind::Parameter => {}
-            // A plane edit is not a created shape; it only marks an undoable edit.
-            ShapeKind::ConstructionPlaneEdit => {}
+            // Tracing images (#169) don't participate in creation-rank ordering yet (they
+            // list after the ranked nodes).
+            ShapeKind::Image => {}
+            // Edits are not created shapes; they only mark undoable in-place changes.
+            ShapeKind::ConstructionPlaneEdit | ShapeKind::EdgeTreatmentEdit => {}
         }
     }
     ranks
@@ -591,6 +658,8 @@ fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
         HierarchyNode::Constraint(i) => *ranks.constraints.get(&i).unwrap_or(&i),
         HierarchyNode::Extrusion(i) => *ranks.extrusions.get(&i).unwrap_or(&i),
         HierarchyNode::Body(i) => *ranks.bodies.get(&i).unwrap_or(&i),
+        // Tracing images list after ranked nodes (#169).
+        HierarchyNode::Image(_) => usize::MAX,
     }
 }
 
@@ -609,7 +678,16 @@ pub fn build_hierarchy(
             continue;
         }
         let face = FaceId::ConstructionPlane(i);
-        let children = build_face_sketches(doc, face, sketch_session);
+        let mut children = build_face_sketches(doc, face, sketch_session);
+        // Tracing images (#169) nest under their host plane.
+        for (ii, image) in doc.tracing_images.iter().enumerate() {
+            if !image.deleted && image.plane == i {
+                children.push(HierarchyEntry {
+                    node: HierarchyNode::Image(ii),
+                    children: Vec::new(),
+                });
+            }
+        }
         roots.push(HierarchyEntry {
             node: HierarchyNode::ConstructionPlane(i),
             children,
@@ -746,6 +824,13 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
         // A face's own edge isn't a hierarchy-pane node in its own right (it's a constraint
         // reference, not an independently listed element) — no parent to nest under.
         SceneElement::FaceEdge(_) => None,
+        // Body sub-elements (#156) likewise aren't pane nodes of their own.
+        SceneElement::BodyEdge { .. } | SceneElement::BodyVertex { .. } => None,
+        // A tracing image nests under its host construction plane (#169).
+        SceneElement::Image(index) => doc
+            .tracing_images
+            .get(index)
+            .map(|img| SceneElement::ConstructionPlane(img.plane)),
     }
 }
 
@@ -837,7 +922,10 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         | SceneElement::Constraint(_)
         | SceneElement::Point(_)
         | SceneElement::Body(_)
-        | SceneElement::FaceEdge(_) => {}
+        | SceneElement::FaceEdge(_)
+        | SceneElement::BodyEdge { .. }
+        | SceneElement::BodyVertex { .. }
+        | SceneElement::Image(_) => {}
     }
 }
 
@@ -1091,6 +1179,8 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
             .unwrap_or(IconId::Constraint),
         HierarchyNode::Extrusion(_) => IconId::Extrude,
         HierarchyNode::Body(_) => IconId::Body,
+        // No dedicated image icon yet; the plane icon reads as "flat thing on a plane".
+        HierarchyNode::Image(_) => IconId::Plane,
     })
 }
 
@@ -1301,6 +1391,7 @@ pub fn show_pane(
     on_export_body_step: &mut impl FnMut(usize),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
+    on_hover_element: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
 ) {
     ui.horizontal(|ui| {
@@ -1346,6 +1437,7 @@ pub fn show_pane(
                         on_export_body_step,
                         on_toggle_visibility,
                         on_click_element,
+                        on_hover_element,
                         highlight_elements,
                     );
                 }
@@ -1374,6 +1466,7 @@ pub fn show_pane(
                     on_export_body_step,
                     on_toggle_visibility,
                     on_click_element,
+                    on_hover_element,
                     highlight_elements,
                 );
             });
@@ -1390,6 +1483,7 @@ pub fn show_pane(
                 &context,
                 &related_constraints,
                 on_click_element,
+                on_hover_element,
                 highlight_elements,
             );
         }
@@ -1417,6 +1511,7 @@ fn show_tree_entries(
     on_export_body_step: &mut impl FnMut(usize),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
+    on_hover_element: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
 ) {
     for entry in entries {
@@ -1438,6 +1533,7 @@ fn show_tree_entries(
             on_export_body_step,
             on_toggle_visibility,
             on_click_element,
+            on_hover_element,
             highlight_elements,
         );
         show_tree_entries(
@@ -1458,6 +1554,7 @@ fn show_tree_entries(
             on_export_body_step,
             on_toggle_visibility,
             on_click_element,
+            on_hover_element,
             highlight_elements,
         );
     }
@@ -1485,6 +1582,7 @@ fn show_graph_view(
     context: &HashSet<SceneElement>,
     related_constraints: &HashSet<usize>,
     on_click_element: &mut impl FnMut(SceneElement, bool),
+    on_hover_element: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
 ) {
     let positions = graph_node_positions(tree);
@@ -1588,6 +1686,10 @@ fn show_graph_view(
                 let response = ui.interact(node_rect, id, egui::Sense::click());
                 if response.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    // Pane-hover → viewport highlight (#161).
+                    if let Some(element) = element.clone() {
+                        on_hover_element(element);
+                    }
                 }
                 if let Some(element) = element {
                     let response = response.on_hover_text(node_label(doc, position.node));
@@ -1597,8 +1699,19 @@ fn show_graph_view(
                     }
                 }
 
-                painter.circle_filled(center, NODE_RADIUS, fill);
-                painter.circle_stroke(center, NODE_RADIUS, egui::Stroke::new(1.0, Color32::from_gray(30)));
+                // Each node draws as its element's icon (#152) — the same icon the List/Tree
+                // rows use, tinted by selection/health state; only the synthetic Document
+                // root (which has no icon) keeps the plain dot.
+                if let Some(icon) = icon_for_hierarchy_node(doc, position.node) {
+                    crate::icons::paint_icon(&painter, ui.ctx(), icon, node_rect, fill);
+                } else {
+                    painter.circle_filled(center, NODE_RADIUS, fill);
+                    painter.circle_stroke(
+                        center,
+                        NODE_RADIUS,
+                        egui::Stroke::new(1.0, Color32::from_gray(30)),
+                    );
+                }
 
                 let label = node_label(doc, position.node);
                 // Keep the label inside the pane's right edge (#34).
@@ -1654,6 +1767,7 @@ fn show_row(
     on_export_body_step: &mut impl FnMut(usize),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
+    on_hover_element: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
 ) {
     // The synthetic Document root has no SceneElement — it isn't selectable, hideable, or
@@ -1712,6 +1826,10 @@ fn show_row(
             style == RowStyle::Selected,
             styled_label(&label, style),
         );
+        // Pane-hover → viewport highlight (#161): the 3D view shows what this row is.
+        if response.hovered() {
+            on_hover_element(element.clone());
+        }
         match node {
             HierarchyNode::Document => unreachable!("handled by the early return above"),
             HierarchyNode::Sketch(sketch) => {
@@ -1778,7 +1896,8 @@ fn show_row(
             }
             HierarchyNode::Line(_)
             | HierarchyNode::Circle(_)
-            | HierarchyNode::Constraint(_) => {
+            | HierarchyNode::Constraint(_)
+            | HierarchyNode::Image(_) => {
                 if response.clicked() {
                     let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
                     on_click_element(element, additive);
@@ -1795,6 +1914,27 @@ mod tests {
     use crate::face::default_xy_plane;
     use crate::construction::PlaneReference;
     use crate::model::{ConstructionPlaneParent, Line};
+
+    /// An imported (STL/STEP) body has no source extrusions; it must still be effectively
+    /// visible by default — `any()` over the empty extrusion list used to read as hidden,
+    /// making imported bodies invisible to every effective-visibility consumer.
+    #[test]
+    fn imported_body_is_effectively_visible_by_default() {
+        let mut doc = Document::default();
+        doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles: vec![[glam::Vec3::ZERO, glam::Vec3::X, glam::Vec3::Y]],
+            source_name: "part".to_string(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: None,
+            deleted: false,
+        });
+        let mut visibility = ElementVisibility::default();
+        assert!(visibility.effective_visible(&doc, SceneElement::Body(0)));
+        visibility.set_visible(SceneElement::Body(0), false);
+        assert!(!visibility.effective_visible(&doc, SceneElement::Body(0)));
+    }
 
     #[test]
     fn default_document_hierarchy_has_single_document_root() {
@@ -2431,6 +2571,38 @@ mod tests {
                 "parent {parent:?} (y={parent_y}) must sit above child {:?} (y={child_y})",
                 p.node
             );
+        }
+    }
+
+    /// #151: repulsion must actually separate the dots — with a sketch's dozen-plus children
+    /// sharing one depth band, no two settled nodes may overlap (dot diameter is 18 px).
+    #[test]
+    fn force_layout_keeps_nodes_from_overlapping() {
+        let width = 420.0;
+        let (layout, positions) = settle_graph_layout(width, 4000);
+        for (i, a) in positions.iter().enumerate() {
+            for b in positions.iter().skip(i + 1) {
+                let pa = layout.pos_of(a.node).unwrap();
+                let pb = layout.pos_of(b.node).unwrap();
+                let dist = (pa - pb).length();
+                assert!(
+                    dist >= 19.0,
+                    "nodes {:?} and {:?} overlap: {dist:.1} px apart",
+                    a.node,
+                    b.node
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn force_layout_probe() {
+        let (layout, _positions) = settle_graph_layout(300.0, 4000);
+        let mut states: Vec<_> = layout.nodes.iter().map(|(n, s)| (*n, *s)).collect();
+        states.sort_by(|a, b| b.1.vel.length_sq().partial_cmp(&a.1.vel.length_sq()).unwrap());
+        for (n, s) in states.iter().take(10) {
+            println!("{:?} pos=({:.1},{:.1}) vel=({:.2},{:.2})", n, s.pos.x, s.pos.y, s.vel.x, s.vel.y);
         }
     }
 

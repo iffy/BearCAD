@@ -83,3 +83,12 @@ fn fs_text(input: TextVertexOutput) -> @location(0) vec4f {
     let glyph = textureSample(font_texture, font_sampler, input.uv);
     return vec4f(input.color.rgb * glyph.a, input.color.a * glyph.a);
 }
+
+// Tracing images (#170): full-color textured quads on construction planes. Reuses the text
+// vertex layout; the vertex color's alpha carries the image opacity.
+@fragment
+fn fs_image(input: TextVertexOutput) -> @location(0) vec4f {
+    let texel = textureSample(font_texture, font_sampler, input.uv);
+    let alpha = texel.a * input.color.a;
+    return vec4f(texel.rgb * alpha, alpha);
+}

@@ -51,6 +51,8 @@ pub enum PaletteCommandId {
     DeleteSelection,
     ExportSessionCommands,
     ToggleFpsMode,
+    ZoomToFit,
+    ProjectSelection,
 }
 
 /// What happens when a palette entry is chosen.
@@ -136,6 +138,8 @@ impl PaletteCommand {
                 PaletteOutcome::Action(Action::ToggleProjectionMode)
             }
             PaletteCommandId::ToggleFpsMode => PaletteOutcome::Action(Action::ToggleFpsMode),
+            PaletteCommandId::ZoomToFit => PaletteOutcome::Action(Action::ZoomToFit),
+            PaletteCommandId::ProjectSelection => PaletteOutcome::Action(Action::ProjectSelection),
             PaletteCommandId::ShowPaneHierarchy => PaletteOutcome::Action(Action::SetPaneVisible {
                 pane: Pane::Hierarchy,
                 visible: true,
@@ -431,6 +435,16 @@ const BASE_COMMANDS: &[PaletteCommand] = &[
         PaletteCommandId::ToggleFpsMode,
         "Toggle FPS Mode",
         "fps first person walk fly wasd shooter mode camera",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::ZoomToFit,
+        "Zoom to Fit",
+        "zoom fit frame selection center view camera",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::ProjectSelection,
+        "Project Selection into Sketch",
+        "project edges body sketch reference associative Y",
     ),
 ];
 

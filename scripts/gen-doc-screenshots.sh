@@ -77,6 +77,12 @@ fi
 
 mkdir -p "$OUT_DIR"
 
+# --- Style swatches (#160) ------------------------------------------------------
+# Drawn directly from the renderer's color constants into PNGs — no GPU or display
+# needed, so this works everywhere the tests build.
+echo "==> style swatches -> $OUT_DIR/styles/"
+cargo test --release $CARGO_FLAGS generate_style_swatches -- --ignored
+
 # --- Run each script and check its PNG -----------------------------------------
 failed=()
 succeeded=()

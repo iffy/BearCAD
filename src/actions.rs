@@ -350,8 +350,9 @@ impl CreatingVertexTreatment {
 /// side/cap edge, via `ExtrusionEdgeRef`, not a sketch vertex).
 #[derive(Clone, Debug)]
 pub struct CreatingEdgeTreatment {
-    pub extrusion: usize,
-    pub edge: ExtrusionEdgeRef,
+    /// The analytic edges being treated together (#166): one shared amount/gizmo applies to
+    /// all of them on commit. Non-empty; the first entry anchors the gizmo.
+    pub edges: Vec<(usize, ExtrusionEdgeRef)>,
     pub kind: VertexTreatmentKind,
     /// Live amount (mm), gizmo-driven; always clamped non-negative.
     pub amount_live: f32,
@@ -362,6 +363,23 @@ pub struct CreatingEdgeTreatment {
 }
 
 impl CreatingEdgeTreatment {
+    /// The gizmo-anchoring edge (the first in the set).
+    pub fn primary(&self) -> Option<(usize, ExtrusionEdgeRef)> {
+        self.edges.first().copied()
+    }
+
+    /// Toggle an edge's membership in the set (#166; shift+click). Removing the last edge
+    /// is refused — an in-progress treatment always keeps at least one edge.
+    pub fn toggle_edge(&mut self, entry: (usize, ExtrusionEdgeRef)) {
+        if let Some(pos) = self.edges.iter().position(|e| *e == entry) {
+            if self.edges.len() > 1 {
+                self.edges.remove(pos);
+            }
+        } else {
+            self.edges.push(entry);
+        }
+    }
+
     /// Evaluated amount: typed magnitude (if edited), otherwise the live gizmo-driven value.
     /// Always non-negative.
     pub fn evaluated_amount(&self, doc: &Document) -> f32 {
@@ -472,6 +490,18 @@ pub enum Action {
     ExportStepBody { path: String, body: usize },
     /// Import an STL file (ASCII or binary, #70) as a new body.
     ImportStl { path: String },
+    /// Import a PNG/JPEG as a tracing image (#163/#169) on a construction plane (defaults
+    /// to plane 0). Seeds 1 px = 1 mm, centered on the plane origin.
+    ImportImage { path: String, plane: Option<usize> },
+    /// Calibrate a tracing image's scale (#171): the plane-local segment `a`-`b` (drawn over
+    /// a known feature) is assigned the real `length`; the image rescales uniformly about
+    /// the segment midpoint so that span measures `length`.
+    CalibrateImage {
+        image: usize,
+        a: (f32, f32),
+        b: (f32, f32),
+        length: f32,
+    },
     /// Import a STEP file's `FACETED_BREP` geometry (#71) as a new body.
     ImportStep { path: String },
     Clear,
@@ -548,6 +578,14 @@ pub enum Action {
     SetProjectionMode(ProjectionMode),
     ToggleProjectionMode,
     SetShadingMode(ShadingMode),
+    /// Frame the current selection in the viewport, or the whole document (non-construction
+    /// geometry) when nothing is selected (#164).
+    ZoomToFit,
+    /// Project the selected body edges (or whole bodies/extrusions) into the open sketch as
+    /// associative construction-style lines (#140; the `Y` shortcut).
+    ProjectSelection,
+    /// Choose how the ground plane renders (#159; gear menu).
+    SetGroundDisplay(crate::camera::GroundDisplay),
     /// Switch the Elements pane's layout (List/Tree/Graph, #34/#108).
     SetElementsViewMode { mode: crate::hierarchy::HierarchyViewMode },
     SetPaneVisible { pane: Pane, visible: bool },
@@ -673,6 +711,13 @@ pub enum Action {
     /// same face (a vertex miter — this mesh-bevel approximation doesn't attempt to blend
     /// three-or-more bevels together). Atomic and declarative: usable directly from Lua
     /// (`bearcad.chamfer_edge`/`fillet_edge`) as well as from the interactive gizmo tool.
+    /// Apply one chamfer/fillet amount to a whole set of edges as a single undo group
+    /// (#166); each entry commits via [`Action::CommitEdgeTreatment`] internally.
+    CommitEdgeTreatments {
+        edges: Vec<(usize, ExtrusionEdgeRef)>,
+        kind: VertexTreatmentKind,
+        amount: f32,
+    },
     CommitEdgeTreatment {
         extrusion: usize,
         edge: ExtrusionEdgeRef,
@@ -1162,6 +1207,10 @@ pub struct AppState {
     /// Snapshots of `construction_planes` taken before each in-place plane edit, so that
     /// `UndoLast` can revert the edit. Kept in lockstep with `ShapeKind::ConstructionPlaneEdit`
     /// markers in `shape_order` (one payload per marker, same LIFO order).
+    /// Snapshots of an extrusion's `edge_treatments` taken before each chamfer/fillet
+    /// commit, so `UndoLast` can revert the edit (#168). Kept in lockstep with
+    /// `ShapeKind::EdgeTreatmentEdit` markers, mirroring `construction_plane_edit_undo`.
+    pub edge_treatment_undo: Vec<(usize, Vec<EdgeTreatment>)>,
     pub construction_plane_edit_undo: Vec<Vec<ConstructionPlane>>,
     /// Elements-pane layout (List/Tree/Graph, #34). Ephemeral UI view state like
     /// `extension_anchors` — never persisted; lives here (not on `App`) so scripts can
@@ -1216,6 +1265,7 @@ impl Default for AppState {
             fps_memory: None,
             normal_inference_anchor: None,
             construction_plane_edit_undo: Vec::new(),
+            edge_treatment_undo: Vec::new(),
             hierarchy_view_mode: crate::hierarchy::HierarchyViewMode::default(),
         }
     }
@@ -1721,6 +1771,9 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::Extrusion(i) => format!("Extrusion {i}"),
         SceneElement::Body(i) => format!("Body {i}"),
         SceneElement::FaceEdge(_) => "Face edge".to_string(),
+        SceneElement::BodyEdge { .. } => "Body edge".to_string(),
+        SceneElement::BodyVertex { .. } => "Body vertex".to_string(),
+        SceneElement::Image(i) => format!("Image {i}"),
     }
 }
 
@@ -2075,6 +2128,99 @@ impl AppState {
                     .unwrap_or_else(|| format!("body-{body}"));
                 self.write_step_body_file(&path, &name, body)
             }
+            Action::CalibrateImage { image, a, b, length } => {
+                let Some(img) = self
+                    .doc
+                    .tracing_images
+                    .get(image)
+                    .filter(|img| !img.deleted)
+                else {
+                    return ActionResult::Err(format!("Image {image} not found"));
+                };
+                let span = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+                if span < 1e-6 {
+                    return ActionResult::Err("Calibration line has zero length".to_string());
+                }
+                if length <= 0.0 {
+                    return ActionResult::Err("Calibration length must be positive".to_string());
+                }
+                let factor = length / span;
+                // Reference segment in image-UV (of the pre-scale quad), kept for re-editing.
+                let (ox, oy) = img.origin;
+                let (w, h) = (img.width_mm.max(1e-6), img.height_mm.max(1e-6));
+                let calibration = crate::model::ImageCalibration {
+                    u0: (a.0 - ox) / w,
+                    v0: (a.1 - oy) / h,
+                    u1: (b.0 - ox) / w,
+                    v1: (b.1 - oy) / h,
+                    length_mm: length,
+                };
+                // Uniform rescale about the segment midpoint, so the calibrated feature
+                // stays where the user drew the line.
+                let mid = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+                let img = &mut self.doc.tracing_images[image];
+                img.origin = (
+                    mid.0 + (img.origin.0 - mid.0) * factor,
+                    mid.1 + (img.origin.1 - mid.1) * factor,
+                );
+                img.width_mm *= factor;
+                img.height_mm *= factor;
+                img.calibration = Some(calibration);
+                self.status = format!(
+                    "Calibrated image: {} (x{factor:.3})",
+                    crate::value::format_length_display(length)
+                );
+                ActionResult::Ok
+            }
+            Action::ImportImage { path, plane } => {
+                let bytes = match std::fs::read(&path) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        self.status = format!("Import failed: {e}");
+                        return ActionResult::Err(self.status.clone());
+                    }
+                };
+                let dims = match image::load_from_memory(&bytes) {
+                    Ok(img) => (img.width() as f32, img.height() as f32),
+                    Err(e) => {
+                        self.status = format!("Import failed: not a readable image ({e})");
+                        return ActionResult::Err(self.status.clone());
+                    }
+                };
+                let plane = plane.unwrap_or(0);
+                if !self
+                    .doc
+                    .construction_planes
+                    .get(plane)
+                    .is_some_and(|p| !p.deleted)
+                {
+                    self.status = format!("Import failed: construction plane {plane} not found");
+                    return ActionResult::Err(self.status.clone());
+                }
+                let source_name = std::path::Path::new(&path)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "image".to_string());
+                self.doc.tracing_images.push(crate::model::TracingImage {
+                    bytes,
+                    source_name: source_name.clone(),
+                    plane,
+                    // Centered on the plane origin at 1 px = 1 mm.
+                    origin: (-dims.0 / 2.0, -dims.1 / 2.0),
+                    width_mm: dims.0,
+                    height_mm: dims.1,
+                    name: None,
+                    deleted: false,
+                    calibration: None,
+                });
+                self.doc.shape_order.push(crate::model::ShapeKind::Image);
+                self.refresh_document_health();
+                self.status = format!(
+                    "Imported image {source_name} ({} x {} px)",
+                    dims.0 as u32, dims.1 as u32
+                );
+                ActionResult::Ok
+            }
             Action::ImportStl { path } => {
                 let bytes = match std::fs::read(&path) {
                     Ok(b) => b,
@@ -2250,6 +2396,27 @@ impl AppState {
                             }
                         }
                     }
+                    Some(ShapeKind::Image) => {
+                        self.doc.tracing_images.pop();
+                        self.status = "Undid image import".to_string();
+                        undone = true;
+                    }
+                    Some(ShapeKind::EdgeTreatmentEdit) => {
+                        match self.edge_treatment_undo.pop() {
+                            Some((extrusion, previous)) => {
+                                if let Some(ext) = self.doc.extrusions.get_mut(extrusion) {
+                                    ext.edge_treatments = previous;
+                                }
+                                let _ = recompute_document_geometry(&mut self.doc);
+                                self.status = "Undid chamfer/fillet".to_string();
+                                undone = true;
+                            }
+                            None => {
+                                // Marker without payload (e.g. loaded from disk); skip safely.
+                                self.status = "Nothing to undo".to_string();
+                            }
+                        }
+                    }
                     Some(ShapeKind::ConstructionPlaneEdit) => {
                         match self.construction_plane_edit_undo.pop() {
                             Some(previous_planes) => {
@@ -2330,6 +2497,31 @@ impl AppState {
                     && !matches!(tool, Tool::Chamfer | Tool::Fillet)
                 {
                     self.creating_edge_treatment = None;
+                }
+                // #157/#166: switching to Chamfer/Fillet with body edges already selected
+                // preloads them (filtered to treatable edges) so the gizmo shows right away.
+                if matches!(tool, Tool::Chamfer | Tool::Fillet)
+                    && self.sketch_session.is_none()
+                    && self.creating_edge_treatment.is_none()
+                {
+                    let edges =
+                        crate::extrude::treatable_edges_in_selection(&self.doc, &self.scene_selection);
+                    if !edges.is_empty() {
+                        self.creating_edge_treatment = Some(CreatingEdgeTreatment {
+                            edges,
+                            kind: if tool == Tool::Chamfer {
+                                VertexTreatmentKind::Chamfer
+                            } else {
+                                VertexTreatmentKind::Fillet
+                            },
+                            amount_live: DEFAULT_VERTEX_TREATMENT_AMOUNT,
+                            text: crate::value::format_length_display(
+                                DEFAULT_VERTEX_TREATMENT_AMOUNT,
+                            ),
+                            user_edited: false,
+                            pending_focus: true,
+                        });
+                    }
                 }
                 // Extruding acts on the 3D model, not sketch geometry: leave sketch
                 // editing when the extrude tool is picked from inside a sketch.
@@ -3202,6 +3394,81 @@ impl AppState {
                 self.status = format!("Projection: {:?}", self.cam.projection_mode());
                 ActionResult::Ok
             }
+            Action::ProjectSelection => {
+                let Some(session) = self.sketch_session else {
+                    return ActionResult::Err("Open a sketch to project into".to_string());
+                };
+                let sources =
+                    crate::projection::projection_sources_from_selection(&self.doc, &self.scene_selection);
+                if sources.is_empty() {
+                    return ActionResult::Err(
+                        "Select body edges (or a body) to project".to_string(),
+                    );
+                }
+                let mut created = 0usize;
+                for source in sources {
+                    let Some((wa, wb)) =
+                        crate::projection::resolve_projection_source(&self.doc, source)
+                    else {
+                        continue;
+                    };
+                    let (Some(a), Some(b)) = (
+                        crate::projection::project_world_point_into_sketch(&self.doc, session.sketch, wa),
+                        crate::projection::project_world_point_into_sketch(&self.doc, session.sketch, wb),
+                    ) else {
+                        continue;
+                    };
+                    // Degenerate after projection (source edge parallel to the plane
+                    // normal): skip rather than create a zero-length line.
+                    if ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt() < 1e-3 {
+                        continue;
+                    }
+                    let mut line = crate::model::Line::from_local_endpoints(
+                        session.sketch,
+                        a.0,
+                        a.1,
+                        b.0,
+                        b.1,
+                    );
+                    line.construction = true;
+                    line.projection = Some(source);
+                    self.doc.lines.push(line);
+                    self.doc.shape_order.push(crate::model::ShapeKind::Line);
+                    created += 1;
+                }
+                if created == 0 {
+                    return ActionResult::Err(
+                        "Nothing projectable (edges vanish edge-on to the sketch plane)".to_string(),
+                    );
+                }
+                self.status = format!("Projected {created} edge(s) into the sketch");
+                self.refresh_document_health();
+                ActionResult::Ok
+            }
+            Action::ZoomToFit => {
+                let bounds = crate::extrude::selection_world_bounds(&self.doc, &self.scene_selection)
+                    .or_else(|| crate::extrude::document_world_bounds(&self.doc));
+                match bounds {
+                    Some((min, max)) => {
+                        self.cam.frame_bounds_instant(min, max);
+                        self.status = if self.scene_selection.is_empty() {
+                            "Zoomed to fit".to_string()
+                        } else {
+                            "Zoomed to selection".to_string()
+                        };
+                        ActionResult::Ok
+                    }
+                    None => ActionResult::Err("Nothing to zoom to".to_string()),
+                }
+            }
+            Action::SetGroundDisplay(mode) => {
+                self.cam.set_ground_display(mode);
+                self.status = match mode {
+                    crate::camera::GroundDisplay::Grid => "Ground: grid".to_string(),
+                    crate::camera::GroundDisplay::Solid => "Ground: solid".to_string(),
+                };
+                ActionResult::Ok
+            }
             Action::SetShadingMode(mode) => {
                 self.cam.set_shading_mode(mode);
                 self.status = format!("Shading: {:?}", mode);
@@ -3577,6 +3844,41 @@ impl AppState {
                 };
                 ActionResult::Ok
             }
+            Action::CommitEdgeTreatments { edges, kind, amount } => {
+                if edges.is_empty() {
+                    return ActionResult::Err("No edges to treat".to_string());
+                }
+                let mut applied = 0usize;
+                let mut first_error: Option<String> = None;
+                for (extrusion, edge) in edges {
+                    match self.apply(Action::CommitEdgeTreatment { extrusion, edge, kind, amount }) {
+                        ActionResult::Ok | ActionResult::NeedsDialog => applied += 1,
+                        ActionResult::Err(e) => {
+                            if first_error.is_none() {
+                                first_error = Some(e);
+                            }
+                        }
+                    }
+                }
+                match (applied, first_error) {
+                    (0, Some(e)) => {
+                        self.status = e.clone();
+                        ActionResult::Err(e)
+                    }
+                    (n, Some(e)) => {
+                        self.status = format!("Treated {n} edge(s); skipped some: {e}");
+                        ActionResult::Ok
+                    }
+                    (n, None) => {
+                        let noun = match kind {
+                            VertexTreatmentKind::Chamfer => "Chamfered",
+                            VertexTreatmentKind::Fillet => "Filleted",
+                        };
+                        self.status = format!("{noun} {n} edge(s)");
+                        ActionResult::Ok
+                    }
+                }
+            }
             Action::CommitEdgeTreatment { extrusion, edge, kind, amount } => {
                 if !(amount > 0.0) {
                     let e = "Amount must be positive".to_string();
@@ -3645,6 +3947,12 @@ impl AppState {
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
+                // #168: snapshot the prior treatment list so this in-place edit undoes.
+                self.edge_treatment_undo.push((
+                    extrusion,
+                    self.doc.extrusions[extrusion].edge_treatments.clone(),
+                ));
+                self.doc.shape_order.push(crate::model::ShapeKind::EdgeTreatmentEdit);
                 self.doc.extrusions[extrusion] = updated;
                 self.refresh_document_health();
                 self.status = match kind {
@@ -6382,6 +6690,286 @@ mod tests {
         assert!(matches!(result, ActionResult::Err(_)), "{result:?}");
     }
 
+    /// #140: pressing Y with a body edge selected projects it into the open sketch as an
+    /// associative construction-style line, and editing the source geometry re-resolves it.
+    #[test]
+    fn project_selection_creates_associative_line() {
+        use crate::hierarchy::{quantize_body_point, SceneElement};
+
+        let mut state = box_extrusion_state();
+        state.apply(Action::ExitSketch);
+        // Select a top-cap edge of the 10x10x5 box.
+        let treatable = crate::extrude::treatable_edges(&state.doc);
+        let (_, _, a, b) = treatable
+            .iter()
+            .find(|(_, edge, _, _)| {
+                matches!(edge, crate::model::ExtrusionEdgeRef::Cap { top: true, .. })
+            })
+            .expect("box has top-cap edges")
+            .clone();
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::BodyEdge {
+                body: 0,
+                a: quantize_body_point(a),
+                b: quantize_body_point(b),
+            },
+            additive: false,
+        });
+
+        // Open a sketch on the ground plane and project.
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        let lines_before = state.doc.lines.len();
+        let result = state.apply(Action::ProjectSelection);
+        assert!(matches!(result, ActionResult::Ok), "{result:?}: {}", state.status);
+        assert_eq!(state.doc.lines.len(), lines_before + 1);
+        let line = state.doc.lines.last().unwrap().clone();
+        assert!(line.construction, "projections render construction-style");
+        assert!(line.projection.is_some(), "projection keeps its source link");
+        // The top edge at z=5 projects straight down onto the ground plane: local coords
+        // equal the source edge's x/y.
+        let got = [(line.x0, line.y0), (line.x1, line.y1)];
+        for world in [a, b] {
+            assert!(
+                got.iter().any(|p| {
+                    (p.0 - world.x).abs() < 1e-3 && (p.1 - world.y).abs() < 1e-3
+                }),
+                "some projected endpoint should match source {world:?}, got {got:?}"
+            );
+        }
+
+        // Associativity: re-resolving after a source change follows the edge. The cap edge
+        // is keyed by its endpoints; a geometry recompute re-projects it.
+        let li = state.doc.lines.len() - 1;
+        state.doc.lines[li].x0 = 999.0; // knock it out of place
+        crate::parameters::recompute_document_geometry(&mut state.doc).unwrap();
+        let x0 = state.doc.lines[li].x0;
+        assert!(
+            (x0 - a.x).abs() < 1e-3 || (x0 - b.x).abs() < 1e-3,
+            "refresh must snap the projected line back to its source, got {x0}"
+        );
+    }
+
+    /// #171: calibrating with a reference segment rescales the image uniformly about the
+    /// segment midpoint and stores the calibration for re-editing.
+    #[test]
+    fn calibrate_image_rescales_about_the_reference_segment() {
+        let mut state = AppState::default();
+        state.doc.tracing_images.push(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "grid".to_string(),
+            plane: 0,
+            origin: (-50.0, -30.0),
+            width_mm: 100.0,
+            height_mm: 60.0,
+            name: None,
+            deleted: false,
+            calibration: None,
+        });
+        // A feature spanning 40 mm on screen is declared to really be 80 mm → 2x.
+        let result = state.apply(Action::CalibrateImage {
+            image: 0,
+            a: (-20.0, 0.0),
+            b: (20.0, 0.0),
+            length: 80.0,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        let img = &state.doc.tracing_images[0];
+        assert!((img.width_mm - 200.0).abs() < 1e-3);
+        assert!((img.height_mm - 120.0).abs() < 1e-3);
+        // Scaled about the segment midpoint (0, 0): origin doubles away from it.
+        assert!((img.origin.0 + 100.0).abs() < 1e-3 && (img.origin.1 + 60.0).abs() < 1e-3);
+        let cal = img.calibration.expect("calibration stored");
+        assert!((cal.length_mm - 80.0).abs() < 1e-3);
+        // UV of the reference points on the pre-scale quad: x -20 → u 0.3, x 20 → u 0.7.
+        assert!((cal.u0 - 0.3).abs() < 1e-3 && (cal.u1 - 0.7).abs() < 1e-3);
+
+        // Degenerate inputs error.
+        let r = state.apply(Action::CalibrateImage { image: 0, a: (0.0, 0.0), b: (0.0, 0.0), length: 10.0 });
+        assert!(matches!(r, ActionResult::Err(_)));
+        let r = state.apply(Action::CalibrateImage { image: 5, a: (0.0, 0.0), b: (1.0, 0.0), length: 10.0 });
+        assert!(matches!(r, ActionResult::Err(_)));
+    }
+
+    /// #169: importing a PNG creates a tracing image on the plane, seeded 1 px = 1 mm and
+    /// centered; Undo removes it; a missing/garbage file errors cleanly.
+    #[test]
+    fn import_image_creates_tracing_image_and_undoes() {
+        // A tiny 4x2 PNG written via the `image` crate.
+        let dir = std::env::temp_dir().join("bearcad_test_import_image");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("swatch.png");
+        image::RgbaImage::from_pixel(4, 2, image::Rgba([255, 0, 0, 255]))
+            .save(&path)
+            .unwrap();
+
+        let mut state = AppState::default();
+        let result = state.apply(Action::ImportImage {
+            path: path.to_string_lossy().to_string(),
+            plane: None,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}: {}", state.status);
+        assert_eq!(state.doc.tracing_images.len(), 1);
+        let img = &state.doc.tracing_images[0];
+        assert_eq!(img.source_name, "swatch");
+        assert_eq!(img.plane, 0);
+        assert_eq!((img.width_mm, img.height_mm), (4.0, 2.0));
+        assert_eq!(img.origin, (-2.0, -1.0), "centered on the plane origin");
+
+        // JSON round trip: bytes survive the base64 codec.
+        let json = serde_json::to_string(&state.doc).unwrap();
+        assert!(json.contains("\"bytes\""));
+        let doc2: crate::model::Document = serde_json::from_str(&json).unwrap();
+        assert_eq!(doc2.tracing_images[0].bytes, state.doc.tracing_images[0].bytes);
+
+        state.apply(Action::UndoLast);
+        assert!(state.doc.tracing_images.is_empty(), "undo removes the import");
+
+        let result = state.apply(Action::ImportImage {
+            path: dir.join("missing.png").to_string_lossy().to_string(),
+            plane: None,
+        });
+        assert!(matches!(result, ActionResult::Err(_)));
+    }
+
+    /// #164: Zoom to Fit frames the selection when one exists (camera target lands on the
+    /// selected body's center), else the whole document's non-construction geometry.
+    #[test]
+    fn zoom_to_fit_frames_selection_then_falls_back_to_document() {
+        let mut state = box_extrusion_state();
+        state.apply(Action::ExitSketch);
+        // Select the body (its box spans 0..10 in x/y, 0..5 in z → center (5, 5, 2.5)).
+        state.apply(Action::ClickSceneElement {
+            element: crate::hierarchy::SceneElement::Body(0),
+            additive: false,
+        });
+        let result = state.apply(Action::ZoomToFit);
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        let target = state.cam.target;
+        assert!(
+            (target - glam::Vec3::new(5.0, 5.0, 2.5)).length() < 0.5,
+            "camera should center on the selected body, got {target:?}"
+        );
+
+        // Nothing selected: still zooms (whole document).
+        state.apply(Action::ClearSceneSelection);
+        state.cam.target = glam::Vec3::new(999.0, 999.0, 999.0);
+        let result = state.apply(Action::ZoomToFit);
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert!(
+            (state.cam.target - glam::Vec3::new(5.0, 5.0, 2.5)).length() < 0.6,
+            "empty selection frames the whole document, got {:?}",
+            state.cam.target
+        );
+    }
+
+    /// #166: one plural commit treats every edge in the set with the shared amount, as a
+    /// single undo group (one Undo removes them all).
+    #[test]
+    fn commit_edge_treatments_applies_the_whole_set_in_one_undo_group() {
+        let mut state = box_extrusion_state();
+        let edges = vec![
+            (0, crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 }),
+            (0, crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 2 }),
+        ];
+        let result = state.apply(Action::CommitEdgeTreatments {
+            edges: edges.clone(),
+            kind: VertexTreatmentKind::Chamfer,
+            amount: 2.0,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        let treated: Vec<_> = state.doc.extrusions[0]
+            .edge_treatments
+            .iter()
+            .map(|t| t.edge)
+            .collect();
+        assert_eq!(treated.len(), 2, "both edges treated: {treated:?}");
+        for (_, edge) in &edges {
+            assert!(treated.contains(edge), "missing {edge:?} in {treated:?}");
+        }
+        assert!(state.status.contains("2 edge"), "status: {}", state.status);
+
+        // #168: the plural commit is one undo group — a single Undo reverts both
+        // treatments while leaving the extrusion itself intact.
+        state.apply(Action::UndoLast);
+        assert_eq!(
+            state.doc.extrusions[0].edge_treatments.len(),
+            0,
+            "one undo must remove the whole treated set"
+        );
+        assert!(!state.doc.extrusions[0].deleted, "the extrusion must survive the undo");
+    }
+
+    /// #168: undoing a single committed chamfer removes just that treatment (and restores
+    /// any prior treatment list), never the extrusion.
+    #[test]
+    fn undo_reverts_a_single_edge_treatment() {
+        let mut state = box_extrusion_state();
+        let edge = crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
+        state.apply(Action::CommitEdgeTreatment {
+            extrusion: 0,
+            edge,
+            kind: VertexTreatmentKind::Chamfer,
+            amount: 2.0,
+        });
+        assert_eq!(state.doc.extrusions[0].edge_treatments.len(), 1);
+
+        // Re-treating the same edge replaces it; undo restores the *previous* treatment.
+        state.apply(Action::CommitEdgeTreatment {
+            extrusion: 0,
+            edge,
+            kind: VertexTreatmentKind::Chamfer,
+            amount: 3.0,
+        });
+        assert!((state.doc.extrusions[0].edge_treatments[0].amount - 3.0).abs() < 1e-4);
+        state.apply(Action::UndoLast);
+        assert_eq!(state.doc.extrusions[0].edge_treatments.len(), 1);
+        assert!(
+            (state.doc.extrusions[0].edge_treatments[0].amount - 2.0).abs() < 1e-4,
+            "undo restores the prior treatment, got {}",
+            state.doc.extrusions[0].edge_treatments[0].amount
+        );
+
+        state.apply(Action::UndoLast);
+        assert!(state.doc.extrusions[0].edge_treatments.is_empty());
+        assert!(!state.doc.extrusions[0].deleted, "the extrusion must survive");
+    }
+
+    /// #157/#166: switching to the Chamfer tool with treatable body edges already selected
+    /// preloads them into the in-progress treatment so the gizmo shows immediately.
+    #[test]
+    fn switching_to_chamfer_preloads_selected_edges() {
+        use crate::hierarchy::{quantize_body_point, SceneElement};
+
+        let mut state = box_extrusion_state();
+        state.apply(Action::ExitSketch);
+        let treatable = crate::extrude::treatable_edges(&state.doc);
+        let (_, _, a, b) = treatable[0].clone();
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::BodyEdge {
+                body: 0,
+                a: quantize_body_point(a),
+                b: quantize_body_point(b),
+            },
+            additive: false,
+        });
+        state.apply(Action::SetTool(Tool::Chamfer));
+        let cet = state
+            .creating_edge_treatment
+            .as_ref()
+            .expect("selection should preload the treatment");
+        assert_eq!(cet.edges.len(), 1);
+        assert_eq!(cet.kind, VertexTreatmentKind::Chamfer);
+
+        // Without a selection, no preload happens.
+        let mut state = box_extrusion_state();
+        state.apply(Action::ExitSketch);
+        state.apply(Action::SetTool(Tool::Chamfer));
+        assert!(state.creating_edge_treatment.is_none());
+    }
+
     #[test]
     fn commit_edge_treatment_chamfers_a_vertical_edge() {
         let mut state = box_extrusion_state();
@@ -6839,6 +7427,35 @@ mod tests {
             state.doc.constraints.iter().find(|c| !c.deleted).unwrap().expression,
             "dia"
         );
+    }
+
+    /// #147 / SPEC §5.1.1: `dia=30` when `dia` already exists **redefines** the parameter and
+    /// commits the circle, instead of failing with a duplicate-name error.
+    #[test]
+    fn commit_circle_with_inline_variable_redefines_existing_parameter() {
+        let mut state = AppState::default();
+        crate::parameters::add_parameter(&mut state.doc, "dia".to_string(), "20mm".to_string())
+            .unwrap();
+        begin_default_sketch(&mut state);
+        state.creating_circle = Some(CreatingCircle {
+            origin: Vec3::ZERO,
+            text: "dia=30".to_string(),
+            last_mouse: Vec3::new(10.0, 0.0, 0.0),
+            user_edited: true,
+            pending_focus: false,
+            construction: false,
+        });
+        state.apply(Action::CommitCircle);
+        assert_eq!(state.doc.circles.len(), 1, "commit must not fail: {}", state.status);
+        assert!((state.doc.circles[0].diameter() - 30.0).abs() < 1e-4);
+        let dia_params: Vec<_> = state
+            .doc
+            .parameters
+            .iter()
+            .filter(|p| !p.deleted && p.name == "dia")
+            .collect();
+        assert_eq!(dia_params.len(), 1, "still exactly one 'dia' parameter");
+        assert_eq!(dia_params[0].expression, "30", "existing parameter redefined");
     }
 
     #[test]

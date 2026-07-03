@@ -798,6 +798,88 @@ pub fn sketch_line_vertex_drag_blocked(
     Ok(!vars_can_move_together(&bridge.system, &line_vars))
 }
 
+/// The lines of one sketch the renderer should style as **fully constrained** (#172).
+/// Deliberately mirrors [`sketch_line_vertex_drag_blocked`]'s semantics — a line styles
+/// white exactly when the app would refuse to drag it (dimensioned, and its endpoints have
+/// no joint freedom under the solve-time gauge holds) — but builds the solver bridge once
+/// per sketch instead of once per line.
+pub fn sketch_fully_constrained_lines(
+    doc: &Document,
+    sketch: SketchId,
+) -> Result<std::collections::HashSet<usize>, String> {
+    use crate::constraints::find_distance_constraint;
+    let mut bridge = SketchBridge::from_document(doc, sketch, true)?;
+    let mut out = std::collections::HashSet::new();
+    for (li, line) in doc.lines.iter().enumerate() {
+        if line.deleted || line.sketch != sketch {
+            continue;
+        }
+        if find_distance_constraint(doc, DistanceTarget::LineLength(li)).is_none() {
+            continue;
+        }
+        let mut line_vars = Vec::new();
+        for end in [LineEnd::Start, LineEnd::End] {
+            let point = ConstraintPoint::LineEndpoint { line: li, end };
+            if let Ok((u, v)) = bridge.point_solver_vars(doc, point) {
+                line_vars.push(u);
+                line_vars.push(v);
+            }
+        }
+        if line_vars.len() == 4 && !vars_can_move_together(&bridge.system, &line_vars) {
+            out.insert(li);
+        }
+    }
+    Ok(out)
+}
+
+/// All fully-constrained lines across every sketch (#172), memoized per document state —
+/// the DOF analysis builds a solver system per sketch, far too heavy to run per line per
+/// frame. Any change to sketch geometry or constraints invalidates the memo.
+pub fn fully_constrained_lines(doc: &Document) -> std::collections::HashSet<usize> {
+    use std::hash::Hasher;
+    struct HashWriter(std::collections::hash_map::DefaultHasher);
+    impl std::io::Write for HashWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.write(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = HashWriter(std::collections::hash_map::DefaultHasher::new());
+    serde_json::to_writer(
+        &mut writer,
+        &(&doc.lines, &doc.circles, &doc.constraints, &doc.sketches),
+    )
+    .ok();
+    let fingerprint = writer.0.finish();
+
+    thread_local! {
+        static CONSTRAINED: std::cell::RefCell<(u64, std::collections::HashSet<usize>)> =
+            std::cell::RefCell::new((0, std::collections::HashSet::new()));
+    }
+    CONSTRAINED.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.0 != fingerprint {
+            let mut all = std::collections::HashSet::new();
+            let sketches: std::collections::HashSet<SketchId> = doc
+                .lines
+                .iter()
+                .filter(|l| !l.deleted)
+                .map(|l| l.sketch)
+                .collect();
+            for sketch in sketches {
+                if let Ok(set) = sketch_fully_constrained_lines(doc, sketch) {
+                    all.extend(set);
+                }
+            }
+            *cache = (fingerprint, all);
+        }
+        cache.1.clone()
+    })
+}
+
 /// Solve all sketches in `doc`, optionally pinning points during drag.
 pub fn solve_document_sketches(
     doc: &mut Document,
@@ -928,6 +1010,67 @@ mod tests {
 
     fn solve_bridge(doc: &mut Document, _sketch: SketchId) {
         solve_document_sketches(doc, &[]).expect("solve");
+    }
+
+    /// #172: the fully-constrained set contains a line whose endpoints have no remaining
+    /// freedom (anchored + oriented + dimensioned), and not a free line.
+    #[test]
+    fn fully_constrained_set_tracks_line_freedom() {
+        use crate::model::{ConstraintEntity, ConstraintPoint, DistanceTarget, LineEnd};
+
+        let (mut doc, sketch) = sketch_doc();
+        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines.push(Line::from_local_endpoints(sketch, 30.0, 5.0, 42.0, 9.0));
+        let mut push = |kind: ConstraintKind| {
+            doc.constraints.push(Constraint {
+                sketch,
+                kind,
+                expression: String::new(),
+                dim_offset: None,
+                name: None,
+                deleted: false,
+            });
+        };
+        // Line 0: start pinned to the origin, horizontal, length locked → zero freedom.
+        push(ConstraintKind::Coincident {
+            a: ConstraintEntity::Origin,
+            b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                line: 0,
+                end: LineEnd::Start,
+            }),
+        });
+        push(ConstraintKind::Horizontal {
+            line: crate::model::ConstraintLine::Line(0),
+        });
+        doc.constraints.push(Constraint {
+            sketch,
+            kind: ConstraintKind::Distance {
+                target: DistanceTarget::LineLength(0),
+            },
+            expression: "10".to_string(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+        solve_document_sketches(&mut doc, &[]).expect("solve");
+
+        let set = sketch_fully_constrained_lines(&doc, sketch).expect("dof analysis");
+        assert!(set.contains(&0), "anchored+oriented+dimensioned line is fully constrained");
+        assert!(!set.contains(&1), "the free line still has freedom");
+
+        // The memoized document-wide wrapper agrees, and refreshes when the dimension is
+        // removed (an undimensioned line never styles as fully constrained).
+        let all = fully_constrained_lines(&doc);
+        assert!(all.contains(&0) && !all.contains(&1));
+        let dist = doc
+            .constraints
+            .iter()
+            .position(|c| matches!(c.kind, ConstraintKind::Distance { .. }))
+            .unwrap();
+        doc.constraints[dist].deleted = true;
+        solve_document_sketches(&mut doc, &[]).expect("solve");
+        let all = fully_constrained_lines(&doc);
+        assert!(!all.contains(&0), "removing the dimension must drop the line from the set");
     }
 
     /// #137: chaining relational constraints across a closed quad (two `Equal` pairs plus a

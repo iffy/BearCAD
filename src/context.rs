@@ -36,6 +36,40 @@ pub struct ContextInput<'a> {
     pub extrude_merge_candidate: Option<usize>,
     /// Current new-body/merge-into choice for the in-progress/edited extrusion.
     pub extrude_body_mode: Option<ExtrudeBodyMode>,
+    /// Selection-picker rows for the active tool (#157/#167): `Some` whenever the tool
+    /// collects a selection set (Chamfer/Fillet outside a sketch — one row per edge in the
+    /// in-progress treatment, empty while nothing is picked yet), `None` for other tools.
+    pub edge_treatment_rows: Option<Vec<String>>,
+    /// Image scale calibration (#171): `Some` when the selection is exactly one tracing
+    /// image plus one line on the image's host plane (the reference segment).
+    pub calibrate_image: Option<CalibrateImageControl>,
+}
+
+/// The "Calibrate scale" control's inputs (#171): the target image and the reference
+/// segment's plane-local endpoints (a line the user drew over a known image feature).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CalibrateImageControl {
+    pub image: usize,
+    pub a: (f32, f32),
+    pub b: (f32, f32),
+}
+
+/// One selection-picker row (#167) for a treated edge: the owning extrusion's display name
+/// plus the analytic edge's position in its profile.
+pub fn edge_treatment_row_label(
+    doc: &Document,
+    extrusion: usize,
+    edge: crate::model::ExtrusionEdgeRef,
+) -> String {
+    let owner = element_name(doc, SceneElement::Extrusion(extrusion))
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| format!("Extrusion {extrusion}"));
+    let which = match edge {
+        crate::model::ExtrusionEdgeRef::Vertical { edge, .. } => format!("vertical {edge}"),
+        crate::model::ExtrusionEdgeRef::Cap { edge, top: true, .. } => format!("top {edge}"),
+        crate::model::ExtrusionEdgeRef::Cap { edge, top: false, .. } => format!("base {edge}"),
+    };
+    format!("{owner} — {which}")
 }
 
 /// Tools that snap while drawing or moving sketch geometry.
@@ -55,7 +89,7 @@ pub enum TriState {
 }
 
 /// What the context pane should display.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ContextPaneContent {
     pub name: Option<NameControl>,
     /// Curve-mode (`B`) checkbox while the line tool is active (#73).
@@ -72,6 +106,18 @@ pub struct ContextPaneContent {
     /// per-sketch (with a "follow document" inherit option) when a single sketch is
     /// selected (#52).
     pub units: Option<UnitsControl>,
+    /// Generalized selection picker (#157/#167): the elements the active tool operates on.
+    pub edge_picker: Option<EdgePickerControl>,
+    /// Image scale calibration (#171).
+    pub calibrate_image: Option<CalibrateImageControl>,
+}
+
+/// The selection-picker input (#157/#167): the picked elements the active tool will operate
+/// on, one label per row. Rendered with per-row remove buttons and a clear-all; an empty
+/// picker shows a pick hint instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EdgePickerControl {
+    pub rows: Vec<String>,
 }
 
 /// What the units picker in the context pane should show and let the user change.
@@ -127,6 +173,8 @@ pub struct ContextPaneState {
     pub name_draft: String,
     pub focus_name_field: bool,
     pub synced_element: Option<SceneElement>,
+    /// Length draft for the image scale calibration control (#171).
+    pub calibrate_length_draft: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -150,6 +198,11 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         _ => None,
     };
     let units = units_control_from_selection(input.doc, input.selection);
+    let edge_picker = input
+        .edge_treatment_rows
+        .clone()
+        .map(|rows| EdgePickerControl { rows });
+    let calibrate_image = input.calibrate_image;
 
     if let Some(construction) = input.draw_rect_construction {
         return ContextPaneContent {
@@ -164,6 +217,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             snapping,
             extrude_body,
             units,
+            edge_picker: edge_picker.clone(),
+            calibrate_image,
         };
     }
     if let Some(construction) = input.draw_line_construction {
@@ -179,6 +234,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             snapping,
             extrude_body,
             units,
+            edge_picker: edge_picker.clone(),
+            calibrate_image,
         };
     }
     if let Some(construction) = input.draw_circle_construction {
@@ -194,6 +251,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             snapping,
             extrude_body,
             units,
+            edge_picker: edge_picker.clone(),
+            calibrate_image,
         };
     }
 
@@ -212,6 +271,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         snapping,
         extrude_body,
         units,
+        edge_picker,
+        calibrate_image,
     }
 }
 
@@ -415,6 +476,8 @@ pub fn show_pane(
     on_snapping_changed: &mut impl FnMut(bool),
     on_extrude_body_mode_changed: &mut impl FnMut(ExtrudeBodyMode),
     on_units_changed: &mut impl FnMut(UnitsChoice),
+    on_edge_picker_edit: &mut impl FnMut(Option<usize>),
+    on_calibrate_image: &mut impl FnMut(CalibrateImageControl, String),
 ) {
     ui.heading(PANE_TITLE);
     ui.separator();
@@ -596,6 +659,55 @@ pub fn show_pane(
         );
     }
 
+    if let Some(control) = content.calibrate_image {
+        any_control = true;
+        ui.separator();
+        ui.label(egui::RichText::new("Calibrate scale").strong());
+        ui.label(
+            egui::RichText::new("Real length of the selected line's span on the image")
+                .color(egui::Color32::from_gray(140))
+                .size(11.0),
+        );
+        ui.horizontal(|ui| {
+            ui.add(
+                TextEdit::singleline(&mut pane_state.calibrate_length_draft)
+                    .desired_width(80.0)
+                    .hint_text("50mm"),
+            );
+            if ui.button("Apply").clicked()
+                && !pane_state.calibrate_length_draft.trim().is_empty()
+            {
+                on_calibrate_image(control, pane_state.calibrate_length_draft.clone());
+            }
+        });
+    }
+
+    if let Some(picker) = &content.edge_picker {
+        any_control = true;
+        ui.separator();
+        ui.label(
+            egui::RichText::new(format!("Edges ({})", picker.rows.len())).strong(),
+        );
+        if picker.rows.is_empty() {
+            ui.label(
+                egui::RichText::new("Click an edge — Shift+click adds more")
+                    .color(egui::Color32::from_gray(140))
+                    .size(11.0),
+            );
+        }
+        for (i, row) in picker.rows.iter().enumerate() {
+            ui.horizontal(|ui| {
+                if ui.small_button("✕").on_hover_text("Remove from set").clicked() {
+                    on_edge_picker_edit(Some(i));
+                }
+                ui.label(row);
+            });
+        }
+        if picker.rows.len() > 1 && ui.small_button("Clear all").clicked() {
+            on_edge_picker_edit(None);
+        }
+    }
+
     if let Some(control) = &content.extrude_body {
         any_control = true;
         ui.label("Extrude into");
@@ -761,7 +873,67 @@ mod tests {
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
+            edge_treatment_rows: None,
+            calibrate_image: None,
         }
+    }
+
+    /// #157/#167: the selection picker surfaces whenever the input carries rows (the
+    /// Chamfer/Fillet edge set), including an empty set (which renders the pick hint).
+    #[test]
+    fn edge_picker_control_follows_input_rows() {
+        let doc = Document::default();
+        let selection = SceneSelection::default();
+        let base = ContextInput {
+            doc: &doc,
+            selection: &selection,
+            tool: Tool::Fillet,
+            draw_rect_construction: None,
+            draw_line_construction: None,
+            draw_circle_construction: None,
+            draw_line_curve_mode: None,
+            draw_line_tangent_constraint: None,
+            in_sketch: false,
+            snapping_enabled: true,
+            extrude_merge_candidate: None,
+            extrude_body_mode: None,
+            edge_treatment_rows: Some(vec!["Block — vertical 0".to_string()]),
+            calibrate_image: None,
+        };
+        let content = context_pane_content(&base);
+        assert_eq!(
+            content.edge_picker,
+            Some(EdgePickerControl { rows: vec!["Block — vertical 0".to_string()] })
+        );
+
+        let empty = ContextInput { edge_treatment_rows: Some(Vec::new()), ..base };
+        assert_eq!(
+            context_pane_content(&empty).edge_picker,
+            Some(EdgePickerControl { rows: Vec::new() })
+        );
+        let off = ContextInput { edge_treatment_rows: None, ..empty };
+        assert_eq!(context_pane_content(&off).edge_picker, None);
+    }
+
+    #[test]
+    fn edge_treatment_row_labels_name_the_extrusion_and_edge() {
+        let doc = Document::default();
+        assert_eq!(
+            edge_treatment_row_label(
+                &doc,
+                3,
+                crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 2 }
+            ),
+            "Extrusion 3 — vertical 2"
+        );
+        assert_eq!(
+            edge_treatment_row_label(
+                &doc,
+                0,
+                crate::model::ExtrusionEdgeRef::Cap { face: 0, edge: 1, top: true }
+            ),
+            "Extrusion 0 — top 1"
+        );
     }
 
     #[test]
@@ -777,6 +949,8 @@ mod tests {
                 constraints: None,
                 snapping: None,
                 extrude_body: None,
+                edge_picker: None,
+                calibrate_image: None,
                 units: Some(UnitsControl {
                     sketch: None,
                     effective_length: LengthUnit::Mm,
@@ -806,6 +980,8 @@ mod tests {
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
+            edge_treatment_rows: None,
+            calibrate_image: None,
         });
         assert_eq!(
             content,
@@ -820,6 +996,8 @@ mod tests {
                 constraints: None,
                 snapping: None,
                 extrude_body: None,
+                edge_picker: None,
+                calibrate_image: None,
                 units: Some(UnitsControl {
                     sketch: None,
                     effective_length: LengthUnit::Mm,
@@ -849,6 +1027,8 @@ mod tests {
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
+            edge_treatment_rows: None,
+            calibrate_image: None,
         });
         assert_eq!(content.curve_mode, Some(true));
         assert_eq!(content.tangent_constraint, Some(false));
@@ -876,6 +1056,8 @@ mod tests {
                 constraints: None,
                 snapping: None,
                 extrude_body: None,
+                edge_picker: None,
+                calibrate_image: None,
                 units: None,
             }
         );
@@ -952,6 +1134,8 @@ mod tests {
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
+            edge_treatment_rows: None,
+            calibrate_image: None,
         });
         assert_eq!(
             content.construction.unwrap().value,
@@ -979,6 +1163,8 @@ mod tests {
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
+            edge_treatment_rows: None,
+            calibrate_image: None,
         });
         assert_eq!(
             content,
@@ -995,6 +1181,8 @@ mod tests {
                 constraints: None,
                 snapping: None,
                 extrude_body: None,
+                edge_picker: None,
+                calibrate_image: None,
                 units: None,
             }
         );
@@ -1016,6 +1204,8 @@ mod tests {
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
+            edge_treatment_rows: None,
+            calibrate_image: None,
         });
         assert_eq!(
             content.constraints.as_ref().map(|rows| rows.len()),

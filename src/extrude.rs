@@ -75,14 +75,16 @@ pub(crate) fn document_world_bounds(doc: &Document) -> Option<(Vec3, Vec3)> {
             extend(max);
         }
     }
-    for line in doc.lines.iter().filter(|l| !l.deleted) {
+    // Construction geometry is scaffolding, not "the model" — zoom-to-fit (#164) frames
+    // only real geometry.
+    for line in doc.lines.iter().filter(|l| !l.deleted && !l.construction) {
         if let Some(frame) = sketch_geometry_frame(doc, line.sketch) {
             for (u, v) in line.sample_local(crate::model::BEZIER_SEGMENTS) {
                 extend(local_to_world(&frame, u, v));
             }
         }
     }
-    for circle in doc.circles.iter().filter(|c| !c.deleted) {
+    for circle in doc.circles.iter().filter(|c| !c.deleted && !c.construction) {
         if let Some(frame) = sketch_geometry_frame(doc, circle.sketch) {
             for (du, dv) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
                 extend(local_to_world(
@@ -417,9 +419,161 @@ pub fn kernel_fallback_cut_warning(doc: &Document) -> Option<String> {
 #[cfg(feature = "occt")]
 pub const OCCT_DEFLECTION: f32 = 0.05;
 
+/// World bounds of the current selection (#164): union of every selected element's own
+/// geometry (a body's solid, an extrusion's solid, a line/circle's sampled points, a point's
+/// position). `None` when nothing in the selection has world extent (then zoom-to-fit falls
+/// back to the whole document).
+pub fn selection_world_bounds(
+    doc: &Document,
+    selection: &crate::selection::SceneSelection,
+) -> Option<(Vec3, Vec3)> {
+    use crate::hierarchy::SceneElement;
+    let mut bounds: Option<(Vec3, Vec3)> = None;
+    let mut extend = |p: Vec3| {
+        bounds = Some(match bounds {
+            Some((min, max)) => (min.min(p), max.max(p)),
+            None => (p, p),
+        });
+    };
+    for element in selection.iter() {
+        match element {
+            SceneElement::Body(bi) => {
+                if let Some((min, max)) = body_solid_mesh(doc, bi).and_then(|m| m.bounds()) {
+                    extend(min);
+                    extend(max);
+                }
+            }
+            SceneElement::Extrusion(ei) => {
+                if let Some((min, max)) = doc
+                    .extrusions
+                    .get(ei)
+                    .filter(|e| !e.deleted)
+                    .and_then(|e| extrusion_mesh(doc, e))
+                    .and_then(|m| m.bounds())
+                {
+                    extend(min);
+                    extend(max);
+                }
+            }
+            SceneElement::Line(li) => {
+                if let Some((line, frame)) = doc
+                    .lines
+                    .get(li)
+                    .filter(|l| !l.deleted)
+                    .and_then(|l| Some((l, sketch_geometry_frame(doc, l.sketch)?)))
+                {
+                    for (u, v) in line.sample_local(crate::model::BEZIER_SEGMENTS) {
+                        extend(local_to_world(&frame, u, v));
+                    }
+                }
+            }
+            SceneElement::Circle(ci) => {
+                if let Some((circle, frame)) = doc
+                    .circles
+                    .get(ci)
+                    .filter(|c| !c.deleted)
+                    .and_then(|c| Some((c, sketch_geometry_frame(doc, c.sketch)?)))
+                {
+                    for i in 0..CIRCLE_SEGMENTS {
+                        let a = i as f32 / CIRCLE_SEGMENTS as f32 * std::f32::consts::TAU;
+                        extend(local_to_world(
+                            &frame,
+                            circle.cx + circle.r * a.cos(),
+                            circle.cy + circle.r * a.sin(),
+                        ));
+                    }
+                }
+            }
+            SceneElement::Point(point) => {
+                if let Some(p) = crate::construction::point_world_position(doc, point) {
+                    extend(p);
+                }
+            }
+            SceneElement::BodyEdge { a, b, .. } => {
+                extend(crate::hierarchy::dequantize_body_point(a));
+                extend(crate::hierarchy::dequantize_body_point(b));
+            }
+            SceneElement::BodyVertex { p, .. } => {
+                extend(crate::hierarchy::dequantize_body_point(p));
+            }
+            SceneElement::Sketch(_)
+            | SceneElement::ConstructionPlane(_)
+            | SceneElement::Constraint(_)
+            | SceneElement::FaceEdge(_)
+            | SceneElement::Image(_) => {}
+        }
+    }
+    bounds
+}
+
+/// Fingerprint of every document input body meshing reads (#162): sketch geometry, planes,
+/// extrusions, and body sources are hashed structurally (via their serde encodings, streamed
+/// straight into a hasher — no allocation of the encoded form); imported meshes are
+/// append-only after load, so their name + triangle count suffices. Two documents with equal
+/// fingerprints mesh identically, which keys [`body_solid_mesh`]'s cache.
+fn document_mesh_fingerprint(doc: &Document) -> u64 {
+    use std::hash::Hasher;
+    struct HashWriter(std::collections::hash_map::DefaultHasher);
+    impl std::io::Write for HashWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.write(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = HashWriter(std::collections::hash_map::DefaultHasher::new());
+    serde_json::to_writer(
+        &mut writer,
+        &(
+            &doc.lines,
+            &doc.circles,
+            &doc.sketches,
+            &doc.construction_planes,
+            &doc.extrusions,
+            &doc.bodies,
+        ),
+    )
+    .ok();
+    for mesh in &doc.imported_meshes {
+        std::io::Write::write_all(&mut writer, mesh.source_name.as_bytes()).ok();
+        writer.0.write_usize(mesh.triangles.len());
+    }
+    writer.0.finish()
+}
+
+thread_local! {
+    /// Per-thread memo for [`body_solid_mesh`] (#162): `(document fingerprint, body → mesh)`.
+    /// The kernel rebuild is expensive (an extrude-to-slanted-plane does OCCT booleans), and
+    /// one frame calls `body_solid_mesh` several times per body (scene build, hover picking,
+    /// occlusion, the selection aura) — without this the viewer visibly slows down. Any
+    /// change to the fingerprinted geometry clears the memo.
+    static BODY_MESH_CACHE: std::cell::RefCell<(u64, HashMap<usize, Option<SolidMesh>>)> =
+        std::cell::RefCell::new((0, HashMap::new()));
+}
+
 /// Build the solid mesh for a single body (by index), or `None` if the body is deleted,
-/// missing, or its source feature produces no geometry.
+/// missing, or its source feature produces no geometry. Memoized per document state (#162);
+/// see [`BODY_MESH_CACHE`].
 pub fn body_solid_mesh(doc: &Document, body_index: usize) -> Option<SolidMesh> {
+    let fingerprint = document_mesh_fingerprint(doc);
+    BODY_MESH_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.0 != fingerprint {
+            cache.0 = fingerprint;
+            cache.1.clear();
+        }
+        if let Some(mesh) = cache.1.get(&body_index) {
+            return mesh.clone();
+        }
+        let mesh = body_solid_mesh_uncached(doc, body_index);
+        cache.1.insert(body_index, mesh.clone());
+        mesh
+    })
+}
+
+fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMesh> {
     let body = doc.bodies.get(body_index)?;
     if body.deleted {
         return None;
@@ -1155,6 +1309,50 @@ pub fn extrusion_edge_exists(doc: &Document, extrusion: usize, edge: ExtrusionEd
 
 /// World-space endpoints of every currently-treatable analytic edge in the document (#77): for
 /// each non-deleted extrusion's `Rect`/`Polygon` faces, every vertical side edge and every
+/// Resolve a geometry-keyed selected body edge (`SceneElement::BodyEdge`, #156) to the
+/// analytic `(extrusion, ExtrusionEdgeRef)` the chamfer/fillet tool operates on (#157/#165):
+/// match its quantized endpoints against [`treatable_edges`], in either direction. `None`
+/// when the selected mesh edge isn't an analytic treatable edge (e.g. a circle-profile wall
+/// seam, an imported-mesh edge, or a boolean-result edge).
+pub fn treatable_edge_for_selection(
+    doc: &Document,
+    body: usize,
+    a: [i32; 3],
+    b: [i32; 3],
+) -> Option<(usize, ExtrusionEdgeRef)> {
+    let q = crate::hierarchy::quantize_body_point;
+    for (extrusion, edge, ea, eb) in treatable_edges(doc) {
+        if crate::model::body_index_for_extrusion(doc, extrusion) != Some(body) {
+            continue;
+        }
+        let (qa, qb) = (q(ea), q(eb));
+        if (qa == a && qb == b) || (qa == b && qb == a) {
+            return Some((extrusion, edge));
+        }
+    }
+    None
+}
+
+/// The subset of a scene selection the chamfer/fillet tool can operate on (#157/#165): every
+/// selected body edge that resolves to an analytic treatable edge, in selection-iteration
+/// order (deduplicated by the resolver's identity).
+pub fn treatable_edges_in_selection(
+    doc: &Document,
+    selection: &crate::selection::SceneSelection,
+) -> Vec<(usize, ExtrusionEdgeRef)> {
+    let mut out: Vec<(usize, ExtrusionEdgeRef)> = Vec::new();
+    for element in selection.iter() {
+        if let crate::hierarchy::SceneElement::BodyEdge { body, a, b } = element {
+            if let Some(resolved) = treatable_edge_for_selection(doc, body, a, b) {
+                if !out.contains(&resolved) {
+                    out.push(resolved);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// side/cap edge (see [`ExtrusionEdgeRef`]). The chamfer/fillet tool picks from this list
 /// directly (rather than the generic mesh-feature-edge extraction used for construction-plane
 /// referencing, #31) when no sketch is open, since it needs the structured edge reference, not
@@ -1351,9 +1549,21 @@ pub fn extrusion_with_edge_treatment(
     extrusion: usize,
     treatment: EdgeTreatment,
 ) -> Option<Extrusion> {
+    extrusion_with_edge_treatments(doc, extrusion, [treatment])
+}
+
+/// [`extrusion_with_edge_treatment`] over a whole set (#166): the ghost preview of a
+/// multi-edge chamfer/fillet splices every in-progress treatment into the clone at once.
+pub fn extrusion_with_edge_treatments(
+    doc: &Document,
+    extrusion: usize,
+    treatments: impl IntoIterator<Item = EdgeTreatment>,
+) -> Option<Extrusion> {
     let mut ext = doc.extrusions.get(extrusion)?.clone();
-    ext.edge_treatments.retain(|t| t.edge != treatment.edge);
-    ext.edge_treatments.push(treatment);
+    for treatment in treatments {
+        ext.edge_treatments.retain(|t| t.edge != treatment.edge);
+        ext.edge_treatments.push(treatment);
+    }
     Some(ext)
 }
 
@@ -2415,6 +2625,84 @@ mod tests {
             amount: 0.0,
         });
         assert_eq!(extrusion_mesh(&doc, &ext).unwrap().triangles.len(), untreated);
+    }
+
+    /// #157/#165: a Select-mode body-edge selection resolves to the analytic treatable edge
+    /// the chamfer/fillet tool needs — matched by quantized endpoints in either direction,
+    /// and filtered down from a whole `SceneSelection`.
+    #[test]
+    fn selected_body_edges_resolve_to_treatable_edges() {
+        use crate::hierarchy::{quantize_body_point, SceneElement};
+
+        let (doc, _sketch, ext) = box_doc();
+        let mut doc = doc;
+        doc.extrusions.push(ext);
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(0),
+            name: None,
+            deleted: false,
+        });
+
+        let edges = treatable_edges(&doc);
+        let (expect_ei, expect_edge, a, b) = edges[0].clone();
+        let (qa, qb) = (quantize_body_point(a), quantize_body_point(b));
+
+        // Forward and reversed endpoint order both resolve to the same analytic edge.
+        assert_eq!(
+            treatable_edge_for_selection(&doc, 0, qa, qb),
+            Some((expect_ei, expect_edge)),
+        );
+        assert_eq!(
+            treatable_edge_for_selection(&doc, 0, qb, qa),
+            Some((expect_ei, expect_edge)),
+        );
+        // A different body index does not match.
+        assert_eq!(treatable_edge_for_selection(&doc, 7, qa, qb), None);
+        // An edge that isn't in the analytic list resolves to None.
+        assert_eq!(
+            treatable_edge_for_selection(&doc, 0, [123456, 0, 0], [123456, 100, 0]),
+            None
+        );
+
+        // Selection filter: two selected edges (one duplicated via reversal) plus a
+        // non-edge element yield exactly the resolved unique edges.
+        let mut selection = crate::selection::SceneSelection::default();
+        crate::selection::click_scene_selection(
+            &mut selection,
+            SceneElement::BodyEdge { body: 0, a: qa, b: qb },
+            true,
+        );
+        crate::selection::click_scene_selection(&mut selection, SceneElement::Body(0), true);
+        let resolved = treatable_edges_in_selection(&doc, &selection);
+        assert_eq!(resolved, vec![(expect_ei, expect_edge)]);
+    }
+
+    /// #162: `body_solid_mesh` is memoized on document geometry — an in-place mutation
+    /// (no shape_order change, e.g. editing the extrusion distance) must still invalidate
+    /// the cache and produce the new solid.
+    #[test]
+    fn body_mesh_cache_invalidates_on_in_place_geometry_edits() {
+        let (mut doc, _sketch, ext) = box_doc();
+        doc.extrusions.push(ext);
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(0),
+            name: None,
+            deleted: false,
+        });
+        let before = body_solid_mesh(&doc, 0).expect("box mesh");
+        let (_, before_max) = before.bounds().unwrap();
+        // Cached call returns the same mesh.
+        assert_eq!(body_solid_mesh(&doc, 0).unwrap(), before);
+
+        doc.extrusions[0].distance = 9.0;
+        let after = body_solid_mesh(&doc, 0).expect("re-meshed box");
+        let (_, after_max) = after.bounds().unwrap();
+        assert!(
+            (after_max.z - 9.0).abs() < 1e-3 && (before_max.z - 5.0).abs() < 1e-3,
+            "cache must invalidate on distance edit: before z {} after z {}",
+            before_max.z,
+            after_max.z
+        );
     }
 
     #[test]

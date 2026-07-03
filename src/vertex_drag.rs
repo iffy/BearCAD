@@ -72,6 +72,11 @@ pub fn can_drag_point(doc: &Document, sketch: SketchId, point: ConstraintPoint) 
         return false;
     }
     if let ConstraintPoint::LineEndpoint { line, .. } = point {
+        // Projected lines (#140) are fixed by their source geometry — dragging one would
+        // be undone by the next associative refresh anyway.
+        if doc.lines.get(line).is_some_and(|l| l.projection.is_some()) {
+            return false;
+        }
         return !crate::sketch_solver::sketch_line_vertex_drag_blocked(doc, sketch, line)
             .unwrap_or(false);
     }
@@ -86,6 +91,9 @@ pub fn can_drag_point(doc: &Document, sketch: SketchId, point: ConstraintPoint) 
 pub fn can_drag_line(doc: &Document, sketch: SketchId, target: ConstraintLine) -> bool {
     match target {
         ConstraintLine::Line(line) => {
+            if doc.lines.get(line).is_some_and(|l| l.projection.is_some()) {
+                return false; // projected lines are fixed (#140)
+            }
             point_in_sketch(doc, line_drag_seed_points(target)[0].clone(), sketch)
                 && !crate::sketch_solver::sketch_line_vertex_drag_blocked(doc, sketch, line)
                     .unwrap_or(false)

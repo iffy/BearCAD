@@ -70,12 +70,22 @@ pub fn length_expression_field_errors(
             errors.push(warning);
         }
     } else {
-        let known_names = document_parameter_names(doc);
-        errors.extend(
-            unknown_variables_in_expression(text, &known_names)
-                .into_iter()
-                .map(|name| format_unknown_variable_error(&name)),
-        );
+        // Inline parameter syntax (SPEC §5.1.1, #147): in `name=value` the left side is the
+        // name being *defined*, not a reference — only the right side can contain unknown
+        // variables. While the value is still being typed (`name=` so far), there's nothing
+        // to warn about yet.
+        let expression = match text.split_once('=') {
+            Some((_, value)) => value.trim(),
+            None => text,
+        };
+        if !expression.is_empty() {
+            let known_names = document_parameter_names(doc);
+            errors.extend(
+                unknown_variables_in_expression(expression, &known_names)
+                    .into_iter()
+                    .map(|name| format_unknown_variable_error(&name)),
+            );
+        }
     }
 
     errors
@@ -435,6 +445,26 @@ mod tests {
         add_parameter(&mut doc, "A".to_string(), "10mm".to_string()).unwrap();
         let errors = length_expression_field_errors("A + B", &doc, None);
         assert_eq!(errors, vec!["Unknown variable: B".to_string()]);
+    }
+
+    /// #147: while typing an inline definition (`dia=10`, or the partial `dia=`), the name
+    /// left of `=` is being *defined* — no unknown-variable warning may appear for it. Only
+    /// the right side is checked as an expression.
+    #[test]
+    fn inline_definition_left_side_never_warns_unknown_variable() {
+        let doc = Document::default();
+        assert!(length_expression_field_errors("dia=10", &doc, None).is_empty());
+        assert!(length_expression_field_errors("dia=", &doc, None).is_empty());
+        assert_eq!(
+            length_expression_field_errors("dia=foo", &doc, None),
+            vec!["Unknown variable: foo".to_string()],
+            "the right side of `=` is still checked"
+        );
+        assert_eq!(
+            length_expression_field_errors("dia", &doc, None),
+            vec!["Unknown variable: dia".to_string()],
+            "without `=` the text is a plain expression and still warns"
+        );
     }
 
     #[test]

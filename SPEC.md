@@ -113,6 +113,19 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   `Origin` entity already gets. Picking is scoped to the *active sketch's own face* only (not
   arbitrary other faces), with vertices taking precedence over edges like other sketch points.
   Out of scope: imported STL/STEP bodies have no analytic face/edge structure to reference.
+- **Projections (#140):** with a sketch open, selecting external 3D geometry (a body's
+  edges via 3D selection, #156 — or a whole body/extrusion, which projects all of its
+  feature edges) and pressing **Y** (or "Project Selection into Sketch" in the palette)
+  projects it onto the sketch plane, along the plane normal. Each projected edge becomes a
+  construction-style line drawn dashed in its own **projection color** (teal, distinct from
+  construction's color) and usable like construction geometry (snapping, constraints).
+  Projections are **associative**: each geometry recompute re-resolves the source edge and
+  rewrites the projected line, so it follows its source body. Sources are geometry-keyed
+  (mesh edges have no stable topological name), so if a rebuild moves/removes the source
+  edge the projection keeps its last resolved shape rather than dangling; projected lines
+  are fixed (not draggable). Edges edge-on to the sketch plane (zero projected length) are
+  skipped. Standalone vertex projection is not yet supported (a projected edge's endpoints
+  already serve as snap targets).
 - Sketch entities: line, arc, circle, ellipse, spline, point, and construction-geometry
   variants. Convenience primitives (e.g. **rectangle**, drawn as four constrained lines)
   may be offered as tools that emit the underlying entities.
@@ -122,6 +135,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   an existing vertex (closing/joining the shape); **Esc** finishes the polyline, keeping the
   segments already drawn.
 - Sketches are fully constraint-driven (see §6).
+- **Constraint-state line color (#172):** solid sketch lines draw in blue while they still
+  have freedom, and in **near-white once fully constrained** — using the same signal that
+  blocks dragging (dimensioned, and the solver's DOF analysis finds no joint endpoint
+  freedom), so "white = can't move" is consistent between styling and interaction. The set
+  is memoized per document state (the DOF analysis builds a solver system per sketch).
+  Construction (dashed grey) and projected (dashed teal, #140) styling take precedence.
 - **Snapping:** while drawing or dragging sketch geometry, the cursor snaps to nearby
   vertices, line midpoints, and lines (vertices take priority, then midpoints, then
   anywhere on a line). Leaving a point on a snap adds the implied constraint (coincident
@@ -428,10 +447,50 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     (reusing the extrude tool's `preview_extrusion`/`editing_extrusion` mechanism: a clone of the
     extrusion with the live treatment spliced in, the committed body hidden meanwhile) — drag or
     type an amount, Enter/click commits, Esc cancels.
+  - **Selection picker (context pane, #157/#167)**: while the Chamfer/Fillet tool is active
+    outside a sketch, the context pane shows a **selection picker** — one row per edge in
+    the in-progress set (named by owning extrusion + analytic edge), each with a remove
+    button, plus a clear-all; when the set is empty it shows a pick hint ("Click an edge —
+    Shift+click adds more"). The picker is the first instance of the generalized per-tool
+    selection input (future tools may host several, e.g. boolean A/B sets).
+  - **Multi-edge sets (#157/#166)**: the in-progress treatment holds a *set* of edges sharing
+    one amount/gizmo. Shift/⌘+click toggles additional treatable edges into the set (a plain
+    click restarts with just the clicked edge); switching to Chamfer/Fillet with body edges
+    already selected (Select mode, #156) **preloads** the selection — filtered to treatable
+    edges — and shows the gizmo immediately. Commit applies every edge in one undo group;
+    edges that individually fail (e.g. a vertex-miter conflict) are skipped with a status
+    note while the rest apply. Each commit pushes a transient `EdgeTreatmentEdit` marker
+    with a snapshot of the prior treatment list (#168, mirroring construction-plane edits),
+    so **Undo reverts the whole treated set** — restoring any replaced treatments — without
+    touching the extrusion itself. The ghost preview shows the gizmo-anchoring extrusion's edges
+    (a set spanning several extrusions still commits everywhere, but only the primary
+    extrusion gets a ghost — the preview mechanism shows one extrusion at a time).
   - Scriptable via `bearcad.chamfer_edge{ extrusion =, edge = {...}, distance = }` and
     `bearcad.fillet_edge{ extrusion =, edge = {...}, radius = }`, where `edge` is `{ kind =
     "vertical", face =, edge = }` or `{ kind = "cap", face =, edge =, top = }`.
 - **Shell** — hollow a solid to a wall thickness, removing selected faces.
+
+### 3.4.1 Tracing images (#163)
+- **Import (#169):** File → Import Image… (or `bearcad.import_image("p.png")` /
+  `bearcad.import_image{ path =, plane = }`) embeds a PNG/JPEG in the document (base64 in
+  the saved JSON, so files stay self-contained like imported meshes) and places it on a
+  construction plane (default: plane 0), centered on the plane origin at an initial scale
+  of **1 px = 1 mm**. The image is an Elements-pane row nested under its host plane —
+  renamable, hideable, deletable, undoable.
+- **Rendering (#170):** each image draws as a **textured quad** on its host plane at 85%
+  opacity — depth-tested (bodies in front occlude it) but never writing depth, so sketch
+  geometry and fills always read on top. Decoded pixels and GPU textures are cached by
+  content, so the per-frame cost is one quad.
+- **Scale calibration (#171):** draw a **line** across a known feature of the image (with
+  the normal Line tool, on the image's plane), then select the image *and* that line — the
+  context pane shows **Calibrate scale** with a length field. Typing the feature's real
+  length rescales the image uniformly about the line's midpoint so the drawn span measures
+  that length; the calibration (reference segment in image-UV + assigned length) is stored
+  on the image for re-editing, and re-running calibration replaces it. Scriptable via
+  `bearcad.calibrate_image{ image =, from = {x, y}, to = {x, y}, length = }` (plane-local
+  coordinates). *Known limitation:* calibration mutates the image in place and is not yet
+  individually undoable (3D edge treatments had the same gap and now undo via a transient
+  snapshot marker, #168 — calibration can adopt the same mechanism).
 
 ### 3.5 Advanced features
 - **Sweep** — sweep a profile along a path.
@@ -587,6 +646,26 @@ modeled on SolveSpace (https://solvespace.com).
 - **Selection:** Sketch points (line endpoints — including a rectangle's corners — and circle
   centres), lines (a rectangle's four edges are plain lines), and circles are selectable in the
   viewport. Point picks take precedence near vertices within the point pick tolerance.
+- **Elements-pane hover → viewport highlight (#161):** hovering any row in the Elements
+  pane (List, Tree, or Graph view) highlights that element in the 3D viewport using the
+  standard hover color: sketch entities get their usual pick highlight, a hovered sketch
+  row highlights all of its entities, a construction plane its fill, and a body or
+  extrusion its **aura** tinted in the hover color. Drawn depth-test-disabled like other
+  pick highlights (#153).
+- **3D body sub-element selection (#156):** outside sketch mode, the Select tool can select
+  a body's **edges and vertices** (the same feature edges/corners the hover highlight shows,
+  #144), not just sketch entities. Shift/⌘-click multi-selects them like any other element.
+  Their selection identity is the quantized geometry (not a stable topological name): if a
+  rebuild moves the edge, the selection simply drops — acceptable for ephemeral, never-
+  persisted selection state. Selected body edges/vertices draw depth-test-disabled like
+  their hover highlights (#153).
+- **No picking through bodies (#155):** while selecting (Select/Constraint tools, and picks
+  made for a tool such as construction-plane references or dimension targets), geometry
+  hidden **behind** a visible body under the cursor is not a pick candidate — clicking a
+  body never selects a line buried inside or behind it. The probe point is the spot on the
+  candidate nearest the cursor, so a partially hidden edge stays pickable along its visible
+  stretch; hiding a body (Elements pane) removes it as an occluder, restoring the old
+  X-ray behavior deliberately.
 - **3D body sub-element hover (#144):** with the Select tool, hovering a 3D body highlights the
   **vertex, edge, or face** under the cursor — in that priority order (a corner beats an edge on
   it, which beats the face they lie on), so it is always clear what a pick would grab. Edges are
@@ -596,9 +675,12 @@ modeled on SolveSpace (https://solvespace.com).
   (`solid_mesh_coplanar_faces`), so a whole box side or cylinder cap highlights as one face, with
   the nearer face winning when two project onto the cursor. The Chamfer/Fillet tool likewise
   hover-highlights the treatable analytic edge under the cursor before it is clicked.
-- **Selected-body highlight / aura (#145/#148):** selecting one or more bodies (or extrusions)
+- **Selected-body highlight / aura (#145/#148):** selecting one or more bodies
   — e.g. in the Elements pane — draws a blue **aura** around them: a purely **2D
-  screen-space effect**. All selected bodies are rasterized into one projected footprint, and
+  screen-space effect**. Selecting an **Extrude** element auras only the solid that
+  extrusion created (#154), with the rest of its body treated as non-selected geometry (it
+  occludes the outline where it stands in front) — so picking a feature highlights the part,
+  not the whole merged body. All selected bodies are rasterized into one projected footprint, and
   the aura is that footprint's outline pushed a few pixels outward (the iso-contour of the
   footprint's screen-space distance field, traced by marching squares, smoothed, and drawn as
   a single solid-color mitered stroke). Consequences of the 2D design, all intentional:
@@ -890,6 +972,13 @@ missing. The Website CI job (`.github/workflows/docs.yml`) regenerates them on L
 `xvfb` + a software Vulkan driver, uploads them as a downloadable artifact, and includes them in
 the deployed site. This reuses §9.3's determinism guarantees (fixed view, no animation waits).
 
+**Style swatches (#160).** The docs "Viewport styles" page documents every geometry style
+(line kinds × normal/hovered/selected states, points, faces, body auras). Hover states can't
+be captured by scripted screenshots (scripted pointer moves don't reach egui, #130), so the
+swatches are **drawn directly into PNGs** by `src/style_swatches.rs` using the renderer's own
+color constants — regenerated by `cargo test generate_style_swatches -- --ignored`, which
+`gen-doc-screenshots.sh` runs alongside the screenshot scripts (no GPU/display needed).
+
 ---
 
 ## 10. Geometry kernel integration (OCCT)
@@ -994,10 +1083,15 @@ the deployed site. This reuses §9.3's determinism guarantees (fixed view, no an
   nest exactly as the Document root tree does, #87), and **Graph** (a 2D node-link diagram
   laid out by a **force-directed simulation (#94)**: nodes are pulled into depth-ordered
   horizontal layers so the graph flows top-to-bottom — "somewhat vertical" — while pairwise
-  repulsion and parent↔child springs spread siblings sideways; the layout animates each frame
-  ("bounces") until its kinetic energy decays and it settles, then stops repainting. x is
+  repulsion and weak, capped parent↔child springs spread siblings sideways; repulsion is
+  deliberately sized to beat the springs at dot-diameter range so nodes never rest on top of
+  each other (#151). The layout animates each frame ("bounces") until its kinetic energy
+  decays and it settles, then stops repainting; the pane-edge clamp kills the velocity
+  component into the wall so a crowded row settles instead of pumping forever. x is
   contained to the pane width so it never scrolls horizontally, only vertically; the seed
-  layout is deterministic (reproducible across runs, no RNG)). Clicking a node in Graph view selects it like any
+  layout is deterministic (reproducible across runs, no RNG)). Each node draws as its
+  element's icon — the same icon its List/Tree row uses, tinted by selection/health state
+  (#152); only the synthetic Document root keeps a plain dot. Clicking a node in Graph view selects it like any
   other row; selecting a node highlights its ancestor and descendant nodes/edges with a distinct
   accent color/stroke. This is a per-session UI preference, not saved with the document.
 
@@ -1023,6 +1117,13 @@ the deployed site. This reuses §9.3's determinism guarantees (fixed view, no an
   | Right-drag | Orbit the camera |
   | **Shift + right-drag** | Pan the camera (slide the view target in the view plane) |
   | Mouse wheel | Zoom (dolly in/out) |
+
+- **Zoom to Fit (#164):** available in the command palette ("Zoom to Fit") and the View
+  menu. Frames the **current selection** (union of the selected elements' world bounds) so
+  it nearly fills the viewport; with nothing selected it frames all **non-construction**
+  geometry (bodies plus solid sketch lines/circles — construction scaffolding and datum
+  planes are ignored). Scriptable via the existing `bearcad.ui.zoom_fit()` (whole-document
+  form).
   | Left-drag (with an active draw tool) | Use the tool, e.g. draw a rectangle on the active plane |
   | **X** | Toggle construction/substantial on the in-progress draw op, or on each constructable selected item |
   | Escape | Cancel the in-progress operation; if none, deactivate the current tool (back to *Select*) |
@@ -1068,11 +1169,20 @@ the deployed site. This reuses §9.3's determinism guarantees (fixed view, no an
   popup with two icon-button rows (words are avoided in favour of icons + tooltips):
   - **Projection** — the same orthographic/perspective choice the old button toggled
     directly; the active one is highlighted, click the other to switch.
+  - **Ground** — how the ground plane renders (#159), one of two icon options:
+    - *Ground grid*: the classic line grid (the default).
+    - *Solid ground*: one filled plane in the grid's grey, slightly darkened, drawn with
+      the same depth bias as the grid so bodies resting on z = 0 never z-fight it; the
+      X/Y/Z axis lines still draw on top for orientation.
+    Scriptable via `bearcad.ui.ground("grid" | "solid")`.
   - **Shading** — how committed bodies render, one of:
     - *Wireframe*: edges only, no fill. Draws *feature* edges only — mesh boundaries and
       creases sharper than ~15° — so the internal triangulation of flat faces (#82) and the
       facet seams of tessellated smooth surfaces like cylinder walls and fillets (#101) are
-      not drawn.
+      not drawn. Smooth surfaces additionally draw their **view-dependent silhouette
+      edges** (#158): the seams where the surface turns away from the camera (one adjacent
+      facet front-facing, the other back-facing), so a cylinder shows its two tangent
+      sides from any angle; these move with the camera and are rebuilt per frame.
     - *Transparent solid*: translucent fill with edges visible through it.
     - *Solid*: opaque fill, no edge overlay (the default — today's existing look).
     - *Solid + wireframe*: opaque fill plus an edge overlay that stays visible through the

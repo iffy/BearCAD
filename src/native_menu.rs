@@ -24,6 +24,7 @@ pub enum MenuCommand {
     ExportStl,
     ExportStep,
     ImportStl,
+    ImportImage,
     ImportStep,
     ExportSessionCommands,
     Quit,
@@ -37,6 +38,7 @@ pub enum MenuCommand {
     ToggleCommandPalette,
     /// Toggle first-person (FPS) mode (#91, #118).
     ToggleFpsMode,
+    ZoomToFit,
     SetPaneVisible { pane: Pane, visible: bool },
 }
 
@@ -50,6 +52,7 @@ pub struct MenuIds {
     pub export_stl: MenuId,
     pub export_step: MenuId,
     pub import_stl: MenuId,
+    pub import_image: MenuId,
     pub import_step: MenuId,
     pub export_session_commands: MenuId,
     pub quit: MenuId,
@@ -60,6 +63,7 @@ pub struct MenuIds {
     pub install_cli: MenuId,
     pub command_palette: MenuId,
     pub fps_mode: MenuId,
+    pub zoom_to_fit: MenuId,
     pub pane_checks: Vec<(Pane, MenuId)>,
 }
 
@@ -110,6 +114,9 @@ pub fn command_for_id(
     if ids.export_step == id {
         return Some(MenuCommand::ExportStep);
     }
+    if ids.import_image == id {
+        return Some(MenuCommand::ImportImage);
+    }
     if ids.import_stl == id {
         return Some(MenuCommand::ImportStl);
     }
@@ -142,6 +149,9 @@ pub fn command_for_id(
     }
     if ids.fps_mode == id {
         return Some(MenuCommand::ToggleFpsMode);
+    }
+    if ids.zoom_to_fit == id {
+        return Some(MenuCommand::ZoomToFit);
     }
     for &(pane, ref check_id) in &ids.pane_checks {
         if check_id == id {
@@ -179,6 +189,7 @@ impl MenuCommand {
             MenuCommand::ExportStl
             | MenuCommand::ExportStep
             | MenuCommand::ImportStl
+            | MenuCommand::ImportImage
             | MenuCommand::ImportStep
             | MenuCommand::ExportSessionCommands => {
                 None
@@ -193,6 +204,7 @@ impl MenuCommand {
             MenuCommand::InstallCli => None,
             MenuCommand::ToggleCommandPalette => Some(Action::ToggleCommandPalette),
             MenuCommand::ToggleFpsMode => Some(Action::ToggleFpsMode),
+            MenuCommand::ZoomToFit => Some(Action::ZoomToFit),
             MenuCommand::SetPaneVisible { pane, visible } => {
                 Some(Action::SetPaneVisible { pane, visible })
             }
@@ -270,6 +282,7 @@ impl NativeMenu {
         let export_stl = MenuItem::with_id("export_stl", "Export STL…", true, None);
         let export_step = MenuItem::with_id("export_step", "Export STEP…", true, None);
         let import_stl = MenuItem::with_id("import_stl", "Import STL…", true, None);
+        let import_image = MenuItem::with_id("import_image", "Import Image…", true, None);
         let import_step = MenuItem::with_id("import_step", "Import STEP…", true, None);
         let quit = MenuItem::with_id(
             "quit",
@@ -291,6 +304,7 @@ impl NativeMenu {
             Some(Accelerator::new(Some(primary), Code::KeyP)),
         );
         let fps_mode = CheckMenuItem::with_id("fps_mode", "FPS Mode", true, false, None);
+        let zoom_to_fit = MenuItem::with_id("zoom_to_fit", "Zoom to Fit", true, None);
         let about = MenuItem::with_id("about", "About BearCAD", true, None);
         let licenses = MenuItem::with_id("licenses", "Licenses", true, None);
         let install_cli = MenuItem::with_id(
@@ -326,6 +340,7 @@ impl NativeMenu {
         file_menu.append(&export_stl)?;
         file_menu.append(&export_step)?;
         file_menu.append(&import_stl)?;
+        file_menu.append(&import_image)?;
         file_menu.append(&import_step)?;
         #[cfg(not(target_os = "macos"))]
         {
@@ -344,6 +359,7 @@ impl NativeMenu {
             .collect();
         panes_menu.append_items(&pane_item_refs)?;
         view_menu.append(&command_palette)?;
+        view_menu.append(&zoom_to_fit)?;
         view_menu.append(&fps_mode)?;
         view_menu.append(&PredefinedMenuItem::separator())?;
         view_menu.append(&panes_menu)?;
@@ -368,6 +384,7 @@ impl NativeMenu {
             export_stl: export_stl.id().clone(),
             export_step: export_step.id().clone(),
             import_stl: import_stl.id().clone(),
+            import_image: import_image.id().clone(),
             import_step: import_step.id().clone(),
             export_session_commands: export_session_commands.id().clone(),
             quit: quit.id().clone(),
@@ -378,6 +395,7 @@ impl NativeMenu {
             install_cli: install_cli.id().clone(),
             command_palette: command_palette.id().clone(),
             fps_mode: fps_mode.id().clone(),
+            zoom_to_fit: zoom_to_fit.id().clone(),
             pane_checks: pane_ids,
         };
 
@@ -466,6 +484,7 @@ mod tests {
             export_stl: MenuId::new("export_stl"),
             export_step: MenuId::new("export_step"),
             import_stl: MenuId::new("import_stl"),
+            import_image: MenuId::new("import_image"),
             import_step: MenuId::new("import_step"),
             export_session_commands: MenuId::new("export_session_commands"),
             quit: MenuId::new("quit"),
@@ -476,6 +495,7 @@ mod tests {
             install_cli: MenuId::new("install_cli"),
             command_palette: MenuId::new("command_palette"),
             fps_mode: MenuId::new("fps_mode"),
+            zoom_to_fit: MenuId::new("zoom_to_fit"),
             pane_checks: vec![(Pane::ViewCube, pane_menu_id.clone())],
         };
         (ids, pane_menu_id)

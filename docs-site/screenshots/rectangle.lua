@@ -13,9 +13,16 @@
 local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/rectangle.png"
 
 bearcad.new()
+-- Hide the side panes so the captured viewport is landscape (#150).
+bearcad.ui.pane("elements", "hide")
+bearcad.ui.pane("context", "hide")
+bearcad.ui.pane("parameters", "hide")
+
 bearcad.rect{ width = 80, height = 50, name = "Plate" }
 
 bearcad.ui.view("top")
+bearcad.ui.wait(2)
+bearcad.ui.zoom_fit()
 bearcad.ui.wait(2)
 bearcad.ui.screenshot(out)
 

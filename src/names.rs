@@ -14,8 +14,12 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::Circle(_)
         | SceneElement::Constraint(_)
         | SceneElement::Extrusion(_)
-        | SceneElement::Body(_) => Some(element),
-        SceneElement::Point(_) | SceneElement::FaceEdge(_) => None,
+        | SceneElement::Body(_)
+        | SceneElement::Image(_) => Some(element),
+        SceneElement::Point(_)
+        | SceneElement::FaceEdge(_)
+        | SceneElement::BodyEdge { .. }
+        | SceneElement::BodyVertex { .. } => None,
     }
 }
 
@@ -93,7 +97,11 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         SceneElement::Constraint(index) => doc.constraints.get(index)?.name.as_deref(),
         SceneElement::Extrusion(index) => doc.extrusions.get(index)?.name.as_deref(),
         SceneElement::Body(index) => doc.bodies.get(index)?.name.as_deref(),
-        SceneElement::Point(_) | SceneElement::FaceEdge(_) => None,
+        SceneElement::Image(index) => doc.tracing_images.get(index)?.name.as_deref(),
+        SceneElement::Point(_)
+        | SceneElement::FaceEdge(_)
+        | SceneElement::BodyEdge { .. }
+        | SceneElement::BodyVertex { .. } => None,
     }?;
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -162,11 +170,21 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 .ok_or_else(|| format!("body {index} not found"))?;
             body.name = stored;
         }
+        SceneElement::Image(index) => {
+            let image = doc
+                .tracing_images
+                .get_mut(index)
+                .ok_or_else(|| format!("image {index} not found"))?;
+            image.name = stored;
+        }
         SceneElement::Point(_) => {
             return Err("points cannot be renamed".to_string());
         }
         SceneElement::FaceEdge(_) => {
             return Err("face edges cannot be renamed".to_string());
+        }
+        SceneElement::BodyEdge { .. } | SceneElement::BodyVertex { .. } => {
+            return Err("body edges and vertices cannot be renamed".to_string());
         }
     }
     Ok(())
@@ -216,6 +234,11 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
             format!("Extrusion {i} ({})", format_length_display_in(distance, unit))
         }
         HierarchyNode::Body(i) => format!("Body {i}"),
+        HierarchyNode::Image(i) => doc
+            .tracing_images
+            .get(i)
+            .map(|img| img.source_name.clone())
+            .unwrap_or_else(|| format!("Image {i}")),
     }
 }
 

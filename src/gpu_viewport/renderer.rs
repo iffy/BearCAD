@@ -33,6 +33,10 @@ pub struct ViewportGpuResources {
     sketch_fill_pipeline: wgpu::RenderPipeline,
     scene_transparent_pipeline: wgpu::RenderPipeline,
     text_pipeline: wgpu::RenderPipeline,
+    /// Tracing-image quads (#170): the text pipeline's layout with a full-color fragment.
+    image_pipeline: wgpu::RenderPipeline,
+    /// Texture + bind group per tracing image, keyed by the scene's content id (#170).
+    image_textures: Mutex<std::collections::HashMap<u64, wgpu::BindGroup>>,
     blit_pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
@@ -468,6 +472,66 @@ impl ViewportGpuResources {
             cache: None,
         });
 
+        // Tracing-image pipeline (#170): identical to the text pipeline except for the
+        // fragment (full-color texture sample instead of glyph-alpha) — same vertex layout,
+        // same texture bind group layout, same depth-test-on/write-off behavior so bodies
+        // in front occlude images while images never occlude anything themselves.
+        let image_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("bearcad_viewport_image_pipeline"),
+            layout: Some(&text_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_text"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<GpuTextVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 12,
+                            shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 20,
+                            shader_location: 2,
+                        },
+                    ],
+                }],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_image"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: VIEWPORT_DEPTH_FORMAT,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: multisample_state(msaa_sample_count),
+            multiview: None,
+            cache: None,
+        });
+
         let blit_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("bearcad_viewport_blit_layout"),
@@ -570,6 +634,8 @@ impl ViewportGpuResources {
             sketch_fill_pipeline,
             scene_transparent_pipeline,
             text_pipeline,
+            image_pipeline,
+            image_textures: Mutex::new(std::collections::HashMap::new()),
             blit_pipeline,
             uniform_buffer,
             uniform_bind_group,
@@ -861,6 +927,89 @@ impl ViewportGpuResources {
             );
         }
 
+        // Tracing images (#170): upload any new textures and build this frame's quad
+        // vertex/index buffers before opening the render pass.
+        let mut image_draws: Vec<(u64, wgpu::Buffer, wgpu::Buffer)> = Vec::new();
+        if !scene.images.is_empty() {
+            let mut textures = self.image_textures.lock().expect("image texture cache");
+            for quad in &scene.images {
+                if !textures.contains_key(&quad.id) {
+                    let texture = device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("bearcad_tracing_image"),
+                        size: wgpu::Extent3d {
+                            width: quad.width_px.max(1),
+                            height: quad.height_px.max(1),
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING
+                            | wgpu::TextureUsages::COPY_DST,
+                        view_formats: &[],
+                    });
+                    queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        &quad.rgba,
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(4 * quad.width_px.max(1)),
+                            rows_per_image: Some(quad.height_px.max(1)),
+                        },
+                        wgpu::Extent3d {
+                            width: quad.width_px.max(1),
+                            height: quad.height_px.max(1),
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("bearcad_tracing_image_bind"),
+                        layout: &self.text_texture_bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(&view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Sampler(&self.sampler),
+                            },
+                        ],
+                    });
+                    textures.insert(quad.id, bind_group);
+                }
+                let uv = [[0.0f32, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+                let vertices: Vec<GpuTextVertex> = quad
+                    .corners
+                    .iter()
+                    .zip(uv.iter())
+                    .map(|(corner, uv)| GpuTextVertex {
+                        position: [corner.x, corner.y, corner.z],
+                        uv: *uv,
+                        color: [1.0, 1.0, 1.0, quad.opacity],
+                    })
+                    .collect();
+                let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("bearcad_tracing_image_vbuf"),
+                    contents: bytemuck::cast_slice(&vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("bearcad_tracing_image_ibuf"),
+                    contents: bytemuck::cast_slice::<u32, u8>(&[0, 1, 2, 0, 2, 3]),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+                image_draws.push((quad.id, vbuf, ibuf));
+            }
+        }
+
         let color_view = self.color_view.as_ref().expect("color view");
         let depth_view = self.depth_view.as_ref().expect("depth view");
         let (color_attachment_view, resolve_target, color_store) =
@@ -935,6 +1084,24 @@ impl ViewportGpuResources {
                 if plane_end > sketch_fill_end {
                     pass.set_pipeline(&self.scene_transparent_pipeline);
                     pass.draw_indexed(sketch_fill_end..plane_end, 0, 0..1);
+                }
+                if !image_draws.is_empty() {
+                    // Tracing images (#170): depth-tested, no depth write — under all
+                    // overlay/gizmo geometry.
+                    let textures = self.image_textures.lock().expect("image texture cache");
+                    pass.set_pipeline(&self.image_pipeline);
+                    pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                    for (id, vbuf, ibuf) in &image_draws {
+                        let Some(bind_group) = textures.get(id) else { continue };
+                        pass.set_bind_group(1, bind_group, &[]);
+                        pass.set_vertex_buffer(0, vbuf.slice(..));
+                        pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..6, 0, 0..1);
+                    }
+                    // Restore state for the ranges below.
+                    pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                    pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                    pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 }
                 if overlay_end > plane_end {
                     pass.set_pipeline(&self.scene_pipeline);

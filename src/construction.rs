@@ -915,12 +915,103 @@ impl PickTarget {
     }
 }
 
-/// Resolve the best pick target under the cursor (shared by hover and click).
+/// Occlusion context for picking (#155): the eye position plus the visible bodies' solid
+/// meshes, so [`resolve_pick_target`] can reject candidates hidden *behind* a body under
+/// the cursor. Build once per pick (it meshes each visible body); pass `None` to keep the
+/// old X-ray behavior (tests, callers without a camera).
+pub struct PickOcclusion {
+    eye: Vec3,
+    meshes: Vec<crate::extrude::SolidMesh>,
+}
+
+impl PickOcclusion {
+    pub fn new(doc: &Document, visibility: &crate::hierarchy::ElementVisibility, eye: Vec3) -> Self {
+        let meshes = doc
+            .bodies
+            .iter()
+            .enumerate()
+            .filter(|(bi, body)| {
+                !body.deleted
+                    && visibility
+                        .effective_visible(doc, crate::hierarchy::SceneElement::Body(*bi))
+            })
+            .filter_map(|(bi, _)| crate::extrude::body_solid_mesh(doc, bi))
+            .collect();
+        Self { eye, meshes }
+    }
+
+    /// Whether a solid stands strictly between the eye and `p` (with slack at both ends so
+    /// a point *on* a body's own surface doesn't occlude itself).
+    pub fn occluded(&self, p: Vec3) -> bool {
+        let dir = p - self.eye;
+        let len = dir.length();
+        if len < 1e-6 {
+            return false;
+        }
+        const SLACK: f32 = 1e-3;
+        self.meshes.iter().any(|mesh| {
+            mesh.triangles.iter().any(|tri| {
+                ray_triangle_t(self.eye, dir, tri)
+                    .is_some_and(|t| t > SLACK && t < 1.0 - SLACK)
+            })
+        })
+    }
+}
+
+/// Möller–Trumbore ray/triangle intersection: the ray parameter `t` where `origin + t*dir`
+/// hits `tri`, or `None` for a miss (or a parallel/degenerate triangle).
+fn ray_triangle_t(origin: Vec3, dir: Vec3, tri: &[Vec3; 3]) -> Option<f32> {
+    let e1 = tri[1] - tri[0];
+    let e2 = tri[2] - tri[0];
+    let p = dir.cross(e2);
+    let det = e1.dot(p);
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    let inv = 1.0 / det;
+    let s = origin - tri[0];
+    let u = s.dot(p) * inv;
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+    let q = s.cross(e1);
+    let v = dir.dot(q) * inv;
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    let t = e2.dot(q) * inv;
+    (t > 0.0).then_some(t)
+}
+
+/// Closest world point on segment `a`-`b` to `screen`, measured in projected screen space —
+/// the point the cursor is actually "on", used as the occlusion probe for edge candidates
+/// (a partially hidden edge stays pickable on its visible stretch).
+fn segment_point_nearest_screen(
+    screen: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    a: Vec3,
+    b: Vec3,
+) -> Vec3 {
+    let (Some(pa), Some(pb)) = (project(a), project(b)) else {
+        return segment_midpoint(a, b);
+    };
+    let ab = pb - pa;
+    if ab.length_sq() < 1e-6 {
+        return a;
+    }
+    let t = ((screen - pa).dot(ab) / ab.length_sq()).clamp(0.0, 1.0);
+    a + (b - a) * t
+}
+
+/// Resolve the best pick target under the cursor (shared by hover and click). With an
+/// [`PickOcclusion`] context, candidates hidden behind a visible body are skipped (#155) —
+/// clicking a body never selects a line buried behind it.
 pub fn resolve_pick_target(
     screen: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     ground_point: Option<Vec3>,
     doc: &Document,
+    occlusion: Option<&PickOcclusion>,
 ) -> Option<PickTarget> {
     let mut best: Option<PickTarget> = None;
 
@@ -929,6 +1020,7 @@ pub fn resolve_pick_target(
             best = Some(candidate);
         }
     };
+    let visible = |p: Vec3| occlusion.is_none_or(|occ| !occ.occluded(p));
 
     if let Some((kind, dist)) = nearest_sketch_point(screen, project, doc) {
         let origin = match &kind {
@@ -937,42 +1029,48 @@ pub fn resolve_pick_target(
             }
             _ => Vec3::ZERO,
         };
-        consider(PickTarget {
-            kind,
-            reference: PlaneReference::Face {
-                origin,
-                normal: Vec3::Z,
-                label: "Point".to_string(),
-            },
-            distance_px: dist,
-            priority: 0,
-        });
+        if visible(origin) {
+            consider(PickTarget {
+                kind,
+                reference: PlaneReference::Face {
+                    origin,
+                    normal: Vec3::Z,
+                    label: "Point".to_string(),
+                },
+                distance_px: dist,
+                priority: 0,
+            });
+        }
     }
 
     if let Some((kind, a, b, label, dist)) = nearest_sketch_edge(screen, project, doc) {
-        consider(PickTarget {
-            kind,
-            reference: PlaneReference::Axis {
-                origin: segment_midpoint(a, b),
-                direction: segment_direction(a, b),
-                label,
-            },
-            distance_px: dist,
-            priority: 0,
-        });
+        if visible(segment_point_nearest_screen(screen, project, a, b)) {
+            consider(PickTarget {
+                kind,
+                reference: PlaneReference::Axis {
+                    origin: segment_midpoint(a, b),
+                    direction: segment_direction(a, b),
+                    label,
+                },
+                distance_px: dist,
+                priority: 0,
+            });
+        }
     }
 
     if let Some((kind, a, b, label, dist)) = nearest_body_edge(screen, project, doc) {
-        consider(PickTarget {
-            kind,
-            reference: PlaneReference::Axis {
-                origin: segment_midpoint(a, b),
-                direction: segment_direction(a, b),
-                label,
-            },
-            distance_px: dist,
-            priority: 0,
-        });
+        if visible(segment_point_nearest_screen(screen, project, a, b)) {
+            consider(PickTarget {
+                kind,
+                reference: PlaneReference::Axis {
+                    origin: segment_midpoint(a, b),
+                    direction: segment_direction(a, b),
+                    label,
+                },
+                distance_px: dist,
+                priority: 0,
+            });
+        }
     }
 
     if let Some((axis, dist)) = nearest_global_axis(screen, project) {
@@ -1036,6 +1134,21 @@ pub fn scene_element_from_pick(kind: &PickTargetKind) -> Option<SceneElement> {
         PickTargetKind::Point(point) => Some(SceneElement::Point(point.clone())),
         PickTargetKind::Line(index) => Some(SceneElement::Line(*index)),
         PickTargetKind::Circle(index) => Some(SceneElement::Circle(*index)),
+        // 3D body sub-elements are selectable outside sketch mode (#156). Their identity is
+        // the quantized geometry, canonically ordered so either traversal direction of the
+        // same edge maps to one selection key.
+        PickTargetKind::BodyEdge { body, a, b } => {
+            let (qa, qb) = (
+                crate::hierarchy::quantize_body_point(*a),
+                crate::hierarchy::quantize_body_point(*b),
+            );
+            let (qa, qb) = if qa <= qb { (qa, qb) } else { (qb, qa) };
+            Some(SceneElement::BodyEdge { body: *body, a: qa, b: qb })
+        }
+        PickTargetKind::BodyVertex { body, position } => Some(SceneElement::BodyVertex {
+            body: *body,
+            p: crate::hierarchy::quantize_body_point(*position),
+        }),
         _ => None,
     }
 }
@@ -1982,6 +2095,7 @@ mod tests {
             &project,
             Some(Vec3::new(50.0, 2.0, 0.0)),
             &doc,
+            None,
         )
         .unwrap();
         assert!(matches!(target.kind, PickTargetKind::GlobalAxis(GlobalAxis::X)));
@@ -2000,6 +2114,7 @@ mod tests {
             &project,
             Some(Vec3::new(3.0, 2.0, 0.0)),
             &doc,
+            None,
         )
         .unwrap();
         assert!(matches!(target.kind, PickTargetKind::GlobalAxis(_)));
@@ -2035,7 +2150,7 @@ mod tests {
         let (mut doc, sketch) = doc_with_plane_sketch();
         doc.lines = vec![Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0)];
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
-        let reference = resolve_pick_target(Pos2::new(50.0, 2.0), &project, Some(Vec3::ZERO), &doc)
+        let reference = resolve_pick_target(Pos2::new(50.0, 2.0), &project, Some(Vec3::ZERO), &doc, None)
             .map(|t| t.reference);
         assert!(matches!(reference, Some(PlaneReference::Axis { .. })));
     }
@@ -2114,12 +2229,87 @@ mod tests {
         assert!(nearest_body_vertex(Pos2::new(50.0, 50.0), &project, &doc).is_none());
     }
 
+    /// #155: with an occlusion context, a line hidden behind a visible body is not pickable;
+    /// without one (or with the body hidden), it still is.
+    #[test]
+    fn occluded_line_is_not_picked() {
+        let (mut doc, sketch) = doc_with_plane_sketch();
+        doc.lines = vec![Line::from_local_endpoints(sketch, 20.0, 40.0, 60.0, 40.0)];
+        // A blocker body (imported soup, so no kernel needed): its top face at z = 10
+        // stands between the eye (z = +100) and the line (z = 0).
+        let c = |x: f32, y: f32, z: f32| Vec3::new(x, y, z);
+        let triangles = vec![
+            [c(0.0, 0.0, 10.0), c(80.0, 0.0, 10.0), c(80.0, 80.0, 10.0)],
+            [c(0.0, 0.0, 10.0), c(80.0, 80.0, 10.0), c(0.0, 80.0, 10.0)],
+        ];
+        doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles,
+            source_name: "blocker".to_string(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: None,
+            deleted: false,
+        });
+
+        // Top-down view: everything projects by (x, y); the eye is above the blocker.
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let eye = Vec3::new(40.0, 40.0, 100.0);
+        let cursor = Pos2::new(40.0, 40.0);
+
+        let visibility = crate::hierarchy::ElementVisibility::default();
+        let occ = PickOcclusion::new(&doc, &visibility, eye);
+        let picked = resolve_pick_target(cursor, &project, None, &doc, Some(&occ));
+        assert!(
+            !matches!(picked.as_ref().map(|t| &t.kind), Some(PickTargetKind::Line(_))),
+            "line behind the body must not be picked, got {:?}",
+            picked.map(|t| t.kind)
+        );
+
+        // Without occlusion the line is picked (the old X-ray behavior).
+        let picked = resolve_pick_target(cursor, &project, None, &doc, None);
+        assert!(matches!(picked.map(|t| t.kind), Some(PickTargetKind::Line(0))));
+
+        // Hiding the body restores pickability: an invisible body must not occlude.
+        let mut visibility = crate::hierarchy::ElementVisibility::default();
+        visibility.set_visible(crate::hierarchy::SceneElement::Body(0), false);
+        let occ = PickOcclusion::new(&doc, &visibility, eye);
+        let picked = resolve_pick_target(cursor, &project, None, &doc, Some(&occ));
+        assert!(matches!(picked.map(|t| t.kind), Some(PickTargetKind::Line(0))));
+    }
+
+    /// #156: body edges and vertices map to selectable scene elements (outside sketch
+    /// mode), with a canonical, direction-independent identity for edges.
+    #[test]
+    fn body_edge_and_vertex_picks_become_selectable_elements() {
+        use crate::hierarchy::SceneElement;
+
+        let a = Vec3::new(0.0, 0.0, 10.0);
+        let b = Vec3::new(80.0, 0.0, 10.0);
+        let forward = scene_element_from_pick(&PickTargetKind::BodyEdge { body: 0, a, b });
+        let backward = scene_element_from_pick(&PickTargetKind::BodyEdge { body: 0, a: b, b: a });
+        assert!(matches!(forward, Some(SceneElement::BodyEdge { body: 0, .. })));
+        assert_eq!(forward, backward, "edge identity must not depend on direction");
+
+        let vertex =
+            scene_element_from_pick(&PickTargetKind::BodyVertex { body: 2, position: a });
+        assert!(matches!(vertex, Some(SceneElement::BodyVertex { body: 2, .. })));
+
+        // Click round trip: selecting the picked edge lands in the scene selection.
+        let mut state = crate::actions::AppState::default();
+        state.apply(crate::actions::Action::ClickSceneElement {
+            element: forward.clone().unwrap(),
+            additive: false,
+        });
+        assert!(state.scene_selection.is_selected(forward.unwrap()));
+    }
+
     #[test]
     fn line_picked_within_proximity_threshold() {
         let (mut doc, sketch) = doc_with_plane_sketch();
         doc.lines = vec![Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0)];
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
-        let target = resolve_pick_target(Pos2::new(50.0, 8.0), &project, None, &doc);
+        let target = resolve_pick_target(Pos2::new(50.0, 8.0), &project, None, &doc, None);
         assert!(matches!(
             target.map(|t| t.kind),
             Some(PickTargetKind::Line(_))
@@ -2131,7 +2321,7 @@ mod tests {
         let (mut doc, sketch) = doc_with_plane_sketch();
         doc.lines = vec![Line::from_local_endpoints(sketch, 100.0, 50.0, 200.0, 50.0)];
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
-        let target = resolve_pick_target(Pos2::new(100.0, 59.0), &project, None, &doc);
+        let target = resolve_pick_target(Pos2::new(100.0, 59.0), &project, None, &doc, None);
         assert!(matches!(
             target.map(|t| t.kind),
             Some(PickTargetKind::Point(ConstraintPoint::LineEndpoint {
@@ -2254,7 +2444,7 @@ mod tests {
         // from x=0/y=0 so it can't coincidentally land on the (legitimately pickable) global
         // X/Y axes instead.
         let on_the_border = Pos2::new(30.0, PLANE_DISPLAY_HALF);
-        let target = resolve_pick_target(on_the_border, &project, None, &doc).unwrap();
+        let target = resolve_pick_target(on_the_border, &project, None, &doc, None).unwrap();
         assert_eq!(target.kind, PickTargetKind::ConstructionPlane(0));
         assert!(matches!(target.reference, PlaneReference::Face { .. }));
     }
@@ -2268,6 +2458,7 @@ mod tests {
             &project,
             Some(Vec3::new(80.0, 80.0, 0.0)),
             &doc,
+            None,
         )
         .map(|t| t.reference);
         assert!(matches!(
