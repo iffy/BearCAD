@@ -427,8 +427,22 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   approximation the 2D fillet uses, faceted at `EDGE_TREATMENT_FILLET_SEGMENTS` (= `BEZIER_
   SEGMENTS`, the existing curve-faceting precedent). The `occt` build instead produces the true
   BREP fillet/chamfer surface described above.
-  - **Explicitly out of scope**: `Circle`-profile edges (curved, no discrete side walls to
-    bevel — `side_face_count` is 0); STL/STEP-imported bodies (pure triangle soup, no analytic
+  - **Circle cap rims (#177, kernel builds)**: a `Circle`-profile extrusion's two cap rims
+    are treatable as `Cap { edge: 0, top }` — one continuous circular edge each. Circle
+    extrusions build as **true BREP cylinders** (`Shape::cylinder`, not a prism over the
+    sampled 48-gon), so the rim is a single circular edge the kernel chamfers/fillets
+    exactly; the FFI edge matcher gained a closed-edge pass (two diametrically opposite
+    request points, matched by curve projection) since a seam-vertex circle can't be matched
+    by endpoints. Rim treatments on a **cut** extrusion are **countersinks**: the tool is
+    built without them, subtracted, and the treatment is applied to the resulting body's
+    hole rim (beveling the tool itself would leave a lip — the inverse). The kernel
+    feasibility trial accordingly trials the owning *body* build when there is one. Rims are
+    kernel-only: the no-kernel mesh fallback renders them untreated (its bevel builder is
+    polygon-vertex-based), and no analytic rim edges are offered for picking in a lean
+    build. Slanted-target (lofted) circle extrusions keep the sampled profile and stay
+    untreatable.
+  - **Explicitly out of scope**: `Circle`-profile *vertical* edges (a smooth wall, nothing
+    to bevel); STL/STEP-imported bodies (pure triangle soup, no analytic
     profile to derive an edge from — #31's generic mesh-feature-edge extraction still works for
     *picking/hovering* those edges for plane-referencing, just not for beveling them); and a
     **vertex miter** where 3+ treated edges would meet at a shared corner — rejected at commit

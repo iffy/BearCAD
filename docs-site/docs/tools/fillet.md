@@ -14,10 +14,11 @@ radius; **Enter** commits. A live preview shows the rounded corner as you adjust
 is how you round a profile *before* extruding — like the rounded bend in the
 [Quickstart bracket](/docs/quickstart#3-round-the-bend).
 
-**On a solid:** with no sketch open, click an edge of a body — a vertical corner edge, or
-an edge where a wall meets the top or bottom face. Shift+click more edges to round several
-with one radius, then drag or type and press **Enter**. The picked edges are listed in the
-Context pane, where individual ones can be removed before committing.
+**On a solid:** with no sketch open, click an edge of a body — a vertical corner edge, an
+edge where a wall meets the top or bottom face, or the **round rim** of a cylinder or a
+drilled hole. Shift+click more edges to round several with one radius, then drag or type
+and press **Enter**. The picked edges are listed in the Context pane, where individual ones
+can be removed before committing.
 
 ![A box with its four vertical edges rounded](/img/screenshots/fillet.png)
 
@@ -27,6 +28,6 @@ Context pane, where individual ones can be removed before committing.
 - A radius that can't physically fit (too big for the part) is rejected at commit rather
   than producing broken geometry.
 - Rounding solid edges works on bodies made from sketch profiles; imported STL/STEP bodies
-  can't be filleted yet. Round hole rims (countersinks) aren't supported yet either.
+  can't be filleted yet.
 - A fillet undoes as a single step, and shows up in the Elements pane nested under the line
   it rounds.

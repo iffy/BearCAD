@@ -7,6 +7,9 @@
 
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
+#include <BRepPrimAPI_MakeCylinder.hxx>
+#include <gp_Ax2.hxx>
+#include <gp_Dir.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepOffsetAPI_ThruSections.hxx>
@@ -21,6 +24,8 @@
 #include <STEPControl_Reader.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <BRep_Tool.hxx>
+#include <GeomAPI_ProjectPointOnCurve.hxx>
+#include <Geom_Curve.hxx>
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
 #include <Poly_Triangulation.hxx>
@@ -288,9 +293,30 @@ TopoDS_Shape apply_edge_treatment(const TopoDS_Shape& shape, const double* edges
         return p.SquareDistance(gp_Pnt(x, y, z)) <= tol * tol;
     };
 
+    // Whether both request points lie on the edge's own curve (within tol) — matches
+    // CLOSED edges (a cylinder cap's rim circle has a seam vertex, so endpoint matching
+    // can't see it); callers request such an edge as two distinct points on the curve.
+    auto on_curve = [tol](const TopoDS_Edge& edge, const gp_Pnt& a, const gp_Pnt& b) {
+        Standard_Real f, l;
+        Handle(Geom_Curve) curve = BRep_Tool::Curve(edge, f, l);
+        if (curve.IsNull()) {
+            return false;
+        }
+        for (const gp_Pnt& p : {a, b}) {
+            GeomAPI_ProjectPointOnCurve proj(p, curve, f, l);
+            if (proj.NbPoints() == 0 || proj.LowerDistance() > tol) {
+                return false;
+            }
+        }
+        return true;
+    };
+
     for (unsigned long i = 0; i < n; ++i) {
         const double* e = edges + 6 * i;
+        gp_Pnt ra(e[0], e[1], e[2]);
+        gp_Pnt rb(e[3], e[4], e[5]);
         bool matched = false;
+        // Pass 1: exact endpoint matching (open edges).
         for (int k = 1; k <= edgeMap.Extent(); ++k) {
             const TopoDS_Edge& edge = TopoDS::Edge(edgeMap(k));
             TopoDS_Vertex v1, v2;
@@ -308,6 +334,29 @@ TopoDS_Shape apply_edge_treatment(const TopoDS_Shape& shape, const double* edges
                 break;
             }
         }
+        // Pass 2: closed/seamed edges (circular rims), matched by both request points
+        // lying on the edge's curve. Restricted to edges whose two vertices coincide
+        // (i.e. actually closed), so a long straight edge that happens to pass through
+        // both points can't shadow an exact endpoint match from pass 1.
+        if (!matched) {
+            for (int k = 1; k <= edgeMap.Extent(); ++k) {
+                const TopoDS_Edge& edge = TopoDS::Edge(edgeMap(k));
+                TopoDS_Vertex v1, v2;
+                TopExp::Vertices(edge, v1, v2);
+                bool closed = (!v1.IsNull() && !v2.IsNull()
+                               && BRep_Tool::Pnt(v1).SquareDistance(BRep_Tool::Pnt(v2))
+                                      <= tol * tol)
+                              || (v1.IsNull() && v2.IsNull());
+                if (!closed) {
+                    continue;
+                }
+                if (on_curve(edge, ra, rb)) {
+                    maker.Add(amounts[i], edge);
+                    matched = true;
+                    break;
+                }
+            }
+        }
         if (!matched) {
             return TopoDS_Shape();  // requested edge not found -> caller falls back
         }
@@ -321,6 +370,30 @@ TopoDS_Shape apply_edge_treatment(const TopoDS_Shape& shape, const double* edges
 }
 
 }  // namespace
+
+// True cylinder (#177): a circle-profile extrusion built as real BREP (circular wall +
+// circular rim edges), so rim chamfers/fillets and countersinks are exact cones — a
+// faceted prism has no circular edge to treat.
+extern "C" BearcadShape* bearcad_shape_cylinder(double cx, double cy, double cz, double ax,
+                                                double ay, double az, double radius,
+                                                double height) {
+    if (radius <= 0.0 || height <= 0.0) {
+        return nullptr;
+    }
+    try {
+        gp_Dir dir(ax, ay, az);
+        gp_Ax2 frame(gp_Pnt(cx, cy, cz), dir);
+        TopoDS_Shape shape = BRepPrimAPI_MakeCylinder(frame, radius, height).Shape();
+        if (shape.IsNull()) {
+            return nullptr;
+        }
+        return new BearcadShape{shape};
+    } catch (const Standard_Failure&) {
+        return nullptr;
+    } catch (...) {
+        return nullptr;
+    }
+}
 
 extern "C" BearcadShape* bearcad_shape_fillet(const BearcadShape* s, const double* edges,
                                               const double* radii, unsigned long n) {

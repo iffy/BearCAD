@@ -48,6 +48,12 @@ bearcad.circle{ x = 31, y = 30, r = 2.5 }
 bearcad.exit_sketch()
 bearcad.extrude{ circles = {0, 1}, distance = -6, body = "cut" }
 
+-- Countersink the holes: chamfer each hole's outer rim (the cut's base cap).
+for face = 0, 1 do
+  bearcad.chamfer_edge{ extrusion = 1,
+    edge = { kind = "cap", face = face, edge = 0, top = false }, distance = 1.2 }
+end
+
 -- Rounded flange-tip corners. Interactively these are single clicks on the tip
 -- edges; from a script the treatable-edge indices depend on internal ordering,
 -- so try the low candidates and keep whichever are real square corners (the

@@ -4038,8 +4038,9 @@ impl AppState {
                     return ActionResult::Err(e);
                 }
                 if !crate::extrude::extrusion_edge_exists(&self.doc, extrusion, edge) {
-                    let e = "Edge no longer exists or isn't chamfer/fillet-able (only vertical \
-                        and side/cap edges of a Rect/Polygon-profiled extrusion are supported)"
+                    let e = "Edge no longer exists or isn't chamfer/fillet-able (vertical and \
+                        side/cap edges of Rect/Polygon-profiled extrusions, or the cap rims \
+                        of Circle-profiled ones, are supported)"
                         .to_string();
                     self.status = e.clone();
                     return ActionResult::Err(e);

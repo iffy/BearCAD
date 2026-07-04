@@ -35,6 +35,16 @@ mod ffi {
             top_xyz: *const f64,
             n_pts: c_ulong,
         ) -> *mut BearcadShape;
+        pub fn bearcad_shape_cylinder(
+            cx: f64,
+            cy: f64,
+            cz: f64,
+            ax: f64,
+            ay: f64,
+            az: f64,
+            radius: f64,
+            height: f64,
+        ) -> *mut BearcadShape;
         pub fn bearcad_shape_boolean(
             a: *const BearcadShape,
             b: *const BearcadShape,
@@ -230,6 +240,29 @@ impl Shape {
                 dir.x as f64,
                 dir.y as f64,
                 dir.z as f64,
+            )
+        };
+        (!raw.is_null()).then_some(Shape { raw })
+    }
+
+    /// True BREP cylinder (#177): base circle centered at `center`, extruded `height`
+    /// along `axis`. Unlike a faceted [`Shape::prism`] of a sampled circle, its wall is a
+    /// real cylindrical surface and its cap rims are single circular edges — which is what
+    /// lets rim chamfers/fillets and countersinks work. `None` on degenerate input.
+    pub fn cylinder(center: glam::Vec3, axis: glam::Vec3, radius: f64, height: f64) -> Option<Shape> {
+        if radius <= 0.0 || height <= 0.0 || axis.length_squared() < 1e-12 {
+            return None;
+        }
+        let raw = unsafe {
+            ffi::bearcad_shape_cylinder(
+                center.x as f64,
+                center.y as f64,
+                center.z as f64,
+                axis.x as f64,
+                axis.y as f64,
+                axis.z as f64,
+                radius,
+                height,
             )
         };
         (!raw.is_null()).then_some(Shape { raw })

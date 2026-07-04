@@ -2162,9 +2162,9 @@ mod tests {
     }
 
     #[test]
-    fn nearest_treatable_edge_ignores_circle_profiles() {
+    fn nearest_treatable_edge_finds_circle_cap_rims() {
         use crate::actions::{Action, AppState, Tool};
-        use crate::model::{Circle, ExtrudeFace, FaceId};
+        use crate::model::{Circle, ExtrudeFace, ExtrusionEdgeRef, FaceId};
 
         let mut state = AppState::default();
         state.apply(Action::BeginSketch { face: FaceId::ConstructionPlane(0), viewport: None });
@@ -2177,7 +2177,15 @@ mod tests {
         state.apply(Action::CommitExtrusion);
 
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
-        assert!(nearest_treatable_edge(Pos2::new(5.0, 0.0), &project, &state.doc).is_none());
+        let hit = nearest_treatable_edge(Pos2::new(5.0, 0.0), &project, &state.doc);
+        // Cap rims of a cylinder are treatable in a kernel build (#177); the lean build
+        // still has no analytic circle edges.
+        if cfg!(feature = "occt") {
+            let (_, edge, _, _, _) = hit.expect("rim should be pickable");
+            assert!(matches!(edge, ExtrusionEdgeRef::Cap { edge: 0, .. }));
+        } else {
+            assert!(hit.is_none());
+        }
     }
 
     #[test]

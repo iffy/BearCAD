@@ -5,11 +5,11 @@ title: Quickstart
 
 # Quickstart: an angle bracket
 
-Let's design a real part: an L-shaped angle bracket with a rounded bend, rounded corners, and
-two screw holes — driven by named parameters so you can resize it afterward without redrawing
-anything.
+Let's design a real part: an L-shaped angle bracket with a rounded bend, rounded corners,
+and two countersunk screw holes — driven by named parameters so you can resize it afterward
+without redrawing anything.
 
-![The finished angle bracket: rounded bend, rounded corners, two screw holes](/img/screenshots/quickstart.png)
+![The finished angle bracket: rounded bend, rounded corners, two countersunk screw holes](/img/screenshots/quickstart.png)
 
 You'll use most of BearCAD's core tools along the way: parameters, the Line tool, fillets,
 extruding, sketching on a face, cutting holes, and rounding edges.
@@ -78,19 +78,26 @@ Holes go through a flange face:
 
 Repeat on the other flange.
 
-## 6. Round the corners
+## 6. Countersink the holes
+
+Flat-head screws want a cone-shaped seat. Press **K** for the Chamfer tool and click the
+**rim** of one hole — the circle where the hole meets the face. Shift+click the other
+hole's rim to add it, type `1.2`, press **Enter**. Both rims are cut into neat
+countersinks.
+
+## 7. Round the corners
 
 With no sketch open, press **F** (Fillet) and click one of the vertical edges at a flange
 tip. Shift+click the other tip edges to add them to the set, type `2`, press **Enter**. The
 flange corners are now rounded.
 
-## 7. Change your mind
+## 8. Change your mind
 
 This is the parametric payoff: open the **Parameters** pane and change `width` from `40mm`
 to `60mm`. The bracket rebuilds wider — holes, fillets and all. Try `leg`, `hole`, or `bend`
 too.
 
-## 8. Export
+## 9. Export
 
 **File → Export STL…** (for 3D printing) or **File → Export STEP…** (for other CAD apps).
 

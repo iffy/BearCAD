@@ -122,7 +122,13 @@ pub fn extrusion_mesh(doc: &Document, extrusion: &Extrusion) -> Option<SolidMesh
             let treatments: Vec<&EdgeTreatment> = extrusion
                 .edge_treatments
                 .iter()
-                .filter(|t| t.edge.face() == face_index && t.amount > 0.0)
+                // Circle cap rims (#177) are kernel-only; the hand-rolled bevel builder is
+                // polygon-vertex-based, so the fallback renders the rim untreated.
+                .filter(|t| {
+                    t.edge.face() == face_index
+                        && t.amount > 0.0
+                        && !is_circle_cap_rim(face, t.edge)
+                })
                 .collect();
             if treatments.is_empty() {
                 extrude_profile(&profile, &top, &mut mesh.triangles);
@@ -169,7 +175,17 @@ fn occt_extrusion_shape(
             .iter()
             .zip(&top)
             .all(|(p, t)| (*t - *p - dir).length() <= 1e-4);
-        let shape = if is_translation {
+        // A circle profile extruded by pure translation builds as a *true* cylinder
+        // (#177): real cylindrical wall, single circular rim edges — treatable and with
+        // exact volume, unlike a prism over the sampled 48-gon. Slanted targets still
+        // loft the sampled profile.
+        let shape = if is_translation && matches!(face, ExtrudeFace::Circle(_)) {
+            let center = profile.iter().copied().sum::<Vec3>() / profile.len() as f32;
+            let radius = (profile[0] - center).length() as f64;
+            let height = dir.length() as f64;
+            let axis = dir.normalize_or_zero();
+            crate::kernel::Shape::cylinder(center, axis, radius, height)
+        } else if is_translation {
             crate::kernel::Shape::prism(&profile, dir)
         } else {
             crate::kernel::Shape::loft(&profile, &top)
@@ -233,6 +249,26 @@ fn edge_ref_world_endpoints(
 ) -> Option<(Vec3, Vec3)> {
     let face = extrusion.faces.get(edge.face())?;
     let (base, normal) = face_profile_world(doc, face)?;
+    // A circle cap rim (#177) is one closed edge: request it as two diametrically opposite
+    // points on the rim — the kernel matcher's closed-edge pass matches by curve hits.
+    if is_circle_cap_rim(face, *edge) {
+        let ExtrusionEdgeRef::Cap { top, .. } = edge else {
+            return None;
+        };
+        let m = base.len();
+        if m < 4 {
+            return None;
+        }
+        let distance = effective_distance(doc, extrusion);
+        let ring: Vec<Vec3> = if *top {
+            base.iter()
+                .map(|p| extruded_top_point(doc, extrusion, normal, *p, distance))
+                .collect()
+        } else {
+            base
+        };
+        return Some((ring[0], ring[m / 2]));
+    }
     let n = base.len();
     if n < 3 {
         return None;
@@ -338,8 +374,45 @@ fn occt_body_shape_from_indices(
         if extrusion.faces.is_empty() || distance.abs() < 1e-4 {
             continue;
         }
-        let cut = occt_extrusion_shape(doc, extrusion, distance)?;
+        // Circle-cap rim treatments on a *cut* extrusion are countersinks (#177): they carve
+        // into the resulting body's hole rim, not into the cutting tool (beveling the tool
+        // would leave a lip — the inverse). Build the tool without them, subtract, then
+        // apply them to the body: the hole's rim edge lies exactly on the tool's rim circle,
+        // so the same closed-edge matching finds it.
+        let mut tool = extrusion.clone();
+        let mut rim_fillets: (Vec<(Vec3, Vec3)>, Vec<f32>) = (Vec::new(), Vec::new());
+        let mut rim_chamfers: (Vec<(Vec3, Vec3)>, Vec<f32>) = (Vec::new(), Vec::new());
+        tool.edge_treatments.retain(|t| {
+            let is_rim = extrusion
+                .faces
+                .get(t.edge.face())
+                .is_some_and(|f| is_circle_cap_rim(f, t.edge));
+            if is_rim && t.amount > 0.0 {
+                if let Some(endpoints) = edge_ref_world_endpoints(doc, extrusion, &t.edge) {
+                    match t.kind {
+                        VertexTreatmentKind::Fillet => {
+                            rim_fillets.0.push(endpoints);
+                            rim_fillets.1.push(t.amount);
+                        }
+                        VertexTreatmentKind::Chamfer => {
+                            rim_chamfers.0.push(endpoints);
+                            rim_chamfers.1.push(t.amount);
+                        }
+                    }
+                }
+                false
+            } else {
+                true
+            }
+        });
+        let cut = occt_extrusion_shape(doc, &tool, distance)?;
         solid = solid.boolean(&cut, BoolOp::Cut)?;
+        if !rim_fillets.0.is_empty() {
+            solid = solid.fillet(&rim_fillets.0, &rim_fillets.1)?;
+        }
+        if !rim_chamfers.0.is_empty() {
+            solid = solid.chamfer(&rim_chamfers.0, &rim_chamfers.1)?;
+        }
     }
     Some(solid)
 }
@@ -384,6 +457,21 @@ pub fn occt_edge_treatments_feasible(
     let distance = effective_distance(doc, base);
     if base.faces.is_empty() || distance.abs() < 1e-4 {
         return true;
+    }
+    // When the extrusion belongs to a body, trial the *body* build — that's where the
+    // treatment actually lands (a cut extrusion's rim chamfer is applied to the body as a
+    // countersink after subtraction, #177 — the standalone tool never carries it).
+    if let Some(bi) = doc
+        .bodies
+        .iter()
+        .position(|b| !b.deleted && b.source.owns_extrusion(extrusion))
+    {
+        if occt_body_shape(doc, bi).is_none() {
+            return true;
+        }
+        let mut clone = doc.clone();
+        clone.extrusions[extrusion] = candidate.clone();
+        return occt_body_shape(&clone, bi).is_some();
     }
     if occt_extrusion_shape(doc, base, distance).is_none() {
         return true;
@@ -1259,6 +1347,14 @@ pub fn cap_polygon_world(
 
 /// Number of flat, sketchable side walls of a profile (rectangles have 4, polygons have
 /// one per edge; circular profiles are curved and have none).
+/// True when `edge` names the circular cap rim of a Circle-profile face (#177): the one
+/// continuous edge where a cylinder's wall meets its base/top cap. Rims are identified as
+/// `Cap {{ edge: 0, top }}` — a circle profile has exactly one boundary "edge" per cap.
+pub fn is_circle_cap_rim(face: &ExtrudeFace, edge: ExtrusionEdgeRef) -> bool {
+    matches!(face, ExtrudeFace::Circle(_))
+        && matches!(edge, ExtrusionEdgeRef::Cap { edge: 0, .. })
+}
+
 pub fn side_face_count(profile: &ExtrudeFace) -> usize {
     match profile {
         ExtrudeFace::Circle(_) => 0,
@@ -1504,6 +1600,11 @@ pub fn extrusion_edge_exists(doc: &Document, extrusion: usize, edge: ExtrusionEd
     let Some(face) = ext.faces.get(edge.face()) else {
         return false;
     };
+    // Circle cap rims (#177) are treatable in kernel builds — the chamfer/fillet is a real
+    // BREP operation on the rim circle; there's no mesh-bevel fallback for them.
+    if cfg!(feature = "occt") && is_circle_cap_rim(face, edge) {
+        return true;
+    }
     let n = side_face_count(face);
     if n < 3 {
         return false;
@@ -1572,6 +1673,36 @@ pub fn treatable_edges(doc: &Document) -> Vec<(usize, ExtrusionEdgeRef, Vec3, Ve
         for (fi, face) in ext.faces.iter().enumerate() {
             let n = side_face_count(face);
             if n < 3 {
+                // Circle profiles have no polygonal side edges, but their cap rims are
+                // treatable in a kernel build (#177): emit each rim as its chord segments,
+                // all naming the same `Cap {{ edge: 0 }}` reference, so segment-based
+                // picking works on the whole circle.
+                #[cfg(feature = "occt")]
+                if matches!(face, ExtrudeFace::Circle(_)) {
+                    if let Some((base, normal)) = face_profile_world(doc, face) {
+                        let distance = effective_distance(doc, ext);
+                        let top: Vec<Vec3> = base
+                            .iter()
+                            .map(|p| extruded_top_point(doc, ext, normal, *p, distance))
+                            .collect();
+                        let m = base.len();
+                        for k in 0..m {
+                            let k2 = (k + 1) % m;
+                            out.push((
+                                ei,
+                                ExtrusionEdgeRef::Cap { face: fi, edge: 0, top: false },
+                                base[k],
+                                base[k2],
+                            ));
+                            out.push((
+                                ei,
+                                ExtrusionEdgeRef::Cap { face: fi, edge: 0, top: true },
+                                top[k],
+                                top[k2],
+                            ));
+                        }
+                    }
+                }
                 continue;
             }
             let Some((base, normal)) = face_profile_world(doc, face) else {
@@ -1615,6 +1746,35 @@ pub fn extrusion_edge_anchor(doc: &Document, extrusion: usize, edge: ExtrusionEd
         return None;
     }
     let face = ext.faces.get(edge.face())?;
+    // Circle cap rim (#177): anchor at a rim point, pointing diagonally outward (radial +
+    // cap normal) like the polygonal cap-edge bisector below.
+    if is_circle_cap_rim(face, edge) {
+        let ExtrusionEdgeRef::Cap { top: is_top, .. } = edge else {
+            return None;
+        };
+        let (base, normal) = face_profile_world(doc, face)?;
+        let distance = effective_distance(doc, ext);
+        let ring: Vec<Vec3> = if is_top {
+            base.iter()
+                .map(|p| extruded_top_point(doc, ext, normal, *p, distance))
+                .collect()
+        } else {
+            base
+        };
+        let m = ring.len();
+        if m < 3 {
+            return None;
+        }
+        let center = ring.iter().copied().sum::<Vec3>() / m as f32;
+        let radial = (ring[0] - center).normalize_or_zero();
+        let cap_out = (normal * if is_top { distance.signum() } else { -distance.signum() })
+            .normalize_or_zero();
+        let bisector = (radial + cap_out).normalize_or_zero();
+        if bisector.length_squared() < 1e-8 {
+            return None;
+        }
+        return Some((ring[0], bisector));
+    }
     let n = side_face_count(face);
     if n < 3 {
         return None;
@@ -1689,6 +1849,16 @@ pub fn edge_treatment_would_bevel(
     let Some(face) = ext.faces.get(edge.face()) else {
         return false;
     };
+    // A circle cap rim (#177) has no polygonal corner to test; sanity-bound the amount by
+    // the cylinder's radius and height — the kernel feasibility trial does the real check.
+    if cfg!(feature = "occt") && is_circle_cap_rim(face, edge) {
+        if let ExtrudeFace::Circle(ci) = face {
+            let radius = doc.circles.get(*ci).map(|c| c.r).unwrap_or(0.0);
+            let height = effective_distance(doc, ext).abs();
+            return amount < radius && amount < height;
+        }
+        return false;
+    }
     let n = side_face_count(face);
     if n < 3 {
         return false;
@@ -2186,6 +2356,101 @@ mod tests {
         );
     }
 
+
+    /// #177: chamfering a cylinder's top rim through the kernel removes an annular ring
+    /// (~perimeter * d^2/2 for a 45-degree chamfer).
+    #[test]
+    #[cfg(feature = "occt")]
+    fn circle_boss_rim_chamfer_removes_a_ring() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
+        let mut ext = extrusion(sketch, vec![ExtrudeFace::Circle(0)], 20.0);
+        ext.edge_treatments.push(EdgeTreatment {
+            edge: ExtrusionEdgeRef::Cap { face: 0, edge: 0, top: true },
+            kind: VertexTreatmentKind::Chamfer,
+            amount: 2.0,
+        });
+        doc.extrusions.push(ext);
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(0),
+            name: None,
+            deleted: false,
+        });
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
+        let cylinder = std::f32::consts::PI * 100.0 * 20.0;
+        let ring = std::f32::consts::PI * 2.0 * (10.0 - 2.0 / 3.0) * 2.0;
+        let expected = cylinder - ring;
+        assert!(
+            (vol - expected).abs() < 30.0,
+            "expected ~{expected} (rim chamfered), got {vol} (untreated would be ~{cylinder})"
+        );
+    }
+
+    /// #177: a chamfer on a *cut* circle extrusion's rim carves a countersink into the
+    /// body it cuts — more material removed than the plain hole.
+    #[test]
+    #[cfg(feature = "occt")]
+    fn cut_hole_rim_chamfer_countersinks_the_body() {
+        let (mut doc, sketch) = sketch_doc();
+        let plate = rect_profile(&mut doc, sketch, -10.0, -10.0, 20.0, 20.0);
+        doc.extrusions.push(extrusion(sketch, vec![plate], 5.0));
+        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 2.5, 0.0));
+        let mut hole = extrusion(sketch, vec![ExtrudeFace::Circle(0)], 6.0);
+        hole.edge_treatments.push(EdgeTreatment {
+            // The hole prism runs z 0..6 through the 5mm plate; its base rim (z=0) is the
+            // plate's bottom surface rim.
+            edge: ExtrusionEdgeRef::Cap { face: 0, edge: 0, top: false },
+            kind: VertexTreatmentKind::Chamfer,
+            amount: 1.0,
+        });
+        doc.extrusions.push(hole);
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
+            name: None,
+            deleted: false,
+        });
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
+        let plain = 2000.0 - std::f32::consts::PI * 2.5 * 2.5 * 5.0;
+        let countersink = std::f32::consts::PI * 2.0 * (2.5 + 1.0 / 3.0) * 0.5;
+        let expected = plain - countersink;
+        assert!(
+            (vol - expected).abs() < 4.0,
+            "expected ~{expected} (countersunk), got {vol} (plain hole would be ~{plain})"
+        );
+    }
+
+    /// #177: circle cap rims surface as treatable edges (kernel builds), one shared edge
+    /// reference per rim.
+    #[test]
+    #[cfg(feature = "occt")]
+    fn treatable_edges_include_circle_cap_rims() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
+        doc.extrusions.push(extrusion(sketch, vec![ExtrudeFace::Circle(0)], 6.0));
+        let edges = treatable_edges(&doc);
+        let tops: Vec<_> = edges
+            .iter()
+            .filter(|(_, e, _, _)| {
+                matches!(e, ExtrusionEdgeRef::Cap { edge: 0, top: true, .. })
+            })
+            .collect();
+        let bases: Vec<_> = edges
+            .iter()
+            .filter(|(_, e, _, _)| {
+                matches!(e, ExtrusionEdgeRef::Cap { edge: 0, top: false, .. })
+            })
+            .collect();
+        assert_eq!(tops.len(), CIRCLE_SEGMENTS);
+        assert_eq!(bases.len(), CIRCLE_SEGMENTS);
+        assert!(edges
+            .iter()
+            .all(|(_, e, _, _)| !matches!(e, ExtrusionEdgeRef::Vertical { .. })));
+        assert!(extrusion_edge_exists(
+            &doc,
+            0,
+            ExtrusionEdgeRef::Cap { face: 0, edge: 0, top: true }
+        ));
+    }
 
     /// A cut extrusion carrying several faces (two holes cut in one operation) must
     /// subtract all of them — it used to fall off the kernel path entirely, silently
@@ -2698,9 +2963,14 @@ mod tests {
             .push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
         let ext = extrusion(sketch, vec![ExtrudeFace::Circle(0)], 8.0);
         let mesh = extrusion_mesh(&doc, &ext).unwrap();
-        // Cylinder: 2 caps of (N-2) + 2N side triangles.
-        let n = CIRCLE_SEGMENTS;
-        assert_eq!(mesh.triangles.len(), 2 * (n - 2) + 2 * n);
+        // Kernel builds tessellate a *true* cylinder (triangle count varies with the
+        // mesher); the hand-rolled fallback makes exactly 2 caps of (N-2) + 2N sides.
+        if cfg!(feature = "occt") {
+            assert!(!mesh.triangles.is_empty());
+        } else {
+            let n = CIRCLE_SEGMENTS;
+            assert_eq!(mesh.triangles.len(), 2 * (n - 2) + 2 * n);
+        }
         let (min, max) = mesh.bounds().unwrap();
         assert!((max.z - 8.0).abs() < 1e-4 && min.z.abs() < 1e-4);
         // Radius 5 → diameter 10 in x and y.
@@ -3063,7 +3333,17 @@ mod tests {
             .push(Circle::from_local_center_radius(csketch, 0.0, 0.0, 5.0, 0.0));
         cdoc.extrusions
             .push(extrusion(csketch, vec![ExtrudeFace::Circle(0)], 6.0));
-        assert!(treatable_edges(&cdoc).is_empty());
+        // Circle profiles have no polygonal edges; in a kernel build their two cap rims
+        // are treatable (#177), emitted as chord segments naming Cap { edge: 0 }.
+        let circle_edges = treatable_edges(&cdoc);
+        if cfg!(feature = "occt") {
+            assert!(!circle_edges.is_empty());
+            assert!(circle_edges
+                .iter()
+                .all(|(_, e, _, _)| matches!(e, ExtrusionEdgeRef::Cap { edge: 0, .. })));
+        } else {
+            assert!(circle_edges.is_empty());
+        }
     }
 
     #[test]
