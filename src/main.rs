@@ -4446,7 +4446,7 @@ fn build_committed_dim_layouts(
         .constraints
         .iter()
         .enumerate()
-        .filter(|(_, c)| c.sketch == session.sketch)
+        .filter(|(_, c)| !c.deleted && c.sketch == session.sketch)
     {
         let ConstraintKind::Distance { target } = constraint.kind.clone() else {
             continue;
@@ -4508,7 +4508,7 @@ fn build_committed_dim_layouts(
         .constraints
         .iter()
         .enumerate()
-        .filter(|(_, c)| c.sketch == session.sketch)
+        .filter(|(_, c)| !c.deleted && c.sketch == session.sketch)
     {
         let ConstraintKind::Distance {
             target: DistanceTarget::CircleDiameter(i),
@@ -4548,7 +4548,7 @@ fn build_committed_dim_layouts(
         .constraints
         .iter()
         .enumerate()
-        .filter(|(_, c)| c.sketch == session.sketch)
+        .filter(|(_, c)| !c.deleted && c.sketch == session.sketch)
     {
         let ConstraintKind::Angle {
             line_a,
