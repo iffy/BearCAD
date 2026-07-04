@@ -12,6 +12,7 @@
 
 local dir = os.getenv("BEARCAD_SCREENSHOT_OUT") or "."
 local function shot(name)
+  bearcad.ui.zoom_fit()
   bearcad.ui.wait(1)
   bearcad.ui.screenshot(dir .. "/" .. name)
 end

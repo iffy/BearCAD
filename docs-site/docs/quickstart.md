@@ -16,6 +16,10 @@ without redrawing anything.
 You'll use most of BearCAD's core tools along the way: parameters, the Line tool, fillets,
 extruding, sketching on a face, cutting holes, and rounding edges.
 
+As you work, move around freely: **right-drag** orbits the view, **Shift+right-drag** pans,
+and the mouse wheel zooms. **Zoom to fit** (in the View menu) frames the whole part. More in
+[Navigation](/docs/tools/navigation).
+
 ## 1. Set up parameters
 
 Open the **Parameters** pane and click **+** to add each of these:

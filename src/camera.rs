@@ -820,13 +820,38 @@ impl Camera {
     }
 
     /// Instantly frame an axis-aligned world bounding box (`bearcad.ui.zoom_fit()`, #108):
-    /// center the target on the box and set the distance so the box's largest half-extent
-    /// fits the vertical field of view, with a small margin. Orientation is left alone.
-    pub fn frame_bounds_instant(&mut self, min: Vec3, max: Vec3) {
+    /// center the target on the box and set the distance so every box corner fits both the
+    /// vertical and (via `aspect`, width/height) horizontal field of view, with a small
+    /// margin. Orientation is left alone. The old largest-axis-extent heuristic overshot
+    /// badly from diagonal views (a box's screen-projected diagonal is larger than any
+    /// single axis extent), clipping the model.
+    pub fn frame_bounds_instant(&mut self, min: Vec3, max: Vec3, aspect: f32) {
         let center = (min + max) * 0.5;
-        let half_extent = ((max - min) * 0.5).max_element().max(0.5);
-        let distance = half_extent / (self.fov_y * 0.5).tan() * 1.2;
-        self.set_pose_instant(None, None, Some(distance), Some(center));
+        let half = ((max - min) * 0.5).max(Vec3::splat(0.5));
+        // Camera basis at the current orientation: unit vector from target toward the eye,
+        // plus the view plane's right/up.
+        let back = (self.eye() - self.target).normalize_or_zero();
+        let world_up = Vec3::Z;
+        let mut right = world_up.cross(back).normalize_or_zero();
+        if right.length_squared() < 1e-6 {
+            right = Vec3::X;
+        }
+        let up = back.cross(right).normalize_or_zero();
+        let tan_y = (self.fov_y * 0.5).tan();
+        let tan_x = tan_y * aspect.max(0.1);
+        let mut distance = 0.5f32;
+        for sx in [-1.0f32, 1.0] {
+            for sy in [-1.0f32, 1.0] {
+                for sz in [-1.0f32, 1.0] {
+                    let r = Vec3::new(sx * half.x, sy * half.y, sz * half.z);
+                    let depth = r.dot(back);
+                    let dv = depth + r.dot(up).abs() / tan_y;
+                    let dh = depth + r.dot(right).abs() / tan_x;
+                    distance = distance.max(dv).max(dh);
+                }
+            }
+        }
+        self.set_pose_instant(None, None, Some(distance * 1.15), Some(center));
     }
 
     /// Advance an in-flight view transition. Returns `true` while animating.

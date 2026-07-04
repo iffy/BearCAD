@@ -3667,8 +3667,7 @@ fn push_arc_dim_layout(
     });
 }
 
-fn push_committed_dim_layout(
-    layouts: &mut Vec<CommittedDimLayout>,
+fn committed_dim_layout(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     label_view: &PlanarLabelView,
@@ -3679,11 +3678,11 @@ fn push_committed_dim_layout(
     outward_uv: (f32, f32),
     pixel_offset: f32,
     label: String,
-) {
+) -> Option<CommittedDimLayout> {
     let color = col::DIM_ANNOTATION;
     let outward_world = uv_dir_to_world(frame.u_axis, frame.v_axis, outward_uv.0, outward_uv.1);
     if outward_world.length_squared() < 1e-8 {
-        return;
+        return None;
     }
     let anchor = a.lerp(b, 0.5);
     let offset_world = pixels_to_world_distance(&project, anchor, outward_world, pixel_offset);
@@ -3699,9 +3698,7 @@ fn push_committed_dim_layout(
         overshoot_world,
         label_outset_world,
     );
-    let Some(geom) = project_linear_dimension_geom(&world_geom, &project) else {
-        return;
-    };
+    let geom = project_linear_dimension_geom(&world_geom, &project)?;
     let label_rect = planar_dimension_label_layout(
         painter,
         &world_geom,
@@ -3710,7 +3707,7 @@ fn push_committed_dim_layout(
         color,
         &project,
     );
-    layouts.push(CommittedDimLayout {
+    Some(CommittedDimLayout {
         target,
         geom,
         world_geom,
@@ -3721,7 +3718,7 @@ fn push_committed_dim_layout(
         label_rect,
         outward: geom.outward,
         offset: pixel_offset,
-    });
+    })
 }
 
 fn build_committed_dim_layouts(
@@ -3735,6 +3732,21 @@ fn build_committed_dim_layouts(
         return Vec::new();
     };
     let mut layouts = Vec::new();
+    // The sketch's local-space centroid: default label placement points *away* from it, so
+    // labels land outside the drawn outline instead of piling into its interior.
+    let sketch_centroid = {
+        let mut sum = (0.0f32, 0.0f32);
+        let mut n = 0usize;
+        for (li, line) in doc.lines.iter().enumerate() {
+            if line.sketch != session.sketch || !document_lifecycle::line_alive(doc, li) {
+                continue;
+            }
+            sum.0 += line.x0 + line.x1;
+            sum.1 += line.y0 + line.y1;
+            n += 2;
+        }
+        (n > 0).then(|| (sum.0 / n as f32, sum.1 / n as f32))
+    };
     for (index, constraint) in doc
         .constraints
         .iter()
@@ -3750,20 +3762,11 @@ fn build_committed_dim_layouts(
         let Some((a, b)) = constraint_segment_endpoints(doc, index) else {
             continue;
         };
-        let outward_uv = match target {
-            DistanceTarget::LineLength(_) => {
-                let (ua, va) = world_to_local(&frame, a);
-                let (ub, vb) = world_to_local(&frame, b);
-                preferred_outward_uv(ua, va, ub, vb)
-            }
-            DistanceTarget::CircleDiameter(_) => unreachable!("handled above"),
-            DistanceTarget::LineLineDistance { .. }
-            | DistanceTarget::PointPointDistance { .. }
-            | DistanceTarget::PointLineDistance { .. } => {
-                let (ua, va) = world_to_local(&frame, a);
-                let (ub, vb) = world_to_local(&frame, b);
-                preferred_outward_uv(ua, va, ub, vb)
-            }
+        let (ua, va) = world_to_local(&frame, a);
+        let (ub, vb) = world_to_local(&frame, b);
+        let outward_uv = match sketch_centroid {
+            Some((cu, cv)) => outward_perpendicular_uv(ua, va, ub, vb, cu, cv),
+            None => preferred_outward_uv(ua, va, ub, vb),
         };
         let label = constraint_evaluated_length(doc, index)
             .map(|v| {
@@ -3773,19 +3776,38 @@ fn build_committed_dim_layouts(
                 )
             })
             .unwrap_or_else(|| "?".to_string());
-        push_committed_dim_layout(
-            &mut layouts,
-            painter,
-            &project,
-            label_view,
-            &frame,
-            index,
-            a,
-            b,
-            outward_uv,
-            effective_dim_offset(constraint.dim_offset),
-            label,
+        // Stack colliding labels: a label without a user-stored offset that would land on
+        // an already-placed one steps further out until it clears (or the offset cap).
+        let base_offset = effective_dim_offset(constraint.dim_offset);
+        let mut offset = base_offset;
+        let mut candidate = committed_dim_layout(
+            painter, &project, label_view, &frame, index, a, b, outward_uv, offset,
+            label.clone(),
         );
+        if constraint.dim_offset.is_none() {
+            let collides = |c: &CommittedDimLayout, placed: &[CommittedDimLayout]| {
+                c.label_rect != egui::Rect::NOTHING
+                    && placed.iter().any(|l| {
+                        l.label_rect != egui::Rect::NOTHING
+                            && l.label_rect.intersects(c.label_rect.expand(2.0))
+                    })
+            };
+            let mut tries = 0;
+            while offset < dimensions::MAX_DIM_OFFSET
+                && tries < 8
+                && candidate.as_ref().is_some_and(|c| collides(c, &layouts))
+            {
+                offset = (offset + 26.0).min(dimensions::MAX_DIM_OFFSET);
+                tries += 1;
+                candidate = committed_dim_layout(
+                    painter, &project, label_view, &frame, index, a, b, outward_uv, offset,
+                    label.clone(),
+                );
+            }
+        }
+        if let Some(layout) = candidate {
+            layouts.push(layout);
+        }
     }
     for (index, constraint) in doc
         .constraints
@@ -5031,6 +5053,7 @@ impl App {
             ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
         let viewport = response.rect;
         self.last_viewport = Some(viewport);
+        self.state.viewport_aspect = (viewport.width() / viewport.height().max(1.0)).max(0.01);
         self.state.apply_pending_sketch_reframe(viewport);
         let mut inline_parameter_field_results = Vec::<SketchDimFieldResult>::new();
 

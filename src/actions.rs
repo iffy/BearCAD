@@ -1172,6 +1172,9 @@ pub struct AppState {
     /// In-progress image scale calibration (#163/#171): Some while the user is placing
     /// the two reference points / typing the real length.
     pub creating_calibration: Option<CreatingCalibration>,
+    /// Viewport width/height, refreshed each frame by the UI — camera framing (ZoomToFit)
+    /// needs it to fit the horizontal field of view.
+    pub viewport_aspect: f32,
     /// Shared construction draw mode for rectangle, line, and circle tools.
     pub draw_construction: bool,
     /// Persisted "next point gets bezier handles" toggle for the line tool (`B`, #73); mirrors
@@ -1271,6 +1274,7 @@ impl Default for AppState {
             creating_edge_treatment: None,
             creating_loft: None,
             creating_calibration: None,
+            viewport_aspect: 16.0 / 9.0,
             draw_construction: false,
             draw_curve_mode: false,
             draw_tangent_constraint: true,
@@ -3564,7 +3568,7 @@ impl AppState {
                     .or_else(|| crate::extrude::document_world_bounds(&self.doc));
                 match bounds {
                     Some((min, max)) => {
-                        self.cam.frame_bounds_instant(min, max);
+                        self.cam.frame_bounds_instant(min, max, self.viewport_aspect);
                         self.status = if self.scene_selection.is_empty() {
                             "Zoomed to fit".to_string()
                         } else {
