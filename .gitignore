@@ -38,3 +38,7 @@ scripts/monitor-state/
 /docs-site/static/img/screenshots/
 block.stl
 block.step
+
+# Web (wasm) build output; built by scripts/build-web.sh, deployed by CI
+/web/dist/
+/docs-site/static/app/

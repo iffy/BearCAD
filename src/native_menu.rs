@@ -2,7 +2,8 @@
 //!
 //! Menu items dispatch the same [`Action`] values as the toolbar and scripts.
 
-use crate::actions::{Action, Pane};
+use crate::actions::Pane;
+use crate::menu_command::MenuCommand;
 use eframe::CreationContext;
 use muda::{
     accelerator::{Accelerator, Code, Modifiers},
@@ -15,32 +16,6 @@ use raw_window_handle::HasWindowHandle;
 use std::sync::{Mutex, OnceLock};
 
 /// What the user chose from the native menu bar.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MenuCommand {
-    NewDocument,
-    Open,
-    Save,
-    SaveAs,
-    ExportStl,
-    ExportStep,
-    ImportStl,
-    ImportImage,
-    ImportStep,
-    ExportSessionCommands,
-    Quit,
-    UndoLast,
-    Clear,
-    About,
-    /// Open the third-party open-source licenses document (Help menu). See #86.
-    Licenses,
-    /// Install the `bearcad` CLI symlink onto PATH (Help menu). See #49.
-    InstallCli,
-    ToggleCommandPalette,
-    /// Toggle first-person (FPS) mode (#91, #118).
-    ToggleFpsMode,
-    ZoomToFit,
-    SetPaneVisible { pane: Pane, visible: bool },
-}
 
 /// Stable menu-item ids for mapping [`MenuEvent`]s to [`MenuCommand`]s.
 #[derive(Clone, Debug)]
@@ -177,39 +152,6 @@ pub fn command_for_event(event: &MenuEvent, menu: &NativeMenu) -> Option<MenuCom
                 .unwrap_or(true)
         },
     )
-}
-
-impl MenuCommand {
-    /// Convert to an [`Action`] where the mapping is direct (no file dialogs).
-    pub fn to_action(self) -> Option<Action> {
-        match self {
-            MenuCommand::NewDocument => Some(Action::NewDocument),
-            MenuCommand::Open | MenuCommand::Save | MenuCommand::SaveAs => None,
-            // Needs a file-save dialog, handled in the app frame loop.
-            MenuCommand::ExportStl
-            | MenuCommand::ExportStep
-            | MenuCommand::ImportStl
-            | MenuCommand::ImportImage
-            | MenuCommand::ImportStep
-            | MenuCommand::ExportSessionCommands => {
-                None
-            }
-            MenuCommand::Quit => None,
-            MenuCommand::UndoLast => Some(Action::UndoLast),
-            MenuCommand::Clear => Some(Action::Clear),
-            MenuCommand::About => None,
-            // Opens a URL in the browser, handled in the app frame loop.
-            MenuCommand::Licenses => None,
-            // Performs filesystem side effects + status reporting in the app frame loop.
-            MenuCommand::InstallCli => None,
-            MenuCommand::ToggleCommandPalette => Some(Action::ToggleCommandPalette),
-            MenuCommand::ToggleFpsMode => Some(Action::ToggleFpsMode),
-            MenuCommand::ZoomToFit => Some(Action::ZoomToFit),
-            MenuCommand::SetPaneVisible { pane, visible } => {
-                Some(Action::SetPaneVisible { pane, visible })
-            }
-        }
-    }
 }
 
 impl NativeMenu {
@@ -473,6 +415,7 @@ fn attach_to_platform(menu: &Menu, cc: &CreationContext<'_>) -> Result<(), muda:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions::Action;
 
     fn ids_with_pane(pane_id: &str) -> (MenuIds, MenuId) {
         let pane_menu_id = MenuId::new(pane_id);

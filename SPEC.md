@@ -513,6 +513,28 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   is not yet individually undoable (3D edge treatments had the same gap and now undo via a
   transient snapshot marker, #168 — calibration can adopt the same mechanism).
 
+### 3.4.2 Web build (wasm32)
+
+BearCAD also compiles to **wasm32-unknown-unknown** and runs in the browser (built by
+`scripts/build-web.sh`, hosted at `/app/` on the docs site, deployed by the Website CI
+workflow). The web build is the lean configuration plus web-specific plumbing:
+
+- **No OCCT kernel, no Lua, no SQLite** — bundled C/C++ doesn't compile for this target.
+  Scripting/REPL/CLI are compiled out; solid cuts render additive-only (the same lean-build
+  fallback that already exists).
+- **In-window menu bar** (`src/web_menu.rs`): the browser has no OS menu bar, so File/Edit/
+  View/Help render as an egui menu strip emitting the same `MenuCommand`s
+  (`src/menu_command.rs`, shared with the muda native menus) through one dispatch path.
+- **Documents are JSON**: `storage::to_json_bytes`/`from_json_bytes` (the whole `Document`
+  serde-serialized). Native `open()` sniffs file magic and accepts either format, so
+  web-saved `.bearcad` files open on desktop. Nothing persists to browser storage — open
+  and save go through the browser's file pickers (`rfd::AsyncFileDialog`; saving downloads
+  the file), as do STL/STEP/image import and STL/STEP export (byte-level `AppState`
+  helpers: `open_document_bytes`, `import_*_bytes`, `export_*_bytes`).
+- **Entry point**: `eframe::WebRunner` into the `bearcad_canvas` element of
+  `web/index.html`; `web-time` stands in for `std::time::Instant`; wgpu's `webgl` feature
+  provides the fallback for browsers without WebGPU.
+
 ### 3.5 Advanced features
 - **Sweep** — sweep a profile along a path.
 - **Loft** *(implemented)* — blend a solid through two or more closed cross-section

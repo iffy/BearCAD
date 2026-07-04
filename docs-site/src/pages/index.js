@@ -9,6 +9,8 @@ import styles from './index.module.css';
 
 // GitHub releases page — matches the download links in the repo README.
 const RELEASES_URL = 'https://github.com/iffy/BearCAD/releases/latest';
+// The hosted web build (wasm), deployed alongside the docs by CI.
+const WEB_APP_PATH = 'pathname:///app/';
 
 function HomepageHeader() {
   const {siteConfig} = useDocusaurusContext();
@@ -20,21 +22,27 @@ function HomepageHeader() {
         </Heading>
         <p className="hero__subtitle">{siteConfig.tagline}</p>
         <p className={styles.heroBlurb}>
-          BearCAD is a local-first, parametric CAD application: a desktop GUI
-          with a <code>wgpu</code>-accelerated 3D viewport, driven by a shared
-          action layer that also powers a Lua scripting API. Everything you can
-          do in the GUI you can do from a script, and vice versa.
+          BearCAD is a free, parametric CAD app for designing real parts —
+          sketch, dimension, extrude, and export for 3D printing. Run it in
+          your browser, or download it for macOS, Windows, or Linux. It's also
+          an experiment to see what AI can do: the app is built almost entirely
+          by an AI from plain-English requests.
         </p>
         <div className={styles.buttons}>
+          <Link
+            className="button button--primary button--lg"
+            href={WEB_APP_PATH}>
+            Run in your browser
+          </Link>
+          <Link
+            className="button button--secondary button--lg"
+            href={RELEASES_URL}>
+            Download
+          </Link>
           <Link
             className="button button--secondary button--lg"
             to="/docs/intro">
             Read the docs
-          </Link>
-          <Link
-            className="button button--primary button--lg"
-            href={RELEASES_URL}>
-            Download
           </Link>
         </div>
       </div>

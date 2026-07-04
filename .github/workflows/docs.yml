@@ -7,6 +7,8 @@ on:
       - "docs-site/**"
       - ".github/workflows/docs.yml"
       - "scripts/gen-doc-screenshots.sh"
+      - "scripts/build-web.sh"
+      - "web/**"
       # App source affects the rendered screenshots, so regenerate + redeploy the
       # site when the geometry/UI code changes too.
       - "src/**"
@@ -95,8 +97,40 @@ jobs:
           path: docs-site/static/img/screenshots/
           if-no-files-found: error
 
+  # Build the hosted web app (wasm32) that deploys under /app/ next to the docs.
+  webapp:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wasm-web
+
+      - name: Install wasm-bindgen-cli
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.125
+
+      - name: Build web app
+        run: scripts/build-web.sh
+
+      - name: Upload web app artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: webapp
+          path: web/dist/
+          if-no-files-found: error
+
   build:
-    needs: screenshots
+    needs: [screenshots, webapp]
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -119,6 +153,13 @@ jobs:
         with:
           name: doc-screenshots
           path: docs-site/static/img/screenshots
+
+      # The hosted web app deploys as static files under /app/.
+      - name: Download web app
+        uses: actions/download-artifact@v5
+        with:
+          name: webapp
+          path: docs-site/static/app
 
       - name: Install dependencies
         run: npm ci

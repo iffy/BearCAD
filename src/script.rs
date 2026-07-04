@@ -20,12 +20,18 @@ use crate::construction::PlaneDim;
 use crate::camera::{GroundDisplay, ProjectionMode, ShadingMode, StandardView};
 use crate::view_cube::{CubeCornerId, CubeEdgeId};
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::lua_script::{load_script, ScriptTickData};
 use eframe::egui::{self, Key, Modifiers, PointerButton};
 use glam::Vec3;
+#[cfg(not(target_arch = "wasm32"))]
 use mlua::Lua;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 /// A single script instruction.
 #[derive(Clone, Debug, PartialEq)]
@@ -1632,9 +1638,17 @@ impl SyntheticInput {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct LuaRunner {
     lua: Lua,
     thread: mlua::Thread,
+    finished: bool,
+}
+
+/// Web builds ship without the Lua runtime (mlua's bundled C doesn't compile for
+/// wasm32-unknown-unknown); this stub keeps `ScriptRunner`'s shape identical.
+#[cfg(target_arch = "wasm32")]
+struct LuaRunner {
     finished: bool,
 }
 
@@ -1647,6 +1661,7 @@ struct LuaRunner {
 /// prompt to print when it's ready for input ([`REPL_PROMPT`], or [`REPL_CONT_PROMPT`] while a
 /// multi-line entry is incomplete), the reader prints it, blocks on a line, sends it back, and
 /// nudges the event loop awake via the installed `egui::Context`.
+#[cfg(not(target_arch = "wasm32"))]
 struct ReplRunner {
     lua: Lua,
     /// The coroutine for the entry currently executing, if any.
@@ -1666,6 +1681,7 @@ pub const REPL_PROMPT: &str = "bearcad> ";
 pub const REPL_CONT_PROMPT: &str = "    ...> ";
 
 /// What the REPL's accumulated input buffer parses to.
+#[cfg(not(target_arch = "wasm32"))]
 enum ChunkOutcome {
     /// A complete chunk, ready to execute as a coroutine.
     Ready(mlua::Thread),
@@ -1675,6 +1691,7 @@ enum ChunkOutcome {
     SyntaxError(String),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ReplRunner {
     /// Compile the buffered input. Tries `return <input>` first (so a bare expression like
     /// `1 + 2` or `bearcad.find("Main box")` echoes its value, as in the standalone Lua
@@ -1721,6 +1738,9 @@ impl ReplRunner {
         println!("{}", rendered.join("\t"));
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+struct ReplRunner {}
 
 /// A pending screenshot request, resolved when egui delivers the captured frame.
 struct ScreenshotRequest {
@@ -1800,6 +1820,7 @@ impl ScriptRunner {
         Ok(runner)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn from_file(path: &Path) -> Result<Self, ScriptError> {
         if path.extension().and_then(|e| e.to_str()) != Some("lua") {
             return Err(ScriptError {
@@ -1826,6 +1847,7 @@ impl ScriptRunner {
         Ok(runner)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Interactive Lua REPL on stdin against the live app (`--repl`). Spawns the stdin
     /// reader thread; entries evaluate in one persistent Lua state (globals survive between
     /// entries), errors print and the session continues, and EOF (Ctrl-D) ends it.
@@ -1880,6 +1902,7 @@ impl ScriptRunner {
     /// REPL core without the stdin thread: complete lines arrive on `lines_rx`, and the
     /// runner sends the next prompt on `ready_tx` whenever it's ready for input. Split out
     /// so tests can drive a REPL session without a terminal.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn repl_from_channels(
         lines_rx: std::sync::mpsc::Receiver<String>,
         ready_tx: std::sync::mpsc::Sender<&'static str>,
@@ -1910,9 +1933,12 @@ impl ScriptRunner {
     /// Give the REPL's stdin reader thread a way to wake the event loop when input arrives
     /// while the app is idle. Called once the eframe context exists; a no-op for scripts.
     pub fn install_repaint_context(&self, ctx: egui::Context) {
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(repl) = &self.repl {
             let _ = repl.repaint_ctx.set(ctx);
         }
+        #[cfg(target_arch = "wasm32")]
+        let _ = ctx;
     }
 
     fn log_instruction(&mut self, instr: &Instruction) {
@@ -1960,6 +1986,7 @@ impl ScriptRunner {
         self.tick_instructions(state, synthetic, viewport, ctx)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn tick_repl_mode(
         &mut self,
         state: &mut AppState,
@@ -2059,6 +2086,32 @@ impl ScriptRunner {
         }
     }
 
+    /// Web stubs: no Lua/REPL runners exist on wasm, so these branches are unreachable.
+    #[cfg(target_arch = "wasm32")]
+    fn tick_repl_mode(
+        &mut self,
+        _state: &mut AppState,
+        _synthetic: &mut SyntheticInput,
+        _viewport: Option<egui::Rect>,
+        _ctx: &egui::Context,
+    ) -> bool {
+        self.done = true;
+        false
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn tick_lua_mode(
+        &mut self,
+        _state: &mut AppState,
+        _synthetic: &mut SyntheticInput,
+        _viewport: Option<egui::Rect>,
+        _ctx: &egui::Context,
+    ) -> bool {
+        self.done = true;
+        false
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn tick_lua_mode(
         &mut self,
         state: &mut AppState,

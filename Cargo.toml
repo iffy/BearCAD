@@ -40,7 +40,6 @@ egui = "0.32"
 # (metal/vulkan/dx12/gles) compiled in and panics at startup. Depend on `wgpu` directly
 # with its own default backends (unifies with eframe's copy via Cargo feature unification).
 wgpu = "25"
-rusqlite = { version = "0.32", features = ["bundled"] }
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -51,7 +50,24 @@ resvg = "0.44"
 usvg = "0.44"
 tiny-skia = "0.11"
 bytemuck = { version = "1", features = ["derive"] }
+
+# Native-only: bundled C code (SQLite, Lua) doesn't build for wasm32-unknown-unknown.
+# The web build saves/loads the JSON document format instead (storage::to_json_bytes)
+# and ships without the Lua scripting runtime.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
 mlua = { version = "0.10", features = ["lua54", "vendored"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlCanvasElement"] }
+# std::time::Instant panics on wasm; this is the drop-in replacement.
+web-time = "1"
+# WebGL fallback so browsers without WebGPU still render.
+wgpu = { version = "25", features = ["webgl"] }
+console_error_panic_hook = "0.1"
+log = "0.4"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.muda]
 version = "0.19"

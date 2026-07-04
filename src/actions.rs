@@ -1511,6 +1511,155 @@ impl AppState {
         self.write_step_file(path, name, mesh)
     }
 
+    /// Byte-level document/import/export entry points for the **web build** (no
+    /// filesystem — the browser hands us bytes from a picked file, and downloads bytes we
+    /// hand back). Compiled everywhere so native tests can exercise them.
+    ///
+    /// Open a JSON-format document (see `storage::to_json_bytes`) from raw bytes.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn open_document_bytes(&mut self, bytes: &[u8], name: &str) -> ActionResult {
+        match crate::storage::from_json_bytes(bytes) {
+            Ok(mut doc) => {
+                if let Err(e) = recompute_document_geometry(&mut doc) {
+                    self.status = format!("Open failed: {e}");
+                    return ActionResult::Err(e);
+                }
+                let n_lines = doc.lines.len();
+                self.doc = doc;
+                self.sketch_session = None;
+                self.cam.set_view_up(None);
+                self.refresh_document_health();
+                self.path = None;
+                self.status = format!("Opened {name} ({n_lines} line(s))");
+                ActionResult::Ok
+            }
+            Err(e) => {
+                self.status = format!("Open failed: {e}");
+                ActionResult::Err(e)
+            }
+        }
+    }
+
+    /// Import an STL from raw bytes as a new body.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn import_stl_bytes(&mut self, name: &str, bytes: &[u8]) -> ActionResult {
+        match crate::stl::parse_stl(bytes) {
+            Ok(tris) => {
+                self.import_mesh_body(name, tris.into_iter().map(|t| t.vertices).collect())
+            }
+            Err(e) => {
+                self.status = format!("Import failed: {e}");
+                ActionResult::Err(self.status.clone())
+            }
+        }
+    }
+
+    /// Import a STEP file's faceted geometry from raw bytes as a new body (the hand-rolled
+    /// parser — the kernel reader is path-based and native-only).
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn import_step_bytes(&mut self, name: &str, bytes: &[u8]) -> ActionResult {
+        let text = match std::str::from_utf8(bytes) {
+            Ok(t) => t,
+            Err(e) => {
+                self.status = format!("Import failed: not UTF-8 ({e})");
+                return ActionResult::Err(self.status.clone());
+            }
+        };
+        match crate::step::parse_step_mesh(text) {
+            Ok(triangles) => self.import_mesh_body(name, triangles),
+            Err(e) => {
+                self.status = format!("Import failed: {e}");
+                ActionResult::Err(self.status.clone())
+            }
+        }
+    }
+
+    /// Import a PNG/JPEG from raw bytes as a tracing image on `plane` (default: ground).
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn import_image_bytes(
+        &mut self,
+        name: &str,
+        bytes: Vec<u8>,
+        plane: Option<usize>,
+    ) -> ActionResult {
+        let dims = match image::load_from_memory(&bytes) {
+            Ok(img) => (img.width() as f32, img.height() as f32),
+            Err(e) => {
+                self.status = format!("Import failed: not a readable image ({e})");
+                return ActionResult::Err(self.status.clone());
+            }
+        };
+        let plane = plane.unwrap_or(0);
+        if !self
+            .doc
+            .construction_planes
+            .get(plane)
+            .is_some_and(|p| !p.deleted)
+        {
+            self.status = format!("Import failed: construction plane {plane} not found");
+            return ActionResult::Err(self.status.clone());
+        }
+        let source_name = std::path::Path::new(name)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "image".to_string());
+        self.doc.tracing_images.push(crate::model::TracingImage {
+            bytes,
+            source_name: source_name.clone(),
+            plane,
+            origin: (-dims.0 / 2.0, -dims.1 / 2.0),
+            width_mm: dims.0,
+            height_mm: dims.1,
+            name: None,
+            deleted: false,
+            calibration: None,
+        });
+        self.doc.shape_order.push(crate::model::ShapeKind::Image);
+        self.refresh_document_health();
+        self.status = format!("Imported image {source_name}");
+        ActionResult::Ok
+    }
+
+    /// ASCII STL of one body (or the whole document) as bytes.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn export_stl_bytes(&self, body: Option<usize>) -> Result<Vec<u8>, String> {
+        let (name, mesh) = self.export_mesh_for(body)?;
+        Ok(crate::stl::write_ascii_stl(&name, &mesh).into_bytes())
+    }
+
+    /// Faceted STEP of one body (or the whole document) as bytes.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn export_step_bytes(&self, body: Option<usize>) -> Result<Vec<u8>, String> {
+        let (name, mesh) = self.export_mesh_for(body)?;
+        Ok(crate::step::write_step(&name, &mesh).into_bytes())
+    }
+
+    fn export_mesh_for(
+        &self,
+        body: Option<usize>,
+    ) -> Result<(String, crate::extrude::SolidMesh), String> {
+        let (name, mesh) = match body {
+            Some(bi) => {
+                let b = self
+                    .doc
+                    .bodies
+                    .get(bi)
+                    .filter(|b| !b.deleted)
+                    .ok_or_else(|| format!("no body {bi}"))?;
+                let name = b.name.clone().unwrap_or_else(|| format!("body-{bi}"));
+                (name, crate::extrude::body_solid_mesh(&self.doc, bi))
+            }
+            None => (
+                "bearcad".to_string(),
+                Some(crate::extrude::document_solid_mesh(&self.doc)),
+            ),
+        };
+        match mesh {
+            Some(m) if !m.is_empty() => Ok((name, m)),
+            _ => Err("no solid geometry to export".to_string()),
+        }
+    }
+
     fn write_mesh_file(
         &mut self,
         path: &str,

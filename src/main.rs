@@ -11,6 +11,9 @@
 //!   bearcad demo.lua --exit
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// The web build compiles the whole native codebase with scripting/CLI/SQLite gated out,
+// which strands many natively-used helpers; keep the strict lints for native builds only.
+#![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports, unused_variables))]
 
 mod actions;
 mod projection;
@@ -43,7 +46,12 @@ mod polygon;
 mod polygon_boolean;
 
 mod model;
+mod menu_command;
+#[cfg(not(target_arch = "wasm32"))]
 mod native_menu;
+#[cfg(target_arch = "wasm32")]
+mod web_menu;
+#[cfg(not(target_arch = "wasm32"))]
 mod lua_script;
 #[cfg(test)]
 mod release_artifacts;
@@ -116,10 +124,13 @@ use model::{
     Circle, ConstraintKind, ConstraintPoint, DistanceTarget, FaceId, Line,
 };
 use eframe::egui;
-use native_menu::{MenuCommand, NativeMenu};
+use menu_command::MenuCommand;
+#[cfg(not(target_arch = "wasm32"))]
+use native_menu::NativeMenu;
 use glam::Vec3;
 use model::ConstructionPlane;
 use script::{ScriptRunner, SyntheticInput};
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 use expression_input::{
     expression_autocomplete_handle_keys, expression_autocomplete_show_dropdown,
@@ -154,6 +165,7 @@ fn tick_launch_maximize(frames_remaining: &mut u8, ctx: &egui::Context) {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn native_options() -> eframe::NativeOptions {
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([960.0, 640.0])
@@ -186,6 +198,7 @@ fn native_options() -> eframe::NativeOptions {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {
     match script::parse_cli(std::env::args()) {
         script::CliOutcome::Help => {
@@ -204,7 +217,46 @@ fn main() -> eframe::Result<()> {
     }
 }
 
+/// Web entry point: eframe renders into the `bearcad_canvas` element of the hosting page
+/// (web/index.html). No CLI, no scripts — just the interactive app.
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    console_error_panic_hook::set_once();
+    wasm_bindgen_futures::spawn_local(async {
+        let document = web_sys::window()
+            .and_then(|w| w.document())
+            .expect("browser document");
+        let canvas = document
+            .get_element_by_id("bearcad_canvas")
+            .expect("page must have a canvas with id bearcad_canvas")
+            .dyn_into::<web_sys::HtmlCanvasElement>()
+            .expect("bearcad_canvas must be a canvas element");
+        eframe::WebRunner::new()
+            .start(
+                canvas,
+                eframe::WebOptions::default(),
+                Box::new(|cc| {
+                    theme::apply(&cc.egui_ctx);
+                    Ok(Box::new(App::new(
+                        cc,
+                        None,
+                        None,
+                        false,
+                        false,
+                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    )))
+                }),
+            )
+            .await
+            .expect("failed to start BearCAD web app");
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
+
 /// Print the result of a CLI install/uninstall action and exit non-zero on failure.
+#[cfg(not(target_arch = "wasm32"))]
 fn run_cli_action(result: Result<String, String>) {
     match result {
         Ok(msg) => println!("{msg}"),
@@ -215,6 +267,7 @@ fn run_cli_action(result: Result<String, String>) {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
     if let Some(secs) = script_opts.timeout_secs {
         std::thread::spawn(move || {
@@ -405,7 +458,11 @@ struct App {
     /// was, to the viewport center) as one huge pointer-motion delta, which would spin the
     /// view on entry. Entry must not move the view, so the first frames' motion is dropped.
     fps_look_warmup: u8,
+    #[cfg(not(target_arch = "wasm32"))]
     native_menu: NativeMenu,
+    /// Results of async browser file dialogs (open/import picks), drained each frame.
+    #[cfg(target_arch = "wasm32")]
+    web_io: WebIoQueue,
     dim_label_drag: Option<DimLabelDrag>,
     angle_gizmo_drag: Option<AngleGizmoDrag>,
     vertex_drag: Option<VertexDrag>,
@@ -436,6 +493,21 @@ struct App {
     script_failed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// One completed async browser file-dialog interaction (web build): picked file bytes to
+/// apply, or a status line from a finished save/export. Queued from `spawn_local` futures
+/// and drained on the next frame.
+#[cfg(target_arch = "wasm32")]
+enum WebIoEvent {
+    OpenedDocument { name: String, bytes: Vec<u8> },
+    ImportStl { name: String, bytes: Vec<u8> },
+    ImportStep { name: String, bytes: Vec<u8> },
+    ImportImage { name: String, bytes: Vec<u8> },
+    Status(String),
+}
+
+#[cfg(target_arch = "wasm32")]
+type WebIoQueue = std::rc::Rc<std::cell::RefCell<Vec<WebIoEvent>>>;
+
 impl App {
     fn new(
         cc: &eframe::CreationContext<'_>,
@@ -443,7 +515,7 @@ impl App {
         document_path: Option<String>,
         exit_on_script_complete: bool,
         show_commands: bool,
-        native_menu: NativeMenu,
+        #[cfg(not(target_arch = "wasm32"))] native_menu: NativeMenu,
         script_failed: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Self {
         let status = if script.as_ref().is_some_and(|r| r.is_repl()) {
@@ -488,7 +560,10 @@ impl App {
             fps_cursor_grabbed: false,
             pane_hovered_element: None,
             fps_look_warmup: 0,
+            #[cfg(not(target_arch = "wasm32"))]
             native_menu,
+            #[cfg(target_arch = "wasm32")]
+            web_io: WebIoQueue::default(),
             dim_label_drag: None,
             angle_gizmo_drag: None,
             extrude_gizmo_drag: None,
@@ -507,6 +582,7 @@ impl App {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn save_as(&mut self) {
         let start = rfd::FileDialog::new()
             .add_filter("BearCAD document", &["bearcad"])
@@ -519,6 +595,7 @@ impl App {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn save(&mut self) {
         match self.state.apply(Action::Save { path: None }) {
             actions::ActionResult::NeedsDialog => self.save_as(),
@@ -526,6 +603,7 @@ impl App {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Export all bodies to an STL file chosen via a save dialog (File → Export STL…).
     fn export_stl_all(&mut self) {
         let picked = rfd::FileDialog::new()
@@ -540,6 +618,7 @@ impl App {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Import an STL file as a new body chosen via an open dialog (File → Import STL…).
     fn import_stl(&mut self) {
         let picked = rfd::FileDialog::new()
@@ -552,6 +631,7 @@ impl App {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Import a PNG/JPEG as a tracing image via an open dialog (File → Import Image…, #169).
     fn import_image(&mut self) {
         let picked = rfd::FileDialog::new()
@@ -565,6 +645,7 @@ impl App {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Import a STEP file as a new body chosen via an open dialog (File → Import STEP…).
     fn import_step(&mut self) {
         let picked = rfd::FileDialog::new()
@@ -577,6 +658,7 @@ impl App {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Export all bodies to a STEP file chosen via a save dialog (File → Export STEP…).
     fn export_step_all(&mut self) {
         let picked = rfd::FileDialog::new()
@@ -591,6 +673,7 @@ impl App {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Export a single body (by index) to an STL file chosen via a save dialog.
     fn export_stl_body(&mut self, body: usize) {
         let default_name = self
@@ -612,6 +695,7 @@ impl App {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Export a single body (by index) to a STEP file chosen via a save dialog.
     fn export_step_body(&mut self, body: usize) {
         let default_name = self
@@ -635,6 +719,7 @@ impl App {
 
     /// Export everything done this session as a timestamped, replayable Lua script, chosen
     /// via a save dialog (Help → Export Session Commands…, and the command palette). See #43.
+    #[cfg(not(target_arch = "wasm32"))]
     fn export_session_commands(&mut self) {
         let timestamp = command_log::utc_timestamp();
         let script = match &self.state.command_log {
@@ -661,6 +746,7 @@ impl App {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn open(&mut self) {
         let picked = rfd::FileDialog::new()
             .add_filter("BearCAD document", &["bearcad"])
@@ -671,48 +757,272 @@ impl App {
         }
     }
 
+    /// Apply the results of finished async browser dialogs (web build).
+    #[cfg(target_arch = "wasm32")]
+    fn drain_web_io(&mut self) {
+        let events: Vec<WebIoEvent> = self.web_io.borrow_mut().drain(..).collect();
+        for event in events {
+            match event {
+                WebIoEvent::OpenedDocument { name, bytes } => {
+                    self.state.open_document_bytes(&bytes, &name);
+                }
+                WebIoEvent::ImportStl { name, bytes } => {
+                    self.state.import_stl_bytes(&name, &bytes);
+                }
+                WebIoEvent::ImportStep { name, bytes } => {
+                    self.state.import_step_bytes(&name, &bytes);
+                }
+                WebIoEvent::ImportImage { name, bytes } => {
+                    self.state.import_image_bytes(&name, bytes, None);
+                }
+                WebIoEvent::Status(message) => self.state.status = message,
+            }
+        }
+    }
+
+    /// Browser open dialog → queue the picked file's bytes as `make_event`'s event.
+    #[cfg(target_arch = "wasm32")]
+    fn web_pick_file(
+        &self,
+        filter_name: &'static str,
+        extensions: &'static [&'static str],
+        make_event: fn(String, Vec<u8>) -> WebIoEvent,
+    ) {
+        let queue = self.web_io.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Some(file) = rfd::AsyncFileDialog::new()
+                .add_filter(filter_name, extensions)
+                .pick_file()
+                .await
+            {
+                let name = file.file_name();
+                let bytes = file.read().await;
+                queue.borrow_mut().push(make_event(name, bytes));
+            }
+        });
+    }
+
+    /// Browser save dialog → write `bytes` (the browser downloads the file).
+    #[cfg(target_arch = "wasm32")]
+    fn web_save_bytes(
+        &self,
+        filter_name: &'static str,
+        extensions: &'static [&'static str],
+        suggested_name: String,
+        bytes: Vec<u8>,
+        done_status: String,
+    ) {
+        let queue = self.web_io.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Some(handle) = rfd::AsyncFileDialog::new()
+                .add_filter(filter_name, extensions)
+                .set_file_name(&suggested_name)
+                .save_file()
+                .await
+            {
+                let message = match handle.write(&bytes).await {
+                    Ok(()) => done_status,
+                    Err(e) => format!("Save failed: {e}"),
+                };
+                queue.borrow_mut().push(WebIoEvent::Status(message));
+            }
+        });
+    }
+
+    /// Web File-menu implementations: same names the shared menu dispatch calls, backed by
+    /// browser dialogs and the byte-level document/import/export helpers (no filesystem).
+    #[cfg(target_arch = "wasm32")]
+    fn open(&mut self) {
+        self.web_pick_file("BearCAD document", &["bearcad", "json"], |name, bytes| {
+            WebIoEvent::OpenedDocument { name, bytes }
+        });
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn save(&mut self) {
+        match crate::storage::to_json_bytes(&self.state.doc) {
+            Ok(bytes) => self.web_save_bytes(
+                "BearCAD document",
+                &["bearcad"],
+                "untitled.bearcad".to_string(),
+                bytes,
+                "Saved document".to_string(),
+            ),
+            Err(e) => self.state.status = format!("Save failed: {e}"),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn save_as(&mut self) {
+        self.save();
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn import_stl(&mut self) {
+        self.web_pick_file("STL mesh", &["stl"], |name, bytes| WebIoEvent::ImportStl {
+            name,
+            bytes,
+        });
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn import_step(&mut self) {
+        self.web_pick_file("STEP model", &["step", "stp"], |name, bytes| {
+            WebIoEvent::ImportStep { name, bytes }
+        });
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn import_image(&mut self) {
+        self.web_pick_file("Image", &["png", "jpg", "jpeg"], |name, bytes| {
+            WebIoEvent::ImportImage { name, bytes }
+        });
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn export_stl_all(&mut self) {
+        match self.state.export_stl_bytes(None) {
+            Ok(bytes) => self.web_save_bytes(
+                "STL mesh",
+                &["stl"],
+                "model.stl".to_string(),
+                bytes,
+                "Exported STL".to_string(),
+            ),
+            Err(e) => self.state.status = format!("Export failed: {e}"),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn export_step_all(&mut self) {
+        match self.state.export_step_bytes(None) {
+            Ok(bytes) => self.web_save_bytes(
+                "STEP model",
+                &["step", "stp"],
+                "model.step".to_string(),
+                bytes,
+                "Exported STEP".to_string(),
+            ),
+            Err(e) => self.state.status = format!("Export failed: {e}"),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn export_stl_body(&mut self, body: usize) {
+        let name = self.web_body_export_name(body, "stl");
+        match self.state.export_stl_bytes(Some(body)) {
+            Ok(bytes) => {
+                self.web_save_bytes("STL mesh", &["stl"], name, bytes, "Exported STL".to_string())
+            }
+            Err(e) => self.state.status = format!("Export failed: {e}"),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn export_step_body(&mut self, body: usize) {
+        let name = self.web_body_export_name(body, "step");
+        match self.state.export_step_bytes(Some(body)) {
+            Ok(bytes) => self.web_save_bytes(
+                "STEP model",
+                &["step", "stp"],
+                name,
+                bytes,
+                "Exported STEP".to_string(),
+            ),
+            Err(e) => self.state.status = format!("Export failed: {e}"),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn web_body_export_name(&self, body: usize, ext: &str) -> String {
+        let stem = self
+            .state
+            .doc
+            .bodies
+            .get(body)
+            .and_then(|b| b.name.clone())
+            .unwrap_or_else(|| format!("body-{body}"));
+        format!("{stem}.{ext}")
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn export_session_commands(&mut self) {
+        let timestamp = command_log::utc_timestamp();
+        let script = match &self.state.command_log {
+            Some(log) if !log.borrow().is_empty() => log.borrow().session_lua_script(&timestamp),
+            _ => {
+                self.state.status = "No session commands to export yet".to_string();
+                return;
+            }
+        };
+        self.web_save_bytes(
+            "Lua script",
+            &["lua"],
+            format!("bearcad-session-{timestamp}.lua"),
+            script.into_bytes(),
+            "Exported session commands".to_string(),
+        );
+    }
+
+    /// Dispatch one menu command — shared by the native OS menu bar and the web build's
+    /// in-window menu bar, so both frontends behave identically.
+    fn handle_menu_command(&mut self, ctx: &egui::Context, command: MenuCommand) {
+        match command {
+            MenuCommand::Open => self.open(),
+            MenuCommand::Save => self.save(),
+            MenuCommand::SaveAs => self.save_as(),
+            MenuCommand::ExportStl => self.export_stl_all(),
+            MenuCommand::ExportStep => self.export_step_all(),
+            MenuCommand::ImportStl => self.import_stl(),
+            MenuCommand::ImportImage => self.import_image(),
+            MenuCommand::ImportStep => self.import_step(),
+            MenuCommand::ExportSessionCommands => self.export_session_commands(),
+            MenuCommand::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            MenuCommand::About => {
+                self.state.status = format!(
+                    "BearCAD — on-device parametric CAD (prototype) • {}",
+                    kernel::selftest()
+                );
+            }
+            MenuCommand::Licenses => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.state.status = match open_licenses_document() {
+                        Ok(()) => "Opened licenses document in your browser".to_string(),
+                        Err(err) => format!("Could not open licenses document: {err}"),
+                    };
+                }
+                #[cfg(target_arch = "wasm32")]
+                ctx.open_url(egui::OpenUrl::new_tab(
+                    "https://github.com/iffy/BearCAD/blob/master/LICENSES-THIRD-PARTY.md",
+                ));
+            }
+            MenuCommand::InstallCli => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.state.status = match cli_install::run_install() {
+                        Ok(msg) => msg,
+                        Err(err) => format!("Install CLI failed: {err}"),
+                    };
+                }
+            }
+            _ => {
+                if let Some(action) = command.to_action() {
+                    self.state.apply(action);
+                }
+            }
+        }
+    }
+
     /// Handle selections from the native OS menu bar.
+    #[cfg(not(target_arch = "wasm32"))]
     fn handle_native_menu(&mut self, ctx: &egui::Context) {
         let events = self.native_menu.drain_events();
         for event in events {
             let Some(command) = native_menu::command_for_event(&event, &self.native_menu) else {
                 continue;
             };
-            match command {
-                MenuCommand::Open => self.open(),
-                MenuCommand::Save => self.save(),
-                MenuCommand::SaveAs => self.save_as(),
-                MenuCommand::ExportStl => self.export_stl_all(),
-                MenuCommand::ExportStep => self.export_step_all(),
-                MenuCommand::ImportStl => self.import_stl(),
-                MenuCommand::ImportImage => self.import_image(),
-                MenuCommand::ImportStep => self.import_step(),
-                MenuCommand::ExportSessionCommands => self.export_session_commands(),
-                MenuCommand::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-                MenuCommand::About => {
-                    self.state.status = format!(
-                        "BearCAD — on-device parametric CAD (prototype) • {}",
-                        kernel::selftest()
-                    );
-                }
-                MenuCommand::Licenses => {
-                    self.state.status = match open_licenses_document() {
-                        Ok(()) => "Opened licenses document in your browser".to_string(),
-                        Err(err) => format!("Could not open licenses document: {err}"),
-                    };
-                }
-                MenuCommand::InstallCli => {
-                    self.state.status = match cli_install::run_install() {
-                        Ok(msg) => msg,
-                        Err(err) => format!("Install CLI failed: {err}"),
-                    };
-                }
-                _ => {
-                    if let Some(action) = command.to_action() {
-                        self.state.apply(action);
-                    }
-                }
-            }
+            self.handle_menu_command(ctx, command);
         }
 
         self.native_menu
@@ -1903,7 +2213,16 @@ impl eframe::App for App {
         self.tick_fps_mode(ctx, dt);
         self.handle_keyboard_shortcuts(ctx);
 
+        #[cfg(not(target_arch = "wasm32"))]
         self.handle_native_menu(ctx);
+        #[cfg(target_arch = "wasm32")]
+        {
+            let panes = self.state.panes.clone();
+            if let Some(command) = web_menu::bar(ctx, |pane| panes.is_visible(pane)) {
+                self.handle_menu_command(ctx, command);
+            }
+            self.drain_web_io();
+        }
 
         egui::TopBottomPanel::top("toolbar")
             .frame(theme::panel_frame())

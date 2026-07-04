@@ -7,10 +7,61 @@
 //! JSON payload (SPEC §7.3). When real features arrive they slot into the same
 //! `dag_nodes` shape.
 
+
 use crate::face::default_xy_plane;
-use crate::constraints::{migrate_legacy_dimensions, solve_document_constraints};
+use crate::model::{Document, FaceId};
+
+pub type Result<T> = std::result::Result<T, String>;
+
+/// The JSON document format: the whole [`Document`] serde-serialized. This is what the
+/// **web build** saves and loads (the browser has no SQLite); the native `open` sniffs
+/// file magic and accepts either format, so web-saved files open everywhere.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub fn to_json_bytes(doc: &Document) -> Result<Vec<u8>> {
+    serde_json::to_vec(doc).map_err(|e| e.to_string())
+}
+
+/// Parse a JSON document (see [`to_json_bytes`]) and run the shared post-load fixups.
+pub fn from_json_bytes(bytes: &[u8]) -> Result<Document> {
+    let mut doc: Document = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    fixup_loaded_document(&mut doc)?;
+    Ok(doc)
+}
+
+/// Post-load normalization shared by every load path (SQLite, legacy, JSON).
+pub(crate) fn fixup_loaded_document(doc: &mut Document) -> Result<()> {
+    ensure_construction_plane_indices(doc);
+    crate::constraints::migrate_legacy_dimensions(doc);
+    crate::constraints::solve_document_constraints(doc).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+
+fn ensure_construction_plane_indices(doc: &mut Document) {
+    if doc.construction_planes.is_empty() {
+        doc.construction_planes.push(default_xy_plane());
+    }
+    let max_index = doc
+        .sketches
+        .iter()
+        .filter_map(|sketch| match sketch.face {
+            FaceId::ConstructionPlane(index) => Some(index),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    while doc.construction_planes.len() <= max_index {
+        doc.construction_planes.push(default_xy_plane());
+    }
+}
+
+/// The SQLite `.bearcad` format — native builds only (the bundled SQLite C library
+/// doesn't compile for wasm32-unknown-unknown).
+#[cfg(not(target_arch = "wasm32"))]
+mod sqlite_format {
+use crate::face::default_xy_plane;
 use crate::model::{
-    Circle, ConstructionPlane, Constraint, Document, FaceId, Line, Parameter, ShapeKind,
+    Circle, ConstructionPlane, Constraint, Document, Line, Parameter, ShapeKind,
     Sketch,
 };
 use crate::parameters::validate_document_parameters_no_cycles;
@@ -32,7 +83,7 @@ const DEFAULT_LENGTH_UNIT_META_KEY: &str = "default_length_unit";
 /// which fall back to [`AngleUnit::default`] (deg), matching their pre-existing behaviour.
 const DEFAULT_ANGLE_UNIT_META_KEY: &str = "default_angle_unit";
 
-pub type Result<T> = std::result::Result<T, String>;
+use super::Result;
 
 /// Create the tables for a fresh database (idempotent).
 fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
@@ -271,23 +322,6 @@ fn load_construction_planes(
 }
 
 /// Ensure every sketch-hosted construction-plane index exists after load.
-fn ensure_construction_plane_indices(doc: &mut Document) {
-    if doc.construction_planes.is_empty() {
-        doc.construction_planes.push(default_xy_plane());
-    }
-    let max_index = doc
-        .sketches
-        .iter()
-        .filter_map(|sketch| match sketch.face {
-            FaceId::ConstructionPlane(index) => Some(index),
-            _ => None,
-        })
-        .max()
-        .unwrap_or(0);
-    while doc.construction_planes.len() <= max_index {
-        doc.construction_planes.push(default_xy_plane());
-    }
-}
 
 fn load_legacy_document_nodes(
     conn: &Connection,
@@ -370,6 +404,13 @@ fn load_legacy_document_nodes(
 
 /// Open the document stored at `path`.
 pub fn open(path: &str) -> Result<Document> {
+    // Documents saved by the web build are plain JSON (the browser has no SQLite);
+    // sniff the magic bytes rather than trusting the extension, so either format opens.
+    if let Ok(bytes) = std::fs::read(path) {
+        if !bytes.starts_with(b"SQLite format 3") {
+            return super::from_json_bytes(&bytes);
+        }
+    }
     let conn = Connection::open(path).map_err(|e| e.to_string())?;
 
     let (
@@ -429,9 +470,7 @@ pub fn open(path: &str) -> Result<Document> {
         default_length_unit,
         default_angle_unit,
     };
-    ensure_construction_plane_indices(&mut doc);
-    migrate_legacy_dimensions(&mut doc);
-    solve_document_constraints(&mut doc).map_err(|e| e.to_string())?;
+    super::fixup_loaded_document(&mut doc)?;
     Ok(doc)
 }
 
@@ -1025,4 +1064,23 @@ mod tests {
 
         std::fs::remove_file(&path).unwrap();
     }
+}
+
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use sqlite_format::{open, save};
+
+/// Path-based IO doesn't exist in the browser — the web build opens/saves through the
+/// file-picker byte flows (`to_json_bytes`/`from_json_bytes`). These stubs keep the
+/// path-based `Action::Open`/`Action::SaveAs` arms compiling; reaching them on web is a
+/// clear error rather than a crash.
+#[cfg(target_arch = "wasm32")]
+pub fn open(_path: &str) -> Result<Document> {
+    Err("opening by file path isn't available in the browser".to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn save(_path: &str, _doc: &Document) -> Result<()> {
+    Err("saving by file path isn't available in the browser".to_string())
 }

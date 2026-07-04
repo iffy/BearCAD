@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BearCAD</title>
+  <link rel="icon" href="favicon.ico" />
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #1b1b1f;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      outline: none;
+    }
+    #loading {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      color: #cfcfd4;
+      font: 15px/1.4 system-ui, sans-serif;
+      text-align: center;
+      padding: 0 24px;
+    }
+  </style>
+</head>
+<body>
+  <div id="loading">
+    <div><strong>BearCAD</strong> is loading…</div>
+    <div>First load downloads the whole app (~15&nbsp;MB); it's cached afterwards.</div>
+  </div>
+  <canvas id="bearcad_canvas"></canvas>
+  <script type="module">
+    import init from "./bearcad.js";
+    init()
+      .then(() => document.getElementById("loading")?.remove())
+      .catch((err) => {
+        const el = document.getElementById("loading");
+        // eframe throws a benign "Using exceptions for control flow" on startup in
+        // some builds; anything else is a real failure worth showing.
+        if (el && !String(err).includes("control flow")) {
+          el.innerHTML =
+            "<div><strong>BearCAD couldn't start.</strong></div>" +
+            "<div>" + String(err) + "</div>" +
+            "<div>A browser with WebGPU or WebGL2 is required.</div>";
+        } else {
+          el?.remove();
+        }
+      });
+  </script>
+</body>
+</html>
