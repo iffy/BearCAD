@@ -2386,6 +2386,42 @@ mod tests {
         );
     }
 
+    /// #177: fillet works on circular rims too — a cut hole's rim fillets into a
+    /// rounded-over lead-in (removes the (1 - pi/4) corner ring), through the same
+    /// post-subtraction body path as chamfer countersinks.
+    #[test]
+    #[cfg(feature = "occt")]
+    fn cut_hole_rim_fillet_rounds_the_hole_edge() {
+        let (mut doc, sketch) = sketch_doc();
+        let plate = rect_profile(&mut doc, sketch, -10.0, -10.0, 20.0, 20.0);
+        doc.extrusions.push(extrusion(sketch, vec![plate], 5.0));
+        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 2.5, 0.0));
+        let mut hole = extrusion(sketch, vec![ExtrudeFace::Circle(0)], 6.0);
+        hole.edge_treatments.push(EdgeTreatment {
+            edge: ExtrusionEdgeRef::Cap { face: 0, edge: 0, top: false },
+            kind: VertexTreatmentKind::Fillet,
+            amount: 1.0,
+        });
+        doc.extrusions.push(hole);
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
+            name: None,
+            deleted: false,
+        });
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
+        let plain = 2000.0 - std::f32::consts::PI * 2.5 * 2.5 * 5.0;
+        // Rounded-over ring: (1 - pi/4) r^2 cross-section revolved near the hole radius.
+        let ring = (1.0 - std::f32::consts::FRAC_PI_4)
+            * 2.0
+            * std::f32::consts::PI
+            * (2.5 + 0.223);
+        let expected = plain - ring;
+        assert!(
+            (vol - expected).abs() < 3.0,
+            "expected ~{expected} (rounded hole edge), got {vol} (plain would be ~{plain})"
+        );
+    }
+
     /// #177: a chamfer on a *cut* circle extrusion's rim carves a countersink into the
     /// body it cuts — more material removed than the plain hole.
     #[test]
