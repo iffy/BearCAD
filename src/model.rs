@@ -376,6 +376,95 @@ pub fn vertex_treatment_geometry(
     Some(VertexTreatmentGeometry { p1, p2, bezier })
 }
 
+/// Re-fit the bezier handles of fillet-bridge arcs after a solve moved their endpoints.
+///
+/// A vertex fillet's arc is a single cubic bezier whose handles were computed for the corner
+/// geometry *at creation time* ([`vertex_treatment_geometry`]). The sketch solver moves line
+/// endpoints only, so when constraints reshape the profile (say a parameter-driven bend angle
+/// changes), the arc's endpoints follow the trimmed lines but its handles stay stale — the
+/// bend folds over itself and any extrusion built from the loop self-intersects. This re-fit
+/// recomputes each fillet arc as the circular arc tangent to its two neighbouring lines at
+/// the arc's current endpoints (the trims stay where the dimensions hold them, so the
+/// effective radius follows the new corner angle).
+pub fn refit_fillet_arc_handles(doc: &mut Document, sketch: SketchId) {
+    const EPS: f32 = 1e-3;
+    let arcs: Vec<usize> = doc
+        .lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| {
+            !l.deleted && l.sketch == sketch && l.chamfer_fillet_parent.is_some() && l.is_curved()
+        })
+        .map(|(i, _)| i)
+        .collect();
+    for arc in arcs {
+        let (p0, p1) = {
+            let l = &doc.lines[arc];
+            ((l.x0, l.y0), (l.x1, l.y1))
+        };
+        // The straight tangent direction at an arc endpoint: along the neighbouring line,
+        // pointing from its far end toward the shared endpoint (i.e. toward the trimmed-away
+        // virtual corner beyond the arc).
+        let tangent_at = |doc: &Document, p: (f32, f32)| -> Option<(f32, f32)> {
+            for (j, l) in doc.lines.iter().enumerate() {
+                if j == arc || l.deleted || l.sketch != sketch || l.construction || l.is_curved()
+                {
+                    continue;
+                }
+                let (near, far) = if (l.x1 - p.0).abs() < EPS && (l.y1 - p.1).abs() < EPS {
+                    ((l.x1, l.y1), (l.x0, l.y0))
+                } else if (l.x0 - p.0).abs() < EPS && (l.y0 - p.1).abs() < EPS {
+                    ((l.x0, l.y0), (l.x1, l.y1))
+                } else {
+                    continue;
+                };
+                let d = (near.0 - far.0, near.1 - far.1);
+                let len = (d.0 * d.0 + d.1 * d.1).sqrt();
+                if len > 1e-6 {
+                    return Some((d.0 / len, d.1 / len));
+                }
+            }
+            None
+        };
+        let (Some(u0), Some(u1)) = (tangent_at(doc, p0), tangent_at(doc, p1)) else {
+            continue;
+        };
+        // Virtual corner: p0 + s*u0 == p1 + t*u1.
+        let det = u0.0 * (-u1.1) - u0.1 * (-u1.0);
+        if det.abs() < 1e-6 {
+            continue;
+        }
+        let (rx, ry) = (p1.0 - p0.0, p1.1 - p0.1);
+        let s = (rx * (-u1.1) - ry * (-u1.0)) / det;
+        let v = (p0.0 + u0.0 * s, p0.1 + u0.1 * s);
+        let to0 = (p0.0 - v.0, p0.1 - v.1);
+        let to1 = (p1.0 - v.0, p1.1 - v.1);
+        let (l0, l1) = (to0.0.hypot(to0.1), to1.0.hypot(to1.1));
+        if l0 < 1e-6 || l1 < 1e-6 {
+            continue;
+        }
+        let dir_a = (to0.0 / l0, to0.1 / l0);
+        let dir_b = (to1.0 / l1, to1.1 / l1);
+        let cos_alpha = (dir_a.0 * dir_b.0 + dir_a.1 * dir_b.1).clamp(-1.0, 1.0);
+        let alpha = cos_alpha.acos();
+        if alpha < VERTEX_TREATMENT_DEGENERATE_EPS
+            || alpha > std::f32::consts::PI - VERTEX_TREATMENT_DEGENERATE_EPS
+        {
+            continue;
+        }
+        // Same handle-length formula as vertex_treatment_geometry, with the tangent length
+        // averaged (asymmetric trims can't host an exactly tangent circle; the average keeps
+        // the arc smooth and inside the corner).
+        let t_avg = (l0 + l1) * 0.5;
+        let radius = t_avg * (alpha / 2.0).tan();
+        let theta = std::f32::consts::PI - alpha;
+        let k = radius * (4.0 / 3.0) * (theta / 4.0).tan();
+        let h0 = (p0.0 - dir_a.0 * k, p0.1 - dir_a.1 * k);
+        let h1 = (p1.0 - dir_b.0 * k, p1.1 - dir_b.1 * k);
+        doc.lines[arc].bezier = Some([h0, h1]);
+    }
+}
+
 /// Which analytic edge family of an extrusion-sourced solid an [`EdgeTreatment`] targets
 /// (#77): a 3D edge chamfer/fillet is a mesh-bevel approximation limited to the two edge
 /// kinds that have a clean analytic definition for a `Rect`/`Polygon` profile — see
