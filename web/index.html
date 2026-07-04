@@ -41,7 +41,16 @@
   </div>
   <canvas id="bearcad_canvas"></canvas>
   <script type="module">
-    import init from "./bearcad.js";
+    // The OCCT geometry kernel is a second wasm module (Emscripten); load it first so
+    // the app's kernel bridge finds it. If it fails, the app still runs — with the
+    // lean-build fallbacks (no solid cuts) and a status note in Help > About.
+    try {
+      const { default: BearcadKernel } = await import("./kernel.js");
+      globalThis.bearcadKernel = await BearcadKernel();
+    } catch (err) {
+      console.warn("BearCAD: geometry kernel failed to load; running lean:", err);
+    }
+    const { default: init } = await import("./bearcad.js");
     init()
       .then(() => document.getElementById("loading")?.remove())
       .catch((err) => {

@@ -17,6 +17,8 @@ pub enum MenuCommand {
     ImportImage,
     ImportStep,
     ExportSessionCommands,
+    /// Pick a `.lua` script and run it against the live document (File menu).
+    LoadScript,
     Quit,
     UndoLast,
     Clear,
@@ -44,7 +46,8 @@ impl MenuCommand {
             | MenuCommand::ImportStl
             | MenuCommand::ImportImage
             | MenuCommand::ImportStep
-            | MenuCommand::ExportSessionCommands => None,
+            | MenuCommand::ExportSessionCommands
+            | MenuCommand::LoadScript => None,
             MenuCommand::Quit => None,
             MenuCommand::UndoLast => Some(Action::UndoLast),
             MenuCommand::Clear => Some(Action::Clear),

@@ -11,7 +11,7 @@ Local-first, parametric CAD. Built by robots to see what AI can do.
 ## Download
 
 Or skip the download: **[run BearCAD in your browser](https://www.iffycan.com/BearCAD/app/)**
-(lean build — no solid cuts, no scripting; documents save as downloads).
+(full geometry engine; no Lua scripting yet; documents save as downloads).
 
 | Platform | Download |
 |----------|----------|

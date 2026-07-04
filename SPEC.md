@@ -519,9 +519,20 @@ BearCAD also compiles to **wasm32-unknown-unknown** and runs in the browser (bui
 `scripts/build-web.sh`, hosted at `/app/` on the docs site, deployed by the Website CI
 workflow). The web build is the lean configuration plus web-specific plumbing:
 
-- **No OCCT kernel, no Lua, no SQLite** — bundled C/C++ doesn't compile for this target.
-  Scripting/REPL/CLI are compiled out; solid cuts render additive-only (the same lean-build
-  fallback that already exists).
+- **The OCCT kernel ships as a second wasm module** (`scripts/build-occt-wasm.sh`:
+  OCCT + the same C++ shim compiled with Emscripten into `kernel.js`/`kernel.wasm`). The
+  app — which is wasm32-unknown-unknown and can't link Emscripten C++ — calls its
+  16-function C API through a JS bridge (`web/kernel-bridge.js`, `src/kernel/web.rs`);
+  shape handles cross the boundary as heap-pointer integers, arrays are copied between
+  module heaps, and STEP bytes go through the kernel module's in-memory filesystem. Full
+  geometry parity: cuts, booleans, BREP fillets/chamfers/countersinks, STEP both ways.
+  If the kernel module fails to load, the app still runs with the lean fallbacks, and the
+  boot status line reports the kernel self-check either way.
+- **No Lua, no SQLite** — bundled C doesn't compile for wasm32-unknown-unknown, and
+  mlua's bindings can't cross a module boundary. Scripting/REPL/CLI are compiled out;
+  **File → Load Script…** exists on both platforms (desktop runs the script; web reports
+  that browser scripting isn't supported yet — see todoer #179 for the side-module
+  design).
 - **In-window menu bar** (`src/web_menu.rs`): the browser has no OS menu bar, so File/Edit/
   View/Help render as an egui menu strip emitting the same `MenuCommand`s
   (`src/menu_command.rs`, shared with the muda native menus) through one dispatch path.

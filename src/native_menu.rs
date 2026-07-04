@@ -27,6 +27,7 @@ pub struct MenuIds {
     pub export_stl: MenuId,
     pub export_step: MenuId,
     pub import_stl: MenuId,
+    pub load_script: MenuId,
     pub import_image: MenuId,
     pub import_step: MenuId,
     pub export_session_commands: MenuId,
@@ -94,6 +95,9 @@ pub fn command_for_id(
     }
     if ids.import_stl == id {
         return Some(MenuCommand::ImportStl);
+    }
+    if ids.load_script == id {
+        return Some(MenuCommand::LoadScript);
     }
     if ids.import_step == id {
         return Some(MenuCommand::ImportStep);
@@ -223,6 +227,7 @@ impl NativeMenu {
         );
         let export_stl = MenuItem::with_id("export_stl", "Export STL…", true, None);
         let export_step = MenuItem::with_id("export_step", "Export STEP…", true, None);
+        let load_script = MenuItem::with_id("load_script", "Load Script…", true, None);
         let import_stl = MenuItem::with_id("import_stl", "Import STL…", true, None);
         let import_image = MenuItem::with_id("import_image", "Import Image…", true, None);
         let import_step = MenuItem::with_id("import_step", "Import STEP…", true, None);
@@ -281,6 +286,7 @@ impl NativeMenu {
         file_menu.append(&PredefinedMenuItem::separator())?;
         file_menu.append(&export_stl)?;
         file_menu.append(&export_step)?;
+        file_menu.append(&load_script)?;
         file_menu.append(&import_stl)?;
         file_menu.append(&import_image)?;
         file_menu.append(&import_step)?;
@@ -325,6 +331,7 @@ impl NativeMenu {
             save_as: save_as.id().clone(),
             export_stl: export_stl.id().clone(),
             export_step: export_step.id().clone(),
+            load_script: load_script.id().clone(),
             import_stl: import_stl.id().clone(),
             import_image: import_image.id().clone(),
             import_step: import_step.id().clone(),
@@ -426,6 +433,7 @@ mod tests {
             save_as: MenuId::new("save_as"),
             export_stl: MenuId::new("export_stl"),
             export_step: MenuId::new("export_step"),
+            load_script: MenuId::new("load_script"),
             import_stl: MenuId::new("import_stl"),
             import_image: MenuId::new("import_image"),
             import_step: MenuId::new("import_step"),

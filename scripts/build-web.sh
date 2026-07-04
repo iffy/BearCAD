@@ -5,8 +5,9 @@
 # and wasm-bindgen-cli matching the wasm-bindgen crate version in Cargo.lock
 # (`cargo install wasm-bindgen-cli --version <version>`).
 #
-# The web build is the lean (no OCCT kernel, no Lua/SQLite) configuration; documents
-# save/load as JSON through the browser's file pickers.
+# The web build ships the OCCT geometry kernel as a second, Emscripten-built wasm
+# module (web/kernel/, from scripts/build-occt-wasm.sh). Lua/SQLite stay native-only;
+# documents save/load as JSON through the browser's file pickers.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -19,8 +20,13 @@ if [[ "$HAVE_BINDGEN" != "$WANT_BINDGEN" ]]; then
   cargo install wasm-bindgen-cli --version "$WANT_BINDGEN" --locked
 fi
 
-echo "==> cargo build (wasm32, release, lean)"
-cargo build --release --target wasm32-unknown-unknown --no-default-features
+if [[ ! -f web/kernel/kernel.js ]]; then
+  echo "==> kernel module missing; building OCCT for wasm (scripts/build-occt-wasm.sh)"
+  scripts/build-occt-wasm.sh
+fi
+
+echo "==> cargo build (wasm32, release, occt kernel via JS bridge)"
+cargo build --release --target wasm32-unknown-unknown
 
 echo "==> wasm-bindgen"
 rm -rf web/dist
@@ -30,6 +36,7 @@ wasm-bindgen target/wasm32-unknown-unknown/release/bearcad.wasm \
 
 cp web/index.html web/dist/
 cp web/favicon.ico web/dist/ 2>/dev/null || true
+cp web/kernel/kernel.js web/kernel/kernel.wasm web/dist/
 
 echo
 echo "Built web/dist/:"

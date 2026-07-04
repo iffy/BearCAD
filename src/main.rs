@@ -522,6 +522,10 @@ impl App {
             "Lua REPL — enter commands in the terminal".to_string()
         } else if script.is_some() {
             "Running script…".to_string()
+        } else if cfg!(target_arch = "wasm32") {
+            // The web kernel is a separately-loaded module that can fail independently of
+            // the app; surface its state at boot so users (and bug reports) see it.
+            kernel::selftest()
         } else {
             String::new()
         };
@@ -964,6 +968,40 @@ impl App {
         );
     }
 
+    /// Pick a `.lua` script and run it against the live document (File → Load Script…).
+    /// The same runner the `--script` CLI flag uses, driven from the running GUI.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn load_script(&mut self) {
+        if self.script.as_ref().is_some_and(|r| !r.done) {
+            self.state.status = "A script is already running".to_string();
+            return;
+        }
+        let picked = rfd::FileDialog::new()
+            .add_filter("Lua script", &["lua"])
+            .pick_file();
+        let Some(path) = picked else {
+            return;
+        };
+        match ScriptRunner::from_file(&path) {
+            Ok(runner) => {
+                self.script = Some(runner);
+                self.state.status = format!("Running script: {}", path.display());
+            }
+            Err(e) => {
+                self.state.status = format!("Could not load script: {}", e.message);
+            }
+        }
+    }
+
+    /// Running Lua in the browser needs a Lua interpreter module (todoer #179); until then
+    /// the menu item explains itself instead of silently doing nothing.
+    #[cfg(target_arch = "wasm32")]
+    fn load_script(&mut self) {
+        self.state.status =
+            "Running Lua scripts in the browser isn't supported yet — use the desktop app"
+                .to_string();
+    }
+
     /// Dispatch one menu command — shared by the native OS menu bar and the web build's
     /// in-window menu bar, so both frontends behave identically.
     fn handle_menu_command(&mut self, ctx: &egui::Context, command: MenuCommand) {
@@ -977,6 +1015,7 @@ impl App {
             MenuCommand::ImportImage => self.import_image(),
             MenuCommand::ImportStep => self.import_step(),
             MenuCommand::ExportSessionCommands => self.export_session_commands(),
+            MenuCommand::LoadScript => self.load_script(),
             MenuCommand::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             MenuCommand::About => {
                 self.state.status = format!(

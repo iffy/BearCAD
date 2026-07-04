@@ -1,7 +1,11 @@
 fn main() {
     // OCCT kernel (#86): only when built with `--features occt`. Cargo exposes an
     // enabled feature as CARGO_FEATURE_<NAME>.
-    if std::env::var_os("CARGO_FEATURE_OCCT").is_some() {
+    // On wasm32 the kernel ships as a separate Emscripten-built module (see
+    // scripts/build-occt-wasm.sh) — nothing links into the app binary here.
+    if std::env::var_os("CARGO_FEATURE_OCCT").is_some()
+        && std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("wasm32")
+    {
         build_occt_shim();
     }
 

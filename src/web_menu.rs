@@ -29,6 +29,10 @@ pub fn bar(ctx: &egui::Context, pane_visible: impl Fn(Pane) -> bool) -> Option<M
                     picked = Some(MenuCommand::Save);
                     ui.close();
                 }
+                if ui.button("Load Script…").clicked() {
+                    picked = Some(MenuCommand::LoadScript);
+                    ui.close();
+                }
                 ui.separator();
                 if ui.button("Import STL…").clicked() {
                     picked = Some(MenuCommand::ImportStl);

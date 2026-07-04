@@ -1558,6 +1558,17 @@ impl AppState {
     /// parser — the kernel reader is path-based and native-only).
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub fn import_step_bytes(&mut self, name: &str, bytes: &[u8]) -> ActionResult {
+        // Web kernel builds read real BREP (curved surfaces included) through the
+        // bridged STEP reader, mirroring the native path-based arm.
+        #[cfg(all(feature = "occt", target_arch = "wasm32"))]
+        {
+            if let Some(shape) = crate::kernel::Shape::read_step_bytes(bytes) {
+                let tris = shape.tessellate(crate::extrude::OCCT_DEFLECTION as f64);
+                if !tris.is_empty() {
+                    return self.import_mesh_body(name, tris);
+                }
+            }
+        }
         let text = match std::str::from_utf8(bytes) {
             Ok(t) => t,
             Err(e) => {
@@ -1627,9 +1638,33 @@ impl AppState {
         Ok(crate::stl::write_ascii_stl(&name, &mesh).into_bytes())
     }
 
-    /// Faceted STEP of one body (or the whole document) as bytes.
+    /// STEP of one body (or the whole document) as bytes. Web kernel builds write real
+    /// BREP through the bridged writer when a single body is exportable (mirroring the
+    /// native single-body path); everything else uses the faceted writer.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub fn export_step_bytes(&self, body: Option<usize>) -> Result<Vec<u8>, String> {
+        #[cfg(all(feature = "occt", target_arch = "wasm32"))]
+        {
+            let single = body.or_else(|| {
+                let mut live = self
+                    .doc
+                    .bodies
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, b)| !b.deleted);
+                match (live.next(), live.next()) {
+                    (Some((bi, _)), None) => Some(bi),
+                    _ => None,
+                }
+            });
+            if let Some(bi) = single {
+                if let Some(shape) = crate::extrude::occt_body_shape(&self.doc, bi) {
+                    if let Some(bytes) = shape.write_step_bytes() {
+                        return Ok(bytes);
+                    }
+                }
+            }
+        }
         let (name, mesh) = self.export_mesh_for(body)?;
         Ok(crate::step::write_step(&name, &mesh).into_bytes())
     }
