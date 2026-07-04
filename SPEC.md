@@ -241,10 +241,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   tessellation) for free, since a filleted corner is, to the rest of the app, just another curved
   `Line`. The tangent length is clamped so it never cuts back past either adjacent line's own far
   endpoint; a corner within ~1° of straight (0°/180°, i.e. parallel/anti-parallel edges) is
-  rejected as degenerate. Only the `Coincident` constraint directly between the two treated
-  endpoints is removed on commit — other constraints that happened to reference the old vertex
-  position are **not** automatically fixed up (a known, documented limitation; the resulting
-  sketch may need manual re-constraining). This is specifically the **2D sketch-vertex** case;
+  rejected as degenerate. On commit, the `Coincident` constraint directly between the two
+  treated endpoints is removed and the bridging line's two endpoints are tied to the trimmed
+  lines with fresh `Coincident` constraints — so a treated polygon **stays a closed loop**
+  (still a fillable, extrudable face; loop detection walks the constraint graph). The whole
+  gesture (bridge line + its two constraints) is one undo group. Other constraints that
+  happened to reference the old vertex position are **not** automatically fixed up (a known,
+  documented limitation; the resulting sketch may need manual re-constraining). This is specifically the **2D sketch-vertex** case;
   the same Chamfer/Fillet tool also does a **3D solid-edge** mesh-bevel approximation on an
   extrusion's analytic side/cap edges when no sketch is open — see §3.4, which is *not* a true
   kernel-backed BREP fillet (BearCAD has no BREP/NURBS kernel — see §10). Scriptable via

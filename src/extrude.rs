@@ -147,31 +147,39 @@ fn occt_extrusion_shape(
     extrusion: &Extrusion,
     distance: f32,
 ) -> Option<crate::kernel::Shape> {
-    // Exactly one face.
-    let [face] = extrusion.faces.as_slice() else {
-        return None;
-    };
-    let (profile, normal) = face_profile_world(doc, face)?;
-    if profile.len() < 3 {
-        return None;
+    // One solid per face, fused. A single-face extrusion (the common case) skips the
+    // boolean; a multi-face one (several coplanar profiles extruded together) fuses into
+    // one solid so it cuts/merges correctly — a multi-face *cut* used to return `None`
+    // here, silently dropping every hole of the cut via the mesh fallback.
+    let mut fused: Option<crate::kernel::Shape> = None;
+    for face in &extrusion.faces {
+        let (profile, normal) = face_profile_world(doc, face)?;
+        if profile.len() < 3 {
+            return None;
+        }
+        let top: Vec<Vec3> = profile
+            .iter()
+            .map(|p| extruded_top_point(doc, extrusion, normal, *p, distance))
+            .collect();
+        // A pure translation is a single prism (simplest/most robust); a slanted
+        // target (per-vertex top offset, e.g. extrude-to-an-angled-face) is a ruled
+        // loft between the bottom and top loops.
+        let dir = top[0] - profile[0];
+        let is_translation = profile
+            .iter()
+            .zip(&top)
+            .all(|(p, t)| (*t - *p - dir).length() <= 1e-4);
+        let shape = if is_translation {
+            crate::kernel::Shape::prism(&profile, dir)
+        } else {
+            crate::kernel::Shape::loft(&profile, &top)
+        }?;
+        fused = Some(match fused {
+            None => shape,
+            Some(acc) => acc.boolean(&shape, crate::kernel::BoolOp::Fuse)?,
+        });
     }
-    let top: Vec<Vec3> = profile
-        .iter()
-        .map(|p| extruded_top_point(doc, extrusion, normal, *p, distance))
-        .collect();
-    // A pure translation is a single prism (simplest/most robust); a slanted
-    // target (per-vertex top offset, e.g. extrude-to-an-angled-face) is a ruled
-    // loft between the bottom and top loops.
-    let dir = top[0] - profile[0];
-    let is_translation = profile
-        .iter()
-        .zip(&top)
-        .all(|(p, t)| (*t - *p - dir).length() <= 1e-4);
-    let base_shape = if is_translation {
-        crate::kernel::Shape::prism(&profile, dir)
-    } else {
-        crate::kernel::Shape::loft(&profile, &top)
-    }?;
+    let base_shape = fused?;
 
     // Real BREP edge fillets/chamfers (#77). Split the active treatments into fillet
     // and chamfer groups (each applied in one batched kernel call), matching each
@@ -2179,6 +2187,35 @@ mod tests {
     }
 
 
+    /// A cut extrusion carrying several faces (two holes cut in one operation) must
+    /// subtract all of them — it used to fall off the kernel path entirely, silently
+    /// dropping every hole (additive-only fallback).
+    #[test]
+    #[cfg(feature = "occt")]
+    fn multi_face_cut_extrusion_subtracts_every_face() {
+        let (mut doc, sketch) = sketch_doc();
+        let plate = rect_profile(&mut doc, sketch, 0.0, 0.0, 50.0, 40.0);
+        doc.extrusions.push(extrusion(sketch, vec![plate], 5.0));
+        doc.circles.push(Circle::from_local_center_radius(sketch, 35.0, 10.0, 2.5, 0.0));
+        doc.circles.push(Circle::from_local_center_radius(sketch, 35.0, 30.0, 2.5, 0.0));
+        doc.extrusions.push(extrusion(
+            sketch,
+            vec![ExtrudeFace::Circle(0), ExtrudeFace::Circle(1)],
+            6.0,
+        ));
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
+            name: None,
+            deleted: false,
+        });
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
+        let expected = 10000.0 - 2.0 * std::f32::consts::PI * 2.5 * 2.5 * 5.0;
+        assert!(
+            (vol - expected).abs() < 20.0,
+            "expected ~{expected} (both holes cut), got {vol}"
+        );
+    }
+
     /// #142: the live cut preview meshes the target body with the in-progress extrusion already
     /// subtracted, so its volume is less than the intact body's — i.e. it shows the finished
     /// hole, not an additive block.
@@ -3167,8 +3204,8 @@ mod tests {
         .unwrap();
         assert!(!occt_edge_treatments_feasible(&doc, 0, &oversized));
 
-        // A two-face extrusion isn't kernel-representable (occt_extrusion_shape wants exactly
-        // one face), so the trial abstains: the mesh-bevel fallback governs either way.
+        // A two-face extrusion is kernel-representable too (each face's prism fused), so
+        // the feasibility trial still applies: the oversized fillet is rejected on it.
         let second = rect_profile(&mut doc, sketch, 20.0, 20.0, 10.0, 10.0);
         let extra_face = second.clone();
         doc.extrusions[0].faces.push(extra_face);
@@ -3178,7 +3215,7 @@ mod tests {
             EdgeTreatment { edge, kind: VertexTreatmentKind::Fillet, amount: 500.0 },
         )
         .unwrap();
-        assert!(occt_edge_treatments_feasible(&doc, 0, &candidate));
+        assert!(!occt_edge_treatments_feasible(&doc, 0, &candidate));
     }
 
     /// #103 part 2: [`kernel_fallback_cut_warning`] fires exactly when a cut-bearing body

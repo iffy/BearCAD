@@ -3936,7 +3936,12 @@ impl AppState {
                                     || (*a == ConstraintEntity::Point(p_b.clone()) && *b == ConstraintEntity::Point(p_a.clone()))
                         )
                 }) {
-                    tombstone_elements(&mut self.doc, &[SceneElement::Constraint(idx)]);
+                    // Mark deleted directly rather than via `tombstone_elements`: the
+                    // tombstone path also removes the constraint's shape_order entry, which
+                    // shrinks this action's net growth and would leave the undo group
+                    // covering only part of the gesture (the bridge line would survive the
+                    // first UndoLast).
+                    self.doc.constraints[idx].deleted = true;
                 }
 
                 let mut bridge =
@@ -3950,6 +3955,32 @@ impl AppState {
                 bridge.chamfer_fillet_parent = Some(line1);
                 self.doc.lines.push(bridge);
                 self.doc.shape_order.push(ShapeKind::Line);
+                // Tie the bridge to the trimmed endpoints with Coincident constraints, so
+                // the treated profile stays a *closed loop* in the constraint graph — loop
+                // detection (closed_line_loops) walks Coincident chains, so without these a
+                // chamfered/filleted polygon silently stopped being a fillable, extrudable
+                // face, and the solver could pull the bridge away from its corner.
+                let bridge_line = self.doc.lines.len() - 1;
+                for (bridge_end, trimmed) in [
+                    (LineEnd::Start, p_a.clone()),
+                    (LineEnd::End, p_b.clone()),
+                ] {
+                    self.doc.constraints.push(crate::model::Constraint {
+                        sketch,
+                        kind: ConstraintKind::Coincident {
+                            a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                                line: bridge_line,
+                                end: bridge_end,
+                            }),
+                            b: ConstraintEntity::Point(trimmed),
+                        },
+                        expression: String::new(),
+                        dim_offset: None,
+                        name: None,
+                        deleted: false,
+                    });
+                    self.doc.shape_order.push(ShapeKind::Constraint);
+                }
 
                 self.refresh_document_health();
                 self.status = match kind {
@@ -6659,10 +6690,14 @@ mod tests {
         // Line 1's Start truncated back from (10,0) toward (10,10) by 3mm.
         assert!((state.doc.lines[1].x0 - 10.0).abs() < 1e-3);
         assert!((state.doc.lines[1].y0 - 3.0).abs() < 1e-3);
-        // A new straight bridging line was appended.
+        // A new straight bridging line was appended, tied into the loop by two
+        // Coincident constraints (so the treated profile stays a closed loop).
         assert_eq!(state.doc.lines.len(), 3);
         assert!(!state.doc.lines[2].is_curved());
-        assert_eq!(state.doc.shape_order.last(), Some(&ShapeKind::Line));
+        assert_eq!(
+            &state.doc.shape_order[state.doc.shape_order.len() - 3..],
+            &[ShapeKind::Line, ShapeKind::Constraint, ShapeKind::Constraint]
+        );
         // Nests under line 0 (the lower-index trimmed line, #76).
         assert_eq!(state.doc.lines[2].chamfer_fillet_parent, Some(0));
     }
@@ -6695,11 +6730,23 @@ mod tests {
             kind: VertexTreatmentKind::Chamfer,
             amount: 3.0,
         });
-        assert!(state
+        // The old vertex's own Coincident is tombstoned; what's live is exactly the
+        // two new constraints tying the bridge line (index 2) into the loop.
+        let live: Vec<_> = state
             .doc
             .constraints
             .iter()
-            .all(|c| c.deleted || c.sketch != sketch));
+            .filter(|c| !c.deleted && c.sketch == sketch)
+            .collect();
+        assert_eq!(live.len(), 2);
+        assert!(live.iter().all(|c| matches!(
+            &c.kind,
+            ConstraintKind::Coincident { a, b }
+                if [a, b].iter().any(|e| matches!(
+                    e,
+                    ConstraintEntity::Point(ConstraintPoint::LineEndpoint { line: 2, .. })
+                ))
+        )));
     }
 
     #[test]
@@ -6777,9 +6824,23 @@ mod tests {
         assert_eq!(state.doc.lines.len(), 3);
         let result = state.apply(Action::UndoLast);
         assert!(matches!(result, ActionResult::Ok));
-        // Undo is best-effort here: it pops the new bridging line back off, but doesn't
-        // restore the two truncated lines' original endpoints (documented limitation).
+        // Undo is best-effort here: it pops the treatment's whole undo group (the
+        // bridging line plus its two loop-closing constraints), but doesn't restore
+        // the two truncated lines' original endpoints (documented limitation).
         assert_eq!(state.doc.lines.len(), 2);
+        assert!(state
+            .doc
+            .constraints
+            .iter()
+            .filter(|c| !c.deleted)
+            .all(|c| !matches!(
+                &c.kind,
+                ConstraintKind::Coincident { a, b }
+                    if [a, b].iter().any(|e| matches!(
+                        e,
+                        ConstraintEntity::Point(ConstraintPoint::LineEndpoint { line: 2, .. })
+                    ))
+            )));
     }
 
     fn box_extrusion_state() -> AppState {

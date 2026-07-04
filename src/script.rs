@@ -2128,6 +2128,9 @@ impl ScriptRunner {
                 mlua::ThreadStatus::Running => true,
                 mlua::ThreadStatus::Error => {
                     self.error = Some("Lua thread error".to_string());
+                    if self.verbose {
+                        eprintln!("Script error: Lua thread error");
+                    }
                     lua_runner.finished = true;
                     self.done = true;
                     false
@@ -2135,6 +2138,12 @@ impl ScriptRunner {
             },
             Err(e) => {
                 self.error = Some(e.to_string());
+                // Surface the failure on the terminal too — without this the error only
+                // lands in the status bar, which reads as a silent hang when running
+                // headless without `--exit`.
+                if self.verbose {
+                    eprintln!("Script error: {e}");
+                }
                 lua_runner.finished = true;
                 self.done = true;
                 false
