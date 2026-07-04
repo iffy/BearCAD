@@ -228,7 +228,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     (summed over the same `BEZIER_SEGMENTS` tessellation) everywhere it's displayed or
     introspected — Elements-pane labels, computed parameters, `bearcad.get{}.length` — but a
     length **dimension** on a curved line constrains the endpoint (**chord**) distance, since
-    the sketch solver moves endpoints, not bezier handles.
+    the sketch solver moves endpoints, not bezier handles. Exception: a *fillet-bridge arc*
+    (a line with `chamfer_fillet_parent` and handles) has its handles re-fit after every
+    solve to stay a circular arc tangent to its neighbours, so constraint-driven reshaping
+    (e.g. a parameter-driven angle change) keeps the bend smooth instead of folding it.
   - Scriptable via `bearcad.line{ x=, y=, x1=, y1=, bezier = { {cx0, cy0}, {cx1, cy1} } }`.
 - **Chamfer and fillet (#37/#38), 2D sketch vertices only:** both are tools ("push/pull" gizmo
   + text-entry input, mirroring the extrude tool) that operate on a sketch vertex where exactly
@@ -835,7 +838,12 @@ back the assembly joints/mates (§2.3).
   are skipped during drag so the solver can rebalance.
 - The UI must report **under-** and **over-constrained** states and indicate conflicting
   constraints. `sketch_degrees_of_freedom()` exposes remaining DOF from Jacobian rank analysis.
-- The solver is deterministic for headless/script use (fixed iteration order, fixed LM damping).
+- The solver is deterministic for headless/script use (fixed iteration order, fixed LM damping;
+  stalled descents retry from deterministically seeded jittered starts).
+- Residuals must be commensurately scaled: direction constraints (parallel/perpendicular)
+  normalize their cross/dot products by the product of the line lengths so mm-scale point
+  equations aren't drowned out, and a length dimension biases its line's start point only at
+  weak gauge weight — a dimension must never pin geometry against real constraints.
 
 ---
 

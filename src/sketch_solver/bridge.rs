@@ -306,6 +306,7 @@ impl SketchBridge {
                 self.hold_line(doc, reference.clone(), GAUGE_HOLD_WEIGHT)?;
                 let a = self.line_vars(doc, reference)?;
                 let b = self.line_vars(doc, movable)?;
+                let weight = self.direction_product_weight(a, b);
                 self.system.add_equation(Equation::Parallel {
                     ax0: a.0.0,
                     ay0: a.0.1,
@@ -315,7 +316,7 @@ impl SketchBridge {
                     by0: b.0.1,
                     bx1: b.1.0,
                     by1: b.1.1,
-                    weight: DEFAULT_WEIGHT,
+                    weight,
                 });
             }
             ConstraintKind::Perpendicular { line_a, line_b } => {
@@ -323,6 +324,7 @@ impl SketchBridge {
                 self.hold_line(doc, reference.clone(), GAUGE_HOLD_WEIGHT)?;
                 let a = self.line_vars(doc, reference)?;
                 let b = self.line_vars(doc, movable)?;
+                let weight = self.direction_product_weight(a, b);
                 self.system.add_equation(Equation::Perpendicular {
                     ax0: a.0.0,
                     ay0: a.0.1,
@@ -332,7 +334,7 @@ impl SketchBridge {
                     by0: b.0.1,
                     bx1: b.1.0,
                     by1: b.1.1,
-                    weight: DEFAULT_WEIGHT,
+                    weight,
                 });
             }
             ConstraintKind::Equal { line_a, line_b } => {
@@ -417,13 +419,19 @@ impl SketchBridge {
         let value = value as f64;
         match target {
             DistanceTarget::LineLength(index) => {
+                // Gauge weight, not a firm hold: this anchor only expresses "prefer growing
+                // the line from its start" for otherwise-free geometry. A firm (1e4) hold
+                // here pins every dimensioned line's start point at wherever it sat when the
+                // solve began — dimension two or more chained lines of a polygon and those
+                // pins contradict each other and the coincident corners, leaving the solver
+                // stuck millimetres from an exact solution it can no longer reach.
                 self.anchor_point(
                     doc,
                     ConstraintPoint::LineEndpoint {
                         line: index,
                         end: LineEnd::Start,
                     },
-                    REFERENCE_HOLD_WEIGHT,
+                    GAUGE_HOLD_WEIGHT,
                 )?;
                 let line = ConstraintLine::Line(index);
                 let ((x0, y0), (x1, y1)) = self.line_vars(doc, line)?;
@@ -554,6 +562,26 @@ impl SketchBridge {
         self.hold_var(u, weight);
         self.hold_var(v, weight);
         Ok(())
+    }
+
+    /// Weight for cross/dot-product equations (`Parallel`/`Perpendicular`) that normalizes
+    /// the raw residual by the product of the two line lengths, making it ~sin/cos of the
+    /// angle error. Unnormalized, two 50 mm lines yield residuals in the thousands (mm²)
+    /// that drown the mm-scale coincident/length equations in the least-squares objective —
+    /// ill-scaling that leaves the LM solver in spurious local minima on real sketches.
+    /// Lengths are read at system-build time; `.max(1.0)` keeps degenerate (sub-mm) lines
+    /// from exploding the weight.
+    fn direction_product_weight(
+        &self,
+        a: ((VarId, VarId), (VarId, VarId)),
+        b: ((VarId, VarId), (VarId, VarId)),
+    ) -> f64 {
+        let val = |id: VarId| self.system.value(id);
+        let len = |l: ((VarId, VarId), (VarId, VarId))| {
+            (val(l.1.0) - val(l.0.0)).hypot(val(l.1.1) - val(l.0.1))
+        };
+        let denom = (len(a) * len(b)).max(1.0);
+        DEFAULT_WEIGHT / (denom * denom)
     }
 
     /// Gauge-hold a reference point during a full solve (no-op during a drag). Uses the weak
@@ -973,6 +1001,7 @@ fn solve_one_sketch(
     bridge.add_drag_pins(doc, &sketch_pins);
     let _report = bridge.solve();
     bridge.apply_to_document(doc)?;
+    crate::model::refit_fillet_arc_handles(doc, sketch);
     Ok(())
 }
 
@@ -1393,5 +1422,90 @@ mod tests {
         .unwrap();
         assert!((pu - 5.0).abs() < EPS);
         assert!(pv.abs() < EPS);
+    }
+
+    /// A sloppily drawn closed hexagon "squared up" afterwards by geometric constraints
+    /// plus several length dims and an angle dim must solve exactly. This regressed two
+    /// ways historically: LineLength dims firmly pinned each dimensioned line's start
+    /// point (mutually contradictory once several chained lines carry dims), and the
+    /// unnormalized parallel/perpendicular residuals (mm^2-scale) drowned the mm-scale
+    /// corner-closing equations, leaving LM in a local minimum ~1 mm off.
+    #[test]
+    fn sloppy_bracket_squares_up_exactly() {
+        use crate::model::{ConstraintEntity, ConstraintLine, ConstraintPoint, ConstraintSign, DistanceTarget, LineEnd};
+
+        let (mut doc, sketch) = sketch_doc();
+        // Roughly a 120-degree bracket profile, every segment a little off.
+        let pts = [
+            (0.0f32, 0.0f32),
+            (51.0, 2.5),
+            (49.5, 7.8),
+            (4.5, 5.5),
+            (-17.5, 47.0),
+            (-25.5, 43.0),
+        ];
+        for i in 0..6 {
+            let (x0, y0) = pts[i];
+            let (x1, y1) = pts[(i + 1) % 6];
+            doc.lines.push(Line::from_local_endpoints(sketch, x0, y0, x1, y1));
+        }
+        let push = |doc: &mut Document, kind: ConstraintKind, expression: &str| {
+            doc.constraints.push(Constraint {
+                sketch,
+                kind,
+                expression: expression.to_string(),
+                dim_offset: None,
+                name: None,
+                deleted: false,
+            });
+        };
+        let end = |line: usize| {
+            ConstraintEntity::Point(ConstraintPoint::LineEndpoint { line, end: LineEnd::End })
+        };
+        let start = |line: usize| {
+            ConstraintEntity::Point(ConstraintPoint::LineEndpoint { line, end: LineEnd::Start })
+        };
+        for i in 0..6 {
+            push(&mut doc, ConstraintKind::Coincident { a: end(i), b: start((i + 1) % 6) }, "");
+        }
+        let line = ConstraintLine::Line;
+        push(&mut doc, ConstraintKind::Horizontal { line: line(0) }, "");
+        push(&mut doc, ConstraintKind::Parallel { line_a: line(0), line_b: line(2) }, "");
+        push(&mut doc, ConstraintKind::Parallel { line_a: line(3), line_b: line(5) }, "");
+        push(&mut doc, ConstraintKind::Perpendicular { line_a: line(0), line_b: line(1) }, "");
+        push(&mut doc, ConstraintKind::Perpendicular { line_a: line(5), line_b: line(4) }, "");
+        push(&mut doc, ConstraintKind::Angle {
+            line_a: line(0),
+            line_b: line(3),
+            rotation_sign: 1 as ConstraintSign,
+        }, "120");
+        for (index, len) in [(0usize, "50"), (5, "50"), (1, "5"), (4, "5")] {
+            push(&mut doc, ConstraintKind::Distance { target: DistanceTarget::LineLength(index) }, len);
+        }
+
+        solve_bridge(&mut doc, sketch);
+
+        // Corners closed.
+        for i in 0..6 {
+            let l = &doc.lines[i];
+            let n = &doc.lines[(i + 1) % 6];
+            assert!(
+                (l.x1 - n.x0).abs() < EPS && (l.y1 - n.y0).abs() < EPS,
+                "corner {i} open: ({}, {}) vs ({}, {})", l.x1, l.y1, n.x0, n.y0,
+            );
+        }
+        // Dimensioned lengths exact.
+        let len = |i: usize| {
+            let l = &doc.lines[i];
+            (l.x1 - l.x0).hypot(l.y1 - l.y0)
+        };
+        assert!((len(0) - 50.0).abs() < EPS, "L0 length {}", len(0));
+        assert!((len(5) - 50.0).abs() < EPS, "L5 length {}", len(5));
+        assert!((len(1) - 5.0).abs() < EPS, "L1 length {}", len(1));
+        assert!((len(4) - 5.0).abs() < EPS, "L4 length {}", len(4));
+        // The bend: line 3 at 120 degrees from the horizontal base.
+        let l3 = &doc.lines[3];
+        let angle = (l3.y1 - l3.y0).atan2(l3.x1 - l3.x0).to_degrees();
+        assert!((angle - 120.0).abs() < 0.05, "bend angle {angle}");
     }
 }

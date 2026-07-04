@@ -15,7 +15,12 @@ pub struct SolverConfig {
 impl Default for SolverConfig {
     fn default() -> Self {
         Self {
-            max_iterations: 100,
+            // 100 stalled real sketches mid-convergence (a sloppily drawn closed profile
+            // being squared up by parallel/perpendicular/angle constraints needs the loop
+            // to reflow through many small LM steps, and every rejected trial step also
+            // burns an iteration). These systems are tiny (tens of variables), so a
+            // deeper budget costs microseconds and only when actually needed.
+            max_iterations: 600,
             tolerance: 1e-6,
             lm_lambda_init: 1e-3,
             lm_lambda_up: 10.0,
@@ -35,6 +40,16 @@ pub struct SolveReport {
     pub failed_constraints: Vec<usize>,
 }
 
+/// When lambda has been driven this high by consecutive rejected steps, the descent is
+/// parked at a stationary point (J^T r ≈ 0) and further iterations are wasted.
+const LAMBDA_STALL: f64 = 1e10;
+
+/// Restart attempts after a stalled descent. Squaring up a sloppily drawn closed profile
+/// (parallel/perpendicular/angle constraints landing on freehand geometry) routinely puts
+/// the least-squares objective in a local minimum that is *not* a solution even though one
+/// exists nearby; a deterministic jitter of the free variables and a re-descent escapes it.
+const STALL_RESTARTS: u32 = 6;
+
 pub fn solve_lm(system: &mut System, config: SolverConfig) -> SolveReport {
     let free = system.free_vars();
     if free.is_empty() {
@@ -48,12 +63,77 @@ pub fn solve_lm(system: &mut System, config: SolverConfig) -> SolveReport {
         };
     }
 
-    let mut lambda = config.lm_lambda_init;
     let mut iterations = 0u32;
-    let mut norm = system.residual_norm_inf();
+    let mut norm = descend(system, &free, config, &mut iterations);
+    if norm <= config.tolerance {
+        return report(true, iterations, norm);
+    }
 
-    while iterations < config.max_iterations && norm > config.tolerance {
-        let step = compute_lm_step(system, &free, lambda);
+    // Stalled short of a solution: retry from deterministically jittered starts, keeping
+    // the best configuration seen. Genuinely conflicting sketches stay failed (each
+    // descent parks quickly once lambda blows up), just with a better local minimum.
+    let mut best_values = system.values.clone();
+    let mut best_norm = norm;
+    let mut rng: u64 = 0x9E37_79B9_7F4A_7C15;
+    for _ in 0..STALL_RESTARTS {
+        if iterations >= config.max_iterations {
+            break;
+        }
+        system.values = best_values.clone();
+        // Jitter each free variable by up to ±4x the residual norm: enough to hop out of
+        // the basin without losing the overall shape the user drew.
+        let scale = (best_norm * 4.0).max(config.tolerance * 10.0);
+        for var in &free {
+            rng = xorshift64(rng);
+            let unit = (rng >> 11) as f64 / (1u64 << 53) as f64; // [0, 1)
+            system.values[var.0] += (unit * 2.0 - 1.0) * scale;
+        }
+        norm = descend(system, &free, config, &mut iterations);
+        if norm < best_norm {
+            best_norm = norm;
+            best_values = system.values.clone();
+        }
+        if best_norm <= config.tolerance {
+            break;
+        }
+    }
+    system.values = best_values;
+    report(best_norm <= config.tolerance, iterations, best_norm)
+}
+
+fn report(success: bool, iterations: u32, norm: f64) -> SolveReport {
+    SolveReport {
+        success,
+        iterations,
+        residual_norm: norm,
+        dof_remaining: 0,
+        failed_constraints: Vec::new(),
+    }
+}
+
+fn xorshift64(mut x: u64) -> u64 {
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    x
+}
+
+/// One LM descent from the system's current values. Returns the final inf-norm; the
+/// shared iteration counter enforces `config.max_iterations` across restarts.
+fn descend(system: &mut System, free: &[VarId], config: SolverConfig, iterations: &mut u32) -> f64 {
+    let mut lambda = config.lm_lambda_init;
+    let mut norm = system.residual_norm_inf();
+    // Steps are accepted on the squared 2-norm — the objective LM actually descends.
+    // Judging acceptance on the inf-norm (as this loop once did) deadlocks whenever the
+    // best global step nudges the single worst residual up: every trial gets rejected,
+    // lambda climbs, and the solve stalls short of an answer that exists. The inf-norm
+    // is still what `success` measures, so "solved" continues to mean every individual
+    // constraint is within tolerance.
+    let mut sq_sum = residual_sq_sum(system);
+
+    while *iterations < config.max_iterations && norm > config.tolerance && lambda < LAMBDA_STALL
+    {
+        let step = compute_lm_step(system, free, lambda);
         if step.is_none() {
             break;
         }
@@ -64,24 +144,29 @@ pub fn solve_lm(system: &mut System, config: SolverConfig) -> SolveReport {
             system.values[var.0] += step[i];
         }
 
-        let new_norm = system.residual_norm_inf();
-        if new_norm < norm {
-            norm = new_norm;
+        let new_sq_sum = residual_sq_sum(system);
+        if new_sq_sum < sq_sum {
+            sq_sum = new_sq_sum;
+            norm = system.residual_norm_inf();
             lambda = (lambda * config.lm_lambda_down).max(1e-12);
         } else {
             system.values = saved;
             lambda *= config.lm_lambda_up;
         }
-        iterations += 1;
+        *iterations += 1;
     }
+    norm
+}
 
-    SolveReport {
-        success: norm <= config.tolerance,
-        iterations,
-        residual_norm: norm,
-        dof_remaining: 0,
-        failed_constraints: Vec::new(),
-    }
+fn residual_sq_sum(system: &System) -> f64 {
+    system
+        .equations
+        .iter()
+        .map(|eq| {
+            let r = eq.residual(system);
+            r * r
+        })
+        .sum()
 }
 
 fn compute_lm_step(system: &System, free: &[VarId], lambda: f64) -> Option<Vec<f64>> {
