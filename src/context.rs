@@ -43,9 +43,16 @@ pub struct ContextInput<'a> {
     /// Selection-picker rows for the Loft tool (#loft): one row per picked cross section,
     /// `Some` (possibly empty) whenever the Loft tool is active outside a sketch.
     pub loft_rows: Option<Vec<String>>,
-    /// Image scale calibration (#171): `Some` when the selection is exactly one tracing
-    /// image plus one line on the image's host plane (the reference segment).
+    /// Image scale calibration (#171): `Some` when a reference segment is ready — either
+    /// both guided calibration points are placed (#163), or the selection is exactly one
+    /// tracing image plus one line on the image's host plane.
     pub calibrate_image: Option<CalibrateImageControl>,
+    /// Guided calibration entry point (#163): `Some(image)` when exactly one tracing image
+    /// is selected and no calibration is running — renders the "Calibrate scale" button.
+    pub calibrate_start: Option<usize>,
+    /// Guided calibration in progress with fewer than two points placed: how many are
+    /// placed so far (renders the click-two-points hint).
+    pub calibrate_pending: Option<usize>,
 }
 
 /// The "Calibrate scale" control's inputs (#171): the target image and the reference
@@ -127,6 +134,10 @@ pub struct ContextPaneContent {
     pub edge_picker: Option<EdgePickerControl>,
     /// Image scale calibration (#171).
     pub calibrate_image: Option<CalibrateImageControl>,
+    /// "Calibrate scale" start button (#163): the selected tracing image.
+    pub calibrate_start: Option<usize>,
+    /// Guided-calibration hint: points placed so far (of 2).
+    pub calibrate_pending: Option<usize>,
 }
 
 /// The selection-picker input (#157/#167): the picked elements the active tool will operate
@@ -235,6 +246,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             })
         });
     let calibrate_image = input.calibrate_image;
+    let calibrate_start = input.calibrate_start;
+    let calibrate_pending = input.calibrate_pending;
 
     if let Some(construction) = input.draw_rect_construction {
         return ContextPaneContent {
@@ -251,6 +264,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             units,
             edge_picker: edge_picker.clone(),
             calibrate_image,
+            calibrate_start,
+            calibrate_pending,
         };
     }
     if let Some(construction) = input.draw_line_construction {
@@ -268,6 +283,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             units,
             edge_picker: edge_picker.clone(),
             calibrate_image,
+            calibrate_start,
+            calibrate_pending,
         };
     }
     if let Some(construction) = input.draw_circle_construction {
@@ -285,6 +302,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             units,
             edge_picker: edge_picker.clone(),
             calibrate_image,
+            calibrate_start,
+            calibrate_pending,
         };
     }
 
@@ -305,6 +324,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         units,
         edge_picker,
         calibrate_image,
+        calibrate_start,
+        calibrate_pending,
     }
 }
 
@@ -509,6 +530,7 @@ pub fn show_pane(
     on_extrude_body_mode_changed: &mut impl FnMut(ExtrudeBodyMode),
     on_units_changed: &mut impl FnMut(UnitsChoice),
     on_edge_picker_edit: &mut impl FnMut(Option<usize>),
+    on_calibrate_start: &mut impl FnMut(usize),
     on_calibrate_image: &mut impl FnMut(CalibrateImageControl, String),
 ) {
     ui.heading(PANE_TITLE);
@@ -691,12 +713,38 @@ pub fn show_pane(
         );
     }
 
+    if let Some(image) = content.calibrate_start {
+        any_control = true;
+        ui.separator();
+        if ui.button("Calibrate scale").clicked() {
+            on_calibrate_start(image);
+        }
+        ui.label(
+            egui::RichText::new("Set the image's real-world scale from a feature of known size")
+                .color(egui::Color32::from_gray(140))
+                .size(11.0),
+        );
+    }
+
+    if let Some(placed) = content.calibrate_pending {
+        any_control = true;
+        ui.separator();
+        ui.label(egui::RichText::new("Calibrate scale").strong());
+        ui.label(
+            egui::RichText::new(format!(
+                "Click two points on the image over a feature of known size ({placed} of 2 placed)"
+            ))
+            .color(egui::Color32::from_gray(140))
+            .size(11.0),
+        );
+    }
+
     if let Some(control) = content.calibrate_image {
         any_control = true;
         ui.separator();
         ui.label(egui::RichText::new("Calibrate scale").strong());
         ui.label(
-            egui::RichText::new("Real length of the selected line's span on the image")
+            egui::RichText::new("Real length of the marked span on the image")
                 .color(egui::Color32::from_gray(140))
                 .size(11.0),
         );
@@ -908,6 +956,8 @@ mod tests {
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
+            calibrate_start: None,
+            calibrate_pending: None,
         }
     }
 
@@ -933,6 +983,8 @@ mod tests {
             edge_treatment_rows: Some(vec!["Block — vertical 0".to_string()]),
             loft_rows: None,
             calibrate_image: None,
+            calibrate_start: None,
+            calibrate_pending: None,
         };
         let content = context_pane_content(&base);
         let edges_picker = |rows: Vec<String>| EdgePickerControl {
@@ -990,6 +1042,8 @@ mod tests {
                 extrude_body: None,
                 edge_picker: None,
                 calibrate_image: None,
+                calibrate_start: None,
+                calibrate_pending: None,
                 units: Some(UnitsControl {
                     sketch: None,
                     effective_length: LengthUnit::Mm,
@@ -1022,6 +1076,8 @@ mod tests {
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
+            calibrate_start: None,
+            calibrate_pending: None,
         });
         assert_eq!(
             content,
@@ -1038,6 +1094,8 @@ mod tests {
                 extrude_body: None,
                 edge_picker: None,
                 calibrate_image: None,
+                calibrate_start: None,
+                calibrate_pending: None,
                 units: Some(UnitsControl {
                     sketch: None,
                     effective_length: LengthUnit::Mm,
@@ -1070,6 +1128,8 @@ mod tests {
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
+            calibrate_start: None,
+            calibrate_pending: None,
         });
         assert_eq!(content.curve_mode, Some(true));
         assert_eq!(content.tangent_constraint, Some(false));
@@ -1099,6 +1159,8 @@ mod tests {
                 extrude_body: None,
                 edge_picker: None,
                 calibrate_image: None,
+                calibrate_start: None,
+                calibrate_pending: None,
                 units: None,
             }
         );
@@ -1178,6 +1240,8 @@ mod tests {
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
+            calibrate_start: None,
+            calibrate_pending: None,
         });
         assert_eq!(
             content.construction.unwrap().value,
@@ -1208,6 +1272,8 @@ mod tests {
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
+            calibrate_start: None,
+            calibrate_pending: None,
         });
         assert_eq!(
             content,
@@ -1226,6 +1292,8 @@ mod tests {
                 extrude_body: None,
                 edge_picker: None,
                 calibrate_image: None,
+                calibrate_start: None,
+                calibrate_pending: None,
                 units: None,
             }
         );
@@ -1250,6 +1318,8 @@ mod tests {
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
+            calibrate_start: None,
+            calibrate_pending: None,
         });
         assert_eq!(
             content.constraints.as_ref().map(|rows| rows.len()),

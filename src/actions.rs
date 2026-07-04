@@ -352,6 +352,17 @@ impl CreatingVertexTreatment {
 /// [`CreatingVertexTreatment`] — kept as a parallel, separate state rather than folded into it,
 /// since resolving the target/geometry is entirely different (an extrusion's own analytic
 /// side/cap edge, via `ExtrusionEdgeRef`, not a sketch vertex).
+/// State for an in-progress image scale calibration (#163/#171): after "Calibrate
+/// scale" is clicked with a tracing image selected, the user places two reference points
+/// on the image (plane-local mm) over a feature of known size, then types that real
+/// length in the context pane to rescale the image.
+#[derive(Clone, Debug)]
+pub struct CreatingCalibration {
+    pub image: usize,
+    /// Placed reference points in host-plane-local mm (0..=2).
+    pub points: Vec<(f32, f32)>,
+}
+
 /// State for the in-progress (pre-Enter) loft: the cross sections picked so far.
 /// Committing (Enter, >= 2 sections) creates a [`crate::model::Loft`] plus its body.
 #[derive(Clone, Debug, Default)]
@@ -513,6 +524,11 @@ pub enum Action {
         b: (f32, f32),
         length: f32,
     },
+    /// Start the guided image calibration (#163): the user will click two points on the
+    /// image over a feature of known size, then type its real length.
+    BeginImageCalibration { image: usize },
+    /// Place one calibration reference point (host-plane-local mm).
+    AddCalibrationPoint { x: f32, y: f32 },
     /// Import a STEP file's `FACETED_BREP` geometry (#71) as a new body.
     ImportStep { path: String },
     Clear,
@@ -1153,6 +1169,9 @@ pub struct AppState {
     /// In-progress loft (Loft tool): the picked cross sections, shown in the context-pane
     /// selection picker.
     pub creating_loft: Option<CreatingLoft>,
+    /// In-progress image scale calibration (#163/#171): Some while the user is placing
+    /// the two reference points / typing the real length.
+    pub creating_calibration: Option<CreatingCalibration>,
     /// Shared construction draw mode for rectangle, line, and circle tools.
     pub draw_construction: bool,
     /// Persisted "next point gets bezier handles" toggle for the line tool (`B`, #73); mirrors
@@ -1251,6 +1270,7 @@ impl Default for AppState {
             creating_vertex_treatment: None,
             creating_edge_treatment: None,
             creating_loft: None,
+            creating_calibration: None,
             draw_construction: false,
             draw_curve_mode: false,
             draw_tangent_constraint: true,
@@ -2185,10 +2205,47 @@ impl AppState {
                 img.width_mm *= factor;
                 img.height_mm *= factor;
                 img.calibration = Some(calibration);
+                self.creating_calibration = None;
                 self.status = format!(
                     "Calibrated image: {} (x{factor:.3})",
                     crate::value::format_length_display(length)
                 );
+                ActionResult::Ok
+            }
+            Action::BeginImageCalibration { image } => {
+                if self
+                    .doc
+                    .tracing_images
+                    .get(image)
+                    .filter(|img| !img.deleted)
+                    .is_none()
+                {
+                    return ActionResult::Err(format!("Image {image} not found"));
+                }
+                // Calibration point-placing takes over viewport clicks, so make sure no
+                // drawing tool is armed underneath it.
+                self.tool = Tool::Select;
+                self.creating_calibration = Some(CreatingCalibration {
+                    image,
+                    points: Vec::new(),
+                });
+                self.status =
+                    "Calibrate: click two points on the image over a feature of known size"
+                        .to_string();
+                ActionResult::Ok
+            }
+            Action::AddCalibrationPoint { x, y } => {
+                let Some(cal) = self.creating_calibration.as_mut() else {
+                    return ActionResult::Err("No calibration in progress".to_string());
+                };
+                if cal.points.len() >= 2 {
+                    return ActionResult::Err("Both calibration points are placed".to_string());
+                }
+                cal.points.push((x, y));
+                self.status = match cal.points.len() {
+                    1 => "Calibrate: click the second point".to_string(),
+                    _ => "Calibrate: type the real length of the marked span".to_string(),
+                };
                 ActionResult::Ok
             }
             Action::ImportImage { path, plane } => {
@@ -2536,6 +2593,9 @@ impl AppState {
                 if self.creating_loft.is_some() && tool != Tool::Loft {
                     self.creating_loft = None;
                 }
+                if self.creating_calibration.is_some() && tool != Tool::Select {
+                    self.creating_calibration = None;
+                }
                 // #157/#166: switching to Chamfer/Fillet with body edges already selected
                 // preloads them (filtered to treatable edges) so the gizmo shows right away.
                 if matches!(tool, Tool::Chamfer | Tool::Fillet)
@@ -2640,6 +2700,8 @@ impl AppState {
                     self.status = "Cancelled extrusion".to_string();
                 } else if self.creating_loft.take().is_some() {
                     self.status = "Cancelled loft".to_string();
+                } else if self.creating_calibration.take().is_some() {
+                    self.status = "Cancelled calibration".to_string();
                 } else if self.creating_rect.take().is_some()
                     || self.discard_creating_line()
                     || self.creating_circle.take().is_some()
@@ -6931,6 +6993,66 @@ mod tests {
 
     /// #171: calibrating with a reference segment rescales the image uniformly about the
     /// segment midpoint and stores the calibration for re-editing.
+    /// Guided calibration (#163): Begin → two viewport points → CalibrateImage commit;
+    /// the in-progress state gates each step and clears on commit and on cancel.
+    #[test]
+    fn guided_calibration_flow_places_points_then_commits() {
+        let mut state = AppState::default();
+        state.doc.tracing_images.push(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "grid".to_string(),
+            plane: 0,
+            origin: (-50.0, -30.0),
+            width_mm: 100.0,
+            height_mm: 60.0,
+            name: None,
+            deleted: false,
+            calibration: None,
+        });
+        // Out-of-range image is rejected; a point without a session is rejected.
+        assert!(matches!(
+            state.apply(Action::BeginImageCalibration { image: 3 }),
+            ActionResult::Err(_)
+        ));
+        assert!(matches!(
+            state.apply(Action::AddCalibrationPoint { x: 0.0, y: 0.0 }),
+            ActionResult::Err(_)
+        ));
+
+        state.tool = Tool::Line;
+        assert!(matches!(
+            state.apply(Action::BeginImageCalibration { image: 0 }),
+            ActionResult::Ok
+        ));
+        // Point placement takes over clicks, so the tool falls back to Select.
+        assert_eq!(state.tool, Tool::Select);
+        state.apply(Action::AddCalibrationPoint { x: -20.0, y: 0.0 });
+        state.apply(Action::AddCalibrationPoint { x: 20.0, y: 0.0 });
+        let cal = state.creating_calibration.as_ref().expect("still in progress");
+        assert_eq!(cal.points, vec![(-20.0, 0.0), (20.0, 0.0)]);
+        // A third point is refused.
+        assert!(matches!(
+            state.apply(Action::AddCalibrationPoint { x: 1.0, y: 1.0 }),
+            ActionResult::Err(_)
+        ));
+
+        // Committing rescales and ends the session.
+        let result = state.apply(Action::CalibrateImage {
+            image: 0,
+            a: (-20.0, 0.0),
+            b: (20.0, 0.0),
+            length: 80.0,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert!(state.creating_calibration.is_none());
+        assert!((state.doc.tracing_images[0].width_mm - 200.0).abs() < 1e-3);
+
+        // Esc cancels a fresh session.
+        state.apply(Action::BeginImageCalibration { image: 0 });
+        state.apply(Action::CancelOperation);
+        assert!(state.creating_calibration.is_none());
+    }
+
     #[test]
     fn calibrate_image_rescales_about_the_reference_segment() {
         let mut state = AppState::default();

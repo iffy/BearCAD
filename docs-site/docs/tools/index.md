@@ -28,6 +28,10 @@ the command palette, the toolbar, a keyboard shortcut, and the Lua scripting API
 | [Extrude](/docs/tools/extrude) | `E` | Turn one or more coplanar sketch faces into a solid body. |
 | [Chamfer](/docs/tools/chamfer) | `K` | Truncate a sketch corner with a straight cut. |
 | [Fillet](/docs/tools/fillet) | `F` | Round a sketch corner with a bezier-approximated arc. |
+| Loft | — | Blend a solid through two or more closed cross-section profiles. |
+
+Reference images for tracing over (import, scale calibration) are covered in
+[Tracing images](/docs/tools/tracing).
 
 Every shortcut above is the platform-independent single-letter binding shown on the toolbar
 buttons (all shortcuts are rebindable; see [Navigation](/docs/tools/navigation) for the camera/mouse

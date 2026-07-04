@@ -2235,6 +2235,16 @@ impl eframe::App for App {
                 // line (on the image's host plane) are selected — the line is the
                 // reference segment drawn over a known image feature.
                 calibrate_image: {
+                    // Guided flow (#163): both reference points placed — the length field.
+                    let guided = self.state.creating_calibration.as_ref().and_then(|cal| {
+                        (cal.points.len() == 2).then(|| context::CalibrateImageControl {
+                            image: cal.image,
+                            a: cal.points[0],
+                            b: cal.points[1],
+                        })
+                    });
+                    // Legacy selection flow (#171): exactly one image + one line on the
+                    // image's host plane selected.
                     let mut image = None;
                     let mut line = None;
                     let mut extras = false;
@@ -2245,7 +2255,7 @@ impl eframe::App for App {
                             _ => extras = true,
                         }
                     }
-                    match (image, line, extras) {
+                    guided.or(match (image, line, extras) {
                         (Some(image), Some(li), false) => self
                             .state
                             .doc
@@ -2263,8 +2273,28 @@ impl eframe::App for App {
                                 b: (line.x1, line.y1),
                             }),
                         _ => None,
-                    }
+                    })
                 },
+                // "Calibrate scale" button (#163): one tracing image selected, nothing
+                // else, no calibration already running.
+                calibrate_start: (self.state.creating_calibration.is_none()).then(|| {
+                    let mut only_image = None;
+                    for element in self.state.scene_selection.iter() {
+                        match (element, only_image) {
+                            (SceneElement::Image(i), None) => only_image = Some(i),
+                            _ => return None,
+                        }
+                    }
+                    only_image.filter(|&i| {
+                        self.state.doc.tracing_images.get(i).is_some_and(|img| !img.deleted)
+                    })
+                }).flatten(),
+                calibrate_pending: self
+                    .state
+                    .creating_calibration
+                    .as_ref()
+                    .filter(|cal| cal.points.len() < 2)
+                    .map(|cal| cal.points.len()),
             };
             let content = context::context_pane_content(&context_input);
             context::sync_name_draft(&mut self.state.context_pane, &self.state.doc, &content);
@@ -2279,6 +2309,7 @@ impl eframe::App for App {
             let mut units_change: Option<context::UnitsChoice> = None;
             let mut edge_picker_edit: Option<Option<usize>> = None;
             let mut calibrate_apply: Option<(context::CalibrateImageControl, String)> = None;
+            let mut calibrate_begin: Option<usize> = None;
             egui::SidePanel::right("context")
                 .resizable(true)
                 .default_width(200.0)
@@ -2307,9 +2338,13 @@ impl eframe::App for App {
                         &mut |mode| extrude_body_mode_change = Some(mode),
                         &mut |choice| units_change = Some(choice),
                         &mut |edit| edge_picker_edit = Some(edit),
+                        &mut |image| calibrate_begin = Some(image),
                         &mut |control, text| calibrate_apply = Some((control, text)),
                     );
                 });
+            if let Some(image) = calibrate_begin {
+                self.state.apply(Action::BeginImageCalibration { image });
+            }
             if let Some((control, text)) = calibrate_apply {
                 match crate::value::eval_parameter_in_doc(&text, &self.state.doc) {
                     Some(crate::value::EvaluatedParameter::LengthMm(length)) if length > 0.0 => {
@@ -5173,7 +5208,73 @@ impl App {
         let mut vertex_dragging = false;
         let mut line_dragging = false;
         let mut bezier_handle_dragging = false;
+        // Guided image calibration (#163): while placing reference points, viewport
+        // clicks land points on the image's host plane (and are not selection clicks).
+        if let Some(cal) = self.state.creating_calibration.clone() {
+            let frame = self
+                .state
+                .doc
+                .tracing_images
+                .get(cal.image)
+                .filter(|img| !img.deleted)
+                .map(|img| img.plane)
+                .and_then(|pi| face::sketch_frame(&self.state.doc, model::FaceId::ConstructionPlane(pi)));
+            if let Some(frame) = frame {
+                let cam = self.state.cam.clone();
+                let local = |pp: egui::Pos2| {
+                    cam.ray_plane_hit(pp, viewport, &vp, frame.origin, frame.normal)
+                        .map(|hit| {
+                            let d = hit - frame.origin;
+                            (d.dot(frame.u_axis), d.dot(frame.v_axis))
+                        })
+                };
+                if cal.points.len() < 2 {
+                    if let Some(pp) = pointer_screen {
+                        if ui.input(|i| i.pointer.primary_pressed()) {
+                            if let Some((x, y)) = local(pp) {
+                                self.state.apply(Action::AddCalibrationPoint { x, y });
+                            }
+                        }
+                    }
+                }
+                // Preview: placed points, the span between them, and a rubber band from
+                // the first point to the cursor while the second is being placed. Reads the
+                // post-click state so a just-placed point shows immediately.
+                let points = self
+                    .state
+                    .creating_calibration
+                    .as_ref()
+                    .map(|c| c.points.clone())
+                    .unwrap_or_default();
+                let world =
+                    |p: (f32, f32)| frame.origin + frame.u_axis * p.0 + frame.v_axis * p.1;
+                for &pt in &points {
+                    if let Some(sp) = project(world(pt)) {
+                        painter.circle_filled(sp, 4.0, col::PREVIEW);
+                        painter.circle_stroke(sp, 6.0, egui::Stroke::new(1.5, col::PREVIEW));
+                    }
+                }
+                match points.as_slice() {
+                    [a, b] => draw_world_segment(&painter, &project, world(*a), world(*b), col::PREVIEW, 2.0),
+                    [a] => {
+                        if let Some(cursor) = pointer_screen.and_then(&local) {
+                            draw_world_segment_dashed(
+                                &painter,
+                                &project,
+                                world(*a),
+                                world(cursor),
+                                col::PREVIEW,
+                                1.5,
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         if matches!(self.state.tool, Tool::Select | Tool::Constraint)
+            && self.state.creating_calibration.is_none()
             && self.state.editing_committed_dim.is_none()
             && !over_committed_dim_label
             && self.dim_label_drag.is_none()

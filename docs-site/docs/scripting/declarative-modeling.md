@@ -200,6 +200,16 @@ bearcad.set_construction(box, true)
 bearcad.new()
 bearcad.import_stl("part.stl")
 bearcad.import_step("part.step")
+
+-- Tracing images (see the Tracing images tool page): PNG/JPEG onto a
+-- construction plane (default: ground), centered, seeded at 1 px = 1 mm.
+bearcad.import_image{ path = "drawing.png" }
+bearcad.import_image{ path = "drawing.png", plane = 1 }
+
+-- Scale calibration: mark a feature of known size (plane-local mm at the
+-- image's current scale) and declare its real length; the image rescales
+-- uniformly about the span's midpoint.
+bearcad.calibrate_image{ image = 0, from = { -100, -120 }, to = { 100, -120 }, length = 50 }
 ```
 
 With the OCCT kernel compiled in (`--features occt`), STEP export writes **real BREP** (planar
