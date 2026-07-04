@@ -1168,6 +1168,31 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Angle dimension between two lines: `bearcad.add_angle_constraint{ a = 0, b = 5,
+    // value = "120" }` (bare numbers are degrees; `rad` and parameters work; `sign`
+    // picks which of the two wedges, like moving the cursor does interactively).
+    api.set(
+        "add_angle_constraint",
+        lua.create_function(|lua, opts: Table| {
+            let line_a: usize = opts.get("a")?;
+            let line_b: usize = opts.get("b")?;
+            let rotation_sign: i8 = opts.get::<Option<i8>>("sign")?.unwrap_or(1);
+            let expression: String = opts
+                .get::<Option<String>>("value")?
+                .or(opts.get::<Option<f64>>("angle")?.map(|a| a.to_string()))
+                .ok_or_else(|| mlua::Error::external("add_angle_constraint requires `value`"))?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe {
+                tick.exec(Instruction::AddAngleConstraint {
+                    line_a,
+                    line_b,
+                    rotation_sign,
+                    expression,
+                })
+            }
+        })?,
+    )?;
+
     api.set(
         "add_geometric_constraint",
         lua.create_function(|lua, name: String| {

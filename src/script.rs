@@ -153,6 +153,13 @@ pub enum Instruction {
     SetDimLabelOffset { axis: DimLabelAxis, offset: f32 },
     BeginEditCommittedDim { axis: DimLabelAxis },
     CommitCommittedDim,
+    /// Angle dimension between two sketch lines (the scripted Dimension-tool angle flow).
+    AddAngleConstraint {
+        line_a: usize,
+        line_b: usize,
+        rotation_sign: crate::model::ConstraintSign,
+        expression: String,
+    },
     AddDistanceConstraint {
         target: DistanceTarget,
         expression: String,
@@ -530,6 +537,14 @@ impl Instruction {
                 )
             }
             Instruction::CommitCommittedDim => "bearcad.commit_dim()".to_string(),
+            Instruction::AddAngleConstraint {
+                line_a,
+                line_b,
+                rotation_sign,
+                expression,
+            } => format!(
+                "bearcad.add_angle_constraint{{ a = {line_a}, b = {line_b}, sign = {rotation_sign}, value = {expression:?} }}"
+            ),
             Instruction::AddDistanceConstraint { target, expression } => {
                 format!(
                     "bearcad.add_constraint({}, {expression:?})",
@@ -2697,6 +2712,31 @@ impl ScriptRunner {
             }
             Instruction::CommitCommittedDim => {
                 let _ = state.apply(Action::CommitCommittedDim);
+                StepResult::Continue
+            }
+            Instruction::AddAngleConstraint {
+                line_a,
+                line_b,
+                rotation_sign,
+                expression,
+            } => {
+                if let Some(session) = state.sketch_session {
+                    let result = crate::constraints::apply_dimension_expression(
+                        &mut state.doc,
+                        session.sketch,
+                        crate::model::DimensionTarget::Angle {
+                            line_a: crate::model::ConstraintLine::Line(line_a),
+                            line_b: crate::model::ConstraintLine::Line(line_b),
+                            rotation_sign,
+                        },
+                        &expression,
+                    );
+                    if let Err(e) = result {
+                        self.record_action_error(crate::actions::ActionResult::Err(e));
+                    } else {
+                        let _ = crate::constraints::solve_document_constraints(&mut state.doc);
+                    }
+                }
                 StepResult::Continue
             }
             Instruction::AddDistanceConstraint { target, expression } => {
