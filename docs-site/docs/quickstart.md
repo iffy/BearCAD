@@ -5,6 +5,8 @@ title: Quickstart
 
 # Quickstart: an angle bracket
 
+Don't have BearCAD yet? [Download it here](https://github.com/iffy/BearCAD/releases/latest).
+
 Let's design a real part: an L-shaped angle bracket with a rounded bend, rounded corners,
 and two countersunk screw holes — driven by named parameters so you can resize it afterward
 without redrawing anything.
