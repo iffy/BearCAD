@@ -30,6 +30,8 @@ Any dimension field in BearCAD accepts these names — and arithmetic like `leg 
 place of a number. You can also invent a parameter on the spot by typing `name=value`
 (e.g. `leg=50`) directly into any dimension field.
 
+![The Parameters pane with the bracket's five parameters](/img/screenshots/quickstart-params.png)
+
 ## 2. Draw the L profile
 
 Press **L** for the Line tool and click on the ground plane to start drawing. The Line tool
@@ -46,6 +48,8 @@ L cross-section clockwise, typing each segment's length and pressing **Enter**:
 Keep each segment horizontal or vertical (the cursor snaps as you go). When the loop closes,
 the L fills in — it's now a face you can extrude.
 
+![The closed L cross-section, filled in as a face](/img/screenshots/quickstart-profile.png)
+
 ## 3. Round the bend
 
 A real bracket bends, it doesn't fold. Press **F** for the Fillet tool:
@@ -56,10 +60,14 @@ A real bracket bends, it doesn't fold. Press **F** for the Fillet tool:
 The two rounds are concentric, just like bent sheet metal. A live preview follows as you
 drag the fillet handle, if you'd rather set it by eye.
 
+![The L profile with both bend corners rounded](/img/screenshots/quickstart-bend.png)
+
 ## 4. Extrude it
 
 Press **Esc** to leave the sketch, then **E** for the Extrude tool. Click the L face, type
 `width`, and press **Enter**. You now have a solid bracket.
+
+![The extruded bracket with its rounded bend](/img/screenshots/quickstart-extrude.png)
 
 ## 5. Cut the screw holes
 
@@ -78,6 +86,8 @@ Holes go through a flange face:
 
 Repeat on the other flange.
 
+![Two screw holes cut through the base flange](/img/screenshots/quickstart-holes.png)
+
 ## 6. Countersink the holes
 
 Flat-head screws want a cone-shaped seat. Press **K** for the Chamfer tool and click the
@@ -85,11 +95,15 @@ Flat-head screws want a cone-shaped seat. Press **K** for the Chamfer tool and c
 hole's rim to add it, type `1.2`, press **Enter**. Both rims are cut into neat
 countersinks.
 
+![The screw holes with chamfered, countersunk rims](/img/screenshots/quickstart-countersink.png)
+
 ## 7. Round the corners
 
 With no sketch open, press **F** (Fillet) and click one of the vertical edges at a flange
 tip. Shift+click the other tip edges to add them to the set, type `2`, press **Enter**. The
 flange corners are now rounded.
+
+![The finished bracket with rounded flange corners](/img/screenshots/quickstart-corners.png)
 
 ## 8. Change your mind
 
@@ -97,9 +111,15 @@ This is the parametric payoff: open the **Parameters** pane and change `width` f
 to `60mm`. The bracket rebuilds wider — holes, fillets and all. Try `leg`, `hole`, or `bend`
 too.
 
+![The same bracket rebuilt 60 mm wide](/img/screenshots/quickstart-resize.png)
+
 ## 9. Export
 
 **File → Export STL…** (for 3D printing) or **File → Export STEP…** (for other CAD apps).
+
+> Every screenshot on this page is generated automatically from
+> [`docs-site/screenshots/quickstart.lua`](https://github.com/iffy/BearCAD/tree/master/docs-site/screenshots/quickstart.lua),
+> so they stay current as BearCAD changes.
 
 ## If something goes wrong
 
