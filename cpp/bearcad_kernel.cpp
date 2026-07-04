@@ -30,6 +30,9 @@
 #include <BRep_Tool.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <Geom_Curve.hxx>
+#include <Geom_Circle.hxx>
+#include <Geom_Ellipse.hxx>
+#include <Geom_TrimmedCurve.hxx>
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
 #include <Poly_Triangulation.hxx>
@@ -410,6 +413,52 @@ TopoDS_Shape apply_edge_treatment(const TopoDS_Shape& shape, const double* edges
                     matched = true;
                     break;
                 }
+            }
+        }
+        // Pass 3: the rim survived a boolean as one or more ARCS of the requested
+        // circle. A coplanar-face cut (a hole drilled flush from a face) often splits
+        // the rim circle at the tool's seam, leaving open arc edges that neither pass
+        // above can see. The two request points are diametrical, so reconstruct the
+        // circle they describe and add every edge whose underlying curve is that
+        // circle — chamfering/filleting the arcs piecewise is the same ring treatment.
+        if (!matched) {
+            gp_Pnt center((ra.X() + rb.X()) / 2.0, (ra.Y() + rb.Y()) / 2.0,
+                          (ra.Z() + rb.Z()) / 2.0);
+            double radius = ra.Distance(rb) / 2.0;
+            for (int k = 1; k <= edgeMap.Extent(); ++k) {
+                const TopoDS_Edge& edge = TopoDS::Edge(edgeMap(k));
+                Standard_Real f, l;
+                Handle(Geom_Curve) curve = BRep_Tool::Curve(edge, f, l);
+                if (curve.IsNull()) {
+                    continue;
+                }
+                Handle(Geom_TrimmedCurve) trimmed = Handle(Geom_TrimmedCurve)::DownCast(curve);
+                if (!trimmed.IsNull()) {
+                    curve = trimmed->BasisCurve();
+                }
+                // Accept circles and near-circular ellipses alike: a hole drilled
+                // flush from an f32-precision sketch face meets that face a hair off
+                // perpendicular, so OCCT sections the rim as a Geom_Ellipse whose two
+                // radii differ from the hole radius by well under the tolerance.
+                gp_Pnt loc;
+                double r_major, r_minor;
+                if (Handle(Geom_Circle) circ = Handle(Geom_Circle)::DownCast(curve)) {
+                    loc = circ->Location();
+                    r_major = r_minor = circ->Radius();
+                } else if (Handle(Geom_Ellipse) ell = Handle(Geom_Ellipse)::DownCast(curve)) {
+                    loc = ell->Location();
+                    r_major = ell->MajorRadius();
+                    r_minor = ell->MinorRadius();
+                } else {
+                    continue;
+                }
+                if (loc.SquareDistance(center) > tol * tol
+                    || std::abs(r_major - radius) > tol
+                    || std::abs(r_minor - radius) > tol) {
+                    continue;
+                }
+                maker.Add(amounts[i], edge);
+                matched = true;
             }
         }
         if (!matched) {
