@@ -5,54 +5,30 @@ title: Select
 
 # Select
 
-**Shortcut:** none (it's the default tool — pressing **Esc** with nothing in progress always
-returns to Select).
+**Shortcut:** none — it's the default. **Esc** (with nothing in progress) always returns
+to Select.
 
-Select is the default viewport tool: it orbits/pans/zooms the camera and lets you click to pick
-geometry, but it never creates anything. This split — navigation only happens in Select, drawing
-only happens in a drawing tool — means moving the camera around can never accidentally create
-geometry.
+Select is for looking and picking, never for creating. Right-drag orbits, Shift+right-drag
+pans, the wheel zooms, and clicking picks whatever is under the cursor.
 
 ## What you can pick
 
-- **Sketch points** — line endpoints, rectangle corners, circle centers.
-- **Lines and rectangle edges.**
-- **Faces** — including the planar cap and side faces of extruded bodies, and construction
-  planes.
-- **Bodies** and other hierarchy elements, via the Elements pane as well as the viewport.
+- **Sketch points** — line endpoints, corners, circle centers. Points win over the edges
+  they sit on when you click near a corner.
+- **Lines and edges** — in sketches and on solid bodies.
+- **Faces** — of bodies and construction planes.
+- **Whole bodies** — in the viewport or in the Elements pane.
 
-Point picks take precedence near vertices (within a screen-space pick tolerance), so clicking
-close to a corner selects the point rather than the edge it sits on. Hovering any pickable target
-highlights it before you click, using a distinct accent color that follows the shape of the
-target (line stroke, face outline, ground crosshair, etc.) — hover and click share the same pick
-resolution logic, so what highlights is exactly what a click would select.
+Anything pickable highlights as you hover it, and what highlights is exactly what a click
+will select. You can't select things hidden behind a body.
 
-## Selecting for other tools
+## Selection feeds the other tools
 
-Select's picks feed directly into other tools and panes:
+Most tools act on what you've selected: select two lines and the
+[Constraint](./constraint.md) tool's Parallel button lights up; select a line and press
+**D** to dimension it; select edges and press **F** to fillet them. Shift+click (or
+⌘/Ctrl+click) adds to a selection.
 
-- The **Constraint** tool needs points/lines/edges selected before its buttons enable.
-- The **Dimension** tool needs a line (or two lines, for an angle) selected.
-- Right-clicking a sketch vertex where exactly two plain lines meet offers **Convert to bezier
-  curve** (or **Straighten curve** on an existing curve) directly from Select.
-- The Elements pane, Context pane, and Parameters table all react to the current selection.
-- The Elements pane has three view modes, toggled via icon buttons next to its heading: **List**
-  (flat, the default), **Tree** (nested, each level indented under its parent), and **Graph** (a
-  2D node-link diagram with a **force-directed layout**: nodes settle into depth-ordered layers
-  that flow top-to-bottom, bouncing until they come to rest, while staying within the pane
-  width). In Graph view, clicking a node selects it like any other row, and
-  selecting a node highlights its ancestor/descendant nodes and edges.
-
-## Scripting
-
-```lua
-bearcad.select(bearcad.find("Main box"))
-bearcad.clear_selection()
-
--- Point-level selection (rather than the whole element):
-bearcad.select{ kind = "line", index = 0, ["end"] = "end" }
-bearcad.select({ kind = "rect", index = 0, corner = 2 }, true) -- additive
-```
-
-See [Scripting → Point-level selection](/docs/scripting/point-selection) for the full picture,
-including how this powers joining two line endpoints purely from a script.
+The **Elements pane** mirrors your selection and offers three views — a flat list, an
+indented tree, and a graph of what depends on what. Hovering a row highlights that element
+in the viewport.

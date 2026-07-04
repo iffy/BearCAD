@@ -7,74 +7,26 @@ title: Fillet
 
 **Shortcut:** `F`
 
-Fillet rounds a **2D sketch vertex** where exactly two plain lines meet, using a "push/pull"
-gizmo plus text-entry input, mirroring the Extrude tool. Click the vertex, then drag the gizmo or
-type a radius; **Enter** commits, **Esc** cancels. A live preview of the resulting rounded corner
-follows the gizmo as you drag, and the finished fillet nests under its trimmed line in the
-Elements pane (labeled "Fillet N") rather than sitting as an ordinary sibling.
+Fillet rounds corners. It works in two places:
 
-## How it works
+**In a sketch:** click a corner where two lines meet, then drag the handle or type a
+radius; **Enter** commits. A live preview shows the rounded corner as you adjust it. This
+is how you round a profile *before* extruding — like the rounded bend in the
+[Quickstart bracket](/docs/quickstart#3-round-the-bend).
 
-Fillet truncates each of the two adjacent lines back along itself by the tangent length implied
-by the requested radius, then bridges the two new endpoints with a new `Line` whose curve is a
-**single-cubic-bezier approximation of the circular arc** — accurate for realistic corner angles,
-not a true NURBS arc. This reuses the same bezier-curve machinery described in
-[Line](./line.md#bezier-curves) (rendering, hit-testing, extrusion tessellation) for free, since a
-filleted corner is, to the rest of the app, just another curved `Line`.
+**On a solid:** with no sketch open, click an edge of a body — a vertical corner edge, or
+an edge where a wall meets the top or bottom face. Shift+click more edges to round several
+with one radius, then drag or type and press **Enter**. The picked edges are listed in the
+Context pane, where individual ones can be removed before committing.
 
-- The tangent length is clamped so it never cuts back past either adjacent line's own far
-  endpoint.
-- A corner within ~1° of straight (0°/180°, i.e. parallel or anti-parallel edges) is rejected as
-  degenerate.
-- Only the `Coincident` constraint directly between the two treated endpoints is removed on
-  commit — other constraints that happened to reference the old vertex position are **not**
-  automatically fixed up. This is a known, documented limitation: the resulting sketch may need
-  manual re-constraining afterward.
+![A box with its four vertical edges rounded](/img/screenshots/fillet.png)
 
-## 3D solid edges
+## Good to know
 
-The same `F` tool also fillets a solid's edges when no sketch is open: click a vertical side
-edge, or a side/cap edge where a wall meets the top or bottom face, then drag the gizmo or type
-a radius. This is a **mesh-bevel approximation**, not a true BREP fillet — BearCAD has no
-BREP/NURBS kernel (see [Construction Plane](./construction-plane.md) and SPEC §10) — so it
-directly reshapes the extrusion's triangle mesh with a faceted rounded bevel rather than a
-tangent-continuous curved surface. It's parametric like everything else: the treatment is stored
-on the `Extrusion` and re-evaluated every frame, not baked into the mesh once.
-
-Scoped to bodies sourced from `Extrusion`s with a `Rect` or `Polygon` profile — `Circle` profiles
-and STL/STEP-imported meshes have no analytic edge to bevel and are out of scope. A **vertex
-miter**, where 3+ treated edges would meet at a shared corner, is rejected at commit time rather
-than blended. In an OCCT-kernel build, a radius the kernel can't actually build (e.g. larger than
-the solid) is also **rejected at commit** — committing it would silently drop the body to
-approximate fallback geometry without its cuts. If a document already contains such a treatment,
-the status bar warns that the body's cuts are not shown.
-
-![A box with its four vertical edges rounded by a mesh-bevel fillet](/img/screenshots/fillet.png)
-
-> This image is auto-generated from
-> [`docs-site/screenshots/fillet.lua`](https://github.com/iffy/BearCAD/tree/master/docs-site/screenshots/fillet.lua).
-> See [Auto-generated screenshots](/docs/scripting/screenshots).
-
-## Scope: 2D sketch vertices only
-
-The bezier-arc approximation, tangent-length clamping, and degenerate-corner rejection described
-above are specific to the **2D sketch-vertex** case.
-
-## Scripting
-
-```lua
-bearcad.fillet_vertex{
-  point = { kind = "line", index = 0, ["end"] = "end" },
-  radius = 3,
-}
-
-bearcad.fillet_edge{
-  extrusion = 0,
-  edge = { kind = "vertical", face = 0, edge = 1 },
-  radius = 3,
-}
-```
-
-`point` uses the same `ConstraintPoint`-style table as
-[point-level selection](/docs/scripting/point-selection) — a line endpoint, a rect corner, etc. `edge`
-is `{ kind = "vertical", face =, edge = }` or `{ kind = "cap", face =, edge =, top = }`.
+- The radius field takes numbers, parameters, and expressions.
+- A radius that can't physically fit (too big for the part) is rejected at commit rather
+  than producing broken geometry.
+- Rounding solid edges works on bodies made from sketch profiles; imported STL/STEP bodies
+  can't be filleted yet. Round hole rims (countersinks) aren't supported yet either.
+- A fillet undoes as a single step, and shows up in the Elements pane nested under the line
+  it rounds.

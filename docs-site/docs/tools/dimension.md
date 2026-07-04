@@ -7,42 +7,18 @@ title: Dimension
 
 **Shortcut:** `D`
 
-Click a line segment (or rectangle edge, or circle) to add or edit a **distance/length/radius**
-constraint, or select two non-parallel lines and press `D` for an **angle** constraint. Dimension
-labels are draggable once placed.
+Dimensions make geometry exact — and keep it that way. Click a line (or a rectangle edge,
+or a circle) to set its length or diameter; select two lines that cross and press **D** for
+the angle between them. Type the value, press **Enter**.
 
-Dimensional constraints may be driven by [parameters and expressions](#parameters), so a named
-parameter can drive sketch geometry directly.
+- Value fields accept **expressions**: `25`, `2.5in`, `leg/2 + 5`, or a new parameter
+  created on the spot by typing `name=value`.
+- Dimension labels are draggable, and double-clicking one reopens it for editing.
+- For angles, two crossing lines enclose two different angles — move the cursor into the
+  one you mean before clicking.
+- When a sketch is drawn on a body's face, you can dimension against that face's own edges
+  — e.g. "this hole's center is 10 mm from the top edge."
 
-## Angle dimensions
-
-Pressing `D` with two non-parallel lines selected (and no existing angle constraint between them)
-doesn't commit a value immediately. Two crossing lines have two distinct angle magnitudes
-(supplementary — one on each pair of opposite wedges); whichever wedge encloses the cursor is the
-one previewed as you move the mouse. Clicking commits that choice and moves on to typing the
-value, the same flow as other dimensions.
-
-## Parameters
-
-Named parameters (with unit expressions — `mm`, `in`, arithmetic, references to other parameters)
-can be created inline while typing a dimension, or managed from the Parameters table. A
-dimension's value field accepts an expression, not just a bare number.
-
-## Scripting
-
-```lua
-bearcad.set_dim("width", "80")            -- set a dimension field while drawing
-bearcad.edit_dim("width")                 -- reopen a committed dimension label
-bearcad.commit_dim()
-
-bearcad.add_constraint({ kind = "line", index = 0 }, "25mm")
-
--- Parameters:
-bearcad.parameter("add", "A", "5mm")
-bearcad.parameter("value", 0, "A + 5in")
-bearcad.parameter("name", 0, "Len")
-```
-
-`bearcad.ui.focus_dim("length")` is the simulated-interaction equivalent of clicking into a
-dimension field, for scripts that specifically need to exercise UI focus behavior rather than set
-the value directly.
+A fully dimensioned shape draws in the
+[fully-constrained color](/docs/styles#lines) and can no longer be dragged out of shape —
+that's the goal: a sketch that only changes when you change a number.

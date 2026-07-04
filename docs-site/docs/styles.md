@@ -1,5 +1,5 @@
 ---
-sidebar_position: 3
+sidebar_position: 4
 title: Viewport styles
 ---
 
@@ -7,9 +7,7 @@ title: Viewport styles
 
 ![A selected body — a cube with a cylinder boss — outlined by the blue selection aura](/img/screenshots/styles-scene.png)
 
-How each kind of geometry is styled in the 3D viewport, in every state. These swatches are
-generated straight from the renderer's color constants (`cargo test
-generate_style_swatches -- --ignored`), so they cannot drift from the app.
+What the colors in the 3D viewport mean, for every kind of geometry and state.
 
 ## Lines
 
@@ -18,13 +16,10 @@ geometry draw dashed in their own colors.
 
 | Kind | Normal | Hovered | Selected |
 |---|---|---|---|
-| **Unconstrained** — still has freedom | ![](/img/screenshots/styles/line-normal.png) | ![](/img/screenshots/styles/line-normal-hovered.png) | ![](/img/screenshots/styles/line-normal-selected.png) |
-| **Fully constrained** — dimensioned and immobile (the same signal that blocks dragging) | ![](/img/screenshots/styles/line-constrained.png) | ![](/img/screenshots/styles/line-constrained-hovered.png) | ![](/img/screenshots/styles/line-constrained-selected.png) |
-| **Construction** — reference geometry, never part of the solid model | ![](/img/screenshots/styles/line-construction.png) | ![](/img/screenshots/styles/line-construction-hovered.png) | ![](/img/screenshots/styles/line-construction-selected.png) |
-| **Projected** — an associative projection of external 3D geometry (press `Y`); follows its source and is not draggable | ![](/img/screenshots/styles/line-projected.png) | ![](/img/screenshots/styles/line-projected-hovered.png) | ![](/img/screenshots/styles/line-projected-selected.png) |
-
-Hovering draws the pick highlight (a thicker stroke in the hover color with endpoint dots)
-over the line; selecting redraws it in the selection-highlight gold.
+| **Unconstrained** — can still move | ![](/img/screenshots/styles/line-normal.png) | ![](/img/screenshots/styles/line-normal-hovered.png) | ![](/img/screenshots/styles/line-normal-selected.png) |
+| **Fully constrained** — dimensioned and immobile | ![](/img/screenshots/styles/line-constrained.png) | ![](/img/screenshots/styles/line-constrained-hovered.png) | ![](/img/screenshots/styles/line-constrained-selected.png) |
+| **Construction** — reference geometry, never part of the solid | ![](/img/screenshots/styles/line-construction.png) | ![](/img/screenshots/styles/line-construction-hovered.png) | ![](/img/screenshots/styles/line-construction-selected.png) |
+| **Projected** — traced from outside the sketch (press `Y`); follows its source | ![](/img/screenshots/styles/line-projected.png) | ![](/img/screenshots/styles/line-projected-hovered.png) | ![](/img/screenshots/styles/line-projected-selected.png) |
 
 ## Points
 
@@ -36,9 +31,7 @@ Line endpoints and circle centers.
 
 ## Faces
 
-Faces highlight on hover (a translucent tint plus a border in the hover color) — for
-sketching-on-face, extruding, and 3D face picking. Faces are not persistently selectable
-yet, so there is no selected state.
+Faces highlight when hovered — for picking a face to sketch on or extrude.
 
 | Normal | Hovered |
 |---|---|
@@ -46,10 +39,8 @@ yet, so there is no selected state.
 
 ## Dimensions
 
-Committed dimensions — linear (extension lines, an arrowed dimension line, and the value
-label) and angle (a measured arc between the two lines) — draw in the annotation grey.
-Hovering a dimension (to drag its label or double-click into editing) recolors it with the
-edit accent.
+Committed dimensions draw in grey; hovering one (to drag its label or double-click to edit)
+recolors it with the edit accent.
 
 | Kind | Normal | Hovered |
 |---|---|---|
@@ -58,11 +49,9 @@ edit accent.
 
 ## Bodies
 
-A selected body fills in a more saturated blue and gets an **aura**: a solid outline
-offset a few pixels *outside* its screen-space silhouette (a body hovered in the Elements
-pane gets the aura in the hover color). The aura is blue for selection
-and uses the hover color for pane hover; bodies in front of the silhouette occlude it, and
-the auras of nearby selected bodies join.
+A selected body fills in a more saturated blue and gets an **aura** — a glowing outline just
+outside its silhouette. Blue for selection; the hover color when a body is hovered in the
+Elements pane.
 
 | Normal | Hovered (Elements pane) | Selected |
 |---|---|---|

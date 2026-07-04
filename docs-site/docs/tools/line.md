@@ -7,116 +7,34 @@ title: Line
 
 **Shortcut:** `L`
 
-Click to fix the first endpoint, move the mouse for direction and length (a live preview
-follows), then click — or type a length and press **Enter** — to commit the segment.
+Click to start, move the mouse, click to finish a segment — or type a length and press
+**Enter**. The tool then chains: the next segment starts where the last one ended, so you
+draw an outline with successive clicks. Closing back onto the starting point (snapping
+grabs it) finishes the shape — and any closed outline becomes a face you can extrude.
 
-## Polyline chaining
+![A capital letter "B", traced as a closed outline and extruded into a solid](/img/screenshots/letter-b.png)
 
-The Line tool draws **connected polylines**: after a segment is committed, the next segment
-starts automatically at that endpoint (coincident with it), so a polygon is drawn with successive
-clicks. Chaining stops when a segment's end snaps onto an existing vertex, which closes or joins
-the shape. Press **Esc** to finish the polyline early, keeping the segments already drawn.
+*An extruded letter "B": outline drawn with the Line tool, extruded, and its two holes cut
+through.*
 
-Any set of plain lines that connects end-to-end into a closed loop (via `Coincident` constraints
-on their endpoints) is itself a usable face — filled the same as a rectangle or circle profile,
-pickable for sketching-on-face, and extrudable. A line shared by two loops (e.g. a rectangle
-split by a diagonal) yields multiple selectable polygon faces.
-
-![A capital letter "B", traced as a closed line-loop outline and extruded into a solid](/img/screenshots/letter-b.png)
-
-> An extruded capital **"B"** — its outer silhouette drawn segment by segment with the Line tool,
-> closed into a loop, and extruded 12 mm into a solid, then its two counters punched clean
-> through with cut extrusions. This image is auto-generated from
-> [`docs-site/screenshots/letter-b.lua`](https://github.com/iffy/BearCAD/tree/master/docs-site/screenshots/letter-b.lua).
-> See [Auto-generated screenshots](/docs/scripting/screenshots).
+Press **Esc** to stop chaining and keep what you've drawn.
 
 ## Snapping
 
-While drawing, the cursor snaps to nearby vertices, line midpoints, and lines — vertices take
-priority, then midpoints, then anywhere on a line. Leaving a point on a snap adds the implied
-constraint (coincident for a vertex/on-line snap, midpoint for a midpoint snap). A ring marks the
-active snap; snapping is toggleable from the context pane.
+While drawing, the cursor snaps to nearby endpoints, midpoints, and lines — a ring marks
+the active snap, and finishing a point on a snap keeps that relationship (the sketch stays
+attached there even as things move). Touching a corner also arms dashed **guide lines**
+along its edges, so you can line a new point up with existing geometry at a distance.
+Snapping can be toggled in the Context pane.
 
-Hovering a vertex while drawing also arms its incident edges as **extension guides** — pulling
-away snaps the point onto the infinite extension of those edges (within a perpendicular
-tolerance), shown with a dashed guide line. Leaving the point there adds a point-on-line
-coincidence, so e.g. touching a rectangle corner lets the next point be placed in line with one of
-its sides.
+## Curves
 
-Touching a line's **midpoint** similarly arms a **normal-at-midpoint guide**: pulling away snaps
-the point onto the infinite line perpendicular to that edge, through its midpoint, again shown
-with a dashed guide line. Leaving the point there invents a dashed construction line from the
-edge's midpoint out to the placed point, pinned perpendicular to the edge and through its
-midpoint — since there's no single constraint for "perpendicular through a midpoint," this is
-built from three ordinary constraints (`Midpoint`, `Perpendicular`, and a point-on-line
-`Coincident`) rather than a new one.
+Lines can bend. While drawing, tick **Curve mode** in the Context pane (or press
+**⌘/Ctrl+B**) and the next point becomes a smooth curve point instead of a corner. On a
+finished sketch, a curved line shows two round **handles** — drag them to reshape the
+curve, or right-click a corner where two lines meet and choose **Convert to bezier curve**
+to smooth it (and **Straighten curve** to undo that). Deleting a curve's handle straightens
+it.
 
-## Bezier curves
-
-A curved line is a plain `Line` with an optional pair of cubic tangent-handle control points —
-its two endpoints stay ordinary constrainable vertices, so coincidence/distance constraints,
-dragging, undo, and persistence all work exactly like a straight line. The Line tool always
-places points with plain click-click; curves come from two toggles instead of a drag gesture:
-
-- **Curve mode (`B`, default off).** Shown as a checkbox in the Context pane (above
-  Construction) while the Line tool is active. When on, the *next* point placed gets bezier
-  handles on both sides of it — or just the outgoing side if it's a fresh chain's starting
-  point, since there's no previous segment yet to derive a tangent from. Concretely: committing
-  the *n*-th point of a chain (n ≥ 3) retroactively smooths the shared vertex between the
-  (n-2)→(n-1) and (n-1)→n segments, so a segment only curves once a further point makes its
-  tangent meaningful. The toggle persists across chained segments, like Construction.
-- **Tangent constraint (`T`, default on).** While curve mode is on, controls *how* each shared
-  vertex is curved. On: both sides' handles are mirrored/tangent-continuous (the same smoothing
-  as **Convert to bezier curve** below). Off: the previous segment's handle is left alone and the
-  new segment gets an independent "corner" handle a third of the way along its own chord — a
-  barely-curved starting shape meant to be reshaped by hand.
-- **Live preview.** As the mouse moves before the next point is placed, the in-progress segment
-  previews its live curve toward the cursor, and — when curve mode smooths a shared vertex — the
-  previous segment's end visibly bends to stay consistent with it, updating every frame.
-- **On a selection, retroactively.** With the Select tool, in sketch mode, with one or more
-  vertices selected: `B` toggles the selected vertex(es) between curved and straight; `T` toggles
-  between tangent-continuous and independent handles at the vertex. Vertices that don't join
-  exactly two plain lines are skipped.
-- **Draggable handles on a committed curve.** A curved line shows its two tangent handles (while
-  its sketch is open) as small discs with dashed guides back to their endpoint — drag one to
-  reshape the curve live. Clicking (rather than dragging) a handle selects it; pressing
-  Delete/Backspace, or right-clicking it and choosing **Delete handle**, straightens the line. A
-  curve is either both handles or neither, so there's no partial/one-handle state.
-- **Right-click a vertex.** Right-clicking a vertex where exactly two plain lines meet offers
-  **Convert to bezier curve**, smoothing the joint into a tangent-continuous pair of curves. The
-  reverse, **Straighten curve**, is offered when right-clicking an existing curved line.
-
-A curved line is faceted into 24 straight sub-segments for rendering, hit-testing, and — when
-part of a closed polygon loop — extrusion tessellation. Side walls swept from a curved profile
-edge are correspondingly multi-faceted rather than a single flat quad; sketching on the side wall
-of a curved extrusion edge is not currently supported. Inference/extension snapping onto a curved
-line still uses its straight chord, not the true curve.
-
-A curved line's reported length is its true arc length (Elements-pane label, computed
-parameters, `bearcad.get{}.length`), but a length dimension on it constrains the endpoint
-(chord) distance — the solver moves endpoints, not bezier handles.
-
-## Scripting
-
-```lua
-bearcad.new()
-bearcad.line{ length = 80, name = "Guide" }                 -- length/angle form
-bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0, name = "Edge" } -- explicit endpoints
-
--- A curved line — same tangent-handle pairs the draggable-handle UI edits:
-bearcad.line{
-  x = 0, y = 0, x1 = 10, y1 = 0,
-  bezier = { {3, 4}, {7, 4} },
-  name = "Curve",
-}
-```
-
-Reference a line's endpoints individually with `["end"] = "start"|"end"` — useful for closing a
-polygon loop purely from a script, see
-[Scripting → point-level selection](/docs/scripting/point-selection):
-
-```lua
-bearcad.select{ kind = "line", index = 0, ["end"] = "end" }
-bearcad.select({ kind = "line", index = 1, ["end"] = "start" }, true)
-bearcad.add_geometric_constraint("coincident")
-```
+Curved lines behave like straight ones everywhere else: they close loops, extrude, and take
+dimensions (a length dimension controls the straight-line distance between the endpoints).

@@ -7,28 +7,14 @@ title: Construction Plane
 
 **Shortcut:** `P`
 
-Click a face or an axis/line reference, then set an offset (and, for an axis, an angle); press
-**Enter** to commit. Construction planes are datum geometry — they don't render as solid, and
-they're the surfaces you sketch on with the [Sketch](./sketch.md) tool (alongside the planar
-faces of extruded bodies).
+Construction planes are invisible flat surfaces to sketch on — for building at an offset
+from a face, or at an angle. Click a reference, position the plane, press **Enter**:
 
-## Picking a reference
+- **Click a face** (the ground, another plane, or a body's face): the new plane sits
+  parallel to it. Drag the arrow handle or type an offset.
+- **Click an edge or axis** (a sketch line, a body edge, or one of the origin's X/Y/Z
+  axes): the plane pivots around it. Set an offset *and* an angle — the angle handle on the
+  ring rotates it.
 
-- **Faces** — an existing construction plane, or a body's face — offset the new plane along that
-  face's normal.
-- **Lines and axes** — standalone sketch lines, individual shape edges (rectangle sides,
-  construction-plane borders), the origin **X/Y/Z triad**, and **any edge of any 3D body**
-  (#31) — including STL/STEP-imported bodies — are all valid axis references. A body edge is a
-  *feature* edge of its triangle mesh (the same extraction the Wireframe shading mode uses), so
-  it works uniformly regardless of how the body was created. Axis gizmo handles highlight on
-  hover so you can see which one will be grabbed.
-- Shape edges take precedence over the shape's own face when the cursor is near the edge.
-
-Manipulation gizmos (including the plane-making gizmo) render with depth testing disabled, so
-they stay visible and clickable even when a body would otherwise occlude them.
-
-## Scripting
-
-Construction planes are referenced by index once created, e.g. as the target of
-`bearcad.begin_sketch("construction_plane", 0)` (index `0` is the default ground/XY plane created
-implicitly the first time a script draws geometry with no sketch open).
+Planes never render as solid and never appear in exports; they exist only to hold sketches.
+Their handles stay visible and grabbable even when a body is in front of them.

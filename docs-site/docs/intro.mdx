@@ -7,62 +7,41 @@ import VersionBadge from '@site/src/components/VersionBadge';
 
 # BearCAD
 
-<VersionBadge /> — this badge tracks the `version` in the workspace root
-[`Cargo.toml`](https://github.com/iffy/BearCAD/blob/master/Cargo.toml) (see
-the note at the bottom of this page for why).
+<VersionBadge />
 
-BearCAD is a local-first, parametric CAD application: an [egui](https://github.com/emilk/egui)/`eframe`
-desktop GUI with a `wgpu`-accelerated 3D viewport, driven by a shared action layer that also
-powers a Lua scripting API. Everything achievable in the GUI is achievable from a script, and
-vice versa.
+:::info An AI experiment
+**BearCAD is an experiment to see what AI can do.** The application — its geometry engine
+integration, tools, documentation, and even the screenshots in these docs — is built almost
+entirely by an AI working from plain-English feature requests and bug reports. Expect rough
+edges, and expect them to get fixed fast.
+:::
+
+BearCAD is a free, parametric 3D CAD app for designing real parts on your own computer —
+nothing is uploaded anywhere. You sketch 2D shapes, give them exact dimensions, and pull them
+into solid bodies you can export for 3D printing or other CAD tools (STL and STEP).
+
+**Parametric** means your design stays editable: dimensions can be named values like `leg` or
+`thickness`, and changing a value later reshapes the whole part to match.
 
 ![The BearCAD window: the Elements pane, 3D viewport, and Context/Parameters panes](/img/screenshots/elements-pane.png)
 
-> Like every screenshot in these docs, this is auto-generated from a Lua script
-> ([`docs-site/screenshots/elements-pane.lua`](https://github.com/iffy/BearCAD/tree/master/docs-site/screenshots/elements-pane.lua))
-> so it stays current as the app changes — see [Auto-generated screenshots](/docs/scripting/screenshots).
+The window has four main areas:
 
-These docs are split into two sections:
+- **The 3D viewport** (center) — where you draw, build, and look at your part.
+- **The Elements pane** (left) — every sketch, feature, and body in your design, as a list,
+  tree, or graph.
+- **The Context pane** (right) — options for whatever tool or selection is active.
+- **The Parameters pane** (right) — your named values, editable any time.
 
-- **[Tools & Navigation](/docs/tools)** — what each toolbar tool does, how sketching and dimensioning
-  work, and how to move around the 3D viewport (orbit/pan/zoom, the view-cube HUD, sketch mode).
-- **[Scripting](/docs/scripting)** — the Lua API: the declarative `bearcad.*` modeling namespace, the
-  `bearcad.ui.*` simulated-interaction namespace, and how to run a script from the command line.
+## Where to go next
 
-## Quick start
+- **[Quickstart](/docs/quickstart)** — build a real part (an angle bracket) step by step in
+  about ten minutes.
+- **[Tools & Navigation](/docs/tools)** — what each tool does and how to move around.
+- **[Viewport styles](/docs/styles)** — what the colors in the viewport mean.
+- **[Scripting](/docs/scripting)** — for programmers: drive BearCAD from Lua scripts.
 
-```sh
-cargo run
-```
+## Getting BearCAD
 
-Pick a face with the **Sketch** tool (or start on the default ground plane), then draw with
-**Rectangle**, **Line**, or **Circle**. Type dimensions while drawing, **Tab** cycles fields,
-**Enter** commits. **Right-drag** orbits the camera; **Shift+right-drag** pans; the mouse wheel
-zooms. See [Tools & Navigation](/docs/tools) for the full tool-by-tool reference.
-
-To drive the app from a script instead:
-
-```sh
-cargo run -- --script examples/rectangle.lua --exit
-```
-
-See [Scripting](/docs/scripting) for the full API.
-
-## Where this content comes from
-
-This documentation is grounded directly in the project's authoritative behavior spec,
-[`SPEC.md`](https://github.com/iffy/BearCAD/blob/master/SPEC.md), plus the keyboard-shortcut
-source of truth (`src/shortcuts.rs`), the toolbar icon list (`src/icons.rs`), and realistic
-usage examples mined from the Lua test suite (`src/lua_script.rs`) and `examples/*.lua`. If the
-app's behavior changes, these docs should be updated alongside `SPEC.md` in the same change (see
-this repo's spec-sync convention).
-
-:::note Version scope decision
-The version badge above reads `Cargo.toml`'s `[package].version`, not "the version at the top of
-`CHANGELOG.md`". As of this writing `CHANGELOG.md` is empty — this project accumulates
-per-change snippets under `changes/*.md` via the `changer` CLI, but nothing has run `changer
-bump`/`changer release` yet to consolidate them into a versioned `CHANGELOG.md`. Once real
-releases start landing there, this badge (and the footer copyright line) should switch to
-reading `CHANGELOG.md`'s top entry instead — see the comment in `docusaurus.config.js`. This is a
-deliberate first-draft scope cut, not an oversight.
-:::
+Download the latest build for macOS, Windows, or Linux from the
+[releases page](https://github.com/iffy/BearCAD/releases/latest).

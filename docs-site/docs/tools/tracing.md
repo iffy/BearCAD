@@ -5,71 +5,43 @@ title: Tracing images
 
 # Tracing images
 
-Import a reference image — a photo, a scanned drawing, a datasheet figure — onto a
-construction plane, set its real-world scale from a feature of known size, and trace over it
-with the normal sketch tools. The image is embedded in the document (saved files stay
-self-contained) and lives in the Elements pane like any other element: it can be renamed,
-hidden, or deleted, and it nests under its host plane.
+Have a photo, scan, or datasheet drawing of the thing you're modeling? Import it, tell
+BearCAD its real-world scale, and trace over it with the normal sketch tools. The image is
+saved inside your document and behaves like any other element — rename, hide, or delete it
+from the Elements pane.
 
-## Importing an image
+## Importing
 
-**File → Import Image…** opens a file dialog for a PNG or JPEG. The image lands on the
-**ground plane**, centered on the plane origin, seeded at **1 px = 1 mm** — almost never the
-real scale, which is what calibration is for.
+**File → Import Image…** places a PNG or JPEG on the ground plane. It arrives at an
+arbitrary scale — fixing that is the next step.
 
-Images render as a translucent textured quad on their host plane: bodies in front occlude
-them, but sketch geometry always reads on top, so traced lines stay visible over the picture.
+Images draw slightly translucent: solid bodies in front hide them, but your sketch lines
+always stay visible on top.
 
-## Calibrating the scale
+## Setting the scale
 
-Pick any feature of the image whose real size you know — a printed scale bar, a ruler in the
-photo, a dimension label on the drawing:
+Find a feature in the image whose real size you know — a scale bar, a ruler in the photo, a
+printed dimension:
 
-1. **Select the image** (click it in the viewport or in the Elements pane). The context pane
-   shows a **Calibrate scale** button.
-2. **Click the button**, then **click two points** on the image, at either end of the
-   known feature. The placed points and the span between them are previewed live, with a
-   rubber band following the cursor to the second point. **Esc** cancels.
-3. With both points placed, the context pane shows the length field: **type the feature's
-   real length** (any length expression works — `50`, `2.5in`, `width/2`) and press
-   **Enter** or click **Apply**.
+1. **Select the image.** The Context pane shows a **Calibrate scale** button.
+2. **Click it, then click two points** on the image at either end of the known feature. A
+   preview line follows your clicks; **Esc** cancels.
+3. **Type the feature's real length** in the field that appears and press **Enter**.
 
-The image rescales uniformly about the marked span's midpoint so that span measures exactly
-the typed length — the feature you clicked stays put while the rest of the image grows or
-shrinks around it. The calibration is stored on the image, and running **Calibrate scale**
-again replaces it.
-
-As an alternative, you can draw a **line** over the known feature with the Line tool, then
-select the image *and* that line together — the same length field appears, using the line as
-the reference span.
+The image rescales so the span you marked measures exactly that length — the feature you
+clicked stays put while the rest of the image resizes around it. Calibrate again any time
+to redo it.
 
 ![A calibrated tracing image on the ground plane with sketch lines traced over the plate outline](/img/screenshots/tracing.png)
 
-> This image is auto-generated from
-> [`docs-site/screenshots/tracing.lua`](https://github.com/iffy/BearCAD/tree/master/docs-site/screenshots/tracing.lua).
-> See [Auto-generated screenshots](/docs/scripting/screenshots).
-
 ## Tracing
 
-Once calibrated, sketch on the image's plane as usual ([Sketch](./sketch.md), then
-[Line](./line.md)/[Rectangle](./rectangle.md)/[Circle](./circle.md)) and trace the shapes you
-need; measurements taken off the traced geometry are then in real units. Extrude the traced
-profiles like any other sketch geometry.
+Sketch on the image's plane as usual ([Sketch](./sketch.md), then
+[Line](./line.md)/[Rectangle](./rectangle.md)/[Circle](./circle.md)) and trace what you
+need. Because the image is calibrated, the traced geometry is in real units — dimension it,
+extrude it, print it.
 
-## Scripting
+## Limitation
 
-```lua
-bearcad.import_image{ path = "drawing.png" }          -- ground plane
-bearcad.import_image{ path = "drawing.png", plane = 1 }
-
--- Reference span in plane-local mm (at the image's current scale) + its real length:
-bearcad.calibrate_image{ image = 0, from = { -100, -120 }, to = { 100, -120 }, length = 50 }
-```
-
-See [Declarative modeling](/docs/scripting/declarative-modeling#import) for the rest of the
-scripting API.
-
-## Known limitation
-
-Calibration mutates the image's placement in place and is not yet individually undoable —
-re-run **Calibrate scale** with corrected inputs to fix a wrong calibration.
+Calibration can't be undone with Undo yet — run **Calibrate scale** again with corrected
+inputs instead.

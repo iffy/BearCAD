@@ -7,103 +7,37 @@ title: Extrude
 
 **Shortcut:** `E`
 
-Extrude turns one or more coplanar sketch faces (closed rectangle, circle, or polygon profiles)
-into a solid **Body**. Click coplanar faces to toggle inclusion (hover-highlighted), then drag the
-normal gizmo or type a distance — expressions and parameter references work — to set the depth
-(positive or negative). A live **semi-transparent** preview solid updates as you type. **Enter**
-commits, **Esc** cancels; double-click or right-click → **Edit** re-opens a committed extrusion to
-change its faces or length.
+Extrude turns a flat sketch face into a solid — or carves into an existing solid. Click one
+or more faces in the same sketch plane to include them, then drag the arrow handle or type
+a distance (numbers, parameters, and expressions all work) and press **Enter**. A
+translucent preview shows the result the whole time.
 
-![An 80 × 50 mm rectangle extruded 20 mm into a solid block](/img/screenshots/extrude.png)
+![An 80 x 50 mm rectangle extruded 20 mm into a solid block](/img/screenshots/extrude.png)
 
-> This image is auto-generated from
-> [`docs-site/screenshots/extrude.lua`](https://github.com/iffy/BearCAD/tree/master/docs-site/screenshots/extrude.lua).
-> See [Auto-generated screenshots](/docs/scripting/screenshots).
+- Double-click a finished extrusion (or right-click → **Edit**) to change its faces or
+  depth later.
+- Typing a digit while the tool is active jumps straight into the distance field.
 
-- The gizmo handle floats a little above the solid's top face rather than sitting on it.
-- Typing a digit while the tool is active focuses the distance field and overwrites its value.
-- While an extrusion is being edited, its committed body is hidden — only the semi-transparent
-  ghost preview is shown, so the preview (not the old solid) reflects the in-progress edit.
+## Extrude up to something
 
-An **Extrusion** is a first-class feature element: its own row in the Elements pane, nameable,
-undoable. It generates a mesh (a prism per rectangle/polygon profile, a cylinder per circle
-profile) and produces a **Body** that depends on it — the body nests under the extrusion in the
-Elements pane, and is removed if the extrusion is deleted. The extrusion itself nests under the
-sketch it was built from.
+While dragging the handle, hover a face, plane, or vertex: the depth snaps to it, and stays
+tied to it — if that target moves later, the extrusion follows. This is how you make a part
+exactly meet another surface, even a slanted one (the preview shows the true resulting
+shape).
 
-## Extrude-to-object
+## Adding to or cutting a body
 
-During a gizmo drag, hovering a vertex/face/plane snaps the depth to that object; on release, the
-extrusion is constrained to it. The effective depth is then derived from the target's extended
-plane (a vertex's perpendicular plane, or where the extrusion axis meets a face/construction
-plane) and recomputes if that geometry moves later. A free gizmo drag with no target leaves a
-plain unconstrained distance. The live ghost preview reflects the snapped target immediately
-while still dragging, not just after release — so extruding to a slanted or irregular target
-shows the actual resulting shape (e.g. a slanted top cap) rather than a generic blind extrude.
+When you extrude from a face of an existing body, the Context pane offers three choices:
 
-## Joining or cutting an existing body
+- **New body** — the extrusion stands alone.
+- **Add** — it fuses into the existing body.
+- **Cut** — it's subtracted, carving a pocket or hole. Extruding *backward* through a body
+  switches to Cut automatically. This is how holes are drilled: sketch a circle on a face,
+  extrude it through, Cut.
 
-A `Body`'s source is one or more extrusions. Extruding from a sketch on an existing body's face
-(a cap or side face) **defaults to joining that body** instead of creating a new one — the
-context pane shows three icon-labelled choices while extruding, or while editing an extrusion:
+## Overlapping shapes
 
-- **New body** — the extrusion becomes its own standalone body.
-- **Add to `<body>`** — the extrusion is fused into the existing body's solid.
-- **Cut `<body>`** — the extrusion is **subtracted** from the existing body's solid, carving a
-  pocket or hole.
-
-Editing an extrusion can also split a merged/cut extrusion back out into its own body. Deleting
-one extrusion of a multi-extrusion body only drops that extrusion's contribution; the body
-survives as long as at least one added extrusion remains.
-
-**Cut requires the OCCT geometry kernel.** A build without the kernel can't subtract solids, so
-the Cut option isn't offered there, and if a document with a cut extrusion is opened in such a
-build the body renders its additive geometry only (the cut is ignored). The cut is saved either
-way, so it reappears once opened in a kernel build.
-
-## Overlapping shapes: intersection and difference regions
-
-If exactly two coplanar shapes in a sketch overlap with nonzero area (and no third shape also
-overlaps that pair), clicking inside their combined footprint toggles the specific region under
-the cursor instead of a whole shape: their shared **intersection**, or one shape **minus** the
-other. This lets you extrude, say, only the overlap of a rectangle and a circle, or the circle
-with the rectangle's overlap cut out — without a separate boolean-operation UI, since it's just
-where you click. Toggling both whole shapes (rather than clicking inside the overlap) still
-unions them, the same as it always has — multi-face selection already supports that.
-
-This only applies to exactly two overlapping shapes at a time; a sketch where three or more
-shapes all overlap the same region falls back to plain whole-shape picking. The computed region
-also has to reduce to a single simple polygon (no separate disjoint pieces, and no hole — e.g.
-subtracting a shape that's strictly interior to another would leave a hole, which isn't
-representable here) or picking likewise falls back to the whole shape.
-
-## Scripting
-
-```lua
-bearcad.new()
-bearcad.rect{ width = 80, height = 50, name = "Base" }
-bearcad.extrude{ rect = 0, distance = 20, name = "Boss" }
-
--- Extrude an explicit set of closed-loop lines (rather than relying on auto-detected polygons):
-bearcad.extrude{ polygon = {0, 1, 2}, distance = 6 }
-
--- Multiple profiles, and joining an existing body explicitly:
-bearcad.extrude{ rects = {0, 1}, distance = 10, body = "merge" }
-
--- Cutting (subtracting) the extrusion from the face's body (needs the OCCT kernel to render):
-bearcad.extrude{ rect = 2, distance = 10, body = "cut" }
-
--- Extrude just the intersection of a rect and a circle:
-bearcad.extrude{ boolean = { op = "intersection", a = {rect = 0}, b = {circle = 0} }, distance = 5 }
-
--- Or the rect minus the circle (`op = "difference"` is `a` minus `b`):
-bearcad.extrude{ boolean = { op = "difference", a = {rect = 0}, b = {circle = 0} }, distance = 5 }
-```
-
-`body = "merge"` joins, and `body = "cut"` subtracts from, the face's body if there is one;
-omitted (or any other value) always creates a new body, matching the declarative/OpenSCAD-style
-default of "each call produces new geometry unless you say otherwise."
-
-See [Sketch → scripting](./sketch.md#scripting) for `bearcad.begin_sketch{ kind = "extrude_cap" |
-"extrude_side", ... }`, which lets a script sketch on a solid's face the same way a user could by
-clicking it.
+If two shapes in a sketch overlap — say a circle overlapping a rectangle — clicking inside
+the overlap picks just that region: the intersection, or one shape minus the other.
+Extruding regions lets you build shapes that neither outline makes alone, with no separate
+"boolean operations" step to learn.

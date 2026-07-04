@@ -1,61 +1,46 @@
 ---
 slug: /tools
-sidebar_position: 1
+sidebar_position: 3
 title: Tools & Navigation
 ---
 
 # Tools & Navigation
 
-BearCAD's 3D viewport has an active **tool** at all times — **Select** is the default and only
-orbits/pans/zooms, so navigating the camera never accidentally creates geometry. Switching to a
-drawing tool (Rectangle, Line, Circle, …) is what enables clicking in the viewport to create or
-edit geometry. Tools are part of the shared action layer, so every tool is also available from
-the command palette, the toolbar, a keyboard shortcut, and the Lua scripting API
-(`bearcad.ui.tool("rectangle")`).
+The viewport always has one active **tool**. **Select** is the default — it only looks
+around and picks things, so moving the camera never accidentally creates geometry. Switch to
+a drawing tool when you want to draw.
 
 ## Tool reference
 
 | Tool | Shortcut | What it does |
 |---|---|---|
-| [Select](/docs/tools/select) | — | Orbit/pan/zoom and pick geometry; the default tool. |
-| [Sketch](/docs/tools/sketch) | `S` | Pick a face (or the ground plane) to enter sketch mode. |
+| [Select](/docs/tools/select) | — | Look around and pick geometry; the default tool. |
+| [Sketch](/docs/tools/sketch) | `S` | Pick a face (or the ground plane) to draw on. |
 | [Rectangle](/docs/tools/rectangle) | `R` | Draw a rectangle by two corners. |
-| [Line](/docs/tools/line) | `L` | Draw connected line segments (polylines), straight or curved. |
-| [Circle](/docs/tools/circle) | `O` | Draw a circle by center and radius/diameter. |
-| [Construction Plane](/docs/tools/construction-plane) | `P` | Create a datum plane from a face or axis. |
-| [Dimension](/docs/tools/dimension) | `D` | Add or edit a distance/length/angle constraint. |
-| [Constraint](/docs/tools/constraint) | `C` | Apply geometric constraints (parallel, coincident, …). |
-| [Extrude](/docs/tools/extrude) | `E` | Turn one or more coplanar sketch faces into a solid body. |
-| [Chamfer](/docs/tools/chamfer) | `K` | Truncate a sketch corner with a straight cut. |
-| [Fillet](/docs/tools/fillet) | `F` | Round a sketch corner with a bezier-approximated arc. |
-| Loft | — | Blend a solid through two or more closed cross-section profiles. |
+| [Line](/docs/tools/line) | `L` | Draw connected lines and curves. |
+| [Circle](/docs/tools/circle) | `O` | Draw a circle by center and diameter. |
+| [Construction Plane](/docs/tools/construction-plane) | `P` | Add a flat reference plane to sketch on. |
+| [Dimension](/docs/tools/dimension) | `D` | Set exact lengths, distances, and angles. |
+| [Constraint](/docs/tools/constraint) | `C` | Relate geometry: parallel, equal, coincident, … |
+| [Extrude](/docs/tools/extrude) | `E` | Pull a sketch face into a solid — or cut into one. |
+| [Chamfer](/docs/tools/chamfer) | `K` | Cut a corner or edge flat. |
+| [Fillet](/docs/tools/fillet) | `F` | Round a corner or edge. |
+| Loft | — | Blend a solid through two or more cross-section profiles. |
 
 Reference images for tracing over (import, scale calibration) are covered in
 [Tracing images](/docs/tools/tracing).
 
-Every shortcut above is the platform-independent single-letter binding shown on the toolbar
-buttons (all shortcuts are rebindable; see [Navigation](/docs/tools/navigation) for the camera/mouse
-bindings, which are separate from the tool-select letters above).
+## Habits that apply everywhere
 
-## Common tool UX patterns
+- **Click to start, move to preview, click or type to finish.** Rectangle, Line, and Circle
+  all work this way. While drawing, just type a number (or a
+  [parameter](/docs/quickstart#1-set-up-parameters) name) to make that dimension exact —
+  **Tab** switches between fields, **Enter** commits.
+- **Esc backs out.** It cancels whatever is in progress; pressed again, it returns to
+  Select.
+- **X toggles construction geometry** — dashed reference shapes that guide your sketch but
+  never become part of the solid.
+- **The Context pane follows you.** Whatever tool or selection is active, its options appear
+  in the pane on the right.
 
-A few conventions apply across most of the drawing tools:
-
-- **Click to start, move to preview, click/type to finish.** Rectangle, Line, and Circle all
-  follow "click first point → move mouse for a live preview → click (or type a dimension and
-  press Enter) to commit."
-- **On-screen dimension typing.** While drawing, you can type a number directly to constrain the
-  in-progress shape (width/height, length, radius/diameter). **Tab** cycles between input fields;
-  **Enter** commits the shape.
-- **Escape cancels, then exits.** Pressing **Esc** cancels the current in-progress draw
-  operation; pressing it again (with nothing in progress) deactivates the current tool and
-  returns to **Select**.
-- **`X` toggles construction.** Press **X** to mark the in-progress draw operation — or each
-  currently-selected constructable item — as construction geometry (dashed, non-solid reference
-  geometry) instead of substantial geometry.
-- **Context pane.** Whatever tool is active (or whatever is selected, if no draw tool is active)
-  drives the contents of the Context pane, which shows the union of editable properties for the
-  current tool/selection.
-
-See [Navigation](/docs/tools/navigation) for camera controls, the view-cube HUD, and sketch mode's
-viewport border.
+See [Navigation](/docs/tools/navigation) for camera controls and the view cube.
