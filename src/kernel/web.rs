@@ -26,6 +26,17 @@ extern "C" {
         height: f64,
     ) -> u32;
     fn kernel_loft(bottom: &[f64], top: &[f64]) -> u32;
+    fn kernel_revolve(
+        xyz: &[f64],
+        ox: f64,
+        oy: f64,
+        oz: f64,
+        ax: f64,
+        ay: f64,
+        az: f64,
+        angle_rad: f64,
+        symmetric: bool,
+    ) -> u32;
     fn kernel_boolean(a: u32, b: u32, op: i32) -> u32;
     fn kernel_fillet(h: u32, edges: &[f64], radii: &[f64]) -> u32;
     fn kernel_chamfer(h: u32, edges: &[f64], dists: &[f64]) -> u32;
@@ -126,6 +137,29 @@ impl Shape {
             axis.z as f64,
             radius,
             height,
+        ))
+    }
+
+    pub fn revolve(
+        profile: &[glam::Vec3],
+        origin: glam::Vec3,
+        axis: glam::Vec3,
+        angle_rad: f64,
+        symmetric: bool,
+    ) -> Option<Shape> {
+        if profile.len() < 3 || axis.length_squared() < 1e-12 || angle_rad <= 0.0 || !kernel_available() {
+            return None;
+        }
+        Self::from_handle(kernel_revolve(
+            &flat_points(profile),
+            origin.x as f64,
+            origin.y as f64,
+            origin.z as f64,
+            axis.x as f64,
+            axis.y as f64,
+            axis.z as f64,
+            angle_rad,
+            symmetric,
         ))
     }
 

@@ -91,6 +91,11 @@ pub enum Tool {
     /// Pick two or more closed sketch profiles (circles or line loops) as cross sections,
     /// then Enter blends them into a lofted solid (SPEC §3.5 Loft).
     Loft,
+    /// Pick coplanar profile faces plus an axis (a sketch line — construction/projected
+    /// fine — or a global axis), set a sweep angle with the gizmo or typed input, and
+    /// revolve a solid (SPEC §3.5 Revolve). New body / fuse into touching bodies / cut
+    /// picked bodies.
+    Revolve,
 }
 
 impl Tool {
@@ -110,6 +115,7 @@ impl Tool {
             "chamfer" => Some(Tool::Chamfer),
             "fillet" => Some(Tool::Fillet),
             "loft" => Some(Tool::Loft),
+            "revolve" => Some(Tool::Revolve),
             _ => None,
         }
     }
@@ -361,6 +367,67 @@ pub struct CreatingCalibration {
     pub image: usize,
     /// Placed reference points in host-plane-local mm (0..=2).
     pub points: Vec<(f32, f32)>,
+}
+
+/// Where a committed revolve lands (#revolve): its own body, fused into whatever bodies
+/// it touches (resolved at commit), or cut from an explicitly picked body set.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RevolveBodyChoice {
+    #[default]
+    NewBody,
+    AddTouching,
+    Cut,
+}
+
+/// State for the in-progress (pre-Enter) revolve: picked profile faces, the axis, the
+/// live sweep angle (degrees; the text field also accepts `rad` expressions), and how
+/// the result lands.
+#[derive(Clone, Debug)]
+pub struct CreatingRevolve {
+    pub sketch: Option<SketchId>,
+    pub faces: Vec<ExtrudeFace>,
+    pub axis: Option<crate::model::RevolveAxis>,
+    /// Live sweep angle in degrees (gizmo-driven when the text hasn't been edited).
+    pub angle_live: f32,
+    pub text: String,
+    pub user_edited: bool,
+    pub pending_focus: bool,
+    pub symmetric: bool,
+    pub body_choice: RevolveBodyChoice,
+    /// Bodies picked for Cut mode.
+    pub cut_bodies: Vec<usize>,
+}
+
+impl Default for CreatingRevolve {
+    fn default() -> Self {
+        Self {
+            sketch: None,
+            faces: Vec::new(),
+            axis: None,
+            angle_live: 360.0,
+            text: "360".to_string(),
+            user_edited: false,
+            pending_focus: false,
+            symmetric: false,
+            body_choice: RevolveBodyChoice::default(),
+            cut_bodies: Vec::new(),
+        }
+    }
+}
+
+impl CreatingRevolve {
+    /// The effective sweep angle in degrees: the typed expression when edited (bare
+    /// numbers are degrees; `rad`/`deg` suffixes and parameters work), else the live
+    /// gizmo angle.
+    pub fn evaluated_angle_deg(&self, doc: &Document) -> f32 {
+        if self.user_edited {
+            crate::value::eval_angle_rad_in_doc(&self.text, doc)
+                .map(|r| r.to_degrees())
+                .unwrap_or(self.angle_live)
+        } else {
+            self.angle_live
+        }
+    }
 }
 
 /// State for the in-progress (pre-Enter) loft: the cross sections picked so far.
@@ -814,6 +881,20 @@ pub enum Action {
     ToggleLoftSection { section: crate::model::LoftSection },
     /// Finalize the in-progress loft: blend the picked sections into a new body.
     CommitLoft,
+    /// Finalize the in-progress revolve (reads `creating_revolve`).
+    CommitRevolve,
+    /// Scripted/replayed revolve creation with an explicit payload. `bodies` is the
+    /// explicit Add/Cut body list; an empty list with `AddTouching` auto-resolves the
+    /// touching bodies, like the interactive tool.
+    CreateRevolution {
+        sketch: SketchId,
+        faces: Vec<ExtrudeFace>,
+        axis: crate::model::RevolveAxis,
+        angle_deg: f32,
+        symmetric: bool,
+        body: RevolveBodyChoice,
+        bodies: Vec<usize>,
+    },
     SetExtrudeBodyMode { mode: ExtrudeBodyMode },
     /// Enable or disable snapping while drawing/dragging.
     SetSnapping(bool),
@@ -1169,6 +1250,8 @@ pub struct AppState {
     /// In-progress loft (Loft tool): the picked cross sections, shown in the context-pane
     /// selection picker.
     pub creating_loft: Option<CreatingLoft>,
+    /// In-progress revolve (Revolve tool).
+    pub creating_revolve: Option<CreatingRevolve>,
     /// In-progress image scale calibration (#163/#171): Some while the user is placing
     /// the two reference points / typing the real length.
     pub creating_calibration: Option<CreatingCalibration>,
@@ -1273,6 +1356,7 @@ impl Default for AppState {
             creating_vertex_treatment: None,
             creating_edge_treatment: None,
             creating_loft: None,
+            creating_revolve: None,
             creating_calibration: None,
             viewport_aspect: 16.0 / 9.0,
             draw_construction: false,
@@ -1667,6 +1751,118 @@ impl AppState {
         }
         let (name, mesh) = self.export_mesh_for(body)?;
         Ok(crate::step::write_step(&name, &mesh).into_bytes())
+    }
+
+    /// Resolve a revolve body choice into a concrete [`RevolveMode`]. `AddTouching` with
+    /// an empty explicit list finds bodies whose mesh bounds intersect the revolve's;
+    /// `Cut` requires a non-empty body list.
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_revolve_mode(
+        &mut self,
+        sketch: SketchId,
+        faces: &[ExtrudeFace],
+        axis: crate::model::RevolveAxis,
+        angle_deg: f32,
+        symmetric: bool,
+        choice: RevolveBodyChoice,
+        bodies: &[usize],
+    ) -> Result<crate::model::RevolveMode, String> {
+        Ok(match choice {
+            RevolveBodyChoice::NewBody => crate::model::RevolveMode::NewBody,
+            RevolveBodyChoice::AddTouching => {
+                if !bodies.is_empty() {
+                    return Ok(crate::model::RevolveMode::AddTo(bodies.to_vec()));
+                }
+                let probe = crate::model::Revolution {
+                    sketch,
+                    faces: faces.to_vec(),
+                    axis,
+                    angle_deg,
+                    symmetric,
+                    mode: crate::model::RevolveMode::NewBody,
+                    name: None,
+                    deleted: false,
+                };
+                let touching = crate::extrude::revolve_mesh(&self.doc, &probe)
+                    .and_then(|m| m.bounds())
+                    .map(|rb| {
+                        (0..self.doc.bodies.len())
+                            .filter(|&bi| !self.doc.bodies[bi].deleted)
+                            .filter(|&bi| {
+                                crate::extrude::body_solid_mesh(&self.doc, bi)
+                                    .and_then(|m| m.bounds())
+                                    .is_some_and(|bb| {
+                                        bb.0.cmple(rb.1).all() && rb.0.cmple(bb.1).all()
+                                    })
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if touching.is_empty() {
+                    self.status = "No touching bodies — revolved into a new body".to_string();
+                    crate::model::RevolveMode::NewBody
+                } else {
+                    crate::model::RevolveMode::AddTo(touching)
+                }
+            }
+            RevolveBodyChoice::Cut => {
+                if bodies.is_empty() {
+                    return Err("Pick at least one body to cut".to_string());
+                }
+                crate::model::RevolveMode::Cut(bodies.to_vec())
+            }
+        })
+    }
+
+    /// Shared revolve commit: validates the solid builds, stores the [`Revolution`], and
+    /// (in NewBody mode) its body — one `ShapeKind::Revolution` undo marker covers both.
+    fn create_revolution(
+        &mut self,
+        sketch: SketchId,
+        faces: Vec<ExtrudeFace>,
+        axis: crate::model::RevolveAxis,
+        angle_deg: f32,
+        symmetric: bool,
+        mode: crate::model::RevolveMode,
+    ) -> ActionResult {
+        let rev = crate::model::Revolution {
+            sketch,
+            faces,
+            axis,
+            angle_deg,
+            symmetric,
+            mode: mode.clone(),
+            name: None,
+            deleted: false,
+        };
+        if crate::extrude::revolve_mesh(&self.doc, &rev).is_none() {
+            let e = "Revolve failed: profile must be a closed face and the axis a real line"
+                .to_string();
+            self.status = e.clone();
+            return ActionResult::Err(e);
+        }
+        self.doc.revolutions.push(rev);
+        if matches!(mode, crate::model::RevolveMode::NewBody) {
+            self.doc.bodies.push(crate::model::Body {
+                source: crate::model::BodySource::Revolve(self.doc.revolutions.len() - 1),
+                name: None,
+                deleted: false,
+            });
+        }
+        self.doc.shape_order.push(crate::model::ShapeKind::Revolution);
+        self.creating_revolve = None;
+        self.tool = Tool::Select;
+        self.refresh_document_health();
+        self.status = match &mode {
+            crate::model::RevolveMode::NewBody => format!("Revolved ({angle_deg:.0}°)"),
+            crate::model::RevolveMode::AddTo(b) => {
+                format!("Revolved into {} body(ies) ({angle_deg:.0}°)", b.len())
+            }
+            crate::model::RevolveMode::Cut(b) => {
+                format!("Revolve cut {} body(ies) ({angle_deg:.0}°)", b.len())
+            }
+        };
+        ActionResult::Ok
     }
 
     fn export_mesh_for(
@@ -2665,6 +2861,22 @@ impl AppState {
                         self.status = "Undid image import".to_string();
                         undone = true;
                     }
+                    Some(ShapeKind::Revolution) => {
+                        // CommitRevolve pushes the revolution (and, in NewBody mode, its
+                        // body) under one marker; undo removes them together.
+                        let ri = self.doc.revolutions.len().wrapping_sub(1);
+                        if self
+                            .doc
+                            .bodies
+                            .last()
+                            .is_some_and(|b| b.source == crate::model::BodySource::Revolve(ri))
+                        {
+                            self.doc.bodies.pop();
+                        }
+                        self.doc.revolutions.pop();
+                        self.status = "Undid revolve".to_string();
+                        undone = true;
+                    }
                     Some(ShapeKind::Loft) => {
                         // CommitLoft pushes the loft and its body under one marker, so
                         // undo removes both together.
@@ -2781,6 +2993,9 @@ impl AppState {
                 if self.creating_loft.is_some() && tool != Tool::Loft {
                     self.creating_loft = None;
                 }
+                if self.creating_revolve.is_some() && tool != Tool::Revolve {
+                    self.creating_revolve = None;
+                }
                 if self.creating_calibration.is_some() && tool != Tool::Select {
                     self.creating_calibration = None;
                 }
@@ -2811,7 +3026,9 @@ impl AppState {
                 }
                 // Extruding/lofting act on the 3D model, not sketch geometry: leave
                 // sketch editing when either tool is picked from inside a sketch.
-                if matches!(tool, Tool::Extrude | Tool::Loft) && self.sketch_session.is_some() {
+                if matches!(tool, Tool::Extrude | Tool::Loft | Tool::Revolve)
+                    && self.sketch_session.is_some()
+                {
                     self.exit_sketch_session();
                 }
                 // Switching to Loft with profiles already selected preloads them as
@@ -2866,6 +3083,9 @@ impl AppState {
                     Tool::Loft => {
                         "Loft tool — click two or more closed profiles".to_string()
                     }
+                    Tool::Revolve => {
+                        "Revolve tool — click profile faces, then an axis line".to_string()
+                    }
                 };
                 if tool == Tool::Dimension {
                     self.try_begin_dimension_from_selection();
@@ -2888,6 +3108,8 @@ impl AppState {
                     self.status = "Cancelled extrusion".to_string();
                 } else if self.creating_loft.take().is_some() {
                     self.status = "Cancelled loft".to_string();
+                } else if self.creating_revolve.take().is_some() {
+                    self.status = "Cancelled revolve".to_string();
                 } else if self.creating_calibration.take().is_some() {
                     self.status = "Cancelled calibration".to_string();
                 } else if self.creating_rect.take().is_some()
@@ -4811,6 +5033,78 @@ impl AppState {
                 self.refresh_document_health();
                 ActionResult::Ok
             }
+            Action::CommitRevolve => {
+                let Some(cr) = self.creating_revolve.take() else {
+                    return ActionResult::Err("No revolve in progress".to_string());
+                };
+                if cr.faces.is_empty() {
+                    self.creating_revolve = Some(cr);
+                    let e = "Pick at least one profile face to revolve".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let (Some(axis), Some(sketch)) = (cr.axis, cr.sketch) else {
+                    let e = "Pick a line (or global axis) to revolve around".to_string();
+                    self.creating_revolve = Some(cr);
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                let angle = cr.evaluated_angle_deg(&self.doc);
+                if !(angle > 0.0) {
+                    self.creating_revolve = Some(cr);
+                    let e = "Revolve angle must be positive".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let mode = match self.resolve_revolve_mode(
+                    sketch,
+                    &cr.faces,
+                    axis,
+                    angle,
+                    cr.symmetric,
+                    cr.body_choice,
+                    &cr.cut_bodies,
+                ) {
+                    Ok(mode) => mode,
+                    Err(e) => {
+                        self.creating_revolve = Some(cr);
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                };
+                let result = self.create_revolution(
+                    sketch,
+                    cr.faces.clone(),
+                    axis,
+                    angle,
+                    cr.symmetric,
+                    mode,
+                );
+                if matches!(result, ActionResult::Err(_)) {
+                    self.creating_revolve = Some(cr);
+                }
+                result
+            }
+            Action::CreateRevolution {
+                sketch,
+                faces,
+                axis,
+                angle_deg,
+                symmetric,
+                body,
+                bodies,
+            } => {
+                let mode = match self.resolve_revolve_mode(
+                    sketch, &faces, axis, angle_deg, symmetric, body, &bodies,
+                ) {
+                    Ok(mode) => mode,
+                    Err(e) => {
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                };
+                self.create_revolution(sketch, faces, axis, angle_deg, symmetric, mode)
+            }
             Action::SetSnapping(enabled) => {
                 self.snapping_enabled = enabled;
                 self.active_snap = None;
@@ -6011,6 +6305,72 @@ mod tests {
         let mut state = AppState::default();
         state.apply(Action::SetTool(Tool::ConstructionPlane));
         assert_eq!(state.tool, Tool::ConstructionPlane);
+    }
+
+    /// Revolve (SPEC §3.5): committing a face + axis creates the revolution and its body
+    /// under one marker; undo removes both. Cut mode requires picked bodies.
+    #[test]
+    fn commit_revolve_creates_body_and_undo_removes_both() {
+        let mut state = AppState::default();
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let lines = crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch,
+            10.0,
+            0.0,
+            10.0,
+            10.0,
+            [false; 4],
+        );
+        state.creating_revolve = Some(CreatingRevolve {
+            sketch: Some(sketch),
+            faces: vec![crate::model::ExtrudeFace::Polygon(lines.to_vec())],
+            axis: Some(crate::model::RevolveAxis::Y),
+            ..CreatingRevolve::default()
+        });
+        assert!(matches!(state.apply(Action::CommitRevolve), ActionResult::Ok));
+        assert_eq!(state.doc.revolutions.len(), 1);
+        assert!((state.doc.revolutions[0].angle_deg - 360.0).abs() < 1e-3);
+        assert_eq!(
+            state.doc.bodies.last().map(|b| b.source.clone()),
+            Some(crate::model::BodySource::Revolve(0))
+        );
+        assert_eq!(state.doc.shape_order.last(), Some(&ShapeKind::Revolution));
+        assert!(state.creating_revolve.is_none());
+        assert!(crate::extrude::body_solid_mesh(&state.doc, state.doc.bodies.len() - 1).is_some());
+
+        state.apply(Action::UndoLast);
+        assert!(state.doc.revolutions.is_empty());
+        assert!(state.doc.bodies.is_empty());
+    }
+
+    /// Cut mode without picked bodies is rejected and the in-progress state survives.
+    #[test]
+    fn commit_revolve_cut_requires_bodies() {
+        let mut state = AppState::default();
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let lines = crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch,
+            10.0,
+            0.0,
+            10.0,
+            10.0,
+            [false; 4],
+        );
+        state.creating_revolve = Some(CreatingRevolve {
+            sketch: Some(sketch),
+            faces: vec![crate::model::ExtrudeFace::Polygon(lines.to_vec())],
+            axis: Some(crate::model::RevolveAxis::Y),
+            body_choice: RevolveBodyChoice::Cut,
+            ..CreatingRevolve::default()
+        });
+        assert!(matches!(
+            state.apply(Action::CommitRevolve),
+            ActionResult::Err(_)
+        ));
+        assert!(state.doc.revolutions.is_empty());
+        assert!(state.creating_revolve.is_some());
     }
 
     /// Loft (SPEC §3.5): toggling two circle sections and committing creates a loft plus

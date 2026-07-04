@@ -35,6 +35,18 @@ mod ffi {
             dy: f64,
             dz: f64,
         ) -> *mut BearcadShape;
+        pub fn bearcad_shape_revolve(
+            xyz: *const f64,
+            n_pts: c_ulong,
+            ox: f64,
+            oy: f64,
+            oz: f64,
+            ax: f64,
+            ay: f64,
+            az: f64,
+            angle_rad: f64,
+            symmetric: c_int,
+        ) -> *mut BearcadShape;
         pub fn bearcad_shape_loft(
             bottom_xyz: *const f64,
             top_xyz: *const f64,
@@ -276,6 +288,42 @@ impl Shape {
                 axis.z as f64,
                 radius,
                 height,
+            )
+        };
+        (!raw.is_null()).then_some(Shape { raw })
+    }
+
+    /// Revolve a closed planar profile around `axis` (through `origin`) by `angle_rad`
+    /// (#revolve). `symmetric` sweeps half the angle to each side of the profile plane.
+    /// `None` on a degenerate profile/axis or kernel failure.
+    pub fn revolve(
+        profile: &[glam::Vec3],
+        origin: glam::Vec3,
+        axis: glam::Vec3,
+        angle_rad: f64,
+        symmetric: bool,
+    ) -> Option<Shape> {
+        if profile.len() < 3 || axis.length_squared() < 1e-12 || angle_rad <= 0.0 {
+            return None;
+        }
+        let mut xyz = Vec::with_capacity(profile.len() * 3);
+        for p in profile {
+            xyz.push(p.x as f64);
+            xyz.push(p.y as f64);
+            xyz.push(p.z as f64);
+        }
+        let raw = unsafe {
+            ffi::bearcad_shape_revolve(
+                xyz.as_ptr(),
+                profile.len() as std::os::raw::c_ulong,
+                origin.x as f64,
+                origin.y as f64,
+                origin.z as f64,
+                axis.x as f64,
+                axis.y as f64,
+                axis.z as f64,
+                angle_rad,
+                symmetric as std::os::raw::c_int,
             )
         };
         (!raw.is_null()).then_some(Shape { raw })

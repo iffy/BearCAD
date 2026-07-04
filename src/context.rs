@@ -47,12 +47,33 @@ pub struct ContextInput<'a> {
     /// both guided calibration points are placed (#163), or the selection is exactly one
     /// tracing image plus one line on the image's host plane.
     pub calibrate_image: Option<CalibrateImageControl>,
+    /// Revolve tool state (#revolve): `Some` while the Revolve tool is active.
+    pub revolve: Option<RevolveControl>,
     /// Guided calibration entry point (#163): `Some(image)` when exactly one tracing image
     /// is selected and no calibration is running — renders the "Calibrate scale" button.
     pub calibrate_start: Option<usize>,
     /// Guided calibration in progress with fewer than two points placed: how many are
     /// placed so far (renders the click-two-points hint).
     pub calibrate_pending: Option<usize>,
+}
+
+/// What the Revolve tool's context section shows (#revolve): the picked axis (if any),
+/// the symmetric toggle, the body mode, and — in Cut mode — the picked bodies (rendered
+/// through the shared selection picker).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RevolveControl {
+    pub face_count: usize,
+    pub axis_label: Option<String>,
+    pub symmetric: bool,
+    pub body_choice: crate::actions::RevolveBodyChoice,
+    pub cut_rows: Vec<String>,
+}
+
+/// One edit from the Revolve context section.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RevolveEdit {
+    Symmetric(bool),
+    BodyChoice(crate::actions::RevolveBodyChoice),
 }
 
 /// The "Calibrate scale" control's inputs (#171): the target image and the reference
@@ -134,6 +155,8 @@ pub struct ContextPaneContent {
     pub edge_picker: Option<EdgePickerControl>,
     /// Image scale calibration (#171).
     pub calibrate_image: Option<CalibrateImageControl>,
+    /// Revolve tool controls (#revolve).
+    pub revolve: Option<RevolveControl>,
     /// "Calibrate scale" start button (#163): the selected tracing image.
     pub calibrate_start: Option<usize>,
     /// Guided-calibration hint: points placed so far (of 2).
@@ -244,8 +267,20 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
                 hint: "Click a closed profile (circle or loop)",
                 rows,
             })
+        })
+        .or_else(|| {
+            input.revolve.as_ref().and_then(|r| {
+                (r.body_choice == crate::actions::RevolveBodyChoice::Cut).then(|| {
+                    EdgePickerControl {
+                        heading: "Cut bodies",
+                        hint: "Click a body to cut",
+                        rows: r.cut_rows.clone(),
+                    }
+                })
+            })
         });
     let calibrate_image = input.calibrate_image;
+    let revolve = input.revolve.clone();
     let calibrate_start = input.calibrate_start;
     let calibrate_pending = input.calibrate_pending;
 
@@ -264,7 +299,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             units,
             edge_picker: edge_picker.clone(),
             calibrate_image,
-            calibrate_start,
+            revolve: revolve.clone(),
+        calibrate_start,
             calibrate_pending,
         };
     }
@@ -283,7 +319,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             units,
             edge_picker: edge_picker.clone(),
             calibrate_image,
-            calibrate_start,
+            revolve: revolve.clone(),
+        calibrate_start,
             calibrate_pending,
         };
     }
@@ -302,7 +339,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             units,
             edge_picker: edge_picker.clone(),
             calibrate_image,
-            calibrate_start,
+            revolve: revolve.clone(),
+        calibrate_start,
             calibrate_pending,
         };
     }
@@ -324,6 +362,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         units,
         edge_picker,
         calibrate_image,
+        revolve,
         calibrate_start,
         calibrate_pending,
     }
@@ -530,6 +569,7 @@ pub fn show_pane(
     on_extrude_body_mode_changed: &mut impl FnMut(ExtrudeBodyMode),
     on_units_changed: &mut impl FnMut(UnitsChoice),
     on_edge_picker_edit: &mut impl FnMut(Option<usize>),
+    on_revolve_edit: &mut impl FnMut(RevolveEdit),
     on_calibrate_start: &mut impl FnMut(usize),
     on_calibrate_image: &mut impl FnMut(CalibrateImageControl, String),
 ) {
@@ -711,6 +751,34 @@ pub fn show_pane(
                 .color(egui::Color32::from_gray(140))
                 .size(11.0),
         );
+    }
+
+    if let Some(control) = &content.revolve {
+        any_control = true;
+        ui.separator();
+        ui.label(egui::RichText::new("Revolve").strong());
+        ui.label(
+            egui::RichText::new(match &control.axis_label {
+                Some(label) => format!("{} face(s) around {}", control.face_count, label),
+                None => format!("{} face(s) — click an axis line", control.face_count),
+            })
+            .color(egui::Color32::from_gray(140))
+            .size(11.0),
+        );
+        let mut symmetric = control.symmetric;
+        if ui.checkbox(&mut symmetric, "Symmetric").changed() {
+            on_revolve_edit(RevolveEdit::Symmetric(symmetric));
+        }
+        let mut choice = control.body_choice;
+        for (value, label) in [
+            (crate::actions::RevolveBodyChoice::NewBody, "New body"),
+            (crate::actions::RevolveBodyChoice::AddTouching, "Add to touching bodies"),
+            (crate::actions::RevolveBodyChoice::Cut, "Cut bodies"),
+        ] {
+            if ui.radio_value(&mut choice, value, label).changed() {
+                on_revolve_edit(RevolveEdit::BodyChoice(choice));
+            }
+        }
     }
 
     if let Some(image) = content.calibrate_start {
@@ -956,6 +1024,7 @@ mod tests {
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
+            revolve: None,
             calibrate_start: None,
             calibrate_pending: None,
         }
@@ -983,6 +1052,7 @@ mod tests {
             edge_treatment_rows: Some(vec!["Block — vertical 0".to_string()]),
             loft_rows: None,
             calibrate_image: None,
+            revolve: None,
             calibrate_start: None,
             calibrate_pending: None,
         };
@@ -1042,7 +1112,8 @@ mod tests {
                 extrude_body: None,
                 edge_picker: None,
                 calibrate_image: None,
-                calibrate_start: None,
+                revolve: None,
+            calibrate_start: None,
                 calibrate_pending: None,
                 units: Some(UnitsControl {
                     sketch: None,
@@ -1076,6 +1147,7 @@ mod tests {
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
+            revolve: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -1094,7 +1166,8 @@ mod tests {
                 extrude_body: None,
                 edge_picker: None,
                 calibrate_image: None,
-                calibrate_start: None,
+                revolve: None,
+            calibrate_start: None,
                 calibrate_pending: None,
                 units: Some(UnitsControl {
                     sketch: None,
@@ -1128,6 +1201,7 @@ mod tests {
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
+            revolve: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -1159,7 +1233,8 @@ mod tests {
                 extrude_body: None,
                 edge_picker: None,
                 calibrate_image: None,
-                calibrate_start: None,
+                revolve: None,
+            calibrate_start: None,
                 calibrate_pending: None,
                 units: None,
             }
@@ -1240,6 +1315,7 @@ mod tests {
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
+            revolve: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -1272,6 +1348,7 @@ mod tests {
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
+            revolve: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -1292,7 +1369,8 @@ mod tests {
                 extrude_body: None,
                 edge_picker: None,
                 calibrate_image: None,
-                calibrate_start: None,
+                revolve: None,
+            calibrate_start: None,
                 calibrate_pending: None,
                 units: None,
             }
@@ -1318,6 +1396,7 @@ mod tests {
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
+            revolve: None,
             calibrate_start: None,
             calibrate_pending: None,
         });

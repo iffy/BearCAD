@@ -107,6 +107,15 @@ pub enum Instruction {
     /// Loft a solid through two or more closed cross-section profiles (SPEC §3.5).
     /// Each face's owning sketch is inferred at execution time, like `bearcad.extrude`.
     Loft { faces: Vec<crate::model::ExtrudeFace> },
+    /// Revolve profiles around an axis (SPEC §3.5 Revolve). Sketch inferred per face.
+    Revolve {
+        faces: Vec<crate::model::ExtrudeFace>,
+        axis: crate::model::RevolveAxis,
+        angle_deg: f32,
+        symmetric: bool,
+        body: crate::actions::RevolveBodyChoice,
+        bodies: Vec<usize>,
+    },
     SetElementVisible {
         element: SceneElement,
         visible: Option<bool>,
@@ -394,6 +403,59 @@ impl Instruction {
                     ));
                 }
                 format!("bearcad.loft{{ {} }}", parts.join(", "))
+            }
+            Instruction::Revolve {
+                faces,
+                axis,
+                angle_deg,
+                symmetric,
+                body,
+                bodies,
+            } => {
+                use crate::model::ExtrudeFace;
+                let index_list = |indices: &[usize]| -> String {
+                    indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+                };
+                let mut parts = Vec::new();
+                let circles: Vec<usize> = faces
+                    .iter()
+                    .filter_map(|f| match f {
+                        ExtrudeFace::Circle(i) => Some(*i),
+                        _ => None,
+                    })
+                    .collect();
+                if !circles.is_empty() {
+                    parts.push(format!("circles = {{{}}}", index_list(&circles)));
+                }
+                for f in faces {
+                    if let ExtrudeFace::Polygon(lines) = f {
+                        parts.push(format!("polygon = {{{}}}", index_list(lines)));
+                    }
+                }
+                parts.push(match axis {
+                    crate::model::RevolveAxis::Line(li) => format!("axis = {{ line = {li} }}"),
+                    crate::model::RevolveAxis::X => "axis = \"x\"".to_string(),
+                    crate::model::RevolveAxis::Y => "axis = \"y\"".to_string(),
+                    crate::model::RevolveAxis::Z => "axis = \"z\"".to_string(),
+                });
+                parts.push(format!("angle = {angle_deg}"));
+                if *symmetric {
+                    parts.push("symmetric = true".to_string());
+                }
+                match body {
+                    crate::actions::RevolveBodyChoice::NewBody => {}
+                    crate::actions::RevolveBodyChoice::AddTouching => {
+                        parts.push("body = \"add\"".to_string());
+                        if !bodies.is_empty() {
+                            parts.push(format!("bodies = {{{}}}", index_list(bodies)));
+                        }
+                    }
+                    crate::actions::RevolveBodyChoice::Cut => {
+                        parts.push("body = \"cut\"".to_string());
+                        parts.push(format!("bodies = {{{}}}", index_list(bodies)));
+                    }
+                }
+                format!("bearcad.revolve{{ {} }}", parts.join(", "))
             }
             Instruction::SetElementVisible { element, visible } => {
                 let target = element_lua_ref(element);
@@ -1141,6 +1203,29 @@ pub fn instruction_for_new_loft(doc: &crate::model::Document) -> Option<Instruct
     })
 }
 
+/// Replayable `Instruction::Revolve` for the revolution the interactive tool just created
+/// (mirrors `instruction_for_new_loft`).
+pub fn instruction_for_new_revolution(doc: &crate::model::Document) -> Option<Instruction> {
+    let rev = doc.revolutions.last()?;
+    let (body, bodies) = match &rev.mode {
+        crate::model::RevolveMode::NewBody => {
+            (crate::actions::RevolveBodyChoice::NewBody, Vec::new())
+        }
+        crate::model::RevolveMode::AddTo(b) => {
+            (crate::actions::RevolveBodyChoice::AddTouching, b.clone())
+        }
+        crate::model::RevolveMode::Cut(b) => (crate::actions::RevolveBodyChoice::Cut, b.clone()),
+    };
+    Some(Instruction::Revolve {
+        faces: rev.faces.clone(),
+        axis: rev.axis,
+        angle_deg: rev.angle_deg,
+        symmetric: rev.symmetric,
+        body,
+        bodies,
+    })
+}
+
 /// Render an extrusion's faces as `bearcad.extrude{}` keyword arguments
 /// (`rect=`/`rects=`, `circle=`/`circles=`, `polygon=`). A single rect or circle uses the
 /// singular field to match how `bearcad.extrude` is normally called by hand; multiple of a
@@ -1347,6 +1432,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
         Tool::Chamfer => "chamfer",
         Tool::Fillet => "fillet",
         Tool::Loft => "loft",
+        Tool::Revolve => "revolve",
     }
 }
 
@@ -2496,6 +2582,35 @@ impl ScriptRunner {
                     self.record_action_error(result);
                 }
                 let result = state.apply(Action::CommitLoft);
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::Revolve {
+                faces,
+                axis,
+                angle_deg,
+                symmetric,
+                body,
+                bodies,
+            } => {
+                let Some(sketch) = faces
+                    .first()
+                    .and_then(|f| crate::actions::extrude_face_sketch(&state.doc, f))
+                else {
+                    self.record_action_error(crate::actions::ActionResult::Err(
+                        "revolve face does not exist".to_string(),
+                    ));
+                    return StepResult::Continue;
+                };
+                let result = state.apply(Action::CreateRevolution {
+                    sketch,
+                    faces,
+                    axis,
+                    angle_deg,
+                    symmetric,
+                    body,
+                    bodies,
+                });
                 self.record_action_error(result);
                 StepResult::Continue
             }

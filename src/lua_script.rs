@@ -2055,6 +2055,75 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Revolve profiles around an axis (SPEC §3.5 Revolve): `axis = "x"|"y"|"z"` or
+    // `{ line = i }` (construction/projected lines work); `angle` in degrees (default
+    // 360); `symmetric` sweeps both ways; `body = "new"|"add"|"cut"` with `bodies`
+    // for an explicit add/cut list ("add" with none auto-resolves touching bodies).
+    api.set(
+        "revolve",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let mut faces: Vec<crate::model::ExtrudeFace> = Vec::new();
+            if let Some(i) = opts.get::<Option<usize>>("circle")? {
+                faces.push(crate::model::ExtrudeFace::Circle(i));
+            }
+            if let Some(list) = opts.get::<Option<Vec<usize>>>("circles")? {
+                faces.extend(list.into_iter().map(crate::model::ExtrudeFace::Circle));
+            }
+            if let Some(lines) = opts.get::<Option<Vec<usize>>>("polygon")? {
+                faces.push(crate::model::ExtrudeFace::Polygon(lines));
+            }
+            if faces.is_empty() {
+                return Err(mlua::Error::external(
+                    "revolve requires a `circle`/`circles`/`polygon` face",
+                ));
+            }
+            let axis = match opts.get::<mlua::Value>("axis")? {
+                mlua::Value::String(sv) => match sv.to_string_lossy().to_lowercase().as_str() {
+                    "x" => crate::model::RevolveAxis::X,
+                    "y" => crate::model::RevolveAxis::Y,
+                    "z" => crate::model::RevolveAxis::Z,
+                    other => {
+                        return Err(mlua::Error::external(format!(
+                            "unknown revolve axis '{other}' (x|y|z or {{line = i}})"
+                        )))
+                    }
+                },
+                mlua::Value::Table(t) => {
+                    let li: usize = t.get("line")?;
+                    crate::model::RevolveAxis::Line(li)
+                }
+                _ => {
+                    return Err(mlua::Error::external(
+                        "revolve requires `axis` (\"x\"|\"y\"|\"z\" or {line = i})",
+                    ))
+                }
+            };
+            let angle_deg: f32 = opts.get::<Option<f32>>("angle")?.unwrap_or(360.0);
+            let symmetric: bool = opts.get::<Option<bool>>("symmetric")?.unwrap_or(false);
+            let bodies: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
+            let body = match opts.get::<Option<String>>("body")?.as_deref() {
+                Some("add") => crate::actions::RevolveBodyChoice::AddTouching,
+                Some("cut") => crate::actions::RevolveBodyChoice::Cut,
+                _ => crate::actions::RevolveBodyChoice::NewBody,
+            };
+            unsafe {
+                tick.exec(Instruction::Revolve {
+                    faces,
+                    axis,
+                    angle_deg,
+                    symmetric,
+                    body,
+                    bodies,
+                })?;
+            }
+            let element = SceneElement::Body(unsafe {
+                tick.state().doc.bodies.len().saturating_sub(1)
+            });
+            apply_optional_name(lua, element, Some(opts))
+        })?,
+    )?;
+
     // Loft a solid through two or more closed cross-section profiles (SPEC §3.5).
     // `circles = {i, ...}` and/or `polygons = {{line, ...}, ...}` list the sections
     // (singular `circle`/`polygon` also accepted); each face's sketch is inferred like
@@ -3724,6 +3793,33 @@ mod tests {
         }
         let err = runner.error.expect("non-cap/side body face target should error");
         assert!(err.contains("cap or side wall"), "unexpected error: {err}");
+    }
+
+    /// SPEC §3.5 Revolve: a square revolved 360° around the global Y axis makes a
+    /// ring-shaped body; 90° makes a quarter of it.
+    #[test]
+    fn lua_revolve_makes_a_ring_body() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ x = 10, y = 0, width = 10, height = 10 }
+            bearcad.exit_sketch()
+            bearcad.revolve{ polygon = {0,1,2,3}, axis = "y", name = "Ring" }
+        "#,
+        );
+        assert_eq!(state.doc.revolutions.len(), 1);
+        let bi = state.doc.bodies.len() - 1;
+        assert_eq!(
+            state.doc.bodies[bi].source,
+            crate::model::BodySource::Revolve(0)
+        );
+        assert_eq!(state.doc.bodies[bi].name.as_deref(), Some("Ring"));
+        let mesh = crate::extrude::body_solid_mesh(&state.doc, bi).expect("mesh");
+        let vol = crate::extrude::mesh_signed_volume(&mesh).abs();
+        let expected = std::f32::consts::PI * (400.0 - 100.0) * 10.0;
+        assert!(
+            (vol - expected).abs() < expected * 0.02,
+            "expected ~{expected}, got {vol}"
+        );
     }
 
     /// SPEC §3.5 Loft: `bearcad.loft{ circles = {...} }` blends circle sections on two

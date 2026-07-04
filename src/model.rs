@@ -784,6 +784,8 @@ pub enum BodySource {
     Imported(usize),
     /// A lofted solid; indexes `Document::lofts`.
     Loft(usize),
+    /// A revolved solid (#revolve); indexes `Document::revolutions`.
+    Revolve(usize),
     /// Additive extrusions with one or more extrusions **subtracted** (cut) from them (#35).
     /// Purely-additive bodies stay in the `Extrusion`/`Extrusions` forms; a body only takes
     /// this shape once it has a cut. `cut` is `#[serde(default)]` so any future add-only
@@ -807,7 +809,7 @@ impl BodySource {
             Self::Extrusion(index) => std::slice::from_ref(index),
             Self::Extrusions(indices) => indices.as_slice(),
             Self::Solid { add, .. } => add.as_slice(),
-            Self::Loft(_) => &[],
+            Self::Loft(_) | Self::Revolve(_) => &[],
             Self::Imported(_) => &[],
         }
     }
@@ -816,14 +818,22 @@ impl BodySource {
     pub fn cut_extrusion_indices(&self) -> &[usize] {
         match self {
             Self::Solid { cut, .. } => cut.as_slice(),
-            Self::Extrusion(_) | Self::Extrusions(_) | Self::Imported(_) | Self::Loft(_) => &[],
+            Self::Extrusion(_)
+            | Self::Extrusions(_)
+            | Self::Imported(_)
+            | Self::Loft(_)
+            | Self::Revolve(_) => &[],
         }
     }
 
     pub fn imported_mesh_index(&self) -> Option<usize> {
         match self {
             Self::Imported(index) => Some(*index),
-            Self::Extrusion(_) | Self::Extrusions(_) | Self::Solid { .. } | Self::Loft(_) => None,
+            Self::Extrusion(_)
+            | Self::Extrusions(_)
+            | Self::Solid { .. }
+            | Self::Loft(_)
+            | Self::Revolve(_) => None,
         }
     }
 
@@ -842,7 +852,7 @@ impl BodySource {
             Self::Solid { add, .. } => add.push(extrusion),
             // An imported mesh body has no extrusion to merge into; unreachable in practice
             // since merge candidates only ever come from extrusion-backed bodies.
-            Self::Imported(_) | Self::Loft(_) => {}
+            Self::Imported(_) | Self::Loft(_) | Self::Revolve(_) => {}
         }
     }
 
@@ -864,7 +874,7 @@ impl BodySource {
             }
             Self::Solid { cut, .. } => cut.push(extrusion),
             // An imported mesh body has no solid feature to cut; unreachable in practice.
-            Self::Imported(_) | Self::Loft(_) => {}
+            Self::Imported(_) | Self::Loft(_) | Self::Revolve(_) => {}
         }
     }
 
@@ -891,7 +901,7 @@ impl BodySource {
                     };
                 }
             }
-            Self::Extrusion(_) | Self::Imported(_) | Self::Loft(_) => {}
+            Self::Extrusion(_) | Self::Imported(_) | Self::Loft(_) | Self::Revolve(_) => {}
         }
     }
 }
@@ -932,6 +942,48 @@ pub struct Loft {
 pub struct LoftSection {
     pub sketch: SketchId,
     pub face: ExtrudeFace,
+}
+
+/// The axis a [`Revolution`] sweeps around: a line in the profile's own sketch (plain,
+/// construction, or projected — any line works), or one of the origin's global axes.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RevolveAxis {
+    Line(usize),
+    X,
+    Y,
+    Z,
+}
+
+/// How a revolved solid lands in the document (#revolve): its own body, fused into
+/// existing bodies, or subtracted from existing bodies (the cut list is user-picked).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RevolveMode {
+    NewBody,
+    AddTo(Vec<usize>),
+    Cut(Vec<usize>),
+}
+
+/// A revolved solid: one or more coplanar closed profiles swept around an axis. Parametric
+/// like everything else — the solid is rebuilt from the live profiles on every recompute.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Revolution {
+    pub sketch: SketchId,
+    /// Closed profiles to sweep, same shape as [`Extrusion::faces`].
+    pub faces: Vec<ExtrudeFace>,
+    pub axis: RevolveAxis,
+    /// Sweep angle in degrees (default 360 = a full solid of revolution).
+    pub angle_deg: f32,
+    /// Sweep `angle_deg/2` to each side of the profile plane instead of one way.
+    #[serde(default)]
+    pub symmetric: bool,
+    /// How the solid lands (new body / fuse into bodies / cut bodies).
+    pub mode: RevolveMode,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
 }
 
 /// A reference image imported for tracing (#163/#169), hosted on a construction plane.
@@ -1012,6 +1064,7 @@ pub enum ShapeKind {
     Image,
     /// A loft feature (its body is a separate `Body` entry).
     Loft,
+    Revolution,
     /// An in-place edit of an existing construction plane (undo restores the prior planes).
     /// Transient: never persisted (storage rebuilds `shape_order` from created shapes only).
     ConstructionPlaneEdit,
@@ -1042,6 +1095,9 @@ pub struct Document {
     /// Loft features (solids blended through cross sections).
     #[serde(default)]
     pub lofts: Vec<Loft>,
+    /// Revolved solids (#revolve).
+    #[serde(default)]
+    pub revolutions: Vec<Revolution>,
     pub shape_order: Vec<ShapeKind>,
     /// Undo-group sizes (#105): entry k is how many [`shape_order`](Self::shape_order)
     /// entries the k-th user-level action created, maintained by `AppState::apply` under
@@ -1078,6 +1134,7 @@ impl Default for Document {
             imported_meshes: Vec::new(),
             tracing_images: Vec::new(),
             lofts: Vec::new(),
+            revolutions: Vec::new(),
             shape_order: Vec::new(),
             undo_groups: Vec::new(),
             default_length_unit: LengthUnit::default(),

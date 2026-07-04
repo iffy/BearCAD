@@ -639,7 +639,7 @@ fn build_creation_ranks(doc: &Document) -> CreationRanks {
             ShapeKind::Parameter => {}
             // Tracing images (#169) and lofts don't participate in creation-rank ordering
             // yet (they list after the ranked nodes).
-            ShapeKind::Image | ShapeKind::Loft => {}
+            ShapeKind::Image | ShapeKind::Loft | ShapeKind::Revolution => {}
             // Edits are not created shapes; they only mark undoable in-place changes.
             ShapeKind::ConstructionPlaneEdit | ShapeKind::EdgeTreatmentEdit => {}
         }

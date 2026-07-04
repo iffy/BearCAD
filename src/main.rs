@@ -481,6 +481,8 @@ struct App {
     /// Push/pull gizmo drag state for the 3D edge chamfer/fillet tool (#77); parallel to
     /// `vertex_treatment_gizmo_drag`.
     edge_treatment_gizmo_drag: Option<EdgeTreatmentGizmoDrag>,
+    /// In-flight revolve angle-handle drag: (start screen pos, start angle degrees).
+    revolve_gizmo_drag: Option<(egui::Pos2, f32)>,
     launch_maximize_frames_remaining: u8,
     gpu_viewport: bool,
     gpu_view_cube: bool,
@@ -574,6 +576,7 @@ impl App {
             pending_extrude_target: None,
             vertex_treatment_gizmo_drag: None,
             edge_treatment_gizmo_drag: None,
+            revolve_gizmo_drag: None,
             vertex_drag: None,
             bezier_handle_drag: None,
             selected_bezier_handle: None,
@@ -1898,6 +1901,250 @@ impl App {
     /// amount. Mirrors [`Self::handle_vertex_treatment_tool`] closely; active precisely when
     /// that one isn't (no sketch open), since the Chamfer/Fillet tool is shared between the 2D
     /// sketch-vertex case and this 3D solid-edge case.
+    /// World-space anchor + tangent direction for the revolve angle gizmo: the picked
+    /// profiles' centroid, with the sweep tangent (axis x radial) as the drag direction.
+    fn revolve_gizmo_frame(&self) -> Option<(Vec3, Vec3)> {
+        let cr = self.state.creating_revolve.as_ref()?;
+        let axis = cr.axis?;
+        if cr.faces.is_empty() {
+            return None;
+        }
+        let probe = model::Revolution {
+            sketch: cr.sketch?,
+            faces: cr.faces.clone(),
+            axis,
+            angle_deg: 360.0,
+            symmetric: false,
+            mode: model::RevolveMode::NewBody,
+            name: None,
+            deleted: false,
+        };
+        let (origin, dir) = extrude::revolve_axis_world(&self.state.doc, &probe)?;
+        let mut centroid = Vec3::ZERO;
+        let mut n = 0usize;
+        for face in &cr.faces {
+            if let Some((profile, _)) = extrude::face_profile_world(&self.state.doc, face) {
+                centroid += profile.iter().copied().sum::<Vec3>();
+                n += profile.len();
+            }
+        }
+        if n == 0 {
+            return None;
+        }
+        centroid /= n as f32;
+        let radial = centroid - (origin + dir * (centroid - origin).dot(dir));
+        let radial = radial.normalize_or_zero();
+        if radial.length_squared() < 1e-8 {
+            return None;
+        }
+        let tangent = dir.cross(radial).normalize_or_zero();
+        Some((centroid, tangent))
+    }
+
+    /// Revolve tool (SPEC §3.5 Revolve): click coplanar profile faces, click an axis line
+    /// (construction/projected lines and the global X/Y/Z all work), then set the sweep
+    /// angle by dragging the tangent handle or typing (degrees by default, `rad` works).
+    /// In Cut mode, clicking bodies toggles them into the cut set. Enter commits.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_revolve_tool(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+        pick_occlusion: Option<&construction::PickOcclusion>,
+    ) {
+        if self.state.sketch_session.is_some() {
+            return;
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+            && self
+                .state
+                .creating_revolve
+                .as_ref()
+                .is_some_and(|c| !c.faces.is_empty() && c.axis.is_some())
+        {
+            self.state.apply(Action::CommitRevolve);
+            return;
+        }
+        let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+        // Angle-handle drag: horizontal screen motion maps to degrees.
+        if let Some((start_pos, start_angle)) = self.revolve_gizmo_drag {
+            if let Some(pp) = pointer_screen {
+                let delta = (pp.x - start_pos.x) * 0.5;
+                if let Some(cr) = self.state.creating_revolve.as_mut() {
+                    cr.angle_live = (start_angle + delta).clamp(1.0, 360.0);
+                    if !cr.user_edited {
+                        cr.text = format!("{:.0}", cr.angle_live);
+                    }
+                }
+            }
+            if primary_pressed {
+                self.revolve_gizmo_drag = None;
+            }
+            return;
+        }
+        // Grab the handle?
+        if primary_pressed {
+            if let (Some(pp), Some((anchor, tangent))) =
+                (pointer_screen, self.revolve_gizmo_frame())
+            {
+                let cr = self.state.creating_revolve.as_ref();
+                let angle = cr.map(|c| c.evaluated_angle_deg(&self.state.doc)).unwrap_or(360.0);
+                let handle_offset = construction::gizmo_display_offset(angle * 0.05);
+                if construction::offset_gizmo_hit(pp, project, anchor, tangent, handle_offset) {
+                    self.revolve_gizmo_drag = Some((pp, angle));
+                    if let Some(c) = self.state.creating_revolve.as_mut() {
+                        c.user_edited = false;
+                    }
+                    ui.ctx().memory_mut(|m| {
+                        m.surrender_focus(egui::Id::new(REVOLVE_ANGLE_FIELD_ID))
+                    });
+                    return;
+                }
+            }
+        }
+        if !primary_pressed {
+            return;
+        }
+        let Some(pp) = pointer_screen else {
+            return;
+        };
+        // 1) profile faces
+        if let Some(face) = pick_extrude_face(
+            pp,
+            project,
+            &self.state.doc,
+            self.state.cam.eye(),
+            cam,
+            viewport,
+            vp,
+        ) {
+            let sketch = actions::extrude_face_sketch(&self.state.doc, &face);
+            let cr = self
+                .state
+                .creating_revolve
+                .get_or_insert_with(actions::CreatingRevolve::default);
+            if cr.sketch.is_some() && cr.sketch != sketch {
+                self.state.status = "Revolve faces must share one sketch".to_string();
+                return;
+            }
+            cr.sketch = sketch;
+            if let Some(pos) = cr.faces.iter().position(|f| *f == face) {
+                cr.faces.remove(pos);
+            } else {
+                cr.faces.push(face);
+            }
+            self.state.status = format!(
+                "Revolve: {} face(s){}",
+                cr.faces.len(),
+                if cr.axis.is_none() { " — click an axis line" } else { "" }
+            );
+            return;
+        }
+        // 2) axis line / global axis / 3) cut bodies
+        let gp = cam.ground_point(pp, viewport, vp);
+        if let Some(target) = resolve_pick_target(pp, project, gp, &self.state.doc, pick_occlusion)
+        {
+            match target.kind {
+                construction::PickTargetKind::Line(li) => {
+                    let cr = self
+                        .state
+                        .creating_revolve
+                        .get_or_insert_with(actions::CreatingRevolve::default);
+                    cr.axis = Some(model::RevolveAxis::Line(li));
+                    self.state.status =
+                        "Revolve: axis set — drag the handle or type an angle".to_string();
+                    return;
+                }
+                construction::PickTargetKind::GlobalAxis(axis) => {
+                    let cr = self
+                        .state
+                        .creating_revolve
+                        .get_or_insert_with(actions::CreatingRevolve::default);
+                    cr.axis = Some(match axis {
+                        construction::GlobalAxis::X => model::RevolveAxis::X,
+                        construction::GlobalAxis::Y => model::RevolveAxis::Y,
+                        construction::GlobalAxis::Z => model::RevolveAxis::Z,
+                    });
+                    self.state.status =
+                        "Revolve: axis set — drag the handle or type an angle".to_string();
+                    return;
+                }
+                ref kind => {
+                    // In Cut mode, clicking a body toggles it into the cut set.
+                    if let Some(SceneElement::Body(bi)) = scene_element_from_pick(kind) {
+                        if let Some(cr) = self.state.creating_revolve.as_mut() {
+                            if cr.body_choice == actions::RevolveBodyChoice::Cut {
+                                if let Some(pos) = cr.cut_bodies.iter().position(|b| *b == bi) {
+                                    cr.cut_bodies.remove(pos);
+                                } else {
+                                    cr.cut_bodies.push(bi);
+                                }
+                                self.state.status =
+                                    format!("Revolve: cutting {} body(ies)", cr.cut_bodies.len());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Floating angle field for the in-progress revolve (Enter commits). Mirrors the
+    /// extrude distance input.
+    fn show_revolve_angle_input(&mut self, ui: &egui::Ui, project: &impl Fn(Vec3) -> Option<egui::Pos2>) {
+        let Some((anchor, tangent)) = self.revolve_gizmo_frame() else {
+            return;
+        };
+        let angle = self
+            .state
+            .creating_revolve
+            .as_ref()
+            .map(|c| c.evaluated_angle_deg(&self.state.doc))
+            .unwrap_or(360.0);
+        let handle_offset = construction::gizmo_display_offset(angle * 0.05);
+        let Some(pos) =
+            project(construction::offset_handle(anchor, tangent, handle_offset))
+                .map(|p| p + egui::vec2(14.0, -12.0))
+        else {
+            return;
+        };
+        let mut commit = false;
+        egui::Area::new(egui::Id::new("revolve_angle_input"))
+            .fixed_pos(pos)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let Some(cr) = self.state.creating_revolve.as_mut() else {
+                            return;
+                        };
+                        let field = egui::TextEdit::singleline(&mut cr.text)
+                            .id(egui::Id::new(REVOLVE_ANGLE_FIELD_ID))
+                            .desired_width(64.0)
+                            .hint_text("360");
+                        let response = ui.add(field);
+                        if cr.pending_focus {
+                            response.request_focus();
+                            cr.pending_focus = false;
+                        }
+                        if response.changed() {
+                            cr.user_edited = true;
+                        }
+                        ui.label("deg");
+                        if ui.input(|i| i.key_pressed(egui::Key::Enter)) && response.lost_focus() {
+                            commit = true;
+                        }
+                    });
+                });
+            });
+        if commit {
+            self.state.apply(Action::CommitRevolve);
+        }
+    }
+
     /// Loft tool (SPEC §3.5): click closed sketch profiles (circles or line loops) to
     /// collect cross sections; Enter blends them into a lofted solid. The picked set shows
     /// in the context-pane selection picker (#167), where rows can be removed.
@@ -2375,6 +2622,16 @@ impl eframe::App for App {
                 }
                 if icons::selectable_icon_button(
                     ui,
+                    icons::IconId::Revolve,
+                    self.state.tool == Tool::Revolve,
+                    shortcuts::compact_label("Revolve", shortcuts::tool_shortcut(Tool::Revolve)),
+                )
+                .clicked()
+                {
+                    self.state.apply(Action::SetTool(Tool::Revolve));
+                }
+                if icons::selectable_icon_button(
+                    ui,
                     icons::IconId::Dimension,
                     self.state.tool == Tool::Dimension,
                     shortcuts::compact_label(
@@ -2635,6 +2892,40 @@ impl eframe::App for App {
                 },
                 // "Calibrate scale" button (#163): one tracing image selected, nothing
                 // else, no calibration already running.
+                revolve: (self.state.tool == Tool::Revolve).then(|| {
+                    let cr = self.state.creating_revolve.as_ref();
+                    context::RevolveControl {
+                        face_count: cr.map(|c| c.faces.len()).unwrap_or(0),
+                        axis_label: cr.and_then(|c| c.axis).map(|a| match a {
+                            model::RevolveAxis::Line(li) => names::element_name(
+                                &self.state.doc,
+                                SceneElement::Line(li),
+                            )
+                            .map(|n| n.to_string())
+                            .unwrap_or_else(|| format!("line {li}")),
+                            model::RevolveAxis::X => "the X axis".to_string(),
+                            model::RevolveAxis::Y => "the Y axis".to_string(),
+                            model::RevolveAxis::Z => "the Z axis".to_string(),
+                        }),
+                        symmetric: cr.map(|c| c.symmetric).unwrap_or(false),
+                        body_choice: cr.map(|c| c.body_choice).unwrap_or_default(),
+                        cut_rows: cr
+                            .map(|c| {
+                                c.cut_bodies
+                                    .iter()
+                                    .map(|&bi| {
+                                        names::element_name(
+                                            &self.state.doc,
+                                            SceneElement::Body(bi),
+                                        )
+                                        .map(|n| n.to_string())
+                                        .unwrap_or_else(|| format!("Body {bi}"))
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    }
+                }),
                 calibrate_start: (self.state.creating_calibration.is_none()).then(|| {
                     let mut only_image = None;
                     for element in self.state.scene_selection.iter() {
@@ -2668,6 +2959,7 @@ impl eframe::App for App {
             let mut edge_picker_edit: Option<Option<usize>> = None;
             let mut calibrate_apply: Option<(context::CalibrateImageControl, String)> = None;
             let mut calibrate_begin: Option<usize> = None;
+            let mut revolve_edit: Option<context::RevolveEdit> = None;
             egui::SidePanel::right("context")
                 .resizable(true)
                 .default_width(200.0)
@@ -2696,10 +2988,21 @@ impl eframe::App for App {
                         &mut |mode| extrude_body_mode_change = Some(mode),
                         &mut |choice| units_change = Some(choice),
                         &mut |edit| edge_picker_edit = Some(edit),
+                        &mut |edit| revolve_edit = Some(edit),
                         &mut |image| calibrate_begin = Some(image),
                         &mut |control, text| calibrate_apply = Some((control, text)),
                     );
                 });
+            if let Some(edit) = revolve_edit {
+                let cr = self
+                    .state
+                    .creating_revolve
+                    .get_or_insert_with(actions::CreatingRevolve::default);
+                match edit {
+                    context::RevolveEdit::Symmetric(v) => cr.symmetric = v,
+                    context::RevolveEdit::BodyChoice(choice) => cr.body_choice = choice,
+                }
+            }
             if let Some(image) = calibrate_begin {
                 self.state.apply(Action::BeginImageCalibration { image });
             }
@@ -2721,7 +3024,18 @@ impl eframe::App for App {
             if let Some(edit) = edge_picker_edit {
                 // Remove one row (or clear the set) from the active tool's picked set
                 // (#167); dropping the last edge cancels the treatment entirely.
-                if self.state.tool == Tool::Loft {
+                if self.state.tool == Tool::Revolve {
+                    if let Some(cr) = self.state.creating_revolve.as_mut() {
+                        match edit {
+                            Some(index) => {
+                                if index < cr.cut_bodies.len() {
+                                    cr.cut_bodies.remove(index);
+                                }
+                            }
+                            None => cr.cut_bodies.clear(),
+                        }
+                    }
+                } else if self.state.tool == Tool::Loft {
                     match edit {
                         Some(index) => {
                             if let Some(cl) = self.state.creating_loft.as_mut() {
@@ -3168,6 +3482,7 @@ fn build_viewport_scene_input<'a>(
     creating_plane: Option<&CreatingConstructionPlane>,
     creating_extrusion: Option<&CreatingExtrusion>,
     creating_edge_treatment: Option<&CreatingEdgeTreatment>,
+    creating_revolve: Option<&actions::CreatingRevolve>,
     pending_extrude_target: Option<model::ExtrudeTarget>,
     plane_gizmo: Option<gpu_viewport::ViewportPlaneGizmo>,
     extrude_gizmo: Option<gpu_viewport::ViewportExtrudeGizmo>,
@@ -3271,6 +3586,27 @@ fn build_viewport_scene_input<'a>(
         .and_then(|ce| ce.edit_index)
         .or_else(|| creating_edge_treatment.and_then(|cet| Some(cet.primary()?.0)));
 
+    // Live ghost of the in-progress revolve (#revolve): a temp Revolution meshed with the
+    // fallback lathe every frame (cheap, and identical to what a lean commit would build).
+    let preview_solid = creating_revolve.and_then(|cr| {
+        let axis = cr.axis?;
+        let sketch = cr.sketch?;
+        if cr.faces.is_empty() {
+            return None;
+        }
+        let probe = model::Revolution {
+            sketch,
+            faces: cr.faces.clone(),
+            axis,
+            angle_deg: cr.evaluated_angle_deg(doc),
+            symmetric: cr.symmetric,
+            mode: model::RevolveMode::NewBody,
+            name: None,
+            deleted: false,
+        };
+        extrude::revolve_mesh(doc, &probe)
+    });
+
     let preview_extrusion = creating_extrusion
         .and_then(|ce| {
             (!ce.faces.is_empty()).then(|| model::Extrusion {
@@ -3342,6 +3678,7 @@ fn build_viewport_scene_input<'a>(
         preview_line,
         preview_circle,
         preview_extrusion,
+        preview_solid,
         editing_extrusion,
         preview_cut_body,
         plane_preview,
@@ -4559,6 +4896,7 @@ fn extrude_face_id(face: model::ExtrudeFace) -> FaceId {
 const EXTRUDE_GIZMO_LIFT: f32 = 4.0;
 
 /// egui id of the floating extrude-distance text field.
+const REVOLVE_ANGLE_FIELD_ID: &str = "revolve_angle_field";
 const EXTRUDE_DISTANCE_FIELD_ID: &str = "extrude_distance_input";
 
 /// egui id of the floating chamfer/fillet amount text field.
@@ -6196,6 +6534,11 @@ impl App {
             self.handle_loft_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
         }
 
+        if self.state.tool == Tool::Revolve {
+            self.handle_revolve_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
+            self.show_revolve_angle_input(ui, &project);
+        }
+
         if matches!(self.state.tool, Tool::Chamfer | Tool::Fillet) {
             self.handle_vertex_treatment_tool(ui, &project, pointer_screen);
             self.show_vertex_treatment_amount_input(ui, &project);
@@ -6627,6 +6970,30 @@ impl App {
         // other needs it closed).
         let mut vertex_treatment_gizmo = None;
         let mut vertex_treatment_preview = None;
+        // Revolve angle handle (#revolve): reuses the shared gizmo slot (mutually
+        // exclusive with chamfer/fillet — different tools).
+        if self.state.tool == Tool::Revolve {
+            if let Some((anchor, tangent)) = self.revolve_gizmo_frame() {
+                let angle = self
+                    .state
+                    .creating_revolve
+                    .as_ref()
+                    .map(|c| c.evaluated_angle_deg(&self.state.doc))
+                    .unwrap_or(360.0);
+                let handle_offset = construction::gizmo_display_offset(angle * 0.05);
+                let hovered = self.revolve_gizmo_drag.is_some()
+                    || pointer_screen.is_some_and(|pp| {
+                        construction::offset_gizmo_hit(pp, &project, anchor, tangent, handle_offset)
+                    });
+                vertex_treatment_gizmo = Some(gpu_viewport::ViewportExtrudeGizmo {
+                    origin: anchor,
+                    normal: tangent,
+                    offset: handle_offset,
+                    color: col::PREVIEW,
+                    hovered,
+                });
+            }
+        }
         if matches!(self.state.tool, Tool::Chamfer | Tool::Fillet) {
             if let (Some(session), Some(cvt)) =
                 (self.state.sketch_session, self.state.creating_vertex_treatment.as_ref())
@@ -6687,6 +7054,7 @@ impl App {
             self.state.creating_plane.as_ref(),
             self.state.creating_extrusion.as_ref(),
             self.state.creating_edge_treatment.as_ref(),
+            self.state.creating_revolve.as_ref(),
             self.pending_extrude_target.clone(),
             plane_gizmo,
             extrude_gizmo,
@@ -7754,6 +8122,16 @@ impl App {
                     "Loft — click two or more closed profiles (circles or loops) • Enter: create loft • Esc: cancel"
                 }
             }
+            Tool::Revolve => {
+                let cr = self.state.creating_revolve.as_ref();
+                if cr.is_some_and(|c| !c.faces.is_empty() && c.axis.is_some()) {
+                    "Revolve — drag the handle or type an angle • Enter: commit • Esc: cancel"
+                } else if cr.is_some_and(|c| !c.faces.is_empty()) {
+                    "Revolve — click a line (or global axis) to revolve around"
+                } else {
+                    "Revolve — click one or more coplanar profile faces"
+                }
+            }
             Tool::Rectangle => {
                 if self.state.creating_rect.is_some() {
                     "Move mouse (free dim) • Type in focused input to constrain • Tab: switch dims • Click/Enter: create rect • Esc: cancel"
@@ -8583,6 +8961,7 @@ mod tests {
             None,
             state.creating_extrusion.as_ref(),
             None,
+            None,
             pending.clone(),
             None,
             None,
@@ -8649,6 +9028,7 @@ mod tests {
             None,
             None,
             state.creating_edge_treatment.as_ref(),
+            None,
             None,
             None,
             None,

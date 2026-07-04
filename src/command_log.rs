@@ -22,6 +22,7 @@ pub struct CommandLog {
     history: Vec<Instruction>,
     extrusion_count_before: usize,
     loft_count_before: usize,
+    revolution_count_before: usize,
     constraint_count_before: usize,
 }
 
@@ -110,6 +111,9 @@ impl CommandLog {
         if matches!(action, Action::CommitLoft) {
             self.loft_count_before = doc.lofts.len();
         }
+        if matches!(action, Action::CommitRevolve) {
+            self.revolution_count_before = doc.revolutions.len();
+        }
         if Self::can_add_snap_constraint(action) {
             self.constraint_count_before = doc.constraints.len();
         }
@@ -136,6 +140,10 @@ impl CommandLog {
         } else if matches!(action, Action::CommitLoft) {
             (doc.lofts.len() > self.loft_count_before)
                 .then(|| crate::script::instruction_for_new_loft(doc))
+                .flatten()
+        } else if matches!(action, Action::CommitRevolve) {
+            (doc.revolutions.len() > self.revolution_count_before)
+                .then(|| crate::script::instruction_for_new_revolution(doc))
                 .flatten()
         } else {
             instruction_from_action(&action, doc)

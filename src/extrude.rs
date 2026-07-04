@@ -427,11 +427,28 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
     if body.deleted || body.source.imported_mesh_index().is_some() {
         return None;
     }
-    occt_body_shape_from_indices(
-        doc,
-        body.source.extrusion_indices(),
-        body.source.cut_extrusion_indices(),
-    )
+    let mut solid = match body.source {
+        crate::model::BodySource::Revolve(ri) => {
+            occt_revolution_shape(doc, doc.revolutions.get(ri).filter(|r| !r.deleted)?)?
+        }
+        _ => occt_body_shape_from_indices(
+            doc,
+            body.source.extrusion_indices(),
+            body.source.cut_extrusion_indices(),
+        )?,
+    };
+    // Revolutions that fuse into / cut this body (#revolve).
+    for (ri, is_cut) in revolutions_targeting(doc, body_index) {
+        let rev = &doc.revolutions[ri];
+        let shape = occt_revolution_shape(doc, rev)?;
+        let op = if is_cut {
+            crate::kernel::BoolOp::Cut
+        } else {
+            crate::kernel::BoolOp::Fuse
+        };
+        solid = solid.boolean(&shape, op)?;
+    }
+    Some(solid)
 }
 
 /// Commit-time kernel feasibility trial for a 3D edge treatment (#103). `candidate` is the
@@ -489,9 +506,10 @@ pub fn occt_edge_treatments_feasible(
 #[cfg(feature = "occt")]
 pub fn kernel_fallback_cut_warning(doc: &Document) -> Option<String> {
     for (i, body) in doc.bodies.iter().enumerate() {
+        let cut_by_revolve = revolutions_targeting(doc, i).iter().any(|(_, cut)| *cut);
         if body.deleted
             || body.source.imported_mesh_index().is_some()
-            || body.source.cut_extrusion_indices().is_empty()
+            || (body.source.cut_extrusion_indices().is_empty() && !cut_by_revolve)
         {
             continue;
         }
@@ -514,6 +532,135 @@ pub fn kernel_fallback_cut_warning(doc: &Document) -> Option<String> {
 /// faces once those go through the kernel.
 #[cfg(feature = "occt")]
 pub const OCCT_DEFLECTION: f32 = 0.05;
+
+/// World-space axis (origin, unit direction) a [`crate::model::Revolution`] sweeps around.
+pub fn revolve_axis_world(
+    doc: &Document,
+    rev: &crate::model::Revolution,
+) -> Option<(Vec3, Vec3)> {
+    match rev.axis {
+        crate::model::RevolveAxis::Line(li) => {
+            let line = doc.lines.get(li)?;
+            if !crate::document_lifecycle::line_alive(doc, li) {
+                return None;
+            }
+            let (a, b) = crate::face::line_world_endpoints(doc, line)?;
+            let dir = (b - a).normalize_or_zero();
+            (dir.length_squared() > 1e-8).then_some((a, dir))
+        }
+        crate::model::RevolveAxis::X => Some((Vec3::ZERO, Vec3::X)),
+        crate::model::RevolveAxis::Y => Some((Vec3::ZERO, Vec3::Y)),
+        crate::model::RevolveAxis::Z => Some((Vec3::ZERO, Vec3::Z)),
+    }
+}
+
+/// Effective sweep angle in degrees, clamped to a sane range (360 = full revolution).
+pub fn revolve_effective_angle(rev: &crate::model::Revolution) -> f32 {
+    rev.angle_deg.clamp(0.1, 360.0)
+}
+
+/// Hand-rolled lathe mesh for a revolution (the no-kernel fallback and the live ghost
+/// preview): each profile is swept around the axis in angular steps, walls stitched
+/// between consecutive rotated rings, with the start/end profile faces capped for a
+/// partial sweep (a full 360-degree sweep closes on itself and needs no caps).
+pub fn revolve_mesh(doc: &Document, rev: &crate::model::Revolution) -> Option<SolidMesh> {
+    let (origin, dir) = revolve_axis_world(doc, rev)?;
+    let angle = revolve_effective_angle(rev);
+    let full = angle >= 359.99;
+    let start = if rev.symmetric { -angle / 2.0 } else { 0.0 };
+    let mut mesh = SolidMesh::default();
+    for face in &rev.faces {
+        let (profile, _normal) = face_profile_world(doc, face)?;
+        if profile.len() < 3 {
+            return None;
+        }
+        let steps = (((CIRCLE_SEGMENTS as f32) * angle / 360.0).ceil() as usize).max(8);
+        let rings: Vec<Vec<Vec3>> = (0..=steps)
+            .map(|i| {
+                let a = (start + angle * i as f32 / steps as f32).to_radians();
+                let q = glam::Quat::from_axis_angle(dir, a);
+                profile.iter().map(|p| origin + q * (*p - origin)).collect()
+            })
+            .collect();
+        // Orientation reference: the *rotated profile centroid* at each sweep step — a
+        // point locally inside the solid, which stays correct for washer-like profiles
+        // that don't contain the axis (a single on-axis reference flips the inner wall).
+        let centroid = profile.iter().copied().sum::<Vec3>() / profile.len() as f32;
+        let centroids: Vec<Vec3> = (0..=steps)
+            .map(|i| {
+                let a = (start + angle * i as f32 / steps as f32).to_radians();
+                origin + glam::Quat::from_axis_angle(dir, a) * (centroid - origin)
+            })
+            .collect();
+        let n = profile.len();
+        for (i, w) in rings.windows(2).enumerate() {
+            let (ra, rb) = (&w[0], &w[1]);
+            let interior = (centroids[i] + centroids[i + 1]) * 0.5;
+            for k in 0..n {
+                let k1 = (k + 1) % n;
+                push_oriented(&mut mesh.triangles, [ra[k], ra[k1], rb[k1]], interior);
+                push_oriented(&mut mesh.triangles, [ra[k], rb[k1], rb[k]], interior);
+            }
+        }
+        if !full {
+            // Cap interiors sit half a step *into* the sweep so each cap faces outward.
+            triangulate_cap(rings.first()?, centroids[0].lerp(centroids[1], 0.5), &mut mesh.triangles);
+            triangulate_cap(
+                rings.last()?,
+                centroids[steps].lerp(centroids[steps - 1], 0.5),
+                &mut mesh.triangles,
+            );
+        }
+    }
+    (!mesh.is_empty()).then_some(mesh)
+}
+
+/// Real BREP solid of revolution via the kernel: each profile revolved with
+/// `BRepPrimAPI_MakeRevol`, multiple profiles fused. `None` when any face/axis is
+/// degenerate or the kernel can't build it (callers fall back to [`revolve_mesh`]).
+#[cfg(feature = "occt")]
+pub fn occt_revolution_shape(
+    doc: &Document,
+    rev: &crate::model::Revolution,
+) -> Option<crate::kernel::Shape> {
+    let (origin, dir) = revolve_axis_world(doc, rev)?;
+    let angle_rad = revolve_effective_angle(rev).to_radians() as f64;
+    let mut fused: Option<crate::kernel::Shape> = None;
+    for face in &rev.faces {
+        let (profile, _normal) = face_profile_world(doc, face)?;
+        if profile.len() < 3 {
+            return None;
+        }
+        let shape =
+            crate::kernel::Shape::revolve(&profile, origin, dir, angle_rad, rev.symmetric)?;
+        fused = Some(match fused {
+            None => shape,
+            Some(acc) => acc.boolean(&shape, crate::kernel::BoolOp::Fuse)?,
+        });
+    }
+    fused
+}
+
+/// The revolutions fusing into (`false`) or cutting (`true`) `body_index`.
+pub fn revolutions_targeting(
+    doc: &Document,
+    body_index: usize,
+) -> Vec<(usize, bool)> {
+    doc.revolutions
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| !r.deleted)
+        .filter_map(|(ri, r)| match &r.mode {
+            crate::model::RevolveMode::AddTo(bodies) if bodies.contains(&body_index) => {
+                Some((ri, false))
+            }
+            crate::model::RevolveMode::Cut(bodies) if bodies.contains(&body_index) => {
+                Some((ri, true))
+            }
+            _ => None,
+        })
+        .collect()
+}
 
 /// Ruled loft mesh through the given cross sections (in order): each section's boundary is
 /// resampled to a common ring size, rings are aligned (consistent winding, twist-minimizing
@@ -878,6 +1025,11 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
         let loft = doc.lofts.get(li).filter(|l| !l.deleted)?;
         return loft_mesh(doc, loft);
     }
+    #[cfg(not(feature = "occt"))]
+    if let crate::model::BodySource::Revolve(ri) = body.source {
+        let rev = doc.revolutions.get(ri).filter(|r| !r.deleted)?;
+        return revolve_mesh(doc, rev);
+    }
     // Fuse the body's added extrusions into one real solid via OCCT and subtract its cut
     // extrusions (#86/#35) when they're all kernel-representable; otherwise fall back to
     // per-extrusion meshing below.
@@ -887,12 +1039,18 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
     // the cut is silently ignored. This is resolved once the kernel is the default (#89);
     // until then, cut mode is only *offered* in the GUI when `occt` is compiled in.
     #[cfg(feature = "occt")]
-    if let Some(mesh) = occt_body_mesh(
-        doc,
-        body.source.extrusion_indices(),
-        body.source.cut_extrusion_indices(),
-    ) {
-        return Some(mesh);
+    if let Some(shape) = occt_body_shape(doc, body_index) {
+        let tris = shape.tessellate(OCCT_DEFLECTION as f64);
+        if !tris.is_empty() {
+            return Some(SolidMesh { triangles: tris });
+        }
+    }
+    // Kernel path failed (or lean build): the additive fallback. A revolve-sourced body
+    // meshes its lathe; cut revolutions are ignored here, like cut extrusions (the
+    // fallback warning covers both).
+    if let crate::model::BodySource::Revolve(ri) = body.source {
+        let rev = doc.revolutions.get(ri).filter(|r| !r.deleted)?;
+        return revolve_mesh(doc, rev);
     }
     let mut mesh = SolidMesh::default();
     for &ei in body.source.extrusion_indices() {
@@ -903,6 +1061,14 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
             continue;
         }
         if let Some(solid) = extrusion_mesh(doc, extrusion) {
+            mesh.triangles.extend(solid.triangles);
+        }
+    }
+    for (ri, is_cut) in revolutions_targeting(doc, body_index) {
+        if is_cut {
+            continue;
+        }
+        if let Some(solid) = revolve_mesh(doc, &doc.revolutions[ri]) {
             mesh.triangles.extend(solid.triangles);
         }
     }
@@ -2602,6 +2768,116 @@ mod tests {
         assert!((max.x - min.x - 10.0).abs() < 1e-4);
         assert!((max.y - min.y - 4.0).abs() < 1e-4);
         assert!((max.z - min.z - 6.0).abs() < 1e-4);
+    }
+
+    fn test_revolution(
+        sketch: crate::model::SketchId,
+        faces: Vec<ExtrudeFace>,
+        angle: f32,
+        symmetric: bool,
+        mode: crate::model::RevolveMode,
+    ) -> crate::model::Revolution {
+        crate::model::Revolution {
+            sketch,
+            faces,
+            axis: crate::model::RevolveAxis::Y,
+            angle_deg: angle,
+            symmetric,
+            mode,
+            name: None,
+            deleted: false,
+        }
+    }
+
+    /// A 10x10 square at x 10..20 revolved 360 degrees around the global Y axis is a
+    /// washer: pi * (20^2 - 10^2) * 10.
+    #[test]
+    fn revolve_full_sweep_makes_a_ring() {
+        let (mut doc, sketch) = sketch_doc();
+        let profile = rect_profile(&mut doc, sketch, 10.0, 0.0, 10.0, 10.0);
+        doc.revolutions.push(test_revolution(
+            sketch,
+            vec![profile],
+            360.0,
+            false,
+            crate::model::RevolveMode::NewBody,
+        ));
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Revolve(0),
+            name: None,
+            deleted: false,
+        });
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
+        let expected = std::f32::consts::PI * (400.0 - 100.0) * 10.0;
+        assert!(
+            (vol - expected).abs() < expected * 0.02,
+            "expected ~{expected}, got {vol}"
+        );
+    }
+
+    /// A 90-degree sweep is a quarter of the ring, symmetric or not.
+    #[test]
+    fn revolve_partial_sweep_is_proportional_and_symmetric_matches() {
+        let expected = std::f32::consts::PI * 300.0 * 10.0 / 4.0;
+        for symmetric in [false, true] {
+            let (mut doc, sketch) = sketch_doc();
+            let profile = rect_profile(&mut doc, sketch, 10.0, 0.0, 10.0, 10.0);
+            doc.revolutions.push(test_revolution(
+                sketch,
+                vec![profile],
+                90.0,
+                symmetric,
+                crate::model::RevolveMode::NewBody,
+            ));
+            doc.bodies.push(crate::model::Body {
+                source: crate::model::BodySource::Revolve(0),
+                name: None,
+                deleted: false,
+            });
+            let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
+            assert!(
+                (vol - expected).abs() < expected * 0.02,
+                "symmetric={symmetric}: expected ~{expected}, got {vol}"
+            );
+        }
+    }
+
+    /// #revolve cut mode: a revolved ring subtracted from a plate leaves a circular groove.
+    #[test]
+    #[cfg(feature = "occt")]
+    fn revolve_cut_carves_the_targeted_body() {
+        let (mut doc, sketch) = sketch_doc();
+        let plate = rect_profile(&mut doc, sketch, -30.0, -30.0, 60.0, 60.0);
+        doc.extrusions.push(extrusion(sketch, vec![plate], 5.0));
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(0),
+            name: None,
+            deleted: false,
+        });
+        // Cut tool: a rect profile (x -20..20, y 3..6 in the ground plane) revolved 360
+        // degrees around the global X axis — a tube of inner radius 3, outer radius 6,
+        // length 40, centered on the X axis. It pierces the plate (z 0..5), so the cut
+        // carves a half-buried channel through it.
+        let tube = rect_profile(&mut doc, sketch, -20.0, 3.0, 40.0, 3.0);
+        doc.revolutions.push(crate::model::Revolution {
+            sketch,
+            faces: vec![tube],
+            axis: crate::model::RevolveAxis::X,
+            angle_deg: 360.0,
+            symmetric: false,
+            mode: crate::model::RevolveMode::Cut(vec![0]),
+            name: None,
+            deleted: false,
+        });
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
+        // Removed material = plate ∩ tube: for the z 0..5 slab of an annulus r 3..6 around
+        // the X axis over 40 of length. Assert a meaningful bite rather than the exact
+        // integral: well below the intact plate, well above nothing.
+        let plain = 60.0 * 60.0 * 5.0;
+        assert!(
+            vol < plain - 100.0 && vol > plain * 0.5,
+            "cut should remove a channel: got {vol} vs plain {plain}"
+        );
     }
 
     /// Two equal circles on planes 10mm apart loft into a closed prism whose signed

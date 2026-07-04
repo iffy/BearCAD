@@ -548,6 +548,29 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
 
 ### 3.5 Advanced features
 - **Sweep** — sweep a profile along a path.
+- **Revolve** *(implemented)* — spin one or more coplanar closed profiles around an axis
+  into a solid. The **Revolve** toolbar tool collects profile faces by clicking (same face
+  picking as Extrude), then an axis: any line in the sketch (plain, construction, or
+  projected) or a global X/Y/Z axis. The sweep angle defaults to **360°** and is set by
+  dragging the tangent handle or typing (bare numbers are degrees; `rad`/`deg` suffixes
+  and parameter expressions work); **Symmetric** sweeps half the angle to each side of the
+  profile plane. The result lands as a **new body**, **fused into touching bodies**
+  (resolved at commit by mesh-bounds intersection), or **cut from picked bodies** — cut
+  targets are clicked in the viewport and listed in the context pane's generic selection
+  picker. Data model: `Revolution { sketch, faces, axis, angle_deg, symmetric, mode }` in
+  `Document::revolutions` with `RevolveMode::{NewBody, AddTo(bodies), Cut(bodies)}`;
+  add/cut relationships live on the revolution (bodies consult `revolutions_targeting` at
+  mesh/kernel build time), and a NewBody revolve gets `BodySource::Revolve`. One
+  `ShapeKind::Revolution` undo marker covers the feature and its body. Kernel builds use
+  `BRepPrimAPI_MakeRevol` (full revolutions via the no-angle constructor — the angle
+  constructor normalizes mod 2π and would build a sliver from a float 2π) with symmetric
+  sweeps pre-rotating the profile; the no-kernel fallback lathes rotated profile rings
+  with sweep-end caps, oriented against the rotated profile centroid (correct for
+  washer profiles that don't contain the axis). Scriptable as
+  `bearcad.revolve{ polygon|circles =, axis = "x"|"y"|"z"|{line = i}, angle =,
+  symmetric =, body = "new"|"add"|"cut", bodies = {..} }`, and interactive revolves
+  replay to the command log as the same call. Limitation: the profile must not cross its
+  axis.
 - **Loft** *(implemented)* — blend a solid through two or more closed cross-section
   profiles (circles or line loops) on different planes. The **Loft** toolbar tool collects
   sections by clicking profiles in the viewport (a click on a loop's line picks the whole

@@ -8,6 +8,10 @@
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakeRevol.hxx>
+#include <BRepBuilderAPI_Transform.hxx>
+#include <gp_Ax1.hxx>
+#include <gp_Trsf.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Dir.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
@@ -98,6 +102,57 @@ extern "C" BearcadShape* bearcad_shape_prism(const double* xyz, unsigned long n_
         }
         BRepPrimAPI_MakePrism prism(face.Face(), gp_Vec(dx, dy, dz));
         return new BearcadShape{prism.Shape()};
+    } catch (const Standard_Failure&) {
+        return nullptr;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+// Revolve a closed planar profile (world-space points, first point not repeated) around
+// the axis through (ox,oy,oz) with direction (ax,ay,az) by `angle_rad`. When `symmetric`
+// is nonzero the profile is pre-rotated by -angle/2 so the sweep straddles its plane.
+extern "C" BearcadShape* bearcad_shape_revolve(const double* xyz, unsigned long n_pts,
+                                               double ox, double oy, double oz, double ax,
+                                               double ay, double az, double angle_rad,
+                                               int symmetric) {
+    if (xyz == nullptr || n_pts < 3 || angle_rad <= 0.0) {
+        return nullptr;
+    }
+    try {
+        BRepBuilderAPI_MakePolygon poly;
+        for (unsigned long i = 0; i < n_pts; ++i) {
+            poly.Add(gp_Pnt(xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]));
+        }
+        poly.Close();
+        if (!poly.IsDone()) {
+            return nullptr;
+        }
+        BRepBuilderAPI_MakeFace face(poly.Wire());
+        if (!face.IsDone()) {
+            return nullptr;
+        }
+        gp_Ax1 axis(gp_Pnt(ox, oy, oz), gp_Dir(ax, ay, az));
+        TopoDS_Shape profile = face.Face();
+        if (symmetric != 0) {
+            gp_Trsf pre;
+            pre.SetRotation(axis, -angle_rad / 2.0);
+            profile = BRepBuilderAPI_Transform(profile, pre, true).Shape();
+        }
+        // A full revolution must use the no-angle constructor: MakeRevol normalizes the
+        // angle modulo 2*pi, so a float angle a hair over 2*pi builds a degenerate sliver.
+        if (angle_rad >= 2.0 * M_PI - 1e-6) {
+            BRepPrimAPI_MakeRevol revol(profile, axis);
+            if (!revol.IsDone()) {
+                return nullptr;
+            }
+            return new BearcadShape{revol.Shape()};
+        }
+        BRepPrimAPI_MakeRevol revol(profile, axis, angle_rad);
+        if (!revol.IsDone()) {
+            return nullptr;
+        }
+        return new BearcadShape{revol.Shape()};
     } catch (const Standard_Failure&) {
         return nullptr;
     } catch (...) {
