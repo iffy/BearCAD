@@ -4317,6 +4317,8 @@ impl AppState {
                     return ActionResult::Err(e);
                 };
 
+                let old_len1 = self.doc.lines.get(line1).map(|l| l.length()).unwrap_or(0.0);
+                let old_len2 = self.doc.lines.get(line2).map(|l| l.length()).unwrap_or(0.0);
                 if let Some(l1) = self.doc.lines.get_mut(line1) {
                     match end1 {
                         LineEnd::Start => (l1.x0, l1.y0) = geom.p1,
@@ -4327,6 +4329,36 @@ impl AppState {
                     match end2 {
                         LineEnd::Start => (l2.x0, l2.y0) = geom.p2,
                         LineEnd::End => (l2.x1, l2.y1) = geom.p2,
+                    }
+                }
+                // A trimmed line's LENGTH dimension still demands the pre-trim length; the
+                // next solve would drag the endpoint back and mangle the treated corner
+                // (the bug showed as a bracket bend collapsing one step later). Re-target
+                // the dims to the trimmed length — numeric expressions get the new number,
+                // parameter expressions stay symbolic as `(expr) - trim` so they keep
+                // following their parameters.
+                for (li, old_len) in [(line1, old_len1), (line2, old_len2)] {
+                    let new_len = self.doc.lines.get(li).map(|l| l.length()).unwrap_or(0.0);
+                    let trim = old_len - new_len;
+                    if trim <= 1e-4 {
+                        continue;
+                    }
+                    if let Some(constraint) = self.doc.constraints.iter_mut().find(|c| {
+                        !c.deleted
+                            && c.sketch == sketch
+                            && matches!(
+                                &c.kind,
+                                ConstraintKind::Distance {
+                                    target: DistanceTarget::LineLength(target_line),
+                                } if *target_line == li
+                            )
+                    }) {
+                        let expr = constraint.expression.trim();
+                        constraint.expression = if expr.parse::<f32>().is_ok() {
+                            format!("{:.3}", new_len)
+                        } else {
+                            format!("({expr}) - {trim:.3}")
+                        };
                     }
                 }
 
@@ -6371,6 +6403,80 @@ mod tests {
         ));
         assert!(state.doc.revolutions.is_empty());
         assert!(state.creating_revolve.is_some());
+    }
+
+    /// A fillet/chamfer trim must re-target the trimmed lines' LENGTH dimensions:
+    /// with stale dims, the next full solve dragged the endpoints back and mangled
+    /// the treated corner (the Quickstart bracket's bend collapsed one step later).
+    #[test]
+    fn vertex_treatment_retargets_length_dims_so_resolve_keeps_the_trim() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        // Two lines meeting at (10, 0), each with a numeric length dim (like typed input).
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 10.0));
+        for (li, len) in [(0usize, "10"), (1, "10")] {
+            state.doc.constraints.push(crate::model::Constraint {
+                sketch,
+                kind: ConstraintKind::Distance {
+                    target: DistanceTarget::LineLength(li),
+                },
+                expression: len.to_string(),
+                dim_offset: None,
+                name: None,
+                deleted: false,
+            });
+        }
+        state.doc.constraints.push(crate::model::Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                    line: 0,
+                    end: LineEnd::End,
+                }),
+                b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                    line: 1,
+                    end: LineEnd::Start,
+                }),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+        let result = state.apply(Action::CommitVertexTreatment {
+            point: ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End },
+            kind: VertexTreatmentKind::Fillet,
+            amount: 3.0,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        // Trimmed: line 0 now ends at x = 7.
+        assert!((state.doc.lines[0].x1 - 7.0).abs() < 1e-3);
+        // The length dims followed the trim.
+        let dim0 = state
+            .doc
+            .constraints
+            .iter()
+            .find(|c| {
+                !c.deleted
+                    && matches!(
+                        &c.kind,
+                        ConstraintKind::Distance { target: DistanceTarget::LineLength(0) }
+                    )
+            })
+            .expect("length dim");
+        assert!(
+            (dim0.expression.parse::<f32>().unwrap() - 7.0).abs() < 1e-2,
+            "dim should be ~7, got {}",
+            dim0.expression
+        );
+        // A full re-solve keeps the trim instead of restoring the old length.
+        crate::constraints::solve_document_constraints(&mut state.doc).unwrap();
+        assert!(
+            (state.doc.lines[0].x1 - 7.0).abs() < 1e-2,
+            "trim must survive a re-solve, got x1 = {}",
+            state.doc.lines[0].x1
+        );
     }
 
     /// Loft (SPEC §3.5): toggling two circle sections and committing creates a loft plus
