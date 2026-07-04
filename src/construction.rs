@@ -755,7 +755,7 @@ pub fn draw_offset_gizmo(
             // path's `push_gizmo_cone`.
             let dir = shaft.normalized();
             for sign in [1.0f32, -1.0] {
-                draw_gizmo_cone_2d(painter, end, dir * sign, 9.0, 11.0, 4.5, offset_color);
+                draw_gizmo_arrow_2d(painter, end, dir * sign, 14.0, 8.0, 4.0, offset_color);
             }
         }
         if hovered {
@@ -767,26 +767,23 @@ pub fn draw_offset_gizmo(
     }
 }
 
-/// Screen-space direction cone for the 2D painter gizmo fallback: a filled triangle
-/// pointing along `dir`, its base `gap` px from the handle center (the 2D silhouette of
-/// the GPU path's solid cone).
-fn draw_gizmo_cone_2d(
+/// Screen-space direction arrow for the 2D painter gizmo fallback: a line-drawn V at
+/// `handle + dir * (gap + head)` pointing along `dir` — mirrors the GPU path's
+/// `push_gizmo_arrowhead`.
+fn draw_gizmo_arrow_2d(
     painter: &egui::Painter,
     handle: egui::Pos2,
     dir: egui::Vec2,
     gap: f32,
-    length: f32,
-    radius: f32,
+    head: f32,
+    wing: f32,
     color: egui::Color32,
 ) {
-    let base = handle + dir * gap;
-    let apex = handle + dir * (gap + length);
-    let side = egui::vec2(-dir.y, dir.x) * radius;
-    painter.add(egui::Shape::convex_polygon(
-        vec![apex, base + side, base - side],
-        color,
-        egui::Stroke::NONE,
-    ));
+    let tip = handle + dir * (gap + head);
+    let base = tip - dir * head;
+    let side = egui::vec2(-dir.y, dir.x) * wing;
+    painter.line_segment([tip, base + side], egui::Stroke::new(2.0, color));
+    painter.line_segment([tip, base - side], egui::Stroke::new(2.0, color));
 }
 
 /// Draw offset arrow and angle circle handles for an axis-referenced plane.
@@ -856,7 +853,7 @@ pub fn draw_axis_plane_gizmo(
             let t_screen = (ta - tb).normalized();
             if t_screen.length_sq() > 1e-4 {
                 for sign in [-1.0f32, 1.0] {
-                    draw_gizmo_cone_2d(painter, sp, t_screen * sign, 7.0, 8.0, 3.5, angle_color);
+                    draw_gizmo_arrow_2d(painter, sp, t_screen * sign, 12.0, 5.0, 3.0, angle_color);
                 }
             }
         }
