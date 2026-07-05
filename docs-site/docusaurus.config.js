@@ -125,6 +125,12 @@ const config = {
           },
           {
             type: 'doc',
+            docId: 'quickstart',
+            position: 'left',
+            label: 'Quickstart',
+          },
+          {
+            type: 'doc',
             docId: 'tools/index',
             position: 'left',
             label: 'Tools & Navigation',
