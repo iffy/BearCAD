@@ -22,21 +22,24 @@ occt_src="$repo_root/third_party/OCCT"
 occt_build="$occt_src/occt-build-wasm"
 occt_install="$occt_src/occt-install-wasm"
 
-if [ ! -f "$occt_src/CMakeLists.txt" ]; then
-  echo "error: OCCT submodule missing at $occt_src" >&2
-  echo "       run: git submodule update --init --depth 1 third_party/OCCT" >&2
-  exit 1
-fi
-
-command -v cmake >/dev/null 2>&1 || { echo "error: cmake not found on PATH" >&2; exit 1; }
 command -v emcc >/dev/null 2>&1 || { echo "error: emcc (emscripten) not found on PATH" >&2; exit 1; }
-
-# emcmake wraps cmake with the Emscripten toolchain file.
-command -v emcmake >/dev/null 2>&1 || { echo "error: emcmake not found on PATH" >&2; exit 1; }
 
 jobs="$( (getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) )"
 
 if [ ! -f "$occt_install/lib/libTKernel.a" ]; then
+  # The OCCT *sources* (submodule) and cmake are only needed to build the static libs.
+  # With a populated install prefix (e.g. restored from CI cache), the link step below
+  # is self-sufficient — CI skips the submodule fetch entirely on a cache hit.
+  if [ ! -f "$occt_src/CMakeLists.txt" ]; then
+    echo "error: OCCT submodule missing at $occt_src" >&2
+    echo "       run: git submodule update --init --depth 1 third_party/OCCT" >&2
+    exit 1
+  fi
+
+  command -v cmake >/dev/null 2>&1 || { echo "error: cmake not found on PATH" >&2; exit 1; }
+  # emcmake wraps cmake with the Emscripten toolchain file.
+  command -v emcmake >/dev/null 2>&1 || { echo "error: emcmake not found on PATH" >&2; exit 1; }
+
   echo ">> Configuring OCCT for wasm (static, modeling + STEP, single-threaded) ..."
   emcmake cmake -S "$occt_src" -B "$occt_build" \
     -DCMAKE_BUILD_TYPE=Release \
