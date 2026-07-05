@@ -18,6 +18,9 @@ path = "src/main.rs"
 # instead — no C++ toolchain, no OCCT — use `--no-default-features` (this is what
 # the Windows release and the fast CI check do). See SPEC.md §10.
 default = ["occt"]
+# EXPERIMENT (slvs-solver branch): replace the hand-rolled sketch constraint solver
+# with SolveSpace's libslvs (third_party/solvespace, compiled by build.rs). Native-only.
+slvs = []
 # Statically link the OpenCASCADE (OCCT) geometry kernel.
 occt = []
 

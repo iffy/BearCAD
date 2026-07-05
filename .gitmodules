@@ -1,3 +1,6 @@
 [submodule "third_party/OCCT"]
 	path = third_party/OCCT
 	url = https://github.com/Open-Cascade-SAS/OCCT.git
+[submodule "third_party/solvespace"]
+	path = third_party/solvespace
+	url = https://github.com/solvespace/solvespace

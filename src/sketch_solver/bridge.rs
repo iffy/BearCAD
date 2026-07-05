@@ -770,12 +770,23 @@ pub fn sketch_conflicting_constraints(
     doc: &Document,
     sketch: SketchId,
 ) -> Result<Vec<usize>, String> {
-    let mut bridge = SketchBridge::from_document(doc, sketch, true)?;
-    let report = bridge.solve();
-    if report.success {
-        return Ok(Vec::new());
+    #[cfg(feature = "slvs")]
+    {
+        let outcome = super::slvs::solve_sketch(doc, sketch, &[])?;
+        if outcome.success {
+            return Ok(Vec::new());
+        }
+        return Ok(outcome.failed_constraints);
     }
-    Ok(report.failed_constraints)
+    #[cfg(not(feature = "slvs"))]
+    {
+        let mut bridge = SketchBridge::from_document(doc, sketch, true)?;
+        let report = bridge.solve();
+        if report.success {
+            return Ok(Vec::new());
+        }
+        Ok(report.failed_constraints)
+    }
 }
 
 /// Remaining degrees of freedom for one sketch's constraint system.
@@ -996,13 +1007,25 @@ fn solve_one_sketch(
         .filter(|(point, _)| point_sketch(doc, point.clone()) == Some(sketch))
         .cloned()
         .collect();
-    let hold_references = sketch_pins.is_empty();
-    let mut bridge = SketchBridge::from_document(doc, sketch, hold_references)?;
-    bridge.add_drag_pins(doc, &sketch_pins);
-    let _report = bridge.solve();
-    bridge.apply_to_document(doc)?;
-    crate::model::refit_fillet_arc_handles(doc, sketch);
-    Ok(())
+    // EXPERIMENT (slvs-solver branch): hand the numeric solve to SolveSpace's libslvs.
+    // Everything around it (constraint model, DOF analysis, arc re-fit) is unchanged.
+    #[cfg(feature = "slvs")]
+    {
+        let outcome = super::slvs::solve_sketch(doc, sketch, &sketch_pins)?;
+        outcome.apply_to_document(doc, sketch)?;
+        crate::model::refit_fillet_arc_handles(doc, sketch);
+        return Ok(());
+    }
+    #[cfg(not(feature = "slvs"))]
+    {
+        let hold_references = sketch_pins.is_empty();
+        let mut bridge = SketchBridge::from_document(doc, sketch, hold_references)?;
+        bridge.add_drag_pins(doc, &sketch_pins);
+        let _report = bridge.solve();
+        bridge.apply_to_document(doc)?;
+        crate::model::refit_fillet_arc_handles(doc, sketch);
+        Ok(())
+    }
 }
 
 fn set_point_uv_from_solver(
