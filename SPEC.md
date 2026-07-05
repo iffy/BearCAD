@@ -937,6 +937,11 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   mouse/keyboard) and enter a ground-plane sketch if none is open: `bearcad.rect{ width, height,
   x?, y?, name? }`, `bearcad.line{ length, angle?, x?, y?, name? }` (or explicit endpoints
   `bearcad.line{ x, y, x1, y1 }`), and `bearcad.circle{ r|radius|diameter, x?, y?, name? }`.
+  A scripted line lands **unconstrained**, exactly like a click-drawn one; passing
+  `dimension = "<expr>"` (or a number, or `true` for the as-drawn length) locks its length,
+  the scripted equivalent of typing a length while drawing. Session-command export carries
+  the typed expression through (`Export Session Commands…` replays typed-length lines
+  dimensioned and click-drawn lines free).
 - `bearcad.plane{ offset?, from?, name? }` (#116) declaratively adds a new construction plane
   offset along the normal of an existing one (`from`, a construction-plane index — defaults to
   plane 0 / Ground), the scripted equivalent of picking a plane in the viewport and typing an

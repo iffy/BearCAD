@@ -4934,6 +4934,7 @@ mod tests {
             x1: 10.0,
             y1: 0.0,
             bezier: None,
+            dimension: None,
         });
     }
 
@@ -4951,6 +4952,7 @@ mod tests {
             x1: 10.0,
             y1: 0.0,
             bezier: None,
+            dimension: None,
         });
         state.apply(crate::actions::Action::CreateLineSegment {
             x0: 10.0,
@@ -4958,6 +4960,7 @@ mod tests {
             x1: 5.0,
             y1: 8.0,
             bezier: None,
+            dimension: None,
         });
         state.apply(crate::actions::Action::CreateLineSegment {
             x0: 5.0,
@@ -4965,6 +4968,7 @@ mod tests {
             x1: 0.0,
             y1: 0.0,
             bezier: None,
+            dimension: None,
         });
         let sketch = state.sketch_session.unwrap().sketch;
         let coincident = |a, b| Constraint {

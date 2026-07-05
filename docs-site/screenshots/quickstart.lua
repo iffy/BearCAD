@@ -54,14 +54,8 @@ bearcad.clear_selection()
 bearcad.ui.view("top")
 shot("quickstart-sloppy.png")
 
--- Step 3: square it up. First drop the six as-drawn length dimensions (they
--- recorded the sloppy lengths), then apply the geometric constraints, then
--- dimension the four lines whose sizes we care about, then the bend angle.
-for ci = 0, 5 do
-  bearcad.select{ kind = "constraint", index = ci }
-  bearcad.delete_selection()
-end
-bearcad.clear_selection()
+-- Step 3: square it up: geometric constraints first, then exact dimensions on
+-- the four lines whose sizes we care about, then the bend angle.
 local function geo(kind, a, b)
   bearcad.select{ kind = "line", index = a }
   if b then bearcad.select({ kind = "line", index = b }, true) end

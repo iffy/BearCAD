@@ -61,10 +61,6 @@ the next step. When the loop closes, the profile fills in: it's now a face you c
 
 ## 3. Square it up with constraints
 
-As you drew, BearCAD recorded each line's as-drawn length as a dimension (the little
-labels). Those sloppy values aren't wanted — select each dimension label and press
-**Delete** to remove all six.
-
 Now tell BearCAD what you *meant*. Press **C** for the Constraint tool, then for each
 constraint select the line(s) and press the constraint's key (or click it in the pane):
 

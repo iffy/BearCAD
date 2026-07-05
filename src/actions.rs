@@ -825,7 +825,9 @@ pub enum Action {
         width: f32,
         height: f32,
     },
-    /// Create a line directly in the active sketch (face-local mm) with a locked length.
+    /// Create a line directly in the active sketch (face-local mm). Unconstrained like a
+    /// click-drawn line ([`Action::CommitLine`] without a typed length); `dimension` locks
+    /// its length with the given expression, like typing a length while drawing does.
     /// `bezier` (#54) makes it a curve: `[handle near (x0,y0), handle near (x1,y1)]`.
     CreateLineSegment {
         x0: f32,
@@ -833,6 +835,7 @@ pub enum Action {
         x1: f32,
         y1: f32,
         bezier: Option<[(f32, f32); 2]>,
+        dimension: Option<String>,
     },
     /// Create a circle directly in the active sketch (face-local mm) with a locked diameter.
     CreateCircle {
@@ -4639,7 +4642,7 @@ impl AppState {
                 );
                 ActionResult::Ok
             }
-            Action::CreateLineSegment { x0, y0, x1, y1, bezier } => {
+            Action::CreateLineSegment { x0, y0, x1, y1, bezier, dimension } => {
                 let Some(session) = self.sketch_session else {
                     return ActionResult::Err("Not in sketch mode".to_string());
                 };
@@ -4653,16 +4656,18 @@ impl AppState {
                 self.doc.lines.push(line);
                 self.doc.shape_order.push(ShapeKind::Line);
                 let line_index = self.doc.lines.len() - 1;
-                if let Err(e) = add_distance_constraint(
-                    &mut self.doc,
-                    session.sketch,
-                    DistanceTarget::LineLength(line_index),
-                    length.to_string(),
-                ) {
-                    self.doc.lines.pop();
-                    self.doc.shape_order.pop();
-                    self.status = e.clone();
-                    return ActionResult::Err(e);
+                if let Some(expression) = dimension {
+                    if let Err(e) = add_distance_constraint(
+                        &mut self.doc,
+                        session.sketch,
+                        DistanceTarget::LineLength(line_index),
+                        expression,
+                    ) {
+                        self.doc.lines.pop();
+                        self.doc.shape_order.pop();
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
                 }
                 self.refresh_document_health();
                 self.status = format!(

@@ -1941,13 +1941,31 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 }
                 None => None,
             };
+            // Like clicking, the line lands unconstrained. `dimension = "leg"` (or a number)
+            // locks the length with that expression — the scripted equivalent of typing a
+            // length while drawing; `dimension = true` locks it at the as-drawn length.
+            let dimension: Option<String> = match opts.get::<Value>("dimension")? {
+                Value::Nil => None,
+                Value::Boolean(false) => None,
+                Value::Boolean(true) => {
+                    Some(((x1 - x0).hypot(y1 - y0)).to_string())
+                }
+                Value::String(s) => Some(s.to_str()?.to_string()),
+                Value::Integer(i) => Some(i.to_string()),
+                Value::Number(n) => Some(n.to_string()),
+                _ => {
+                    return Err(mlua::Error::external(
+                        "line `dimension` must be an expression string, a number, or true",
+                    ))
+                }
+            };
             unsafe {
                 if tick.state().sketch_session.is_none() {
                     tick.exec(Instruction::BeginSketch {
                         face: FaceId::ConstructionPlane(0),
                     })?;
                 }
-                tick.exec(Instruction::CreateLine { x0, y0, x1, y1, bezier })?;
+                tick.exec(Instruction::CreateLine { x0, y0, x1, y1, bezier, dimension })?;
             }
             let element =
                 SceneElement::Line(unsafe { tick.state().doc.lines.len().saturating_sub(1) });

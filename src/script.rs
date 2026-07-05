@@ -70,7 +70,9 @@ pub enum Instruction {
         width: f32,
         height: f32,
     },
-    /// Create a line directly in the active sketch (face-local mm endpoints) with a locked length.
+    /// Create a line directly in the active sketch (face-local mm endpoints). Like a
+    /// click-drawn line it is unconstrained; `dimension` (an expression, e.g. "50" or "leg")
+    /// locks its length the way typing a length while drawing does.
     /// `bezier` (#54) makes it a curve: `[handle near (x0,y0), handle near (x1,y1)]`.
     CreateLine {
         x0: f32,
@@ -78,6 +80,7 @@ pub enum Instruction {
         x1: f32,
         y1: f32,
         bezier: Option<[(f32, f32); 2]>,
+        dimension: Option<String>,
     },
     /// Create a circle directly in the active sketch (face-local mm) with a locked diameter.
     CreateCircle {
@@ -336,14 +339,20 @@ impl Instruction {
                 width,
                 height,
             } => format!("bearcad.rect{{ x = {x}, y = {y}, width = {width}, height = {height} }}"),
-            Instruction::CreateLine { x0, y0, x1, y1, bezier } => {
+            Instruction::CreateLine { x0, y0, x1, y1, bezier, dimension } => {
                 let bezier_arg = match bezier {
                     Some([(c0x, c0y), (c1x, c1y)]) => format!(
                         ", bezier = {{ {{ {c0x}, {c0y} }}, {{ {c1x}, {c1y} }} }}"
                     ),
                     None => String::new(),
                 };
-                format!("bearcad.line{{ x = {x0}, y = {y0}, x1 = {x1}, y1 = {y1}{bezier_arg} }}")
+                let dim_arg = match dimension {
+                    Some(expr) => format!(", dimension = \"{expr}\""),
+                    None => String::new(),
+                };
+                format!(
+                    "bearcad.line{{ x = {x0}, y = {y0}, x1 = {x1}, y1 = {y1}{bezier_arg}{dim_arg} }}"
+                )
             }
             Instruction::CreateCircle { cx, cy, r } => {
                 format!("bearcad.circle{{ x = {cx}, y = {cy}, r = {r} }}")
@@ -980,12 +989,25 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 }
             })
         }
-        Action::CommitLine => doc.lines.last().map(|l| Instruction::CreateLine {
-            x0: l.x0,
-            y0: l.y0,
-            x1: l.x1,
-            y1: l.y1,
-            bezier: l.bezier,
+        Action::CommitLine => doc.lines.last().map(|l| {
+            // A typed-while-drawing length lands as a LineLength dim inside CommitLine;
+            // carry its expression so replaying the log recreates the same constraint
+            // (and click-drawn lines replay unconstrained, as drawn).
+            let index = doc.lines.len() - 1;
+            let dimension = doc.constraints.iter().rev().find_map(|c| match &c.kind {
+                crate::model::ConstraintKind::Distance {
+                    target: crate::model::DistanceTarget::LineLength(i),
+                } if *i == index && !c.deleted => Some(c.expression.clone()),
+                _ => None,
+            });
+            Instruction::CreateLine {
+                x0: l.x0,
+                y0: l.y0,
+                x1: l.x1,
+                y1: l.y1,
+                bezier: l.bezier,
+                dimension,
+            }
         }),
         Action::CommitCircle => doc.circles.last().map(|c| Instruction::CreateCircle {
             cx: c.cx,
@@ -2547,8 +2569,9 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::CreateLine { x0, y0, x1, y1, bezier } => {
-                let result = state.apply(Action::CreateLineSegment { x0, y0, x1, y1, bezier });
+            Instruction::CreateLine { x0, y0, x1, y1, bezier, dimension } => {
+                let result =
+                    state.apply(Action::CreateLineSegment { x0, y0, x1, y1, bezier, dimension });
                 self.record_action_error(result);
                 StepResult::Continue
             }
@@ -3528,7 +3551,9 @@ mod tests {
 
     #[test]
     fn create_line_instruction_renders_bezier_when_present() {
-        let straight = Instruction::CreateLine { x0: 0.0, y0: 0.0, x1: 10.0, y1: 0.0, bezier: None };
+        let straight = Instruction::CreateLine {
+            x0: 0.0, y0: 0.0, x1: 10.0, y1: 0.0, bezier: None, dimension: None,
+        };
         assert_eq!(straight.as_lua(), "bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }");
 
         let curved = Instruction::CreateLine {
@@ -3537,6 +3562,7 @@ mod tests {
             x1: 10.0,
             y1: 0.0,
             bezier: Some([(3.0, 4.0), (7.0, 4.0)]),
+            dimension: None,
         };
         assert_eq!(
             curved.as_lua(),
@@ -3631,6 +3657,7 @@ mod tests {
                 x1: 10.0,
                 y1: 0.0,
                 bezier: Some([(3.0, 4.0), (7.0, 4.0)]),
+                dimension: None,
             }
         );
     }
