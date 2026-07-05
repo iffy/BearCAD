@@ -55,6 +55,11 @@ pub fn bar(ctx: &egui::Context, pane_visible: impl Fn(Pane) -> bool) -> Option<M
                     picked = Some(MenuCommand::ExportStep);
                     ui.close();
                 }
+                ui.separator();
+                if ui.button("Document JSON…").clicked() {
+                    picked = Some(MenuCommand::DocumentJson);
+                    ui.close();
+                }
             });
             ui.menu_button("Edit", |ui| {
                 if ui.button("Undo").clicked() {

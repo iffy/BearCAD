@@ -463,6 +463,9 @@ struct App {
     /// Results of async browser file dialogs (open/import picks), drained each frame.
     #[cfg(target_arch = "wasm32")]
     web_io: WebIoQueue,
+    /// Document JSON dialog (File ▸ Document JSON…): the whole document as pasteable
+    /// JSON text for bug reports, and a paste-target to load one back. `None` = closed.
+    json_dialog: Option<String>,
     dim_label_drag: Option<DimLabelDrag>,
     angle_gizmo_drag: Option<AngleGizmoDrag>,
     vertex_drag: Option<VertexDrag>,
@@ -570,6 +573,7 @@ impl App {
             native_menu,
             #[cfg(target_arch = "wasm32")]
             web_io: WebIoQueue::default(),
+            json_dialog: None,
             dim_label_drag: None,
             angle_gizmo_drag: None,
             extrude_gizmo_drag: None,
@@ -721,6 +725,66 @@ impl App {
                 path: path.to_string_lossy().to_string(),
                 body,
             });
+        }
+    }
+
+    /// Open the Document JSON dialog pre-filled with the current document, serialized with
+    /// the same JSON codec the web build saves with (`storage::to_json_bytes`). The text is
+    /// meant to travel through a bug report: copy it out to attach a document state, or
+    /// paste a reported state in and load it.
+    fn open_json_dialog(&mut self) {
+        match crate::storage::to_json_bytes(&self.state.doc) {
+            Ok(bytes) => {
+                self.json_dialog = Some(String::from_utf8_lossy(&bytes).into_owned());
+            }
+            Err(e) => self.state.status = format!("Could not serialize document: {e}"),
+        }
+    }
+
+    /// Per-frame UI for the Document JSON dialog (see [`Self::open_json_dialog`]).
+    fn show_json_dialog(&mut self, ctx: &egui::Context) {
+        let Some(text) = self.json_dialog.as_mut() else {
+            return;
+        };
+        let mut open = true;
+        let mut copy = false;
+        let mut load = false;
+        let mut refresh = false;
+        egui::Window::new("Document JSON")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(560.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    "The whole document as JSON. Copy it into a bug report — or paste a \
+                     reported document here and load it.",
+                );
+                ui.horizontal(|ui| {
+                    copy = ui.button("Copy to clipboard").clicked();
+                    refresh = ui.button("Refresh from document").clicked();
+                    load = ui.button("Load into document").clicked();
+                });
+                egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(text)
+                            .code_editor()
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(20),
+                    );
+                });
+            });
+        if copy {
+            ctx.copy_text(text.clone());
+            self.state.status = "Document JSON copied to clipboard".to_string();
+        }
+        if load {
+            let bytes = text.clone().into_bytes();
+            self.state.open_document_bytes(&bytes, "pasted JSON");
+        }
+        if refresh {
+            self.open_json_dialog();
+        } else if !open {
+            self.json_dialog = None;
         }
     }
 
@@ -1018,6 +1082,7 @@ impl App {
             MenuCommand::ImportImage => self.import_image(),
             MenuCommand::ImportStep => self.import_step(),
             MenuCommand::ExportSessionCommands => self.export_session_commands(),
+            MenuCommand::DocumentJson => self.open_json_dialog(),
             MenuCommand::LoadScript => self.load_script(),
             MenuCommand::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             MenuCommand::About => {
@@ -1081,6 +1146,7 @@ impl App {
             PaletteOutcome::SaveFile => self.save(),
             PaletteOutcome::SaveFileAs => self.save_as(),
             PaletteOutcome::ExportSessionCommands => self.export_session_commands(),
+            PaletteOutcome::DocumentJson => self.open_json_dialog(),
         }
         self.state.command_palette.close_palette();
     }
@@ -2666,6 +2732,8 @@ impl eframe::App for App {
                 }
             });
         });
+
+        self.show_json_dialog(ctx);
 
         if self.state.command_palette.open {
             let commands = commands_for_state(&self.state);

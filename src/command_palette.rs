@@ -50,6 +50,7 @@ pub enum PaletteCommandId {
     HidePaneViewCube,
     DeleteSelection,
     ExportSessionCommands,
+    DocumentJson,
     ToggleFpsMode,
     ZoomToFit,
     ProjectSelection,
@@ -63,6 +64,7 @@ pub enum PaletteOutcome {
     SaveFile,
     SaveFileAs,
     ExportSessionCommands,
+    DocumentJson,
 }
 
 /// One invokable palette entry.
@@ -176,6 +178,7 @@ impl PaletteCommand {
                 PaletteOutcome::Action(Action::DeleteSelection)
             }
             PaletteCommandId::ExportSessionCommands => PaletteOutcome::ExportSessionCommands,
+            PaletteCommandId::DocumentJson => PaletteOutcome::DocumentJson,
         }
     }
 }
@@ -368,6 +371,11 @@ const BASE_COMMANDS: &[PaletteCommand] = &[
         PaletteCommandId::ExportSessionCommands,
         "Export Session Commands…",
         "export session commands lua script record steps replay history",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::DocumentJson,
+        "Document JSON…",
+        "document json copy paste export import bug report state",
     ),
     PaletteCommand::new(
         PaletteCommandId::ToolSelect,

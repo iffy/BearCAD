@@ -57,6 +57,15 @@ bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 } -- explicit endpoints
 bearcad.circle{ x = 10, y = 5, r = 12, name = "Hole" } -- `radius` and `diameter` also accepted
 ```
 
+A scripted line lands **unconstrained**, exactly like clicking with the Line tool. To lock its
+length — the scripted equivalent of typing a length while drawing — pass `dimension`:
+
+```lua
+bearcad.line{ x = 0, y = 0, x1 = 50, y1 = 0, dimension = "leg" } -- expression (parameters work)
+bearcad.line{ x = 0, y = 0, x1 = 50, y1 = 0, dimension = 50 }    -- plain number
+bearcad.line{ x = 0, y = 0, x1 = 50, y1 = 0, dimension = true }  -- lock at the as-drawn length
+```
+
 To sketch on a specific plane instead of the default ground plane:
 
 ```lua

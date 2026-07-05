@@ -30,6 +30,7 @@ pub struct MenuIds {
     pub load_script: MenuId,
     pub import_image: MenuId,
     pub import_step: MenuId,
+    pub document_json: MenuId,
     pub export_session_commands: MenuId,
     pub quit: MenuId,
     pub undo: MenuId,
@@ -101,6 +102,9 @@ pub fn command_for_id(
     }
     if ids.import_step == id {
         return Some(MenuCommand::ImportStep);
+    }
+    if ids.document_json == id {
+        return Some(MenuCommand::DocumentJson);
     }
     if ids.export_session_commands == id {
         return Some(MenuCommand::ExportSessionCommands);
@@ -231,6 +235,7 @@ impl NativeMenu {
         let import_stl = MenuItem::with_id("import_stl", "Import STL…", true, None);
         let import_image = MenuItem::with_id("import_image", "Import Image…", true, None);
         let import_step = MenuItem::with_id("import_step", "Import STEP…", true, None);
+        let document_json = MenuItem::with_id("document_json", "Document JSON…", true, None);
         let quit = MenuItem::with_id(
             "quit",
             "Quit",
@@ -290,6 +295,7 @@ impl NativeMenu {
         file_menu.append(&import_stl)?;
         file_menu.append(&import_image)?;
         file_menu.append(&import_step)?;
+        file_menu.append(&document_json)?;
         #[cfg(not(target_os = "macos"))]
         {
             let quit_sep = PredefinedMenuItem::separator();
@@ -335,6 +341,7 @@ impl NativeMenu {
             import_stl: import_stl.id().clone(),
             import_image: import_image.id().clone(),
             import_step: import_step.id().clone(),
+            document_json: document_json.id().clone(),
             export_session_commands: export_session_commands.id().clone(),
             quit: quit.id().clone(),
             undo: undo.id().clone(),
@@ -437,6 +444,7 @@ mod tests {
             import_stl: MenuId::new("import_stl"),
             import_image: MenuId::new("import_image"),
             import_step: MenuId::new("import_step"),
+            document_json: MenuId::new("document_json"),
             export_session_commands: MenuId::new("export_session_commands"),
             quit: MenuId::new("quit"),
             undo: MenuId::new("undo"),

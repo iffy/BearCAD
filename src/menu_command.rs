@@ -17,6 +17,9 @@ pub enum MenuCommand {
     ImportImage,
     ImportStep,
     ExportSessionCommands,
+    /// Open the Document JSON dialog: the whole document as pasteable JSON text, for
+    /// copying into (and loading back out of) bug reports.
+    DocumentJson,
     /// Pick a `.lua` script and run it against the live document (File menu).
     LoadScript,
     Quit,
@@ -47,6 +50,7 @@ impl MenuCommand {
             | MenuCommand::ImportImage
             | MenuCommand::ImportStep
             | MenuCommand::ExportSessionCommands
+            | MenuCommand::DocumentJson
             | MenuCommand::LoadScript => None,
             MenuCommand::Quit => None,
             MenuCommand::UndoLast => Some(Action::UndoLast),

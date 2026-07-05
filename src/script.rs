@@ -3082,7 +3082,8 @@ impl ScriptRunner {
                         }
                         PaletteOutcome::OpenFile | PaletteOutcome::SaveFile
                         | PaletteOutcome::SaveFileAs
-                        | PaletteOutcome::ExportSessionCommands => {
+                        | PaletteOutcome::ExportSessionCommands
+                        | PaletteOutcome::DocumentJson => {
                             state.status =
                                 "Palette file commands require the GUI".to_string();
                         }
