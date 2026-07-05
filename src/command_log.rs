@@ -285,8 +285,15 @@ impl CommandLog {
 /// Current UTC time as `YYYYMMDD-HHMMSS` (Howard Hinnant's civil-from-days algorithm), used
 /// for session-export filenames and headers without pulling in a date/time dependency.
 pub fn utc_timestamp() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    // web-time on wasm: std::time::SystemTime::now() panics outright on
+    // wasm32-unknown-unknown, which took the whole web app down the moment
+    // Export Session Commands asked for a filename timestamp.
+    #[cfg(target_arch = "wasm32")]
+    use web_time::{SystemTime, UNIX_EPOCH};
+    #[cfg(not(target_arch = "wasm32"))]
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0) as i64;
     let days = secs.div_euclid(86_400);
