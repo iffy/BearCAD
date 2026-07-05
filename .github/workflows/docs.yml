@@ -8,7 +8,11 @@ on:
       - ".github/workflows/docs.yml"
       - "scripts/gen-doc-screenshots.sh"
       - "scripts/build-web.sh"
+      - "scripts/build-occt-wasm.sh"
       - "web/**"
+      # The web kernel module links these; rebuild + redeploy when they change.
+      - "cpp/**"
+      - "third_party/OCCT"
       # App source affects the rendered screenshots, so regenerate + redeploy the
       # site when the geometry/UI code changes too.
       - "src/**"
