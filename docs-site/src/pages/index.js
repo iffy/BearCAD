@@ -30,21 +30,22 @@ function HomepageHeader() {
         </p>
         <div className={styles.buttons}>
           <Link
-            className="button button--primary button--lg"
+            className={clsx('button button--lg', styles.ctaButton)}
             href={WEB_APP_PATH}>
-            Run in your browser
+            ▶&nbsp;&nbsp;Run in your browser
           </Link>
           <Link
-            className="button button--secondary button--lg"
+            className="button button--outline button--secondary button--lg"
             href={RELEASES_URL}>
             Download
           </Link>
           <Link
-            className="button button--secondary button--lg"
+            className="button button--outline button--secondary button--lg"
             to="/docs/intro">
             Read the docs
           </Link>
         </div>
+        <span className={styles.ctaHint}>Nothing to install — it runs right in the tab.</span>
       </div>
     </header>
   );

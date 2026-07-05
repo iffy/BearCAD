@@ -30,3 +30,30 @@
   gap: 1rem;
   flex-wrap: wrap;
 }
+
+/* The one action we most want visitors to take. The hero background is the primary
+   green, so a green `button--primary` vanishes into it — this is a deliberate
+   high-contrast amber CTA instead, a size up from its neighbours. */
+.ctaButton {
+  background: #ffc94d;
+  border: none;
+  color: #1c1e21;
+  font-size: 1.2rem;
+  padding: 1rem 2rem;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.ctaButton:hover {
+  background: #ffd36b;
+  color: #1c1e21;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+
+.ctaHint {
+  display: block;
+  margin-top: 0.75rem;
+  font-size: 0.85rem;
+  opacity: 0.8;
+}
