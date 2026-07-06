@@ -3242,6 +3242,56 @@ mod tests {
         ));
     }
 
+    /// #192: a filleted edge shows in the Elements pane as a node nested under its extrusion,
+    /// labelled with its kind and amount, and re-committing the same edge updates the amount in
+    /// place (the "edit fillet amount after the fact" path) rather than adding a second treatment.
+    #[test]
+    fn edge_treatment_is_an_editable_element_under_its_extrusion() {
+        let mut state = run_lua(
+            r#"
+            bearcad.rect{ x = 0, y = 0, width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.fillet_edge{
+                extrusion = 0,
+                edge = { kind = "vertical", face = 0, edge = 0 },
+                radius = 1.5,
+            }
+        "#,
+        );
+        // It appears as a hierarchy node, and its default label names kind + amount.
+        let node = crate::hierarchy::HierarchyNode::EdgeTreatment {
+            extrusion: 0,
+            index: 0,
+        };
+        let nodes = crate::hierarchy::build_element_list(&state.doc, state.sketch_session);
+        assert!(nodes.contains(&node), "fillet should show in the elements pane");
+        assert!(crate::names::node_label(&state.doc, node).starts_with("Fillet"));
+        // The node nests under its extrusion in the real tree.
+        let tree = crate::hierarchy::build_hierarchy(&state.doc, state.sketch_session);
+        let ext = crate::hierarchy::find_hierarchy_entry(
+            &tree,
+            crate::hierarchy::HierarchyNode::Extrusion(0),
+        )
+        .expect("extrusion entry");
+        assert!(ext.children.iter().any(|c| c.node == node));
+
+        // Editing the amount re-commits the same edge; the treatment count stays 1 and the
+        // amount updates — exactly what the pane's right-click editor dispatches (#192).
+        let edge = state.doc.extrusions[0].edge_treatments[0].edge;
+        let kind = state.doc.extrusions[0].edge_treatments[0].kind;
+        assert_eq!(
+            state.apply(crate::actions::Action::CommitEdgeTreatment {
+                extrusion: 0,
+                edge,
+                kind,
+                amount: 2.75,
+            }),
+            crate::actions::ActionResult::Ok
+        );
+        assert_eq!(state.doc.extrusions[0].edge_treatments.len(), 1);
+        assert!((state.doc.extrusions[0].edge_treatments[0].amount - 2.75).abs() < 1e-4);
+    }
+
     #[test]
     fn lua_chamfer_edge_rejects_an_out_of_range_edge() {
         // `tick.exec` turns a failed declarative-modeling action into a Lua error

@@ -286,6 +286,27 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
         HierarchyNode::MoveOp(i) => format!("Move {i}"),
         HierarchyNode::RepeatOp(i) => format!("Repeat {i}"),
         HierarchyNode::SliceOp(i) => format!("Slice {i}"),
+        HierarchyNode::EdgeTreatment { extrusion, index } => {
+            match doc
+                .extrusions
+                .get(extrusion)
+                .and_then(|ext| ext.edge_treatments.get(index))
+            {
+                Some(t) => {
+                    let unit = doc
+                        .extrusions
+                        .get(extrusion)
+                        .map(|e| effective_length_unit(doc, e.sketch))
+                        .unwrap_or(doc.default_length_unit);
+                    let kind = match t.kind {
+                        crate::model::VertexTreatmentKind::Chamfer => "Chamfer",
+                        crate::model::VertexTreatmentKind::Fillet => "Fillet",
+                    };
+                    format!("{kind} ({})", format_length_display_in(t.amount, unit))
+                }
+                None => "Fillet".to_string(),
+            }
+        }
     }
 }
 

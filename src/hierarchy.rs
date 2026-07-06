@@ -48,6 +48,11 @@ pub enum HierarchyNode {
     RepeatOp(usize),
     /// A slice operation on bodies (Slice tool); its fragment bodies nest under it.
     SliceOp(usize),
+    /// A 3D edge chamfer/fillet applied to an extrusion (#77); `index` is into that
+    /// extrusion's `edge_treatments`. A display-only leaf (like [`HierarchyNode::Document`]
+    /// it has no [`SceneElement`]): it nests under its extrusion and is right-clickable to
+    /// edit its amount after the fact (#192), but isn't individually selectable/hideable.
+    EdgeTreatment { extrusion: usize, index: usize },
 }
 
 /// Identifies an element whose visibility can be toggled.
@@ -115,7 +120,8 @@ pub fn dequantize_body_point(p: [i32; 3]) -> glam::Vec3 {
 /// has no independent selectable/hideable identity of its own.
 pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
     Some(match node {
-        HierarchyNode::Document => return None,
+        // Display-only leaves with no independent selectable/hideable identity (#192).
+        HierarchyNode::Document | HierarchyNode::EdgeTreatment { .. } => return None,
         HierarchyNode::ConstructionPlane(i) => SceneElement::ConstructionPlane(i),
         HierarchyNode::Sketch(i) => SceneElement::Sketch(i),
         HierarchyNode::Line(i) => SceneElement::Line(i),
@@ -354,7 +360,10 @@ pub fn graph_node_positions(tree: &[HierarchyEntry]) -> Vec<GraphNodePosition> {
 
 /// Find `node`'s entry anywhere in `tree` (not just at the root — e.g. a sketch nests under
 /// its construction plane).
-fn find_hierarchy_entry(tree: &[HierarchyEntry], node: HierarchyNode) -> Option<&HierarchyEntry> {
+pub(crate) fn find_hierarchy_entry(
+    tree: &[HierarchyEntry],
+    node: HierarchyNode,
+) -> Option<&HierarchyEntry> {
     for entry in tree {
         if entry.node == node {
             return Some(entry);
@@ -697,6 +706,8 @@ fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
         HierarchyNode::MoveOp(_) => usize::MAX,
         HierarchyNode::RepeatOp(_) => usize::MAX,
         HierarchyNode::SliceOp(_) => usize::MAX,
+        // Edge treatments order by their index within the extrusion, after the bodies/sketches.
+        HierarchyNode::EdgeTreatment { index, .. } => index,
     }
 }
 
@@ -1350,7 +1361,24 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         HierarchyNode::MoveOp(_) => IconId::Move,
         HierarchyNode::RepeatOp(_) => IconId::Repeat,
         HierarchyNode::SliceOp(_) => IconId::Slice,
+        HierarchyNode::EdgeTreatment { extrusion, index } => {
+            match edge_treatment_at(doc, extrusion, index).map(|t| t.kind) {
+                Some(crate::model::VertexTreatmentKind::Chamfer) => IconId::Chamfer,
+                _ => IconId::Fillet,
+            }
+        }
     })
+}
+
+/// The [`EdgeTreatment`] a [`HierarchyNode::EdgeTreatment`] points at, if it still exists.
+fn edge_treatment_at(
+    doc: &Document,
+    extrusion: usize,
+    index: usize,
+) -> Option<&crate::model::EdgeTreatment> {
+    doc.extrusions
+        .get(extrusion)
+        .and_then(|ext| ext.edge_treatments.get(index))
 }
 
 /// Primary double-click on a row label (fallback when [`egui::Response::double_clicked`] misses).
@@ -1530,6 +1558,17 @@ fn build_sketch_extrusions(
                     children.push(build_sketch_entry(doc, si, sketch_session));
                 }
             }
+            // Edge chamfers/fillets applied to this extrusion (#192) show as leaves under it,
+            // right-clickable to edit their amount.
+            for ti in 0..doc.extrusions[ei].edge_treatments.len() {
+                children.push(HierarchyEntry {
+                    node: HierarchyNode::EdgeTreatment {
+                        extrusion: ei,
+                        index: ti,
+                    },
+                    children: Vec::new(),
+                });
+            }
             HierarchyEntry {
                 node: HierarchyNode::Extrusion(ei),
                 children,
@@ -1557,6 +1596,7 @@ pub fn show_pane(
     on_edit_plane: &mut impl FnMut(usize),
     on_import_image_on_plane: &mut impl FnMut(usize),
     on_edit_extrusion: &mut impl FnMut(usize),
+    on_edit_edge_treatment: &mut impl FnMut(usize, usize, f32),
     on_export_body: &mut impl FnMut(usize),
     on_export_body_step: &mut impl FnMut(usize),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
@@ -1604,6 +1644,7 @@ pub fn show_pane(
                         on_edit_plane,
                         on_import_image_on_plane,
                         on_edit_extrusion,
+                        on_edit_edge_treatment,
                         on_export_body,
                         on_export_body_step,
                         on_toggle_visibility,
@@ -1634,6 +1675,7 @@ pub fn show_pane(
                     on_edit_plane,
                     on_import_image_on_plane,
                     on_edit_extrusion,
+                    on_edit_edge_treatment,
                     on_export_body,
                     on_export_body_step,
                     on_toggle_visibility,
@@ -1680,6 +1722,7 @@ fn show_tree_entries(
     on_edit_plane: &mut impl FnMut(usize),
     on_import_image_on_plane: &mut impl FnMut(usize),
     on_edit_extrusion: &mut impl FnMut(usize),
+    on_edit_edge_treatment: &mut impl FnMut(usize, usize, f32),
     on_export_body: &mut impl FnMut(usize),
     on_export_body_step: &mut impl FnMut(usize),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
@@ -1703,6 +1746,7 @@ fn show_tree_entries(
             on_edit_plane,
             on_import_image_on_plane,
             on_edit_extrusion,
+            on_edit_edge_treatment,
             on_export_body,
             on_export_body_step,
             on_toggle_visibility,
@@ -1725,6 +1769,7 @@ fn show_tree_entries(
             on_edit_plane,
             on_import_image_on_plane,
             on_edit_extrusion,
+            on_edit_edge_treatment,
             on_export_body,
             on_export_body_step,
             on_toggle_visibility,
@@ -1939,6 +1984,7 @@ fn show_row(
     on_edit_plane: &mut impl FnMut(usize),
     on_import_image_on_plane: &mut impl FnMut(usize),
     on_edit_extrusion: &mut impl FnMut(usize),
+    on_edit_edge_treatment: &mut impl FnMut(usize, usize, f32),
     on_export_body: &mut impl FnMut(usize),
     on_export_body_step: &mut impl FnMut(usize),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
@@ -1957,6 +2003,48 @@ fn show_row(
                 ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
             }
             ui.label(RichText::new(node_label(doc, node)).strong());
+        });
+        return;
+    }
+
+    // An edge chamfer/fillet (#192): a display-only leaf with no `SceneElement`. It shows a
+    // labelled row and a right-click "Edit amount" editor that re-commits the treatment with a
+    // new value, but doesn't participate in selection/visibility.
+    if let HierarchyNode::EdgeTreatment { extrusion, index } = node {
+        let Some(treatment) = edge_treatment_at(doc, extrusion, index) else {
+            return;
+        };
+        let (kind, amount) = (treatment.kind, treatment.amount);
+        ui.horizontal(|ui| {
+            ui.add_space(depth as f32 * 18.0);
+            if let Some(icon) = icon_for_hierarchy_node(doc, node) {
+                ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
+            }
+            let response = ui.selectable_label(false, node_label(doc, node));
+            let noun = match kind {
+                crate::model::VertexTreatmentKind::Chamfer => "chamfer",
+                crate::model::VertexTreatmentKind::Fillet => "fillet",
+            };
+            response.context_menu(|ui| {
+                ui.label(format!("Edit {noun} amount"));
+                // The in-progress value lives in egui's temp memory keyed by this treatment, so it
+                // survives across frames while the menu is open and re-seeds from the committed
+                // amount on the next open (it's cleared on Apply).
+                let id = ui.make_persistent_id(("edit_edge_treatment", extrusion, index));
+                let mut value = ui.data_mut(|d| d.get_temp::<f32>(id)).unwrap_or(amount);
+                ui.add(
+                    egui::DragValue::new(&mut value)
+                        .speed(0.1)
+                        .range(0.01..=f32::INFINITY)
+                        .suffix(" mm"),
+                );
+                ui.data_mut(|d| d.insert_temp(id, value));
+                if ui.button("Apply").clicked() {
+                    on_edit_edge_treatment(extrusion, index, value);
+                    ui.data_mut(|d| d.remove::<f32>(id));
+                    ui.close();
+                }
+            });
         });
         return;
     }
@@ -2087,6 +2175,8 @@ fn show_row(
                     on_click_element(element, additive);
                 }
             }
+            // Handled by the early return above (no SceneElement).
+            HierarchyNode::EdgeTreatment { .. } => unreachable!(),
         }
     });
 }
