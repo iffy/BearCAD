@@ -684,7 +684,7 @@ pub fn line_uv_endpoints(
 /// The world-space endpoints of a `FaceEdge`: `boundary_loop[index]` to
 /// `boundary_loop[(index + 1) % boundary_loop.len()]`. `Err` if the extrusion/face can no
 /// longer be resolved (e.g. the extrusion was deleted) or `index` is out of range.
-fn face_edge_world(doc: &Document, face: &crate::model::FaceId, index: usize) -> Result<(Vec3, Vec3), String> {
+pub(crate) fn face_edge_world(doc: &Document, face: &crate::model::FaceId, index: usize) -> Result<(Vec3, Vec3), String> {
     let boundary = crate::extrude::face_boundary_loop_world(doc, face)
         .ok_or_else(|| "Face boundary not available".to_string())?;
     let n = boundary.len();

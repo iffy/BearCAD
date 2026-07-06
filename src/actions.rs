@@ -9034,6 +9034,105 @@ mod tests {
         assert_eq!(offsets.len(), 3);
     }
 
+    /// #198: with a circle drawn on a body face, selecting the circle's center and one of the
+    /// face's own edges resolves to a point-to-line distance dimension — the thing the user
+    /// couldn't do. Exercises the selection→constraint logic end to end (the viewport pick and
+    /// this share `dimension_edit_from_selection`).
+    #[test]
+    fn circle_center_and_face_edge_resolve_to_a_point_line_distance() {
+        use crate::model::{ConstraintLine, ConstraintPoint, DimensionTarget, DistanceTarget};
+
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        let rect = crate::construction::add_line_rectangle(&mut state.doc, sketch, 0.0, 0.0, 20.0, 20.0, [false; 4]);
+        let profile = ExtrudeFace::Polygon(rect.to_vec());
+        state.apply(Action::CreateExtrusion {
+            sketch,
+            faces: vec![profile.clone()],
+            distance: 10.0,
+            body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
+        });
+        let cap = FaceId::ExtrudeCap { extrusion: 0, profile, top: true };
+        state.apply(Action::BeginSketch { face: cap.clone(), viewport: None });
+        let cap_sketch = state.sketch_session.unwrap().sketch;
+        state
+            .doc
+            .circles
+            .push(crate::model::Circle::from_local_center_radius(cap_sketch, 5.0, 5.0, 3.0, 0.0));
+        let ci = state.doc.circles.len() - 1;
+        state.doc.shape_order.push(ShapeKind::Circle);
+        state.refresh_document_health();
+
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Point(ConstraintPoint::CircleCenter(ci)),
+            additive: false,
+        });
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::FaceEdge(ConstraintLine::FaceEdge { face: cap, index: 0 }),
+            additive: true,
+        });
+
+        let target = crate::constraints::dimension_edit_from_selection(
+            &state.doc,
+            cap_sketch,
+            &state.scene_selection,
+        );
+        assert!(
+            matches!(
+                target,
+                Some(DimensionTarget::Distance(DistanceTarget::PointLineDistance { .. }))
+            ),
+            "circle center + face edge should dimension as a point-line distance, got {target:?}"
+        );
+
+        // And the viewport pick actually resolves the circle center: aim a top-down camera at
+        // the cap, project the center, and click there.
+        let center_world = crate::face::circle_world_center(&state.doc, &state.doc.circles[ci])
+            .expect("circle center world position");
+        let mut cam = crate::camera::Camera::default();
+        let (yaw, pitch) = crate::camera::StandardView::Top.yaw_pitch();
+        cam.yaw = yaw;
+        cam.pitch = pitch;
+        cam.target = center_world;
+        cam.distance = 120.0;
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
+        let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
+        let center_px = project(center_world).expect("center projects into view");
+        let picked = crate::construction::nearest_sketch_point_in_sketch(
+            center_px,
+            &project,
+            &state.doc,
+            cap_sketch,
+        );
+        assert!(
+            matches!(
+                picked,
+                Some((crate::model::ConstraintPoint::CircleCenter(c), _)) if c == ci
+            ),
+            "clicking the circle's center on a body-face sketch should pick it, got {picked:?}"
+        );
+
+        // #199: the face's own edges are pickable in the same sketch — click an edge midpoint.
+        let loop_ = crate::extrude::face_boundary_loop_world(
+            &state.doc,
+            &FaceId::ExtrudeCap { extrusion: 0, profile: ExtrudeFace::Polygon(rect.to_vec()), top: true },
+        )
+        .expect("cap boundary loop");
+        let edge_mid = (loop_[0] + loop_[1]) * 0.5;
+        let edge_px = project(edge_mid).expect("edge midpoint projects into view");
+        let edge_pick =
+            crate::construction::nearest_sketch_line_in_sketch(edge_px, &project, &state.doc, cap_sketch);
+        assert!(
+            matches!(
+                edge_pick,
+                Some((crate::model::ConstraintLine::FaceEdge { index: 0, .. }, _))
+            ),
+            "clicking a face edge on a body-face sketch should pick it, got {edge_pick:?}"
+        );
+    }
+
     /// #201: committing a repeat whose count is typed as `name = expr` defines the parameter
     /// and stores the bare name, so the repeat stays parameter-driven.
     #[test]

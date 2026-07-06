@@ -1494,6 +1494,11 @@ impl<'a> SceneMesh<'a> {
                 self.push_line_segment(window[0], window[1], stroke, 1.5, cam, viewport, view_proj);
             }
         }
+        // A small marker at the center so it's visible and clickable as a constraint point
+        // (#198) — a circle otherwise has no drawn geometry at its center to aim at.
+        if let Some(center) = crate::face::circle_world_center(doc, circle) {
+            self.push_point_marker(center, stroke, 4.0, cam, viewport, view_proj);
+        }
     }
 
     fn push_circle(
@@ -1713,6 +1718,19 @@ impl<'a> SceneMesh<'a> {
                         view_proj,
                     );
                     self.set_index_layer(restore);
+                }
+                // A selected face edge (#199): highlight the edge segment so selecting it gives
+                // feedback. Depth-test-disabled like body edges (#153) — it lies on the body
+                // surface, so a plain depth test would z-fight it away.
+                SceneElement::FaceEdge(crate::model::ConstraintLine::FaceEdge { face, index }) => {
+                    if let Ok((a, b)) =
+                        crate::geometric_constraints::face_edge_world(doc, &face, index)
+                    {
+                        let restore = self.index_layer;
+                        self.set_index_layer(MeshIndexLayer::Wireframe);
+                        self.push_line_segment(a, b, color, 4.0, cam, viewport, view_proj);
+                        self.set_index_layer(restore);
+                    }
                 }
                 // A selected body (or extrusion) gets a glowing blue outline traced around its
                 // camera-facing silhouette (#145).
