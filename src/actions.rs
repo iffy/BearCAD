@@ -105,6 +105,10 @@ pub enum Tool {
     /// Repeat bodies along an axis (Repeat tool, #182). The original stays; each further
     /// instance is a new body; the operation is editable.
     Repeat,
+    /// Slice bodies with planar cutters (Slice tool, #181): each target splits into the
+    /// fragments on either side of the cutter planes. Inputs become shadow bodies; the
+    /// fragments are new bodies; the operation is editable.
+    Slice,
 }
 
 impl Tool {
@@ -128,6 +132,7 @@ impl Tool {
             "combine" | "boolean" => Some(Tool::Combine),
             "move" => Some(Tool::Move),
             "repeat" | "linear_repeat" | "pattern" => Some(Tool::Repeat),
+            "slice" | "split" => Some(Tool::Slice),
             _ => None,
         }
     }
@@ -444,6 +449,32 @@ impl Default for CreatingRepeat {
             count: "3".to_string(),
             spacing: "10".to_string(),
             length: String::new(),
+            editing: None,
+        }
+    }
+}
+
+/// In-progress slice operation (Slice tool): the picked target bodies (A), planar cutters
+/// (B), the extend-to-infinity toggle, and which picker the next click lands on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreatingSlice {
+    pub targets: Vec<usize>,
+    pub cutters: Vec<FaceId>,
+    /// Which picker the next viewport click adds to: `false` = a target body, `true` = a
+    /// cutter face/plane.
+    pub picking_cutter: bool,
+    pub extend_infinite: bool,
+    /// `Some(op)` while re-editing a committed operation.
+    pub editing: Option<usize>,
+}
+
+impl Default for CreatingSlice {
+    fn default() -> Self {
+        Self {
+            targets: Vec::new(),
+            cutters: Vec::new(),
+            picking_cutter: false,
+            extend_infinite: true,
             editing: None,
         }
     }
@@ -1040,6 +1071,22 @@ pub enum Action {
         spacing: String,
         length: String,
     },
+    /// Commit the in-progress Slice-tool operation.
+    CommitSlice,
+    /// Scripted/replayed slice with an explicit payload (also what `CommitSlice` lowers to).
+    CreateSliceOperation {
+        targets: Vec<usize>,
+        cutters: Vec<FaceId>,
+        extend_infinite: bool,
+    },
+    /// Re-point an existing slice operation at new targets / cutters / extend flag. Fragment
+    /// bodies are resized to the new piece counts (grow pushes bodies, shrink tombstones).
+    EditSliceOperation {
+        op: usize,
+        targets: Vec<usize>,
+        cutters: Vec<FaceId>,
+        extend_infinite: bool,
+    },
     SetExtrudeBodyMode { mode: ExtrudeBodyMode },
     /// Enable or disable snapping while drawing/dragging.
     SetSnapping(bool),
@@ -1405,6 +1452,8 @@ pub struct AppState {
     pub creating_move: Option<CreatingMove>,
     /// In-progress linear repeat (Repeat tool).
     pub creating_repeat: Option<CreatingRepeat>,
+    /// In-progress slice operation (Slice tool).
+    pub creating_slice: Option<CreatingSlice>,
     /// In-progress image scale calibration (#163/#171): Some while the user is placing
     /// the two reference points / typing the real length.
     pub creating_calibration: Option<CreatingCalibration>,
@@ -1513,6 +1562,7 @@ impl Default for AppState {
             creating_boolean: None,
             creating_move: None,
             creating_repeat: None,
+            creating_slice: None,
             creating_calibration: None,
             viewport_aspect: 16.0 / 9.0,
             draw_construction: false,
@@ -2459,6 +2509,53 @@ fn validate_repeat_inputs(doc: &Document, targets: &[usize]) -> Result<(), Strin
     Ok(())
 }
 
+/// Shared validation for creating/editing a slice operation. `editing` is the op being
+/// edited (its own inputs are shadow bodies, so re-picking them is allowed).
+fn validate_slice_inputs(
+    doc: &Document,
+    targets: &[usize],
+    cutters: &[FaceId],
+    editing: Option<usize>,
+) -> Result<(), String> {
+    if targets.is_empty() {
+        return Err("Pick at least one body to slice".to_string());
+    }
+    if cutters.is_empty() {
+        return Err("Pick at least one cutting plane or face".to_string());
+    }
+    let editing_inputs: Vec<usize> = editing
+        .and_then(|e| doc.slice_ops.get(e))
+        .map(|o| o.targets.clone())
+        .unwrap_or_default();
+    let mut seen = std::collections::HashSet::new();
+    for &bi in targets {
+        let Some(body) = doc.bodies.get(bi).filter(|body| !body.deleted) else {
+            return Err(format!("Body {bi} not found"));
+        };
+        if body.shadow && !editing_inputs.contains(&bi) {
+            return Err(format!("Body {bi} is already consumed by another operation"));
+        }
+        if let crate::model::BodySource::Sliced { op, .. } = body.source {
+            if editing.is_some_and(|e| op >= e) {
+                return Err(
+                    "Cannot use this operation's own (or a later) result as an input".to_string(),
+                );
+            }
+        }
+        if !seen.insert(bi) {
+            return Err(format!("Body {bi} is picked twice"));
+        }
+    }
+    // Cutters must be planar faces the kernel can build a plane from (construction planes
+    // or planar body faces).
+    for cutter in cutters {
+        if crate::face::sketch_frame(doc, cutter.clone()).is_none() {
+            return Err("A cutter is not a valid planar face".to_string());
+        }
+    }
+    Ok(())
+}
+
 fn element_label(element: SceneElement) -> String {
     match element {
         SceneElement::ConstructionPlane(i) => format!("Construction plane {i}"),
@@ -2476,6 +2573,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::BooleanOp(i) => format!("Boolean operation {i}"),
         SceneElement::MoveOp(i) => format!("Move operation {i}"),
         SceneElement::RepeatOp(i) => format!("Repeat operation {i}"),
+        SceneElement::SliceOp(i) => format!("Slice operation {i}"),
     }
 }
 
@@ -3108,6 +3206,20 @@ impl AppState {
                         self.status = "Undid boolean operation".to_string();
                         undone = true;
                     }
+                    Some(ShapeKind::SliceOperation) => {
+                        // Undo the whole slice op: its fragment bodies were popped by the
+                        // ShapeKind::Body entries recorded after it (same undo group); drop
+                        // the operation and un-shadow its inputs.
+                        if let Some(op) = self.doc.slice_ops.pop() {
+                            for &bi in &op.targets {
+                                if let Some(body) = self.doc.bodies.get_mut(bi) {
+                                    body.shadow = false;
+                                }
+                            }
+                        }
+                        self.status = "Undid slice operation".to_string();
+                        undone = true;
+                    }
                     Some(ShapeKind::Body) => {
                         let body = self.doc.bodies.pop();
                         // A body created fresh by an extrusion always wraps exactly that one
@@ -3325,6 +3437,12 @@ impl AppState {
                 if tool == Tool::Repeat && self.creating_repeat.is_none() {
                     self.creating_repeat = Some(CreatingRepeat::default());
                 }
+                if self.creating_slice.is_some() && tool != Tool::Slice {
+                    self.creating_slice = None;
+                }
+                if tool == Tool::Slice && self.creating_slice.is_none() {
+                    self.creating_slice = Some(CreatingSlice::default());
+                }
                 if self.creating_revolve.is_some() && tool != Tool::Revolve {
                     self.creating_revolve = None;
                 }
@@ -3428,6 +3546,10 @@ impl AppState {
                     }
                     Tool::Repeat => {
                         "Repeat tool — click bodies, pick an axis and spacing, Enter commits"
+                            .to_string()
+                    }
+                    Tool::Slice => {
+                        "Slice tool — pick bodies, then cutting planes/faces, Enter commits"
                             .to_string()
                     }
                 };
@@ -5705,7 +5827,7 @@ impl AppState {
                     }
                 }
                 for &input in old.targets.iter() {
-                    if crate::model::body_shadowed_by_other_ops(&self.doc, input, None, Some(op)) {
+                    if crate::model::body_shadowed_by_other_ops(&self.doc, input, None, Some(op), None) {
                         if let Some(body) = self.doc.bodies.get_mut(input) {
                             body.shadow = true;
                         }
@@ -5881,6 +6003,157 @@ impl AppState {
                 }
                 self.refresh_document_health();
                 self.status = format!("Edited {}", kind.label());
+                ActionResult::Ok
+            }
+            Action::CommitSlice => {
+                let Some(cs) = self.creating_slice.take() else {
+                    return ActionResult::Err("No slice operation in progress".to_string());
+                };
+                let result = match cs.editing {
+                    Some(op) => self.apply(Action::EditSliceOperation {
+                        op,
+                        targets: cs.targets.clone(),
+                        cutters: cs.cutters.clone(),
+                        extend_infinite: cs.extend_infinite,
+                    }),
+                    None => self.apply(Action::CreateSliceOperation {
+                        targets: cs.targets.clone(),
+                        cutters: cs.cutters.clone(),
+                        extend_infinite: cs.extend_infinite,
+                    }),
+                };
+                if matches!(result, ActionResult::Err(_)) {
+                    self.creating_slice = Some(cs);
+                } else {
+                    self.creating_slice = Some(CreatingSlice::default());
+                }
+                result
+            }
+            Action::CreateSliceOperation { targets, cutters, extend_infinite } => {
+                if let Err(e) = validate_slice_inputs(&self.doc, &targets, &cutters, None) {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let op_index = self.doc.slice_ops.len();
+                self.doc.slice_ops.push(crate::model::SliceOperation {
+                    targets: targets.clone(),
+                    cutters: cutters.clone(),
+                    extend_infinite,
+                    outputs: Vec::new(),
+                    name: None,
+                    deleted: false,
+                });
+                self.doc.shape_order.push(ShapeKind::SliceOperation);
+                // Fragment count per target = solids the kernel finds after cutting (at
+                // least one). A target the cutters miss stays whole (one fragment).
+                let mut outputs = Vec::new();
+                for target in 0..targets.len() {
+                    let pieces = crate::extrude::slice_piece_count(&self.doc, op_index, target)
+                        .unwrap_or(1)
+                        .max(1);
+                    for piece in 0..pieces {
+                        outputs.push(self.doc.bodies.len());
+                        self.doc.bodies.push(crate::model::Body {
+                            source: crate::model::BodySource::Sliced { op: op_index, target, piece },
+                            name: None,
+                            deleted: false,
+                            shadow: false,
+                        });
+                        self.doc.shape_order.push(ShapeKind::Body);
+                    }
+                }
+                let fragments = outputs.len();
+                self.doc.slice_ops[op_index].outputs = outputs;
+                for &input in targets.iter() {
+                    if let Some(body) = self.doc.bodies.get_mut(input) {
+                        body.shadow = true;
+                    }
+                }
+                self.refresh_document_health();
+                self.status = format!(
+                    "Slice: {} fragment(s) from {} body(ies)",
+                    fragments,
+                    targets.len()
+                );
+                ActionResult::Ok
+            }
+            Action::EditSliceOperation { op, targets, cutters, extend_infinite } => {
+                if self.doc.slice_ops.get(op).filter(|o| !o.deleted).is_none() {
+                    let e = format!("Slice operation {op} not found");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                if let Err(e) = validate_slice_inputs(&self.doc, &targets, &cutters, Some(op)) {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                // Release old inputs from shadow, re-point the op, shadow the new ones.
+                let old_targets = self.doc.slice_ops[op].targets.clone();
+                for &input in old_targets.iter() {
+                    if let Some(body) = self.doc.bodies.get_mut(input) {
+                        body.shadow = false;
+                    }
+                }
+                {
+                    let entry = &mut self.doc.slice_ops[op];
+                    entry.targets = targets.clone();
+                    entry.cutters = cutters.clone();
+                    entry.extend_infinite = extend_infinite;
+                }
+                for &input in targets.iter() {
+                    if let Some(body) = self.doc.bodies.get_mut(input) {
+                        body.shadow = true;
+                    }
+                }
+                // Inputs shadowed by other live ops must stay shadows even if this op just
+                // dropped them.
+                for &input in old_targets.iter() {
+                    if crate::model::body_shadowed_by_other_ops(&self.doc, input, None, None, Some(op)) {
+                        if let Some(body) = self.doc.bodies.get_mut(input) {
+                            body.shadow = true;
+                        }
+                    }
+                }
+                // Recompute the target-major fragment list and reconcile the output bodies:
+                // reuse existing slots, push new ones for a surplus, tombstone the shortfall.
+                let desired: Vec<(usize, usize)> = (0..targets.len())
+                    .flat_map(|target| {
+                        let pieces = crate::extrude::slice_piece_count(&self.doc, op, target)
+                            .unwrap_or(1)
+                            .max(1);
+                        (0..pieces).map(move |piece| (target, piece))
+                    })
+                    .collect();
+                let existing = self.doc.slice_ops[op].outputs.clone();
+                let mut outputs = Vec::with_capacity(desired.len());
+                for (i, &(target, piece)) in desired.iter().enumerate() {
+                    let source = crate::model::BodySource::Sliced { op, target, piece };
+                    if let Some(&bi) = existing.get(i) {
+                        if let Some(body) = self.doc.bodies.get_mut(bi) {
+                            body.source = source;
+                            body.deleted = false;
+                        }
+                        outputs.push(bi);
+                    } else {
+                        outputs.push(self.doc.bodies.len());
+                        self.doc.bodies.push(crate::model::Body {
+                            source,
+                            name: None,
+                            deleted: false,
+                            shadow: false,
+                        });
+                        self.doc.shape_order.push(ShapeKind::Body);
+                        self.doc.undo_groups.push(1);
+                    }
+                }
+                for &bi in existing.iter().skip(desired.len()) {
+                    if let Some(body) = self.doc.bodies.get_mut(bi) {
+                        body.deleted = true;
+                    }
+                }
+                self.doc.slice_ops[op].outputs = outputs;
+                self.refresh_document_health();
+                self.status = "Edited slice".to_string();
                 ActionResult::Ok
             }
             Action::CommitRevolve => {
@@ -8704,6 +8977,126 @@ mod tests {
         assert_eq!(op.outputs.len(), 3);
         let offsets = crate::extrude::repeat_offsets(&state.doc, &op).unwrap();
         assert_eq!(offsets.len(), 3);
+    }
+
+    /// Adds an XY-parallel construction plane at `z` and returns its `FaceId`.
+    fn add_offset_xy_plane(state: &mut AppState, z: f32) -> FaceId {
+        let plane = plane_from_definition(
+            &definition_from_reference(
+                &PlaneReference::Face {
+                    origin: Vec3::ZERO,
+                    normal: Vec3::Z,
+                    label: "Ground".to_string(),
+                },
+                z,
+                0.0,
+            ),
+            ConstructionPlaneParent::Root,
+        );
+        state.doc.construction_planes.push(plane);
+        FaceId::ConstructionPlane(state.doc.construction_planes.len() - 1)
+    }
+
+    /// Slice: a plane through the middle of a box splits it into two fragment bodies, the
+    /// input becomes a shadow body, and one undo restores everything.
+    #[cfg(feature = "occt")]
+    #[test]
+    fn slice_splits_a_box_into_two_fragments() {
+        let mut state = two_box_state(false);
+        // Box 0 spans z 0..5; a plane at z=2.5 halves it.
+        let cutter = add_offset_xy_plane(&mut state, 2.5);
+        let bodies_before = state.doc.bodies.len();
+        let result = state.apply(Action::CreateSliceOperation {
+            targets: vec![0],
+            cutters: vec![cutter],
+            extend_infinite: true,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert_eq!(state.doc.slice_ops.len(), 1);
+        let op = &state.doc.slice_ops[0];
+        assert_eq!(op.outputs.len(), 2, "a mid-plane cut yields two fragments");
+        for &out in &op.outputs {
+            assert!(matches!(
+                state.doc.bodies[out].source,
+                crate::model::BodySource::Sliced { op: 0, .. }
+            ));
+            assert!(!state.doc.bodies[out].shadow);
+            assert!(
+                crate::extrude::body_solid_mesh(&state.doc, out).is_some(),
+                "fragment {out} should have a kernel mesh"
+            );
+        }
+        assert!(state.doc.bodies[0].shadow, "the sliced input becomes a shadow body");
+        assert_eq!(state.doc.bodies.len(), bodies_before + 2);
+
+        state.apply(Action::UndoLast);
+        assert!(state.doc.slice_ops.is_empty());
+        assert_eq!(state.doc.bodies.len(), bodies_before);
+        assert!(!state.doc.bodies[0].shadow, "undo restores the input body");
+    }
+
+    /// A cutter that misses the body leaves it whole (one fragment).
+    #[cfg(feature = "occt")]
+    #[test]
+    fn slice_with_a_missing_cutter_keeps_the_body_whole() {
+        let mut state = two_box_state(false);
+        // Box 0 spans z 0..5; a plane at z=20 is entirely above it.
+        let cutter = add_offset_xy_plane(&mut state, 20.0);
+        state.apply(Action::CreateSliceOperation {
+            targets: vec![0],
+            cutters: vec![cutter],
+            extend_infinite: true,
+        });
+        assert_eq!(state.doc.slice_ops[0].outputs.len(), 1);
+    }
+
+    /// Editing a slice re-points its cutters and resizes the fragment list.
+    #[cfg(feature = "occt")]
+    #[test]
+    fn slice_edit_resizes_outputs() {
+        let mut state = two_box_state(false);
+        let miss = add_offset_xy_plane(&mut state, 20.0);
+        let hit = add_offset_xy_plane(&mut state, 2.5);
+        state.apply(Action::CreateSliceOperation {
+            targets: vec![0],
+            cutters: vec![miss],
+            extend_infinite: true,
+        });
+        assert_eq!(state.doc.slice_ops[0].outputs.len(), 1);
+        let result = state.apply(Action::EditSliceOperation {
+            op: 0,
+            targets: vec![0],
+            cutters: vec![hit],
+            extend_infinite: true,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert_eq!(
+            state.doc.slice_ops[0].outputs.len(),
+            2,
+            "the mid-plane cutter now yields two fragments"
+        );
+        assert!(state.doc.bodies[0].shadow);
+    }
+
+    /// Slice rejects an empty cutter set and a shadow input.
+    #[test]
+    fn slice_validation_rejects_no_cutters_and_shadow_inputs() {
+        let mut state = two_box_state(false);
+        let no_cutters = state.apply(Action::CreateSliceOperation {
+            targets: vec![0],
+            cutters: Vec::new(),
+            extend_infinite: true,
+        });
+        assert!(matches!(no_cutters, ActionResult::Err(_)));
+        // Shadow body 0 via a move op, then it can't be sliced.
+        state.doc.bodies[0].shadow = true;
+        let cutter = add_offset_xy_plane(&mut state, 2.5);
+        let shadowed = state.apply(Action::CreateSliceOperation {
+            targets: vec![0],
+            cutters: vec![cutter],
+            extend_infinite: true,
+        });
+        assert!(matches!(shadowed, ActionResult::Err(_)));
     }
 
     /// Combining two *disjoint* boxes keeps them as one operation with (kernel builds) two

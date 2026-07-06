@@ -904,6 +904,18 @@ pub enum BodySource {
         #[serde(default)]
         solid: usize,
     },
+    /// One piece of a slice operation (Slice tool, #181): `op` indexes
+    /// `Document::slice_ops`, `target` is the sliced input body's position in the op's
+    /// target list, and `piece` is the ordinal of this fragment within that target's cut
+    /// result. The input body becomes a shadow body; each fragment is its own `Body`.
+    Sliced {
+        #[serde(rename = "slice_op")]
+        op: usize,
+        #[serde(default)]
+        target: usize,
+        #[serde(default)]
+        piece: usize,
+    },
     /// Additive extrusions with one or more extrusions **subtracted** (cut) from them (#35).
     /// Purely-additive bodies stay in the `Extrusion`/`Extrusions` forms; a body only takes
     /// this shape once it has a cut. `cut` is `#[serde(default)]` so any future add-only
@@ -931,7 +943,8 @@ impl BodySource {
             | Self::Revolve(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
-            | Self::Repeated { .. } => &[],
+            | Self::Repeated { .. }
+            | Self::Sliced { .. } => &[],
             Self::Imported(_) => &[],
         }
     }
@@ -947,7 +960,8 @@ impl BodySource {
             | Self::Revolve(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
-            | Self::Repeated { .. } => &[],
+            | Self::Repeated { .. }
+            | Self::Sliced { .. } => &[],
         }
     }
 
@@ -961,7 +975,8 @@ impl BodySource {
             | Self::Revolve(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
-            | Self::Repeated { .. } => None,
+            | Self::Repeated { .. }
+            | Self::Sliced { .. } => None,
         }
     }
 
@@ -985,7 +1000,8 @@ impl BodySource {
             | Self::Revolve(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
-            | Self::Repeated { .. } => {}
+            | Self::Repeated { .. }
+            | Self::Sliced { .. } => {}
         }
     }
 
@@ -1012,7 +1028,8 @@ impl BodySource {
             | Self::Revolve(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
-            | Self::Repeated { .. } => {}
+            | Self::Repeated { .. }
+            | Self::Sliced { .. } => {}
         }
     }
 
@@ -1045,7 +1062,8 @@ impl BodySource {
             | Self::Revolve(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
-            | Self::Repeated { .. } => {}
+            | Self::Repeated { .. }
+            | Self::Sliced { .. } => {}
         }
     }
 }
@@ -1058,6 +1076,7 @@ pub fn body_shadowed_by_other_ops(
     body: usize,
     skip_boolean: Option<usize>,
     skip_move: Option<usize>,
+    skip_slice: Option<usize>,
 ) -> bool {
     doc.boolean_ops.iter().enumerate().any(|(oi, o)| {
         skip_boolean != Some(oi)
@@ -1065,6 +1084,8 @@ pub fn body_shadowed_by_other_ops(
             && (o.a.contains(&body) || (!o.keep_b && o.b.contains(&body)))
     }) || doc.move_ops.iter().enumerate().any(|(oi, o)| {
         skip_move != Some(oi) && !o.deleted && o.targets.contains(&body)
+    }) || doc.slice_ops.iter().enumerate().any(|(oi, o)| {
+        skip_slice != Some(oi) && !o.deleted && o.targets.contains(&body)
     })
 }
 
@@ -1328,6 +1349,34 @@ pub struct RepeatOperation {
     pub deleted: bool,
 }
 
+/// A slice operation (Slice tool, #181): cuts whole bodies with one or more planar
+/// cutters (construction planes or planar body faces), splitting each target into the
+/// fragments that fall on either side. Each input body becomes a **shadow** body; every
+/// fragment is a fresh [`Body`] with a [`BodySource::Sliced`] source, and the operation
+/// itself is an editable pane element — fragments depend on the operation, the operation
+/// depends on every target and cutter.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SliceOperation {
+    /// Input body indices (the A side); each is sliced independently.
+    pub targets: Vec<usize>,
+    /// Planar cutters (the B side): construction planes and/or planar body faces.
+    #[serde(default)]
+    pub cutters: Vec<FaceId>,
+    /// When set, each cutter divides the whole target (its plane extends infinitely).
+    /// When clear, a cutter only separates material within its own face footprint.
+    #[serde(default)]
+    pub extend_infinite: bool,
+    /// Output body indices: target-major, then piece (all fragments of target 0, then
+    /// target 1, …). The last fragment of each target absorbs any extra solids a rebuild
+    /// produces, so the pane's element list stays stable while geometry changes.
+    #[serde(default)]
+    pub outputs: Vec<usize>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
 /// A reference image imported for tracing (#163/#169), hosted on a construction plane.
 /// The encoded file bytes are embedded (base64 in the saved JSON) so documents stay
 /// self-contained, like imported meshes.
@@ -1413,6 +1462,8 @@ pub enum ShapeKind {
     MoveOperation,
     /// A linear repeat on bodies (its output bodies are separate `Body` entries).
     RepeatOperation,
+    /// A slice operation on bodies (its fragment bodies are separate `Body` entries).
+    SliceOperation,
     /// An in-place edit of an existing construction plane (undo restores the prior planes).
     /// Transient: never persisted (storage rebuilds `shape_order` from created shapes only).
     ConstructionPlaneEdit,
@@ -1455,6 +1506,9 @@ pub struct Document {
     /// Linear repeats on bodies (the Repeat tool, #182).
     #[serde(default)]
     pub repeat_ops: Vec<RepeatOperation>,
+    /// Slice operations on bodies (the Slice tool, #181).
+    #[serde(default)]
+    pub slice_ops: Vec<SliceOperation>,
     pub shape_order: Vec<ShapeKind>,
     /// Undo-group sizes (#105): entry k is how many [`shape_order`](Self::shape_order)
     /// entries the k-th user-level action created, maintained by `AppState::apply` under
@@ -1495,6 +1549,7 @@ impl Default for Document {
             boolean_ops: Vec::new(),
             move_ops: Vec::new(),
             repeat_ops: Vec::new(),
+            slice_ops: Vec::new(),
             shape_order: Vec::new(),
             undo_groups: Vec::new(),
             default_length_unit: LengthUnit::default(),

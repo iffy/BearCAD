@@ -46,6 +46,8 @@ pub enum HierarchyNode {
     MoveOp(usize),
     /// A linear repeat on bodies (Repeat tool); its output bodies nest under it.
     RepeatOp(usize),
+    /// A slice operation on bodies (Slice tool); its fragment bodies nest under it.
+    SliceOp(usize),
 }
 
 /// Identifies an element whose visibility can be toggled.
@@ -88,6 +90,8 @@ pub enum SceneElement {
     MoveOp(usize),
     /// A linear repeat on bodies (Repeat tool).
     RepeatOp(usize),
+    /// A slice operation on bodies (Slice tool).
+    SliceOp(usize),
 }
 
 /// Quantize a world position (mm) to the 0.01 mm grid used for body edge/vertex selection
@@ -123,6 +127,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::BooleanOp(i) => SceneElement::BooleanOp(i),
         HierarchyNode::MoveOp(i) => SceneElement::MoveOp(i),
         HierarchyNode::RepeatOp(i) => SceneElement::RepeatOp(i),
+        HierarchyNode::SliceOp(i) => SceneElement::SliceOp(i),
     })
 }
 
@@ -215,6 +220,7 @@ impl ElementVisibility {
             SceneElement::BooleanOp(_) => true,
             SceneElement::MoveOp(_) => true,
             SceneElement::RepeatOp(_) => true,
+            SceneElement::SliceOp(_) => true,
         }
     }
 }
@@ -664,7 +670,8 @@ fn build_creation_ranks(doc: &Document) -> CreationRanks {
             | ShapeKind::Revolution
             | ShapeKind::BooleanOperation
             | ShapeKind::MoveOperation
-            | ShapeKind::RepeatOperation => {}
+            | ShapeKind::RepeatOperation
+            | ShapeKind::SliceOperation => {}
             // Edits are not created shapes; they only mark undoable in-place changes.
             ShapeKind::ConstructionPlaneEdit | ShapeKind::EdgeTreatmentEdit => {}
         }
@@ -689,6 +696,7 @@ fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
         HierarchyNode::BooleanOp(_) => usize::MAX,
         HierarchyNode::MoveOp(_) => usize::MAX,
         HierarchyNode::RepeatOp(_) => usize::MAX,
+        HierarchyNode::SliceOp(_) => usize::MAX,
     }
 }
 
@@ -748,6 +756,7 @@ pub fn build_hierarchy(
                 crate::model::BodySource::Boolean { .. }
                     | crate::model::BodySource::Moved { .. }
                     | crate::model::BodySource::Repeated { .. }
+                    | crate::model::BodySource::Sliced { .. }
             )
         {
             roots.push(HierarchyEntry {
@@ -810,6 +819,26 @@ pub fn build_hierarchy(
             .collect();
         roots.push(HierarchyEntry {
             node: HierarchyNode::RepeatOp(oi),
+            children,
+        });
+    }
+    // Slice operations (Slice tool): the operation is its own element, with its fragment
+    // bodies nested beneath it.
+    for (oi, op) in doc.slice_ops.iter().enumerate() {
+        if op.deleted {
+            continue;
+        }
+        let children = op
+            .outputs
+            .iter()
+            .filter(|&&bi| doc.bodies.get(bi).is_some_and(|b| !b.deleted))
+            .map(|&bi| HierarchyEntry {
+                node: HierarchyNode::Body(bi),
+                children: Vec::new(),
+            })
+            .collect();
+        roots.push(HierarchyEntry {
+            node: HierarchyNode::SliceOp(oi),
             children,
         });
     }
@@ -928,6 +957,7 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
         SceneElement::BooleanOp(_) => None,
         SceneElement::MoveOp(_) => None,
         SceneElement::RepeatOp(_) => None,
+        SceneElement::SliceOp(_) => None,
     }
 }
 
@@ -1041,6 +1071,14 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         }
         SceneElement::RepeatOp(index) => {
             if let Some(op) = doc.repeat_ops.get(index) {
+                for &output in &op.outputs {
+                    out.insert(SceneElement::Body(output));
+                    collect_descendants(doc, SceneElement::Body(output), out);
+                }
+            }
+        }
+        SceneElement::SliceOp(index) => {
+            if let Some(op) = doc.slice_ops.get(index) {
                 for &output in &op.outputs {
                     out.insert(SceneElement::Body(output));
                     collect_descendants(doc, SceneElement::Body(output), out);
@@ -1311,6 +1349,7 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         HierarchyNode::BooleanOp(_) => IconId::Combine,
         HierarchyNode::MoveOp(_) => IconId::Move,
         HierarchyNode::RepeatOp(_) => IconId::Repeat,
+        HierarchyNode::SliceOp(_) => IconId::Slice,
     })
 }
 
@@ -2041,7 +2080,8 @@ fn show_row(
             | HierarchyNode::Image(_)
             | HierarchyNode::BooleanOp(_)
             | HierarchyNode::MoveOp(_)
-            | HierarchyNode::RepeatOp(_) => {
+            | HierarchyNode::RepeatOp(_)
+            | HierarchyNode::SliceOp(_) => {
                 if response.clicked() {
                     let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
                     on_click_element(element, additive);

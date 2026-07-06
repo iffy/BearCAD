@@ -63,6 +63,10 @@ pub struct ContextInput<'a> {
     pub repeat_op: Option<RepeatControl>,
     /// "Edit repeat" entry point.
     pub repeat_edit_start: Option<usize>,
+    /// Slice tool state: `Some` while the Slice tool is active.
+    pub slice_op: Option<SliceControl>,
+    /// "Edit slice" entry point.
+    pub slice_edit_start: Option<usize>,
     /// Guided calibration entry point (#163): `Some(image)` when exactly one tracing image
     /// is selected and no calibration is running — renders the "Calibrate scale" button.
     pub calibrate_start: Option<usize>,
@@ -147,6 +151,32 @@ pub enum RepeatEdit {
     Spacing(String),
     Length(String),
     RemoveTarget(Option<usize>),
+    Commit,
+}
+
+/// What the Slice tool's context section shows: the picked target bodies, the planar
+/// cutters, which picker the next viewport click lands on, and the extend-to-infinity flag.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SliceControl {
+    pub target_rows: Vec<String>,
+    pub cutter_rows: Vec<String>,
+    /// `true` while the cutter picker is active (the next viewport click adds a cutter).
+    pub picking_cutter: bool,
+    pub extend_infinite: bool,
+    pub editing: bool,
+    pub can_commit: bool,
+}
+
+/// One edit from the Slice context section.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SliceEdit {
+    /// Choose which picker the next viewport click lands on (`true` = cutter).
+    PickingCutter(bool),
+    ExtendInfinite(bool),
+    /// Remove target row `i` (`None` clears the target set).
+    RemoveTarget(Option<usize>),
+    /// Remove cutter row `i` (`None` clears the cutter set).
+    RemoveCutter(Option<usize>),
     Commit,
 }
 
@@ -263,6 +293,10 @@ pub struct ContextPaneContent {
     pub repeat_op: Option<RepeatControl>,
     /// "Edit repeat" entry point.
     pub repeat_edit_start: Option<usize>,
+    /// Slice tool controls.
+    pub slice_op: Option<SliceControl>,
+    /// "Edit slice" button target.
+    pub slice_edit_start: Option<usize>,
     /// "Calibrate scale" start button (#163): the selected tracing image.
     pub calibrate_start: Option<usize>,
     /// Guided-calibration hint: points placed so far (of 2).
@@ -393,6 +427,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let move_edit_start = input.move_edit_start;
     let repeat_op = input.repeat_op.clone();
     let repeat_edit_start = input.repeat_edit_start;
+    let slice_op = input.slice_op.clone();
+    let slice_edit_start = input.slice_edit_start;
     let calibrate_start = input.calibrate_start;
     let calibrate_pending = input.calibrate_pending;
 
@@ -418,6 +454,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             move_edit_start,
             repeat_op: repeat_op.clone(),
             repeat_edit_start,
+            slice_op: slice_op.clone(),
+            slice_edit_start,
         calibrate_start,
             calibrate_pending,
         };
@@ -444,6 +482,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             move_edit_start,
             repeat_op: repeat_op.clone(),
             repeat_edit_start,
+            slice_op: slice_op.clone(),
+            slice_edit_start,
         calibrate_start,
             calibrate_pending,
         };
@@ -470,6 +510,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             move_edit_start,
             repeat_op: repeat_op.clone(),
             repeat_edit_start,
+            slice_op: slice_op.clone(),
+            slice_edit_start,
         calibrate_start,
             calibrate_pending,
         };
@@ -499,6 +541,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         move_edit_start,
         repeat_op,
         repeat_edit_start,
+        slice_op,
+        slice_edit_start,
         calibrate_start,
         calibrate_pending,
     }
@@ -712,6 +756,8 @@ pub fn show_pane(
     on_move_edit_start: &mut impl FnMut(usize),
     on_repeat_edit: &mut impl FnMut(RepeatEdit),
     on_repeat_edit_start: &mut impl FnMut(usize),
+    on_slice_edit: &mut impl FnMut(SliceEdit),
+    on_slice_edit_start: &mut impl FnMut(usize),
     on_calibrate_start: &mut impl FnMut(usize),
     on_calibrate_image: &mut impl FnMut(CalibrateImageControl, String),
 ) {
@@ -1255,6 +1301,102 @@ pub fn show_pane(
         );
     }
 
+    if let Some(control) = &content.slice_op {
+        any_control = true;
+        ui.separator();
+        ui.label(
+            egui::RichText::new(if control.editing { "Edit slice" } else { "Slice" }).strong(),
+        );
+        let mut pending: Option<SliceEdit> = None;
+        // Which picker the next viewport click lands on.
+        ui.horizontal(|ui| {
+            ui.label("Picking");
+            let mut picking_cutter = control.picking_cutter;
+            if ui
+                .selectable_label(!picking_cutter, "Bodies")
+                .clicked()
+            {
+                picking_cutter = false;
+            }
+            if ui.selectable_label(picking_cutter, "Cutters").clicked() {
+                picking_cutter = true;
+            }
+            if picking_cutter != control.picking_cutter {
+                pending = Some(SliceEdit::PickingCutter(picking_cutter));
+            }
+        });
+        ui.label(
+            egui::RichText::new(format!("Bodies ({})", control.target_rows.len())).strong(),
+        );
+        if control.target_rows.is_empty() {
+            ui.label(
+                egui::RichText::new("Click bodies in the viewport")
+                    .color(egui::Color32::from_gray(140))
+                    .size(11.0),
+            );
+        }
+        for (i, row) in control.target_rows.iter().enumerate() {
+            ui.horizontal(|ui| {
+                if ui.small_button("✕").on_hover_text("Remove from set").clicked() {
+                    pending = Some(SliceEdit::RemoveTarget(Some(i)));
+                }
+                ui.label(row);
+            });
+        }
+        ui.label(
+            egui::RichText::new(format!("Cutters ({})", control.cutter_rows.len())).strong(),
+        );
+        if control.cutter_rows.is_empty() {
+            ui.label(
+                egui::RichText::new("Switch to Cutters, then click planes or faces")
+                    .color(egui::Color32::from_gray(140))
+                    .size(11.0),
+            );
+        }
+        for (i, row) in control.cutter_rows.iter().enumerate() {
+            ui.horizontal(|ui| {
+                if ui.small_button("✕").on_hover_text("Remove cutter").clicked() {
+                    pending = Some(SliceEdit::RemoveCutter(Some(i)));
+                }
+                ui.label(row);
+            });
+        }
+        let mut extend = control.extend_infinite;
+        if ui
+            .checkbox(&mut extend, "Extend cutters to infinity")
+            .on_hover_text("Off: a cutter only separates material within its own footprint")
+            .changed()
+        {
+            pending = Some(SliceEdit::ExtendInfinite(extend));
+        }
+        if let Some(edit) = pending {
+            on_slice_edit(edit);
+        }
+        ui.add_space(2.0);
+        if ui
+            .add_enabled(
+                control.can_commit && controls_enabled,
+                egui::Button::new(if control.editing { "Apply changes" } else { "Slice" }),
+            )
+            .clicked()
+        {
+            on_slice_edit(SliceEdit::Commit);
+        }
+    }
+
+    if let Some(op) = content.slice_edit_start {
+        any_control = true;
+        ui.separator();
+        if ui.button("Edit slice").clicked() {
+            on_slice_edit_start(op);
+        }
+        ui.label(
+            egui::RichText::new("Re-open the Slice tool to change this operation")
+                .color(egui::Color32::from_gray(140))
+                .size(11.0),
+        );
+    }
+
     if let Some(image) = content.calibrate_start {
         any_control = true;
         ui.separator();
@@ -1505,6 +1647,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
+            slice_op: None,
+            slice_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         }
@@ -1539,6 +1683,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
+            slice_op: None,
+            slice_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         };
@@ -1605,6 +1751,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
+            slice_op: None,
+            slice_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: Some(UnitsControl {
@@ -1646,6 +1794,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
+            slice_op: None,
+            slice_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -1671,6 +1821,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
+            slice_op: None,
+            slice_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: Some(UnitsControl {
@@ -1712,6 +1864,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
+            slice_op: None,
+            slice_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -1750,6 +1904,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
+            slice_op: None,
+            slice_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: None,
@@ -1838,6 +1994,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
+            slice_op: None,
+            slice_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -1877,6 +2035,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
+            slice_op: None,
+            slice_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -1904,6 +2064,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
+            slice_op: None,
+            slice_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: None,
@@ -1937,6 +2099,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
+            slice_op: None,
+            slice_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });

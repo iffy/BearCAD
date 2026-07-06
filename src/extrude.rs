@@ -440,6 +440,9 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
         crate::model::BodySource::Repeated { op, target, instance } => {
             return occt_repeated_output_shape(doc, op, target, instance);
         }
+        crate::model::BodySource::Sliced { op, target, piece } => {
+            return occt_sliced_output_shape(doc, op, target, piece);
+        }
         _ => occt_body_shape_from_indices(
             doc,
             body.source.extrusion_indices(),
@@ -658,6 +661,157 @@ fn occt_repeated_output_shape(
     let t = dir * offset;
     let m = glam::Mat4::from_translation(t);
     shape.transformed(&mat4_to_rows_3x4(&m))
+}
+
+/// The half-space cutting solid for one slice cutter: a large prism built on the cutter's
+/// plane, occupying the `+normal` side. With `extend_infinite` the profile is a big square
+/// covering the target; otherwise it's the cutter face's own boundary (a planar body face),
+/// so the cut only reaches material within that footprint. Construction planes have no
+/// finite boundary and always cut as infinite planes.
+#[cfg(feature = "occt")]
+fn occt_slice_halfspace(
+    doc: &Document,
+    cutter: &FaceId,
+    extend_infinite: bool,
+    target: usize,
+) -> Option<crate::kernel::Shape> {
+    let frame = sketch_frame(doc, cutter.clone())?;
+    let n = frame.normal.normalize_or_zero();
+    if n == Vec3::ZERO {
+        return None;
+    }
+    let (min, max) = body_solid_mesh_uncached(doc, target)?.bounds()?;
+    let reach = (max - min).length().max(1.0) * 4.0;
+    let finite = if extend_infinite {
+        None
+    } else {
+        face_boundary_loop_world(doc, cutter).filter(|loop_world| loop_world.len() >= 3)
+    };
+    let profile = match finite {
+        Some(loop_world) => loop_world,
+        None => {
+            // A big square in the plane, centered on the target's centroid projected onto
+            // the cutter plane, sized to overhang the whole body.
+            let u = frame.u_axis.normalize_or_zero();
+            let v = frame.v_axis.normalize_or_zero();
+            let centroid = (min + max) * 0.5;
+            let center = centroid - n * (centroid - frame.origin).dot(n);
+            let half = reach;
+            vec![
+                center - u * half - v * half,
+                center + u * half - v * half,
+                center + u * half + v * half,
+                center - u * half + v * half,
+            ]
+        }
+    };
+    crate::kernel::Shape::prism(&profile, n * reach)
+}
+
+/// The ordered fragments one slice target splits into: start from the input body's solid(s)
+/// and, for each cutter, replace every current piece with its two sides of the cutter's
+/// half-space, dropping empty results. Deterministic order (common side before cut side, in
+/// cutter order) keeps output-body mapping stable across edits.
+#[cfg(feature = "occt")]
+fn occt_slice_pieces(doc: &Document, op_index: usize, target_pos: usize) -> Option<Vec<crate::kernel::Shape>> {
+    use crate::kernel::BoolOp;
+    const MIN_PIECE_VOLUME: f64 = 1e-6;
+    let op = doc.slice_ops.get(op_index).filter(|o| !o.deleted)?;
+    let &input = op.targets.get(target_pos)?;
+    // Inputs must precede this op's outputs; the guard breaks any accidental self-reference.
+    if op.outputs.contains(&input) {
+        return None;
+    }
+    let base = occt_body_shape(doc, input)?;
+    let mut pieces: Vec<crate::kernel::Shape> = base.solids();
+    if pieces.is_empty() {
+        pieces = vec![base];
+    }
+    for cutter in &op.cutters {
+        let Some(hs) = occt_slice_halfspace(doc, cutter, op.extend_infinite, input) else {
+            continue;
+        };
+        let mut next = Vec::new();
+        for piece in &pieces {
+            for op_code in [BoolOp::Common, BoolOp::Cut] {
+                if let Some(side) = piece.boolean(&hs, op_code) {
+                    for solid in side.solids() {
+                        if solid.volume().map(|v| v.abs() > MIN_PIECE_VOLUME).unwrap_or(false) {
+                            next.push(solid);
+                        }
+                    }
+                }
+            }
+        }
+        if !next.is_empty() {
+            pieces = next;
+        }
+    }
+    Some(pieces)
+}
+
+/// The BREP solid of one slice fragment: piece `piece` of target `target`. The target's
+/// *last* fragment absorbs any extra solids a rebuild produced (fused into one shape), so
+/// the body list stays stable while geometry changes underneath — same contract as boolean
+/// outputs.
+#[cfg(feature = "occt")]
+fn occt_sliced_output_shape(
+    doc: &Document,
+    op_index: usize,
+    target: usize,
+    piece: usize,
+) -> Option<crate::kernel::Shape> {
+    use crate::kernel::BoolOp;
+    let mut pieces = occt_slice_pieces(doc, op_index, target)?;
+    if pieces.is_empty() {
+        return None;
+    }
+    // The stable fragment count for this target is how many output bodies it owns.
+    let owned = slice_target_body_count(doc, op_index, target);
+    let last = owned.saturating_sub(1);
+    if piece > last || piece >= pieces.len() && piece != last {
+        return None;
+    }
+    if piece == last && pieces.len() > owned {
+        let mut extra = pieces.drain(last..).collect::<Vec<_>>().into_iter();
+        let mut sum = extra.next()?;
+        for s in extra {
+            sum = sum.boolean(&s, BoolOp::Fuse)?;
+        }
+        return Some(sum);
+    }
+    if piece < pieces.len() {
+        Some(pieces.swap_remove(piece))
+    } else {
+        None
+    }
+}
+
+/// How many (live) output bodies a slice target currently owns — the authoritative,
+/// stable fragment count, recovered from the `BodySource::Sliced` sources.
+fn slice_target_body_count(doc: &Document, op_index: usize, target: usize) -> usize {
+    doc.bodies
+        .iter()
+        .filter(|b| {
+            !b.deleted
+                && matches!(
+                    b.source,
+                    crate::model::BodySource::Sliced { op, target: t, .. }
+                        if op == op_index && t == target
+                )
+        })
+        .count()
+}
+
+/// Number of fragments a slice target currently produces (commit-time output sizing).
+#[cfg(feature = "occt")]
+pub fn slice_piece_count(doc: &Document, op_index: usize, target: usize) -> Option<usize> {
+    Some(occt_slice_pieces(doc, op_index, target)?.len())
+}
+
+#[cfg(not(feature = "occt"))]
+pub fn slice_piece_count(_doc: &Document, _op_index: usize, _target: usize) -> Option<usize> {
+    None
 }
 
 /// The whole (possibly multi-solid) OCCT result of one boolean operation: A-side bodies
@@ -1214,6 +1368,19 @@ pub fn selection_world_bounds(
                     }
                 }
             }
+            SceneElement::SliceOp(op) => {
+                let outputs = doc
+                    .slice_ops
+                    .get(op)
+                    .map(|o| o.outputs.clone())
+                    .unwrap_or_default();
+                for bi in outputs {
+                    if let Some((min, max)) = body_solid_mesh(doc, bi).and_then(|m| m.bounds()) {
+                        extend(min);
+                        extend(max);
+                    }
+                }
+            }
             SceneElement::Body(bi) => {
                 if let Some((min, max)) = body_solid_mesh(doc, bi).and_then(|m| m.bounds()) {
                     extend(min);
@@ -1417,6 +1584,20 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
         #[cfg(not(feature = "occt"))]
         {
             let _ = (op, solid);
+            return None;
+        }
+    }
+    if let crate::model::BodySource::Sliced { op, target, piece } = body.source {
+        // Slice fragments are kernel-computed; shadow inputs keep their own meshes.
+        #[cfg(feature = "occt")]
+        {
+            let shape = occt_sliced_output_shape(doc, op, target, piece)?;
+            let tris = shape.tessellate(OCCT_DEFLECTION as f64);
+            return (!tris.is_empty()).then_some(SolidMesh { triangles: tris });
+        }
+        #[cfg(not(feature = "occt"))]
+        {
+            let _ = (op, target, piece);
             return None;
         }
     }

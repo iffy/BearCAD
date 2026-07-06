@@ -99,6 +99,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::BooleanOp(_) => "boolean_op",
         SceneElement::MoveOp(_) => "move_op",
         SceneElement::RepeatOp(_) => "repeat_op",
+        SceneElement::SliceOp(_) => "slice_op",
     }
 }
 
@@ -114,7 +115,8 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::Image(i)
         | SceneElement::BooleanOp(i)
         | SceneElement::MoveOp(i)
-        | SceneElement::RepeatOp(i) => i,
+        | SceneElement::RepeatOp(i)
+        | SceneElement::SliceOp(i) => i,
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::BodyEdge { .. }
@@ -565,6 +567,22 @@ fn parse_repeat_op_args(
         })
     };
     Ok((targets, axis, mode, expr("count")?, expr("spacing")?, expr("length")?))
+}
+
+/// Parses `bearcad.slice{}`/`bearcad.edit_slice{}` arguments: the target body list, the
+/// planar cutters (face-spec tables), and the extend-to-infinity flag.
+fn parse_slice_op_args(
+    opts: &Table,
+) -> mlua::Result<(Vec<usize>, Vec<FaceId>, bool)> {
+    let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
+    let mut cutters: Vec<FaceId> = Vec::new();
+    if let Some(list) = opts.get::<Option<Vec<Table>>>("cutters")? {
+        for table in list {
+            cutters.push(parse_face_id_table(table)?);
+        }
+    }
+    let extend_infinite: bool = opts.get::<Option<bool>>("extend")?.unwrap_or(true);
+    Ok((targets, cutters, extend_infinite))
 }
 
 fn parse_geometric_constraint(name: &str) -> Option<GeometricConstraintType> {
@@ -2336,6 +2354,35 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let (kind, a, b, keep_b) = parse_boolean_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::EditBooleanOp { op, kind, a, b, keep_b })?;
+            }
+            Ok(())
+        })?,
+    )?;
+
+    api.set(
+        "slice",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let (targets, cutters, extend_infinite) = parse_slice_op_args(&opts)?;
+            unsafe {
+                tick.exec(Instruction::CreateSliceOp { targets, cutters, extend_infinite })?;
+            }
+            let element = SceneElement::SliceOp(unsafe {
+                tick.state().doc.slice_ops.len().saturating_sub(1)
+            });
+            drop(tick);
+            apply_optional_name(lua, element, Some(opts))
+        })?,
+    )?;
+
+    api.set(
+        "edit_slice",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let op: usize = opts.get("index")?;
+            let (targets, cutters, extend_infinite) = parse_slice_op_args(&opts)?;
+            unsafe {
+                tick.exec(Instruction::EditSliceOp { op, targets, cutters, extend_infinite })?;
             }
             Ok(())
         })?,
@@ -4127,6 +4174,27 @@ mod tests {
         assert!(state.doc.bodies[0].shadow);
         assert!(state.doc.bodies[1].shadow);
         assert!(!op.outputs.is_empty());
+    }
+
+    /// Slice tool scripting: `bearcad.slice{}` cuts a box with an offset plane into two
+    /// fragments and shadows the input.
+    #[cfg(feature = "occt")]
+    #[test]
+    fn lua_slice_halves_a_box() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ x = 0, y = 0, width = 10, height = 10 }
+            bearcad.exit_sketch()
+            bearcad.extrude{ polygon = {0,1,2,3}, distance = 5 }
+            bearcad.plane{ offset = 2.5 }
+            bearcad.slice{ bodies = {0}, cutters = {{ kind = "construction_plane", index = 1 }}, name = "Halved" }
+        "#,
+        );
+        assert_eq!(state.doc.slice_ops.len(), 1);
+        let op = &state.doc.slice_ops[0];
+        assert_eq!(op.name.as_deref(), Some("Halved"));
+        assert_eq!(op.outputs.len(), 2, "a mid-plane cut yields two fragments");
+        assert!(state.doc.bodies[0].shadow, "the sliced input becomes a shadow body");
     }
 
     /// SPEC §3.5 Loft: `bearcad.loft{ circles = {...} }` blends circle sections on two

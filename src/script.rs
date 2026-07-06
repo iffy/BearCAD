@@ -172,6 +172,19 @@ pub enum Instruction {
         spacing: String,
         length: String,
     },
+    /// Slice bodies with planar cutters (Slice tool).
+    CreateSliceOp {
+        targets: Vec<usize>,
+        cutters: Vec<FaceId>,
+        extend_infinite: bool,
+    },
+    /// Re-point an existing slice operation.
+    EditSliceOp {
+        op: usize,
+        targets: Vec<usize>,
+        cutters: Vec<FaceId>,
+        extend_infinite: bool,
+    },
     SetElementVisible {
         element: SceneElement,
         visible: Option<bool>,
@@ -543,6 +556,12 @@ impl Instruction {
             }
             Instruction::EditRepeatOp { op, targets, axis, mode, count, spacing, length } => {
                 repeat_op_lua("bearcad.edit_repeat", Some(*op), targets, *axis, *mode, count, spacing, length)
+            }
+            Instruction::CreateSliceOp { targets, cutters, extend_infinite } => {
+                slice_op_lua("bearcad.slice", None, targets, cutters, *extend_infinite)
+            }
+            Instruction::EditSliceOp { op, targets, cutters, extend_infinite } => {
+                slice_op_lua("bearcad.edit_slice", Some(*op), targets, cutters, *extend_infinite)
             }
             Instruction::SetElementVisible { element, visible } => {
                 let target = element_lua_ref(element);
@@ -989,6 +1008,11 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        SceneElement::SliceOp(i) => ElementScriptTokens {
+            kind: "slice_op",
+            index: i,
+            point: None,
+        },
     }
 }
 
@@ -1068,6 +1092,21 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 count: count.clone(),
                 spacing: spacing.clone(),
                 length: length.clone(),
+            })
+        }
+        Action::CreateSliceOperation { targets, cutters, extend_infinite } => {
+            Some(Instruction::CreateSliceOp {
+                targets: targets.clone(),
+                cutters: cutters.clone(),
+                extend_infinite: *extend_infinite,
+            })
+        }
+        Action::EditSliceOperation { op, targets, cutters, extend_infinite } => {
+            Some(Instruction::EditSliceOp {
+                op: *op,
+                targets: targets.clone(),
+                cutters: cutters.clone(),
+                extend_infinite: *extend_infinite,
             })
         }
         Action::NewDocument => Some(Instruction::New),
@@ -1522,6 +1561,32 @@ fn repeat_op_lua(
     format!("{call}{{ {} }}", parts.join(", "))
 }
 
+/// Render a slice-operation call (`bearcad.slice{}` / `bearcad.edit_slice{}`).
+fn slice_op_lua(
+    call: &str,
+    op: Option<usize>,
+    targets: &[usize],
+    cutters: &[FaceId],
+    extend_infinite: bool,
+) -> String {
+    let mut parts = Vec::new();
+    if let Some(op) = op {
+        parts.push(format!("index = {op}"));
+    }
+    parts.push(format!(
+        "bodies = {{{}}}",
+        targets.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+    ));
+    parts.push(format!(
+        "cutters = {{{}}}",
+        cutters.iter().map(face_id_lua_ref).collect::<Vec<_>>().join(", ")
+    ));
+    if extend_infinite {
+        parts.push("extend = true".to_string());
+    }
+    format!("{call}{{ {} }}", parts.join(", "))
+}
+
 /// Render an extrusion's faces as `bearcad.extrude{}` keyword arguments
 /// (`rect=`/`rects=`, `circle=`/`circles=`, `polygon=`). A single rect or circle uses the
 /// singular field to match how `bearcad.extrude` is normally called by hand; multiple of a
@@ -1732,6 +1797,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
         Tool::Combine => "combine",
         Tool::Move => "move",
         Tool::Repeat => "repeat",
+        Tool::Slice => "slice",
     }
 }
 
@@ -2976,6 +3042,25 @@ impl ScriptRunner {
                     count,
                     spacing,
                     length,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::CreateSliceOp { targets, cutters, extend_infinite } => {
+                let result = state.apply(Action::CreateSliceOperation {
+                    targets,
+                    cutters,
+                    extend_infinite,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::EditSliceOp { op, targets, cutters, extend_infinite } => {
+                let result = state.apply(Action::EditSliceOperation {
+                    op,
+                    targets,
+                    cutters,
+                    extend_infinite,
                 });
                 self.record_action_error(result);
                 StepResult::Continue

@@ -459,6 +459,23 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   `bearcad.edit_repeat{ index, … }`. Repeating sketches/planes/operations, 2D in-sketch
   repeats, and picking the length endpoint from a face are the tracked follow-up (#186).
 
+- **Slice tool (#181):** cuts whole bodies with planar cutters. Two pickers — **Bodies**
+  (the targets, multi-select) and **Cutters** (construction planes and/or planar body
+  faces, multi-select) — with a *Picking* switch in the context pane choosing where the
+  next viewport click lands. Each target is split independently: for every cutter the
+  current pieces are divided by the cutter's plane, so *n* cutters through a body can yield
+  up to *2ⁿ* fragments. Each fragment is an output body (`BodySource::Sliced { op, target,
+  piece }`) nested under an editable **slice operation element** (`Document::slice_ops`,
+  `ShapeKind::SliceOperation`); the input body becomes a **shadow body** exactly like the
+  Combine tool, and fragments chain as ordinary bodies into further operations. The
+  **Extend cutters to infinity** toggle (default on) treats each cutter as an infinite
+  plane; turned off, a cutter only separates material within its own face footprint. The
+  slicing runs through the OCCT kernel (half-space booleans); a cutter that misses a body
+  leaves it whole. "Edit slice" re-opens the tool and resizes the fragment list; the whole
+  slice undoes as one step. Scripting: `bearcad.slice{ bodies, cutters, extend?, name? }` /
+  `bearcad.edit_slice{ index, … }`. The 2D in-sketch version (shadow shapes), line/curve/
+  face targets, and picking side-wall faces as cutters are the tracked follow-up (#191).
+
 ### 3.4 Modifying solids
 - **Fillet** and **Chamfer**, 2D sketch vertices: the tools described in §3.1 (#37/#38) —
   truncate-and-bridge on a sketch vertex where two lines meet, with the fillet arc approximated

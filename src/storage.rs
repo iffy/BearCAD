@@ -191,6 +191,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "boolean_op", &doc.boolean_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "move_op", &doc.move_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "repeat_op", &doc.repeat_ops)?;
+    save_indexed_nodes(&tx, &mut row_id, "slice_op", &doc.slice_ops)?;
     if doc.construction_planes.len() > 1 {
         save_indexed_nodes(
             &tx,
@@ -457,6 +458,7 @@ pub fn open(path: &str) -> Result<Document> {
     let boolean_ops = load_indexed_entities(&conn, "boolean_op")?;
     let move_ops = load_indexed_entities(&conn, "move_op")?;
     let repeat_ops = load_indexed_entities(&conn, "repeat_op")?;
+    let slice_ops = load_indexed_entities(&conn, "slice_op")?;
     let default_length_unit = load_default_length_unit_meta(&conn);
     let default_angle_unit = load_default_angle_unit_meta(&conn);
     let undo_groups = load_undo_groups_meta(&conn);
@@ -477,6 +479,7 @@ pub fn open(path: &str) -> Result<Document> {
         boolean_ops,
         move_ops,
         repeat_ops,
+        slice_ops,
         shape_order,
         undo_groups,
         default_length_unit,
@@ -588,6 +591,53 @@ mod tests {
         save(&path, &doc).unwrap();
         let loaded = open(&path).unwrap();
         assert_eq!(loaded.boolean_ops, doc.boolean_ops);
+        assert_eq!(loaded.bodies, doc.bodies);
+        assert_eq!(loaded.shape_order, doc.shape_order);
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn round_trips_slice_ops_and_shadow_bodies() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("bearcad_slice_roundtrip_test.bearcad");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: None,
+            deleted: false,
+            shadow: true,
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Sliced { op: 0, target: 0, piece: 0 },
+            name: Some("Top".to_string()),
+            deleted: false,
+            shadow: false,
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Sliced { op: 0, target: 0, piece: 1 },
+            name: Some("Bottom".to_string()),
+            deleted: false,
+            shadow: false,
+        });
+        doc.slice_ops.push(crate::model::SliceOperation {
+            targets: vec![0],
+            cutters: vec![crate::model::FaceId::ConstructionPlane(3)],
+            extend_infinite: true,
+            outputs: vec![1, 2],
+            name: Some("Halved".to_string()),
+            deleted: false,
+        });
+        doc.shape_order.push(ShapeKind::SliceOperation);
+        doc.shape_order.push(ShapeKind::Body);
+        doc.shape_order.push(ShapeKind::Body);
+
+        save(&path, &doc).unwrap();
+        let loaded = open(&path).unwrap();
+        assert_eq!(loaded.slice_ops, doc.slice_ops);
         assert_eq!(loaded.bodies, doc.bodies);
         assert_eq!(loaded.shape_order, doc.shape_order);
 

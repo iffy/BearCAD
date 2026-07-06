@@ -2387,6 +2387,87 @@ impl App {
         self.state.status = format!("Repeat: {} body(ies) picked", cr.targets.len());
     }
 
+    /// Slice tool (#181): with the target picker active, click bodies to toggle them into
+    /// the slice set; with the cutter picker active, click construction planes or planar
+    /// body faces to toggle them as cutters. Enter commits.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_slice_tool(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+        pick_occlusion: Option<&construction::PickOcclusion>,
+    ) {
+        if self.state.sketch_session.is_some() {
+            return;
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+            && self
+                .state
+                .creating_slice
+                .as_ref()
+                .is_some_and(|c| !c.targets.is_empty() && !c.cutters.is_empty())
+            && !ui.ctx().wants_keyboard_input()
+        {
+            self.state.apply(Action::CommitSlice);
+            return;
+        }
+        if !ui.input(|i| i.pointer.primary_pressed()) {
+            return;
+        }
+        let Some(pp) = pointer_screen else {
+            return;
+        };
+        let picking_cutter = self
+            .state
+            .creating_slice
+            .as_ref()
+            .is_some_and(|c| c.picking_cutter);
+        if picking_cutter {
+            // A cutter is a construction plane or a planar body face.
+            let Some(face) = pick_sketch_face(pp, project, &self.state.doc, cam.eye()) else {
+                return;
+            };
+            let cs = self
+                .state
+                .creating_slice
+                .get_or_insert_with(actions::CreatingSlice::default);
+            if let Some(pos) = cs.cutters.iter().position(|c| *c == face) {
+                cs.cutters.remove(pos);
+            } else {
+                cs.cutters.push(face);
+            }
+            self.state.status = format!("Slice: {} cutter(s) picked", cs.cutters.len());
+            return;
+        }
+        let gp = cam.ground_point(pp, viewport, vp);
+        let Some(target) = resolve_pick_target(pp, project, gp, &self.state.doc, pick_occlusion)
+        else {
+            return;
+        };
+        let Some(SceneElement::Body(bi)) = scene_element_from_pick(&target.kind) else {
+            return;
+        };
+        if self.state.doc.bodies.get(bi).is_some_and(|b| b.shadow) {
+            self.state.status =
+                "That body is already consumed by another operation".to_string();
+            return;
+        }
+        let cs = self
+            .state
+            .creating_slice
+            .get_or_insert_with(actions::CreatingSlice::default);
+        if let Some(pos) = cs.targets.iter().position(|b| *b == bi) {
+            cs.targets.remove(pos);
+        } else {
+            cs.targets.push(bi);
+        }
+        self.state.status = format!("Slice: {} body(ies) picked", cs.targets.len());
+    }
+
     /// Floating angle field for the in-progress revolve (Enter commits). Mirrors the
     /// extrude distance input.
     fn show_revolve_angle_input(&mut self, ui: &egui::Ui, project: &impl Fn(Vec3) -> Option<egui::Pos2>) {
@@ -2956,6 +3037,16 @@ impl eframe::App for App {
                 }
                 if icons::selectable_icon_button(
                     ui,
+                    icons::IconId::Slice,
+                    self.state.tool == Tool::Slice,
+                    shortcuts::compact_label("Slice", shortcuts::tool_shortcut(Tool::Slice)),
+                )
+                .clicked()
+                {
+                    self.state.apply(Action::SetTool(Tool::Slice));
+                }
+                if icons::selectable_icon_button(
+                    ui,
                     icons::IconId::Dimension,
                     self.state.tool == Tool::Dimension,
                     shortcuts::compact_label(
@@ -3399,6 +3490,53 @@ impl eframe::App for App {
                         })
                     })
                     .flatten(),
+                slice_op: (self.state.tool == Tool::Slice).then(|| {
+                    let cs = self.state.creating_slice.as_ref();
+                    let target_rows = cs
+                        .map(|c| {
+                            c.targets
+                                .iter()
+                                .map(|&bi| {
+                                    names::element_name(&self.state.doc, SceneElement::Body(bi))
+                                        .map(|n| n.to_string())
+                                        .unwrap_or_else(|| format!("Body {bi}"))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let cutter_rows = cs
+                        .map(|c| {
+                            c.cutters
+                                .iter()
+                                .map(|f| crate::face::face_label(&self.state.doc, f.clone()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    context::SliceControl {
+                        target_rows,
+                        cutter_rows,
+                        picking_cutter: cs.map(|c| c.picking_cutter).unwrap_or(false),
+                        extend_infinite: cs.map(|c| c.extend_infinite).unwrap_or(true),
+                        editing: cs.map(|c| c.editing.is_some()).unwrap_or(false),
+                        can_commit: cs
+                            .map(|c| !c.targets.is_empty() && !c.cutters.is_empty())
+                            .unwrap_or(false),
+                    }
+                }),
+                slice_edit_start: (self.state.tool != Tool::Slice)
+                    .then(|| {
+                        let mut only = None;
+                        for element in self.state.scene_selection.iter() {
+                            match (element, only) {
+                                (SceneElement::SliceOp(i), None) => only = Some(i),
+                                _ => return None,
+                            }
+                        }
+                        only.filter(|&i| {
+                            self.state.doc.slice_ops.get(i).is_some_and(|o| !o.deleted)
+                        })
+                    })
+                    .flatten(),
                 revolve: (self.state.tool == Tool::Revolve).then(|| {
                     let cr = self.state.creating_revolve.as_ref();
                     context::RevolveControl {
@@ -3473,6 +3611,8 @@ impl eframe::App for App {
             let mut move_edit_begin: Option<usize> = None;
             let mut repeat_edit: Option<context::RepeatEdit> = None;
             let mut repeat_edit_begin: Option<usize> = None;
+            let mut slice_edit: Option<context::SliceEdit> = None;
+            let mut slice_edit_begin: Option<usize> = None;
             egui::SidePanel::right("context")
                 .resizable(true)
                 .default_width(200.0)
@@ -3508,6 +3648,8 @@ impl eframe::App for App {
                         &mut |op| move_edit_begin = Some(op),
                         &mut |edit| repeat_edit = Some(edit),
                         &mut |op| repeat_edit_begin = Some(op),
+                        &mut |edit| slice_edit = Some(edit),
+                        &mut |op| slice_edit_begin = Some(op),
                         &mut |image| calibrate_begin = Some(image),
                         &mut |control, text| calibrate_apply = Some((control, text)),
                     );
@@ -3645,6 +3787,48 @@ impl eframe::App for App {
                         editing: Some(op),
                     });
                     self.state.apply(Action::SetTool(Tool::Repeat));
+                }
+            }
+            if let Some(edit) = slice_edit {
+                match edit {
+                    context::SliceEdit::Commit => {
+                        self.state.apply(Action::CommitSlice);
+                    }
+                    edit => {
+                        let cs = self
+                            .state
+                            .creating_slice
+                            .get_or_insert_with(actions::CreatingSlice::default);
+                        match edit {
+                            context::SliceEdit::PickingCutter(v) => cs.picking_cutter = v,
+                            context::SliceEdit::ExtendInfinite(v) => cs.extend_infinite = v,
+                            context::SliceEdit::RemoveTarget(Some(i)) => {
+                                if i < cs.targets.len() {
+                                    cs.targets.remove(i);
+                                }
+                            }
+                            context::SliceEdit::RemoveTarget(None) => cs.targets.clear(),
+                            context::SliceEdit::RemoveCutter(Some(i)) => {
+                                if i < cs.cutters.len() {
+                                    cs.cutters.remove(i);
+                                }
+                            }
+                            context::SliceEdit::RemoveCutter(None) => cs.cutters.clear(),
+                            context::SliceEdit::Commit => unreachable!(),
+                        }
+                    }
+                }
+            }
+            if let Some(op) = slice_edit_begin {
+                if let Some(existing) = self.state.doc.slice_ops.get(op).cloned() {
+                    self.state.creating_slice = Some(actions::CreatingSlice {
+                        targets: existing.targets,
+                        cutters: existing.cutters,
+                        picking_cutter: false,
+                        extend_infinite: existing.extend_infinite,
+                        editing: Some(op),
+                    });
+                    self.state.apply(Action::SetTool(Tool::Slice));
                 }
             }
             if let Some(op) = boolean_edit_begin {
@@ -7208,6 +7392,10 @@ impl App {
             self.handle_repeat_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
         }
 
+        if self.state.tool == Tool::Slice {
+            self.handle_slice_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
+        }
+
         if matches!(self.state.tool, Tool::Chamfer | Tool::Fillet) {
             self.handle_vertex_treatment_tool(ui, &project, pointer_screen);
             self.show_vertex_treatment_amount_input(ui, &project);
@@ -8823,6 +9011,14 @@ impl App {
                     "Repeat — set axis/mode/spacing in the context pane • Enter: commit"
                 } else {
                     "Repeat — click one or more bodies to repeat"
+                }
+            }
+            Tool::Slice => {
+                let cs = self.state.creating_slice.as_ref();
+                if cs.is_some_and(|c| !c.targets.is_empty()) {
+                    "Slice — pick cutting planes/faces in the Cutters picker • Enter: commit • Esc: cancel"
+                } else {
+                    "Slice — click one or more bodies to slice"
                 }
             }
             Tool::Rectangle => {

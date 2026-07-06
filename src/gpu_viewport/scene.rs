@@ -516,6 +516,11 @@ impl ViewportScene {
                     .boolean_ops
                     .get(*op)
                     .is_some_and(|o| o.a.contains(&bi) || o.b.contains(&bi)),
+                Some(ViewportHoverHighlight::Element(SceneElement::SliceOp(op))) => input
+                    .doc
+                    .slice_ops
+                    .get(*op)
+                    .is_some_and(|o| o.targets.contains(&bi)),
                 _ => false,
             }
         };
@@ -2410,7 +2415,8 @@ impl<'a> SceneMesh<'a> {
             | SceneElement::Image(_)
             | SceneElement::BooleanOp(_)
             | SceneElement::MoveOp(_)
-            | SceneElement::RepeatOp(_) => {}
+            | SceneElement::RepeatOp(_)
+            | SceneElement::SliceOp(_) => {}
             // Bodies and extrusions get their aura, tinted with the hover color.
             SceneElement::Body(index) => {
                 let bodies: std::collections::HashSet<usize> = [index].into_iter().collect();
