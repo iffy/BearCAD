@@ -4247,6 +4247,17 @@ fn resolve_viewport_hover_highlight(
             resolve_pick_target(pp, project, gp, doc, occlusion)
                 .map(|t| gpu_viewport::ViewportHoverHighlight::PickTarget(t.kind))
         }
+        // Dimension tool (#190): glow the dimensionable segment under the cursor — the same
+        // thing a click would dimension — so hover has feedback like every other pick tool.
+        Tool::Dimension
+            if !editing_committed_dim && !over_committed_dim_label && !dim_label_drag =>
+        {
+            let session = sketch_session?;
+            let gp = cam.ground_point(pp, viewport, vp);
+            let target = resolve_pick_target(pp, project, gp, doc, occlusion)?;
+            crate::constraints::distance_target_from_pick(doc, session.sketch, &target.kind)
+                .map(|_| gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind))
+        }
         Tool::Select | Tool::Constraint
             if !editing_committed_dim && !over_committed_dim_label && !dim_label_drag =>
         {
@@ -7428,7 +7439,13 @@ impl App {
                                 });
                             }
                         }
-                    } else if self.state.editing_committed_dim.is_none() && !suppress_hover_highlight {
+                    } else if self.state.editing_committed_dim.is_none()
+                        && !suppress_hover_highlight
+                        // In GPU mode the dimensionable segment glows through the shared
+                        // `resolve_viewport_hover_highlight` path (#190); this painter overlay
+                        // is only the fallback for the non-GPU renderer.
+                        && !self.gpu_viewport
+                    {
                         if let Some(target) =
                             resolve_pick_target(pp, &project, Some(gp), &self.state.doc, pick_occlusion)
                         {
@@ -10383,6 +10400,53 @@ mod tests {
                 None,
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn dimension_tool_hovers_a_dimensionable_line() {
+        use super::gpu_viewport;
+        use super::resolve_viewport_hover_highlight;
+        use crate::actions::SketchSession;
+        use crate::construction::PickTargetKind;
+
+        // A sketch on the ground plane with one line near the origin.
+        let mut doc = crate::model::Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        doc.lines
+            .push(crate::model::Line::from_local_endpoints(sketch, -20.0, 0.0, 20.0, 0.0));
+
+        let cam = crate::camera::Camera::default();
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
+        let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
+        // Aim the cursor at the line's midpoint on screen.
+        let mid = project(glam::Vec3::ZERO).expect("origin projects into the viewport");
+
+        let hover = resolve_viewport_hover_highlight(
+            false,
+            crate::actions::Tool::Dimension,
+            Some(SketchSession { sketch }),
+            false,
+            false,
+            false,
+            false,
+            Some(mid),
+            &cam,
+            viewport,
+            &vp,
+            &doc,
+            &project,
+            None,
+        );
+        assert!(
+            matches!(
+                hover,
+                Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
+                    PickTargetKind::Line(0)
+                ))
+            ),
+            "hovering a line with the Dimension tool should highlight it, got {hover:?}"
         );
     }
 
