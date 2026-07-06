@@ -30,7 +30,7 @@ bearcad.ui.orbit(dx, dy)
 bearcad.ui.pan(dx, dy)
 bearcad.ui.wheel(scroll)
 bearcad.ui.view("front")                -- standard view; waits for the camera animation
-bearcad.ui.view("edge", "front_top")    -- a view-cube edge
+bearcad.ui.view("edge", "front_top")    -- a view-bear edge
 bearcad.ui.view_home()
 bearcad.ui.toggle_projection()
 bearcad.ui.shading("solid_wireframe")   -- "wireframe" | "transparent" | "solid" | "solid_wireframe"
@@ -48,12 +48,13 @@ bearcad.ui.zoom_fit()                   -- frame the whole document (bodies + sk
 ```
 
 See [Navigation](/docs/tools/navigation) for what these correspond to in the GUI, including the
-view-cube HUD's gear/shading-modes popup.
+view bear's gear/shading-modes popup.
 
 ## Panes and the command palette
 
 ```lua
 bearcad.ui.pane("hierarchy", "hide")    -- show / hide / toggle a pane
+bearcad.ui.pane("view_bear", "show")    -- panes: hierarchy, context, parameters, view_bear
 bearcad.ui.palette("run", "view top")   -- run a command palette entry by name
 bearcad.ui.elements_view("graph")       -- Elements-pane layout: "list" | "tree" | "graph"
 ```
@@ -84,7 +85,7 @@ bearcad.ui.screenshot("out.png")
 bearcad.ui.screenshot("out.png", true)        -- whole_window = true: capture the entire window
 ```
 
-By default, `screenshot` captures the 3D viewport only (the view-cube HUD is suppressed for that
+By default, `screenshot` captures the 3D viewport only (the view bear is suppressed for that
 frame); pass `whole_window = true` to capture the entire window instead. This is the mechanism
 behind BearCAD's visual regression testing: an instruction script can drive an exact interactive
 flow (e.g. the rectangle tool's click → move → type → enter sequence) and emit a screenshot to

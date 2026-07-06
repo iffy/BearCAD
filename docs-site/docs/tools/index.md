@@ -44,4 +44,4 @@ Reference images for tracing over (import, scale calibration) are covered in
 - **The Context pane follows you.** Whatever tool or selection is active, its options appear
   in the pane on the right.
 
-See [Navigation](/docs/tools/navigation) for camera controls and the view cube.
+See [Navigation](/docs/tools/navigation) for camera controls and the view bear.

@@ -41,7 +41,7 @@ Sketch on the image's plane as usual ([Sketch](./sketch.md), then
 need. Because the image is calibrated, the traced geometry is in real units — dimension it,
 extrude it, print it.
 
-## Limitation
+## Recalibrating
 
-Calibration can't be undone with Undo yet — run **Calibrate scale** again with corrected
-inputs instead.
+To correct a calibration, run **Calibrate scale** again with corrected inputs — the image
+rescales to match.

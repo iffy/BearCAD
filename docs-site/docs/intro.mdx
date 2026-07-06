@@ -23,6 +23,12 @@ into solid bodies you can export for 3D printing or other CAD tools (STL and STE
 **Parametric** means your design stays editable: dimensions can be named values like `leg` or
 `thickness`, and changing a value later reshapes the whole part to match.
 
+Under the hood BearCAD runs on proven engineering libraries: solid geometry is
+[OpenCASCADE (OCCT)](https://dev.opencascade.org/), the industry-grade BREP kernel behind many
+professional CAD packages, and sketch constraints are solved by
+[SolveSpace](https://solvespace.com/)'s constraint solver — in the desktop apps and in the
+browser alike.
+
 ![The BearCAD window: the Elements pane, 3D viewport, and Context/Parameters panes](/img/screenshots/elements-pane.png)
 
 The window has four main areas:
@@ -44,7 +50,6 @@ The window has four main areas:
 ## Getting BearCAD
 
 - **[Run it in your browser](https://www.iffycan.com/BearCAD/app/)** — nothing to install,
-  full geometry engine included. Documents save as downloads rather than to browser
-  storage, and Lua scripting isn't available there yet.
+  full geometry engine included. Documents save as downloads.
 - **[Download it](https://github.com/iffy/BearCAD/releases/latest)** for macOS, Windows, or
-  Linux — includes scripting.
+  Linux — adds Lua scripting and a command line.

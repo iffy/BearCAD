@@ -28,7 +28,6 @@ can be removed before committing.
 - The radius field takes numbers, parameters, and expressions.
 - A radius that can't physically fit (too big for the part) is rejected at commit rather
   than producing broken geometry.
-- Rounding solid edges works on bodies made from sketch profiles; imported STL/STEP bodies
-  can't be filleted yet.
+- Rounding solid edges works on bodies made from sketch profiles.
 - A fillet undoes as a single step, and shows up in the Elements pane nested under the line
   it rounds.

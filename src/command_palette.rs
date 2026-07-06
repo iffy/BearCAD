@@ -341,13 +341,13 @@ const PANE_COMMANDS: &[(Pane, PaletteCommand, PaletteCommand)] = &[
         Pane::ViewCube,
         PaletteCommand::new(
             PaletteCommandId::ShowPaneViewCube,
-            "Show Orientation Cube Pane",
-            "show orientation cube pane view hud",
+            "Show View Bear Pane",
+            "show view bear orientation cube pane view hud",
         ),
         PaletteCommand::new(
             PaletteCommandId::HidePaneViewCube,
-            "Hide Orientation Cube Pane",
-            "hide orientation cube pane view hud",
+            "Hide View Bear Pane",
+            "hide view bear orientation cube pane view hud",
         ),
     ),
 ];

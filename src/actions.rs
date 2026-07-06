@@ -928,7 +928,7 @@ impl Pane {
     /// Human-readable label for menus.
     pub fn label(self) -> &'static str {
         match self {
-            Pane::ViewCube => "Orientation Cube",
+            Pane::ViewCube => "View Bear",
             Pane::Hierarchy => "Elements",
             Pane::Parameters => "Parameters",
             Pane::Context => "Context",
@@ -938,7 +938,7 @@ impl Pane {
     /// Stable name used in instruction scripts.
     pub fn script_name(self) -> &'static str {
         match self {
-            Pane::ViewCube => "view_cube",
+            Pane::ViewCube => "view_bear",
             Pane::Hierarchy => "hierarchy",
             Pane::Parameters => "parameters",
             Pane::Context => "context",
@@ -947,7 +947,9 @@ impl Pane {
 
     pub fn from_name(name: &str) -> Option<Self> {
         match name.to_ascii_lowercase().as_str() {
-            "view_cube" | "viewcube" | "cube" | "hud" => Some(Pane::ViewCube),
+            "view_bear" | "viewbear" | "bear" | "view_cube" | "viewcube" | "cube" | "hud" => {
+                Some(Pane::ViewCube)
+            }
             "hierarchy" | "tree" | "dag" | "elements" => Some(Pane::Hierarchy),
             "parameters" | "params" | "param" => Some(Pane::Parameters),
             "context" | "properties" | "props" => Some(Pane::Context),

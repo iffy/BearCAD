@@ -30,5 +30,4 @@ Revolve spins a flat profile around an axis into a solid — rings, shafts, vase
 
 - The profile can't cross its axis; keep it entirely on one side.
 - A translucent preview of the swept solid follows the angle live.
-- Cutting shows its true result with the full geometry engine (included in official
-  builds and the web version); without it, cut results aren't rendered.
+- Cutting shows its true result live.

@@ -5,13 +5,23 @@ import styles from './styles.module.css';
 
 const FeatureList = [
   {
+    title: 'Quickstart',
+    to: '/docs/quickstart',
+    description: (
+      <>
+        Build a real part in about ten minutes: sketch a bracket freehand, square it up with
+        constraints, drive the bend angle with a parameter, and export it for 3D printing.
+      </>
+    ),
+  },
+  {
     title: 'Tools & Navigation',
     to: '/docs/tools',
     description: (
       <>
         Tool-by-tool reference for Select, Sketch, Rectangle, Line, Circle, Fillet, Chamfer,
-        Construction Plane, Extrude, Dimension, and Constraint — plus orbit/pan/zoom, the
-        view-cube HUD, and sketch mode.
+        Construction Plane, Extrude, Revolve, Dimension, and Constraint — plus orbit/pan/zoom,
+        the view bear, and sketch mode.
       </>
     ),
   },
@@ -20,19 +30,9 @@ const FeatureList = [
     to: '/docs/scripting',
     description: (
       <>
-        The Lua API: declarative <code>bearcad.*</code> modeling, the{' '}
-        <code>bearcad.ui.*</code> simulated-interaction namespace, point-level selection, and how
-        to run a script from the command line.
-      </>
-    ),
-  },
-  {
-    title: 'One model, two front ends',
-    to: '/docs/intro',
-    description: (
-      <>
-        Everything achievable in the GUI is achievable by scripting, and vice versa — the same
-        action layer powers the toolbar, the command palette, and the Lua API.
+        Drive BearCAD from Lua: declarative <code>bearcad.*</code> modeling and the{' '}
+        <code>bearcad.ui.*</code> interaction namespace. The same action layer powers the GUI,
+        the command palette, and scripts — anything you can click, you can script.
       </>
     ),
   },

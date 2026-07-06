@@ -20,12 +20,13 @@ which is why the camera bindings live on the *right* mouse button.
 **Zoom to fit** (in the command palette and the View menu) frames your selection — or the
 whole model — in one step.
 
-## The view cube
+## The view bear
 
-The cube in the corner snaps to standard views: click a face, edge, or corner. The house
-icon returns to the **Home** view (right-click it to save the current view as Home).
+The bear-shaped cube in the corner — the **view bear** — snaps to standard views: click a
+face, edge, or corner. The house icon returns to the **Home** view (right-click it to save
+the current view as Home).
 
-The **gear icon** under the cube opens display settings:
+The **gear icon** under the view bear opens display settings:
 
 - **Projection** — orthographic (flat, technical) or perspective (natural).
 - **Shading** — wireframe, transparent, solid, solid + visible edges, or realistic

@@ -154,6 +154,7 @@ const config = {
           {
             title: 'Docs',
             items: [
+              {label: 'Quickstart', to: '/docs/quickstart'},
               {label: 'Tools & Navigation', to: '/docs/tools'},
               {label: 'Scripting', to: '/docs/scripting'},
             ],

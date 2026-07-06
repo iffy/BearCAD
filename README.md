@@ -6,12 +6,16 @@
 
 Local-first, parametric CAD. Built by robots to see what AI can do.
 
+Solid geometry by [OpenCASCADE (OCCT)](https://dev.opencascade.org/), the industry-grade
+BREP kernel; sketch constraints solved by [SolveSpace](https://solvespace.com/)'s solver
+(libslvs) — on desktop and in the browser alike.
+
 [Docs](https://iffy.github.io/BearCAD/)
 
 ## Download
 
 Or skip the download: **[run BearCAD in your browser](https://www.iffycan.com/BearCAD/app/)**
-(full geometry engine; no Lua scripting yet; documents save as downloads).
+(full geometry engine and constraint solver; documents save as downloads).
 
 | Platform | Download |
 |----------|----------|
