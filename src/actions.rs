@@ -1095,6 +1095,45 @@ pub enum Action {
         point: ConstraintPoint,
         target: crate::snapping::SnapTarget,
     },
+    /// Redo the last undone action (#193): the inverse of [`Action::UndoLast`].
+    RedoLast,
+}
+
+/// Maximum number of document snapshots the undo stack retains (#194). Old snapshots past
+/// this are dropped, capping session memory for very long edit histories.
+const MAX_UNDO_SNAPSHOTS: usize = 200;
+
+impl Action {
+    /// Whether [`AppState::apply`] should snapshot the document before this action for
+    /// checkpoint undo (#194). Undo/redo never snapshot (they restore snapshots), and the
+    /// pure navigation/selection/tool actions never touch the document, so cloning for them
+    /// is pointless. Everything else defaults to `true` — a snapshot that turns out unused
+    /// (the document didn't change) is discarded — so a new *mutating* action is undoable by
+    /// default without having to remember to opt in.
+    fn snapshots_for_undo(&self) -> bool {
+        !self.resets_undo_history()
+            && !matches!(
+                self,
+                Action::UndoLast
+                    | Action::RedoLast
+                    | Action::SetTool(_)
+                    | Action::ClickSceneElement { .. }
+                    | Action::ClearSceneSelection
+                    | Action::SetElementVisible { .. }
+                    | Action::ToggleElementVisibility(_)
+                    | Action::ToggleFpsMode
+            )
+    }
+
+    /// Actions that replace or wipe the whole document, after which the previous edit
+    /// history is meaningless — the undo/redo stacks are cleared rather than letting undo
+    /// cross the boundary back into a different document (#194).
+    fn resets_undo_history(&self) -> bool {
+        matches!(
+            self,
+            Action::NewDocument | Action::Open { .. } | Action::Clear
+        )
+    }
 }
 
 /// A toggleable UI pane (SPEC §11.1).
@@ -1526,6 +1565,11 @@ pub struct AppState {
     /// still undo as one gesture. Transient, never persisted; `pub` only so
     /// struct-update construction (`..AppState::default()`) works across modules.
     pub undo_group_depth: u8,
+    /// Checkpoint-based undo/redo (#194): a snapshot of the whole document taken *before*
+    /// each mutating user action. `UndoLast` restores the top snapshot; `RedoLast` re-applies
+    /// it. Transient session state, never persisted. Capped at [`MAX_UNDO_SNAPSHOTS`].
+    pub undo_stack: Vec<Document>,
+    pub redo_stack: Vec<Document>,
     /// First-person mode player state (#91); `Some` while FPS mode is active.
     /// Transient, never persisted.
     pub fps: Option<crate::fps::FpsController>,
@@ -1602,6 +1646,8 @@ impl Default for AppState {
             circle_center_snap: None,
             extension_anchors: Vec::new(),
             undo_group_depth: 0,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
             fps: None,
             fps_memory: None,
             normal_inference_anchor: None,
@@ -2774,6 +2820,13 @@ impl AppState {
         // bridge-line entry), degrading gracefully to single-entry groups.
         let outermost = self.undo_group_depth == 0;
         let before = self.doc.shape_order.len();
+        // Checkpoint undo (#194): snapshot the document before a mutating user action, so
+        // undo restores the exact prior state instead of replaying per-entry reversals.
+        // Cloning is skipped for the actions that never mutate the document (and for
+        // undo/redo themselves); if a snapshotted action turns out to leave the document
+        // unchanged, the snapshot is discarded, so no empty undo steps accumulate.
+        let snapshot = (outermost && action.snapshots_for_undo()).then(|| self.doc.clone());
+        let resets_history = outermost && action.resets_undo_history();
         if outermost {
             self.reconcile_undo_groups_to(before);
         }
@@ -2788,6 +2841,18 @@ impl AppState {
                 // Shrunk or replaced (UndoLast consumed its own group; New/Open
                 // swapped the document): re-establish the sum invariant.
                 self.reconcile_undo_groups_to(after);
+            }
+        }
+        if resets_history {
+            self.undo_stack.clear();
+            self.redo_stack.clear();
+        } else if let Some(snap) = snapshot {
+            if self.doc != snap {
+                self.undo_stack.push(snap);
+                if self.undo_stack.len() > MAX_UNDO_SNAPSHOTS {
+                    self.undo_stack.remove(0);
+                }
+                self.redo_stack.clear();
             }
         }
         result
@@ -2814,6 +2879,26 @@ impl AppState {
             self.doc.undo_groups.push(1);
             sum += 1;
         }
+    }
+
+    /// Fix up session state after `UndoLast`/`RedoLast` swaps the whole document (#194):
+    /// drop selection and any in-progress dimension edit that referenced the old document,
+    /// close a sketch session whose sketch no longer exists, and recompute health.
+    fn after_history_restore(&mut self) {
+        self.editing_committed_dim = None;
+        self.placing_angle_dimension = None;
+        self.scene_selection.clear();
+        if let Some(session) = self.sketch_session {
+            let alive = self
+                .doc
+                .sketches
+                .get(session.sketch)
+                .is_some_and(|s| !s.deleted);
+            if !alive {
+                self.sketch_session = None;
+            }
+        }
+        self.refresh_document_health();
     }
 
     fn apply_inner(&mut self, action: Action) -> ActionResult {
@@ -3147,258 +3232,29 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::UndoLast => {
-                // Undo one whole user action (#105): pop as many entries as the last
-                // recorded group holds, so a gesture that created many entries (a
-                // rectangle's 4 lines + constraints) reverts as a single step.
-                // Ungrouped content (legacy documents) was reconciled into 1-entry
-                // groups by `apply`, keeping the old per-entry behavior. A refusal
-                // (e.g. a sketch that still has geometry) stops the walk with the
-                // refused entry pushed back and the unconsumed remainder re-grouped.
-                let start_len = self.doc.shape_order.len();
-                let group = self.doc.undo_groups.pop().unwrap_or(1).max(1);
-                let target_len = start_len.saturating_sub(group);
-                let mut steps = 0usize;
-                while self.doc.shape_order.len() > target_len {
-                let mut undone = false;
-                match self.doc.shape_order.pop() {
-                    Some(ShapeKind::Sketch) => {
-                        let idx = self.doc.sketches.len().saturating_sub(1);
-                        if self.doc.sketch_has_geometry(idx) {
-                            self.doc.shape_order.push(ShapeKind::Sketch);
-                            self.status = "Cannot undo: sketch has geometry".to_string();
-                        } else if self.doc.sketches.is_empty() {
-                            self.status = "Nothing to undo".to_string();
-                        } else {
-                            self.doc.sketches.pop();
-                            if self.sketch_session == Some(SketchSession { sketch: idx }) {
-                                self.exit_sketch_session();
-                            }
-                            self.status = "Undid last sketch".to_string();
-                            undone = true;
-                        }
-                    }
-                    Some(ShapeKind::Line) => {
-                        self.doc.lines.pop();
-                        self.status = "Undid last line".to_string();
-                        undone = true;
-                    }
-                    Some(ShapeKind::Circle) => {
-                        self.doc.circles.pop();
-                        self.status = "Undid last circle".to_string();
-                        undone = true;
-                    }
-                    Some(ShapeKind::Constraint) => {
-                        self.doc.constraints.pop();
-                        let _ = recompute_document_geometry(&mut self.doc);
-                        self.status = "Undid last constraint".to_string();
-                        undone = true;
-                    }
-                    Some(ShapeKind::Parameter) => {
-                        self.doc.parameters.pop();
-                        self.status = "Undid last parameter".to_string();
-                        undone = true;
-                    }
-                    Some(ShapeKind::RepeatOperation) => {
-                        // Output bodies were popped by their own Body entries (same undo
-                        // group); the repeat's inputs were never shadowed.
-                        self.doc.repeat_ops.pop();
-                        self.status = "Undid repeat".to_string();
-                        undone = true;
-                    }
-                    Some(ShapeKind::MoveOperation) => {
-                        // Undo the whole move op: output bodies were popped by their own
-                        // ShapeKind::Body entries (same undo group); drop the operation
-                        // and un-shadow its inputs.
-                        if let Some(op) = self.doc.move_ops.pop() {
-                            for &bi in &op.targets {
-                                if let Some(body) = self.doc.bodies.get_mut(bi) {
-                                    body.shadow = false;
-                                }
-                            }
-                        }
-                        self.status = "Undid move operation".to_string();
-                        undone = true;
-                    }
-                    Some(ShapeKind::BooleanOperation) => {
-                        // Undo the whole boolean op: its output bodies were popped by the
-                        // ShapeKind::Body entries recorded after it (same undo group), so
-                        // here we drop the operation and un-shadow its inputs.
-                        if let Some(op) = self.doc.boolean_ops.pop() {
-                            for &bi in op.a.iter().chain(op.b.iter()) {
-                                if let Some(body) = self.doc.bodies.get_mut(bi) {
-                                    body.shadow = false;
-                                }
-                            }
-                        }
-                        self.status = "Undid boolean operation".to_string();
-                        undone = true;
-                    }
-                    Some(ShapeKind::SliceOperation) => {
-                        // Undo the whole slice op: its fragment bodies were popped by the
-                        // ShapeKind::Body entries recorded after it (same undo group); drop
-                        // the operation and un-shadow its inputs.
-                        if let Some(op) = self.doc.slice_ops.pop() {
-                            for &bi in &op.targets {
-                                if let Some(body) = self.doc.bodies.get_mut(bi) {
-                                    body.shadow = false;
-                                }
-                            }
-                        }
-                        self.status = "Undid slice operation".to_string();
-                        undone = true;
-                    }
-                    Some(ShapeKind::Body) => {
-                        let body = self.doc.bodies.pop();
-                        // A body created fresh by an extrusion always wraps exactly that one
-                        // extrusion (CreateExtrusion/CommitExtrusion's new-body path pushes
-                        // Extrusion then Body together), so undo must remove both as one step,
-                        // not just the body (#64).
-                        let ei = body
-                            .and_then(|b| b.source.extrusion_indices().first().copied())
-                            .unwrap_or(usize::MAX);
-                        if self.doc.shape_order.last() == Some(&ShapeKind::Extrusion)
-                            && ei == self.doc.extrusions.len().wrapping_sub(1)
-                        {
-                            self.doc.shape_order.pop();
-                            self.doc.extrusions.pop();
-                            self.status = "Undid last extrusion".to_string();
-                        } else {
-                            self.status = "Undid last body".to_string();
-                        }
-                        undone = true;
-                    }
-                    Some(ShapeKind::Extrusion) => {
-                        // An extrusion merged into an existing body (#32) has no paired Body
-                        // shape-order entry, so undo here must also drop it from whichever
-                        // body's source absorbed it — otherwise that body is left pointing at
-                        // a now-removed extrusion index.
-                        let ei = self.doc.extrusions.len().saturating_sub(1);
-                        if let Some(body) = self
-                            .doc
-                            .bodies
-                            .iter_mut()
-                            .find(|b| !b.deleted && b.source.owns_extrusion(ei))
-                        {
-                            body.source.remove_extrusion(ei);
-                        }
-                        self.doc.extrusions.pop();
-                        self.status = "Undid last extrusion".to_string();
-                        undone = true;
-                    }
-                    Some(ShapeKind::ConstructionPlane) => {
-                        if self.doc.construction_planes.len() <= 1 {
-                            self.doc.shape_order.push(ShapeKind::ConstructionPlane);
-                            self.status = "Cannot undo default datum plane".to_string();
-                        } else {
-                            let idx = self.doc.construction_planes.len() - 1;
-                            let face = FaceId::ConstructionPlane(idx);
-                            if self.doc.has_children(&face) {
-                                self.doc.shape_order.push(ShapeKind::ConstructionPlane);
-                                self.status =
-                                    "Cannot undo: construction plane has child sketches"
-                                        .to_string();
-                            } else {
-                                self.doc.construction_planes.pop();
-                                if self.sketch_session.is_some_and(|s| {
-                                    self.doc.sketch_face(s.sketch) == Some(face)
-                                }) {
-                                    self.exit_sketch_session();
-                                }
-                                self.status = "Undid last construction plane".to_string();
-                                undone = true;
-                            }
-                        }
-                    }
-                    Some(ShapeKind::Image) => {
-                        self.doc.tracing_images.pop();
-                        self.status = "Undid image import".to_string();
-                        undone = true;
-                    }
-                    Some(ShapeKind::Revolution) => {
-                        // CommitRevolve pushes the revolution (and, in NewBody mode, its
-                        // body) under one marker; undo removes them together.
-                        let ri = self.doc.revolutions.len().wrapping_sub(1);
-                        if self
-                            .doc
-                            .bodies
-                            .last()
-                            .is_some_and(|b| b.source == crate::model::BodySource::Revolve(ri))
-                        {
-                            self.doc.bodies.pop();
-                        }
-                        self.doc.revolutions.pop();
-                        self.status = "Undid revolve".to_string();
-                        undone = true;
-                    }
-                    Some(ShapeKind::Loft) => {
-                        // CommitLoft pushes the loft and its body under one marker, so
-                        // undo removes both together.
-                        let li = self.doc.lofts.len().wrapping_sub(1);
-                        if self
-                            .doc
-                            .bodies
-                            .last()
-                            .is_some_and(|b| b.source == crate::model::BodySource::Loft(li))
-                        {
-                            self.doc.bodies.pop();
-                        }
-                        self.doc.lofts.pop();
-                        self.status = "Undid loft".to_string();
-                        undone = true;
-                    }
-                    Some(ShapeKind::EdgeTreatmentEdit) => {
-                        match self.edge_treatment_undo.pop() {
-                            Some((extrusion, previous)) => {
-                                if let Some(ext) = self.doc.extrusions.get_mut(extrusion) {
-                                    ext.edge_treatments = previous;
-                                }
-                                let _ = recompute_document_geometry(&mut self.doc);
-                                self.status = "Undid chamfer/fillet".to_string();
-                                undone = true;
-                            }
-                            None => {
-                                // Marker without payload (e.g. loaded from disk); skip safely.
-                                self.status = "Nothing to undo".to_string();
-                            }
-                        }
-                    }
-                    Some(ShapeKind::ConstructionPlaneEdit) => {
-                        match self.construction_plane_edit_undo.pop() {
-                            Some(previous_planes) => {
-                                self.doc.construction_planes = previous_planes;
-                                let _ = recompute_document_geometry(&mut self.doc);
-                                self.status = "Undid construction plane edit".to_string();
-                                undone = true;
-                            }
-                            None => {
-                                // Marker without payload should never happen; ignore safely.
-                                self.status = "Nothing to undo".to_string();
-                            }
-                        }
-                    }
-                    None => self.status = "Nothing to undo".to_string(),
-                }
-                if undone {
-                    steps += 1;
+                // Checkpoint undo (#194): restore the snapshot taken before the last mutating
+                // action. Provably correct — it reinstates the exact prior document — which is
+                // why it fixes the fillet-undo-deletes-the-line class of bug that the old
+                // per-entry reversal machine was prone to.
+                if let Some(prev) = self.undo_stack.pop() {
+                    let current = std::mem::replace(&mut self.doc, prev);
+                    self.redo_stack.push(current);
+                    self.after_history_restore();
+                    self.status = "Undid last action".to_string();
                 } else {
-                    break;
-                }
-                }
-                // Entries the group still claims but that weren't consumed (a refusal
-                // pushed one back, or a Body pop removed two at once) stay grouped so
-                // the accounting keeps summing to shape_order's length.
-                let removed = start_len - self.doc.shape_order.len();
-                if removed < group && !self.doc.shape_order.is_empty() {
-                    self.doc.undo_groups.push(group - removed);
-                }
-                if steps == 0 && self.doc.shape_order.is_empty() {
                     self.status = "Nothing to undo".to_string();
                 }
-                if steps > 1 {
-                    self.status = format!("Undid last action ({steps} steps)");
-                }
-                if steps > 0 {
-                    self.refresh_document_health();
+                ActionResult::Ok
+            }
+            Action::RedoLast => {
+                // Redo (#193): re-apply the most recently undone document snapshot.
+                if let Some(next) = self.redo_stack.pop() {
+                    let current = std::mem::replace(&mut self.doc, next);
+                    self.undo_stack.push(current);
+                    self.after_history_restore();
+                    self.status = "Redid last action".to_string();
+                } else {
+                    self.status = "Nothing to redo".to_string();
                 }
                 ActionResult::Ok
             }
@@ -8414,6 +8270,62 @@ mod tests {
         (sketch, point)
     }
 
+    /// #194: undoing a fillet restores the two original lines instead of deleting one. The
+    /// old per-entry undo mis-reversed the truncate-and-bridge gesture; checkpoint undo
+    /// reinstates the exact pre-fillet document.
+    #[test]
+    fn undo_after_fillet_restores_the_original_lines() {
+        let mut state = AppState::default();
+        let (_, point) = two_coincident_lines_at_a_right_angle(&mut state);
+        assert_eq!(state.doc.lines.len(), 2);
+        let l0 = state.doc.lines[0].clone();
+        let l1 = state.doc.lines[1].clone();
+
+        let result = state.apply(Action::CommitVertexTreatment {
+            point,
+            kind: VertexTreatmentKind::Fillet,
+            amount: 3.0,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert_eq!(state.doc.lines.len(), 3, "the fillet adds a bridge line");
+
+        state.apply(Action::UndoLast);
+        assert_eq!(state.doc.lines.len(), 2, "undo removes the bridge line");
+        assert_eq!(state.doc.lines[0], l0, "line 0 restored to its pre-fillet geometry");
+        assert_eq!(state.doc.lines[1], l1, "line 1 restored to its pre-fillet geometry");
+    }
+
+    /// #193: redo re-applies an undone action, and a fresh action clears the redo stack.
+    #[test]
+    fn redo_reapplies_an_undone_action() {
+        let mut state = AppState::default();
+        state.apply(Action::AddParameter {
+            name: "w".to_string(),
+            expression: "10".to_string(),
+        });
+        assert_eq!(state.doc.parameters.len(), 1);
+
+        state.apply(Action::UndoLast);
+        assert!(state.doc.parameters.is_empty(), "undo removed the parameter");
+
+        state.apply(Action::RedoLast);
+        assert_eq!(state.doc.parameters.len(), 1, "redo restored the parameter");
+
+        // A new mutating action after an undo clears the redo stack.
+        state.apply(Action::UndoLast);
+        state.apply(Action::AddParameter {
+            name: "h".to_string(),
+            expression: "20".to_string(),
+        });
+        state.apply(Action::RedoLast);
+        assert_eq!(
+            state.doc.parameters.len(),
+            1,
+            "redo is a no-op once a new action has cleared the redo stack"
+        );
+        assert_eq!(state.doc.parameters[0].name, "h");
+    }
+
     #[test]
     fn set_vertex_tangent_continuous_smooths_both_lines() {
         let mut state = AppState::default();
@@ -10913,6 +10825,8 @@ mod tests {
     #[test]
     fn undo_last_refreshes_document_health() {
         let mut state = AppState::default();
+        // Checkpoint the empty document, then force an invalid-parameter state in place.
+        state.undo_stack.push(state.doc.clone());
         state.doc.parameters.push(crate::model::Parameter {
             name: "bad".to_string(),
             expression: "1mm / 0".to_string(),
@@ -10926,6 +10840,7 @@ mod tests {
             crate::document_health::HealthStatus::Invalid
         );
 
+        // Undo restores the checkpoint and recomputes health from the restored document.
         state.apply(Action::UndoLast);
         assert!(state.doc.parameters.is_empty());
         assert!(state.document_health.parameters.is_empty());

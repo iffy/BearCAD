@@ -16,6 +16,7 @@ pub enum PaletteCommandId {
     Save,
     SaveAs,
     Undo,
+    Redo,
     Clear,
     ToolSelect,
     ToolSketch,
@@ -91,6 +92,7 @@ impl PaletteCommand {
             PaletteCommandId::Save => PaletteOutcome::SaveFile,
             PaletteCommandId::SaveAs => PaletteOutcome::SaveFileAs,
             PaletteCommandId::Undo => PaletteOutcome::Action(Action::UndoLast),
+            PaletteCommandId::Redo => PaletteOutcome::Action(Action::RedoLast),
             PaletteCommandId::Clear => PaletteOutcome::Action(Action::Clear),
             PaletteCommandId::ToolSelect => PaletteOutcome::Action(Action::SetTool(Tool::Select)),
             PaletteCommandId::ToolSketch => PaletteOutcome::Action(Action::SetTool(Tool::Sketch)),
@@ -366,6 +368,7 @@ const BASE_COMMANDS: &[PaletteCommand] = &[
         "save as file document export",
     ),
     PaletteCommand::new(PaletteCommandId::Undo, "Undo", "undo revert last"),
+    PaletteCommand::new(PaletteCommandId::Redo, "Redo", "redo repeat reapply"),
     PaletteCommand::new(PaletteCommandId::Clear, "Clear Document", "clear document delete all"),
     PaletteCommand::new(
         PaletteCommandId::ExportSessionCommands,

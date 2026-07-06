@@ -1570,11 +1570,13 @@ impl Document {
             .filter_map(move |(i, s)| (s.face == face).then_some(i))
     }
 
+    #[allow(dead_code)] // query helper; now exercised only by tests since undo went snapshot-based (#194)
     pub fn sketch_has_geometry(&self, sketch: SketchId) -> bool {
         self.lines.iter().any(|l| l.sketch == sketch)
             || self.circles.iter().any(|c| c.sketch == sketch)
     }
 
+    #[allow(dead_code)] // query helper; now exercised only by tests
     pub fn has_children(&self, face: &FaceId) -> bool {
         self.sketches.iter().any(|s| &s.face == face)
     }

@@ -3322,21 +3322,20 @@ mod tests {
 
     /// #105: legacy documents (no recorded boundaries) keep the old per-entry undo.
     #[test]
-    fn undo_without_boundaries_pops_a_single_entry() {
+    fn undo_removes_the_whole_last_gesture() {
+        // Checkpoint undo (#194) reverts a whole user gesture at once: a rectangle (its
+        // sketch + four lines + constraints) undoes in a single step back to empty.
         let mut state = run_lua(
             r#"
             bearcad.new()
             bearcad.rect{ width = 40, height = 30 }
         "#,
         );
-        // Simulate a pre-#105 file: entries exist but no groups were recorded.
-        state.doc.undo_groups.clear();
-        let before = state.doc.shape_order.len();
+        assert_eq!(state.doc.lines.len(), 4, "the rectangle created four lines");
         state.apply(crate::actions::Action::UndoLast);
-        assert_eq!(
-            state.doc.shape_order.len(),
-            before - 1,
-            "legacy undo removes exactly one entry"
+        assert!(
+            state.doc.lines.is_empty(),
+            "undo removes the entire rectangle gesture, not one line"
         );
     }
 
