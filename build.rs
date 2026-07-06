@@ -208,10 +208,19 @@ fn build_slvs() {
         );
     }
 
+    // mimalloc is compiled as C++ (its own MI_USE_CXX mode): the MSVC-in-C branch of
+    // its atomics header is missing mi_atomic_void_addi64_relaxed (upstream bug), which
+    // breaks stats.c under cl/clang-cl; the C++/C11 branch is complete on every target.
     cc::Build::new()
+        .cpp(true)
+        .std("c++17")
         .file(ss.join("extlib/mimalloc/src/static.c"))
         .include(ss.join("extlib/mimalloc/include"))
         .flag_if_supported("-Wno-unused-function")
+        .flag_if_supported("-Wno-deprecated")
+        // Force C++ despite the .c extension (gnu-style and MSVC-style spellings).
+        .flag_if_supported("-xc++")
+        .flag_if_supported("/TP")
         .compile("slvs_mimalloc");
 
     let mut b = cc::Build::new();
