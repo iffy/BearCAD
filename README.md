@@ -65,7 +65,8 @@ read/write) — no visualization, application-framework, or Draw modules — int
 
 ### Building without the kernel
 
-To build the lean fallback — **no C++ toolchain, no OCCT** — disable the default
+To build the lean fallback — **no OCCT** (a C++ compiler is still required for the vendored
+libslvs sketch solver) — disable the default
 feature:
 
 ```sh

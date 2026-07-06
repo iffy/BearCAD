@@ -127,24 +127,6 @@ extern "C" {
     ) -> i32;
 }
 
-/// Whether the libslvs backend can run right now. Native builds link it statically, so
-/// always; the web build reaches it inside the kernel module, which can fail to load
-/// (the caller then falls back to the built-in LM solver).
-pub fn available() -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        true
-    }
-    #[cfg(all(target_arch = "wasm32", feature = "occt"))]
-    {
-        crate::kernel::slvs_available()
-    }
-    #[cfg(all(target_arch = "wasm32", not(feature = "occt")))]
-    {
-        false
-    }
-}
-
 fn flatten_params(params: &[SlvsParam]) -> Vec<f64> {
     let mut out = Vec::with_capacity(params.len() * 3);
     for p in params {

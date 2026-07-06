@@ -210,7 +210,6 @@ mod tests {
             y0,
             x1,
             y1,
-            length: 10.0,
             weight: DEFAULT_WEIGHT,
         });
         assert!(dof_remaining(&sys) > 0);
@@ -227,7 +226,6 @@ mod tests {
             y0,
             x1,
             y1,
-            length: 10.0,
             weight: DEFAULT_WEIGHT,
         });
         sys.add_equation(Equation::LineLength {
@@ -235,7 +233,6 @@ mod tests {
             y0,
             x1: x2,
             y1: y2,
-            length: 8.0,
             weight: DEFAULT_WEIGHT,
         });
         sys.add_equation(Equation::LineLength {
@@ -243,40 +240,12 @@ mod tests {
             y0: y1,
             x1: x2,
             y1: y2,
-            length: 8.0,
             weight: DEFAULT_WEIGHT,
         });
         assert_eq!(dof_remaining(&sys), 0);
         assert!(!vars_can_move_together(&sys, &[x2, y2]));
     }
 
-    #[test]
-    fn conflicting_lengths_fail_to_converge() {
-        use crate::sketch_solver::newton::{solve_lm, SolverConfig};
-
-        let mut sys = System::new();
-        let (x0, y0) = sys.add_point(0.0, 0.0, true);
-        let (x1, y1) = sys.add_point(10.0, 0.0, false);
-        sys.add_equation(Equation::LineLength {
-            x0,
-            y0,
-            x1,
-            y1,
-            length: 10.0,
-            weight: DEFAULT_WEIGHT,
-        });
-        sys.add_equation(Equation::LineLength {
-            x0,
-            y0,
-            x1,
-            y1,
-            length: 12.0,
-            weight: DEFAULT_WEIGHT,
-        });
-        let report = solve_lm(&mut sys, SolverConfig::default());
-        assert!(!report.success);
-        assert!(report.residual_norm > 1e-3);
-    }
 
     #[test]
     fn fixed_var_cannot_move() {

@@ -30,7 +30,6 @@ pub enum Equation {
         y0: VarId,
         x1: VarId,
         y1: VarId,
-        length: f64,
         weight: f64,
     },
     Parallel {
@@ -74,8 +73,6 @@ pub enum Equation {
         y0: VarId,
         x1: VarId,
         y1: VarId,
-        distance: f64,
-        side: f64,
         weight: f64,
     },
     MidpointU {
@@ -99,7 +96,6 @@ pub enum Equation {
         by0: VarId,
         bx1: VarId,
         by1: VarId,
-        angle: f64,
         weight: f64,
     },
     PointPointDistance {
@@ -107,7 +103,6 @@ pub enum Equation {
         my: VarId,
         ax: VarId,
         ay: VarId,
-        distance: f64,
         weight: f64,
     },
     LineLineDistance {
@@ -119,13 +114,10 @@ pub enum Equation {
         by0: VarId,
         bx1: VarId,
         by1: VarId,
-        distance: f64,
-        side: f64,
         weight: f64,
     },
     CircleDiameter {
         radius: VarId,
-        diameter: f64,
         weight: f64,
     },
     /// A point lies on a circle's perimeter: `|p - center| = radius`.
@@ -139,24 +131,8 @@ pub enum Equation {
     },
     Pin {
         var: VarId,
-        target: f64,
         weight: f64,
     },
-}
-
-fn wrap_angle(mut angle: f64) -> f64 {
-    let pi = std::f64::consts::PI;
-    while angle > pi {
-        angle -= 2.0 * pi;
-    }
-    while angle < -pi {
-        angle += 2.0 * pi;
-    }
-    angle
-}
-
-fn line_angle(x0: f64, y0: f64, x1: f64, y1: f64) -> f64 {
-    (y1 - y0).atan2(x1 - x0)
 }
 
 fn line_angle_derivs(x0: f64, y0: f64, x1: f64, y1: f64) -> (f64, f64, f64, f64) {
@@ -170,218 +146,7 @@ fn line_angle_derivs(x0: f64, y0: f64, x1: f64, y1: f64) -> (f64, f64, f64, f64)
     (dy * inv, -dx * inv, -dy * inv, dx * inv)
 }
 
-fn signed_line_offset(
-    px: f64,
-    py: f64,
-    x0: f64,
-    y0: f64,
-    x1: f64,
-    y1: f64,
-) -> (f64, f64, f64, f64, f64, f64) {
-    let dx = x1 - x0;
-    let dy = y1 - y0;
-    let len = dx.hypot(dy);
-    if len < 1e-12 {
-        return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-    }
-    let perp_u = -dy / len;
-    let perp_v = dx / len;
-    let signed = (px - x0) * perp_u + (py - y0) * perp_v;
-    (signed, perp_u, perp_v, dx, dy, len)
-}
-
 impl Equation {
-    pub fn residual(&self, system: &System) -> f64 {
-        let v = |id: VarId| system.value(id);
-        let weighted = |raw: f64, weight: f64| raw * weight.sqrt();
-        match self {
-            Equation::CoincidentU { a, b, weight } => weighted(v(*a) - v(*b), *weight),
-            Equation::CoincidentV { a, b, weight } => weighted(v(*a) - v(*b), *weight),
-            Equation::Horizontal { y0, y1, weight } => weighted(v(*y1) - v(*y0), *weight),
-            Equation::Vertical { x0, x1, weight } => weighted(v(*x1) - v(*x0), *weight),
-            Equation::LineLength {
-                x0,
-                y0,
-                x1,
-                y1,
-                length,
-                weight,
-            } => {
-                let dx = v(*x1) - v(*x0);
-                let dy = v(*y1) - v(*y0);
-                weighted(dx.hypot(dy) - length, *weight)
-            }
-            Equation::Parallel {
-                ax0,
-                ay0,
-                ax1,
-                ay1,
-                bx0,
-                by0,
-                bx1,
-                by1,
-                weight,
-            } => {
-                let adu = v(*ax1) - v(*ax0);
-                let adv = v(*ay1) - v(*ay0);
-                let bdu = v(*bx1) - v(*bx0);
-                let bdv = v(*by1) - v(*by0);
-                weighted(adu * bdv - adv * bdu, *weight)
-            }
-            Equation::Perpendicular {
-                ax0,
-                ay0,
-                ax1,
-                ay1,
-                bx0,
-                by0,
-                bx1,
-                by1,
-                weight,
-            } => {
-                let adu = v(*ax1) - v(*ax0);
-                let adv = v(*ay1) - v(*ay0);
-                let bdu = v(*bx1) - v(*bx0);
-                let bdv = v(*by1) - v(*by0);
-                weighted(adu * bdu + adv * bdv, *weight)
-            }
-            Equation::EqualLength {
-                ax0,
-                ay0,
-                ax1,
-                ay1,
-                bx0,
-                by0,
-                bx1,
-                by1,
-                weight,
-            } => {
-                let adu = v(*ax1) - v(*ax0);
-                let adv = v(*ay1) - v(*ay0);
-                let bdu = v(*bx1) - v(*bx0);
-                let bdv = v(*by1) - v(*by0);
-                weighted(adu.hypot(adv) - bdu.hypot(bdv), *weight)
-            }
-            Equation::PointLineDistance {
-                px,
-                py,
-                x0,
-                y0,
-                x1,
-                y1,
-                distance,
-                side,
-                weight,
-            } => {
-                let pxv = v(*px);
-                let pyv = v(*py);
-                let lx0 = v(*x0);
-                let ly0 = v(*y0);
-                let lx1 = v(*x1);
-                let ly1 = v(*y1);
-                let dx = lx1 - lx0;
-                let dy = ly1 - ly0;
-                let len = dx.hypot(dy);
-                if len < 1e-12 {
-                    return weighted(0.0, *weight);
-                }
-                let perp_u = -dy / len;
-                let perp_v = dx / len;
-                let signed = (pxv - lx0) * perp_u + (pyv - ly0) * perp_v;
-                weighted(signed - side * distance, *weight)
-            }
-            Equation::MidpointU {
-                px,
-                x0,
-                x1,
-                weight,
-            } => weighted(v(*px) - (v(*x0) + v(*x1)) * 0.5, *weight),
-            Equation::MidpointV {
-                py,
-                y0,
-                y1,
-                weight,
-            } => weighted(v(*py) - (v(*y0) + v(*y1)) * 0.5, *weight),
-            Equation::Angle {
-                ax0,
-                ay0,
-                ax1,
-                ay1,
-                bx0,
-                by0,
-                bx1,
-                by1,
-                angle,
-                weight,
-            } => {
-                let a_angle = line_angle(v(*ax0), v(*ay0), v(*ax1), v(*ay1));
-                let b_angle = line_angle(v(*bx0), v(*by0), v(*bx1), v(*by1));
-                weighted(wrap_angle(b_angle - a_angle - angle), *weight)
-            }
-            Equation::PointPointDistance {
-                mx,
-                my,
-                ax,
-                ay,
-                distance,
-                weight,
-            } => {
-                let du = v(*mx) - v(*ax);
-                let dv = v(*my) - v(*ay);
-                let len = du.hypot(dv);
-                let residual = if len < 1e-12 {
-                    -*distance
-                } else {
-                    len - distance
-                };
-                weighted(residual, *weight)
-            }
-            Equation::LineLineDistance {
-                ax0,
-                ay0,
-                ax1,
-                ay1,
-                bx0,
-                by0,
-                bx1,
-                by1,
-                distance,
-                side,
-                weight,
-            } => {
-                let bmu = (v(*bx0) + v(*bx1)) * 0.5;
-                let bmv = (v(*by0) + v(*by1)) * 0.5;
-                let (signed, _, _, _, _, _) = signed_line_offset(
-                    bmu,
-                    bmv,
-                    v(*ax0),
-                    v(*ay0),
-                    v(*ax1),
-                    v(*ay1),
-                );
-                weighted(signed - side * distance, *weight)
-            }
-            Equation::CircleDiameter {
-                radius,
-                diameter,
-                weight,
-            } => weighted(v(*radius) * 2.0 - diameter, *weight),
-            Equation::PointOnCircle {
-                px,
-                py,
-                cx,
-                cy,
-                radius,
-                weight,
-            } => {
-                let du = v(*px) - v(*cx);
-                let dv = v(*py) - v(*cy);
-                weighted(du.hypot(dv) - v(*radius), *weight)
-            }
-            Equation::Pin { var, target, weight } => weighted(v(*var) - target, *weight),
-        }
-    }
-
     pub fn jacobian_row(&self, system: &System, accum: &mut Vec<(VarId, f64)>) {
         accum.clear();
         let v = |id: VarId| system.value(id);
@@ -413,7 +178,6 @@ impl Equation {
                 y0,
                 x1,
                 y1,
-                length: _,
                 weight,
             } => {
                 let dx = v(*x1) - v(*x0);
@@ -517,8 +281,6 @@ impl Equation {
                 y0,
                 x1,
                 y1,
-                distance: _,
-                side: _,
                 weight,
             } => {
                 let pxv = v(*px);
@@ -571,7 +333,6 @@ impl Equation {
                 by0,
                 bx1,
                 by1,
-                angle: _,
                 weight,
             } => {
                 let (adx0, ady0, adx1, ady1) =
@@ -592,7 +353,6 @@ impl Equation {
                 my,
                 ax,
                 ay,
-                distance: _,
                 weight,
             } => {
                 let du = v(*mx) - v(*ax);
@@ -617,8 +377,6 @@ impl Equation {
                 by0,
                 bx1,
                 by1,
-                distance: _,
-                side: _,
                 weight,
             } => {
                 let bmu = (v(*bx0) + v(*bx1)) * 0.5;
@@ -656,7 +414,6 @@ impl Equation {
             }
             Equation::CircleDiameter {
                 radius,
-                diameter: _,
                 weight,
             } => {
                 push(accum, *radius, 2.0, *weight);
@@ -683,7 +440,7 @@ impl Equation {
                 push(accum, *cy, -nv, *weight);
                 push(accum, *radius, -1.0, *weight);
             }
-            Equation::Pin { var, target: _, weight } => {
+            Equation::Pin { var, weight } => {
                 push(accum, *var, 1.0, *weight);
             }
         }
@@ -699,4 +456,3 @@ pub const REFERENCE_HOLD_WEIGHT: f64 = 1e4;
 /// free degrees of freedom and never fights a real constraint — e.g. a parameter change
 /// driving a rectangle whose corner is also a distance anchor (#53).
 pub const GAUGE_HOLD_WEIGHT: f64 = 1e-6;
-pub const DRAG_PIN_WEIGHT: f64 = 1e6;

@@ -8,11 +8,10 @@ fn main() {
     {
         build_occt_shim();
     }
-    // libslvs links natively; the wasm32 app instead reaches it inside the
-    // emscripten-built kernel module (scripts/build-occt-wasm.sh + web/kernel-bridge.js).
-    if std::env::var_os("CARGO_FEATURE_SLVS").is_some()
-        && std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("wasm32")
-    {
+    // libslvs (the sketch constraint solver) links into every native build; the wasm32
+    // app instead reaches it inside the emscripten-built kernel module
+    // (scripts/build-occt-wasm.sh + web/kernel-bridge.js).
+    if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("wasm32") {
         build_slvs();
     }
 
@@ -197,7 +196,7 @@ fn png_to_ico(png_path: &str, out_path: &std::path::Path) {
 /// sources — the same six translation units its own `slvs-solver`/`slvs-interface` CMake
 /// targets build, plus the flat-array shim (cpp/bearcad_slvs.cpp) and mimalloc
 /// (single-file amalgamation) for the solver's temporary arena. Header-only Eigen comes
-/// from the vendored extlib. On by default via the `slvs` feature; the wasm32 app gets
+/// from the vendored extlib. Linked into every native build; the wasm32 app gets
 /// libslvs from the emscripten kernel module instead (scripts/build-occt-wasm.sh).
 fn build_slvs() {
     use std::path::PathBuf;

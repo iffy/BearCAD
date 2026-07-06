@@ -61,20 +61,6 @@ impl System {
             .filter_map(|(i, fixed)| (!fixed).then_some(VarId(i)))
             .collect()
     }
-
-    pub fn residual_values(&self) -> Vec<f64> {
-        self.equations
-            .iter()
-            .map(|eq| eq.residual(self))
-            .collect()
-    }
-
-    pub fn residual_norm_inf(&self) -> f64 {
-        self.residual_values()
-            .into_iter()
-            .map(f64::abs)
-            .fold(0.0, f64::max)
-    }
 }
 
 impl Default for System {

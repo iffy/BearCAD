@@ -1,10 +1,7 @@
 //! Bridge between [`Document`] sketch geometry and the numeric solver.
 
 use super::dof::{dof_remaining, vars_can_move_together};
-use super::newton::{solve_lm, SolveReport, SolverConfig};
-use super::residuals::{
-    Equation, DEFAULT_WEIGHT, DRAG_PIN_WEIGHT, GAUGE_HOLD_WEIGHT, REFERENCE_HOLD_WEIGHT,
-};
+use super::residuals::{Equation, DEFAULT_WEIGHT, GAUGE_HOLD_WEIGHT, REFERENCE_HOLD_WEIGHT};
 use crate::geometric_constraints::parallel_reference_and_movable;
 use super::system::{System, VarId};
 use crate::document_lifecycle::constraint_kind_applicable;
@@ -45,164 +42,8 @@ impl SketchBridge {
         Ok(bridge)
     }
 
-    pub fn add_drag_pins(
-        &mut self,
-        doc: &Document,
-        pins: &[(ConstraintPoint, (f32, f32))],
-    ) {
-        let pinned: HashSet<ConstraintPoint> = pins.iter().map(|(point, _)| point.clone()).collect();
-        for (point, (u, v)) in pins {
-            if let Some((u_id, v_id)) = self.point_vars.get(point).copied() {
-                self.system.add_equation(Equation::Pin {
-                    var: u_id,
-                    target: *u as f64,
-                    weight: DRAG_PIN_WEIGHT,
-                });
-                self.system.add_equation(Equation::Pin {
-                    var: v_id,
-                    target: *v as f64,
-                    weight: DRAG_PIN_WEIGHT,
-                });
-            }
-        }
-        if self.hold_references {
-            return;
-        }
-        // Reference geometry must stay put while the movable side is dragged. Holds were
-        // dropped for the whole sketch (hold_references = false during drag), so re-pin the
-        // reference of each direction/distance constraint when its movable side is the one
-        // being dragged. Coincident anchors are intentionally left free so they still follow.
-        for constraint in &doc.constraints {
-            if constraint.deleted || constraint.sketch != self.sketch {
-                continue;
-            }
-            match &constraint.kind {
-                ConstraintKind::Distance {
-                    target: DistanceTarget::PointPointDistance { anchor, mover, .. },
-                } => {
-                    if pinned.contains(mover) && !pinned.contains(anchor) {
-                        let _ = self.anchor_point(doc, anchor.clone(), REFERENCE_HOLD_WEIGHT);
-                    } else if pinned.contains(anchor) && !pinned.contains(mover) {
-                        let _ = self.anchor_point(doc, mover.clone(), REFERENCE_HOLD_WEIGHT);
-                    }
-                }
-                ConstraintKind::Distance {
-                    target: DistanceTarget::PointLineDistance { point, line, .. },
-                } => self.hold_reference_when_point_dragged(doc, line.clone(), point.clone(), &pinned),
-                ConstraintKind::Midpoint { point, line } => {
-                    self.hold_reference_when_point_dragged(doc, line.clone(), point.clone(), &pinned)
-                }
-                ConstraintKind::Distance {
-                    target: DistanceTarget::LineLineDistance { line_a, line_b, .. },
-                }
-                | ConstraintKind::Parallel { line_a, line_b }
-                | ConstraintKind::Perpendicular { line_a, line_b }
-                | ConstraintKind::Equal { line_a, line_b }
-                | ConstraintKind::Angle { line_a, line_b, .. } => {
-                    let (reference, movable) =
-                        parallel_reference_and_movable(line_a.clone(), line_b.clone());
-                    self.hold_reference_when_movable_dragged(doc, reference, movable, &pinned);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// Hold a constraint's reference line if the dragged geometry is the movable line (and the
-    /// reference itself isn't being dragged).
-    fn hold_reference_when_movable_dragged(
-        &mut self,
-        doc: &Document,
-        reference: ConstraintLine,
-        movable: ConstraintLine,
-        pinned: &HashSet<ConstraintPoint>,
-    ) {
-        let reference_points = line_endpoint_points(doc, reference);
-        let movable_points = line_endpoint_points(doc, movable);
-        let movable_dragged = movable_points.iter().any(|p| pinned.contains(p));
-        let reference_dragged = reference_points.iter().any(|p| pinned.contains(p));
-        if movable_dragged && !reference_dragged {
-            for point in reference_points {
-                let _ = self.anchor_point(doc, point, REFERENCE_HOLD_WEIGHT);
-            }
-        }
-    }
-
-    /// Hold a reference line if the dragged geometry is the constrained point (and the line
-    /// itself isn't being dragged).
-    fn hold_reference_when_point_dragged(
-        &mut self,
-        doc: &Document,
-        line: ConstraintLine,
-        point: ConstraintPoint,
-        pinned: &HashSet<ConstraintPoint>,
-    ) {
-        let reference_points = line_endpoint_points(doc, line);
-        let reference_dragged = reference_points.iter().any(|p| pinned.contains(p));
-        if pinned.contains(&point) && !reference_dragged {
-            for reference_point in reference_points {
-                let _ = self.anchor_point(doc, reference_point, REFERENCE_HOLD_WEIGHT);
-            }
-        }
-    }
-
-    pub fn solve(&mut self) -> SolveReport {
-        let mut report = solve_lm(&mut self.system, SolverConfig::default());
-        report.dof_remaining = dof_remaining(&self.system);
-        if !report.success {
-            report.failed_constraints = self.conflicting_constraints();
-        }
-        report
-    }
-
-    /// Constraint indices sorted by largest residual contribution (failed solves only).
-    pub fn conflicting_constraints(&self) -> Vec<usize> {
-        let residuals = self.system.residual_values();
-        let mut scored: Vec<(usize, f64)> = self
-            .constraint_equations
-            .iter()
-            .map(|(id, equations)| {
-                let score = equations
-                    .iter()
-                    .map(|index| residuals[*index].abs())
-                    .fold(0.0f64, f64::max);
-                (*id, score)
-            })
-            .filter(|(_, score)| *score > 1e-9)
-            .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        scored.into_iter().map(|(id, _)| id).collect()
-    }
-
     pub fn point_solver_vars(&mut self, doc: &Document, point: ConstraintPoint) -> Result<(VarId, VarId), String> {
         self.point_vars(doc, point)
-    }
-
-    pub fn apply_to_document(&self, doc: &mut Document) -> Result<(), String> {
-        for (point, (u_id, v_id)) in &self.point_vars {
-            if let ConstraintPoint::LineEndpoint { .. } = point {
-                set_point_uv_from_solver(doc, self.sketch, point.clone(), self.system.value(*u_id), self.system.value(*v_id))?;
-            }
-        }
-
-        for (circle, radius_var) in &self.circle_radius {
-            let center = ConstraintPoint::CircleCenter(*circle);
-            if let Some((u_id, v_id)) = self.point_vars.get(&center) {
-                set_point_uv_from_solver(
-                    doc,
-                    self.sketch,
-                    center,
-                    self.system.value(*u_id),
-                    self.system.value(*v_id),
-                )?;
-            }
-            let entity = doc
-                .circles
-                .get_mut(*circle)
-                .ok_or_else(|| format!("Circle {circle} not found"))?;
-            entity.r = self.system.value(*radius_var) as f32;
-        }
-        Ok(())
     }
 
     fn seed_entities(&mut self, doc: &Document) -> Result<(), String> {
@@ -375,7 +216,7 @@ impl SketchBridge {
             ConstraintKind::Angle {
                 line_a,
                 line_b,
-                rotation_sign,
+                rotation_sign: _,
             } => {
                 let Some(angle) = eval_angle_rad_in_doc(&constraint.expression, doc) else {
                     return Ok(());
@@ -396,7 +237,6 @@ impl SketchBridge {
                     by0: b.0.1,
                     bx1: b.1.0,
                     by1: b.1.1,
-                    angle: rotation_sign as f64 * angle as f64,
                     weight: DEFAULT_WEIGHT,
                 });
             }
@@ -416,7 +256,7 @@ impl SketchBridge {
         if value <= 0.0 {
             return Ok(());
         }
-        let value = value as f64;
+        let _ = value;
         match target {
             DistanceTarget::LineLength(index) => {
                 // Gauge weight, not a firm hold: this anchor only expresses "prefer growing
@@ -440,7 +280,6 @@ impl SketchBridge {
                     y0,
                     x1,
                     y1,
-                    length: value,
                     weight: DEFAULT_WEIGHT,
                 });
             }
@@ -453,14 +292,13 @@ impl SketchBridge {
                     .ok_or_else(|| format!("Circle {index} not in solver graph"))?;
                 self.system.add_equation(Equation::CircleDiameter {
                     radius,
-                    diameter: value,
                     weight: DEFAULT_WEIGHT,
                 });
             }
             DistanceTarget::LineLineDistance {
                 line_a,
                 line_b,
-                side,
+                side: _,
             } => {
                 let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
                 // A line-line *distance* is a dimensional constraint between two typically
@@ -479,8 +317,6 @@ impl SketchBridge {
                     by0: b.0.1,
                     bx1: b.1.0,
                     by1: b.1.1,
-                    distance: value,
-                    side: side as f64,
                     weight: DEFAULT_WEIGHT,
                 });
             }
@@ -498,14 +334,13 @@ impl SketchBridge {
                     my,
                     ax,
                     ay,
-                    distance: value,
                     weight: DEFAULT_WEIGHT,
                 });
             }
             DistanceTarget::PointLineDistance {
                 point,
                 line,
-                side,
+                side: _,
             } => {
                 self.hold_line(doc, line.clone(), REFERENCE_HOLD_WEIGHT)?;
                 let (px, py) = self.point_vars(doc, point)?;
@@ -517,8 +352,6 @@ impl SketchBridge {
                     y0,
                     x1,
                     y1,
-                    distance: value,
-                    side: side as f64,
                     weight: DEFAULT_WEIGHT,
                 });
             }
@@ -594,11 +427,7 @@ impl SketchBridge {
     }
 
     fn hold_var(&mut self, var: VarId, weight: f64) {
-        self.system.add_equation(Equation::Pin {
-            var,
-            target: self.system.value(var),
-            weight,
-        });
+        self.system.add_equation(Equation::Pin { var, weight });
     }
 
     fn add_coincident(
@@ -637,8 +466,6 @@ impl SketchBridge {
                     y0,
                     x1,
                     y1,
-                    distance: 0.0,
-                    side: 1.0,
                     weight: DEFAULT_WEIGHT,
                 });
             }
@@ -770,20 +597,11 @@ pub fn sketch_conflicting_constraints(
     doc: &Document,
     sketch: SketchId,
 ) -> Result<Vec<usize>, String> {
-    #[cfg(feature = "slvs")]
-    if super::slvs::available() {
-        let outcome = super::slvs::solve_sketch(doc, sketch, &[])?;
-        if outcome.success {
-            return Ok(Vec::new());
-        }
-        return Ok(outcome.failed_constraints);
-    }
-    let mut bridge = SketchBridge::from_document(doc, sketch, true)?;
-    let report = bridge.solve();
-    if report.success {
+    let outcome = super::slvs::solve_sketch(doc, sketch, &[])?;
+    if outcome.success {
         return Ok(Vec::new());
     }
-    Ok(report.failed_constraints)
+    Ok(outcome.failed_constraints)
 }
 
 /// Remaining degrees of freedom for one sketch's constraint system.
@@ -1004,36 +822,14 @@ fn solve_one_sketch(
         .filter(|(point, _)| point_sketch(doc, point.clone()) == Some(sketch))
         .cloned()
         .collect();
-    // The numeric solve is SolveSpace's libslvs (see super::slvs). The built-in LM
-    // solver below remains only as the fallback: the lean `--no-default-features`
-    // build, and a web session whose kernel module failed to load.
-    #[cfg(feature = "slvs")]
-    if super::slvs::available() {
-        let outcome = super::slvs::solve_sketch(doc, sketch, &sketch_pins)?;
-        outcome.apply_to_document(doc, sketch)?;
-        crate::model::refit_fillet_arc_handles(doc, sketch);
-        return Ok(());
-    }
-    let hold_references = sketch_pins.is_empty();
-    let mut bridge = SketchBridge::from_document(doc, sketch, hold_references)?;
-    bridge.add_drag_pins(doc, &sketch_pins);
-    let _report = bridge.solve();
-    bridge.apply_to_document(doc)?;
+    // The numeric solve is SolveSpace's libslvs (see super::slvs) — on every target.
+    // Natively it is statically linked; on the web it lives in the kernel module, and a
+    // session whose kernel failed to load gets a hard error here rather than a
+    // different solver.
+    let outcome = super::slvs::solve_sketch(doc, sketch, &sketch_pins)?;
+    outcome.apply_to_document(doc, sketch)?;
     crate::model::refit_fillet_arc_handles(doc, sketch);
     Ok(())
-}
-
-fn set_point_uv_from_solver(
-    doc: &mut Document,
-    sketch: SketchId,
-    point: ConstraintPoint,
-    u: f64,
-    v: f64,
-) -> Result<(), String> {
-    // `sketch` is only meaningful for `FaceVertex` (fixed, so `set_point_uv` always errors on
-    // it anyway) — every point this is actually called with (`LineEndpoint`/`CircleCenter`)
-    // ignores it.
-    crate::geometric_constraints::set_point_uv(doc, sketch, point, u as f32, v as f32)
 }
 
 #[cfg(test)]
@@ -1154,8 +950,7 @@ mod tests {
         push(ConstraintKind::Equal { line_a: ConstraintLine::Line(idx[2]), line_b: ConstraintLine::Line(idx[0]) });
         push(ConstraintKind::Perpendicular { line_a: ConstraintLine::Line(idx[1]), line_b: ConstraintLine::Line(idx[2]) });
 
-        let mut bridge = SketchBridge::from_document(&doc, sketch, true).unwrap();
-        let _ = bridge.solve();
+        solve_document_sketches(&mut doc, &[]).unwrap();
 
         for i in 0..4 {
             let a = &doc.lines[idx[i]];
@@ -1240,12 +1035,10 @@ mod tests {
             deleted: false,
         });
 
-        let mut bridge = SketchBridge::from_document(&doc, sketch, true).unwrap();
-        let report = bridge.solve();
-        assert!(!report.success);
-        assert_eq!(report.failed_constraints.len(), 2);
-        assert!(report.failed_constraints.contains(&0));
-        assert!(report.failed_constraints.contains(&1));
+        let failed = sketch_conflicting_constraints(&doc, sketch).unwrap();
+        assert_eq!(failed.len(), 2);
+        assert!(failed.contains(&0));
+        assert!(failed.contains(&1));
     }
 
     #[test]
