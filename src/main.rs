@@ -3898,6 +3898,25 @@ impl eframe::App for App {
                         }
                         None => self.state.creating_loft = None,
                     }
+                } else if self.state.tool == Tool::Select {
+                    // Select tool (#202): the picker rows mirror the current selection in the
+                    // same deterministic order used to build them, so removing row `index`
+                    // deselects that element (clicking it, which toggles it off since it's
+                    // already selected). "Clear all" empties the selection.
+                    match edit {
+                        Some(index) => {
+                            if let Some(element) =
+                                self.state.scene_selection.ordered().get(index).cloned()
+                            {
+                                selection::click_scene_selection(
+                                    &mut self.state.scene_selection,
+                                    element,
+                                    true,
+                                );
+                            }
+                        }
+                        None => self.state.scene_selection.clear(),
+                    }
                 } else {
                     match edit {
                         Some(index) => {
@@ -4251,6 +4270,21 @@ fn resolve_viewport_hover_highlight(
     match tool {
         Tool::Sketch => pick_sketch_face(pp, project, doc, cam.eye())
             .map(gpu_viewport::ViewportHoverHighlight::SketchFace),
+        // Loft tool (#202): glow the closed profile (circle or line loop) under the cursor —
+        // the same cross section a click would add — so it has hover feedback like every other
+        // pick tool. The whole profile loop lights up, not just the one edge hit.
+        Tool::Loft if sketch_session.is_none() => {
+            let gp = cam.ground_point(pp, viewport, vp);
+            let target = resolve_pick_target(pp, project, gp, doc, occlusion)?;
+            let element = match target.kind {
+                construction::PickTargetKind::Circle(ci) => Some(SceneElement::Circle(ci)),
+                construction::PickTargetKind::Line(li) => Some(SceneElement::Line(li)),
+                _ => None,
+            };
+            let section = element.and_then(|el| extrude::loft_section_from_element(doc, el))?;
+            let (world_loop, _) = extrude::face_profile_world(doc, &section.face)?;
+            Some(gpu_viewport::ViewportHoverHighlight::ClosedLoop { world_loop })
+        }
         Tool::Rectangle | Tool::Line | Tool::Circle if sketch_session.is_none() => {
             pick_sketch_face(pp, project, doc, cam.eye())
                 .map(gpu_viewport::ViewportHoverHighlight::SketchFace)
@@ -7824,7 +7858,7 @@ impl App {
                         // the user can see the intersection/difference area distinctly.
                         if let model::ExtrudeFace::Boolean { .. } = &f {
                             let (profile, _) = extrude::face_profile_world(doc, &f)?;
-                            Some(gpu_viewport::ViewportHoverHighlight::BooleanRegion {
+                            Some(gpu_viewport::ViewportHoverHighlight::ClosedLoop {
                                 world_loop: profile,
                             })
                         } else {
@@ -7957,13 +7991,29 @@ impl App {
                 }
             }
         }
+        // Loft tool (#202): render the picked cross sections with their selection highlight —
+        // "every element that is selected should show it" — without disturbing the persistent
+        // selection. Fold the sections' sketch entities into a throwaway selection for the
+        // scene only.
+        let render_selection = match self.state.creating_loft.as_ref() {
+            Some(cl) if self.state.tool == Tool::Loft && !cl.sections.is_empty() => {
+                let mut sel = self.state.scene_selection.clone();
+                for section in &cl.sections {
+                    for element in extrude::loft_section_scene_elements(section) {
+                        sel.insert(element);
+                    }
+                }
+                std::borrow::Cow::Owned(sel)
+            }
+            _ => std::borrow::Cow::Borrowed(&self.state.scene_selection),
+        };
         let scene_input = build_viewport_scene_input(
             doc,
             &cam,
             viewport,
             sketch_session,
             &self.state.element_visibility,
-            &self.state.scene_selection,
+            &render_selection,
             &self.state.document_health,
             self.state.creating_rect.as_ref(),
             self.state.creating_line.as_ref(),

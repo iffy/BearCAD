@@ -15,9 +15,11 @@ horns, hulls, funnels, transitions between shapes.
 1. Sketch a closed profile (a circle or a loop of lines) on each plane you want the solid
    to pass through — use [Construction Planes](/docs/tools/construction-plane) to stack
    section planes at the offsets you need.
-2. Pick the **Loft** tool and click each profile. A click on any line of a loop picks the
-   whole loop; clicking a picked section removes it. The picked sections are listed in the
-   context pane, with per-row remove buttons.
+2. Pick the **Loft** tool and click each profile. Hovering a profile highlights the whole
+   closed loop under the cursor, so it's clear what a click will pick. A click on any line of
+   a loop picks the whole loop; clicking a picked section removes it. Picked sections stay
+   highlighted in the viewport and are listed in the context pane, with per-row remove
+   buttons.
 3. With two or more sections picked, press **Enter**. The sections are blended in order
    along the loft's direction — pick order doesn't matter.
 

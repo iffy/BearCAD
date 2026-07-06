@@ -289,6 +289,39 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
     }
 }
 
+/// A short display label for a selected element, for the Select tool's selection picker
+/// (#202). A custom name wins; otherwise a compact type + index label. Kept index-safe (no
+/// direct slice indexing) so a stale selection can't panic the picker.
+pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
+    if let Some(name) = element_name(doc, element.clone()) {
+        return name.to_string();
+    }
+    match element {
+        SceneElement::ConstructionPlane(i) => {
+            if *i == 0 {
+                "Construction plane (XY)".to_string()
+            } else {
+                format!("Construction plane {i}")
+            }
+        }
+        SceneElement::Sketch(i) => format!("Sketch {i}"),
+        SceneElement::Line(i) => format!("Line {i}"),
+        SceneElement::Circle(i) => format!("Circle {i}"),
+        SceneElement::Point(_) => "Point".to_string(),
+        SceneElement::Constraint(i) => format!("Constraint {i}"),
+        SceneElement::Extrusion(i) => format!("Extrusion {i}"),
+        SceneElement::Body(i) => format!("Body {i}"),
+        SceneElement::FaceEdge(_) => "Edge".to_string(),
+        SceneElement::BodyEdge { .. } => "Body edge".to_string(),
+        SceneElement::BodyVertex { .. } => "Body vertex".to_string(),
+        SceneElement::Image(i) => format!("Image {i}"),
+        SceneElement::BooleanOp(i) => format!("Boolean {i}"),
+        SceneElement::MoveOp(i) => format!("Move {i}"),
+        SceneElement::RepeatOp(i) => format!("Repeat {i}"),
+        SceneElement::SliceOp(i) => format!("Slice {i}"),
+    }
+}
+
 pub fn node_label(doc: &Document, node: HierarchyNode) -> String {
     // HierarchyNode::Document has no SceneElement, and thus no custom-name storage — it
     // always falls through to its fixed default label.
