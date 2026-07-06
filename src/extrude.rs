@@ -153,6 +153,23 @@ fn occt_extrusion_shape(
     extrusion: &Extrusion,
     distance: f32,
 ) -> Option<crate::kernel::Shape> {
+    occt_extrusion_shape_overshoot(doc, extrusion, distance, 0.0)
+}
+
+/// [`occt_extrusion_shape`] with an optional `overshoot` (mm) that extends the built solid by
+/// that amount past *both* ends along the extrusion direction. Used to build **cut tools**:
+/// when a cut's cap lands exactly on a body face (e.g. an extrude-to-face cut that spans the
+/// body), a flush boolean leaves a coincident zero-thickness seam face — the wall renders
+/// capped even though the material is gone (#200). Overshooting the tool moves both caps
+/// clear of the body faces so the walls open cleanly; the extra length is outside the body,
+/// so it changes nothing else.
+#[cfg(feature = "occt")]
+fn occt_extrusion_shape_overshoot(
+    doc: &Document,
+    extrusion: &Extrusion,
+    distance: f32,
+    overshoot: f32,
+) -> Option<crate::kernel::Shape> {
     // One solid per face, fused. A single-face extrusion (the common case) skips the
     // boolean; a multi-face one (several coplanar profiles extruded together) fuses into
     // one solid so it cuts/merges correctly — a multi-face *cut* used to return `None`
@@ -167,6 +184,16 @@ fn occt_extrusion_shape(
             .iter()
             .map(|p| extruded_top_point(doc, extrusion, normal, *p, distance))
             .collect();
+        // Extend both ends by `overshoot` along the extrusion direction (cut tools only).
+        let (profile, top) = if overshoot > 1e-6 {
+            let u = (top[0] - profile[0]).normalize_or_zero();
+            (
+                profile.iter().map(|p| *p - u * overshoot).collect::<Vec<_>>(),
+                top.iter().map(|t| *t + u * overshoot).collect::<Vec<_>>(),
+            )
+        } else {
+            (profile, top)
+        };
         // A pure translation is a single prism (simplest/most robust); a slanted
         // target (per-vertex top offset, e.g. extrude-to-an-angled-face) is a ruled
         // loft between the bottom and top loops.
@@ -405,7 +432,7 @@ fn occt_body_shape_from_indices(
                 true
             }
         });
-        let cut = occt_extrusion_shape(doc, &tool, distance)?;
+        let cut = occt_extrusion_shape_overshoot(doc, &tool, distance, CUT_TOOL_OVERSHOOT)?;
         solid = solid.boolean(&cut, BoolOp::Cut)?;
         if !rim_fillets.0.is_empty() {
             solid = solid.fillet(&rim_fillets.0, &rim_fillets.1)?;
@@ -987,6 +1014,12 @@ pub fn kernel_fallback_cut_warning(doc: &Document) -> Option<String> {
 /// faces once those go through the kernel.
 #[cfg(feature = "occt")]
 pub const OCCT_DEFLECTION: f32 = 0.05;
+
+/// How far a cut tool overshoots each end past its nominal extent so its caps never sit
+/// exactly on a body face (which would leave a coincident seam face; #200). Small enough to
+/// be geometrically irrelevant, large enough to clear float noise at typical mm scale.
+#[cfg(feature = "occt")]
+const CUT_TOOL_OVERSHOOT: f32 = 0.05;
 
 /// World-space axis (origin, unit direction) a [`crate::model::Revolution`] sweeps around.
 pub fn revolve_axis_world(
@@ -3585,6 +3618,28 @@ mod tests {
             deleted: false,
             edge_treatments: Vec::new(),
         }
+    }
+
+    /// #200: a cut tool built with overshoot extends past both ends by `2 * overshoot`, so
+    /// its caps clear any body face they would otherwise sit exactly on (which leaves a
+    /// coincident seam face — a wall that renders capped even though the material is gone).
+    #[test]
+    #[cfg(feature = "occt")]
+    fn cut_tool_overshoots_past_both_ends() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
+        let ext = extrusion(sketch, vec![ExtrudeFace::Circle(0)], 20.0);
+        let flush = occt_extrusion_shape(&doc, &ext, 20.0).unwrap().volume().unwrap();
+        let overshot = occt_extrusion_shape_overshoot(&doc, &ext, 20.0, 0.05)
+            .unwrap()
+            .volume()
+            .unwrap();
+        // Extra volume = the cylinder cross-section times the 2 * 0.05 mm of added length.
+        let expected_extra = std::f64::consts::PI * 25.0 * 0.10;
+        assert!(
+            (overshot - flush - expected_extra).abs() < 1.0,
+            "flush={flush} overshot={overshot} expected_extra={expected_extra}"
+        );
     }
 
     #[test]
