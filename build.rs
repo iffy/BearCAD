@@ -224,6 +224,19 @@ fn build_slvs() {
         .include(ss.join("extlib/mimalloc/include"))
         .flag_if_supported("-Wno-deprecated-declarations")
         .flag_if_supported("-Wno-unused-parameter");
+    // MSVC: the define set solvespace's own CMake uses on Windows. _USE_MATH_DEFINES is
+    // load-bearing (M_PI etc.); /bigobj covers the Eigen-heavy system.cpp object.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        b.define("_USE_MATH_DEFINES", None)
+            .define("NOMINMAX", None)
+            .define("WIN32_LEAN_AND_MEAN", None)
+            .define("_CRT_SECURE_NO_WARNINGS", None)
+            .define("_SCL_SECURE_NO_WARNINGS", None)
+            .define("UNICODE", None)
+            .define("_UNICODE", None)
+            .flag_if_supported("/bigobj")
+            .flag_if_supported("/EHsc");
+    }
     b.file("cpp/bearcad_slvs.cpp");
     println!("cargo:rerun-if-changed=cpp/bearcad_slvs.cpp");
     for f in [
