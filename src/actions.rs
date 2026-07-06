@@ -102,6 +102,9 @@ pub enum Tool {
     /// Move bodies (translate and/or rotate) into new bodies (Move tool, #176/#183).
     /// Inputs become shadow bodies; outputs are new bodies; the operation is editable.
     Move,
+    /// Repeat bodies along an axis (Repeat tool, #182). The original stays; each further
+    /// instance is a new body; the operation is editable.
+    Repeat,
 }
 
 impl Tool {
@@ -124,6 +127,7 @@ impl Tool {
             "revolve" => Some(Tool::Revolve),
             "combine" | "boolean" => Some(Tool::Combine),
             "move" => Some(Tool::Move),
+            "repeat" | "linear_repeat" | "pattern" => Some(Tool::Repeat),
             _ => None,
         }
     }
@@ -412,6 +416,34 @@ impl Default for CreatingBoolean {
             b: Vec::new(),
             picking_b: false,
             keep_b: false,
+            editing: None,
+        }
+    }
+}
+
+/// In-progress linear repeat (Repeat tool): the picked bodies, axis, spacing mode, and
+/// the count/spacing/length expressions.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreatingRepeat {
+    pub targets: Vec<usize>,
+    pub axis: crate::model::RevolveAxis,
+    pub mode: crate::model::RepeatMode,
+    pub count: String,
+    pub spacing: String,
+    pub length: String,
+    /// `Some(op)` while re-editing a committed operation.
+    pub editing: Option<usize>,
+}
+
+impl Default for CreatingRepeat {
+    fn default() -> Self {
+        Self {
+            targets: Vec::new(),
+            axis: crate::model::RevolveAxis::X,
+            mode: crate::model::RepeatMode::CountGap,
+            count: "3".to_string(),
+            spacing: "10".to_string(),
+            length: String::new(),
             editing: None,
         }
     }
@@ -987,6 +1019,27 @@ pub enum Action {
         axis: Option<crate::model::RevolveAxis>,
         angle: String,
     },
+    /// Commit the in-progress Repeat-tool operation.
+    CommitRepeat,
+    /// Scripted/replayed linear repeat with an explicit payload.
+    CreateRepeatOperation {
+        targets: Vec<usize>,
+        axis: crate::model::RevolveAxis,
+        mode: crate::model::RepeatMode,
+        count: String,
+        spacing: String,
+        length: String,
+    },
+    /// Re-point an existing repeat operation.
+    EditRepeatOperation {
+        op: usize,
+        targets: Vec<usize>,
+        axis: crate::model::RevolveAxis,
+        mode: crate::model::RepeatMode,
+        count: String,
+        spacing: String,
+        length: String,
+    },
     SetExtrudeBodyMode { mode: ExtrudeBodyMode },
     /// Enable or disable snapping while drawing/dragging.
     SetSnapping(bool),
@@ -1350,6 +1403,8 @@ pub struct AppState {
     pub creating_boolean: Option<CreatingBoolean>,
     /// In-progress move operation (Move tool).
     pub creating_move: Option<CreatingMove>,
+    /// In-progress linear repeat (Repeat tool).
+    pub creating_repeat: Option<CreatingRepeat>,
     /// In-progress image scale calibration (#163/#171): Some while the user is placing
     /// the two reference points / typing the real length.
     pub creating_calibration: Option<CreatingCalibration>,
@@ -1457,6 +1512,7 @@ impl Default for AppState {
             creating_revolve: None,
             creating_boolean: None,
             creating_move: None,
+            creating_repeat: None,
             creating_calibration: None,
             viewport_aspect: 16.0 / 9.0,
             draw_construction: false,
@@ -2380,6 +2436,29 @@ fn validate_move_inputs(
     Ok(())
 }
 
+/// Shared validation for creating/editing a repeat operation.
+fn validate_repeat_inputs(doc: &Document, targets: &[usize]) -> Result<(), String> {
+    if targets.is_empty() {
+        return Err("Pick at least one body to repeat".to_string());
+    }
+    let mut seen = std::collections::HashSet::new();
+    for &bi in targets {
+        let Some(body) = doc.bodies.get(bi).filter(|body| !body.deleted) else {
+            return Err(format!("Body {bi} not found"));
+        };
+        if body.shadow {
+            return Err(format!("Body {bi} is consumed by another operation"));
+        }
+        if matches!(body.source, crate::model::BodySource::Repeated { .. }) {
+            return Err("Cannot repeat a repeat output; edit the repeat instead".to_string());
+        }
+        if !seen.insert(bi) {
+            return Err(format!("Body {bi} is picked twice"));
+        }
+    }
+    Ok(())
+}
+
 fn element_label(element: SceneElement) -> String {
     match element {
         SceneElement::ConstructionPlane(i) => format!("Construction plane {i}"),
@@ -2396,6 +2475,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::Image(i) => format!("Image {i}"),
         SceneElement::BooleanOp(i) => format!("Boolean operation {i}"),
         SceneElement::MoveOp(i) => format!("Move operation {i}"),
+        SceneElement::RepeatOp(i) => format!("Repeat operation {i}"),
     }
 }
 
@@ -2993,6 +3073,13 @@ impl AppState {
                         self.status = "Undid last parameter".to_string();
                         undone = true;
                     }
+                    Some(ShapeKind::RepeatOperation) => {
+                        // Output bodies were popped by their own Body entries (same undo
+                        // group); the repeat's inputs were never shadowed.
+                        self.doc.repeat_ops.pop();
+                        self.status = "Undid repeat".to_string();
+                        undone = true;
+                    }
                     Some(ShapeKind::MoveOperation) => {
                         // Undo the whole move op: output bodies were popped by their own
                         // ShapeKind::Body entries (same undo group); drop the operation
@@ -3232,6 +3319,12 @@ impl AppState {
                 if tool == Tool::Move && self.creating_move.is_none() {
                     self.creating_move = Some(CreatingMove::default());
                 }
+                if self.creating_repeat.is_some() && tool != Tool::Repeat {
+                    self.creating_repeat = None;
+                }
+                if tool == Tool::Repeat && self.creating_repeat.is_none() {
+                    self.creating_repeat = Some(CreatingRepeat::default());
+                }
                 if self.creating_revolve.is_some() && tool != Tool::Revolve {
                     self.creating_revolve = None;
                 }
@@ -3331,6 +3424,10 @@ impl AppState {
                     }
                     Tool::Move => {
                         "Move tool — click bodies to pick them, set the offset/rotation, Enter commits"
+                            .to_string()
+                    }
+                    Tool::Repeat => {
+                        "Repeat tool — click bodies, pick an axis and spacing, Enter commits"
                             .to_string()
                     }
                 };
@@ -5313,6 +5410,174 @@ impl AppState {
                 self.tool = Tool::Select;
                 self.status = format!("Added loft ({count} sections)");
                 self.refresh_document_health();
+                ActionResult::Ok
+            }
+            Action::CommitRepeat => {
+                let Some(cr) = self.creating_repeat.take() else {
+                    return ActionResult::Err("No repeat in progress".to_string());
+                };
+                let result = match cr.editing {
+                    Some(op) => self.apply(Action::EditRepeatOperation {
+                        op,
+                        targets: cr.targets.clone(),
+                        axis: cr.axis,
+                        mode: cr.mode,
+                        count: cr.count.clone(),
+                        spacing: cr.spacing.clone(),
+                        length: cr.length.clone(),
+                    }),
+                    None => self.apply(Action::CreateRepeatOperation {
+                        targets: cr.targets.clone(),
+                        axis: cr.axis,
+                        mode: cr.mode,
+                        count: cr.count.clone(),
+                        spacing: cr.spacing.clone(),
+                        length: cr.length.clone(),
+                    }),
+                };
+                if matches!(result, ActionResult::Err(_)) {
+                    self.creating_repeat = Some(cr);
+                } else {
+                    self.creating_repeat = Some(CreatingRepeat::default());
+                }
+                result
+            }
+            Action::CreateRepeatOperation { targets, axis, mode, count, spacing, length } => {
+                if let Err(e) = validate_repeat_inputs(&self.doc, &targets) {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let op_index = self.doc.repeat_ops.len();
+                self.doc.repeat_ops.push(crate::model::RepeatOperation {
+                    targets: targets.clone(),
+                    axis,
+                    mode,
+                    count,
+                    spacing,
+                    length,
+                    outputs: Vec::new(),
+                    name: None,
+                    deleted: false,
+                });
+                let Some(offsets) =
+                    crate::extrude::repeat_offsets(&self.doc, &self.doc.repeat_ops[op_index])
+                else {
+                    self.doc.repeat_ops.pop();
+                    let e =
+                        "Repeat doesn't evaluate (check count/spacing/length and the axis)"
+                            .to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                if offsets.is_empty() {
+                    self.doc.repeat_ops.pop();
+                    let e = "Repeat produces no extra instances".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                self.doc.shape_order.push(ShapeKind::RepeatOperation);
+                let mut outputs = Vec::new();
+                for instance in 1..=offsets.len() {
+                    for (ti, _) in targets.iter().enumerate() {
+                        outputs.push(self.doc.bodies.len());
+                        self.doc.bodies.push(crate::model::Body {
+                            source: crate::model::BodySource::Repeated {
+                                op: op_index,
+                                target: ti,
+                                instance,
+                            },
+                            name: None,
+                            deleted: false,
+                            shadow: false,
+                        });
+                        self.doc.shape_order.push(ShapeKind::Body);
+                    }
+                }
+                self.doc.repeat_ops[op_index].outputs = outputs;
+                self.refresh_document_health();
+                self.status = format!(
+                    "Repeated {} body(ies) × {} instances",
+                    targets.len(),
+                    offsets.len() + 1
+                );
+                ActionResult::Ok
+            }
+            Action::EditRepeatOperation { op, targets, axis, mode, count, spacing, length } => {
+                if self.doc.repeat_ops.get(op).filter(|o| !o.deleted).is_none() {
+                    let e = format!("Repeat operation {op} not found");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                if let Err(e) = validate_repeat_inputs(&self.doc, &targets) {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let old = self.doc.repeat_ops[op].clone();
+                {
+                    let entry = &mut self.doc.repeat_ops[op];
+                    entry.targets = targets.clone();
+                    entry.axis = axis;
+                    entry.mode = mode;
+                    entry.count = count;
+                    entry.spacing = spacing;
+                    entry.length = length;
+                }
+                let Some(offsets) =
+                    crate::extrude::repeat_offsets(&self.doc, &self.doc.repeat_ops[op])
+                else {
+                    self.doc.repeat_ops[op] = old;
+                    let e =
+                        "Repeat doesn't evaluate (check count/spacing/length and the axis)"
+                            .to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                // Resize outputs to instance-count × targets (tombstone extras, grow new).
+                let want = offsets.len() * targets.len();
+                let have = self.doc.repeat_ops[op].outputs.len();
+                if want > have {
+                    let mut outputs = self.doc.repeat_ops[op].outputs.clone();
+                    for slot in have..want {
+                        let instance = slot / targets.len() + 1;
+                        let ti = slot % targets.len();
+                        outputs.push(self.doc.bodies.len());
+                        self.doc.bodies.push(crate::model::Body {
+                            source: crate::model::BodySource::Repeated {
+                                op,
+                                target: ti,
+                                instance,
+                            },
+                            name: None,
+                            deleted: false,
+                            shadow: false,
+                        });
+                        self.doc.shape_order.push(ShapeKind::Body);
+                        self.doc.undo_groups.push(1);
+                    }
+                    self.doc.repeat_ops[op].outputs = outputs;
+                } else if want < have {
+                    let extras = self.doc.repeat_ops[op].outputs.split_off(want);
+                    for out in extras {
+                        if let Some(body) = self.doc.bodies.get_mut(out) {
+                            body.deleted = true;
+                        }
+                    }
+                }
+                // Re-point surviving outputs at the (possibly reordered) target list.
+                let outputs = self.doc.repeat_ops[op].outputs.clone();
+                for (slot, &out) in outputs.iter().enumerate() {
+                    let instance = slot / targets.len() + 1;
+                    let ti = slot % targets.len();
+                    if let Some(body) = self.doc.bodies.get_mut(out) {
+                        body.source = crate::model::BodySource::Repeated {
+                            op,
+                            target: ti,
+                            instance,
+                        };
+                    }
+                }
+                self.refresh_document_health();
+                self.status = "Edited repeat".to_string();
                 ActionResult::Ok
             }
             Action::CommitMove => {
@@ -8332,6 +8597,113 @@ mod tests {
         let op = state.doc.move_ops[0].clone();
         let m = crate::extrude::move_op_transform(&state.doc, &op).unwrap();
         assert!((m.w_axis.x - 30.0).abs() < 1e-4);
+    }
+
+    /// Repeat tool: count × gap produces N-1 output bodies at increasing offsets; undo
+    /// removes everything; the original stays real (never shadowed).
+    #[test]
+    fn repeat_count_gap_creates_offset_instances() {
+        let mut state = two_box_state(false);
+        let result = state.apply(Action::CreateRepeatOperation {
+            targets: vec![0],
+            axis: crate::model::RevolveAxis::X,
+            mode: crate::model::RepeatMode::CountGap,
+            count: "3".to_string(),
+            spacing: "5".to_string(),
+            length: String::new(),
+        });
+        assert!(matches!(result, ActionResult::Ok));
+        let op = state.doc.repeat_ops[0].clone();
+        assert_eq!(op.outputs.len(), 2, "3 instances = original + 2 outputs");
+        assert!(!state.doc.bodies[0].shadow, "repeat originals stay real");
+        // Box extent along X is 10, so step = 15: instance offsets 15 and 30.
+        let min_x = |bi: usize| {
+            crate::extrude::body_solid_mesh(&state.doc, bi)
+                .unwrap()
+                .triangles
+                .iter()
+                .flat_map(|t| t.iter())
+                .map(|p| p.x)
+                .fold(f32::INFINITY, f32::min)
+        };
+        let base = min_x(0);
+        assert!((min_x(op.outputs[0]) - base - 15.0).abs() < 1e-3);
+        assert!((min_x(op.outputs[1]) - base - 30.0).abs() < 1e-3);
+
+        state.apply(Action::UndoLast);
+        assert!(state.doc.repeat_ops.is_empty());
+        assert_eq!(state.doc.bodies.len(), 2);
+    }
+
+    /// The stud-spacing mode lands the last instance at the end of L with pitch <= D.
+    #[test]
+    fn repeat_fill_max_pitch_lands_on_the_end() {
+        let mut state = two_box_state(false);
+        // Box extent 10 along X; wall length 100 -> span 90; max pitch 40 -> 4 instances
+        // at even pitch 30.
+        let result = state.apply(Action::CreateRepeatOperation {
+            targets: vec![0],
+            axis: crate::model::RevolveAxis::X,
+            mode: crate::model::RepeatMode::FillMaxPitch,
+            count: String::new(),
+            spacing: "40".to_string(),
+            length: "100".to_string(),
+        });
+        assert!(matches!(result, ActionResult::Ok));
+        let op = state.doc.repeat_ops[0].clone();
+        assert_eq!(op.outputs.len(), 3);
+        let offsets = crate::extrude::repeat_offsets(&state.doc, &op).unwrap();
+        assert_eq!(offsets.len(), 3);
+        assert!((offsets[2] - 90.0).abs() < 1e-3, "last instance starts at L - extent");
+        assert!(offsets[0] <= 40.0 + 1e-3, "pitch stays within the max");
+    }
+
+    /// Editing a repeat re-evaluates the instance count and resizes the outputs.
+    #[test]
+    fn repeat_edit_resizes_outputs() {
+        let mut state = two_box_state(false);
+        state.apply(Action::CreateRepeatOperation {
+            targets: vec![0],
+            axis: crate::model::RevolveAxis::X,
+            mode: crate::model::RepeatMode::CountGap,
+            count: "2".to_string(),
+            spacing: "5".to_string(),
+            length: String::new(),
+        });
+        assert_eq!(state.doc.repeat_ops[0].outputs.len(), 1);
+        let result = state.apply(Action::EditRepeatOperation {
+            op: 0,
+            targets: vec![0],
+            axis: crate::model::RevolveAxis::X,
+            mode: crate::model::RepeatMode::CountGap,
+            count: "5".to_string(),
+            spacing: "5".to_string(),
+            length: String::new(),
+        });
+        assert!(matches!(result, ActionResult::Ok));
+        assert_eq!(state.doc.repeat_ops[0].outputs.len(), 4);
+    }
+
+    /// A parameter-driven count follows parameter edits.
+    #[test]
+    fn repeat_count_is_parametric() {
+        let mut state = two_box_state(false);
+        state.apply(Action::AddParameter {
+            name: "n".to_string(),
+            expression: "4".to_string(),
+        });
+        state.apply(Action::CreateRepeatOperation {
+            targets: vec![0],
+            axis: crate::model::RevolveAxis::X,
+            mode: crate::model::RepeatMode::CountGap,
+            count: "n".to_string(),
+            spacing: "5".to_string(),
+            length: String::new(),
+        });
+        let op = state.doc.repeat_ops[0].clone();
+        assert_eq!(op.outputs.len(), 3);
+        let offsets = crate::extrude::repeat_offsets(&state.doc, &op).unwrap();
+        assert_eq!(offsets.len(), 3);
     }
 
     /// Combining two *disjoint* boxes keeps them as one operation with (kernel builds) two

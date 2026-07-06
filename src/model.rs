@@ -875,6 +875,17 @@ pub enum BodySource {
     Loft(usize),
     /// A revolved solid (#revolve); indexes `Document::revolutions`.
     Revolve(usize),
+    /// One repeated instance of one input of a linear repeat (Repeat tool): `op` indexes
+    /// `Document::repeat_ops`; `target` is the input's position in the op's target list;
+    /// `instance` counts from 1 (the original body is instance 0).
+    Repeated {
+        #[serde(rename = "repeat_op")]
+        op: usize,
+        #[serde(default)]
+        target: usize,
+        #[serde(default)]
+        instance: usize,
+    },
     /// The moved copy of one input of a move operation (Move tool): `op` indexes
     /// `Document::move_ops`, `target` is the position within that operation's input list.
     Moved {
@@ -919,7 +930,8 @@ impl BodySource {
             Self::Loft(_)
             | Self::Revolve(_)
             | Self::Boolean { .. }
-            | Self::Moved { .. } => &[],
+            | Self::Moved { .. }
+            | Self::Repeated { .. } => &[],
             Self::Imported(_) => &[],
         }
     }
@@ -934,7 +946,8 @@ impl BodySource {
             | Self::Loft(_)
             | Self::Revolve(_)
             | Self::Boolean { .. }
-            | Self::Moved { .. } => &[],
+            | Self::Moved { .. }
+            | Self::Repeated { .. } => &[],
         }
     }
 
@@ -947,7 +960,8 @@ impl BodySource {
             | Self::Loft(_)
             | Self::Revolve(_)
             | Self::Boolean { .. }
-            | Self::Moved { .. } => None,
+            | Self::Moved { .. }
+            | Self::Repeated { .. } => None,
         }
     }
 
@@ -970,7 +984,8 @@ impl BodySource {
             | Self::Loft(_)
             | Self::Revolve(_)
             | Self::Boolean { .. }
-            | Self::Moved { .. } => {}
+            | Self::Moved { .. }
+            | Self::Repeated { .. } => {}
         }
     }
 
@@ -996,7 +1011,8 @@ impl BodySource {
             | Self::Loft(_)
             | Self::Revolve(_)
             | Self::Boolean { .. }
-            | Self::Moved { .. } => {}
+            | Self::Moved { .. }
+            | Self::Repeated { .. } => {}
         }
     }
 
@@ -1028,7 +1044,8 @@ impl BodySource {
             | Self::Loft(_)
             | Self::Revolve(_)
             | Self::Boolean { .. }
-            | Self::Moved { .. } => {}
+            | Self::Moved { .. }
+            | Self::Repeated { .. } => {}
         }
     }
 }
@@ -1227,6 +1244,90 @@ pub struct MoveOperation {
     pub deleted: bool,
 }
 
+/// How a linear repeat spaces its instances (Repeat tool, #182). `gap` measures between
+/// an instance's end and the next one's start; `pitch` measures start-to-start; `fit`
+/// modes squeeze N instances into a length L.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepeatMode {
+    /// N instances, clear gap D between them (end-to-start).
+    CountGap,
+    /// N instances spread evenly so the last *ends* at length D.
+    CountFitEnds,
+    /// N instances spread evenly so the last *starts* at length D (start-to-start span).
+    CountFitCenters,
+    /// Fill length L with as many instances as fit, clear gap D between them.
+    FillGap,
+    /// Fill length L with as many instances as fit at start-to-start pitch D.
+    FillPitch,
+    /// Fill length L ending with an instance at the end, pitch at most D (stud spacing:
+    /// never farther apart than D on center, squeezed evenly to land the last one).
+    FillMaxPitch,
+}
+
+impl RepeatMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CountGap => "Count × gap",
+            Self::CountFitEnds => "Count fit (to end)",
+            Self::CountFitCenters => "Count fit (start-to-start)",
+            Self::FillGap => "Fill length, gap",
+            Self::FillPitch => "Fill length, pitch",
+            Self::FillMaxPitch => "Fill length, max pitch",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "count_gap" | "count" => Some(Self::CountGap),
+            "count_fit_ends" | "fit" => Some(Self::CountFitEnds),
+            "count_fit_centers" | "fit_centers" => Some(Self::CountFitCenters),
+            "fill_gap" => Some(Self::FillGap),
+            "fill_pitch" => Some(Self::FillPitch),
+            "fill_max_pitch" | "max_pitch" => Some(Self::FillMaxPitch),
+            _ => None,
+        }
+    }
+
+    /// Whether the mode uses the count `n` (vs deriving it from the length).
+    pub fn uses_count(self) -> bool {
+        matches!(self, Self::CountGap | Self::CountFitEnds | Self::CountFitCenters)
+    }
+
+    /// Whether the mode uses the fill length `length`.
+    pub fn uses_length(self) -> bool {
+        !matches!(self, Self::CountGap)
+    }
+}
+
+/// A linear repeat (Repeat tool, #182): copies of whole bodies spaced along an axis. The
+/// original stays as instance 0; each further instance of each target gets an output body
+/// (`BodySource::Repeated`). Count/spacing/length are expressions, so repeats rebuild
+/// parametrically.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RepeatOperation {
+    pub targets: Vec<usize>,
+    pub axis: RevolveAxis,
+    pub mode: RepeatMode,
+    /// Instance count expression (count modes).
+    #[serde(default)]
+    pub count: String,
+    /// Gap/pitch expression `D`.
+    #[serde(default)]
+    pub spacing: String,
+    /// Fill length expression `L` (fill and fit modes).
+    #[serde(default)]
+    pub length: String,
+    /// Output body indices: instance-major, then target (instance 1 of each target, then
+    /// instance 2 of each target, …).
+    #[serde(default)]
+    pub outputs: Vec<usize>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
 /// A reference image imported for tracing (#163/#169), hosted on a construction plane.
 /// The encoded file bytes are embedded (base64 in the saved JSON) so documents stay
 /// self-contained, like imported meshes.
@@ -1310,6 +1411,8 @@ pub enum ShapeKind {
     BooleanOperation,
     /// A move operation on bodies (its output bodies are separate `Body` entries).
     MoveOperation,
+    /// A linear repeat on bodies (its output bodies are separate `Body` entries).
+    RepeatOperation,
     /// An in-place edit of an existing construction plane (undo restores the prior planes).
     /// Transient: never persisted (storage rebuilds `shape_order` from created shapes only).
     ConstructionPlaneEdit,
@@ -1349,6 +1452,9 @@ pub struct Document {
     /// Move operations on bodies (the Move tool, #176/#183).
     #[serde(default)]
     pub move_ops: Vec<MoveOperation>,
+    /// Linear repeats on bodies (the Repeat tool, #182).
+    #[serde(default)]
+    pub repeat_ops: Vec<RepeatOperation>,
     pub shape_order: Vec<ShapeKind>,
     /// Undo-group sizes (#105): entry k is how many [`shape_order`](Self::shape_order)
     /// entries the k-th user-level action created, maintained by `AppState::apply` under
@@ -1388,6 +1494,7 @@ impl Default for Document {
             revolutions: Vec::new(),
             boolean_ops: Vec::new(),
             move_ops: Vec::new(),
+            repeat_ops: Vec::new(),
             shape_order: Vec::new(),
             undo_groups: Vec::new(),
             default_length_unit: LengthUnit::default(),

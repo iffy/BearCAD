@@ -153,6 +153,25 @@ pub enum Instruction {
         axis: Option<crate::model::RevolveAxis>,
         angle: String,
     },
+    /// Linear repeat of bodies along an axis (Repeat tool).
+    CreateRepeatOp {
+        targets: Vec<usize>,
+        axis: crate::model::RevolveAxis,
+        mode: crate::model::RepeatMode,
+        count: String,
+        spacing: String,
+        length: String,
+    },
+    /// Re-point an existing repeat operation.
+    EditRepeatOp {
+        op: usize,
+        targets: Vec<usize>,
+        axis: crate::model::RevolveAxis,
+        mode: crate::model::RepeatMode,
+        count: String,
+        spacing: String,
+        length: String,
+    },
     SetElementVisible {
         element: SceneElement,
         visible: Option<bool>,
@@ -518,6 +537,12 @@ impl Instruction {
             }
             Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle } => {
                 move_op_lua("bearcad.edit_move", Some(*op), targets, tx, ty, tz, *axis, angle)
+            }
+            Instruction::CreateRepeatOp { targets, axis, mode, count, spacing, length } => {
+                repeat_op_lua("bearcad.repeat_bodies", None, targets, *axis, *mode, count, spacing, length)
+            }
+            Instruction::EditRepeatOp { op, targets, axis, mode, count, spacing, length } => {
+                repeat_op_lua("bearcad.edit_repeat", Some(*op), targets, *axis, *mode, count, spacing, length)
             }
             Instruction::SetElementVisible { element, visible } => {
                 let target = element_lua_ref(element);
@@ -959,6 +984,11 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        SceneElement::RepeatOp(i) => ElementScriptTokens {
+            kind: "repeat_op",
+            index: i,
+            point: None,
+        },
     }
 }
 
@@ -1017,6 +1047,27 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 tz: tz.clone(),
                 axis: *axis,
                 angle: angle.clone(),
+            })
+        }
+        Action::CreateRepeatOperation { targets, axis, mode, count, spacing, length } => {
+            Some(Instruction::CreateRepeatOp {
+                targets: targets.clone(),
+                axis: *axis,
+                mode: *mode,
+                count: count.clone(),
+                spacing: spacing.clone(),
+                length: length.clone(),
+            })
+        }
+        Action::EditRepeatOperation { op, targets, axis, mode, count, spacing, length } => {
+            Some(Instruction::EditRepeatOp {
+                op: *op,
+                targets: targets.clone(),
+                axis: *axis,
+                mode: *mode,
+                count: count.clone(),
+                spacing: spacing.clone(),
+                length: length.clone(),
             })
         }
         Action::NewDocument => Some(Instruction::New),
@@ -1429,6 +1480,48 @@ fn move_op_lua(
     format!("{call}{{ {} }}", parts.join(", "))
 }
 
+/// Render a repeat-operation call (`bearcad.repeat_bodies{}` / `bearcad.edit_repeat{}`).
+#[allow(clippy::too_many_arguments)]
+fn repeat_op_lua(
+    call: &str,
+    op: Option<usize>,
+    targets: &[usize],
+    axis: crate::model::RevolveAxis,
+    mode: crate::model::RepeatMode,
+    count: &str,
+    spacing: &str,
+    length: &str,
+) -> String {
+    let mut parts = Vec::new();
+    if let Some(op) = op {
+        parts.push(format!("index = {op}"));
+    }
+    parts.push(format!(
+        "bodies = {{{}}}",
+        targets.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+    ));
+    match axis {
+        crate::model::RevolveAxis::X => parts.push("axis = \"x\"".to_string()),
+        crate::model::RevolveAxis::Y => parts.push("axis = \"y\"".to_string()),
+        crate::model::RevolveAxis::Z => parts.push("axis = \"z\"".to_string()),
+        crate::model::RevolveAxis::Line(li) => parts.push(format!("axis = {{ line = {li} }}")),
+    }
+    parts.push(format!("mode = \"{}\"", match mode {
+        crate::model::RepeatMode::CountGap => "count_gap",
+        crate::model::RepeatMode::CountFitEnds => "count_fit_ends",
+        crate::model::RepeatMode::CountFitCenters => "count_fit_centers",
+        crate::model::RepeatMode::FillGap => "fill_gap",
+        crate::model::RepeatMode::FillPitch => "fill_pitch",
+        crate::model::RepeatMode::FillMaxPitch => "fill_max_pitch",
+    }));
+    for (name, value) in [("count", count), ("spacing", spacing), ("length", length)] {
+        if !value.trim().is_empty() {
+            parts.push(format!("{name} = \"{value}\""));
+        }
+    }
+    format!("{call}{{ {} }}", parts.join(", "))
+}
+
 /// Render an extrusion's faces as `bearcad.extrude{}` keyword arguments
 /// (`rect=`/`rects=`, `circle=`/`circles=`, `polygon=`). A single rect or circle uses the
 /// singular field to match how `bearcad.extrude` is normally called by hand; multiple of a
@@ -1638,6 +1731,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
         Tool::Revolve => "revolve",
         Tool::Combine => "combine",
         Tool::Move => "move",
+        Tool::Repeat => "repeat",
     }
 }
 
@@ -2857,6 +2951,31 @@ impl ScriptRunner {
                     tz,
                     axis,
                     angle,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::CreateRepeatOp { targets, axis, mode, count, spacing, length } => {
+                let result = state.apply(Action::CreateRepeatOperation {
+                    targets,
+                    axis,
+                    mode,
+                    count,
+                    spacing,
+                    length,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::EditRepeatOp { op, targets, axis, mode, count, spacing, length } => {
+                let result = state.apply(Action::EditRepeatOperation {
+                    op,
+                    targets,
+                    axis,
+                    mode,
+                    count,
+                    spacing,
+                    length,
                 });
                 self.record_action_error(result);
                 StepResult::Continue

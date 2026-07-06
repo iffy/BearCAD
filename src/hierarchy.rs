@@ -44,6 +44,8 @@ pub enum HierarchyNode {
     BooleanOp(usize),
     /// A move operation on bodies (Move tool); its output bodies nest under it.
     MoveOp(usize),
+    /// A linear repeat on bodies (Repeat tool); its output bodies nest under it.
+    RepeatOp(usize),
 }
 
 /// Identifies an element whose visibility can be toggled.
@@ -84,6 +86,8 @@ pub enum SceneElement {
     BooleanOp(usize),
     /// A move operation on bodies (Move tool).
     MoveOp(usize),
+    /// A linear repeat on bodies (Repeat tool).
+    RepeatOp(usize),
 }
 
 /// Quantize a world position (mm) to the 0.01 mm grid used for body edge/vertex selection
@@ -118,6 +122,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::Image(i) => SceneElement::Image(i),
         HierarchyNode::BooleanOp(i) => SceneElement::BooleanOp(i),
         HierarchyNode::MoveOp(i) => SceneElement::MoveOp(i),
+        HierarchyNode::RepeatOp(i) => SceneElement::RepeatOp(i),
     })
 }
 
@@ -209,6 +214,7 @@ impl ElementVisibility {
             // of their own (their outputs are ordinary bodies).
             SceneElement::BooleanOp(_) => true,
             SceneElement::MoveOp(_) => true,
+            SceneElement::RepeatOp(_) => true,
         }
     }
 }
@@ -657,7 +663,8 @@ fn build_creation_ranks(doc: &Document) -> CreationRanks {
             | ShapeKind::Loft
             | ShapeKind::Revolution
             | ShapeKind::BooleanOperation
-            | ShapeKind::MoveOperation => {}
+            | ShapeKind::MoveOperation
+            | ShapeKind::RepeatOperation => {}
             // Edits are not created shapes; they only mark undoable in-place changes.
             ShapeKind::ConstructionPlaneEdit | ShapeKind::EdgeTreatmentEdit => {}
         }
@@ -681,6 +688,7 @@ fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
         // Boolean/move operations likewise list after ranked nodes.
         HierarchyNode::BooleanOp(_) => usize::MAX,
         HierarchyNode::MoveOp(_) => usize::MAX,
+        HierarchyNode::RepeatOp(_) => usize::MAX,
     }
 }
 
@@ -737,7 +745,9 @@ pub fn build_hierarchy(
             && body.source.extrusion_indices().is_empty()
             && !matches!(
                 body.source,
-                crate::model::BodySource::Boolean { .. } | crate::model::BodySource::Moved { .. }
+                crate::model::BodySource::Boolean { .. }
+                    | crate::model::BodySource::Moved { .. }
+                    | crate::model::BodySource::Repeated { .. }
             )
         {
             roots.push(HierarchyEntry {
@@ -782,6 +792,24 @@ pub fn build_hierarchy(
             .collect();
         roots.push(HierarchyEntry {
             node: HierarchyNode::MoveOp(oi),
+            children,
+        });
+    }
+    for (oi, op) in doc.repeat_ops.iter().enumerate() {
+        if op.deleted {
+            continue;
+        }
+        let children = op
+            .outputs
+            .iter()
+            .filter(|&&bi| doc.bodies.get(bi).is_some_and(|b| !b.deleted))
+            .map(|&bi| HierarchyEntry {
+                node: HierarchyNode::Body(bi),
+                children: Vec::new(),
+            })
+            .collect();
+        roots.push(HierarchyEntry {
+            node: HierarchyNode::RepeatOp(oi),
             children,
         });
     }
@@ -899,6 +927,7 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
             .map(|img| SceneElement::ConstructionPlane(img.plane)),
         SceneElement::BooleanOp(_) => None,
         SceneElement::MoveOp(_) => None,
+        SceneElement::RepeatOp(_) => None,
     }
 }
 
@@ -1004,6 +1033,14 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         }
         SceneElement::MoveOp(index) => {
             if let Some(op) = doc.move_ops.get(index) {
+                for &output in &op.outputs {
+                    out.insert(SceneElement::Body(output));
+                    collect_descendants(doc, SceneElement::Body(output), out);
+                }
+            }
+        }
+        SceneElement::RepeatOp(index) => {
+            if let Some(op) = doc.repeat_ops.get(index) {
                 for &output in &op.outputs {
                     out.insert(SceneElement::Body(output));
                     collect_descendants(doc, SceneElement::Body(output), out);
@@ -1273,6 +1310,7 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         HierarchyNode::Image(_) => IconId::Plane,
         HierarchyNode::BooleanOp(_) => IconId::Combine,
         HierarchyNode::MoveOp(_) => IconId::Move,
+        HierarchyNode::RepeatOp(_) => IconId::Repeat,
     })
 }
 
@@ -2002,7 +2040,8 @@ fn show_row(
             | HierarchyNode::Constraint(_)
             | HierarchyNode::Image(_)
             | HierarchyNode::BooleanOp(_)
-            | HierarchyNode::MoveOp(_) => {
+            | HierarchyNode::MoveOp(_)
+            | HierarchyNode::RepeatOp(_) => {
                 if response.clicked() {
                     let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
                     on_click_element(element, additive);

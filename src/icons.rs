@@ -36,6 +36,7 @@ pub enum IconId {
     Revolve,
     Combine,
     Move,
+    Repeat,
     Body,
     ShadowBody,
     Plus,
@@ -62,7 +63,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 44] = [
+    pub const ALL: [Self; 45] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -86,6 +87,7 @@ impl IconId {
         Self::Revolve,
         Self::Combine,
         Self::Move,
+        Self::Repeat,
         Self::ShadowBody,
         Self::Body,
         Self::Plus,
@@ -134,6 +136,7 @@ impl IconId {
             Self::Revolve => include_str!("assets/icons/revolve.svg"),
             Self::Combine => include_str!("assets/icons/combine.svg"),
             Self::Move => include_str!("assets/icons/move.svg"),
+            Self::Repeat => include_str!("assets/icons/repeat.svg"),
             Self::ShadowBody => include_str!("assets/icons/shadow_body.svg"),
             Self::Body => include_str!("assets/icons/body.svg"),
             Self::Plus => include_str!("assets/icons/plus.svg"),
@@ -183,6 +186,7 @@ impl IconId {
             Self::Revolve => "Revolve",
             Self::Combine => "Combine",
             Self::Move => "Move",
+            Self::Repeat => "Repeat",
             Self::ShadowBody => "Shadow body",
             Self::Body => "Body",
             Self::Plus => "Plus",

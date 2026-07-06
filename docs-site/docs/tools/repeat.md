@@ -1,0 +1,48 @@
+---
+sidebar_position: 15
+title: Repeat
+---
+
+# Repeat
+
+Repeat lays out copies of bodies along a straight line — bolt patterns, studs along a
+wall, teeth on a rack.
+
+![A block repeated four times along the X axis](/img/screenshots/repeat.png)
+
+## How to use it
+
+1. Pick the **Repeat** tool and click one or more bodies.
+2. Pick the **axis**: the X/Y/Z buttons in the context pane, or click any line in the
+   viewport.
+3. Choose how to space the copies (see the modes below) and fill in the values — every
+   value is an expression, so parameters work. The context pane shows the live instance
+   count as you type.
+4. Press **Enter** (or the **Repeat** button).
+
+## Spacing modes
+
+| Mode | You give | Meaning |
+|---|---|---|
+| **Count × gap** | N, D | N instances with a clear gap D between them. |
+| **Count fit (to end)** | N, L | N instances spread evenly; the last one *ends* at L. |
+| **Count fit (start-to-start)** | N, L | N instances; the last one *starts* at L. |
+| **Fill length, gap** | L, D | As many instances as fit in L with gap D. |
+| **Fill length, pitch** | L, D | As many instances as fit in L at start-to-start pitch D. |
+| **Fill length, max pitch** | L, D | An instance lands exactly at the end of L, spaced evenly, never farther apart than D — stud spacing. |
+
+## What you get
+
+The original bodies stay put as the first instance. Every further instance is a real body,
+nested under the repeat element in the pane. Select the element and choose **Edit repeat**
+to change anything — the copies re-space, and the set grows or shrinks with the count.
+Because the values are expressions, editing a parameter re-spaces the whole pattern.
+
+## Scripting
+
+```lua
+bearcad.repeat_bodies{ bodies = {0}, axis = "x", mode = "count_gap", count = 4, spacing = 8 }
+bearcad.repeat_bodies{ bodies = {0}, axis = "x", mode = "fill_max_pitch",
+                       length = "wall", spacing = "16in", name = "Studs" }
+bearcad.edit_repeat{ index = 0, bodies = {0}, axis = "x", mode = "count_gap", count = 6, spacing = 8 }
+```

@@ -17,7 +17,8 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::Body(_)
         | SceneElement::Image(_)
         | SceneElement::BooleanOp(_)
-        | SceneElement::MoveOp(_) => Some(element),
+        | SceneElement::MoveOp(_)
+        | SceneElement::RepeatOp(_) => Some(element),
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::BodyEdge { .. }
@@ -102,6 +103,7 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         SceneElement::Image(index) => doc.tracing_images.get(index)?.name.as_deref(),
         SceneElement::BooleanOp(index) => doc.boolean_ops.get(index)?.name.as_deref(),
         SceneElement::MoveOp(index) => doc.move_ops.get(index)?.name.as_deref(),
+        SceneElement::RepeatOp(index) => doc.repeat_ops.get(index)?.name.as_deref(),
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::BodyEdge { .. }
@@ -188,6 +190,13 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 .ok_or_else(|| format!("move operation {index} not found"))?;
             op.name = stored;
         }
+        SceneElement::RepeatOp(index) => {
+            let op = doc
+                .repeat_ops
+                .get_mut(index)
+                .ok_or_else(|| format!("repeat operation {index} not found"))?;
+            op.name = stored;
+        }
         SceneElement::Image(index) => {
             let image = doc
                 .tracing_images
@@ -266,6 +275,7 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
             format!("{kind} {i}")
         }
         HierarchyNode::MoveOp(i) => format!("Move {i}"),
+        HierarchyNode::RepeatOp(i) => format!("Repeat {i}"),
     }
 }
 

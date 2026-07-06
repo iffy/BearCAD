@@ -59,6 +59,10 @@ pub struct ContextInput<'a> {
     pub move_op: Option<MoveControl>,
     /// "Edit move" entry point: `Some(op)` when exactly one move operation is selected.
     pub move_edit_start: Option<usize>,
+    /// Repeat tool state: `Some` while the Repeat tool is active.
+    pub repeat_op: Option<RepeatControl>,
+    /// "Edit repeat" entry point.
+    pub repeat_edit_start: Option<usize>,
     /// Guided calibration entry point (#163): `Some(image)` when exactly one tracing image
     /// is selected and no calibration is running — renders the "Calibrate scale" button.
     pub calibrate_start: Option<usize>,
@@ -115,6 +119,33 @@ pub enum MoveEdit {
     Tz(String),
     Angle(String),
     Axis(Option<crate::model::RevolveAxis>),
+    RemoveTarget(Option<usize>),
+    Commit,
+}
+
+/// What the Repeat tool's context section shows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RepeatControl {
+    pub target_rows: Vec<String>,
+    pub axis_label: String,
+    pub mode: crate::model::RepeatMode,
+    pub count: String,
+    pub spacing: String,
+    pub length: String,
+    /// Live instance count the current configuration produces (`None` = doesn't evaluate).
+    pub preview_instances: Option<usize>,
+    pub editing: bool,
+    pub can_commit: bool,
+}
+
+/// One edit from the Repeat context section.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RepeatEdit {
+    Mode(crate::model::RepeatMode),
+    Axis(crate::model::RevolveAxis),
+    Count(String),
+    Spacing(String),
+    Length(String),
     RemoveTarget(Option<usize>),
     Commit,
 }
@@ -228,6 +259,10 @@ pub struct ContextPaneContent {
     pub move_op: Option<MoveControl>,
     /// "Edit move" entry point: `Some(op)` when exactly one move operation is selected.
     pub move_edit_start: Option<usize>,
+    /// Repeat tool state: `Some` while the Repeat tool is active.
+    pub repeat_op: Option<RepeatControl>,
+    /// "Edit repeat" entry point.
+    pub repeat_edit_start: Option<usize>,
     /// "Calibrate scale" start button (#163): the selected tracing image.
     pub calibrate_start: Option<usize>,
     /// Guided-calibration hint: points placed so far (of 2).
@@ -356,6 +391,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let boolean_edit_start = input.boolean_edit_start;
     let move_op = input.move_op.clone();
     let move_edit_start = input.move_edit_start;
+    let repeat_op = input.repeat_op.clone();
+    let repeat_edit_start = input.repeat_edit_start;
     let calibrate_start = input.calibrate_start;
     let calibrate_pending = input.calibrate_pending;
 
@@ -379,6 +416,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             boolean_edit_start,
             move_op: move_op.clone(),
             move_edit_start,
+            repeat_op: repeat_op.clone(),
+            repeat_edit_start,
         calibrate_start,
             calibrate_pending,
         };
@@ -403,6 +442,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             boolean_edit_start,
             move_op: move_op.clone(),
             move_edit_start,
+            repeat_op: repeat_op.clone(),
+            repeat_edit_start,
         calibrate_start,
             calibrate_pending,
         };
@@ -427,6 +468,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             boolean_edit_start,
             move_op: move_op.clone(),
             move_edit_start,
+            repeat_op: repeat_op.clone(),
+            repeat_edit_start,
         calibrate_start,
             calibrate_pending,
         };
@@ -454,6 +497,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         boolean_edit_start,
         move_op,
         move_edit_start,
+        repeat_op,
+        repeat_edit_start,
         calibrate_start,
         calibrate_pending,
     }
@@ -665,6 +710,8 @@ pub fn show_pane(
     on_boolean_edit_start: &mut impl FnMut(usize),
     on_move_edit: &mut impl FnMut(MoveEdit),
     on_move_edit_start: &mut impl FnMut(usize),
+    on_repeat_edit: &mut impl FnMut(RepeatEdit),
+    on_repeat_edit_start: &mut impl FnMut(usize),
     on_calibrate_start: &mut impl FnMut(usize),
     on_calibrate_image: &mut impl FnMut(CalibrateImageControl, String),
 ) {
@@ -1094,6 +1141,120 @@ pub fn show_pane(
         );
     }
 
+    if let Some(control) = &content.repeat_op {
+        any_control = true;
+        ui.separator();
+        ui.label(
+            egui::RichText::new(if control.editing { "Edit repeat" } else { "Linear repeat" })
+                .strong(),
+        );
+        ui.label(
+            egui::RichText::new(format!("Bodies ({})", control.target_rows.len())).strong(),
+        );
+        if control.target_rows.is_empty() {
+            ui.label(
+                egui::RichText::new("Click bodies in the viewport")
+                    .color(egui::Color32::from_gray(140))
+                    .size(11.0),
+            );
+        }
+        for (i, row) in control.target_rows.iter().enumerate() {
+            ui.horizontal(|ui| {
+                if ui.small_button("✕").on_hover_text("Remove from set").clicked() {
+                    on_repeat_edit(RepeatEdit::RemoveTarget(Some(i)));
+                }
+                ui.label(row);
+            });
+        }
+        let mut pending: Option<RepeatEdit> = None;
+        ui.horizontal(|ui| {
+            ui.label("Axis");
+            for (axis, label) in [
+                (crate::model::RevolveAxis::X, "X"),
+                (crate::model::RevolveAxis::Y, "Y"),
+                (crate::model::RevolveAxis::Z, "Z"),
+            ] {
+                if ui.small_button(label).clicked() {
+                    pending = Some(RepeatEdit::Axis(axis));
+                }
+            }
+        });
+        ui.label(
+            egui::RichText::new(format!("Along {} — or click a line", control.axis_label))
+                .color(egui::Color32::from_gray(140))
+                .size(11.0),
+        );
+        let mut mode = control.mode;
+        for value in [
+            crate::model::RepeatMode::CountGap,
+            crate::model::RepeatMode::CountFitEnds,
+            crate::model::RepeatMode::CountFitCenters,
+            crate::model::RepeatMode::FillGap,
+            crate::model::RepeatMode::FillPitch,
+            crate::model::RepeatMode::FillMaxPitch,
+        ] {
+            if ui.radio_value(&mut mode, value, value.label()).changed() {
+                pending = Some(RepeatEdit::Mode(mode));
+            }
+        }
+        {
+            let mut field = |ui: &mut egui::Ui,
+                             label: &str,
+                             value: &str,
+                             enabled: bool,
+                             make: &dyn Fn(String) -> RepeatEdit| {
+                ui.add_enabled_ui(enabled, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(label);
+                        let mut text = value.to_string();
+                        let resp =
+                            ui.add(egui::TextEdit::singleline(&mut text).desired_width(90.0));
+                        if resp.changed() {
+                            pending = Some(make(text));
+                        }
+                    });
+                });
+            };
+            field(ui, "Count", &control.count, control.mode.uses_count(), &RepeatEdit::Count);
+            field(ui, "Spacing", &control.spacing, !matches!(control.mode, crate::model::RepeatMode::CountFitEnds | crate::model::RepeatMode::CountFitCenters), &RepeatEdit::Spacing);
+            field(ui, "Length", &control.length, control.mode.uses_length(), &RepeatEdit::Length);
+        }
+        ui.label(
+            egui::RichText::new(match control.preview_instances {
+                Some(n) => format!("{n} instances"),
+                None => "Configuration doesn't evaluate yet".to_string(),
+            })
+            .color(egui::Color32::from_gray(140))
+            .size(11.0),
+        );
+        if let Some(edit) = pending {
+            on_repeat_edit(edit);
+        }
+        ui.add_space(2.0);
+        if ui
+            .add_enabled(
+                control.can_commit && controls_enabled,
+                egui::Button::new(if control.editing { "Apply changes" } else { "Repeat" }),
+            )
+            .clicked()
+        {
+            on_repeat_edit(RepeatEdit::Commit);
+        }
+    }
+
+    if let Some(op) = content.repeat_edit_start {
+        any_control = true;
+        ui.separator();
+        if ui.button("Edit repeat").clicked() {
+            on_repeat_edit_start(op);
+        }
+        ui.label(
+            egui::RichText::new("Re-open the Repeat tool to change this operation")
+                .color(egui::Color32::from_gray(140))
+                .size(11.0),
+        );
+    }
+
     if let Some(image) = content.calibrate_start {
         any_control = true;
         ui.separator();
@@ -1342,6 +1503,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            repeat_op: None,
+            repeat_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         }
@@ -1374,6 +1537,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            repeat_op: None,
+            repeat_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         };
@@ -1438,6 +1603,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            repeat_op: None,
+            repeat_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: Some(UnitsControl {
@@ -1477,6 +1644,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            repeat_op: None,
+            repeat_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -1500,6 +1669,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            repeat_op: None,
+            repeat_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: Some(UnitsControl {
@@ -1539,6 +1710,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            repeat_op: None,
+            repeat_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -1575,6 +1748,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            repeat_op: None,
+            repeat_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: None,
@@ -1661,6 +1836,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            repeat_op: None,
+            repeat_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -1698,6 +1875,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            repeat_op: None,
+            repeat_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -1723,6 +1902,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            repeat_op: None,
+            repeat_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: None,
@@ -1754,6 +1935,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            repeat_op: None,
+            repeat_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });

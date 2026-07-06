@@ -437,6 +437,9 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
         crate::model::BodySource::Moved { op, target } => {
             return occt_moved_output_shape(doc, op, target);
         }
+        crate::model::BodySource::Repeated { op, target, instance } => {
+            return occt_repeated_output_shape(doc, op, target, instance);
+        }
         _ => occt_body_shape_from_indices(
             doc,
             body.source.extrusion_indices(),
@@ -531,6 +534,129 @@ fn occt_moved_output_shape(
     }
     let shape = occt_body_shape(doc, input)?;
     let m = move_op_transform(doc, op)?;
+    shape.transformed(&mat4_to_rows_3x4(&m))
+}
+
+/// The axis-aligned offsets (mm along the axis direction) of a repeat's instances 1..N-1
+/// — instance 0 is the original at offset 0. `None` when an expression doesn't evaluate,
+/// the axis died, or the configuration is degenerate. Instance counts are clamped to a
+/// sane ceiling so a bad expression can't wedge the app.
+pub fn repeat_offsets(doc: &Document, op: &crate::model::RepeatOperation) -> Option<Vec<f32>> {
+    use crate::model::RepeatMode;
+    const MAX_INSTANCES: usize = 512;
+    let (_, dir) = axis_world(doc, op.axis)?;
+    // The targets' combined extent along the axis (end-to-start measurements need it).
+    let mut min_p = f32::INFINITY;
+    let mut max_p = f32::NEG_INFINITY;
+    for &bi in &op.targets {
+        // Uncached: this runs inside the mesh cache's borrow when a repeat output's own
+        // mesh is being built.
+        let mesh = body_solid_mesh_uncached(doc, bi)?;
+        for tri in &mesh.triangles {
+            for p in tri {
+                let d = p.dot(dir);
+                min_p = min_p.min(d);
+                max_p = max_p.max(d);
+            }
+        }
+    }
+    if !min_p.is_finite() || !max_p.is_finite() {
+        return None;
+    }
+    let extent = (max_p - min_p).max(0.0);
+    let eval = |expr: &str| -> Option<f32> {
+        if expr.trim().is_empty() {
+            return None;
+        }
+        crate::value::eval_length_mm_in_doc(expr, doc)
+    };
+    let count = || -> Option<usize> {
+        let n = crate::value::eval_parameter_in_doc(&op.count, doc).and_then(|v| match v {
+            crate::value::EvaluatedParameter::LengthMm(n) => Some(n),
+            crate::value::EvaluatedParameter::AngleRad(_) => None,
+        })?;
+        (n >= 1.0).then_some((n.round() as usize).min(MAX_INSTANCES))
+    };
+    let offsets = |n: usize, step: f32| -> Option<Vec<f32>> {
+        (n >= 1 && step.is_finite() && step > 1e-6).then(|| {
+            (1..n).map(|i| step * i as f32).collect()
+        })
+    };
+    match op.mode {
+        RepeatMode::CountGap => {
+            let n = count()?;
+            let gap = eval(&op.spacing)?;
+            offsets(n, extent + gap)
+        }
+        RepeatMode::CountFitEnds => {
+            let n = count()?;
+            if n < 2 {
+                return Some(Vec::new());
+            }
+            let total = eval(&op.length)?;
+            offsets(n, (total - extent) / (n as f32 - 1.0))
+        }
+        RepeatMode::CountFitCenters => {
+            let n = count()?;
+            if n < 2 {
+                return Some(Vec::new());
+            }
+            let span = eval(&op.length)?;
+            offsets(n, span / (n as f32 - 1.0))
+        }
+        RepeatMode::FillGap => {
+            let l = eval(&op.length)?;
+            let gap = eval(&op.spacing)?;
+            let step = extent + gap;
+            if step <= 1e-6 {
+                return None;
+            }
+            let n = (((l - extent) / step).floor() as isize + 1).max(1) as usize;
+            offsets(n.min(MAX_INSTANCES), step)
+        }
+        RepeatMode::FillPitch => {
+            let l = eval(&op.length)?;
+            let pitch = eval(&op.spacing)?;
+            if pitch <= 1e-6 {
+                return None;
+            }
+            let n = (((l - extent) / pitch).floor() as isize + 1).max(1) as usize;
+            offsets(n.min(MAX_INSTANCES), pitch)
+        }
+        RepeatMode::FillMaxPitch => {
+            // Stud spacing: last instance lands exactly at the end of L, pitch <= D.
+            let l = eval(&op.length)?;
+            let max_pitch = eval(&op.spacing)?;
+            if max_pitch <= 1e-6 {
+                return None;
+            }
+            let span = (l - extent).max(0.0);
+            if span <= 1e-6 {
+                return Some(Vec::new());
+            }
+            let n = ((span / max_pitch).ceil() as usize + 1).min(MAX_INSTANCES);
+            offsets(n, span / (n as f32 - 1.0))
+        }
+    }
+}
+
+/// The BREP solid of one repeat output: the input body's shape translated to its instance
+/// offset along the axis.
+#[cfg(feature = "occt")]
+fn occt_repeated_output_shape(
+    doc: &Document,
+    op_index: usize,
+    target: usize,
+    instance: usize,
+) -> Option<crate::kernel::Shape> {
+    let op = doc.repeat_ops.get(op_index).filter(|o| !o.deleted)?;
+    let &input = op.targets.get(target)?;
+    let (_, dir) = axis_world(doc, op.axis)?;
+    let offsets = repeat_offsets(doc, op)?;
+    let offset = *offsets.get(instance.checked_sub(1)?)?;
+    let shape = occt_body_shape(doc, input)?;
+    let t = dir * offset;
+    let m = glam::Mat4::from_translation(t);
     shape.transformed(&mat4_to_rows_3x4(&m))
 }
 
@@ -1049,6 +1175,19 @@ pub fn selection_world_bounds(
     };
     for element in selection.iter() {
         match element {
+            SceneElement::RepeatOp(op) => {
+                let outputs = doc
+                    .repeat_ops
+                    .get(op)
+                    .map(|o| o.outputs.clone())
+                    .unwrap_or_default();
+                for bi in outputs {
+                    if let Some((min, max)) = body_solid_mesh(doc, bi).and_then(|m| m.bounds()) {
+                        extend(min);
+                        extend(max);
+                    }
+                }
+            }
             SceneElement::MoveOp(op) => {
                 let outputs = doc
                     .move_ops
@@ -1225,6 +1364,24 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
     if let crate::model::BodySource::Loft(li) = body.source {
         let loft = doc.lofts.get(li).filter(|l| !l.deleted)?;
         return loft_mesh(doc, loft);
+    }
+    if let crate::model::BodySource::Repeated { op, target, instance } = body.source {
+        let rp = doc.repeat_ops.get(op).filter(|o| !o.deleted)?;
+        let &input = rp.targets.get(target)?;
+        if input == body_index {
+            return None;
+        }
+        let (_, dir) = axis_world(doc, rp.axis)?;
+        let offsets = repeat_offsets(doc, rp)?;
+        let offset = *offsets.get(instance.checked_sub(1)?)?;
+        let source = body_solid_mesh_uncached(doc, input)?;
+        let t = dir * offset;
+        let triangles = source
+            .triangles
+            .iter()
+            .map(|tri| [tri[0] + t, tri[1] + t, tri[2] + t])
+            .collect();
+        return Some(SolidMesh { triangles });
     }
     if let crate::model::BodySource::Moved { op, target } = body.source {
         let mv = doc.move_ops.get(op).filter(|o| !o.deleted)?;

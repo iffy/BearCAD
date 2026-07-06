@@ -2409,7 +2409,8 @@ impl<'a> SceneMesh<'a> {
             SceneElement::FaceEdge(_)
             | SceneElement::Image(_)
             | SceneElement::BooleanOp(_)
-            | SceneElement::MoveOp(_) => {}
+            | SceneElement::MoveOp(_)
+            | SceneElement::RepeatOp(_) => {}
             // Bodies and extrusions get their aura, tinted with the hover color.
             SceneElement::Body(index) => {
                 let bodies: std::collections::HashSet<usize> = [index].into_iter().collect();

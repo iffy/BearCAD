@@ -444,6 +444,21 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   move to faces/edges/vertices/planes/images and adding drag gizmos is tracked as a
   follow-up (#185).
 
+- **Linear repeat tool (#182):** copies of whole bodies spaced along an axis (global or a
+  clicked line). One multi-select body picker; the original stays as instance 0; each
+  further instance of each target is an output body (`BodySource::Repeated { op, target,
+  instance }`) nested under an editable **repeat operation element**
+  (`Document::repeat_ops`, `ShapeKind::RepeatOperation`). Six spacing modes: count × gap
+  (end-to-start), count fit-to-end, count fit start-to-start, fill-length by gap,
+  fill-length by pitch, and fill-length with a *maximum* pitch that lands an instance
+  exactly at the end (stud spacing). Count/spacing/length are **expressions** (parameters
+  work); the context pane shows the live instance count as they change; instance counts
+  clamp at 512. End-to-start measurements use the targets' combined extent along the axis.
+  "Edit repeat" re-opens the tool and resizes the output list. Scripting:
+  `bearcad.repeat_bodies{ bodies, axis, mode, count?, spacing?, length?, name? }` /
+  `bearcad.edit_repeat{ index, … }`. Repeating sketches/planes/operations, 2D in-sketch
+  repeats, and picking the length endpoint from a face are the tracked follow-up (#186).
+
 ### 3.4 Modifying solids
 - **Fillet** and **Chamfer**, 2D sketch vertices: the tools described in §3.1 (#37/#38) —
   truncate-and-bridge on a sketch vertex where two lines meet, with the fillet arc approximated

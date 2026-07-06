@@ -2322,6 +2322,71 @@ impl App {
         self.state.status = format!("Move: {} body(ies) picked", cm.targets.len());
     }
 
+    /// Repeat tool (#182): click bodies to toggle them into the repeat set; clicking a
+    /// line picks it as the axis. Enter commits.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_repeat_tool(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+        pick_occlusion: Option<&construction::PickOcclusion>,
+    ) {
+        if self.state.sketch_session.is_some() {
+            return;
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+            && self
+                .state
+                .creating_repeat
+                .as_ref()
+                .is_some_and(|c| !c.targets.is_empty())
+            && !ui.ctx().wants_keyboard_input()
+        {
+            self.state.apply(Action::CommitRepeat);
+            return;
+        }
+        if !ui.input(|i| i.pointer.primary_pressed()) {
+            return;
+        }
+        let Some(pp) = pointer_screen else {
+            return;
+        };
+        let gp = cam.ground_point(pp, viewport, vp);
+        let Some(target) = resolve_pick_target(pp, project, gp, &self.state.doc, pick_occlusion)
+        else {
+            return;
+        };
+        if let construction::PickTargetKind::Line(li) = target.kind {
+            if let Some(cr) = self.state.creating_repeat.as_mut() {
+                cr.axis = model::RevolveAxis::Line(li);
+                self.state.status = "Repeat: axis set".to_string();
+            }
+            return;
+        }
+        let Some(SceneElement::Body(bi)) = scene_element_from_pick(&target.kind) else {
+            return;
+        };
+        if self.state.doc.bodies.get(bi).is_some_and(|b| b.shadow) {
+            self.state.status =
+                "That body is already consumed by another operation".to_string();
+            return;
+        }
+        let cr = self
+            .state
+            .creating_repeat
+            .get_or_insert_with(actions::CreatingRepeat::default);
+        if let Some(pos) = cr.targets.iter().position(|b| *b == bi) {
+            cr.targets.remove(pos);
+        } else {
+            cr.targets.push(bi);
+        }
+        self.state.status = format!("Repeat: {} body(ies) picked", cr.targets.len());
+    }
+
     /// Floating angle field for the in-progress revolve (Enter commits). Mirrors the
     /// extrude distance input.
     fn show_revolve_angle_input(&mut self, ui: &egui::Ui, project: &impl Fn(Vec3) -> Option<egui::Pos2>) {
@@ -2881,6 +2946,16 @@ impl eframe::App for App {
                 }
                 if icons::selectable_icon_button(
                     ui,
+                    icons::IconId::Repeat,
+                    self.state.tool == Tool::Repeat,
+                    shortcuts::compact_label("Repeat", shortcuts::tool_shortcut(Tool::Repeat)),
+                )
+                .clicked()
+                {
+                    self.state.apply(Action::SetTool(Tool::Repeat));
+                }
+                if icons::selectable_icon_button(
+                    ui,
                     icons::IconId::Dimension,
                     self.state.tool == Tool::Dimension,
                     shortcuts::compact_label(
@@ -3250,6 +3325,80 @@ impl eframe::App for App {
                         })
                     })
                     .flatten(),
+                repeat_op: (self.state.tool == Tool::Repeat).then(|| {
+                    let cr = self.state.creating_repeat.as_ref();
+                    let preview = cr.and_then(|c| {
+                        let probe = model::RepeatOperation {
+                            targets: c.targets.clone(),
+                            axis: c.axis,
+                            mode: c.mode,
+                            count: c.count.clone(),
+                            spacing: c.spacing.clone(),
+                            length: c.length.clone(),
+                            outputs: Vec::new(),
+                            name: None,
+                            deleted: false,
+                        };
+                        (!c.targets.is_empty())
+                            .then(|| crate::extrude::repeat_offsets(&self.state.doc, &probe))
+                            .flatten()
+                            .map(|offsets| offsets.len() + 1)
+                    });
+                    context::RepeatControl {
+                        target_rows: cr
+                            .map(|c| {
+                                c.targets
+                                    .iter()
+                                    .map(|&bi| {
+                                        names::element_name(
+                                            &self.state.doc,
+                                            SceneElement::Body(bi),
+                                        )
+                                        .map(|n| n.to_string())
+                                        .unwrap_or_else(|| format!("Body {bi}"))
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        axis_label: cr
+                            .map(|c| match c.axis {
+                                model::RevolveAxis::Line(li) => names::element_name(
+                                    &self.state.doc,
+                                    SceneElement::Line(li),
+                                )
+                                .map(|n| n.to_string())
+                                .unwrap_or_else(|| format!("line {li}")),
+                                model::RevolveAxis::X => "the X axis".to_string(),
+                                model::RevolveAxis::Y => "the Y axis".to_string(),
+                                model::RevolveAxis::Z => "the Z axis".to_string(),
+                            })
+                            .unwrap_or_else(|| "the X axis".to_string()),
+                        mode: cr.map(|c| c.mode).unwrap_or(model::RepeatMode::CountGap),
+                        count: cr.map(|c| c.count.clone()).unwrap_or_default(),
+                        spacing: cr.map(|c| c.spacing.clone()).unwrap_or_default(),
+                        length: cr.map(|c| c.length.clone()).unwrap_or_default(),
+                        preview_instances: preview,
+                        editing: cr.map(|c| c.editing.is_some()).unwrap_or(false),
+                        can_commit: cr
+                            .map(|c| !c.targets.is_empty())
+                            .unwrap_or(false)
+                            && preview.is_some_and(|n| n > 1),
+                    }
+                }),
+                repeat_edit_start: (self.state.tool != Tool::Repeat)
+                    .then(|| {
+                        let mut only = None;
+                        for element in self.state.scene_selection.iter() {
+                            match (element, only) {
+                                (SceneElement::RepeatOp(i), None) => only = Some(i),
+                                _ => return None,
+                            }
+                        }
+                        only.filter(|&i| {
+                            self.state.doc.repeat_ops.get(i).is_some_and(|o| !o.deleted)
+                        })
+                    })
+                    .flatten(),
                 revolve: (self.state.tool == Tool::Revolve).then(|| {
                     let cr = self.state.creating_revolve.as_ref();
                     context::RevolveControl {
@@ -3322,6 +3471,8 @@ impl eframe::App for App {
             let mut boolean_edit_begin: Option<usize> = None;
             let mut move_edit: Option<context::MoveEdit> = None;
             let mut move_edit_begin: Option<usize> = None;
+            let mut repeat_edit: Option<context::RepeatEdit> = None;
+            let mut repeat_edit_begin: Option<usize> = None;
             egui::SidePanel::right("context")
                 .resizable(true)
                 .default_width(200.0)
@@ -3355,6 +3506,8 @@ impl eframe::App for App {
                         &mut |op| boolean_edit_begin = Some(op),
                         &mut |edit| move_edit = Some(edit),
                         &mut |op| move_edit_begin = Some(op),
+                        &mut |edit| repeat_edit = Some(edit),
+                        &mut |op| repeat_edit_begin = Some(op),
                         &mut |image| calibrate_begin = Some(image),
                         &mut |control, text| calibrate_apply = Some((control, text)),
                     );
@@ -3451,6 +3604,47 @@ impl eframe::App for App {
                         editing: Some(op),
                     });
                     self.state.apply(Action::SetTool(Tool::Move));
+                }
+            }
+            if let Some(edit) = repeat_edit {
+                match edit {
+                    context::RepeatEdit::Commit => {
+                        self.state.apply(Action::CommitRepeat);
+                    }
+                    edit => {
+                        let cr = self
+                            .state
+                            .creating_repeat
+                            .get_or_insert_with(actions::CreatingRepeat::default);
+                        match edit {
+                            context::RepeatEdit::Mode(m) => cr.mode = m,
+                            context::RepeatEdit::Axis(a) => cr.axis = a,
+                            context::RepeatEdit::Count(v) => cr.count = v,
+                            context::RepeatEdit::Spacing(v) => cr.spacing = v,
+                            context::RepeatEdit::Length(v) => cr.length = v,
+                            context::RepeatEdit::RemoveTarget(Some(i)) => {
+                                if i < cr.targets.len() {
+                                    cr.targets.remove(i);
+                                }
+                            }
+                            context::RepeatEdit::RemoveTarget(None) => cr.targets.clear(),
+                            context::RepeatEdit::Commit => unreachable!(),
+                        }
+                    }
+                }
+            }
+            if let Some(op) = repeat_edit_begin {
+                if let Some(existing) = self.state.doc.repeat_ops.get(op).cloned() {
+                    self.state.creating_repeat = Some(actions::CreatingRepeat {
+                        targets: existing.targets,
+                        axis: existing.axis,
+                        mode: existing.mode,
+                        count: existing.count,
+                        spacing: existing.spacing,
+                        length: existing.length,
+                        editing: Some(op),
+                    });
+                    self.state.apply(Action::SetTool(Tool::Repeat));
                 }
             }
             if let Some(op) = boolean_edit_begin {
@@ -7010,6 +7204,10 @@ impl App {
             self.handle_move_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
         }
 
+        if self.state.tool == Tool::Repeat {
+            self.handle_repeat_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
+        }
+
         if matches!(self.state.tool, Tool::Chamfer | Tool::Fillet) {
             self.handle_vertex_treatment_tool(ui, &project, pointer_screen);
             self.show_vertex_treatment_amount_input(ui, &project);
@@ -8617,6 +8815,14 @@ impl App {
                     "Move — click bodies to add/remove • set offset/rotation in the context pane • Enter: commit"
                 } else {
                     "Move — click one or more bodies to move"
+                }
+            }
+            Tool::Repeat => {
+                let cr = self.state.creating_repeat.as_ref();
+                if cr.is_some_and(|c| !c.targets.is_empty()) {
+                    "Repeat — set axis/mode/spacing in the context pane • Enter: commit"
+                } else {
+                    "Repeat — click one or more bodies to repeat"
                 }
             }
             Tool::Rectangle => {

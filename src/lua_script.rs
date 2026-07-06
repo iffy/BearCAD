@@ -98,6 +98,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::Image(_) => "image",
         SceneElement::BooleanOp(_) => "boolean_op",
         SceneElement::MoveOp(_) => "move_op",
+        SceneElement::RepeatOp(_) => "repeat_op",
     }
 }
 
@@ -112,7 +113,8 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::Body(i)
         | SceneElement::Image(i)
         | SceneElement::BooleanOp(i)
-        | SceneElement::MoveOp(i) => i,
+        | SceneElement::MoveOp(i)
+        | SceneElement::RepeatOp(i) => i,
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::BodyEdge { .. }
@@ -504,6 +506,65 @@ fn parse_move_op_args(
         }
     };
     Ok((targets, tx, ty, tz, axis, angle))
+}
+
+/// Parses `bearcad.repeat_bodies{}`/`bearcad.edit_repeat{}` arguments.
+#[allow(clippy::type_complexity)]
+fn parse_repeat_op_args(
+    opts: &Table,
+) -> mlua::Result<(
+    Vec<usize>,
+    crate::model::RevolveAxis,
+    crate::model::RepeatMode,
+    String,
+    String,
+    String,
+)> {
+    let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
+    let axis = match opts.get::<Value>("axis")? {
+        Value::Nil => crate::model::RevolveAxis::X,
+        Value::String(sv) => match sv.to_string_lossy().to_lowercase().as_str() {
+            "x" => crate::model::RevolveAxis::X,
+            "y" => crate::model::RevolveAxis::Y,
+            "z" => crate::model::RevolveAxis::Z,
+            other => {
+                return Err(mlua::Error::external(format!(
+                    "unknown repeat axis '{other}' (x|y|z or {{line = i}})"
+                )))
+            }
+        },
+        Value::Table(t) => {
+            let li: usize = t.get("line")?;
+            crate::model::RevolveAxis::Line(li)
+        }
+        _ => {
+            return Err(mlua::Error::external(
+                "repeat `axis` must be \"x\"|\"y\"|\"z\" or {line = i}",
+            ))
+        }
+    };
+    let mode_name: String = opts
+        .get::<Option<String>>("mode")?
+        .unwrap_or_else(|| "count_gap".to_string());
+    let mode = crate::model::RepeatMode::from_name(&mode_name).ok_or_else(|| {
+        mlua::Error::external(format!(
+            "unknown repeat mode '{mode_name}' (count_gap|count_fit_ends|count_fit_centers|fill_gap|fill_pitch|fill_max_pitch)"
+        ))
+    })?;
+    let expr = |key: &str| -> mlua::Result<String> {
+        Ok(match opts.get::<Value>(key)? {
+            Value::Nil => String::new(),
+            Value::String(s) => s.to_str()?.to_string(),
+            Value::Integer(i) => i.to_string(),
+            Value::Number(n) => n.to_string(),
+            _ => {
+                return Err(mlua::Error::external(format!(
+                    "repeat `{key}` must be an expression string or a number"
+                )))
+            }
+        })
+    };
+    Ok((targets, axis, mode, expr("count")?, expr("spacing")?, expr("length")?))
 }
 
 fn parse_geometric_constraint(name: &str) -> Option<GeometricConstraintType> {
@@ -2178,6 +2239,50 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // `{ line = i }` (construction/projected lines work); `angle` in degrees (default
     // 360); `symmetric` sweeps both ways; `body = "new"|"add"|"cut"` with `bodies`
     // for an explicit add/cut list ("add" with none auto-resolves touching bodies).
+    api.set(
+        "repeat_bodies",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let (targets, axis, mode, count, spacing, length) = parse_repeat_op_args(&opts)?;
+            unsafe {
+                tick.exec(Instruction::CreateRepeatOp {
+                    targets,
+                    axis,
+                    mode,
+                    count,
+                    spacing,
+                    length,
+                })?;
+            }
+            let element = SceneElement::RepeatOp(unsafe {
+                tick.state().doc.repeat_ops.len().saturating_sub(1)
+            });
+            drop(tick);
+            apply_optional_name(lua, element, Some(opts))
+        })?,
+    )?;
+
+    api.set(
+        "edit_repeat",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let op: usize = opts.get("index")?;
+            let (targets, axis, mode, count, spacing, length) = parse_repeat_op_args(&opts)?;
+            unsafe {
+                tick.exec(Instruction::EditRepeatOp {
+                    op,
+                    targets,
+                    axis,
+                    mode,
+                    count,
+                    spacing,
+                    length,
+                })?;
+            }
+            Ok(())
+        })?,
+    )?;
+
     api.set(
         "move_bodies",
         lua.create_function(|lua, opts: Table| {

@@ -61,6 +61,10 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             .move_ops
             .get(index)
             .is_some_and(|op| !op.deleted),
+        SceneElement::RepeatOp(index) => doc
+            .repeat_ops
+            .get(index)
+            .is_some_and(|op| !op.deleted),
         SceneElement::Image(index) => doc
             .tracing_images
             .get(index)
@@ -175,6 +179,20 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         SceneElement::FaceEdge(_)
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. } => {}
+        SceneElement::RepeatOp(index) => {
+            if let Some(op) = doc.repeat_ops.get_mut(index) {
+                if !op.deleted {
+                    op.deleted = true;
+                    let outputs = doc.repeat_ops[index].outputs.clone();
+                    for out in outputs {
+                        if let Some(body) = doc.bodies.get_mut(out) {
+                            body.deleted = true;
+                        }
+                    }
+                    changed = true;
+                }
+            }
+        }
         SceneElement::MoveOp(index) => {
             if let Some(op) = doc.move_ops.get_mut(index) {
                 if !op.deleted {
