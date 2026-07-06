@@ -1700,8 +1700,10 @@ impl App {
             return;
         }
 
-        // Typing a number while the field is unfocused grabs focus and overwrites
-        // the current value, so the user can just start typing a depth.
+        // Typing while the field is unfocused grabs focus and overwrites the current value,
+        // so the user can just start typing a depth. Any expression character is accepted —
+        // not only digits — so a unit or parameter expression like `15mm` or `width=2` can be
+        // typed from the first keystroke (#196).
         if !ctx.memory(|m| m.has_focus(id)) {
             let typed: String = ctx.input(|i| {
                 i.events
@@ -1714,7 +1716,7 @@ impl App {
             });
             let typed: String = typed
                 .chars()
-                .filter(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+                .filter(|c| c.is_ascii_alphanumeric() || "._-+*/()= ".contains(*c))
                 .collect();
             if !typed.is_empty() {
                 if let Some(ce) = self.state.creating_extrusion.as_mut() {
@@ -1746,7 +1748,6 @@ impl App {
                         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             commit = true;
                         }
-                        ui.label("mm");
                     });
                 });
         }

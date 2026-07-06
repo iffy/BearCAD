@@ -5450,12 +5450,24 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::CommitExtrusion => {
-                let Some(ce) = self.creating_extrusion.take() else {
-                    return ActionResult::Err("No extrusion in progress".to_string());
+                let mut ce = match self.creating_extrusion.take() {
+                    Some(ce) => ce,
+                    None => return ActionResult::Err("No extrusion in progress".to_string()),
                 };
                 if ce.faces.is_empty() {
                     self.creating_extrusion = Some(ce);
                     return ActionResult::Err("Select at least one face".to_string());
+                }
+                // A typed `name = expr` defines a parameter and drives the depth from it, same
+                // as the sketch dimension inputs (#196).
+                if ce.user_edited {
+                    if let Err(e) =
+                        try_commit_inline_parameter_definition(&mut self.doc, &mut ce.text)
+                    {
+                        self.creating_extrusion = Some(ce);
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
                 }
                 let distance = ce.evaluated_distance(&self.doc);
                 if distance.abs() < 1e-3 {
@@ -7172,6 +7184,39 @@ mod tests {
 
         assert_eq!(state.doc.extrusions.len(), 1);
         assert_eq!(state.doc.bodies.len(), 1);
+    }
+
+    #[test]
+    fn extrude_distance_input_defines_an_inline_parameter() {
+        // Typing `name = expr` as the extrude depth defines a parameter and drives the
+        // extrusion from it, like the sketch dimension inputs (#196).
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        let rect =
+            crate::construction::add_line_rectangle(&mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
+        state.refresh_document_health();
+        let face = ExtrudeFace::Polygon(rect.to_vec());
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace { face });
+        {
+            let ce = state.creating_extrusion.as_mut().unwrap();
+            ce.text = "depth = 20".to_string();
+            ce.user_edited = true;
+        }
+        assert!(
+            matches!(state.apply(Action::CommitExtrusion), ActionResult::Ok),
+            "commit failed: {}",
+            state.status
+        );
+        assert!(
+            state.doc.parameters.iter().any(|p| !p.deleted && p.name == "depth"),
+            "a `depth` parameter should have been defined"
+        );
+        assert!(
+            (state.doc.extrusions[0].distance.abs() - 20.0).abs() < 1e-3,
+            "distance={}",
+            state.doc.extrusions[0].distance
+        );
     }
 
     #[test]
