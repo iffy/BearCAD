@@ -40,6 +40,8 @@ pub enum HierarchyNode {
     Body(usize),
     /// A tracing image (#163/#169).
     Image(usize),
+    /// A boolean operation between bodies (Combine tool); its output bodies nest under it.
+    BooleanOp(usize),
 }
 
 /// Identifies an element whose visibility can be toggled.
@@ -76,6 +78,8 @@ pub enum SceneElement {
     BodyVertex { body: usize, p: [i32; 3] },
     /// A tracing image (#163/#169).
     Image(usize),
+    /// A boolean operation between bodies (Combine tool).
+    BooleanOp(usize),
 }
 
 /// Quantize a world position (mm) to the 0.01 mm grid used for body edge/vertex selection
@@ -108,6 +112,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::Extrusion(i) => SceneElement::Extrusion(i),
         HierarchyNode::Body(i) => SceneElement::Body(i),
         HierarchyNode::Image(i) => SceneElement::Image(i),
+        HierarchyNode::BooleanOp(i) => SceneElement::BooleanOp(i),
     })
 }
 
@@ -195,6 +200,9 @@ impl ElementVisibility {
                 self.effective_visible(doc, SceneElement::Body(body))
             }
             SceneElement::Image(index) => self.is_visible(SceneElement::Image(index)),
+            // Boolean operations are pane-only elements with no viewport visibility of
+            // their own (their outputs are ordinary bodies).
+            SceneElement::BooleanOp(_) => true,
         }
     }
 }
@@ -639,7 +647,7 @@ fn build_creation_ranks(doc: &Document) -> CreationRanks {
             ShapeKind::Parameter => {}
             // Tracing images (#169) and lofts don't participate in creation-rank ordering
             // yet (they list after the ranked nodes).
-            ShapeKind::Image | ShapeKind::Loft | ShapeKind::Revolution => {}
+            ShapeKind::Image | ShapeKind::Loft | ShapeKind::Revolution | ShapeKind::BooleanOperation => {}
             // Edits are not created shapes; they only mark undoable in-place changes.
             ShapeKind::ConstructionPlaneEdit | ShapeKind::EdgeTreatmentEdit => {}
         }
@@ -660,6 +668,8 @@ fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
         HierarchyNode::Body(i) => *ranks.bodies.get(&i).unwrap_or(&i),
         // Tracing images list after ranked nodes (#169).
         HierarchyNode::Image(_) => usize::MAX,
+        // Boolean operations likewise list after ranked nodes.
+        HierarchyNode::BooleanOp(_) => usize::MAX,
     }
 }
 
@@ -712,12 +722,36 @@ pub fn build_hierarchy(
     // Bodies with no source extrusion (e.g. STL imports, #70) have no sketch/feature to nest
     // under, so they surface at the top level, same as an orphaned extrusion above.
     for (bi, body) in doc.bodies.iter().enumerate() {
-        if !body.deleted && body.source.extrusion_indices().is_empty() {
+        if !body.deleted
+            && body.source.extrusion_indices().is_empty()
+            && !matches!(body.source, crate::model::BodySource::Boolean { .. })
+        {
             roots.push(HierarchyEntry {
                 node: HierarchyNode::Body(bi),
                 children: Vec::new(),
             });
         }
+    }
+    // Boolean operations (Combine tool): the operation is an element of its own, with its
+    // output bodies nested beneath it — outputs depend on the operation, the operation on
+    // its (shadow) inputs.
+    for (oi, op) in doc.boolean_ops.iter().enumerate() {
+        if op.deleted {
+            continue;
+        }
+        let children = op
+            .outputs
+            .iter()
+            .filter(|&&bi| doc.bodies.get(bi).is_some_and(|b| !b.deleted))
+            .map(|&bi| HierarchyEntry {
+                node: HierarchyNode::Body(bi),
+                children: Vec::new(),
+            })
+            .collect();
+        roots.push(HierarchyEntry {
+            node: HierarchyNode::BooleanOp(oi),
+            children,
+        });
     }
     vec![HierarchyEntry {
         node: HierarchyNode::Document,
@@ -831,6 +865,7 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
             .tracing_images
             .get(index)
             .map(|img| SceneElement::ConstructionPlane(img.plane)),
+        SceneElement::BooleanOp(_) => None,
     }
 }
 
@@ -926,6 +961,14 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
         | SceneElement::Image(_) => {}
+        SceneElement::BooleanOp(index) => {
+            if let Some(op) = doc.boolean_ops.get(index) {
+                for &output in &op.outputs {
+                    out.insert(SceneElement::Body(output));
+                    collect_descendants(doc, SceneElement::Body(output), out);
+                }
+            }
+        }
     }
 }
 
@@ -1178,9 +1221,16 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
             .map(|constraint| icon_for_constraint_kind(&constraint.kind))
             .unwrap_or(IconId::Constraint),
         HierarchyNode::Extrusion(_) => IconId::Extrude,
-        HierarchyNode::Body(_) => IconId::Body,
+        HierarchyNode::Body(index) => {
+            if doc.bodies.get(index).is_some_and(|b| b.shadow) {
+                IconId::ShadowBody
+            } else {
+                IconId::Body
+            }
+        }
         // No dedicated image icon yet; the plane icon reads as "flat thing on a plane".
         HierarchyNode::Image(_) => IconId::Plane,
+        HierarchyNode::BooleanOp(_) => IconId::Combine,
     })
 }
 
@@ -1897,7 +1947,8 @@ fn show_row(
             HierarchyNode::Line(_)
             | HierarchyNode::Circle(_)
             | HierarchyNode::Constraint(_)
-            | HierarchyNode::Image(_) => {
+            | HierarchyNode::Image(_)
+            | HierarchyNode::BooleanOp(_) => {
                 if response.clicked() {
                     let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
                     on_click_element(element, additive);
@@ -1929,6 +1980,7 @@ mod tests {
             source: crate::model::BodySource::Imported(0),
             name: None,
             deleted: false,
+            shadow: false,
         });
         let mut visibility = ElementVisibility::default();
         assert!(visibility.effective_visible(&doc, SceneElement::Body(0)));
@@ -1992,6 +2044,7 @@ mod tests {
             source: crate::model::BodySource::Imported(0),
             name: None,
             deleted: false,
+            shadow: false,
         });
 
         let tree = build_hierarchy(&doc, None);
@@ -2015,6 +2068,7 @@ mod tests {
             source: crate::model::BodySource::Imported(0),
             name: Some("part".to_string()),
             deleted: false,
+            shadow: false,
         });
         doc.shape_order.push(ShapeKind::Body);
 
@@ -2517,6 +2571,7 @@ mod tests {
             source: BodySource::Extrusion(0),
             name: None,
             deleted: false,
+            shadow: false,
         });
         (doc, sketch)
     }

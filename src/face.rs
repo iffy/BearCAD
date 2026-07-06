@@ -817,7 +817,7 @@ pub fn pick_body_face(
 ) -> Option<crate::construction::PickTargetKind> {
     let mut best: Option<(crate::construction::PickTargetKind, f32)> = None;
     for (bi, body) in doc.bodies.iter().enumerate() {
-        if body.deleted {
+        if body.deleted || body.shadow {
             continue;
         }
         let Some(solid) = crate::extrude::body_solid_mesh(doc, bi) else {
@@ -1096,6 +1096,7 @@ mod tests {
             source: crate::model::BodySource::Imported(0),
             name: None,
             deleted: false,
+            shadow: false,
         });
         doc
     }

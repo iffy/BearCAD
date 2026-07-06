@@ -61,6 +61,10 @@ pub const PLANE_FILL_DEPTH_BIAS: f32 = 0.02;
 /// Base depth lift for sketch shape fills toward the camera.
 /// Base fill color for extruded solid bodies (shaded per triangle).
 pub const SOLID_FILL: Color32 = Color32::from_rgb(150, 168, 196);
+/// Ghost fill for a shadow body (a boolean operation's consumed input) while it's hovered
+/// or selected in the Elements pane — the only time shadows render at all.
+pub const SHADOW_BODY_FILL: Color32 = Color32::from_rgb(120, 140, 170);
+const SHADOW_BODY_OPACITY: f32 = 0.30;
 /// Fill for a **selected** body (#174): a more saturated blue than the neutral body grey,
 /// so selection reads on the body itself, not just its aura outline.
 pub const SOLID_FILL_SELECTED: Color32 = Color32::from_rgb(112, 152, 224);
@@ -498,13 +502,31 @@ impl ViewportScene {
         // compute each visible body's mesh once per frame and share it between the body
         // render below and the selection aura (#145), which used to recompute every mesh a
         // second time and visibly slowed frames while a body was selected.
+        // A shadow body (a boolean operation's consumed input) renders only while hovered
+        // or selected in the Elements pane; hovering the operation row ghosts all of its
+        // inputs at once.
+        let shadow_shown = |bi: usize| -> bool {
+            if input.selection.is_selected(SceneElement::Body(bi)) {
+                return true;
+            }
+            match &input.hover_highlight {
+                Some(ViewportHoverHighlight::Element(SceneElement::Body(h))) => *h == bi,
+                Some(ViewportHoverHighlight::Element(SceneElement::BooleanOp(op))) => input
+                    .doc
+                    .boolean_ops
+                    .get(*op)
+                    .is_some_and(|o| o.a.contains(&bi) || o.b.contains(&bi)),
+                _ => false,
+            }
+        };
         let body_meshes: Vec<Option<crate::extrude::SolidMesh>> = (0..input.doc.bodies.len())
             .map(|bi| {
                 let body = &input.doc.bodies[bi];
                 let visible = !body.deleted
                     && input
                         .element_visibility
-                        .effective_visible(input.doc, SceneElement::Body(bi));
+                        .effective_visible(input.doc, SceneElement::Body(bi))
+                    && (!body.shadow || shadow_shown(bi));
                 if visible {
                     crate::extrude::body_solid_mesh(input.doc, bi)
                 } else {
@@ -528,6 +550,19 @@ impl ViewportScene {
             let Some(solid) = body_meshes[bi].as_ref() else {
                 continue;
             };
+            // Shadow bodies render as a translucent ghost with a wireframe, whatever the
+            // shading mode — visually distinct from every real body.
+            if body.shadow {
+                mesh.push_solid_translucent(solid, SHADOW_BODY_FILL, SHADOW_BODY_OPACITY);
+                mesh.push_solid_wireframe(
+                    solid,
+                    WIREFRAME_LINE_COLOR,
+                    input.cam,
+                    input.viewport,
+                    &vp,
+                );
+                continue;
+            }
             // A selected body fills in the saturated selection blue (#174); the aura
             // outline still draws on top via `push_selection`.
             let fill = if input.selection.is_selected(SceneElement::Body(bi)) {
@@ -2371,7 +2406,7 @@ impl<'a> SceneMesh<'a> {
                     &project,
                 );
             }
-            SceneElement::FaceEdge(_) | SceneElement::Image(_) => {}
+            SceneElement::FaceEdge(_) | SceneElement::Image(_) | SceneElement::BooleanOp(_) => {}
             // Bodies and extrusions get their aura, tinted with the hover color.
             SceneElement::Body(index) => {
                 let bodies: std::collections::HashSet<usize> = [index].into_iter().collect();
@@ -5962,6 +5997,7 @@ mod tests {
             source: BodySource::Extrusion(0),
             name: None,
             deleted: false,
+            shadow: false,
         });
 
         let palette = ViewportPalette::default();

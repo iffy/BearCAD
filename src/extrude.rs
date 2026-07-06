@@ -431,6 +431,9 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
         crate::model::BodySource::Revolve(ri) => {
             occt_revolution_shape(doc, doc.revolutions.get(ri).filter(|r| !r.deleted)?)?
         }
+        crate::model::BodySource::Boolean { op, solid } => {
+            return occt_boolean_output_shape(doc, op, solid);
+        }
         _ => occt_body_shape_from_indices(
             doc,
             body.source.extrusion_indices(),
@@ -449,6 +452,98 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
         solid = solid.boolean(&shape, op)?;
     }
     Some(solid)
+}
+
+/// The whole (possibly multi-solid) OCCT result of one boolean operation: A-side bodies
+/// fused, then combined with the fused B side per the operation's algebra. Difference
+/// (symmetric) is (A∪B) − (A∩B). `None` when any input body isn't kernel-representable.
+#[cfg(feature = "occt")]
+fn occt_boolean_result_shape(
+    doc: &Document,
+    op_index: usize,
+) -> Option<crate::kernel::Shape> {
+    use crate::kernel::BoolOp;
+    let op = doc.boolean_ops.get(op_index).filter(|o| !o.deleted)?;
+    let fuse_all = |list: &[usize]| -> Option<crate::kernel::Shape> {
+        let mut acc: Option<crate::kernel::Shape> = None;
+        for &bi in list {
+            // Inputs must precede this op's outputs; the index guard breaks any accidental
+            // self-reference cycle (an output can never be its own op's input).
+            if op.outputs.contains(&bi) {
+                return None;
+            }
+            let shape = occt_body_shape(doc, bi)?;
+            acc = Some(match acc {
+                None => shape,
+                Some(sum) => sum.boolean(&shape, BoolOp::Fuse)?,
+            });
+        }
+        acc
+    };
+    let a = fuse_all(&op.a)?;
+    match op.kind {
+        crate::model::BooleanOpKind::Combine => Some(a),
+        crate::model::BooleanOpKind::Cut => {
+            let b = fuse_all(&op.b)?;
+            a.boolean(&b, BoolOp::Cut)
+        }
+        crate::model::BooleanOpKind::Intersect => {
+            let b = fuse_all(&op.b)?;
+            a.boolean(&b, BoolOp::Common)
+        }
+        crate::model::BooleanOpKind::Difference => {
+            let b = fuse_all(&op.b)?;
+            let union = a.boolean(&b, BoolOp::Fuse)?;
+            let common = a.boolean(&b, BoolOp::Common)?;
+            union.boolean(&common, BoolOp::Cut)
+        }
+    }
+}
+
+/// The BREP solid of one boolean output body: solid `ordinal` of the operation's split
+/// result. The op's *last* output absorbs any extra solids a rebuild produced (fused into
+/// one shape), so the body list stays stable while geometry changes underneath.
+#[cfg(feature = "occt")]
+fn occt_boolean_output_shape(
+    doc: &Document,
+    op_index: usize,
+    ordinal: usize,
+) -> Option<crate::kernel::Shape> {
+    use crate::kernel::BoolOp;
+    let op = doc.boolean_ops.get(op_index).filter(|o| !o.deleted)?;
+    let result = occt_boolean_result_shape(doc, op_index)?;
+    let mut solids = result.solids();
+    if solids.is_empty() {
+        return None;
+    }
+    let last = op.outputs.len().saturating_sub(1);
+    if ordinal > last || ordinal >= solids.len() && ordinal != last {
+        return None;
+    }
+    if ordinal == last && solids.len() > op.outputs.len() {
+        let mut acc = solids.drain(last..).collect::<Vec<_>>().into_iter();
+        let mut sum = acc.next()?;
+        for extra in acc {
+            sum = sum.boolean(&extra, BoolOp::Fuse)?;
+        }
+        return Some(sum);
+    }
+    if ordinal < solids.len() {
+        Some(solids.swap_remove(ordinal))
+    } else {
+        None
+    }
+}
+
+/// Number of solids a boolean operation currently produces (commit-time output sizing).
+#[cfg(feature = "occt")]
+pub fn boolean_result_solid_count(doc: &Document, op_index: usize) -> Option<usize> {
+    Some(occt_boolean_result_shape(doc, op_index)?.solids().len())
+}
+
+#[cfg(not(feature = "occt"))]
+pub fn boolean_result_solid_count(_doc: &Document, _op_index: usize) -> Option<usize> {
+    None
 }
 
 /// Commit-time kernel feasibility trial for a 3D edge treatment (#103). `candidate` is the
@@ -874,6 +969,19 @@ pub fn selection_world_bounds(
     };
     for element in selection.iter() {
         match element {
+            SceneElement::BooleanOp(op) => {
+                let outputs = doc
+                    .boolean_ops
+                    .get(op)
+                    .map(|o| o.outputs.clone())
+                    .unwrap_or_default();
+                for bi in outputs {
+                    if let Some((min, max)) = body_solid_mesh(doc, bi).and_then(|m| m.bounds()) {
+                        extend(min);
+                        extend(max);
+                    }
+                }
+            }
             SceneElement::Body(bi) => {
                 if let Some((min, max)) = body_solid_mesh(doc, bi).and_then(|m| m.bounds()) {
                     extend(min);
@@ -1024,6 +1132,20 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
     if let crate::model::BodySource::Loft(li) = body.source {
         let loft = doc.lofts.get(li).filter(|l| !l.deleted)?;
         return loft_mesh(doc, loft);
+    }
+    if let crate::model::BodySource::Boolean { op, solid } = body.source {
+        // Boolean outputs are kernel-computed; shadow inputs keep their own meshes.
+        #[cfg(feature = "occt")]
+        {
+            let shape = occt_boolean_output_shape(doc, op, solid)?;
+            let tris = shape.tessellate(OCCT_DEFLECTION as f64);
+            return (!tris.is_empty()).then_some(SolidMesh { triangles: tris });
+        }
+        #[cfg(not(feature = "occt"))]
+        {
+            let _ = (op, solid);
+            return None;
+        }
     }
     #[cfg(not(feature = "occt"))]
     if let crate::model::BodySource::Revolve(ri) = body.source {
@@ -2486,6 +2608,7 @@ mod tests {
             },
             name: None,
             deleted: false,
+            shadow: false,
         });
         doc
     }
@@ -2513,6 +2636,7 @@ mod tests {
                 source: crate::model::BodySource::Extrusion(ei),
                 name: None,
                 deleted: false,
+                shadow: false,
             });
         }
         let vol = mesh_signed_volume(&document_solid_mesh(&doc)).abs();
@@ -2541,6 +2665,7 @@ mod tests {
             source: crate::model::BodySource::Extrusion(0),
             name: None,
             deleted: false,
+            shadow: false,
         });
         let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
         let cylinder = std::f32::consts::PI * 100.0 * 20.0;
@@ -2573,6 +2698,7 @@ mod tests {
             source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
             name: None,
             deleted: false,
+            shadow: false,
         });
         let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
         let plain = 2000.0 - std::f32::consts::PI * 2.5 * 2.5 * 5.0;
@@ -2610,6 +2736,7 @@ mod tests {
             source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
             name: None,
             deleted: false,
+            shadow: false,
         });
         let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
         let plain = 2000.0 - std::f32::consts::PI * 2.5 * 2.5 * 5.0;
@@ -2674,6 +2801,7 @@ mod tests {
             source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
             name: None,
             deleted: false,
+            shadow: false,
         });
         let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
         let expected = 10000.0 - 2.0 * std::f32::consts::PI * 2.5 * 2.5 * 5.0;
@@ -2696,6 +2824,7 @@ mod tests {
             source: crate::model::BodySource::Extrusion(0),
             name: None,
             deleted: false,
+            shadow: false,
         });
         let intact = body_solid_mesh(&doc, 0).expect("intact box");
         let intact_vol = mesh_signed_volume(&intact).abs();
@@ -2806,6 +2935,7 @@ mod tests {
             source: crate::model::BodySource::Revolve(0),
             name: None,
             deleted: false,
+            shadow: false,
         });
         let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
         let expected = std::f32::consts::PI * (400.0 - 100.0) * 10.0;
@@ -2833,6 +2963,7 @@ mod tests {
                 source: crate::model::BodySource::Revolve(0),
                 name: None,
                 deleted: false,
+                shadow: false,
             });
             let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
             assert!(
@@ -2853,6 +2984,7 @@ mod tests {
             source: crate::model::BodySource::Extrusion(0),
             name: None,
             deleted: false,
+            shadow: false,
         });
         // Cut tool: a rect profile (x -20..20, y 3..6 in the ground plane) revolved 360
         // degrees around the global X axis — a tube of inner radius 3, outer radius 6,
@@ -3221,6 +3353,7 @@ mod tests {
             source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1, 2] },
             name: Some("B".to_string()),
             deleted: false,
+            shadow: false,
         });
         let cut_vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("occt B mesh")).abs();
 
@@ -3566,6 +3699,7 @@ mod tests {
             source: crate::model::BodySource::Extrusion(0),
             name: None,
             deleted: false,
+            shadow: false,
         });
 
         let edges = treatable_edges(&doc);
@@ -3613,6 +3747,7 @@ mod tests {
             source: crate::model::BodySource::Extrusion(0),
             name: None,
             deleted: false,
+            shadow: false,
         });
         let before = body_solid_mesh(&doc, 0).expect("box mesh");
         let (_, before_max) = before.bounds().unwrap();

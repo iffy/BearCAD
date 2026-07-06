@@ -43,6 +43,7 @@ extern "C" {
     fn kernel_volume(h: u32) -> f64;
     fn kernel_tessellate(h: u32, deflection: f64) -> Vec<f64>;
     fn kernel_shape_free(h: u32);
+    fn kernel_split_solids(h: u32) -> Vec<f64>;
     fn kernel_face_boolean_loop(a: &[f64], b: &[f64], op: i32) -> Option<Vec<f64>>;
     fn kernel_write_step(h: u32) -> Option<Vec<u8>>;
     fn kernel_slvs_solve(
@@ -219,6 +220,14 @@ impl Shape {
         }
         let d: Vec<f64> = dists.iter().map(|&x| x as f64).collect();
         Self::from_handle(kernel_chamfer(self.handle, &flat_edges(edges), &d))
+    }
+
+    /// Split into individual solids (see the native `Shape::solids`).
+    pub fn solids(&self) -> Vec<Shape> {
+        kernel_split_solids(self.handle)
+            .into_iter()
+            .filter_map(|h| Self::from_handle(h as u32))
+            .collect()
     }
 
     pub fn volume(&self) -> Option<f64> {

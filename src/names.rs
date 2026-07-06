@@ -15,7 +15,8 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::Constraint(_)
         | SceneElement::Extrusion(_)
         | SceneElement::Body(_)
-        | SceneElement::Image(_) => Some(element),
+        | SceneElement::Image(_)
+        | SceneElement::BooleanOp(_) => Some(element),
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::BodyEdge { .. }
@@ -98,6 +99,7 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         SceneElement::Extrusion(index) => doc.extrusions.get(index)?.name.as_deref(),
         SceneElement::Body(index) => doc.bodies.get(index)?.name.as_deref(),
         SceneElement::Image(index) => doc.tracing_images.get(index)?.name.as_deref(),
+        SceneElement::BooleanOp(index) => doc.boolean_ops.get(index)?.name.as_deref(),
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::BodyEdge { .. }
@@ -170,6 +172,13 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 .ok_or_else(|| format!("body {index} not found"))?;
             body.name = stored;
         }
+        SceneElement::BooleanOp(index) => {
+            let op = doc
+                .boolean_ops
+                .get_mut(index)
+                .ok_or_else(|| format!("boolean operation {index} not found"))?;
+            op.name = stored;
+        }
         SceneElement::Image(index) => {
             let image = doc
                 .tracing_images
@@ -239,6 +248,14 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
             .get(i)
             .map(|img| img.source_name.clone())
             .unwrap_or_else(|| format!("Image {i}")),
+        HierarchyNode::BooleanOp(i) => {
+            let kind = doc
+                .boolean_ops
+                .get(i)
+                .map(|op| op.kind.label())
+                .unwrap_or("Boolean");
+            format!("{kind} {i}")
+        }
     }
 }
 

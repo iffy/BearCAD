@@ -53,6 +53,10 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         SceneElement::BodyEdge { body, .. } | SceneElement::BodyVertex { body, .. } => {
             body_alive(doc, body)
         }
+        SceneElement::BooleanOp(index) => doc
+            .boolean_ops
+            .get(index)
+            .is_some_and(|op| !op.deleted),
         SceneElement::Image(index) => doc
             .tracing_images
             .get(index)
@@ -167,6 +171,39 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         SceneElement::FaceEdge(_)
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. } => {}
+        SceneElement::BooleanOp(index) => {
+            // Deleting the operation removes its outputs and releases its inputs from
+            // shadow (unless another live operation still consumes them).
+            if let Some(op) = doc.boolean_ops.get_mut(index) {
+                if !op.deleted {
+                    op.deleted = true;
+                    let op = doc.boolean_ops[index].clone();
+                    for &out in &op.outputs {
+                        if let Some(body) = doc.bodies.get_mut(out) {
+                            body.deleted = true;
+                        }
+                    }
+                    for &input in op.a.iter().chain(op.b.iter()) {
+                        // Stays a shadow only if another live op consumes it on a side
+                        // that shadows (A always; B when that op doesn't keep B).
+                        let shadowed_elsewhere = doc.boolean_ops.iter().enumerate().any(
+                            |(oi, o)| {
+                                oi != index
+                                    && !o.deleted
+                                    && (o.a.contains(&input)
+                                        || (!o.keep_b && o.b.contains(&input)))
+                            },
+                        );
+                        if !shadowed_elsewhere {
+                            if let Some(body) = doc.bodies.get_mut(input) {
+                                body.shadow = false;
+                            }
+                        }
+                    }
+                    changed = true;
+                }
+            }
+        }
         SceneElement::Image(index) => {
             if let Some(image) = doc.tracing_images.get_mut(index) {
                 if !image.deleted {

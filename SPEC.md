@@ -397,6 +397,38 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   ignored) and the GUI doesn't offer the Cut option — a known limitation resolved once the kernel
   is the default (#89). The cut list round-trips through save/load regardless of build.
 
+- **Combine tool (whole-body booleans):** operates on committed bodies rather than
+  extrusions. Four operations: **Combine** (union of the picked set), **Cut** (A − B),
+  **Intersect** (only what's common), **Difference** (symmetric difference — only what's
+  *not* common). Combine uses a single picker; the two-sided operations have A and B
+  pickers (multi-select each, clicking a body in the viewport toggles it into the active
+  side) plus a **Keep B** toggle that leaves the B-side inputs as real bodies.
+  - Committing creates a **boolean operation element** (`Document::boolean_ops`,
+    `ShapeKind::BooleanOperation`) and one **output body per result solid**
+    (`BodySource::Boolean { op, solid }`) — a cut or difference that severs a body into
+    pieces yields one body per piece. The output count is fixed at commit; a parametric
+    rebuild that produces *more* solids folds the extras into the last output body, fewer
+    leaves trailing outputs empty, so the Elements pane stays stable.
+  - The input bodies become **shadow bodies** (`Body::shadow`): still listed in the pane
+    with their own dashed-cube icon, but hidden in the viewport (and excluded from picking
+    and occlusion) except while hovered or selected in the pane, where they render as a
+    translucent ghost with a wireframe. Hovering the operation row ghosts all of its
+    inputs at once.
+  - Dependencies: outputs nest under the operation in the pane; the operation depends on
+    its inputs (enforced: an operation may only consume bodies that exist before it —
+    outputs of *earlier* operations are fine, so booleans chain acyclically; shadow
+    bodies can't be re-picked unless the operation being edited already owns them).
+  - The operation element is **editable**: selecting it offers "Edit operation", which
+    re-opens the pickers (kind, sides, keep-B) and applies in place, re-shadowing inputs
+    accordingly. Deleting the operation tombstones its outputs and releases its inputs
+    from shadow (unless another live operation still consumes them). Undo of a commit
+    restores inputs and removes the operation and its outputs as one step.
+  - Scripting: `bearcad.combine{ op = "combine"|"cut"|"intersect"|"difference", a = {…},
+    b = {…}, keep_b?, name? }` and `bearcad.edit_boolean{ index, … }`; session-command
+    export replays both. The result geometry is kernel-computed (difference is
+    (A∪B) − (A∩B); multi-solid results split via `Shape::solids`), on desktop and web
+    alike via the kernel module.
+
 ### 3.4 Modifying solids
 - **Fillet** and **Chamfer**, 2D sketch vertices: the tools described in §3.1 (#37/#38) —
   truncate-and-bridge on a sketch vertex where two lines meet, with the fillet arc approximated

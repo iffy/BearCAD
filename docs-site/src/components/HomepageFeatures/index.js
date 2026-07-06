@@ -20,7 +20,7 @@ const FeatureList = [
     description: (
       <>
         Tool-by-tool reference for Select, Sketch, Rectangle, Line, Circle, Fillet, Chamfer,
-        Construction Plane, Extrude, Revolve, Dimension, and Constraint — plus orbit/pan/zoom,
+        Construction Plane, Extrude, Revolve, Combine, Dimension, and Constraint — plus orbit/pan/zoom,
         the view bear, and sketch mode.
       </>
     ),

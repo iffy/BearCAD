@@ -96,6 +96,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::BodyEdge { .. } => "body_edge",
         SceneElement::BodyVertex { .. } => "body_vertex",
         SceneElement::Image(_) => "image",
+        SceneElement::BooleanOp(_) => "boolean_op",
     }
 }
 
@@ -108,7 +109,8 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::Constraint(i)
         | SceneElement::Extrusion(i)
         | SceneElement::Body(i)
-        | SceneElement::Image(i) => i,
+        | SceneElement::Image(i)
+        | SceneElement::BooleanOp(i) => i,
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::BodyEdge { .. }
@@ -428,6 +430,25 @@ fn parse_extrusion_edge_table(table: Table) -> mlua::Result<ExtrusionEdgeRef> {
             "unknown extrusion edge kind '{other}' (expected 'vertical' or 'cap')"
         ))),
     }
+}
+
+/// Parses `bearcad.combine{}`/`bearcad.edit_boolean{}` arguments: the op kind, the A and
+/// B input body lists, and the keep-B flag.
+fn parse_boolean_op_args(
+    opts: &Table,
+) -> mlua::Result<(crate::model::BooleanOpKind, Vec<usize>, Vec<usize>, bool)> {
+    let op_name: String = opts
+        .get::<Option<String>>("op")?
+        .unwrap_or_else(|| "combine".to_string());
+    let kind = crate::model::BooleanOpKind::from_name(&op_name).ok_or_else(|| {
+        mlua::Error::external(format!(
+            "unknown boolean op '{op_name}' (combine|cut|intersect|difference)"
+        ))
+    })?;
+    let a: Vec<usize> = opts.get::<Option<Vec<usize>>>("a")?.unwrap_or_default();
+    let b: Vec<usize> = opts.get::<Option<Vec<usize>>>("b")?.unwrap_or_default();
+    let keep_b: bool = opts.get::<Option<bool>>("keep_b")?.unwrap_or(false);
+    Ok((kind, a, b, keep_b))
 }
 
 fn parse_geometric_constraint(name: &str) -> Option<GeometricConstraintType> {
@@ -2102,6 +2123,35 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // `{ line = i }` (construction/projected lines work); `angle` in degrees (default
     // 360); `symmetric` sweeps both ways; `body = "new"|"add"|"cut"` with `bodies`
     // for an explicit add/cut list ("add" with none auto-resolves touching bodies).
+    api.set(
+        "combine",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let (kind, a, b, keep_b) = parse_boolean_op_args(&opts)?;
+            unsafe {
+                tick.exec(Instruction::CreateBooleanOp { kind, a, b, keep_b })?;
+            }
+            let element = SceneElement::BooleanOp(unsafe {
+                tick.state().doc.boolean_ops.len().saturating_sub(1)
+            });
+            drop(tick);
+            apply_optional_name(lua, element, Some(opts))
+        })?,
+    )?;
+
+    api.set(
+        "edit_boolean",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let op: usize = opts.get("index")?;
+            let (kind, a, b, keep_b) = parse_boolean_op_args(&opts)?;
+            unsafe {
+                tick.exec(Instruction::EditBooleanOp { op, kind, a, b, keep_b })?;
+            }
+            Ok(())
+        })?,
+    )?;
+
     api.set(
         "revolve",
         lua.create_function(|lua, opts: Table| {
@@ -3863,6 +3913,31 @@ mod tests {
             (vol - expected).abs() < expected * 0.02,
             "expected ~{expected}, got {vol}"
         );
+    }
+
+    /// Combine tool scripting: `bearcad.combine{}` cuts one body out of another, shadows
+    /// the inputs (except kept B), and names the operation.
+    #[test]
+    fn lua_combine_cut_creates_op_and_shadows() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ x = 0, y = 0, width = 10, height = 10 }
+            bearcad.exit_sketch()
+            bearcad.extrude{ polygon = {0,1,2,3}, distance = 5 }
+            bearcad.begin_sketch{ kind = "plane", index = 0 }
+            bearcad.rect{ x = 5, y = 0, width = 10, height = 10 }
+            bearcad.exit_sketch()
+            bearcad.extrude{ polygon = {4,5,6,7}, distance = 5 }
+            bearcad.combine{ op = "cut", a = {0}, b = {1}, name = "Slot" }
+        "#,
+        );
+        assert_eq!(state.doc.boolean_ops.len(), 1);
+        let op = &state.doc.boolean_ops[0];
+        assert_eq!(op.kind, crate::model::BooleanOpKind::Cut);
+        assert_eq!(op.name.as_deref(), Some("Slot"));
+        assert!(state.doc.bodies[0].shadow);
+        assert!(state.doc.bodies[1].shadow);
+        assert!(!op.outputs.is_empty());
     }
 
     /// SPEC §3.5 Loft: `bearcad.loft{ circles = {...} }` blends circle sections on two

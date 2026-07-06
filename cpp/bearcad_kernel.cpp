@@ -58,6 +58,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <vector>
 
 // Opaque owned BREP shape handle exposed across the C ABI.
@@ -609,6 +610,45 @@ extern "C" double* bearcad_shape_tessellate(const BearcadShape* shape, double de
 
 extern "C" void bearcad_tri_free(double* tris) {
     delete[] tris;
+}
+
+// Split a shape into its individual SOLIDs (a boolean between disjoint bodies can yield
+// several disconnected pieces). Returns a malloc'd array of owned shape handles and writes
+// its length to `out_count`; free the array itself with `bearcad_handles_free` (each handle
+// is then owned by the caller and freed individually with `bearcad_shape_free`). A shape
+// with no solids returns null with count 0.
+extern "C" BearcadShape** bearcad_shape_split_solids(const BearcadShape* shape,
+                                                     unsigned long* out_count) {
+    if (out_count != nullptr) {
+        *out_count = 0;
+    }
+    if (shape == nullptr || out_count == nullptr) {
+        return nullptr;
+    }
+    try {
+        std::vector<BearcadShape*> solids;
+        for (TopExp_Explorer exp(shape->shape, TopAbs_SOLID); exp.More(); exp.Next()) {
+            solids.push_back(new BearcadShape{exp.Current()});
+        }
+        if (solids.empty()) {
+            return nullptr;
+        }
+        BearcadShape** out =
+            static_cast<BearcadShape**>(std::malloc(solids.size() * sizeof(BearcadShape*)));
+        for (size_t i = 0; i < solids.size(); ++i) {
+            out[i] = solids[i];
+        }
+        *out_count = solids.size();
+        return out;
+    } catch (const Standard_Failure&) {
+        return nullptr;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+extern "C" void bearcad_handles_free(BearcadShape** handles) {
+    std::free(handles);
 }
 
 extern "C" void bearcad_shape_free(BearcadShape* shape) {

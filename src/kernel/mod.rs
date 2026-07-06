@@ -96,6 +96,11 @@ mod ffi {
         ) -> *mut f64;
         pub fn bearcad_tri_free(tris: *mut f64);
         pub fn bearcad_shape_free(shape: *mut BearcadShape);
+        pub fn bearcad_shape_split_solids(
+            shape: *const BearcadShape,
+            out_count: *mut c_ulong,
+        ) -> *mut *mut BearcadShape;
+        pub fn bearcad_handles_free(handles: *mut *mut BearcadShape);
 
         pub fn bearcad_shape_write_step(s: *const BearcadShape, path: *const c_char) -> c_int;
         pub fn bearcad_read_step(path: *const c_char) -> *mut BearcadShape;
@@ -362,6 +367,25 @@ impl Shape {
         };
         let raw = unsafe { ffi::bearcad_shape_boolean(self.raw, other.raw, code) };
         (!raw.is_null()).then_some(Shape { raw })
+    }
+
+    /// Split into individual solids (a boolean between disjoint bodies can yield several
+    /// disconnected pieces). Empty when the shape holds no solid.
+    pub fn solids(&self) -> Vec<Shape> {
+        let mut count: std::os::raw::c_ulong = 0;
+        let raw = unsafe { ffi::bearcad_shape_split_solids(self.raw, &mut count) };
+        if raw.is_null() {
+            return Vec::new();
+        }
+        let mut out = Vec::with_capacity(count as usize);
+        for i in 0..count as usize {
+            let handle = unsafe { *raw.add(i) };
+            if !handle.is_null() {
+                out.push(Shape { raw: handle });
+            }
+        }
+        unsafe { ffi::bearcad_handles_free(raw) };
+        out
     }
 
     /// Apply true BREP fillets (rounded edges) of the given per-edge `radii` to the

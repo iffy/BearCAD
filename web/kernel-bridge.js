@@ -128,6 +128,21 @@ export function kernel_tessellate(h, deflection) {
   return doubles;
 }
 
+// Split a shape into its individual solids; returns a Float64Array of new shape
+// handles (empty when none / kernel missing).
+export function kernel_split_solids(h) {
+  const m = M();
+  if (!m) return new Float64Array(0);
+  const countPtr = m._malloc(4);
+  const arrPtr = m._bearcad_shape_split_solids(h, countPtr);
+  const count = new Uint32Array(m.HEAPU8.buffer)[countPtr / 4];
+  m._free(countPtr);
+  if (!arrPtr || !count) return new Float64Array(0);
+  const handles = new Uint32Array(m.HEAPU8.buffer).slice(arrPtr / 4, arrPtr / 4 + count);
+  m._bearcad_handles_free(arrPtr);
+  return Float64Array.from(handles);
+}
+
 export function kernel_shape_free(h) {
   const m = M();
   if (m && h) m._bearcad_shape_free(h);

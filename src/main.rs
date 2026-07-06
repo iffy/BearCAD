@@ -2159,6 +2159,80 @@ impl App {
         }
     }
 
+    /// Combine tool (boolean operations): click bodies to toggle them into the active
+    /// picker side (A, or B for the two-sided operations); Enter commits.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_combine_tool(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+        pick_occlusion: Option<&construction::PickOcclusion>,
+    ) {
+        if self.state.sketch_session.is_some() {
+            return;
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+            && self
+                .state
+                .creating_boolean
+                .as_ref()
+                .is_some_and(|c| !c.a.is_empty())
+        {
+            self.state.apply(Action::CommitBoolean);
+            return;
+        }
+        if !ui.input(|i| i.pointer.primary_pressed()) {
+            return;
+        }
+        let Some(pp) = pointer_screen else {
+            return;
+        };
+        let gp = cam.ground_point(pp, viewport, vp);
+        let Some(target) = resolve_pick_target(pp, project, gp, &self.state.doc, pick_occlusion)
+        else {
+            return;
+        };
+        let Some(SceneElement::Body(bi)) = scene_element_from_pick(&target.kind) else {
+            return;
+        };
+        if self
+            .state
+            .doc
+            .bodies
+            .get(bi)
+            .is_some_and(|b| b.shadow)
+        {
+            self.state.status =
+                "That body is already consumed by another operation".to_string();
+            return;
+        }
+        let cb = self
+            .state
+            .creating_boolean
+            .get_or_insert_with(actions::CreatingBoolean::default);
+        let to_b = cb.picking_b && cb.kind != model::BooleanOpKind::Combine;
+        // A body lives on at most one side; re-clicking it anywhere removes it.
+        if let Some(pos) = cb.a.iter().position(|b| *b == bi) {
+            cb.a.remove(pos);
+        } else if let Some(pos) = cb.b.iter().position(|b| *b == bi) {
+            cb.b.remove(pos);
+        } else if to_b {
+            cb.b.push(bi);
+        } else {
+            cb.a.push(bi);
+        }
+        self.state.status = format!(
+            "{}: {} body(ies) on A, {} on B",
+            cb.kind.label(),
+            cb.a.len(),
+            cb.b.len()
+        );
+    }
+
     /// Floating angle field for the in-progress revolve (Enter commits). Mirrors the
     /// extrude distance input.
     fn show_revolve_angle_input(&mut self, ui: &egui::Ui, project: &impl Fn(Vec3) -> Option<egui::Pos2>) {
@@ -2698,6 +2772,16 @@ impl eframe::App for App {
                 }
                 if icons::selectable_icon_button(
                     ui,
+                    icons::IconId::Combine,
+                    self.state.tool == Tool::Combine,
+                    shortcuts::compact_label("Combine", shortcuts::tool_shortcut(Tool::Combine)),
+                )
+                .clicked()
+                {
+                    self.state.apply(Action::SetTool(Tool::Combine));
+                }
+                if icons::selectable_icon_button(
+                    ui,
                     icons::IconId::Dimension,
                     self.state.tool == Tool::Dimension,
                     shortcuts::compact_label(
@@ -2960,6 +3044,54 @@ impl eframe::App for App {
                 },
                 // "Calibrate scale" button (#163): one tracing image selected, nothing
                 // else, no calibration already running.
+                boolean_op: (self.state.tool == Tool::Combine).then(|| {
+                    let cb = self.state.creating_boolean.as_ref();
+                    let rows = |list: Option<&Vec<usize>>| -> Vec<String> {
+                        list.map(|l| {
+                            l.iter()
+                                .map(|&bi| {
+                                    names::element_name(&self.state.doc, SceneElement::Body(bi))
+                                        .map(|n| n.to_string())
+                                        .unwrap_or_else(|| format!("Body {bi}"))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                    };
+                    let kind = cb.map(|c| c.kind).unwrap_or(model::BooleanOpKind::Combine);
+                    let a_len = cb.map(|c| c.a.len()).unwrap_or(0);
+                    let b_len = cb.map(|c| c.b.len()).unwrap_or(0);
+                    context::BooleanControl {
+                        kind,
+                        a_rows: rows(cb.map(|c| &c.a)),
+                        b_rows: rows(cb.map(|c| &c.b)),
+                        picking_b: cb.map(|c| c.picking_b).unwrap_or(false),
+                        keep_b: cb.map(|c| c.keep_b).unwrap_or(false),
+                        editing: cb.map(|c| c.editing.is_some()).unwrap_or(false),
+                        can_commit: match kind {
+                            model::BooleanOpKind::Combine => a_len >= 2,
+                            _ => a_len >= 1 && b_len >= 1,
+                        },
+                    }
+                }),
+                boolean_edit_start: (self.state.tool != Tool::Combine)
+                    .then(|| {
+                        let mut only = None;
+                        for element in self.state.scene_selection.iter() {
+                            match (element, only) {
+                                (SceneElement::BooleanOp(i), None) => only = Some(i),
+                                _ => return None,
+                            }
+                        }
+                        only.filter(|&i| {
+                            self.state
+                                .doc
+                                .boolean_ops
+                                .get(i)
+                                .is_some_and(|o| !o.deleted)
+                        })
+                    })
+                    .flatten(),
                 revolve: (self.state.tool == Tool::Revolve).then(|| {
                     let cr = self.state.creating_revolve.as_ref();
                     context::RevolveControl {
@@ -3028,6 +3160,8 @@ impl eframe::App for App {
             let mut calibrate_apply: Option<(context::CalibrateImageControl, String)> = None;
             let mut calibrate_begin: Option<usize> = None;
             let mut revolve_edit: Option<context::RevolveEdit> = None;
+            let mut boolean_edit: Option<context::BooleanEdit> = None;
+            let mut boolean_edit_begin: Option<usize> = None;
             egui::SidePanel::right("context")
                 .resizable(true)
                 .default_width(200.0)
@@ -3057,6 +3191,8 @@ impl eframe::App for App {
                         &mut |choice| units_change = Some(choice),
                         &mut |edit| edge_picker_edit = Some(edit),
                         &mut |edit| revolve_edit = Some(edit),
+                        &mut |edit| boolean_edit = Some(edit),
+                        &mut |op| boolean_edit_begin = Some(op),
                         &mut |image| calibrate_begin = Some(image),
                         &mut |control, text| calibrate_apply = Some((control, text)),
                     );
@@ -3069,6 +3205,62 @@ impl eframe::App for App {
                 match edit {
                     context::RevolveEdit::Symmetric(v) => cr.symmetric = v,
                     context::RevolveEdit::BodyChoice(choice) => cr.body_choice = choice,
+                }
+            }
+            if let Some(edit) = boolean_edit {
+                match edit {
+                    context::BooleanEdit::Commit => {
+                        self.state.apply(Action::CommitBoolean);
+                    }
+                    edit => {
+                        let cb = self
+                            .state
+                            .creating_boolean
+                            .get_or_insert_with(actions::CreatingBoolean::default);
+                        match edit {
+                            context::BooleanEdit::Kind(kind) => {
+                                cb.kind = kind;
+                                if kind == model::BooleanOpKind::Combine {
+                                    // Combine has a single picker: fold B into A.
+                                    let b = std::mem::take(&mut cb.b);
+                                    for bi in b {
+                                        if !cb.a.contains(&bi) {
+                                            cb.a.push(bi);
+                                        }
+                                    }
+                                    cb.picking_b = false;
+                                }
+                            }
+                            context::BooleanEdit::PickingB(v) => cb.picking_b = v,
+                            context::BooleanEdit::KeepB(v) => cb.keep_b = v,
+                            context::BooleanEdit::RemoveA(Some(i)) => {
+                                if i < cb.a.len() {
+                                    cb.a.remove(i);
+                                }
+                            }
+                            context::BooleanEdit::RemoveA(None) => cb.a.clear(),
+                            context::BooleanEdit::RemoveB(Some(i)) => {
+                                if i < cb.b.len() {
+                                    cb.b.remove(i);
+                                }
+                            }
+                            context::BooleanEdit::RemoveB(None) => cb.b.clear(),
+                            context::BooleanEdit::Commit => unreachable!(),
+                        }
+                    }
+                }
+            }
+            if let Some(op) = boolean_edit_begin {
+                if let Some(existing) = self.state.doc.boolean_ops.get(op).cloned() {
+                    self.state.creating_boolean = Some(actions::CreatingBoolean {
+                        kind: existing.kind,
+                        a: existing.a,
+                        b: existing.b,
+                        picking_b: false,
+                        keep_b: existing.keep_b,
+                        editing: Some(op),
+                    });
+                    self.state.apply(Action::SetTool(Tool::Combine));
                 }
             }
             if let Some(image) = calibrate_begin {
@@ -6607,6 +6799,10 @@ impl App {
             self.show_revolve_angle_input(ui, &project);
         }
 
+        if self.state.tool == Tool::Combine {
+            self.handle_combine_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
+        }
+
         if matches!(self.state.tool, Tool::Chamfer | Tool::Fillet) {
             self.handle_vertex_treatment_tool(ui, &project, pointer_screen);
             self.show_vertex_treatment_amount_input(ui, &project);
@@ -8198,6 +8394,14 @@ impl App {
                     "Revolve — click a line (or global axis) to revolve around"
                 } else {
                     "Revolve — click one or more coplanar profile faces"
+                }
+            }
+            Tool::Combine => {
+                let cb = self.state.creating_boolean.as_ref();
+                if cb.is_some_and(|c| !c.a.is_empty()) {
+                    "Combine — click bodies to add/remove • Enter: commit • Esc: cancel"
+                } else {
+                    "Combine — click one or more bodies to operate on"
                 }
             }
             Tool::Rectangle => {

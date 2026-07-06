@@ -96,6 +96,9 @@ pub enum Tool {
     /// revolve a solid (SPEC §3.5 Revolve). New body / fuse into touching bodies / cut
     /// picked bodies.
     Revolve,
+    /// Boolean operations between whole bodies (Combine tool): union, cut, intersect,
+    /// symmetric difference. Inputs become shadow bodies; outputs are new bodies.
+    Combine,
 }
 
 impl Tool {
@@ -116,6 +119,7 @@ impl Tool {
             "fillet" => Some(Tool::Fillet),
             "loft" => Some(Tool::Loft),
             "revolve" => Some(Tool::Revolve),
+            "combine" | "boolean" => Some(Tool::Combine),
             _ => None,
         }
     }
@@ -382,6 +386,33 @@ pub enum RevolveBodyChoice {
 /// State for the in-progress (pre-Enter) revolve: picked profile faces, the axis, the
 /// live sweep angle (degrees; the text field also accepts `rad` expressions), and how
 /// the result lands.
+/// In-progress boolean operation (Combine tool): the op kind, the picked input bodies
+/// per side, which side the next viewport body click lands on, and the keep-B toggle.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreatingBoolean {
+    pub kind: crate::model::BooleanOpKind,
+    pub a: Vec<usize>,
+    pub b: Vec<usize>,
+    /// Which picker the next body click adds to (`Combine` only ever uses A).
+    pub picking_b: bool,
+    pub keep_b: bool,
+    /// `Some(op)` while re-editing a committed operation (commit then updates in place).
+    pub editing: Option<usize>,
+}
+
+impl Default for CreatingBoolean {
+    fn default() -> Self {
+        Self {
+            kind: crate::model::BooleanOpKind::Combine,
+            a: Vec::new(),
+            b: Vec::new(),
+            picking_b: false,
+            keep_b: false,
+            editing: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CreatingRevolve {
     pub sketch: Option<SketchId>,
@@ -898,6 +929,25 @@ pub enum Action {
         body: RevolveBodyChoice,
         bodies: Vec<usize>,
     },
+    /// Commit the in-progress Combine-tool boolean operation.
+    CommitBoolean,
+    /// Scripted/replayed boolean operation with an explicit payload (also what
+    /// `CommitBoolean` lowers to).
+    CreateBooleanOperation {
+        kind: crate::model::BooleanOpKind,
+        a: Vec<usize>,
+        b: Vec<usize>,
+        keep_b: bool,
+    },
+    /// Re-point an existing boolean operation at new inputs / kind / keep-B. Outputs are
+    /// preserved (their meshes recompute; the last output absorbs extra result solids).
+    EditBooleanOperation {
+        op: usize,
+        kind: crate::model::BooleanOpKind,
+        a: Vec<usize>,
+        b: Vec<usize>,
+        keep_b: bool,
+    },
     SetExtrudeBodyMode { mode: ExtrudeBodyMode },
     /// Enable or disable snapping while drawing/dragging.
     SetSnapping(bool),
@@ -1257,6 +1307,8 @@ pub struct AppState {
     pub creating_loft: Option<CreatingLoft>,
     /// In-progress revolve (Revolve tool).
     pub creating_revolve: Option<CreatingRevolve>,
+    /// In-progress boolean operation (Combine tool).
+    pub creating_boolean: Option<CreatingBoolean>,
     /// In-progress image scale calibration (#163/#171): Some while the user is placing
     /// the two reference points / typing the real length.
     pub creating_calibration: Option<CreatingCalibration>,
@@ -1362,6 +1414,7 @@ impl Default for AppState {
             creating_edge_treatment: None,
             creating_loft: None,
             creating_revolve: None,
+            creating_boolean: None,
             creating_calibration: None,
             viewport_aspect: 16.0 / 9.0,
             draw_construction: false,
@@ -1479,6 +1532,7 @@ impl AppState {
                     source: crate::model::BodySource::single(ei),
                     name: None,
                     deleted: false,
+                    shadow: false,
                 });
                 self.doc.shape_order.push(ShapeKind::Body);
             }
@@ -1490,6 +1544,7 @@ impl AppState {
                         source: crate::model::BodySource::single(ei),
                         name: None,
                         deleted: false,
+                        shadow: false,
                     });
                     self.doc.shape_order.push(ShapeKind::Body);
                 }
@@ -1502,6 +1557,7 @@ impl AppState {
                         source: crate::model::BodySource::single(ei),
                         name: None,
                         deleted: false,
+                        shadow: false,
                     });
                     self.doc.shape_order.push(ShapeKind::Body);
                 }
@@ -1531,6 +1587,7 @@ impl AppState {
             source: crate::model::BodySource::single(ei),
             name: None,
             deleted: false,
+            shadow: false,
         });
         self.doc.shape_order.push(ShapeKind::Body);
         self.doc.bodies.len() - 1
@@ -1553,6 +1610,7 @@ impl AppState {
             source: crate::model::BodySource::Imported(mesh_index),
             name: Some(source_name),
             deleted: false,
+            shadow: false,
         });
         self.doc.shape_order.push(ShapeKind::Body);
         self.refresh_document_health();
@@ -1852,6 +1910,7 @@ impl AppState {
                 source: crate::model::BodySource::Revolve(self.doc.revolutions.len() - 1),
                 name: None,
                 deleted: false,
+                shadow: false,
             });
         }
         self.doc.shape_order.push(crate::model::ShapeKind::Revolution);
@@ -2188,6 +2247,62 @@ fn dimension_target_status_label(target: DimensionTarget) -> String {
     }
 }
 
+/// Shared validation for creating/editing a boolean operation. `editing` is the op being
+/// edited (its own outputs are then off-limits as inputs, as is anything downstream of it).
+fn validate_boolean_inputs(
+    doc: &Document,
+    kind: crate::model::BooleanOpKind,
+    a: &[usize],
+    b: &[usize],
+    editing: Option<usize>,
+) -> Result<(), String> {
+    use crate::model::BooleanOpKind;
+    if a.is_empty() {
+        return Err(match kind {
+            BooleanOpKind::Combine => "Pick at least two bodies to combine".to_string(),
+            _ => "Pick at least one body for side A".to_string(),
+        });
+    }
+    if kind == BooleanOpKind::Combine {
+        if a.len() < 2 {
+            return Err("Pick at least two bodies to combine".to_string());
+        }
+        if !b.is_empty() {
+            return Err("Combine uses a single picker; side B must be empty".to_string());
+        }
+    } else if b.is_empty() {
+        return Err(format!("{} needs at least one body on side B", kind.label()));
+    }
+    // While editing, the op's own current inputs are shadow bodies — re-picking them is
+    // the normal case, not a conflict.
+    let editing_inputs: Vec<usize> = editing
+        .and_then(|e| doc.boolean_ops.get(e))
+        .map(|o| o.a.iter().chain(o.b.iter()).copied().collect())
+        .unwrap_or_default();
+    for &bi in a.iter().chain(b.iter()) {
+        let Some(body) = doc.bodies.get(bi).filter(|body| !body.deleted) else {
+            return Err(format!("Body {bi} not found"));
+        };
+        if body.shadow && !editing_inputs.contains(&bi) {
+            return Err(format!("Body {bi} is already consumed by another operation"));
+        }
+        if let crate::model::BodySource::Boolean { op, .. } = body.source {
+            // An op may consume outputs of *earlier* ops only, so the dependency graph
+            // stays acyclic (edit included).
+            if editing.is_some_and(|e| op >= e) {
+                return Err("Cannot use this operation's own (or a later) result as an input".to_string());
+            }
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    for &bi in a.iter().chain(b.iter()) {
+        if !seen.insert(bi) {
+            return Err(format!("Body {bi} is picked twice"));
+        }
+    }
+    Ok(())
+}
+
 fn element_label(element: SceneElement) -> String {
     match element {
         SceneElement::ConstructionPlane(i) => format!("Construction plane {i}"),
@@ -2202,6 +2317,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::BodyEdge { .. } => "Body edge".to_string(),
         SceneElement::BodyVertex { .. } => "Body vertex".to_string(),
         SceneElement::Image(i) => format!("Image {i}"),
+        SceneElement::BooleanOp(i) => format!("Boolean operation {i}"),
     }
 }
 
@@ -2799,6 +2915,20 @@ impl AppState {
                         self.status = "Undid last parameter".to_string();
                         undone = true;
                     }
+                    Some(ShapeKind::BooleanOperation) => {
+                        // Undo the whole boolean op: its output bodies were popped by the
+                        // ShapeKind::Body entries recorded after it (same undo group), so
+                        // here we drop the operation and un-shadow its inputs.
+                        if let Some(op) = self.doc.boolean_ops.pop() {
+                            for &bi in op.a.iter().chain(op.b.iter()) {
+                                if let Some(body) = self.doc.bodies.get_mut(bi) {
+                                    body.shadow = false;
+                                }
+                            }
+                        }
+                        self.status = "Undid boolean operation".to_string();
+                        undone = true;
+                    }
                     Some(ShapeKind::Body) => {
                         let body = self.doc.bodies.pop();
                         // A body created fresh by an extrusion always wraps exactly that one
@@ -2998,6 +3128,12 @@ impl AppState {
                 if self.creating_loft.is_some() && tool != Tool::Loft {
                     self.creating_loft = None;
                 }
+                if self.creating_boolean.is_some() && tool != Tool::Combine {
+                    self.creating_boolean = None;
+                }
+                if tool == Tool::Combine && self.creating_boolean.is_none() {
+                    self.creating_boolean = Some(CreatingBoolean::default());
+                }
                 if self.creating_revolve.is_some() && tool != Tool::Revolve {
                     self.creating_revolve = None;
                 }
@@ -3090,6 +3226,10 @@ impl AppState {
                     }
                     Tool::Revolve => {
                         "Revolve tool — click profile faces, then an axis line".to_string()
+                    }
+                    Tool::Combine => {
+                        "Combine tool — click bodies to pick them, choose the operation, Enter commits"
+                            .to_string()
                     }
                 };
                 if tool == Tool::Dimension {
@@ -5064,12 +5204,156 @@ impl AppState {
                     source: crate::model::BodySource::Loft(self.doc.lofts.len() - 1),
                     name: None,
                     deleted: false,
+                    shadow: false,
                 });
                 // One shape-order marker for the pair; undo pops the body with the loft.
                 self.doc.shape_order.push(ShapeKind::Loft);
                 self.tool = Tool::Select;
                 self.status = format!("Added loft ({count} sections)");
                 self.refresh_document_health();
+                ActionResult::Ok
+            }
+            Action::CommitBoolean => {
+                let Some(cb) = self.creating_boolean.take() else {
+                    return ActionResult::Err("No boolean operation in progress".to_string());
+                };
+                let result = match cb.editing {
+                    Some(op) => self.apply(Action::EditBooleanOperation {
+                        op,
+                        kind: cb.kind,
+                        a: cb.a.clone(),
+                        b: cb.b.clone(),
+                        keep_b: cb.keep_b,
+                    }),
+                    None => self.apply(Action::CreateBooleanOperation {
+                        kind: cb.kind,
+                        a: cb.a.clone(),
+                        b: cb.b.clone(),
+                        keep_b: cb.keep_b,
+                    }),
+                };
+                if matches!(result, ActionResult::Err(_)) {
+                    self.creating_boolean = Some(cb);
+                } else {
+                    self.creating_boolean = Some(CreatingBoolean::default());
+                }
+                result
+            }
+            Action::CreateBooleanOperation { kind, a, b, keep_b } => {
+                if let Err(e) = validate_boolean_inputs(&self.doc, kind, &a, &b, None) {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let op_index = self.doc.boolean_ops.len();
+                self.doc.boolean_ops.push(crate::model::BooleanOperation {
+                    kind,
+                    a: a.clone(),
+                    b: b.clone(),
+                    keep_b,
+                    outputs: Vec::new(),
+                    name: None,
+                    deleted: false,
+                });
+                // Output body count = solids the kernel finds in the result right now
+                // (at least one). A later rebuild that produces more solids folds the
+                // extras into the last output body; fewer leaves trailing outputs empty.
+                let solids = crate::extrude::boolean_result_solid_count(&self.doc, op_index)
+                    .unwrap_or(1)
+                    .max(1);
+                self.doc.shape_order.push(ShapeKind::BooleanOperation);
+                let mut outputs = Vec::with_capacity(solids);
+                for ordinal in 0..solids {
+                    outputs.push(self.doc.bodies.len());
+                    self.doc.bodies.push(crate::model::Body {
+                        source: crate::model::BodySource::Boolean {
+                            op: op_index,
+                            solid: ordinal,
+                        },
+                        name: None,
+                        deleted: false,
+                        shadow: false,
+                    });
+                    self.doc.shape_order.push(ShapeKind::Body);
+                }
+                self.doc.boolean_ops[op_index].outputs = outputs;
+                for &input in a.iter() {
+                    if let Some(body) = self.doc.bodies.get_mut(input) {
+                        body.shadow = true;
+                    }
+                }
+                if !keep_b {
+                    for &input in b.iter() {
+                        if let Some(body) = self.doc.bodies.get_mut(input) {
+                            body.shadow = true;
+                        }
+                    }
+                }
+                self.refresh_document_health();
+                self.status = format!(
+                    "{}: {} new body(ies) from {} input(s)",
+                    kind.label(),
+                    solids,
+                    a.len() + b.len()
+                );
+                ActionResult::Ok
+            }
+            Action::EditBooleanOperation { op, kind, a, b, keep_b } => {
+                if self
+                    .doc
+                    .boolean_ops
+                    .get(op)
+                    .filter(|o| !o.deleted)
+                    .is_none()
+                {
+                    let e = format!("Boolean operation {op} not found");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                if let Err(e) = validate_boolean_inputs(&self.doc, kind, &a, &b, Some(op)) {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                // Release the old inputs from shadow, re-point the op, shadow the new ones.
+                let old = self.doc.boolean_ops[op].clone();
+                for &input in old.a.iter().chain(old.b.iter()) {
+                    if let Some(body) = self.doc.bodies.get_mut(input) {
+                        body.shadow = false;
+                    }
+                }
+                {
+                    let entry = &mut self.doc.boolean_ops[op];
+                    entry.kind = kind;
+                    entry.a = a.clone();
+                    entry.b = b.clone();
+                    entry.keep_b = keep_b;
+                }
+                for &input in a.iter() {
+                    if let Some(body) = self.doc.bodies.get_mut(input) {
+                        body.shadow = true;
+                    }
+                }
+                if !keep_b {
+                    for &input in b.iter() {
+                        if let Some(body) = self.doc.bodies.get_mut(input) {
+                            body.shadow = true;
+                        }
+                    }
+                }
+                // Inputs shadowed by *other* live ops must stay shadows even if this op
+                // just dropped them.
+                let ops = self.doc.boolean_ops.clone();
+                for (oi, o) in ops.iter().enumerate() {
+                    if o.deleted || oi == op {
+                        continue;
+                    }
+                    for &input in o.a.iter().chain((!o.keep_b).then_some(&o.b).into_iter().flatten()) {
+                        if let Some(body) = self.doc.bodies.get_mut(input) {
+                            body.shadow = true;
+                        }
+                    }
+                }
+                self.refresh_document_health();
+                self.status = format!("Edited {}", kind.label());
                 ActionResult::Ok
             }
             Action::CommitRevolve => {
@@ -7527,6 +7811,220 @@ mod tests {
         state
     }
 
+    /// Two separate extruded box bodies side by side (overlapping when `overlap`).
+    fn two_box_state(overlap: bool) -> AppState {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        let a = crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch,
+            0.0,
+            0.0,
+            10.0,
+            10.0,
+            [false; 4],
+        );
+        let x1 = if overlap { 5.0 } else { 20.0 };
+        let b = crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch,
+            x1,
+            0.0,
+            x1 + 10.0,
+            10.0,
+            [false; 4],
+        );
+        state.apply(Action::CreateExtrusion {
+            sketch,
+            faces: vec![ExtrudeFace::Polygon(a.to_vec())],
+            distance: 5.0,
+            body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
+        });
+        state.apply(Action::CreateExtrusion {
+            sketch,
+            faces: vec![ExtrudeFace::Polygon(b.to_vec())],
+            distance: 5.0,
+            body: crate::actions::ExtrudeBodyChoice::New,
+            target: None,
+        });
+        assert_eq!(state.doc.bodies.len(), 2);
+        state
+    }
+
+    /// Combine tool: committing shadows the inputs, creates the operation element and its
+    /// output bodies, and one undo restores everything.
+    #[test]
+    fn boolean_combine_creates_outputs_and_shadows_inputs() {
+        let mut state = two_box_state(true);
+        let result = state.apply(Action::CreateBooleanOperation {
+            kind: crate::model::BooleanOpKind::Combine,
+            a: vec![0, 1],
+            b: Vec::new(),
+            keep_b: false,
+        });
+        assert!(matches!(result, ActionResult::Ok));
+        assert_eq!(state.doc.boolean_ops.len(), 1);
+        let op = &state.doc.boolean_ops[0];
+        assert!(!op.outputs.is_empty());
+        for &out in &op.outputs {
+            assert!(matches!(
+                state.doc.bodies[out].source,
+                crate::model::BodySource::Boolean { op: 0, .. }
+            ));
+            assert!(!state.doc.bodies[out].shadow);
+        }
+        assert!(state.doc.bodies[0].shadow, "input A should be a shadow body");
+        assert!(state.doc.bodies[1].shadow, "input B should be a shadow body");
+
+        state.apply(Action::UndoLast);
+        assert!(state.doc.boolean_ops.is_empty());
+        assert_eq!(state.doc.bodies.len(), 2);
+        assert!(!state.doc.bodies[0].shadow);
+        assert!(!state.doc.bodies[1].shadow);
+    }
+
+    /// Cut with keep-B leaves the B-side inputs as real bodies.
+    #[test]
+    fn boolean_cut_keep_b_leaves_b_real() {
+        let mut state = two_box_state(true);
+        let result = state.apply(Action::CreateBooleanOperation {
+            kind: crate::model::BooleanOpKind::Cut,
+            a: vec![0],
+            b: vec![1],
+            keep_b: true,
+        });
+        assert!(matches!(result, ActionResult::Ok));
+        assert!(state.doc.bodies[0].shadow);
+        assert!(!state.doc.bodies[1].shadow, "keep_b must leave B real");
+    }
+
+    /// Validation: combine needs two inputs; consumed (shadow) inputs are rejected; the
+    /// two-sided ops need a B side.
+    #[test]
+    fn boolean_validation_rejects_bad_inputs() {
+        let mut state = two_box_state(true);
+        assert!(matches!(
+            state.apply(Action::CreateBooleanOperation {
+                kind: crate::model::BooleanOpKind::Combine,
+                a: vec![0],
+                b: Vec::new(),
+                keep_b: false,
+            }),
+            ActionResult::Err(_)
+        ));
+        assert!(matches!(
+            state.apply(Action::CreateBooleanOperation {
+                kind: crate::model::BooleanOpKind::Cut,
+                a: vec![0],
+                b: Vec::new(),
+                keep_b: false,
+            }),
+            ActionResult::Err(_)
+        ));
+        // Consume both, then try to reuse a shadow input.
+        state.apply(Action::CreateBooleanOperation {
+            kind: crate::model::BooleanOpKind::Combine,
+            a: vec![0, 1],
+            b: Vec::new(),
+            keep_b: false,
+        });
+        let out = state.doc.boolean_ops[0].outputs[0];
+        assert!(matches!(
+            state.apply(Action::CreateBooleanOperation {
+                kind: crate::model::BooleanOpKind::Cut,
+                a: vec![out],
+                b: vec![0],
+                keep_b: false,
+            }),
+            ActionResult::Err(_)
+        ));
+    }
+
+    /// Editing re-points the inputs and adjusts shadow flags.
+    #[test]
+    fn boolean_edit_repoints_inputs() {
+        let mut state = two_box_state(true);
+        state.apply(Action::CreateBooleanOperation {
+            kind: crate::model::BooleanOpKind::Cut,
+            a: vec![0],
+            b: vec![1],
+            keep_b: false,
+        });
+        assert!(state.doc.bodies[1].shadow);
+        let result = state.apply(Action::EditBooleanOperation {
+            op: 0,
+            kind: crate::model::BooleanOpKind::Cut,
+            a: vec![0],
+            b: vec![1],
+            keep_b: true,
+        });
+        assert!(matches!(result, ActionResult::Ok));
+        assert!(state.doc.bodies[0].shadow);
+        assert!(!state.doc.bodies[1].shadow, "edit to keep_b must release B");
+        assert_eq!(state.doc.boolean_ops[0].keep_b, true);
+    }
+
+    /// Deleting the operation element tombstones its outputs and releases its inputs.
+    #[test]
+    fn boolean_delete_releases_inputs() {
+        let mut state = two_box_state(true);
+        state.apply(Action::CreateBooleanOperation {
+            kind: crate::model::BooleanOpKind::Intersect,
+            a: vec![0],
+            b: vec![1],
+            keep_b: false,
+        });
+        let out = state.doc.boolean_ops[0].outputs[0];
+        assert!(crate::document_lifecycle::tombstone_element(
+            &mut state.doc,
+            SceneElement::BooleanOp(0),
+        ));
+        assert!(state.doc.boolean_ops[0].deleted);
+        assert!(state.doc.bodies[out].deleted);
+        assert!(!state.doc.bodies[0].shadow);
+        assert!(!state.doc.bodies[1].shadow);
+    }
+
+    /// Combining two *disjoint* boxes keeps them as one operation with (kernel builds) two
+    /// output solids — and the outputs render as real meshes.
+    #[cfg(feature = "occt")]
+    #[test]
+    fn boolean_combine_disjoint_produces_two_outputs() {
+        let mut state = two_box_state(false);
+        state.apply(Action::CreateBooleanOperation {
+            kind: crate::model::BooleanOpKind::Combine,
+            a: vec![0, 1],
+            b: Vec::new(),
+            keep_b: false,
+        });
+        let op = &state.doc.boolean_ops[0];
+        assert_eq!(op.outputs.len(), 2, "disjoint union should split into two bodies");
+        for &out in &op.outputs {
+            assert!(
+                crate::extrude::body_solid_mesh(&state.doc, out).is_some(),
+                "output body {out} should have a mesh"
+            );
+        }
+    }
+
+    /// Cutting an overlapping box out of another produces a real, smaller solid.
+    #[cfg(feature = "occt")]
+    #[test]
+    fn boolean_cut_produces_kernel_mesh() {
+        let mut state = two_box_state(true);
+        state.apply(Action::CreateBooleanOperation {
+            kind: crate::model::BooleanOpKind::Cut,
+            a: vec![0],
+            b: vec![1],
+            keep_b: false,
+        });
+        let op = &state.doc.boolean_ops[0];
+        assert_eq!(op.outputs.len(), 1);
+        let mesh = crate::extrude::body_solid_mesh(&state.doc, op.outputs[0]);
+        assert!(mesh.is_some_and(|m| !m.triangles.is_empty()));
+    }
+
     /// #122: pushing/pulling a bare side wall (no separate sketch) creates an implicit
     /// sketch on that exact face and starts extruding from it.
     #[test]
@@ -8166,6 +8664,7 @@ mod tests {
             source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
             name: None,
             deleted: false,
+            shadow: false,
         });
         state.doc.shape_order.push(ShapeKind::Body);
         assert!(

@@ -49,6 +49,12 @@ pub struct ContextInput<'a> {
     pub calibrate_image: Option<CalibrateImageControl>,
     /// Revolve tool state (#revolve): `Some` while the Revolve tool is active.
     pub revolve: Option<RevolveControl>,
+    /// Combine tool state: `Some` while the Combine tool is active (creating or editing
+    /// a boolean operation).
+    pub boolean_op: Option<BooleanControl>,
+    /// "Edit operation" entry point: `Some(op)` when exactly one boolean operation is
+    /// selected and the Combine tool isn't already active.
+    pub boolean_edit_start: Option<usize>,
     /// Guided calibration entry point (#163): `Some(image)` when exactly one tracing image
     /// is selected and no calibration is running — renders the "Calibrate scale" button.
     pub calibrate_start: Option<usize>,
@@ -67,6 +73,33 @@ pub struct RevolveControl {
     pub symmetric: bool,
     pub body_choice: crate::actions::RevolveBodyChoice,
     pub cut_rows: Vec<String>,
+}
+
+/// What the Combine tool's context section shows: the operation kind, both picker
+/// sides (labels), which side the next viewport click lands on, and the keep-B toggle.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BooleanControl {
+    pub kind: crate::model::BooleanOpKind,
+    pub a_rows: Vec<String>,
+    pub b_rows: Vec<String>,
+    pub picking_b: bool,
+    pub keep_b: bool,
+    /// `true` while re-editing a committed operation (changes the commit label).
+    pub editing: bool,
+    pub can_commit: bool,
+}
+
+/// One edit from the Combine context section.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BooleanEdit {
+    Kind(crate::model::BooleanOpKind),
+    PickingB(bool),
+    KeepB(bool),
+    /// Remove row `i` from side A (`None` clears the side).
+    RemoveA(Option<usize>),
+    /// Remove row `i` from side B (`None` clears the side).
+    RemoveB(Option<usize>),
+    Commit,
 }
 
 /// One edit from the Revolve context section.
@@ -157,6 +190,10 @@ pub struct ContextPaneContent {
     pub calibrate_image: Option<CalibrateImageControl>,
     /// Revolve tool controls (#revolve).
     pub revolve: Option<RevolveControl>,
+    /// Combine tool controls.
+    pub boolean_op: Option<BooleanControl>,
+    /// "Edit operation" button target.
+    pub boolean_edit_start: Option<usize>,
     /// "Calibrate scale" start button (#163): the selected tracing image.
     pub calibrate_start: Option<usize>,
     /// Guided-calibration hint: points placed so far (of 2).
@@ -281,6 +318,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         });
     let calibrate_image = input.calibrate_image;
     let revolve = input.revolve.clone();
+    let boolean_op = input.boolean_op.clone();
+    let boolean_edit_start = input.boolean_edit_start;
     let calibrate_start = input.calibrate_start;
     let calibrate_pending = input.calibrate_pending;
 
@@ -300,6 +339,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             edge_picker: edge_picker.clone(),
             calibrate_image,
             revolve: revolve.clone(),
+            boolean_op: boolean_op.clone(),
+            boolean_edit_start,
         calibrate_start,
             calibrate_pending,
         };
@@ -320,6 +361,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             edge_picker: edge_picker.clone(),
             calibrate_image,
             revolve: revolve.clone(),
+            boolean_op: boolean_op.clone(),
+            boolean_edit_start,
         calibrate_start,
             calibrate_pending,
         };
@@ -340,6 +383,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             edge_picker: edge_picker.clone(),
             calibrate_image,
             revolve: revolve.clone(),
+            boolean_op: boolean_op.clone(),
+            boolean_edit_start,
         calibrate_start,
             calibrate_pending,
         };
@@ -363,6 +408,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         edge_picker,
         calibrate_image,
         revolve,
+        boolean_op,
+        boolean_edit_start,
         calibrate_start,
         calibrate_pending,
     }
@@ -570,6 +617,8 @@ pub fn show_pane(
     on_units_changed: &mut impl FnMut(UnitsChoice),
     on_edge_picker_edit: &mut impl FnMut(Option<usize>),
     on_revolve_edit: &mut impl FnMut(RevolveEdit),
+    on_boolean_edit: &mut impl FnMut(BooleanEdit),
+    on_boolean_edit_start: &mut impl FnMut(usize),
     on_calibrate_start: &mut impl FnMut(usize),
     on_calibrate_image: &mut impl FnMut(CalibrateImageControl, String),
 ) {
@@ -779,6 +828,123 @@ pub fn show_pane(
                 on_revolve_edit(RevolveEdit::BodyChoice(choice));
             }
         }
+    }
+
+    if let Some(control) = &content.boolean_op {
+        any_control = true;
+        ui.separator();
+        ui.label(
+            egui::RichText::new(if control.editing {
+                "Edit boolean operation"
+            } else {
+                "Combine"
+            })
+            .strong(),
+        );
+        let mut kind = control.kind;
+        for value in [
+            crate::model::BooleanOpKind::Combine,
+            crate::model::BooleanOpKind::Cut,
+            crate::model::BooleanOpKind::Intersect,
+            crate::model::BooleanOpKind::Difference,
+        ] {
+            if ui.radio_value(&mut kind, value, value.label()).changed() {
+                on_boolean_edit(BooleanEdit::Kind(kind));
+            }
+        }
+        let two_sided = control.kind != crate::model::BooleanOpKind::Combine;
+        if two_sided {
+            ui.horizontal(|ui| {
+                ui.label("Picking");
+                if ui.selectable_label(!control.picking_b, "A").clicked() {
+                    on_boolean_edit(BooleanEdit::PickingB(false));
+                }
+                if ui.selectable_label(control.picking_b, "B").clicked() {
+                    on_boolean_edit(BooleanEdit::PickingB(true));
+                }
+            });
+        }
+        let side = |ui: &mut egui::Ui,
+                    heading: String,
+                    rows: &[String],
+                    hint: &str,
+                    remove: &mut dyn FnMut(Option<usize>)| {
+            ui.label(egui::RichText::new(heading).strong());
+            if rows.is_empty() {
+                ui.label(
+                    egui::RichText::new(hint)
+                        .color(egui::Color32::from_gray(140))
+                        .size(11.0),
+                );
+            }
+            for (i, row) in rows.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    if ui.small_button("✕").on_hover_text("Remove from set").clicked() {
+                        remove(Some(i));
+                    }
+                    ui.label(row);
+                });
+            }
+            if rows.len() > 1 && ui.small_button("Clear").clicked() {
+                remove(None);
+            }
+        };
+        side(
+            ui,
+            format!(
+                "{} ({})",
+                if two_sided { "Side A" } else { "Bodies" },
+                control.a_rows.len()
+            ),
+            &control.a_rows,
+            "Click bodies in the viewport",
+            &mut |i| on_boolean_edit(BooleanEdit::RemoveA(i)),
+        );
+        if two_sided {
+            side(
+                ui,
+                format!("Side B ({})", control.b_rows.len()),
+                &control.b_rows,
+                "Switch Picking to B, then click bodies",
+                &mut |i| on_boolean_edit(BooleanEdit::RemoveB(i)),
+            );
+            let mut keep_b = control.keep_b;
+            if ui
+                .checkbox(&mut keep_b, "Keep B bodies")
+                .on_hover_text("Leave the B-side inputs as real bodies instead of shadows")
+                .changed()
+            {
+                on_boolean_edit(BooleanEdit::KeepB(keep_b));
+            }
+        }
+        ui.add_space(2.0);
+        if ui
+            .add_enabled(
+                control.can_commit && controls_enabled,
+                egui::Button::new(if control.editing { "Apply changes" } else { "Create" }),
+            )
+            .clicked()
+        {
+            on_boolean_edit(BooleanEdit::Commit);
+        }
+        ui.label(
+            egui::RichText::new("Inputs become shadow bodies; the result is one or more new bodies")
+                .color(egui::Color32::from_gray(140))
+                .size(11.0),
+        );
+    }
+
+    if let Some(op) = content.boolean_edit_start {
+        any_control = true;
+        ui.separator();
+        if ui.button("Edit operation").clicked() {
+            on_boolean_edit_start(op);
+        }
+        ui.label(
+            egui::RichText::new("Re-open the pickers to change this boolean operation")
+                .color(egui::Color32::from_gray(140))
+                .size(11.0),
+        );
     }
 
     if let Some(image) = content.calibrate_start {
@@ -1025,6 +1191,8 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
+            boolean_op: None,
+            boolean_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         }
@@ -1053,6 +1221,8 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
+            boolean_op: None,
+            boolean_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         };
@@ -1113,6 +1283,8 @@ mod tests {
                 edge_picker: None,
                 calibrate_image: None,
                 revolve: None,
+            boolean_op: None,
+            boolean_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: Some(UnitsControl {
@@ -1148,6 +1320,8 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
+            boolean_op: None,
+            boolean_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -1167,6 +1341,8 @@ mod tests {
                 edge_picker: None,
                 calibrate_image: None,
                 revolve: None,
+            boolean_op: None,
+            boolean_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: Some(UnitsControl {
@@ -1202,6 +1378,8 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
+            boolean_op: None,
+            boolean_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -1234,6 +1412,8 @@ mod tests {
                 edge_picker: None,
                 calibrate_image: None,
                 revolve: None,
+            boolean_op: None,
+            boolean_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: None,
@@ -1316,6 +1496,8 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
+            boolean_op: None,
+            boolean_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -1349,6 +1531,8 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
+            boolean_op: None,
+            boolean_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -1370,6 +1554,8 @@ mod tests {
                 edge_picker: None,
                 calibrate_image: None,
                 revolve: None,
+            boolean_op: None,
+            boolean_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: None,
@@ -1397,6 +1583,8 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
+            boolean_op: None,
+            boolean_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });

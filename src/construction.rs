@@ -934,7 +934,9 @@ impl PickOcclusion {
             .iter()
             .enumerate()
             .filter(|(bi, body)| {
+                // Shadow bodies neither render nor occlude/catch picks.
                 !body.deleted
+                    && !body.shadow
                     && visibility
                         .effective_visible(doc, crate::hierarchy::SceneElement::Body(*bi))
             })
@@ -1699,7 +1701,7 @@ fn nearest_body_edge(
     };
 
     for (bi, body) in doc.bodies.iter().enumerate() {
-        if body.deleted {
+        if body.deleted || body.shadow {
             continue;
         }
         let Some(solid) = crate::extrude::body_solid_mesh(doc, bi) else {
@@ -1722,7 +1724,7 @@ pub fn nearest_body_vertex(
 ) -> Option<(PickTargetKind, f32)> {
     let mut best: Option<(PickTargetKind, f32)> = None;
     for (bi, body) in doc.bodies.iter().enumerate() {
-        if body.deleted {
+        if body.deleted || body.shadow {
             continue;
         }
         let Some(solid) = crate::extrude::body_solid_mesh(doc, bi) else {
@@ -2218,6 +2220,7 @@ mod tests {
             source: crate::model::BodySource::Imported(0),
             name: None,
             deleted: false,
+            shadow: false,
         });
         doc
     }
@@ -2261,6 +2264,7 @@ mod tests {
             source: crate::model::BodySource::Imported(0),
             name: None,
             deleted: false,
+            shadow: false,
         });
 
         // Top-down view: everything projects by (x, y); the eye is above the blocker.

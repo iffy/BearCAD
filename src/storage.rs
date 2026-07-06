@@ -188,6 +188,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "tracing_image", &doc.tracing_images)?;
     save_indexed_nodes(&tx, &mut row_id, "loft", &doc.lofts)?;
     save_indexed_nodes(&tx, &mut row_id, "revolution", &doc.revolutions)?;
+    save_indexed_nodes(&tx, &mut row_id, "boolean_op", &doc.boolean_ops)?;
     if doc.construction_planes.len() > 1 {
         save_indexed_nodes(
             &tx,
@@ -451,6 +452,7 @@ pub fn open(path: &str) -> Result<Document> {
     let tracing_images = load_indexed_entities(&conn, "tracing_image")?;
     let lofts = load_indexed_entities(&conn, "loft")?;
     let revolutions = load_indexed_entities(&conn, "revolution")?;
+    let boolean_ops = load_indexed_entities(&conn, "boolean_op")?;
     let default_length_unit = load_default_length_unit_meta(&conn);
     let default_angle_unit = load_default_angle_unit_meta(&conn);
     let undo_groups = load_undo_groups_meta(&conn);
@@ -468,6 +470,7 @@ pub fn open(path: &str) -> Result<Document> {
         tracing_images,
         lofts,
         revolutions,
+        boolean_ops,
         shape_order,
         undo_groups,
         default_length_unit,
@@ -539,6 +542,47 @@ mod tests {
         let loaded = open(&path).unwrap();
         assert_eq!(loaded.lines, doc.lines);
         assert_eq!(loaded.constraints, doc.constraints);
+        assert_eq!(loaded.shape_order, doc.shape_order);
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn round_trips_boolean_ops_and_shadow_bodies() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("bearcad_boolean_roundtrip_test.bearcad");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: None,
+            deleted: false,
+            shadow: true,
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Boolean { op: 0, solid: 0 },
+            name: Some("Result".to_string()),
+            deleted: false,
+            shadow: false,
+        });
+        doc.boolean_ops.push(crate::model::BooleanOperation {
+            kind: crate::model::BooleanOpKind::Cut,
+            a: vec![0],
+            b: vec![3],
+            keep_b: true,
+            outputs: vec![1],
+            name: Some("Slot".to_string()),
+            deleted: false,
+        });
+        doc.shape_order.push(ShapeKind::BooleanOperation);
+        doc.shape_order.push(ShapeKind::Body);
+
+        save(&path, &doc).unwrap();
+        let loaded = open(&path).unwrap();
+        assert_eq!(loaded.boolean_ops, doc.boolean_ops);
+        assert_eq!(loaded.bodies, doc.bodies);
         assert_eq!(loaded.shape_order, doc.shape_order);
 
         std::fs::remove_file(&path).unwrap();
@@ -733,6 +777,7 @@ mod tests {
             source: BodySource::Extrusion(0),
             name: None,
             deleted: false,
+            shadow: false,
         });
         doc.shape_order.push(ShapeKind::Body);
 
@@ -791,6 +836,7 @@ mod tests {
             },
             name: None,
             deleted: false,
+            shadow: false,
         });
         doc.shape_order.push(ShapeKind::Body);
 

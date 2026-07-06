@@ -119,6 +119,21 @@ pub enum Instruction {
         body: crate::actions::RevolveBodyChoice,
         bodies: Vec<usize>,
     },
+    /// Boolean operation between whole bodies (the Combine tool).
+    CreateBooleanOp {
+        kind: crate::model::BooleanOpKind,
+        a: Vec<usize>,
+        b: Vec<usize>,
+        keep_b: bool,
+    },
+    /// Re-point an existing boolean operation.
+    EditBooleanOp {
+        op: usize,
+        kind: crate::model::BooleanOpKind,
+        a: Vec<usize>,
+        b: Vec<usize>,
+        keep_b: bool,
+    },
     SetElementVisible {
         element: SceneElement,
         visible: Option<bool>,
@@ -472,6 +487,12 @@ impl Instruction {
                     }
                 }
                 format!("bearcad.revolve{{ {} }}", parts.join(", "))
+            }
+            Instruction::CreateBooleanOp { kind, a, b, keep_b } => {
+                boolean_op_lua("bearcad.combine", None, *kind, a, b, *keep_b)
+            }
+            Instruction::EditBooleanOp { op, kind, a, b, keep_b } => {
+                boolean_op_lua("bearcad.edit_boolean", Some(*op), *kind, a, b, *keep_b)
             }
             Instruction::SetElementVisible { element, visible } => {
                 let target = element_lua_ref(element);
@@ -903,6 +924,11 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        SceneElement::BooleanOp(i) => ElementScriptTokens {
+            kind: "boolean_op",
+            index: i,
+            point: None,
+        },
     }
 }
 
@@ -925,6 +951,23 @@ fn geometric_constraint_script_name(
 pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) -> Option<Instruction> {
     use crate::actions::dim_label_axis_for_target;
     match action {
+        Action::CreateBooleanOperation { kind, a, b, keep_b } => {
+            Some(Instruction::CreateBooleanOp {
+                kind: *kind,
+                a: a.clone(),
+                b: b.clone(),
+                keep_b: *keep_b,
+            })
+        }
+        Action::EditBooleanOperation { op, kind, a, b, keep_b } => {
+            Some(Instruction::EditBooleanOp {
+                op: *op,
+                kind: *kind,
+                a: a.clone(),
+                b: b.clone(),
+                keep_b: *keep_b,
+            })
+        }
         Action::NewDocument => Some(Instruction::New),
         Action::Open { path } => Some(Instruction::Open(path.clone())),
         Action::Save { path } => Some(Instruction::Save(path.clone())),
@@ -1263,6 +1306,38 @@ pub fn instruction_for_new_revolution(doc: &crate::model::Document) -> Option<In
     })
 }
 
+/// Render a boolean-operation call (`bearcad.combine{}` / `bearcad.edit_boolean{}`).
+fn boolean_op_lua(
+    call: &str,
+    op: Option<usize>,
+    kind: crate::model::BooleanOpKind,
+    a: &[usize],
+    b: &[usize],
+    keep_b: bool,
+) -> String {
+    let list = |v: &[usize]| {
+        v.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+    };
+    let mut parts = Vec::new();
+    if let Some(op) = op {
+        parts.push(format!("index = {op}"));
+    }
+    parts.push(format!("op = \"{}\"", match kind {
+        crate::model::BooleanOpKind::Combine => "combine",
+        crate::model::BooleanOpKind::Cut => "cut",
+        crate::model::BooleanOpKind::Intersect => "intersect",
+        crate::model::BooleanOpKind::Difference => "difference",
+    }));
+    parts.push(format!("a = {{{}}}", list(a)));
+    if !b.is_empty() {
+        parts.push(format!("b = {{{}}}", list(b)));
+    }
+    if keep_b {
+        parts.push("keep_b = true".to_string());
+    }
+    format!("{call}{{ {} }}", parts.join(", "))
+}
+
 /// Render an extrusion's faces as `bearcad.extrude{}` keyword arguments
 /// (`rect=`/`rects=`, `circle=`/`circles=`, `polygon=`). A single rect or circle uses the
 /// singular field to match how `bearcad.extrude` is normally called by hand; multiple of a
@@ -1470,6 +1545,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
         Tool::Fillet => "fillet",
         Tool::Loft => "loft",
         Tool::Revolve => "revolve",
+        Tool::Combine => "combine",
     }
 }
 
@@ -2660,6 +2736,17 @@ impl ScriptRunner {
             Instruction::EdgeTreatment { extrusion, edge, kind, amount } => {
                 let result =
                     state.apply(Action::CommitEdgeTreatment { extrusion, edge, kind, amount });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::CreateBooleanOp { kind, a, b, keep_b } => {
+                let result = state.apply(Action::CreateBooleanOperation { kind, a, b, keep_b });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::EditBooleanOp { op, kind, a, b, keep_b } => {
+                let result =
+                    state.apply(Action::EditBooleanOperation { op, kind, a, b, keep_b });
                 self.record_action_error(result);
                 StepResult::Continue
             }

@@ -875,6 +875,16 @@ pub enum BodySource {
     Loft(usize),
     /// A revolved solid (#revolve); indexes `Document::revolutions`.
     Revolve(usize),
+    /// One output solid of a boolean operation (Combine tool): `op` indexes
+    /// `Document::boolean_ops`, `solid` is the ordinal of this body's solid within the
+    /// operation's result (a cut or difference can split into several pieces). The last
+    /// output body absorbs any extra solids a parametric rebuild produces, so the pane's
+    /// element list stays stable while geometry changes.
+    Boolean {
+        op: usize,
+        #[serde(default)]
+        solid: usize,
+    },
     /// Additive extrusions with one or more extrusions **subtracted** (cut) from them (#35).
     /// Purely-additive bodies stay in the `Extrusion`/`Extrusions` forms; a body only takes
     /// this shape once it has a cut. `cut` is `#[serde(default)]` so any future add-only
@@ -898,7 +908,7 @@ impl BodySource {
             Self::Extrusion(index) => std::slice::from_ref(index),
             Self::Extrusions(indices) => indices.as_slice(),
             Self::Solid { add, .. } => add.as_slice(),
-            Self::Loft(_) | Self::Revolve(_) => &[],
+            Self::Loft(_) | Self::Revolve(_) | Self::Boolean { .. } => &[],
             Self::Imported(_) => &[],
         }
     }
@@ -911,7 +921,8 @@ impl BodySource {
             | Self::Extrusions(_)
             | Self::Imported(_)
             | Self::Loft(_)
-            | Self::Revolve(_) => &[],
+            | Self::Revolve(_)
+            | Self::Boolean { .. } => &[],
         }
     }
 
@@ -922,7 +933,8 @@ impl BodySource {
             | Self::Extrusions(_)
             | Self::Solid { .. }
             | Self::Loft(_)
-            | Self::Revolve(_) => None,
+            | Self::Revolve(_)
+            | Self::Boolean { .. } => None,
         }
     }
 
@@ -941,7 +953,7 @@ impl BodySource {
             Self::Solid { add, .. } => add.push(extrusion),
             // An imported mesh body has no extrusion to merge into; unreachable in practice
             // since merge candidates only ever come from extrusion-backed bodies.
-            Self::Imported(_) | Self::Loft(_) | Self::Revolve(_) => {}
+            Self::Imported(_) | Self::Loft(_) | Self::Revolve(_) | Self::Boolean { .. } => {}
         }
     }
 
@@ -963,7 +975,7 @@ impl BodySource {
             }
             Self::Solid { cut, .. } => cut.push(extrusion),
             // An imported mesh body has no solid feature to cut; unreachable in practice.
-            Self::Imported(_) | Self::Loft(_) | Self::Revolve(_) => {}
+            Self::Imported(_) | Self::Loft(_) | Self::Revolve(_) | Self::Boolean { .. } => {}
         }
     }
 
@@ -990,7 +1002,11 @@ impl BodySource {
                     };
                 }
             }
-            Self::Extrusion(_) | Self::Imported(_) | Self::Loft(_) | Self::Revolve(_) => {}
+            Self::Extrusion(_)
+            | Self::Imported(_)
+            | Self::Loft(_)
+            | Self::Revolve(_)
+            | Self::Boolean { .. } => {}
         }
     }
 }
@@ -1010,6 +1026,11 @@ pub struct Body {
     pub name: Option<String>,
     #[serde(default)]
     pub deleted: bool,
+    /// A consumed boolean-operation input (Combine tool): still listed in the Elements
+    /// pane (dimmed, its own icon) but hidden in the viewport except while hovered or
+    /// selected there, where it renders ghosted.
+    #[serde(default)]
+    pub shadow: bool,
 }
 
 /// A loft: a solid blended through two or more cross-section profiles on (usually)
@@ -1069,6 +1090,66 @@ pub struct Revolution {
     pub symmetric: bool,
     /// How the solid lands (new body / fuse into bodies / cut bodies).
     pub mode: RevolveMode,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+/// Which set algebra a boolean operation (Combine tool) applies to its input bodies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BooleanOpKind {
+    /// Union of all `a` inputs into one solid.
+    Combine,
+    /// `a` minus `b`.
+    Cut,
+    /// Only what's common to `a` and `b`.
+    Intersect,
+    /// Symmetric difference: everything *not* common to `a` and `b`.
+    Difference,
+}
+
+#[allow(dead_code)] // wired up by the Combine tool below in this feature
+impl BooleanOpKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Combine => "Combine",
+            Self::Cut => "Cut",
+            Self::Intersect => "Intersect",
+            Self::Difference => "Difference",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "combine" | "union" | "fuse" | "merge" => Some(Self::Combine),
+            "cut" | "subtract" => Some(Self::Cut),
+            "intersect" | "intersection" | "common" => Some(Self::Intersect),
+            "difference" | "xor" | "symmetric_difference" => Some(Self::Difference),
+            _ => None,
+        }
+    }
+}
+
+/// A boolean operation between whole bodies (the Combine tool). Its inputs become
+/// **shadow** bodies (unless `keep_b`), its outputs are fresh [`Body`] elements with
+/// [`BodySource::Boolean`] sources, and the operation itself is an editable element in
+/// the pane: outputs depend on the operation, the operation depends on every input.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BooleanOperation {
+    pub kind: BooleanOpKind,
+    /// Input bodies on the A side (the only side for `Combine`).
+    pub a: Vec<usize>,
+    /// Input bodies on the B side (cut/intersect/difference).
+    #[serde(default)]
+    pub b: Vec<usize>,
+    /// Keep the B-side inputs as real bodies after the operation instead of shadowing them.
+    #[serde(default)]
+    pub keep_b: bool,
+    /// Output body indices, in solid-ordinal order.
+    #[serde(default)]
+    pub outputs: Vec<usize>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -1154,6 +1235,8 @@ pub enum ShapeKind {
     /// A loft feature (its body is a separate `Body` entry).
     Loft,
     Revolution,
+    /// A boolean operation between bodies (its output bodies are separate `Body` entries).
+    BooleanOperation,
     /// An in-place edit of an existing construction plane (undo restores the prior planes).
     /// Transient: never persisted (storage rebuilds `shape_order` from created shapes only).
     ConstructionPlaneEdit,
@@ -1187,6 +1270,9 @@ pub struct Document {
     /// Revolved solids (#revolve).
     #[serde(default)]
     pub revolutions: Vec<Revolution>,
+    /// Boolean operations between bodies (the Combine tool).
+    #[serde(default)]
+    pub boolean_ops: Vec<BooleanOperation>,
     pub shape_order: Vec<ShapeKind>,
     /// Undo-group sizes (#105): entry k is how many [`shape_order`](Self::shape_order)
     /// entries the k-th user-level action created, maintained by `AppState::apply` under
@@ -1224,6 +1310,7 @@ impl Default for Document {
             tracing_images: Vec::new(),
             lofts: Vec::new(),
             revolutions: Vec::new(),
+            boolean_ops: Vec::new(),
             shape_order: Vec::new(),
             undo_groups: Vec::new(),
             default_length_unit: LengthUnit::default(),
