@@ -2253,6 +2253,46 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Push/pull a bare 3D body face directly (#130/#122): `face = { kind = "extrude_cap" |
+    // "extrude_side", ... }` picks the face, `distance` (or `to = { face|plane|vertex }` to
+    // snap onto another surface) drives the depth, and `body = "merge"|"cut"` attaches it —
+    // the declarative equivalent of clicking the face with the Extrude tool and pulling it.
+    api.set(
+        "extrude_face",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let face_table: Table = opts
+                .get("face")
+                .map_err(|_| mlua::Error::external("extrude_face requires a `face` table"))?;
+            let face = parse_face_id_table(face_table)?;
+            let target = match opts.get::<Option<Table>>("to")? {
+                Some(t) => Some(parse_extrude_target_table(&t)?),
+                None => None,
+            };
+            let distance: f32 = match opts.get::<Option<f32>>("distance")? {
+                Some(d) => d,
+                None if target.is_some() => 0.0,
+                None => {
+                    return Err(mlua::Error::external(
+                        "extrude_face requires a `distance` or `to`",
+                    ))
+                }
+            };
+            let body = match opts.get::<Option<String>>("body")?.as_deref() {
+                Some("merge") => crate::actions::ExtrudeBodyChoice::Merge,
+                Some("cut") => crate::actions::ExtrudeBodyChoice::Cut,
+                _ => crate::actions::ExtrudeBodyChoice::New,
+            };
+            unsafe {
+                tick.exec(Instruction::ExtrudeBodyFace { face, distance, body, target })?;
+            }
+            let element = SceneElement::Extrusion(unsafe {
+                tick.state().doc.extrusions.len().saturating_sub(1)
+            });
+            apply_optional_name(lua, element, Some(opts))
+        })?,
+    )?;
+
     // Revolve profiles around an axis (SPEC §3.5 Revolve): `axis = "x"|"y"|"z"` or
     // `{ line = i }` (construction/projected lines work); `angle` in degrees (default
     // 360); `symmetric` sweeps both ways; `body = "new"|"add"|"cut"` with `bodies`
@@ -4151,6 +4191,45 @@ mod tests {
     }
 
     /// Combine tool scripting: `bearcad.combine{}` cuts one body out of another, shadows
+    /// #130: a bare body face is push/pulled declaratively with `bearcad.extrude_face{}`,
+    /// no simulated viewport click — the scripting path the user asked for.
+    #[test]
+    fn lua_extrude_face_pushes_a_body_side_wall() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ x = 0, y = 0, width = 20, height = 20 }
+            bearcad.exit_sketch()
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20 }
+            bearcad.extrude_face{
+                face = { kind = "extrude_side", extrusion = 0, profile = "polygon", profile_lines = {0, 1, 2, 3}, edge = 0 },
+                distance = 10,
+                name = "Boss"
+            }
+        "#,
+        );
+        assert_eq!(state.doc.extrusions.len(), 2, "a second extrusion grew from the body face");
+        assert_eq!(state.doc.extrusions[1].name.as_deref(), Some("Boss"));
+    }
+
+    /// #130: `extrude_face{ to = { face = ... } }` snaps a pushed face onto another face —
+    /// "simulate extruding and choose a face to snap to."
+    #[test]
+    fn lua_extrude_face_snaps_to_a_target_face() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ x = 0, y = 0, width = 20, height = 20 }
+            bearcad.exit_sketch()
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20 }
+            bearcad.extrude_face{
+                face = { kind = "extrude_side", extrusion = 0, profile = "polygon", profile_lines = {0, 1, 2, 3}, edge = 0 },
+                to = { plane = 0 }
+            }
+        "#,
+        );
+        assert_eq!(state.doc.extrusions.len(), 2);
+        assert!(state.doc.extrusions[1].target.is_some(), "the extrusion snapped to a target");
+    }
+
     /// the inputs (except kept B), and names the operation.
     #[test]
     fn lua_combine_cut_creates_op_and_shadows() {

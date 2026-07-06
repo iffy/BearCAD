@@ -103,6 +103,31 @@ bearcad.line{ x = 5, y = 8, x1 = 0, y1 = 0 }
 bearcad.extrude{ polygon = {0, 1, 2}, distance = 6 }
 ```
 
+## Push or pull a body face
+
+Extrude a bare face of an existing body directly — the scripted equivalent of clicking the
+face with the Extrude tool and pulling it. Give the face the same way `begin_sketch` names a
+body face, then a `distance` (or a `to` target to snap onto another surface). `body = "cut"`
+subtracts instead of adding; `body = "merge"` joins the face's body.
+
+```lua
+bearcad.rect{ x = 0, y = 0, width = 20, height = 20 }
+bearcad.exit_sketch()
+bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20 }
+
+-- Pull a side wall outward by 10 mm into a boss.
+bearcad.extrude_face{
+  face = { kind = "extrude_side", extrusion = 0, profile = "polygon", profile_lines = {0, 1, 2, 3}, edge = 0 },
+  distance = 10, name = "Boss",
+}
+
+-- Or snap the pushed face onto another surface instead of a fixed distance.
+bearcad.extrude_face{
+  face = { kind = "extrude_cap", extrusion = 0, profile = "polygon", profile_lines = {0, 1, 2, 3}, top = true },
+  to = { plane = 1 },
+}
+```
+
 ## Bezier curves
 
 ```lua

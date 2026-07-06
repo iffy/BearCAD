@@ -982,6 +982,16 @@ pub enum Action {
     /// sketch mirroring `face_id`'s exact boundary and starts a fresh single-face extrusion
     /// from it (a body face is never grouped with other faces into one multi-face extrusion).
     ExtrudeBodyFace { face_id: FaceId },
+    /// Scripted push/pull of a bare body face committed in one step (#130): builds the
+    /// implicit sketch mirroring `face_id`, then creates the extrusion with `distance`,
+    /// optional snap `target`, and body attachment — the declarative equivalent of clicking
+    /// the face with the Extrude tool and pulling it onto another face.
+    CreateBodyFaceExtrusion {
+        face_id: FaceId,
+        distance: f32,
+        target: Option<crate::model::ExtrudeTarget>,
+        body: ExtrudeBodyChoice,
+    },
     /// Set the live (gizmo-driven) extrusion distance.
     SetExtrudeDistance { distance: f32 },
     /// Constrain (or unconstrain) the in-progress extrusion to an object's extended plane.
@@ -5229,6 +5239,27 @@ impl AppState {
                     merge_candidate,
                 });
                 ActionResult::Ok
+            }
+            Action::CreateBodyFaceExtrusion { face_id, distance, target, body } => {
+                // Build the implicit sketch on the body face, then create the extrusion in
+                // one gesture — the scripted equivalent of clicking the face and pulling it.
+                let face = match create_implicit_extrude_sketch(&mut self.doc, face_id) {
+                    Ok(face) => face,
+                    Err(e) => {
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                };
+                let Some(sketch) = extrude_face_sketch(&self.doc, &face) else {
+                    return ActionResult::Err("Body face sketch not found".to_string());
+                };
+                self.apply(Action::CreateExtrusion {
+                    sketch,
+                    faces: vec![face],
+                    distance,
+                    body,
+                    target,
+                })
             }
             Action::SetExtrudeDistance { distance } => {
                 if let Some(ce) = &mut self.creating_extrusion {

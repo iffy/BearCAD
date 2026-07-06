@@ -100,6 +100,14 @@ pub enum Instruction {
         /// the scripted "pull the gizmo and snap to a surface" (#114).
         target: Option<crate::model::ExtrudeTarget>,
     },
+    /// Scripted push/pull of a bare body face (#130/#122): the declarative equivalent of
+    /// clicking the face with the Extrude tool and pulling it (optionally onto `target`).
+    ExtrudeBodyFace {
+        face: FaceId,
+        distance: f32,
+        body: crate::actions::ExtrudeBodyChoice,
+        target: Option<crate::model::ExtrudeTarget>,
+    },
     /// Semantic push/pull of an existing extrusion (#114): a new fixed distance
     /// (clearing any snap target) and/or a new snap target.
     UpdateExtrusion {
@@ -442,6 +450,21 @@ impl Instruction {
                 format!(
                     "bearcad.extrude{{ {}, distance = {distance}{body}{to} }}",
                     extrude_face_args(faces)
+                )
+            }
+            Instruction::ExtrudeBodyFace { face, distance, body, target } => {
+                let body = match body {
+                    crate::actions::ExtrudeBodyChoice::New => "",
+                    crate::actions::ExtrudeBodyChoice::Merge => ", body = \"merge\"",
+                    crate::actions::ExtrudeBodyChoice::Cut => ", body = \"cut\"",
+                };
+                let to = target
+                    .as_ref()
+                    .map(|t| format!(", to = {}", extrude_target_lua_table(t)))
+                    .unwrap_or_default();
+                format!(
+                    "bearcad.extrude_face{{ face = {}, distance = {distance}{body}{to} }}",
+                    face_id_lua_ref(face)
                 )
             }
             Instruction::UpdateExtrusion { extrusion, distance, target } => {
@@ -2921,6 +2944,16 @@ impl ScriptRunner {
                     distance,
                     body,
                     target,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::ExtrudeBodyFace { face, distance, body, target } => {
+                let result = state.apply(Action::CreateBodyFaceExtrusion {
+                    face_id: face,
+                    distance,
+                    target,
+                    body,
                 });
                 self.record_action_error(result);
                 StepResult::Continue
