@@ -523,7 +523,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 - **Shell** — hollow a solid to a wall thickness, removing selected faces.
 
 ### 3.4.1 Tracing images (#163)
-- **Import (#169):** File → Import Image… (or `bearcad.import_image("p.png")` /
+- **Import (#169):** File → Import Image…, or right-click a construction plane in the
+  Elements pane → "Import image on this plane…" to target that plane directly (#175)
+  (or `bearcad.import_image("p.png")` /
   `bearcad.import_image{ path =, plane = }`) embeds a PNG/JPEG in the document (base64 in
   the saved JSON, so files stay self-contained like imported meshes) and places it on a
   construction plane (default: plane 0), centered on the plane origin at an initial scale

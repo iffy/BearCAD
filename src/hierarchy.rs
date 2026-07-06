@@ -1436,6 +1436,7 @@ pub fn show_pane(
     graph_layout: &mut GraphLayout,
     on_edit_sketch: &mut impl FnMut(SketchId),
     on_edit_plane: &mut impl FnMut(usize),
+    on_import_image_on_plane: &mut impl FnMut(usize),
     on_edit_extrusion: &mut impl FnMut(usize),
     on_export_body: &mut impl FnMut(usize),
     on_export_body_step: &mut impl FnMut(usize),
@@ -1482,6 +1483,7 @@ pub fn show_pane(
                         style_selection,
                         on_edit_sketch,
                         on_edit_plane,
+                        on_import_image_on_plane,
                         on_edit_extrusion,
                         on_export_body,
                         on_export_body_step,
@@ -1511,6 +1513,7 @@ pub fn show_pane(
                     style_selection,
                     on_edit_sketch,
                     on_edit_plane,
+                    on_import_image_on_plane,
                     on_edit_extrusion,
                     on_export_body,
                     on_export_body_step,
@@ -1556,6 +1559,7 @@ fn show_tree_entries(
     style_selection: bool,
     on_edit_sketch: &mut impl FnMut(SketchId),
     on_edit_plane: &mut impl FnMut(usize),
+    on_import_image_on_plane: &mut impl FnMut(usize),
     on_edit_extrusion: &mut impl FnMut(usize),
     on_export_body: &mut impl FnMut(usize),
     on_export_body_step: &mut impl FnMut(usize),
@@ -1578,6 +1582,7 @@ fn show_tree_entries(
             style_selection,
             on_edit_sketch,
             on_edit_plane,
+            on_import_image_on_plane,
             on_edit_extrusion,
             on_export_body,
             on_export_body_step,
@@ -1599,6 +1604,7 @@ fn show_tree_entries(
             style_selection,
             on_edit_sketch,
             on_edit_plane,
+            on_import_image_on_plane,
             on_edit_extrusion,
             on_export_body,
             on_export_body_step,
@@ -1812,6 +1818,7 @@ fn show_row(
     style_selection: bool,
     on_edit_sketch: &mut impl FnMut(SketchId),
     on_edit_plane: &mut impl FnMut(usize),
+    on_import_image_on_plane: &mut impl FnMut(usize),
     on_edit_extrusion: &mut impl FnMut(usize),
     on_export_body: &mut impl FnMut(usize),
     on_export_body_step: &mut impl FnMut(usize),
@@ -1910,6 +1917,10 @@ fn show_row(
                 response.context_menu(|ui| {
                     if ui.button("Edit plane").clicked() {
                         on_edit_plane(index);
+                        ui.close();
+                    }
+                    if ui.button("Import image on this plane…").clicked() {
+                        on_import_image_on_plane(index);
                         ui.close();
                     }
                 });

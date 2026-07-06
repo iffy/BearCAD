@@ -12,8 +12,10 @@ from the Elements pane.
 
 ## Importing
 
-**File → Import Image…** places a PNG or JPEG on the ground plane. It arrives at an
-arbitrary scale — fixing that is the next step.
+**File → Import Image…** places a PNG or JPEG on the ground plane. To land it on a
+different plane, right-click that construction plane in the Elements pane and choose
+**Import image on this plane…**. Either way it arrives at an arbitrary scale — fixing
+that is the next step.
 
 Images draw slightly translucent: solid bodies in front hide them, but your sketch lines
 always stay visible on top.

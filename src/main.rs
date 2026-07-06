@@ -506,7 +506,7 @@ enum WebIoEvent {
     OpenedDocument { name: String, bytes: Vec<u8> },
     ImportStl { name: String, bytes: Vec<u8> },
     ImportStep { name: String, bytes: Vec<u8> },
-    ImportImage { name: String, bytes: Vec<u8> },
+    ImportImage { name: String, bytes: Vec<u8>, plane: Option<usize> },
     Status(String),
 }
 
@@ -652,6 +652,21 @@ impl App {
             self.state.apply(Action::ImportImage {
                 path: path.to_string_lossy().to_string(),
                 plane: None,
+            });
+        }
+    }
+
+    /// Import a PNG/JPEG onto a *specific* construction plane (the Elements pane's
+    /// right-click "Import image on this plane…", #175).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn import_image_on_plane(&mut self, plane: usize) {
+        let picked = rfd::FileDialog::new()
+            .add_filter("Image", &["png", "jpg", "jpeg"])
+            .pick_file();
+        if let Some(path) = picked {
+            self.state.apply(Action::ImportImage {
+                path: path.to_string_lossy().to_string(),
+                plane: Some(plane),
             });
         }
     }
@@ -843,8 +858,8 @@ impl App {
                 WebIoEvent::ImportStep { name, bytes } => {
                     self.state.import_step_bytes(&name, &bytes);
                 }
-                WebIoEvent::ImportImage { name, bytes } => {
-                    self.state.import_image_bytes(&name, bytes, None);
+                WebIoEvent::ImportImage { name, bytes, plane } => {
+                    self.state.import_image_bytes(&name, bytes, plane);
                 }
                 WebIoEvent::Status(message) => self.state.status = message,
             }
@@ -857,7 +872,7 @@ impl App {
         &self,
         filter_name: &'static str,
         extensions: &'static [&'static str],
-        make_event: fn(String, Vec<u8>) -> WebIoEvent,
+        make_event: impl Fn(String, Vec<u8>) -> WebIoEvent + 'static,
     ) {
         let queue = self.web_io.clone();
         wasm_bindgen_futures::spawn_local(async move {
@@ -946,7 +961,16 @@ impl App {
     #[cfg(target_arch = "wasm32")]
     fn import_image(&mut self) {
         self.web_pick_file("Image", &["png", "jpg", "jpeg"], |name, bytes| {
-            WebIoEvent::ImportImage { name, bytes }
+            WebIoEvent::ImportImage { name, bytes, plane: None }
+        });
+    }
+
+    /// Import a PNG/JPEG onto a *specific* construction plane (the Elements pane's
+    /// right-click "Import image on this plane…", #175).
+    #[cfg(target_arch = "wasm32")]
+    fn import_image_on_plane(&mut self, plane: usize) {
+        self.web_pick_file("Image", &["png", "jpg", "jpeg"], move |name, bytes| {
+            WebIoEvent::ImportImage { name, bytes, plane: Some(plane) }
         });
     }
 
@@ -2853,6 +2877,7 @@ impl eframe::App for App {
         if self.state.panes.is_visible(Pane::Hierarchy) {
             let mut edit_sketch: Option<SketchId> = None;
             let mut edit_plane: Option<usize> = None;
+            let mut import_image_on_plane: Option<usize> = None;
             let mut edit_extrusion: Option<usize> = None;
             let mut export_body: Option<usize> = None;
             let mut export_body_step: Option<usize> = None;
@@ -2868,6 +2893,9 @@ impl eframe::App for App {
                     };
                     let mut queue_edit_plane = |index: usize| {
                         edit_plane = Some(index);
+                    };
+                    let mut queue_import_image_on_plane = |index: usize| {
+                        import_image_on_plane = Some(index);
                     };
                     let mut queue_edit_extrusion = |index: usize| {
                         edit_extrusion = Some(index);
@@ -2900,6 +2928,7 @@ impl eframe::App for App {
                         &mut self.graph_layout,
                         &mut queue_edit_sketch,
                         &mut queue_edit_plane,
+                        &mut queue_import_image_on_plane,
                         &mut queue_edit_extrusion,
                         &mut queue_export_body,
                         &mut queue_export_body_step,
@@ -2918,6 +2947,9 @@ impl eframe::App for App {
                     sketch,
                     viewport: self.last_viewport,
                 });
+            }
+            if let Some(index) = import_image_on_plane {
+                self.import_image_on_plane(index);
             }
             if let Some(index) = edit_plane {
                 self.state.apply(Action::BeginEditConstructionPlane { index });
