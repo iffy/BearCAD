@@ -86,6 +86,8 @@ pub(crate) enum ConstraintRef {
     Point(ConstraintPoint),
     /// A whole circle (its perimeter), for point-on-circle coincidence.
     Circle(usize),
+    /// The origin (#189), for a point-coincident-to-origin constraint.
+    Origin,
 }
 
 /// One row in the constraint-tool context pane.
@@ -159,7 +161,25 @@ fn match_kind(
                 .iter()
                 .filter(|r| matches!(r, ConstraintRef::Line(_)))
                 .count();
+            let origins = refs
+                .iter()
+                .filter(|r| matches!(r, ConstraintRef::Origin))
+                .count();
             if points >= 2 {
+                return Some((true, Vec::new()));
+            }
+            // A point coincident with the origin (#189).
+            if origins >= 1 {
+                return if points == 1 && origins == 1 && lines == 0 && circles == 0 {
+                    Some((true, Vec::new()))
+                } else if points == 0 && origins == 1 && lines == 0 && circles == 0 {
+                    Some((false, vec!["point"]))
+                } else {
+                    None
+                };
+            }
+            // Two lines coincident = collinear.
+            if points == 0 && circles == 0 && lines >= 2 {
                 return Some((true, Vec::new()));
             }
             // A point on a circle's perimeter (point-on-circle coincidence).
@@ -298,6 +318,7 @@ pub fn scene_element_to_constraint_ref(element: SceneElement) -> Option<Constrai
         // A face's own edge (#26/#27) — picked in the viewport via `SceneElement::FaceEdge`,
         // flows into the same Coincident/Midpoint/PointLineDistance pane as any other line.
         SceneElement::FaceEdge(line) => Some(ConstraintRef::Line(line)),
+        SceneElement::Origin => Some(ConstraintRef::Origin),
         _ => None,
     }
 }
@@ -313,6 +334,7 @@ fn constraint_ref_sort_key(reference: ConstraintRef) -> (u8, usize, u8, u8) {
         ConstraintRef::Point(ConstraintPoint::FaceVertex { index, .. }) => (6, index, 0, 0),
         ConstraintRef::Line(ConstraintLine::FaceEdge { index, .. }) => (7, index, 0, 0),
         ConstraintRef::Line(ConstraintLine::OriginAxis(axis)) => (8, axis as usize, 0, 0),
+        ConstraintRef::Origin => (9, 0, 0, 0),
     }
 }
 
@@ -424,13 +446,25 @@ fn build_constraint_kind(
                     a: ConstraintEntity::Point(points[0].clone()),
                     b: ConstraintEntity::Circle(circles[0]),
                 })
+            } else if points.len() == 1 && refs.iter().any(|r| matches!(r, ConstraintRef::Origin)) {
+                // A point coincident with the origin (#189).
+                Ok(ConstraintKind::Coincident {
+                    a: ConstraintEntity::Point(points[0].clone()),
+                    b: ConstraintEntity::Origin,
+                })
             } else if points.len() == 1 && !lines.is_empty() {
                 Ok(ConstraintKind::Coincident {
                     a: ConstraintEntity::Point(points[0].clone()),
                     b: ConstraintEntity::Line(lines[0].clone()),
                 })
+            } else if points.is_empty() && lines.len() >= 2 {
+                // Two lines coincident = collinear: they lie on the same infinite line.
+                Ok(ConstraintKind::Coincident {
+                    a: ConstraintEntity::Line(lines[0].clone()),
+                    b: ConstraintEntity::Line(lines[1].clone()),
+                })
             } else {
-                Err("Coincident requires two points, a point and a line, or a point and a circle"
+                Err("Coincident requires two points, two lines, a point and a line, or a point and a circle"
                     .to_string())
             }
         }

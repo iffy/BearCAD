@@ -778,7 +778,37 @@ impl<'a> Builder<'a> {
                     ..Default::default()
                 });
             }
-            // Line–line / circle–circle coincidence isn't produced by the UI; skip.
+            // Two lines coincident = collinear: pin the movable line's endpoints onto the
+            // other line's infinite line (zero point-line distance, like point-on-line above).
+            // A fixed reference (face edge / origin axis) has no movable endpoints, so pin the
+            // other line to it instead.
+            (E::Line(la), E::Line(lb)) => {
+                let (movable, fixed) = if line_endpoints(lb).0.is_some() {
+                    (lb, la)
+                } else {
+                    (la, lb)
+                };
+                let (s, e) = line_endpoints(movable);
+                let el = self.ensure_line(fixed)?;
+                // Each doc constraint owns one primary + one secondary slot; a line has exactly
+                // two endpoints, so the two point-on-line constraints fit those two slots.
+                for (i, pt) in [s, e].into_iter().flatten().enumerate() {
+                    let ep = self.ensure_point(&pt)?;
+                    let c = SlvsConstraint {
+                        type_: SLVS_C_PT_LINE_DISTANCE,
+                        pt_a: ep,
+                        entity_a: el,
+                        val_a: 0.0,
+                        ..Default::default()
+                    };
+                    if i == 0 {
+                        self.constraint(doc_index, c);
+                    } else {
+                        self.secondary_constraint(doc_index, c);
+                    }
+                }
+            }
+            // circle–circle coincidence isn't produced by the UI; skip.
             _ => {}
         }
         Ok(())

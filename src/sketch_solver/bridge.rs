@@ -510,8 +510,30 @@ impl SketchBridge {
                     weight: DEFAULT_WEIGHT,
                 });
             }
-            (ConstraintEntity::Line(_), ConstraintEntity::Line(_))
-            | (ConstraintEntity::Circle(_), ConstraintEntity::Circle(_))
+            // Two lines coincident = collinear: put the movable line's endpoints on the other
+            // line's infinite line (zero point-line distance for each).
+            (ConstraintEntity::Line(la), ConstraintEntity::Line(lb)) => {
+                let (movable, fixed) = if !line_endpoint_points(doc, lb.clone()).is_empty() {
+                    (lb.clone(), la.clone())
+                } else {
+                    (la.clone(), lb.clone())
+                };
+                self.hold_line(doc, fixed.clone(), REFERENCE_HOLD_WEIGHT)?;
+                let ((x0, y0), (x1, y1)) = self.line_vars(doc, fixed)?;
+                for pt in line_endpoint_points(doc, movable) {
+                    let (px, py) = self.point_vars(doc, pt)?;
+                    self.system.add_equation(Equation::PointLineDistance {
+                        px,
+                        py,
+                        x0,
+                        y0,
+                        x1,
+                        y1,
+                        weight: DEFAULT_WEIGHT,
+                    });
+                }
+            }
+            (ConstraintEntity::Circle(_), ConstraintEntity::Circle(_))
             | (ConstraintEntity::Line(_), ConstraintEntity::Circle(_))
             | (ConstraintEntity::Circle(_), ConstraintEntity::Line(_))
             | (ConstraintEntity::Origin, _)

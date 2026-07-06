@@ -1577,6 +1577,22 @@ pub fn nearest_sketch_line_in_sketch(
         }
     }
 
+    // The origin axes (#189) are pickable everywhere as fixed reference lines, so a point or
+    // line can be constrained onto one from the constraint tool (not only by snapping).
+    if let Some(frame) = crate::face::sketch_geometry_frame(doc, sketch) {
+        const AXIS_HALF: f32 = 1.0e4;
+        consider(
+            ConstraintLine::OriginAxis(crate::model::SketchAxis::X),
+            frame.origin - frame.u_axis * AXIS_HALF,
+            frame.origin + frame.u_axis * AXIS_HALF,
+        );
+        consider(
+            ConstraintLine::OriginAxis(crate::model::SketchAxis::Y),
+            frame.origin - frame.v_axis * AXIS_HALF,
+            frame.origin + frame.v_axis * AXIS_HALF,
+        );
+    }
+
     best
 }
 

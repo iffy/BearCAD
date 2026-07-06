@@ -19,7 +19,7 @@ its shortcut letter:
 | Parallel | two lines | `A` |
 | Perpendicular | two lines | `T` |
 | Equal | two lines | `Q` |
-| Coincident | two points, a point + a line, or a point + a circle | `I` |
+| Coincident | two points; a point + a line, circle, or the origin; or two lines (made collinear) | `I` |
 | Midpoint | a point + a line | `M` |
 | Vertical | a line | `V` |
 | Horizontal | a line | `H` |
@@ -30,3 +30,11 @@ you draw — snapping a line's end onto a point keeps them attached.
 
 When a sketch is drawn on a body's face, the face's own corners and edges can be
 constrained against too — pin a point to the face's corner, or keep a line on its edge.
+
+## The origin and its axes
+
+The **origin** and the two **origin axes** are selectable just like any other geometry. Click
+the origin (the marker where the axes cross) and a point to pin that point to the origin, or
+click an axis and a point to hold the point on that axis (which fixes one of its coordinates).
+A selected origin brightens and a selected axis highlights along its full length, so you can
+see exactly what you picked.

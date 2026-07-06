@@ -93,6 +93,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::Extrusion(_) => "extrusion",
         SceneElement::Body(_) => "body",
         SceneElement::FaceEdge(_) => "face_edge",
+        SceneElement::Origin => "origin",
         SceneElement::BodyEdge { .. } => "body_edge",
         SceneElement::BodyVertex { .. } => "body_vertex",
         SceneElement::Image(_) => "image",
@@ -119,6 +120,7 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::SliceOp(i) => i,
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
+        | SceneElement::Origin
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. } => 0,
     }
@@ -228,6 +230,10 @@ fn parse_element_table(lua: &Lua, table: Table) -> mlua::Result<SceneElement> {
     // point can be constrained onto it.
     if kind.eq_ignore_ascii_case("axis") {
         return Ok(SceneElement::FaceEdge(parse_constraint_line_table(table)?));
+    }
+    // The origin (#189): `{ kind = "origin" }`.
+    if kind.eq_ignore_ascii_case("origin") {
+        return Ok(SceneElement::Origin);
     }
     let index: usize = table.get("index")?;
     // Point-level selector (#68): a line endpoint (`end = "start"|"end"`), or an explicit

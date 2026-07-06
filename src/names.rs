@@ -22,6 +22,7 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::SliceOp(_) => Some(element),
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
+        | SceneElement::Origin
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. } => None,
     }
@@ -108,6 +109,7 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         SceneElement::SliceOp(index) => doc.slice_ops.get(index)?.name.as_deref(),
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
+        | SceneElement::Origin
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. } => None,
     }?;
@@ -218,6 +220,9 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
         }
         SceneElement::FaceEdge(_) => {
             return Err("face edges cannot be renamed".to_string());
+        }
+        SceneElement::Origin => {
+            return Err("the origin cannot be renamed".to_string());
         }
         SceneElement::BodyEdge { .. } | SceneElement::BodyVertex { .. } => {
             return Err("body edges and vertices cannot be renamed".to_string());

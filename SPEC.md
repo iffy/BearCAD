@@ -153,9 +153,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   midpoint snap), deduped against existing constraints. A point-on-axis snap is a point-on-line
   coincidence against the origin axis, pinning that coordinate to 0. A ring marks the active
   snap. Snapping is toggleable from the context pane and the toggle only appears for tools that
-  snap (Select, Line, Rectangle, Circle) while a sketch is open. The origin axes are also
-  selectable (`ConstraintLine::OriginAxis`) so a point can be constrained onto one from the
-  constraint tool, not just by snapping.
+  snap (Select, Line, Rectangle, Circle) while a sketch is open. The origin (`SceneElement::Origin`,
+  drawn as a small marker where the axes cross) and the origin axes (`ConstraintLine::OriginAxis`)
+  are also directly viewport-selectable in the constraint tool — not just reachable by snapping —
+  so a point can be constrained coincident with the origin, or onto an axis, by clicking them. A
+  selected origin brightens to the selection colour and a selected axis highlights along its full
+  length so the pick is visible.
 - **Inference / extension snapping:** hovering a vertex while drawing arms its incident edges
   as extension guides; pulling away then snaps the point onto the **infinite extension** of
   those edges (within a perpendicular tolerance), with a dashed guide line from the edge to the
@@ -898,9 +901,11 @@ modeled on SolveSpace (https://solvespace.com).
   - **Perpendicular** — `line`, `line`
   - **Equal** — `line`, `line` (the two edges are constrained to equal length; a rectangle's
     edges are plain lines). See #47.
-  - **Coincident** — `point`, `point`; `point`, `line`; or `point`, `circle` (point on the
-    circle's perimeter). A `point`/`line` operand may be the sketch's own face's vertex/edge
-    (#26/#27, see §3.1) — picked the same way as any other sketch point/line.
+  - **Coincident** — `point`, `point`; `point`, `line`; `point`, `circle` (point on the
+    circle's perimeter); `point`, `origin` (pins the point to the origin); or `line`, `line`
+    (the two lines are made **collinear** — each endpoint of one is held on the other's carrier).
+    A `point`/`line` operand may be the sketch's own face's vertex/edge (#26/#27, see §3.1) — or
+    the origin/origin axes — picked the same way as any other sketch point/line.
   - **Midpoint** — `point`, `line`
   - **Vertical** — `line`
   - **Horizontal** — `line`
