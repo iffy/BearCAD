@@ -327,7 +327,6 @@ fn load_construction_planes(
 }
 
 /// Ensure every sketch-hosted construction-plane index exists after load.
-
 fn load_legacy_document_nodes(
     conn: &Connection,
 ) -> Result<(

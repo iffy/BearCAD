@@ -1985,7 +1985,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "key",
         lua.create_function(|lua, name: String| {
             let key = parse_key(&name)
-                .map_err(|e| mlua::Error::external(e))?;
+                .map_err(mlua::Error::external)?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::Key(key)) }
         })?,
@@ -1995,7 +1995,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "keydown",
         lua.create_function(|lua, name: String| {
             let key = parse_key(&name)
-                .map_err(|e| mlua::Error::external(e))?;
+                .map_err(mlua::Error::external)?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::KeyDown(key)) }
         })?,
@@ -2005,7 +2005,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "keyup",
         lua.create_function(|lua, name: String| {
             let key = parse_key(&name)
-                .map_err(|e| mlua::Error::external(e))?;
+                .map_err(mlua::Error::external)?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe { tick.exec(Instruction::KeyUp(key)) }
         })?,

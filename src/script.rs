@@ -2022,7 +2022,7 @@ impl SyntheticInput {
             return;
         }
         ctx.input_mut(|input| {
-            input.events.extend(self.events.drain(..));
+            input.events.append(&mut self.events);
         });
     }
 
@@ -2908,14 +2908,14 @@ impl ScriptRunner {
             Instruction::BeginSketch { face } => {
                 state.apply(Action::BeginSketch {
                     face,
-                    viewport: viewport,
+                    viewport,
                 });
                 StepResult::Continue
             }
             Instruction::OpenSketch { sketch } => {
                 state.apply(Action::OpenSketch {
                     sketch,
-                    viewport: viewport,
+                    viewport,
                 });
                 StepResult::Continue
             }
@@ -3303,7 +3303,7 @@ impl ScriptRunner {
             }
             Instruction::FpsMode { on } => {
                 let active = state.fps.is_some();
-                if on.map_or(true, |want| want != active) {
+                if on != Some(active) {
                     let result = state.apply(Action::ToggleFpsMode);
                     self.record_action_error(result);
                 }

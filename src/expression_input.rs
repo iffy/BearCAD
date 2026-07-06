@@ -104,7 +104,7 @@ pub fn show_expression_error_tooltips_above(ui: &egui::Ui, anchor: &Response, er
         .fixed_pos(anchor.rect.left_top() - egui::vec2(0.0, ERROR_TOOLTIP_GAP))
         .interactable(false)
         .show(ui.ctx(), |ui| {
-            Frame::popup(&ui.style()).show(ui, |ui| {
+            Frame::popup(ui.style()).show(ui, |ui| {
                 for error in errors {
                     ui.label(egui::RichText::new(error).color(ERROR_TOOLTIP_TEXT));
                 }
@@ -357,7 +357,7 @@ pub fn expression_autocomplete_show_dropdown(
         .order(Order::Foreground)
         .fixed_pos(anchor.rect.left_bottom())
         .show(ctx, |ui| {
-            Frame::popup(&ui.style()).show(ui, |ui| {
+            Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_min_width(anchor.rect.width().max(160.0));
                 for (index, candidate) in candidates.iter().enumerate() {
                     let selected = index == highlight;

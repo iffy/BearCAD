@@ -117,13 +117,14 @@ impl ProjectionMode {
 /// How committed bodies are rendered in the 3D viewport (#33). A viewport display
 /// preference, not model data — stored alongside [`ProjectionMode`] on [`Camera`], the
 /// existing home for this kind of per-session view state.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ShadingMode {
     /// Edges only, no fill.
     Wireframe,
     /// Translucent fill with edges visible through it.
     TransparentSolid,
     /// Opaque fill, no edge overlay (today's existing look — the default).
+    #[default]
     Solid,
     /// Opaque fill plus an edge overlay that stays visible through the body.
     SolidWireframe,
@@ -131,12 +132,6 @@ pub enum ShadingMode {
     /// flat/Lambert-ish shading `Solid` uses — a matte/satin "painted object" look (#83). No
     /// materials/textures yet; every body uses the same fixed gloss.
     Realistic,
-}
-
-impl Default for ShadingMode {
-    fn default() -> Self {
-        Self::Solid
-    }
 }
 
 /// All shading modes, in the order they should list in the HUD popup.

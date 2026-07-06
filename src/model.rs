@@ -343,8 +343,9 @@ pub fn vertex_treatment_geometry(
     let dir_b = ((b.0 - v.0) / dist_vb, (b.1 - v.1) / dist_vb);
     let cos_alpha = (dir_a.0 * dir_b.0 + dir_a.1 * dir_b.1).clamp(-1.0, 1.0);
     let alpha = cos_alpha.acos();
-    if alpha < VERTEX_TREATMENT_DEGENERATE_EPS
-        || alpha > std::f32::consts::PI - VERTEX_TREATMENT_DEGENERATE_EPS
+    if !(VERTEX_TREATMENT_DEGENERATE_EPS
+        ..=std::f32::consts::PI - VERTEX_TREATMENT_DEGENERATE_EPS)
+        .contains(&alpha)
     {
         return None;
     }
@@ -447,8 +448,9 @@ pub fn refit_fillet_arc_handles(doc: &mut Document, sketch: SketchId) {
         let dir_b = (to1.0 / l1, to1.1 / l1);
         let cos_alpha = (dir_a.0 * dir_b.0 + dir_a.1 * dir_b.1).clamp(-1.0, 1.0);
         let alpha = cos_alpha.acos();
-        if alpha < VERTEX_TREATMENT_DEGENERATE_EPS
-            || alpha > std::f32::consts::PI - VERTEX_TREATMENT_DEGENERATE_EPS
+        if !(VERTEX_TREATMENT_DEGENERATE_EPS
+            ..=std::f32::consts::PI - VERTEX_TREATMENT_DEGENERATE_EPS)
+            .contains(&alpha)
         {
             continue;
         }

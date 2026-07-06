@@ -514,7 +514,7 @@ pub fn move_op_transform(doc: &Document, op: &crate::model::MoveOperation) -> Op
             let rot = glam::Mat4::from_translation(origin)
                 * glam::Mat4::from_axis_angle(dir, angle_rad)
                 * glam::Mat4::from_translation(-origin);
-            m = m * rot;
+            m *= rot;
         }
     }
     Some(m)
@@ -1207,7 +1207,7 @@ pub fn loft_mesh(doc: &Document, loft: &crate::model::Loft) -> Option<SolidMesh>
         ring.rotate_left(best);
     }
 
-    let interior = rings.iter().map(|r| centroid(r)).sum::<Vec3>() / rings.len() as f32;
+    let interior = rings.iter().map(centroid).sum::<Vec3>() / rings.len() as f32;
     let mut triangles = Vec::new();
     for w in rings.windows(2) {
         let (a, b) = (&w[0], &w[1]);

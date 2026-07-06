@@ -588,14 +588,14 @@ impl ViewportScene {
             // gizmos draw through bodies — depth-test disabled, see `MeshIndexLayer::Wireframe`).
             match input.cam.shading_mode() {
                 crate::camera::ShadingMode::Solid => {
-                    mesh.push_solid(&solid, fill, input.cam, cap_plane);
+                    mesh.push_solid(solid, fill, input.cam, cap_plane);
                 }
                 crate::camera::ShadingMode::TransparentSolid => {
-                    mesh.push_solid_translucent(&solid, fill, TRANSPARENT_SOLID_OPACITY);
+                    mesh.push_solid_translucent(solid, fill, TRANSPARENT_SOLID_OPACITY);
                 }
                 crate::camera::ShadingMode::Wireframe => {
                     mesh.push_solid_wireframe(
-                        &solid,
+                        solid,
                         WIREFRAME_LINE_COLOR,
                         input.cam,
                         input.viewport,
@@ -603,9 +603,9 @@ impl ViewportScene {
                     );
                 }
                 crate::camera::ShadingMode::SolidWireframe => {
-                    mesh.push_solid(&solid, fill, input.cam, cap_plane);
+                    mesh.push_solid(solid, fill, input.cam, cap_plane);
                     mesh.push_solid_wireframe(
-                        &solid,
+                        solid,
                         WIREFRAME_LINE_COLOR,
                         input.cam,
                         input.viewport,
@@ -613,7 +613,7 @@ impl ViewportScene {
                     );
                 }
                 crate::camera::ShadingMode::Realistic => {
-                    mesh.push_solid_realistic(&solid, fill, input.cam, cap_plane);
+                    mesh.push_solid_realistic(solid, fill, input.cam, cap_plane);
                 }
             }
         }
@@ -4065,12 +4065,8 @@ pub fn line_screen_quad(
     view_proj: &Mat4,
 ) -> Option<[Vec3; 4]> {
     let _ = view_proj;
-    let Some(sa) = cam.project(a, viewport, view_proj) else {
-        return None;
-    };
-    let Some(sb) = cam.project(b, viewport, view_proj) else {
-        return None;
-    };
+    let sa = cam.project(a, viewport, view_proj)?;
+    let sb = cam.project(b, viewport, view_proj)?;
     if (sa - sb).length() < 1e-3 {
         return None;
     }
