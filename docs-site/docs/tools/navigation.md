@@ -10,7 +10,7 @@ title: Navigation
 | Input | Action |
 |---|---|
 | Right-drag | Orbit around the part |
-| Shift + right-drag | Pan |
+| Middle-drag, or Shift + right-drag | Pan |
 | Mouse wheel | Zoom |
 | **Esc** | Cancel what's in progress; again to return to Select |
 

@@ -4218,6 +4218,8 @@ fn suppress_viewport_pick_hover(
 ) -> bool {
     ui.input(|i| i.pointer.secondary_down())
         || response.dragged_by(egui::PointerButton::Secondary)
+        || ui.input(|i| i.pointer.middle_down())
+        || response.dragged_by(egui::PointerButton::Middle)
         || vertex_drag_active
         || line_drag_active
         || dim_label_drag_active
@@ -6649,6 +6651,16 @@ impl App {
                 }
             }
         }
+        // Middle-mouse drag always pans (#195). Shift+right-drag pans too, but Firefox forces
+        // its native context menu on Shift+right-click regardless of preventDefault, eating the
+        // gesture on the web — so middle-drag is the browser-safe way to pan there.
+        if response.dragged_by(egui::PointerButton::Middle) && !fps_active {
+            let delta = response.drag_delta();
+            self.state.cam.pan(delta, viewport.height());
+            if let Some(log) = &self.state.command_log {
+                log.borrow_mut().note_pan(delta);
+            }
+        }
         if response.hovered() && !fps_active {
             let scroll = ui.input(|i| i.raw_scroll_delta.y);
             if scroll != 0.0 {
@@ -9073,27 +9085,27 @@ impl App {
                 if self.state.creating_rect.is_some() {
                     "Move mouse (free dim) • Type in focused input to constrain • Tab: switch dims • Click/Enter: create rect • Esc: cancel"
                 } else if self.state.sketch_session.is_none() {
-                    "r: rectangle  •  Click a face to sketch on  •  Right-drag: orbit  •  Shift+right-drag: pan  •  Wheel: zoom"
+                    "r: rectangle  •  Click a face to sketch on  •  Right-drag: orbit  •  Shift-right or middle-drag: pan  •  Wheel: zoom"
                 } else {
-                    "r: rectangle  •  Left-click to set corner • move to size • Right-drag: orbit  • Shift+right-drag: pan  •  Wheel: zoom"
+                    "r: rectangle  •  Left-click to set corner • move to size • Right-drag: orbit  • Shift-right or middle-drag: pan  •  Wheel: zoom"
                 }
             }
             Tool::Line => {
                 if self.state.creating_line.is_some() {
                     "Move mouse (free length) • Type in length input to constrain • Click/Enter: create line • Esc: cancel"
                 } else if self.state.sketch_session.is_none() {
-                    "l: line  •  Click a face to sketch on  •  Right-drag: orbit  • Shift+right-drag: pan  •  Wheel: zoom"
+                    "l: line  •  Click a face to sketch on  •  Right-drag: orbit  • Shift-right or middle-drag: pan  •  Wheel: zoom"
                 } else {
-                    "l: line  •  Left-click to set start • move to aim • Right-drag: orbit  • Shift+right-drag: pan  •  Wheel: zoom"
+                    "l: line  •  Left-click to set start • move to aim • Right-drag: orbit  • Shift-right or middle-drag: pan  •  Wheel: zoom"
                 }
             }
             Tool::Circle => {
                 if self.state.creating_circle.is_some() {
                     "Move mouse (free diameter) • Type in diameter input to constrain • Click/Enter: create circle • Esc: cancel"
                 } else if self.state.sketch_session.is_none() {
-                    "o: circle  •  Click a face to sketch on  •  Right-drag: orbit  • Shift+right-drag: pan  •  Wheel: zoom"
+                    "o: circle  •  Click a face to sketch on  •  Right-drag: orbit  • Shift-right or middle-drag: pan  •  Wheel: zoom"
                 } else {
-                    "o: circle  •  Left-click to set center • move to size • Right-drag: orbit  • Shift+right-drag: pan  •  Wheel: zoom"
+                    "o: circle  •  Left-click to set center • move to size • Right-drag: orbit  • Shift-right or middle-drag: pan  •  Wheel: zoom"
                 }
             }
             Tool::Constraint => {
