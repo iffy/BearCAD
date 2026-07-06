@@ -875,6 +875,14 @@ pub enum BodySource {
     Loft(usize),
     /// A revolved solid (#revolve); indexes `Document::revolutions`.
     Revolve(usize),
+    /// The moved copy of one input of a move operation (Move tool): `op` indexes
+    /// `Document::move_ops`, `target` is the position within that operation's input list.
+    Moved {
+        #[serde(rename = "move_op")]
+        op: usize,
+        #[serde(default)]
+        target: usize,
+    },
     /// One output solid of a boolean operation (Combine tool): `op` indexes
     /// `Document::boolean_ops`, `solid` is the ordinal of this body's solid within the
     /// operation's result (a cut or difference can split into several pieces). The last
@@ -908,7 +916,10 @@ impl BodySource {
             Self::Extrusion(index) => std::slice::from_ref(index),
             Self::Extrusions(indices) => indices.as_slice(),
             Self::Solid { add, .. } => add.as_slice(),
-            Self::Loft(_) | Self::Revolve(_) | Self::Boolean { .. } => &[],
+            Self::Loft(_)
+            | Self::Revolve(_)
+            | Self::Boolean { .. }
+            | Self::Moved { .. } => &[],
             Self::Imported(_) => &[],
         }
     }
@@ -922,7 +933,8 @@ impl BodySource {
             | Self::Imported(_)
             | Self::Loft(_)
             | Self::Revolve(_)
-            | Self::Boolean { .. } => &[],
+            | Self::Boolean { .. }
+            | Self::Moved { .. } => &[],
         }
     }
 
@@ -934,7 +946,8 @@ impl BodySource {
             | Self::Solid { .. }
             | Self::Loft(_)
             | Self::Revolve(_)
-            | Self::Boolean { .. } => None,
+            | Self::Boolean { .. }
+            | Self::Moved { .. } => None,
         }
     }
 
@@ -953,7 +966,11 @@ impl BodySource {
             Self::Solid { add, .. } => add.push(extrusion),
             // An imported mesh body has no extrusion to merge into; unreachable in practice
             // since merge candidates only ever come from extrusion-backed bodies.
-            Self::Imported(_) | Self::Loft(_) | Self::Revolve(_) | Self::Boolean { .. } => {}
+            Self::Imported(_)
+            | Self::Loft(_)
+            | Self::Revolve(_)
+            | Self::Boolean { .. }
+            | Self::Moved { .. } => {}
         }
     }
 
@@ -975,7 +992,11 @@ impl BodySource {
             }
             Self::Solid { cut, .. } => cut.push(extrusion),
             // An imported mesh body has no solid feature to cut; unreachable in practice.
-            Self::Imported(_) | Self::Loft(_) | Self::Revolve(_) | Self::Boolean { .. } => {}
+            Self::Imported(_)
+            | Self::Loft(_)
+            | Self::Revolve(_)
+            | Self::Boolean { .. }
+            | Self::Moved { .. } => {}
         }
     }
 
@@ -1006,9 +1027,28 @@ impl BodySource {
             | Self::Imported(_)
             | Self::Loft(_)
             | Self::Revolve(_)
-            | Self::Boolean { .. } => {}
+            | Self::Boolean { .. }
+            | Self::Moved { .. } => {}
         }
     }
+}
+
+/// Whether any live operation (boolean or move) other than the excluded ones consumes
+/// `body` on a side that shadows it — used when deleting/editing an operation to decide
+/// whether an input body stays a shadow.
+pub fn body_shadowed_by_other_ops(
+    doc: &Document,
+    body: usize,
+    skip_boolean: Option<usize>,
+    skip_move: Option<usize>,
+) -> bool {
+    doc.boolean_ops.iter().enumerate().any(|(oi, o)| {
+        skip_boolean != Some(oi)
+            && !o.deleted
+            && (o.a.contains(&body) || (!o.keep_b && o.b.contains(&body)))
+    }) || doc.move_ops.iter().enumerate().any(|(oi, o)| {
+        skip_move != Some(oi) && !o.deleted && o.targets.contains(&body)
+    })
 }
 
 /// Body index whose source includes `extrusion` (added or cut), if any.
@@ -1156,6 +1196,37 @@ pub struct BooleanOperation {
     pub deleted: bool,
 }
 
+/// A move operation (Move tool, #176/#183): rigid translation and/or rotation applied to
+/// whole bodies. Inputs become **shadow** bodies; each input gets a moved output body
+/// (`BodySource::Moved`), and the operation itself is an editable pane element. The
+/// translation components and angle are expressions, so moves are parameter-driven like
+/// dimensions.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MoveOperation {
+    /// Input body indices, one output per entry (same order).
+    pub targets: Vec<usize>,
+    /// Translation components (mm expressions; empty = 0).
+    #[serde(default)]
+    pub tx: String,
+    #[serde(default)]
+    pub ty: String,
+    #[serde(default)]
+    pub tz: String,
+    /// Rotation axis; `None` = no rotation.
+    #[serde(default)]
+    pub axis: Option<RevolveAxis>,
+    /// Rotation angle (angle expression; empty = 0).
+    #[serde(default)]
+    pub angle: String,
+    /// Output body indices, matching `targets` order.
+    #[serde(default)]
+    pub outputs: Vec<usize>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
 /// A reference image imported for tracing (#163/#169), hosted on a construction plane.
 /// The encoded file bytes are embedded (base64 in the saved JSON) so documents stay
 /// self-contained, like imported meshes.
@@ -1237,6 +1308,8 @@ pub enum ShapeKind {
     Revolution,
     /// A boolean operation between bodies (its output bodies are separate `Body` entries).
     BooleanOperation,
+    /// A move operation on bodies (its output bodies are separate `Body` entries).
+    MoveOperation,
     /// An in-place edit of an existing construction plane (undo restores the prior planes).
     /// Transient: never persisted (storage rebuilds `shape_order` from created shapes only).
     ConstructionPlaneEdit,
@@ -1273,6 +1346,9 @@ pub struct Document {
     /// Boolean operations between bodies (the Combine tool).
     #[serde(default)]
     pub boolean_ops: Vec<BooleanOperation>,
+    /// Move operations on bodies (the Move tool, #176/#183).
+    #[serde(default)]
+    pub move_ops: Vec<MoveOperation>,
     pub shape_order: Vec<ShapeKind>,
     /// Undo-group sizes (#105): entry k is how many [`shape_order`](Self::shape_order)
     /// entries the k-th user-level action created, maintained by `AppState::apply` under
@@ -1311,6 +1387,7 @@ impl Default for Document {
             lofts: Vec::new(),
             revolutions: Vec::new(),
             boolean_ops: Vec::new(),
+            move_ops: Vec::new(),
             shape_order: Vec::new(),
             undo_groups: Vec::new(),
             default_length_unit: LengthUnit::default(),

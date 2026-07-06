@@ -134,6 +134,25 @@ pub enum Instruction {
         b: Vec<usize>,
         keep_b: bool,
     },
+    /// Move bodies (Move tool): translation + optional rotation, expressions allowed.
+    CreateMoveOp {
+        targets: Vec<usize>,
+        tx: String,
+        ty: String,
+        tz: String,
+        axis: Option<crate::model::RevolveAxis>,
+        angle: String,
+    },
+    /// Re-point an existing move operation.
+    EditMoveOp {
+        op: usize,
+        targets: Vec<usize>,
+        tx: String,
+        ty: String,
+        tz: String,
+        axis: Option<crate::model::RevolveAxis>,
+        angle: String,
+    },
     SetElementVisible {
         element: SceneElement,
         visible: Option<bool>,
@@ -493,6 +512,12 @@ impl Instruction {
             }
             Instruction::EditBooleanOp { op, kind, a, b, keep_b } => {
                 boolean_op_lua("bearcad.edit_boolean", Some(*op), *kind, a, b, *keep_b)
+            }
+            Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle } => {
+                move_op_lua("bearcad.move_bodies", None, targets, tx, ty, tz, *axis, angle)
+            }
+            Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle } => {
+                move_op_lua("bearcad.edit_move", Some(*op), targets, tx, ty, tz, *axis, angle)
             }
             Instruction::SetElementVisible { element, visible } => {
                 let target = element_lua_ref(element);
@@ -929,6 +954,11 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        SceneElement::MoveOp(i) => ElementScriptTokens {
+            kind: "move_op",
+            index: i,
+            point: None,
+        },
     }
 }
 
@@ -966,6 +996,27 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 a: a.clone(),
                 b: b.clone(),
                 keep_b: *keep_b,
+            })
+        }
+        Action::CreateMoveOperation { targets, tx, ty, tz, axis, angle } => {
+            Some(Instruction::CreateMoveOp {
+                targets: targets.clone(),
+                tx: tx.clone(),
+                ty: ty.clone(),
+                tz: tz.clone(),
+                axis: *axis,
+                angle: angle.clone(),
+            })
+        }
+        Action::EditMoveOperation { op, targets, tx, ty, tz, axis, angle } => {
+            Some(Instruction::EditMoveOp {
+                op: *op,
+                targets: targets.clone(),
+                tx: tx.clone(),
+                ty: ty.clone(),
+                tz: tz.clone(),
+                axis: *axis,
+                angle: angle.clone(),
             })
         }
         Action::NewDocument => Some(Instruction::New),
@@ -1338,6 +1389,46 @@ fn boolean_op_lua(
     format!("{call}{{ {} }}", parts.join(", "))
 }
 
+/// Render a move-operation call (`bearcad.move_bodies{}` / `bearcad.edit_move{}`).
+#[allow(clippy::too_many_arguments)]
+fn move_op_lua(
+    call: &str,
+    op: Option<usize>,
+    targets: &[usize],
+    tx: &str,
+    ty: &str,
+    tz: &str,
+    axis: Option<crate::model::RevolveAxis>,
+    angle: &str,
+) -> String {
+    let mut parts = Vec::new();
+    if let Some(op) = op {
+        parts.push(format!("index = {op}"));
+    }
+    parts.push(format!(
+        "bodies = {{{}}}",
+        targets.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+    ));
+    for (name, value) in [("x", tx), ("y", ty), ("z", tz)] {
+        if !value.trim().is_empty() {
+            parts.push(format!("{name} = \"{value}\""));
+        }
+    }
+    match axis {
+        Some(crate::model::RevolveAxis::X) => parts.push("axis = \"x\"".to_string()),
+        Some(crate::model::RevolveAxis::Y) => parts.push("axis = \"y\"".to_string()),
+        Some(crate::model::RevolveAxis::Z) => parts.push("axis = \"z\"".to_string()),
+        Some(crate::model::RevolveAxis::Line(li)) => {
+            parts.push(format!("axis = {{ line = {li} }}"))
+        }
+        None => {}
+    }
+    if !angle.trim().is_empty() {
+        parts.push(format!("angle = \"{angle}\""));
+    }
+    format!("{call}{{ {} }}", parts.join(", "))
+}
+
 /// Render an extrusion's faces as `bearcad.extrude{}` keyword arguments
 /// (`rect=`/`rects=`, `circle=`/`circles=`, `polygon=`). A single rect or circle uses the
 /// singular field to match how `bearcad.extrude` is normally called by hand; multiple of a
@@ -1546,6 +1637,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
         Tool::Loft => "loft",
         Tool::Revolve => "revolve",
         Tool::Combine => "combine",
+        Tool::Move => "move",
     }
 }
 
@@ -2747,6 +2839,25 @@ impl ScriptRunner {
             Instruction::EditBooleanOp { op, kind, a, b, keep_b } => {
                 let result =
                     state.apply(Action::EditBooleanOperation { op, kind, a, b, keep_b });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle } => {
+                let result =
+                    state.apply(Action::CreateMoveOperation { targets, tx, ty, tz, axis, angle });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle } => {
+                let result = state.apply(Action::EditMoveOperation {
+                    op,
+                    targets,
+                    tx,
+                    ty,
+                    tz,
+                    axis,
+                    angle,
+                });
                 self.record_action_error(result);
                 StepResult::Continue
             }

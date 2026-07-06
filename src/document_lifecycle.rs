@@ -57,6 +57,10 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             .boolean_ops
             .get(index)
             .is_some_and(|op| !op.deleted),
+        SceneElement::MoveOp(index) => doc
+            .move_ops
+            .get(index)
+            .is_some_and(|op| !op.deleted),
         SceneElement::Image(index) => doc
             .tracing_images
             .get(index)
@@ -171,6 +175,28 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         SceneElement::FaceEdge(_)
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. } => {}
+        SceneElement::MoveOp(index) => {
+            if let Some(op) = doc.move_ops.get_mut(index) {
+                if !op.deleted {
+                    op.deleted = true;
+                    let op = doc.move_ops[index].clone();
+                    for &out in &op.outputs {
+                        if let Some(body) = doc.bodies.get_mut(out) {
+                            body.deleted = true;
+                        }
+                    }
+                    for &input in &op.targets {
+                        if !crate::model::body_shadowed_by_other_ops(doc, input, None, Some(index))
+                        {
+                            if let Some(body) = doc.bodies.get_mut(input) {
+                                body.shadow = false;
+                            }
+                        }
+                    }
+                    changed = true;
+                }
+            }
+        }
         SceneElement::BooleanOp(index) => {
             // Deleting the operation removes its outputs and releases its inputs from
             // shadow (unless another live operation still consumes them).
@@ -184,17 +210,8 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                         }
                     }
                     for &input in op.a.iter().chain(op.b.iter()) {
-                        // Stays a shadow only if another live op consumes it on a side
-                        // that shadows (A always; B when that op doesn't keep B).
-                        let shadowed_elsewhere = doc.boolean_ops.iter().enumerate().any(
-                            |(oi, o)| {
-                                oi != index
-                                    && !o.deleted
-                                    && (o.a.contains(&input)
-                                        || (!o.keep_b && o.b.contains(&input)))
-                            },
-                        );
-                        if !shadowed_elsewhere {
+                        if !crate::model::body_shadowed_by_other_ops(doc, input, Some(index), None)
+                        {
                             if let Some(body) = doc.bodies.get_mut(input) {
                                 body.shadow = false;
                             }

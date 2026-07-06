@@ -97,6 +97,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::BodyVertex { .. } => "body_vertex",
         SceneElement::Image(_) => "image",
         SceneElement::BooleanOp(_) => "boolean_op",
+        SceneElement::MoveOp(_) => "move_op",
     }
 }
 
@@ -110,7 +111,8 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::Extrusion(i)
         | SceneElement::Body(i)
         | SceneElement::Image(i)
-        | SceneElement::BooleanOp(i) => i,
+        | SceneElement::BooleanOp(i)
+        | SceneElement::MoveOp(i) => i,
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::BodyEdge { .. }
@@ -449,6 +451,59 @@ fn parse_boolean_op_args(
     let b: Vec<usize> = opts.get::<Option<Vec<usize>>>("b")?.unwrap_or_default();
     let keep_b: bool = opts.get::<Option<bool>>("keep_b")?.unwrap_or(false);
     Ok((kind, a, b, keep_b))
+}
+
+/// Parses `bearcad.move_bodies{}`/`bearcad.edit_move{}` arguments. Numbers are accepted
+/// for the expression fields and stringified.
+#[allow(clippy::type_complexity)]
+fn parse_move_op_args(
+    opts: &Table,
+) -> mlua::Result<(
+    Vec<usize>,
+    String,
+    String,
+    String,
+    Option<crate::model::RevolveAxis>,
+    String,
+)> {
+    let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
+    let expr = |key: &str| -> mlua::Result<String> {
+        Ok(match opts.get::<Value>(key)? {
+            Value::Nil => String::new(),
+            Value::String(s) => s.to_str()?.to_string(),
+            Value::Integer(i) => i.to_string(),
+            Value::Number(n) => n.to_string(),
+            _ => {
+                return Err(mlua::Error::external(format!(
+                    "move `{key}` must be an expression string or a number"
+                )))
+            }
+        })
+    };
+    let (tx, ty, tz, angle) = (expr("x")?, expr("y")?, expr("z")?, expr("angle")?);
+    let axis = match opts.get::<Value>("axis")? {
+        Value::Nil => None,
+        Value::String(sv) => match sv.to_string_lossy().to_lowercase().as_str() {
+            "x" => Some(crate::model::RevolveAxis::X),
+            "y" => Some(crate::model::RevolveAxis::Y),
+            "z" => Some(crate::model::RevolveAxis::Z),
+            other => {
+                return Err(mlua::Error::external(format!(
+                    "unknown move axis '{other}' (x|y|z or {{line = i}})"
+                )))
+            }
+        },
+        Value::Table(t) => {
+            let li: usize = t.get("line")?;
+            Some(crate::model::RevolveAxis::Line(li))
+        }
+        _ => {
+            return Err(mlua::Error::external(
+                "move `axis` must be \"x\"|\"y\"|\"z\" or {line = i}",
+            ))
+        }
+    };
+    Ok((targets, tx, ty, tz, axis, angle))
 }
 
 fn parse_geometric_constraint(name: &str) -> Option<GeometricConstraintType> {
@@ -2123,6 +2178,35 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // `{ line = i }` (construction/projected lines work); `angle` in degrees (default
     // 360); `symmetric` sweeps both ways; `body = "new"|"add"|"cut"` with `bodies`
     // for an explicit add/cut list ("add" with none auto-resolves touching bodies).
+    api.set(
+        "move_bodies",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let (targets, tx, ty, tz, axis, angle) = parse_move_op_args(&opts)?;
+            unsafe {
+                tick.exec(Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle })?;
+            }
+            let element = SceneElement::MoveOp(unsafe {
+                tick.state().doc.move_ops.len().saturating_sub(1)
+            });
+            drop(tick);
+            apply_optional_name(lua, element, Some(opts))
+        })?,
+    )?;
+
+    api.set(
+        "edit_move",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let op: usize = opts.get("index")?;
+            let (targets, tx, ty, tz, axis, angle) = parse_move_op_args(&opts)?;
+            unsafe {
+                tick.exec(Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle })?;
+            }
+            Ok(())
+        })?,
+    )?;
+
     api.set(
         "combine",
         lua.create_function(|lua, opts: Table| {

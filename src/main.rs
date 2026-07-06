@@ -2257,6 +2257,71 @@ impl App {
         );
     }
 
+    /// Move tool (#176/#183): click bodies to toggle them into the move set; clicking a
+    /// line picks it as the rotation axis. Enter commits.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_move_tool(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+        pick_occlusion: Option<&construction::PickOcclusion>,
+    ) {
+        if self.state.sketch_session.is_some() {
+            return;
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+            && self
+                .state
+                .creating_move
+                .as_ref()
+                .is_some_and(|c| !c.targets.is_empty())
+            && !ui.ctx().wants_keyboard_input()
+        {
+            self.state.apply(Action::CommitMove);
+            return;
+        }
+        if !ui.input(|i| i.pointer.primary_pressed()) {
+            return;
+        }
+        let Some(pp) = pointer_screen else {
+            return;
+        };
+        let gp = cam.ground_point(pp, viewport, vp);
+        let Some(target) = resolve_pick_target(pp, project, gp, &self.state.doc, pick_occlusion)
+        else {
+            return;
+        };
+        if let construction::PickTargetKind::Line(li) = target.kind {
+            if let Some(cm) = self.state.creating_move.as_mut() {
+                cm.axis = Some(model::RevolveAxis::Line(li));
+                self.state.status = "Move: rotation axis set".to_string();
+            }
+            return;
+        }
+        let Some(SceneElement::Body(bi)) = scene_element_from_pick(&target.kind) else {
+            return;
+        };
+        if self.state.doc.bodies.get(bi).is_some_and(|b| b.shadow) {
+            self.state.status =
+                "That body is already consumed by another operation".to_string();
+            return;
+        }
+        let cm = self
+            .state
+            .creating_move
+            .get_or_insert_with(actions::CreatingMove::default);
+        if let Some(pos) = cm.targets.iter().position(|b| *b == bi) {
+            cm.targets.remove(pos);
+        } else {
+            cm.targets.push(bi);
+        }
+        self.state.status = format!("Move: {} body(ies) picked", cm.targets.len());
+    }
+
     /// Floating angle field for the in-progress revolve (Enter commits). Mirrors the
     /// extrude distance input.
     fn show_revolve_angle_input(&mut self, ui: &egui::Ui, project: &impl Fn(Vec3) -> Option<egui::Pos2>) {
@@ -2806,6 +2871,16 @@ impl eframe::App for App {
                 }
                 if icons::selectable_icon_button(
                     ui,
+                    icons::IconId::Move,
+                    self.state.tool == Tool::Move,
+                    shortcuts::compact_label("Move", shortcuts::tool_shortcut(Tool::Move)),
+                )
+                .clicked()
+                {
+                    self.state.apply(Action::SetTool(Tool::Move));
+                }
+                if icons::selectable_icon_button(
+                    ui,
                     icons::IconId::Dimension,
                     self.state.tool == Tool::Dimension,
                     shortcuts::compact_label(
@@ -3124,6 +3199,57 @@ impl eframe::App for App {
                         })
                     })
                     .flatten(),
+                move_op: (self.state.tool == Tool::Move).then(|| {
+                    let cm = self.state.creating_move.as_ref();
+                    context::MoveControl {
+                        target_rows: cm
+                            .map(|c| {
+                                c.targets
+                                    .iter()
+                                    .map(|&bi| {
+                                        names::element_name(
+                                            &self.state.doc,
+                                            SceneElement::Body(bi),
+                                        )
+                                        .map(|n| n.to_string())
+                                        .unwrap_or_else(|| format!("Body {bi}"))
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        tx: cm.map(|c| c.tx.clone()).unwrap_or_default(),
+                        ty: cm.map(|c| c.ty.clone()).unwrap_or_default(),
+                        tz: cm.map(|c| c.tz.clone()).unwrap_or_default(),
+                        axis_label: cm.and_then(|c| c.axis).map(|a| match a {
+                            model::RevolveAxis::Line(li) => names::element_name(
+                                &self.state.doc,
+                                SceneElement::Line(li),
+                            )
+                            .map(|n| n.to_string())
+                            .unwrap_or_else(|| format!("line {li}")),
+                            model::RevolveAxis::X => "the X axis".to_string(),
+                            model::RevolveAxis::Y => "the Y axis".to_string(),
+                            model::RevolveAxis::Z => "the Z axis".to_string(),
+                        }),
+                        angle: cm.map(|c| c.angle.clone()).unwrap_or_default(),
+                        editing: cm.map(|c| c.editing.is_some()).unwrap_or(false),
+                        can_commit: cm.map(|c| !c.targets.is_empty()).unwrap_or(false),
+                    }
+                }),
+                move_edit_start: (self.state.tool != Tool::Move)
+                    .then(|| {
+                        let mut only = None;
+                        for element in self.state.scene_selection.iter() {
+                            match (element, only) {
+                                (SceneElement::MoveOp(i), None) => only = Some(i),
+                                _ => return None,
+                            }
+                        }
+                        only.filter(|&i| {
+                            self.state.doc.move_ops.get(i).is_some_and(|o| !o.deleted)
+                        })
+                    })
+                    .flatten(),
                 revolve: (self.state.tool == Tool::Revolve).then(|| {
                     let cr = self.state.creating_revolve.as_ref();
                     context::RevolveControl {
@@ -3194,6 +3320,8 @@ impl eframe::App for App {
             let mut revolve_edit: Option<context::RevolveEdit> = None;
             let mut boolean_edit: Option<context::BooleanEdit> = None;
             let mut boolean_edit_begin: Option<usize> = None;
+            let mut move_edit: Option<context::MoveEdit> = None;
+            let mut move_edit_begin: Option<usize> = None;
             egui::SidePanel::right("context")
                 .resizable(true)
                 .default_width(200.0)
@@ -3225,6 +3353,8 @@ impl eframe::App for App {
                         &mut |edit| revolve_edit = Some(edit),
                         &mut |edit| boolean_edit = Some(edit),
                         &mut |op| boolean_edit_begin = Some(op),
+                        &mut |edit| move_edit = Some(edit),
+                        &mut |op| move_edit_begin = Some(op),
                         &mut |image| calibrate_begin = Some(image),
                         &mut |control, text| calibrate_apply = Some((control, text)),
                     );
@@ -3280,6 +3410,47 @@ impl eframe::App for App {
                             context::BooleanEdit::Commit => unreachable!(),
                         }
                     }
+                }
+            }
+            if let Some(edit) = move_edit {
+                match edit {
+                    context::MoveEdit::Commit => {
+                        self.state.apply(Action::CommitMove);
+                    }
+                    edit => {
+                        let cm = self
+                            .state
+                            .creating_move
+                            .get_or_insert_with(actions::CreatingMove::default);
+                        match edit {
+                            context::MoveEdit::Tx(v) => cm.tx = v,
+                            context::MoveEdit::Ty(v) => cm.ty = v,
+                            context::MoveEdit::Tz(v) => cm.tz = v,
+                            context::MoveEdit::Angle(v) => cm.angle = v,
+                            context::MoveEdit::Axis(a) => cm.axis = a,
+                            context::MoveEdit::RemoveTarget(Some(i)) => {
+                                if i < cm.targets.len() {
+                                    cm.targets.remove(i);
+                                }
+                            }
+                            context::MoveEdit::RemoveTarget(None) => cm.targets.clear(),
+                            context::MoveEdit::Commit => unreachable!(),
+                        }
+                    }
+                }
+            }
+            if let Some(op) = move_edit_begin {
+                if let Some(existing) = self.state.doc.move_ops.get(op).cloned() {
+                    self.state.creating_move = Some(actions::CreatingMove {
+                        targets: existing.targets,
+                        tx: existing.tx,
+                        ty: existing.ty,
+                        tz: existing.tz,
+                        axis: existing.axis,
+                        angle: existing.angle,
+                        editing: Some(op),
+                    });
+                    self.state.apply(Action::SetTool(Tool::Move));
                 }
             }
             if let Some(op) = boolean_edit_begin {
@@ -6835,6 +7006,10 @@ impl App {
             self.handle_combine_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
         }
 
+        if self.state.tool == Tool::Move {
+            self.handle_move_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
+        }
+
         if matches!(self.state.tool, Tool::Chamfer | Tool::Fillet) {
             self.handle_vertex_treatment_tool(ui, &project, pointer_screen);
             self.show_vertex_treatment_amount_input(ui, &project);
@@ -8434,6 +8609,14 @@ impl App {
                     "Combine — click bodies to add/remove • Enter: commit • Esc: cancel"
                 } else {
                     "Combine — click one or more bodies to operate on"
+                }
+            }
+            Tool::Move => {
+                let cm = self.state.creating_move.as_ref();
+                if cm.is_some_and(|c| !c.targets.is_empty()) {
+                    "Move — click bodies to add/remove • set offset/rotation in the context pane • Enter: commit"
+                } else {
+                    "Move — click one or more bodies to move"
                 }
             }
             Tool::Rectangle => {

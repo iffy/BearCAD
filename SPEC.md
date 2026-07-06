@@ -429,6 +429,21 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     (A∪B) − (A∩B); multi-solid results split via `Shape::solids`), on desktop and web
     alike via the kernel module.
 
+- **Move tool (#176/#183):** rigid translation and/or rotation of whole bodies. One
+  multi-select body picker (viewport clicks toggle); translation X/Y/Z and the rotation
+  angle are **expressions** (parameters work — moves rebuild parametrically); the rotation
+  axis is a global axis or any clicked line. Committing creates an editable **move
+  operation element** (`Document::move_ops`, `ShapeKind::MoveOperation`) with one moved
+  output body per input (`BodySource::Moved { op, target }`); inputs become shadow bodies,
+  exactly like the Combine tool. "Edit move" re-opens the tool (outputs grow/shrink with
+  the target list; removed ones tombstone). Meshes transform on every target (works in the
+  lean build); the BREP shape transforms through the kernel (`Shape::transformed`,
+  `bearcad_shape_transform` natively and in the web kernel module) so moved bodies chain
+  into booleans and export as real BREP. Scripting: `bearcad.move_bodies{ bodies = {…},
+  x?, y?, z?, axis?, angle?, name? }` and `bearcad.edit_move{ index, … }`. Extending the
+  move to faces/edges/vertices/planes/images and adding drag gizmos is tracked as a
+  follow-up (#185).
+
 ### 3.4 Modifying solids
 - **Fillet** and **Chamfer**, 2D sketch vertices: the tools described in §3.1 (#37/#38) —
   truncate-and-bridge on a sketch vertex where two lines meet, with the fillet arc approximated

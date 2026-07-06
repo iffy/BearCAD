@@ -434,6 +434,9 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
         crate::model::BodySource::Boolean { op, solid } => {
             return occt_boolean_output_shape(doc, op, solid);
         }
+        crate::model::BodySource::Moved { op, target } => {
+            return occt_moved_output_shape(doc, op, target);
+        }
         _ => occt_body_shape_from_indices(
             doc,
             body.source.extrusion_indices(),
@@ -452,6 +455,83 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
         solid = solid.boolean(&shape, op)?;
     }
     Some(solid)
+}
+
+/// World-space rigid transform of one move operation (Move tool): rotation about the
+/// op's axis (through its world origin) then translation. Expressions evaluate against
+/// document parameters, so moves rebuild parametrically. `None` when the axis line died
+/// or an expression doesn't evaluate.
+pub fn move_op_transform(doc: &Document, op: &crate::model::MoveOperation) -> Option<glam::Mat4> {
+    let eval_len = |expr: &str| -> Option<f32> {
+        if expr.trim().is_empty() {
+            return Some(0.0);
+        }
+        crate::value::eval_length_mm_in_doc(expr, doc)
+    };
+    let t = Vec3::new(eval_len(&op.tx)?, eval_len(&op.ty)?, eval_len(&op.tz)?);
+    let mut m = glam::Mat4::from_translation(t);
+    if let Some(axis) = op.axis {
+        let angle_rad = if op.angle.trim().is_empty() {
+            0.0
+        } else {
+            crate::value::eval_angle_rad_in_doc(&op.angle, doc)?
+        };
+        if angle_rad.abs() > 1e-9 {
+            let (origin, dir) = axis_world(doc, axis)?;
+            let rot = glam::Mat4::from_translation(origin)
+                * glam::Mat4::from_axis_angle(dir, angle_rad)
+                * glam::Mat4::from_translation(-origin);
+            m = m * rot;
+        }
+    }
+    Some(m)
+}
+
+/// Resolve a rotation/revolve axis to world origin + unit direction.
+pub fn axis_world(doc: &Document, axis: crate::model::RevolveAxis) -> Option<(Vec3, Vec3)> {
+    match axis {
+        crate::model::RevolveAxis::Line(li) => {
+            let line = doc.lines.get(li)?;
+            if !crate::document_lifecycle::line_alive(doc, li) {
+                return None;
+            }
+            let (a, b) = crate::face::line_world_endpoints(doc, line)?;
+            let dir = (b - a).normalize_or_zero();
+            (dir.length_squared() > 1e-8).then_some((a, dir))
+        }
+        crate::model::RevolveAxis::X => Some((Vec3::ZERO, Vec3::X)),
+        crate::model::RevolveAxis::Y => Some((Vec3::ZERO, Vec3::Y)),
+        crate::model::RevolveAxis::Z => Some((Vec3::ZERO, Vec3::Z)),
+    }
+}
+
+/// Row-major 3x4 (rotation + translation) of a glam column-major Mat4, the layout both
+/// OCCT's `gp_Trsf::SetValues` and the kernel transform entry point take.
+#[cfg(feature = "occt")]
+fn mat4_to_rows_3x4(m: &glam::Mat4) -> [f64; 12] {
+    let c = m.to_cols_array_2d();
+    [
+        c[0][0] as f64, c[1][0] as f64, c[2][0] as f64, c[3][0] as f64,
+        c[0][1] as f64, c[1][1] as f64, c[2][1] as f64, c[3][1] as f64,
+        c[0][2] as f64, c[1][2] as f64, c[2][2] as f64, c[3][2] as f64,
+    ]
+}
+
+/// The BREP solid of one move-operation output: the input body's shape, transformed.
+#[cfg(feature = "occt")]
+fn occt_moved_output_shape(
+    doc: &Document,
+    op_index: usize,
+    target: usize,
+) -> Option<crate::kernel::Shape> {
+    let op = doc.move_ops.get(op_index).filter(|o| !o.deleted)?;
+    let &input = op.targets.get(target)?;
+    if op.outputs.contains(&input) {
+        return None;
+    }
+    let shape = occt_body_shape(doc, input)?;
+    let m = move_op_transform(doc, op)?;
+    shape.transformed(&mat4_to_rows_3x4(&m))
 }
 
 /// The whole (possibly multi-solid) OCCT result of one boolean operation: A-side bodies
@@ -969,6 +1049,19 @@ pub fn selection_world_bounds(
     };
     for element in selection.iter() {
         match element {
+            SceneElement::MoveOp(op) => {
+                let outputs = doc
+                    .move_ops
+                    .get(op)
+                    .map(|o| o.outputs.clone())
+                    .unwrap_or_default();
+                for bi in outputs {
+                    if let Some((min, max)) = body_solid_mesh(doc, bi).and_then(|m| m.bounds()) {
+                        extend(min);
+                        extend(max);
+                    }
+                }
+            }
             SceneElement::BooleanOp(op) => {
                 let outputs = doc
                     .boolean_ops
@@ -1132,6 +1225,29 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
     if let crate::model::BodySource::Loft(li) = body.source {
         let loft = doc.lofts.get(li).filter(|l| !l.deleted)?;
         return loft_mesh(doc, loft);
+    }
+    if let crate::model::BodySource::Moved { op, target } = body.source {
+        let mv = doc.move_ops.get(op).filter(|o| !o.deleted)?;
+        let &input = mv.targets.get(target)?;
+        if input == body_index {
+            return None;
+        }
+        let m = move_op_transform(doc, mv)?;
+        // The uncached inner fn: this runs inside the mesh cache's own borrow, so going
+        // through the cached wrapper would double-borrow the RefCell.
+        let source = body_solid_mesh_uncached(doc, input)?;
+        let triangles = source
+            .triangles
+            .iter()
+            .map(|tri| {
+                [
+                    m.transform_point3(tri[0]),
+                    m.transform_point3(tri[1]),
+                    m.transform_point3(tri[2]),
+                ]
+            })
+            .collect();
+        return Some(SolidMesh { triangles });
     }
     if let crate::model::BodySource::Boolean { op, solid } = body.source {
         // Boolean outputs are kernel-computed; shadow inputs keep their own meshes.

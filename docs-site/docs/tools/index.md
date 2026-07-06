@@ -25,6 +25,7 @@ a drawing tool when you want to draw.
 | [Extrude](/docs/tools/extrude) | `E` | Pull a sketch face into a solid — or cut into one. |
 | [Revolve](/docs/tools/revolve) | — | Spin a profile around an axis into a solid. |
 | [Combine](/docs/tools/combine) | — | Boolean operations on bodies: merge, cut, intersect, difference. |
+| [Move](/docs/tools/move) | — | Translate or rotate bodies into moved copies. |
 | [Chamfer](/docs/tools/chamfer) | `K` | Cut a corner or edge flat. |
 | [Fillet](/docs/tools/fillet) | `F` | Round a corner or edge. |
 | [Loft](/docs/tools/loft) | — | Blend a solid through two or more cross-section profiles. |

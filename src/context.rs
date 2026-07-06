@@ -55,6 +55,10 @@ pub struct ContextInput<'a> {
     /// "Edit operation" entry point: `Some(op)` when exactly one boolean operation is
     /// selected and the Combine tool isn't already active.
     pub boolean_edit_start: Option<usize>,
+    /// Move tool state: `Some` while the Move tool is active.
+    pub move_op: Option<MoveControl>,
+    /// "Edit move" entry point: `Some(op)` when exactly one move operation is selected.
+    pub move_edit_start: Option<usize>,
     /// Guided calibration entry point (#163): `Some(image)` when exactly one tracing image
     /// is selected and no calibration is running — renders the "Calibrate scale" button.
     pub calibrate_start: Option<usize>,
@@ -87,6 +91,32 @@ pub struct BooleanControl {
     /// `true` while re-editing a committed operation (changes the commit label).
     pub editing: bool,
     pub can_commit: bool,
+}
+
+/// What the Move tool's context section shows: the picked bodies, the translation
+/// component expressions, the rotation axis + angle expression.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MoveControl {
+    pub target_rows: Vec<String>,
+    pub tx: String,
+    pub ty: String,
+    pub tz: String,
+    pub axis_label: Option<String>,
+    pub angle: String,
+    pub editing: bool,
+    pub can_commit: bool,
+}
+
+/// One edit from the Move context section.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MoveEdit {
+    Tx(String),
+    Ty(String),
+    Tz(String),
+    Angle(String),
+    Axis(Option<crate::model::RevolveAxis>),
+    RemoveTarget(Option<usize>),
+    Commit,
 }
 
 /// One edit from the Combine context section.
@@ -194,6 +224,10 @@ pub struct ContextPaneContent {
     pub boolean_op: Option<BooleanControl>,
     /// "Edit operation" button target.
     pub boolean_edit_start: Option<usize>,
+    /// Move tool state: `Some` while the Move tool is active.
+    pub move_op: Option<MoveControl>,
+    /// "Edit move" entry point: `Some(op)` when exactly one move operation is selected.
+    pub move_edit_start: Option<usize>,
     /// "Calibrate scale" start button (#163): the selected tracing image.
     pub calibrate_start: Option<usize>,
     /// Guided-calibration hint: points placed so far (of 2).
@@ -320,6 +354,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let revolve = input.revolve.clone();
     let boolean_op = input.boolean_op.clone();
     let boolean_edit_start = input.boolean_edit_start;
+    let move_op = input.move_op.clone();
+    let move_edit_start = input.move_edit_start;
     let calibrate_start = input.calibrate_start;
     let calibrate_pending = input.calibrate_pending;
 
@@ -341,6 +377,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             revolve: revolve.clone(),
             boolean_op: boolean_op.clone(),
             boolean_edit_start,
+            move_op: move_op.clone(),
+            move_edit_start,
         calibrate_start,
             calibrate_pending,
         };
@@ -363,6 +401,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             revolve: revolve.clone(),
             boolean_op: boolean_op.clone(),
             boolean_edit_start,
+            move_op: move_op.clone(),
+            move_edit_start,
         calibrate_start,
             calibrate_pending,
         };
@@ -385,6 +425,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             revolve: revolve.clone(),
             boolean_op: boolean_op.clone(),
             boolean_edit_start,
+            move_op: move_op.clone(),
+            move_edit_start,
         calibrate_start,
             calibrate_pending,
         };
@@ -410,6 +452,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         revolve,
         boolean_op,
         boolean_edit_start,
+        move_op,
+        move_edit_start,
         calibrate_start,
         calibrate_pending,
     }
@@ -619,6 +663,8 @@ pub fn show_pane(
     on_revolve_edit: &mut impl FnMut(RevolveEdit),
     on_boolean_edit: &mut impl FnMut(BooleanEdit),
     on_boolean_edit_start: &mut impl FnMut(usize),
+    on_move_edit: &mut impl FnMut(MoveEdit),
+    on_move_edit_start: &mut impl FnMut(usize),
     on_calibrate_start: &mut impl FnMut(usize),
     on_calibrate_image: &mut impl FnMut(CalibrateImageControl, String),
 ) {
@@ -947,6 +993,107 @@ pub fn show_pane(
         );
     }
 
+    if let Some(control) = &content.move_op {
+        any_control = true;
+        ui.separator();
+        ui.label(
+            egui::RichText::new(if control.editing { "Edit move" } else { "Move" }).strong(),
+        );
+        ui.label(
+            egui::RichText::new(format!("Bodies ({})", control.target_rows.len())).strong(),
+        );
+        if control.target_rows.is_empty() {
+            ui.label(
+                egui::RichText::new("Click bodies in the viewport")
+                    .color(egui::Color32::from_gray(140))
+                    .size(11.0),
+            );
+        }
+        for (i, row) in control.target_rows.iter().enumerate() {
+            ui.horizontal(|ui| {
+                if ui.small_button("✕").on_hover_text("Remove from set").clicked() {
+                    on_move_edit(MoveEdit::RemoveTarget(Some(i)));
+                }
+                ui.label(row);
+            });
+        }
+        let mut pending: Option<MoveEdit> = None;
+        {
+            let mut field = |ui: &mut egui::Ui,
+                             label: &str,
+                             value: &str,
+                             make: &dyn Fn(String) -> MoveEdit| {
+                ui.horizontal(|ui| {
+                    ui.label(label);
+                    let mut text = value.to_string();
+                    let resp =
+                        ui.add(egui::TextEdit::singleline(&mut text).desired_width(90.0));
+                    if resp.changed() {
+                        pending = Some(make(text));
+                    }
+                });
+            };
+            field(ui, "X", &control.tx, &MoveEdit::Tx);
+            field(ui, "Y", &control.ty, &MoveEdit::Ty);
+            field(ui, "Z", &control.tz, &MoveEdit::Tz);
+            field(ui, "Angle", &control.angle, &MoveEdit::Angle);
+        }
+        ui.horizontal(|ui| {
+            ui.label("Axis");
+            for (axis, label) in [
+                (crate::model::RevolveAxis::X, "X"),
+                (crate::model::RevolveAxis::Y, "Y"),
+                (crate::model::RevolveAxis::Z, "Z"),
+            ] {
+                if ui.small_button(label).clicked() {
+                    pending = Some(MoveEdit::Axis(Some(axis)));
+                }
+            }
+            if ui.small_button("None").clicked() {
+                pending = Some(MoveEdit::Axis(None));
+            }
+        });
+        ui.label(
+            egui::RichText::new(match &control.axis_label {
+                Some(label) => format!("Rotating around {label} — or click a line"),
+                None => "No rotation — pick an axis or click a line".to_string(),
+            })
+            .color(egui::Color32::from_gray(140))
+            .size(11.0),
+        );
+        if let Some(edit) = pending {
+            on_move_edit(edit);
+        }
+        ui.add_space(2.0);
+        if ui
+            .add_enabled(
+                control.can_commit && controls_enabled,
+                egui::Button::new(if control.editing { "Apply changes" } else { "Move" }),
+            )
+            .clicked()
+        {
+            on_move_edit(MoveEdit::Commit);
+        }
+        ui.label(
+            egui::RichText::new("Inputs become shadow bodies; the moved copies are new bodies")
+                .color(egui::Color32::from_gray(140))
+                .size(11.0),
+        );
+    }
+
+    if let Some(op) = content.move_edit_start {
+        any_control = true;
+        ui.separator();
+        if ui.button("Edit move").clicked() {
+            on_move_edit_start(op);
+        }
+        ui.label(
+            egui::RichText::new("Re-open the Move tool to change this operation")
+                .color(egui::Color32::from_gray(140))
+                .size(11.0),
+        );
+    }
+
     if let Some(image) = content.calibrate_start {
         any_control = true;
         ui.separator();
@@ -1193,6 +1340,8 @@ mod tests {
             revolve: None,
             boolean_op: None,
             boolean_edit_start: None,
+            move_op: None,
+            move_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         }
@@ -1223,6 +1372,8 @@ mod tests {
             revolve: None,
             boolean_op: None,
             boolean_edit_start: None,
+            move_op: None,
+            move_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         };
@@ -1285,6 +1436,8 @@ mod tests {
                 revolve: None,
             boolean_op: None,
             boolean_edit_start: None,
+            move_op: None,
+            move_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: Some(UnitsControl {
@@ -1322,6 +1475,8 @@ mod tests {
             revolve: None,
             boolean_op: None,
             boolean_edit_start: None,
+            move_op: None,
+            move_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -1343,6 +1498,8 @@ mod tests {
                 revolve: None,
             boolean_op: None,
             boolean_edit_start: None,
+            move_op: None,
+            move_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: Some(UnitsControl {
@@ -1380,6 +1537,8 @@ mod tests {
             revolve: None,
             boolean_op: None,
             boolean_edit_start: None,
+            move_op: None,
+            move_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -1414,6 +1573,8 @@ mod tests {
                 revolve: None,
             boolean_op: None,
             boolean_edit_start: None,
+            move_op: None,
+            move_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: None,
@@ -1498,6 +1659,8 @@ mod tests {
             revolve: None,
             boolean_op: None,
             boolean_edit_start: None,
+            move_op: None,
+            move_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -1533,6 +1696,8 @@ mod tests {
             revolve: None,
             boolean_op: None,
             boolean_edit_start: None,
+            move_op: None,
+            move_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -1556,6 +1721,8 @@ mod tests {
                 revolve: None,
             boolean_op: None,
             boolean_edit_start: None,
+            move_op: None,
+            move_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: None,
@@ -1585,6 +1752,8 @@ mod tests {
             revolve: None,
             boolean_op: None,
             boolean_edit_start: None,
+            move_op: None,
+            move_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });

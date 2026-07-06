@@ -143,6 +143,15 @@ export function kernel_split_solids(h) {
   return Float64Array.from(handles);
 }
 
+export function kernel_shape_transform(h, m) {
+  const mm = M();
+  if (!mm) return 0;
+  const p = copyF64In(mm, m);
+  const out = mm._bearcad_shape_transform(h, p);
+  mm._free(p);
+  return out;
+}
+
 export function kernel_shape_free(h) {
   const m = M();
   if (m && h) m._bearcad_shape_free(h);

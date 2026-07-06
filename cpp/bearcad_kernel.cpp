@@ -647,6 +647,29 @@ extern "C" BearcadShape** bearcad_shape_split_solids(const BearcadShape* shape,
     }
 }
 
+// Rigid-transform a shape: `m` is a row-major 3x4 matrix (rotation columns + translation),
+// the same layout gp_Trsf::SetValues takes. Returns a new owned shape.
+extern "C" BearcadShape* bearcad_shape_transform(const BearcadShape* shape, const double* m) {
+    if (shape == nullptr || m == nullptr) {
+        return nullptr;
+    }
+    try {
+        gp_Trsf trsf;
+        trsf.SetValues(m[0], m[1], m[2], m[3],
+                       m[4], m[5], m[6], m[7],
+                       m[8], m[9], m[10], m[11]);
+        BRepBuilderAPI_Transform op(shape->shape, trsf, /*Copy=*/true);
+        if (!op.IsDone()) {
+            return nullptr;
+        }
+        return new BearcadShape{op.Shape()};
+    } catch (const Standard_Failure&) {
+        return nullptr;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
 extern "C" void bearcad_handles_free(BearcadShape** handles) {
     std::free(handles);
 }

@@ -189,6 +189,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "loft", &doc.lofts)?;
     save_indexed_nodes(&tx, &mut row_id, "revolution", &doc.revolutions)?;
     save_indexed_nodes(&tx, &mut row_id, "boolean_op", &doc.boolean_ops)?;
+    save_indexed_nodes(&tx, &mut row_id, "move_op", &doc.move_ops)?;
     if doc.construction_planes.len() > 1 {
         save_indexed_nodes(
             &tx,
@@ -453,6 +454,7 @@ pub fn open(path: &str) -> Result<Document> {
     let lofts = load_indexed_entities(&conn, "loft")?;
     let revolutions = load_indexed_entities(&conn, "revolution")?;
     let boolean_ops = load_indexed_entities(&conn, "boolean_op")?;
+    let move_ops = load_indexed_entities(&conn, "move_op")?;
     let default_length_unit = load_default_length_unit_meta(&conn);
     let default_angle_unit = load_default_angle_unit_meta(&conn);
     let undo_groups = load_undo_groups_meta(&conn);
@@ -471,6 +473,7 @@ pub fn open(path: &str) -> Result<Document> {
         lofts,
         revolutions,
         boolean_ops,
+        move_ops,
         shape_order,
         undo_groups,
         default_length_unit,

@@ -101,6 +101,10 @@ mod ffi {
             out_count: *mut c_ulong,
         ) -> *mut *mut BearcadShape;
         pub fn bearcad_handles_free(handles: *mut *mut BearcadShape);
+        pub fn bearcad_shape_transform(
+            shape: *const BearcadShape,
+            m: *const f64,
+        ) -> *mut BearcadShape;
 
         pub fn bearcad_shape_write_step(s: *const BearcadShape, path: *const c_char) -> c_int;
         pub fn bearcad_read_step(path: *const c_char) -> *mut BearcadShape;
@@ -366,6 +370,12 @@ impl Shape {
             BoolOp::Common => 2,
         };
         let raw = unsafe { ffi::bearcad_shape_boolean(self.raw, other.raw, code) };
+        (!raw.is_null()).then_some(Shape { raw })
+    }
+
+    /// Rigid-transform this shape (Move tool): `m` is a row-major 3x4 rotation+translation.
+    pub fn transformed(&self, m: &[f64; 12]) -> Option<Shape> {
+        let raw = unsafe { ffi::bearcad_shape_transform(self.raw, m.as_ptr()) };
         (!raw.is_null()).then_some(Shape { raw })
     }
 

@@ -99,6 +99,9 @@ pub enum Tool {
     /// Boolean operations between whole bodies (Combine tool): union, cut, intersect,
     /// symmetric difference. Inputs become shadow bodies; outputs are new bodies.
     Combine,
+    /// Move bodies (translate and/or rotate) into new bodies (Move tool, #176/#183).
+    /// Inputs become shadow bodies; outputs are new bodies; the operation is editable.
+    Move,
 }
 
 impl Tool {
@@ -120,6 +123,7 @@ impl Tool {
             "loft" => Some(Tool::Loft),
             "revolve" => Some(Tool::Revolve),
             "combine" | "boolean" => Some(Tool::Combine),
+            "move" => Some(Tool::Move),
             _ => None,
         }
     }
@@ -411,6 +415,20 @@ impl Default for CreatingBoolean {
             editing: None,
         }
     }
+}
+
+/// In-progress move operation (Move tool): the picked bodies, translation component
+/// expressions, optional rotation axis + angle expression, and the op being re-edited.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CreatingMove {
+    pub targets: Vec<usize>,
+    pub tx: String,
+    pub ty: String,
+    pub tz: String,
+    pub axis: Option<crate::model::RevolveAxis>,
+    pub angle: String,
+    /// `Some(op)` while re-editing a committed operation.
+    pub editing: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -948,6 +966,27 @@ pub enum Action {
         b: Vec<usize>,
         keep_b: bool,
     },
+    /// Commit the in-progress Move-tool operation.
+    CommitMove,
+    /// Scripted/replayed move operation with an explicit payload.
+    CreateMoveOperation {
+        targets: Vec<usize>,
+        tx: String,
+        ty: String,
+        tz: String,
+        axis: Option<crate::model::RevolveAxis>,
+        angle: String,
+    },
+    /// Re-point an existing move operation.
+    EditMoveOperation {
+        op: usize,
+        targets: Vec<usize>,
+        tx: String,
+        ty: String,
+        tz: String,
+        axis: Option<crate::model::RevolveAxis>,
+        angle: String,
+    },
     SetExtrudeBodyMode { mode: ExtrudeBodyMode },
     /// Enable or disable snapping while drawing/dragging.
     SetSnapping(bool),
@@ -1309,6 +1348,8 @@ pub struct AppState {
     pub creating_revolve: Option<CreatingRevolve>,
     /// In-progress boolean operation (Combine tool).
     pub creating_boolean: Option<CreatingBoolean>,
+    /// In-progress move operation (Move tool).
+    pub creating_move: Option<CreatingMove>,
     /// In-progress image scale calibration (#163/#171): Some while the user is placing
     /// the two reference points / typing the real length.
     pub creating_calibration: Option<CreatingCalibration>,
@@ -1415,6 +1456,7 @@ impl Default for AppState {
             creating_loft: None,
             creating_revolve: None,
             creating_boolean: None,
+            creating_move: None,
             creating_calibration: None,
             viewport_aspect: 16.0 / 9.0,
             draw_construction: false,
@@ -2303,6 +2345,41 @@ fn validate_boolean_inputs(
     Ok(())
 }
 
+/// Shared validation for creating/editing a move operation.
+fn validate_move_inputs(
+    doc: &Document,
+    targets: &[usize],
+    editing: Option<usize>,
+) -> Result<(), String> {
+    if targets.is_empty() {
+        return Err("Pick at least one body to move".to_string());
+    }
+    let editing_inputs: Vec<usize> = editing
+        .and_then(|e| doc.move_ops.get(e))
+        .map(|o| o.targets.clone())
+        .unwrap_or_default();
+    let mut seen = std::collections::HashSet::new();
+    for &bi in targets {
+        let Some(body) = doc.bodies.get(bi).filter(|body| !body.deleted) else {
+            return Err(format!("Body {bi} not found"));
+        };
+        if body.shadow && !editing_inputs.contains(&bi) {
+            return Err(format!("Body {bi} is already consumed by another operation"));
+        }
+        if let crate::model::BodySource::Moved { op, .. } = body.source {
+            if editing.is_some_and(|e| op >= e) {
+                return Err(
+                    "Cannot use this operation's own (or a later) result as an input".to_string(),
+                );
+            }
+        }
+        if !seen.insert(bi) {
+            return Err(format!("Body {bi} is picked twice"));
+        }
+    }
+    Ok(())
+}
+
 fn element_label(element: SceneElement) -> String {
     match element {
         SceneElement::ConstructionPlane(i) => format!("Construction plane {i}"),
@@ -2318,6 +2395,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::BodyVertex { .. } => "Body vertex".to_string(),
         SceneElement::Image(i) => format!("Image {i}"),
         SceneElement::BooleanOp(i) => format!("Boolean operation {i}"),
+        SceneElement::MoveOp(i) => format!("Move operation {i}"),
     }
 }
 
@@ -2915,6 +2993,20 @@ impl AppState {
                         self.status = "Undid last parameter".to_string();
                         undone = true;
                     }
+                    Some(ShapeKind::MoveOperation) => {
+                        // Undo the whole move op: output bodies were popped by their own
+                        // ShapeKind::Body entries (same undo group); drop the operation
+                        // and un-shadow its inputs.
+                        if let Some(op) = self.doc.move_ops.pop() {
+                            for &bi in &op.targets {
+                                if let Some(body) = self.doc.bodies.get_mut(bi) {
+                                    body.shadow = false;
+                                }
+                            }
+                        }
+                        self.status = "Undid move operation".to_string();
+                        undone = true;
+                    }
                     Some(ShapeKind::BooleanOperation) => {
                         // Undo the whole boolean op: its output bodies were popped by the
                         // ShapeKind::Body entries recorded after it (same undo group), so
@@ -3134,6 +3226,12 @@ impl AppState {
                 if tool == Tool::Combine && self.creating_boolean.is_none() {
                     self.creating_boolean = Some(CreatingBoolean::default());
                 }
+                if self.creating_move.is_some() && tool != Tool::Move {
+                    self.creating_move = None;
+                }
+                if tool == Tool::Move && self.creating_move.is_none() {
+                    self.creating_move = Some(CreatingMove::default());
+                }
                 if self.creating_revolve.is_some() && tool != Tool::Revolve {
                     self.creating_revolve = None;
                 }
@@ -3229,6 +3327,10 @@ impl AppState {
                     }
                     Tool::Combine => {
                         "Combine tool — click bodies to pick them, choose the operation, Enter commits"
+                            .to_string()
+                    }
+                    Tool::Move => {
+                        "Move tool — click bodies to pick them, set the offset/rotation, Enter commits"
                             .to_string()
                     }
                 };
@@ -5211,6 +5313,166 @@ impl AppState {
                 self.tool = Tool::Select;
                 self.status = format!("Added loft ({count} sections)");
                 self.refresh_document_health();
+                ActionResult::Ok
+            }
+            Action::CommitMove => {
+                let Some(cm) = self.creating_move.take() else {
+                    return ActionResult::Err("No move in progress".to_string());
+                };
+                let result = match cm.editing {
+                    Some(op) => self.apply(Action::EditMoveOperation {
+                        op,
+                        targets: cm.targets.clone(),
+                        tx: cm.tx.clone(),
+                        ty: cm.ty.clone(),
+                        tz: cm.tz.clone(),
+                        axis: cm.axis,
+                        angle: cm.angle.clone(),
+                    }),
+                    None => self.apply(Action::CreateMoveOperation {
+                        targets: cm.targets.clone(),
+                        tx: cm.tx.clone(),
+                        ty: cm.ty.clone(),
+                        tz: cm.tz.clone(),
+                        axis: cm.axis,
+                        angle: cm.angle.clone(),
+                    }),
+                };
+                if matches!(result, ActionResult::Err(_)) {
+                    self.creating_move = Some(cm);
+                } else {
+                    self.creating_move = Some(CreatingMove::default());
+                }
+                result
+            }
+            Action::CreateMoveOperation { targets, tx, ty, tz, axis, angle } => {
+                if let Err(e) = validate_move_inputs(&self.doc, &targets, None) {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let op_index = self.doc.move_ops.len();
+                self.doc.move_ops.push(crate::model::MoveOperation {
+                    targets: targets.clone(),
+                    tx,
+                    ty,
+                    tz,
+                    axis,
+                    angle,
+                    outputs: Vec::new(),
+                    name: None,
+                    deleted: false,
+                });
+                if crate::extrude::move_op_transform(&self.doc, &self.doc.move_ops[op_index])
+                    .is_none()
+                {
+                    self.doc.move_ops.pop();
+                    let e = "Move amounts don't evaluate (check expressions and axis)".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                self.doc.shape_order.push(ShapeKind::MoveOperation);
+                let mut outputs = Vec::with_capacity(targets.len());
+                for (ordinal, _) in targets.iter().enumerate() {
+                    outputs.push(self.doc.bodies.len());
+                    self.doc.bodies.push(crate::model::Body {
+                        source: crate::model::BodySource::Moved {
+                            op: op_index,
+                            target: ordinal,
+                        },
+                        name: None,
+                        deleted: false,
+                        shadow: false,
+                    });
+                    self.doc.shape_order.push(ShapeKind::Body);
+                }
+                self.doc.move_ops[op_index].outputs = outputs;
+                for &input in &targets {
+                    if let Some(body) = self.doc.bodies.get_mut(input) {
+                        body.shadow = true;
+                    }
+                }
+                self.refresh_document_health();
+                self.status = format!("Moved {} body(ies)", targets.len());
+                ActionResult::Ok
+            }
+            Action::EditMoveOperation { op, targets, tx, ty, tz, axis, angle } => {
+                if self.doc.move_ops.get(op).filter(|o| !o.deleted).is_none() {
+                    let e = format!("Move operation {op} not found");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                if let Err(e) = validate_move_inputs(&self.doc, &targets, Some(op)) {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let old = self.doc.move_ops[op].clone();
+                for &input in &old.targets {
+                    if let Some(body) = self.doc.bodies.get_mut(input) {
+                        body.shadow = false;
+                    }
+                }
+                {
+                    let entry = &mut self.doc.move_ops[op];
+                    entry.targets = targets.clone();
+                    entry.tx = tx;
+                    entry.ty = ty;
+                    entry.tz = tz;
+                    entry.axis = axis;
+                    entry.angle = angle;
+                }
+                if crate::extrude::move_op_transform(&self.doc, &self.doc.move_ops[op]).is_none() {
+                    self.doc.move_ops[op] = old.clone();
+                    for &input in &old.targets {
+                        if let Some(body) = self.doc.bodies.get_mut(input) {
+                            body.shadow = true;
+                        }
+                    }
+                    let e = "Move amounts don't evaluate (check expressions and axis)".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                // The edit may change how many outputs the op *should* have; keep the
+                // committed output count (extra targets reuse the last output's slot is
+                // not possible for moves — instead cap targets to outputs, or grow).
+                for &input in &targets {
+                    if let Some(body) = self.doc.bodies.get_mut(input) {
+                        body.shadow = true;
+                    }
+                }
+                for &input in old.targets.iter() {
+                    if crate::model::body_shadowed_by_other_ops(&self.doc, input, None, Some(op)) {
+                        if let Some(body) = self.doc.bodies.get_mut(input) {
+                            body.shadow = true;
+                        }
+                    }
+                }
+                // Grow/shrink outputs to match the new target list (tombstoning removed
+                // ones keeps later body indices stable).
+                let have = self.doc.move_ops[op].outputs.len();
+                if targets.len() > have {
+                    let mut outputs = self.doc.move_ops[op].outputs.clone();
+                    for ordinal in have..targets.len() {
+                        outputs.push(self.doc.bodies.len());
+                        self.doc.bodies.push(crate::model::Body {
+                            source: crate::model::BodySource::Moved { op, target: ordinal },
+                            name: None,
+                            deleted: false,
+                            shadow: false,
+                        });
+                        self.doc.shape_order.push(ShapeKind::Body);
+                        self.doc.undo_groups.push(1);
+                    }
+                    self.doc.move_ops[op].outputs = outputs;
+                } else if targets.len() < have {
+                    let outputs = self.doc.move_ops[op].outputs.split_off(targets.len());
+                    for out in outputs {
+                        if let Some(body) = self.doc.bodies.get_mut(out) {
+                            body.deleted = true;
+                        }
+                    }
+                }
+                self.refresh_document_health();
+                self.status = "Edited move".to_string();
                 ActionResult::Ok
             }
             Action::CommitBoolean => {
@@ -7984,6 +8246,92 @@ mod tests {
         assert!(state.doc.bodies[out].deleted);
         assert!(!state.doc.bodies[0].shadow);
         assert!(!state.doc.bodies[1].shadow);
+    }
+
+    /// Move tool: committing shadows the inputs, creates the operation + one moved output
+    /// per input, geometry lands offset, and one undo restores everything.
+    #[test]
+    fn move_commit_creates_outputs_and_shadows_inputs() {
+        let mut state = two_box_state(false);
+        let result = state.apply(Action::CreateMoveOperation {
+            targets: vec![0, 1],
+            tx: "25".to_string(),
+            ty: String::new(),
+            tz: String::new(),
+            axis: None,
+            angle: String::new(),
+        });
+        assert!(matches!(result, ActionResult::Ok));
+        assert_eq!(state.doc.move_ops.len(), 1);
+        let op = state.doc.move_ops[0].clone();
+        assert_eq!(op.outputs.len(), 2);
+        assert!(state.doc.bodies[0].shadow);
+        assert!(state.doc.bodies[1].shadow);
+        // The moved copy sits 25mm along +X of its source.
+        let src = crate::extrude::body_solid_mesh(&state.doc, 0).unwrap();
+        let out = crate::extrude::body_solid_mesh(&state.doc, op.outputs[0]).unwrap();
+        let min_x = |m: &crate::extrude::SolidMesh| {
+            m.triangles
+                .iter()
+                .flat_map(|t| t.iter())
+                .map(|p| p.x)
+                .fold(f32::INFINITY, f32::min)
+        };
+        assert!((min_x(&out) - min_x(&src) - 25.0).abs() < 1e-3);
+
+        state.apply(Action::UndoLast);
+        assert!(state.doc.move_ops.is_empty());
+        assert_eq!(state.doc.bodies.len(), 2);
+        assert!(!state.doc.bodies[0].shadow);
+    }
+
+    /// Editing a move re-points targets and grows/shrinks outputs to match.
+    #[test]
+    fn move_edit_repoints_and_resizes_outputs() {
+        let mut state = two_box_state(false);
+        state.apply(Action::CreateMoveOperation {
+            targets: vec![0],
+            tx: "5".to_string(),
+            ty: String::new(),
+            tz: String::new(),
+            axis: None,
+            angle: String::new(),
+        });
+        assert_eq!(state.doc.move_ops[0].outputs.len(), 1);
+        let result = state.apply(Action::EditMoveOperation {
+            op: 0,
+            targets: vec![0, 1],
+            tx: "5".to_string(),
+            ty: "2".to_string(),
+            tz: String::new(),
+            axis: Some(crate::model::RevolveAxis::Z),
+            angle: "45".to_string(),
+        });
+        assert!(matches!(result, ActionResult::Ok));
+        assert_eq!(state.doc.move_ops[0].outputs.len(), 2);
+        assert!(state.doc.bodies[1].shadow);
+    }
+
+    /// A move driven by a parameter follows parameter edits at rebuild time.
+    #[test]
+    fn move_expression_is_parametric() {
+        let mut state = two_box_state(false);
+        state.apply(Action::AddParameter {
+            name: "gap".to_string(),
+            expression: "30".to_string(),
+        });
+        let result = state.apply(Action::CreateMoveOperation {
+            targets: vec![0],
+            tx: "gap".to_string(),
+            ty: String::new(),
+            tz: String::new(),
+            axis: None,
+            angle: String::new(),
+        });
+        assert!(matches!(result, ActionResult::Ok));
+        let op = state.doc.move_ops[0].clone();
+        let m = crate::extrude::move_op_transform(&state.doc, &op).unwrap();
+        assert!((m.w_axis.x - 30.0).abs() < 1e-4);
     }
 
     /// Combining two *disjoint* boxes keeps them as one operation with (kernel builds) two
