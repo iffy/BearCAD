@@ -588,6 +588,17 @@ impl SketchBridge {
                 )?;
                 Ok((start, end))
             }
+            // A fixed reference line from the origin along the axis direction (#189): two
+            // fixed helper points, like the origin coincidence's (0, 0) helper.
+            ConstraintLine::OriginAxis(axis) => {
+                let (dx, dy) = match axis {
+                    crate::model::SketchAxis::X => (1.0, 0.0),
+                    crate::model::SketchAxis::Y => (0.0, 1.0),
+                };
+                let start = self.system.add_point(0.0, 0.0, true);
+                let end = self.system.add_point(dx, dy, true);
+                Ok((start, end))
+            }
         }
     }
 }
@@ -799,6 +810,8 @@ fn line_endpoint_points(doc: &Document, line: ConstraintLine) -> Vec<ConstraintP
                 },
             ]
         }
+        // The origin axes have no draggable endpoint geometry (#189).
+        ConstraintLine::OriginAxis(_) => Vec::new(),
     }
 }
 

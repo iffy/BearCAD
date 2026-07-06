@@ -480,6 +480,8 @@ pub fn constraint_line_alive(doc: &Document, line: &ConstraintLine) -> bool {
         ConstraintLine::FaceEdge { face, index } => {
             crate::extrude::face_boundary_loop_world(doc, face).is_some_and(|l| *index < l.len())
         }
+        // The origin axes always exist (#189).
+        ConstraintLine::OriginAxis(_) => true,
     }
 }
 

@@ -468,6 +468,7 @@ fn line_sort_key(line: &ConstraintLine) -> (u8, usize, u8, usize) {
     match line {
         ConstraintLine::Line(i) => (0, *i, 0, 0),
         ConstraintLine::FaceEdge { index, .. } => (2, *index, 0, 0),
+        ConstraintLine::OriginAxis(axis) => (3, *axis as usize, 0, 0),
     }
 }
 
@@ -605,6 +606,8 @@ fn validate_line_in_sketch(
                 return Err(format!("Face edge {index} no longer resolves"));
             }
         }
+        // The origin axes always exist for any sketch (#189).
+        ConstraintLine::OriginAxis(_) => {}
     }
     Ok(())
 }
@@ -1119,7 +1122,7 @@ fn line_sketch(doc: &Document, line: ConstraintLine) -> Option<SketchId> {
         // not owned by one) — angle constraints/display against a `FaceEdge` reference aren't
         // supported (out of scope for #26/#27, which only asks for coincident-to-vertex and
         // point-line-distance-to-edge), so this degrades to "no display" rather than a panic.
-        ConstraintLine::FaceEdge { .. } => None,
+        ConstraintLine::FaceEdge { .. } | ConstraintLine::OriginAxis(_) => None,
     }
 }
 
@@ -1387,6 +1390,63 @@ mod tests {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         (doc, sketch)
+    }
+
+    /// #189: constraining a line endpoint onto the sketch's X axis pins that point to `v = 0`,
+    /// and onto the Y axis pins it to `u = 0` — the solver treats the axes as fixed reference
+    /// lines through the origin.
+    #[test]
+    fn point_on_origin_axis_pins_the_coordinate() {
+        use crate::model::{
+            ConstraintEntity, ConstraintKind, ConstraintLine, ConstraintPoint, LineEnd, SketchAxis,
+        };
+
+        let (mut doc, sketch) = sketch_doc();
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 5.0, 5.0, 12.0, 8.0));
+        doc.shape_order.push(ShapeKind::Line);
+        doc.constraints.push(crate::model::Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                    line: 0,
+                    end: LineEnd::Start,
+                }),
+                b: ConstraintEntity::Line(ConstraintLine::OriginAxis(SketchAxis::X)),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+        solve_document_constraints(&mut doc).unwrap();
+        assert!(
+            doc.lines[0].y0.abs() < 1e-3,
+            "start should sit on the X axis (v = 0), got y0={}",
+            doc.lines[0].y0
+        );
+
+        // Now pin the *end* to the Y axis (u = 0).
+        doc.constraints.push(crate::model::Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                    line: 0,
+                    end: LineEnd::End,
+                }),
+                b: ConstraintEntity::Line(ConstraintLine::OriginAxis(SketchAxis::Y)),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+        solve_document_constraints(&mut doc).unwrap();
+        assert!(
+            doc.lines[0].x1.abs() < 1e-3,
+            "end should sit on the Y axis (u = 0), got x1={}",
+            doc.lines[0].x1
+        );
     }
 
     #[test]

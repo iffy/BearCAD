@@ -1381,9 +1381,9 @@ pub fn instructions_for_snap_constraint(kind: &crate::model::ConstraintKind) -> 
         match entity {
             ConstraintEntity::Point(point) => Some(SceneElement::Point(point.clone())),
             ConstraintEntity::Line(ConstraintLine::Line(index)) => Some(SceneElement::Line(*index)),
-            ConstraintEntity::Line(line @ ConstraintLine::FaceEdge { .. }) => {
-                Some(SceneElement::FaceEdge(line.clone()))
-            }
+            ConstraintEntity::Line(
+                line @ (ConstraintLine::FaceEdge { .. } | ConstraintLine::OriginAxis(_)),
+            ) => Some(SceneElement::FaceEdge(line.clone())),
             ConstraintEntity::Circle(index) => Some(SceneElement::Circle(*index)),
             ConstraintEntity::Origin => None,
         }
@@ -1869,13 +1869,20 @@ fn element_lua_ref(element: &SceneElement) -> String {
     // #26/#27: a face's own edge, matching `lua_script::parse_element_table`'s
     // `{ kind = "face", face = {...}, index = N, edge = true }` shape.
     if let SceneElement::FaceEdge(line) = element {
-        let ConstraintLine::FaceEdge { face, index } = line else {
-            unreachable!("SceneElement::FaceEdge always wraps ConstraintLine::FaceEdge")
-        };
-        return format!(
-            "{{ kind = \"face\", face = {}, index = {index}, edge = true }}",
-            face_id_lua_ref(face)
-        );
+        match line {
+            ConstraintLine::FaceEdge { face, index } => {
+                return format!(
+                    "{{ kind = \"face\", face = {}, index = {index}, edge = true }}",
+                    face_id_lua_ref(face)
+                );
+            }
+            ConstraintLine::OriginAxis(axis) => {
+                return format!("{{ kind = \"axis\", axis = \"{}\" }}", sketch_axis_lua_name(*axis));
+            }
+            ConstraintLine::Line(index) => {
+                return format!("{{ kind = \"line\", index = {index} }}");
+            }
+        }
     }
     let tokens = element_script_tokens(element.clone());
     if let Some(point) = tokens.point {
@@ -1913,6 +1920,17 @@ fn constraint_line_lua_ref(line: &ConstraintLine) -> String {
             "{{ kind = \"face\", face = {}, index = {index} }}",
             face_id_lua_ref(face)
         ),
+        ConstraintLine::OriginAxis(axis) => {
+            format!("{{ kind = \"axis\", axis = \"{}\" }}", sketch_axis_lua_name(*axis))
+        }
+    }
+}
+
+/// Lua name for a sketch origin axis (#189).
+fn sketch_axis_lua_name(axis: crate::model::SketchAxis) -> &'static str {
+    match axis {
+        crate::model::SketchAxis::X => "x",
+        crate::model::SketchAxis::Y => "y",
     }
 }
 

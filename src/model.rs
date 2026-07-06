@@ -653,6 +653,19 @@ pub enum ConstraintLine {
     /// `boundary_loop[index]` to `boundary_loop[(index + 1) % boundary_loop.len()]`. Same
     /// scope and fixed-geometry treatment as [`ConstraintPoint::FaceVertex`].
     FaceEdge { face: FaceId, index: usize },
+    /// One of the sketch's own axes through the origin (#189): the X axis (local U, the line
+    /// `v = 0`) or the Y axis (local V, the line `u = 0`). A fixed reference line — a point
+    /// constrains *onto* it (point-on-line coincidence), pinning that coordinate to 0. Same
+    /// "no owning sketch, fixed geometry" treatment as [`ConstraintLine::FaceEdge`].
+    OriginAxis(SketchAxis),
+}
+
+/// One of a sketch's in-plane origin axes (#189): X is the local U direction, Y the local V.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SketchAxis {
+    X,
+    Y,
 }
 
 /// +1 or -1 disambiguation for constraints with two valid solutions.

@@ -445,8 +445,21 @@ impl<'a> Builder<'a> {
                     })?,
                 )
             }
+            // A fixed reference line from the origin along the axis direction (#189).
+            ConstraintLine::OriginAxis(axis) => {
+                let origin = self.ensure_origin();
+                let (dx, dy) = match axis {
+                    crate::model::SketchAxis::X => (1.0, 0.0),
+                    crate::model::SketchAxis::Y => (0.0, 1.0),
+                };
+                let (dir, _, _) = self.point2d(GROUP_FIXED, dx, dy);
+                (origin, dir)
+            }
         };
-        let group = if matches!(line, ConstraintLine::FaceEdge { .. }) {
+        let group = if matches!(
+            line,
+            ConstraintLine::FaceEdge { .. } | ConstraintLine::OriginAxis(_)
+        ) {
             GROUP_FIXED
         } else {
             GROUP_SOLVE
@@ -805,7 +818,7 @@ fn line_endpoints(line: &ConstraintLine) -> (Option<ConstraintPoint>, Option<Con
                 end: LineEnd::End,
             }),
         ),
-        ConstraintLine::FaceEdge { .. } => (None, None),
+        ConstraintLine::FaceEdge { .. } | ConstraintLine::OriginAxis(_) => (None, None),
     }
 }
 
@@ -844,6 +857,10 @@ fn line_endpoints_uv(
             .ok()?;
             Some((a, b))
         }
+        ConstraintLine::OriginAxis(axis) => Some(match axis {
+            crate::model::SketchAxis::X => ((0.0, 0.0), (1.0, 0.0)),
+            crate::model::SketchAxis::Y => ((0.0, 0.0), (0.0, 1.0)),
+        }),
     }
 }
 

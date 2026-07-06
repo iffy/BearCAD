@@ -111,6 +111,7 @@ fn pane_element_for_constraint_line(line: crate::model::ConstraintLine) -> crate
         ConstraintLine::FaceEdge { face, .. } => {
             SceneElement::Extrusion(face.extrusion_index().unwrap_or(usize::MAX))
         }
+        ConstraintLine::OriginAxis(_) => SceneElement::ConstructionPlane(0),
     }
 }
 

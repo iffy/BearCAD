@@ -203,7 +203,7 @@ impl ElementVisibility {
             SceneElement::FaceEdge(line) => {
                 let extrusion = match &line {
                     ConstraintLine::FaceEdge { face, .. } => face.extrusion_index(),
-                    ConstraintLine::Line(_) => None,
+                    ConstraintLine::Line(_) | ConstraintLine::OriginAxis(_) => None,
                 };
                 self.effective_visible(
                     doc,

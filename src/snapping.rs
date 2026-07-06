@@ -5,7 +5,7 @@
 use crate::geometric_constraints::{line_uv_endpoints, point_uv};
 use crate::model::{
     ConstraintEntity, ConstraintKind, ConstraintLine, ConstraintPoint, Document, LineEnd,
-    SketchId,
+    SketchAxis, SketchId,
 };
 
 /// What a snapped point latched onto, and the constraint to add if it is left there.
@@ -128,6 +128,23 @@ pub fn find_snap(
                     },
                 ));
             }
+        }
+    }
+    // The sketch's own origin axes are always snappable (point-on-axis, #189): the X axis is
+    // the line v = 0, the Y axis is u = 0. Treated at on-line priority, so a real vertex,
+    // the origin, and line midpoints still win.
+    for (axis, foot, d2) in [
+        (SketchAxis::X, (query.0, 0.0), query.1 * query.1),
+        (SketchAxis::Y, (0.0, query.1), query.0 * query.0),
+    ] {
+        if d2 <= radius_sq && best_on_line.as_ref().is_none_or(|(b, _)| d2 < *b) {
+            best_on_line = Some((
+                d2,
+                Snap {
+                    uv: foot,
+                    target: SnapTarget::OnLine(ConstraintLine::OriginAxis(axis)),
+                },
+            ));
         }
     }
     if let Some((_, snap)) = best_mid {
@@ -450,6 +467,27 @@ mod tests {
     }
 
     #[test]
+    fn snaps_onto_the_origin_axes() {
+        use crate::model::SketchAxis;
+        let (doc, sketch) = sketch_doc();
+        // Near the X axis (small v, away from the origin): snaps onto it at v = 0.
+        let sx = find_snap(&doc, sketch, (20.0, 0.3), 1.0, &[]).expect("snap to X axis");
+        assert_eq!(
+            sx.target,
+            SnapTarget::OnLine(ConstraintLine::OriginAxis(SketchAxis::X))
+        );
+        assert!(sx.uv.1.abs() < EPS && (sx.uv.0 - 20.0).abs() < EPS);
+
+        // Near the Y axis (small u): snaps onto it at u = 0.
+        let sy = find_snap(&doc, sketch, (0.3, 15.0), 1.0, &[]).expect("snap to Y axis");
+        assert_eq!(
+            sy.target,
+            SnapTarget::OnLine(ConstraintLine::OriginAxis(SketchAxis::Y))
+        );
+        assert!(sy.uv.0.abs() < EPS && (sy.uv.1 - 15.0).abs() < EPS);
+    }
+
+    #[test]
     fn snaps_to_nearby_vertex() {
         let (mut doc, sketch) = sketch_doc();
         doc.lines
@@ -544,14 +582,15 @@ mod tests {
     #[test]
     fn excludes_dragged_point_and_its_line() {
         let (mut doc, sketch) = sketch_doc();
+        // Off both origin axes (v = 5) so only own-geometry exclusion is under test.
         doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+            .push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
         let dragged = ConstraintPoint::LineEndpoint {
             line: 0,
             end: LineEnd::End,
         };
         // Querying right at the dragged end must not snap to itself or its own line.
-        let snap = find_snap(&doc, sketch, (10.0, 0.0), 1.0, &[dragged]);
+        let snap = find_snap(&doc, sketch, (10.0, 5.0), 1.0, &[dragged]);
         assert!(snap.is_none(), "should not snap to own geometry: {snap:?}");
     }
 

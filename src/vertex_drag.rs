@@ -45,7 +45,9 @@ pub fn scene_element_for_line(line: ConstraintLine) -> SceneElement {
         // A face's own edge (#26/#27) is itself a first-class selectable/constraint-authoring
         // target, so it wraps whole like `ConstraintPoint`/`SceneElement::Point` do — not the
         // extrusion-owner mapping other (dependency-tracking) call sites use.
-        face_edge @ ConstraintLine::FaceEdge { .. } => SceneElement::FaceEdge(face_edge),
+        edge @ (ConstraintLine::FaceEdge { .. } | ConstraintLine::OriginAxis(_)) => {
+            SceneElement::FaceEdge(edge)
+        }
     }
 }
 
@@ -62,7 +64,7 @@ pub fn line_drag_seed_points(line: ConstraintLine) -> Vec<ConstraintPoint> {
             },
         ],
         // A face's own edge is fixed (not draggable), so it has no seed points to drag.
-        ConstraintLine::FaceEdge { .. } => Vec::new(),
+        ConstraintLine::FaceEdge { .. } | ConstraintLine::OriginAxis(_) => Vec::new(),
     }
 }
 
@@ -99,7 +101,7 @@ pub fn can_drag_line(doc: &Document, sketch: SketchId, target: ConstraintLine) -
                     .unwrap_or(false)
         }
         // Fixed by the body's own geometry, never draggable.
-        ConstraintLine::FaceEdge { .. } => false,
+        ConstraintLine::FaceEdge { .. } | ConstraintLine::OriginAxis(_) => false,
     }
 }
 
@@ -166,6 +168,10 @@ fn validate_line_drag_target(
         // Fixed by the body's own geometry — never a valid line-drag target.
         ConstraintLine::FaceEdge { index, .. } => {
             return Err(format!("Face edge {index} cannot be dragged"));
+        }
+        // A fixed reference axis (#189) — never draggable.
+        ConstraintLine::OriginAxis(_) => {
+            return Err("Origin axes are fixed and cannot be dragged".to_string());
         }
     }
     Ok(())

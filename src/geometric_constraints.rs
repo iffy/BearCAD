@@ -312,6 +312,7 @@ fn constraint_ref_sort_key(reference: ConstraintRef) -> (u8, usize, u8, u8) {
         ConstraintRef::Circle(i) => (5, i, 0, 0),
         ConstraintRef::Point(ConstraintPoint::FaceVertex { index, .. }) => (6, index, 0, 0),
         ConstraintRef::Line(ConstraintLine::FaceEdge { index, .. }) => (7, index, 0, 0),
+        ConstraintRef::Line(ConstraintLine::OriginAxis(axis)) => (8, axis as usize, 0, 0),
     }
 }
 
@@ -525,6 +526,8 @@ fn validate_line_ref(doc: &Document, sketch: SketchId, line: &ConstraintLine) ->
                 return Err(format!("Face edge {index} no longer resolves"));
             }
         }
+        // The origin axes exist for every sketch (#189).
+        ConstraintLine::OriginAxis(_) => {}
     }
     Ok(())
 }
@@ -678,6 +681,12 @@ pub fn line_uv_endpoints(
                 crate::face::world_to_local(&frame, b),
             ))
         }
+        // The origin axes are fixed reference lines through (0, 0) in the sketch's own
+        // coordinates: X along +U, Y along +V (#189).
+        ConstraintLine::OriginAxis(axis) => Ok(match axis {
+            crate::model::SketchAxis::X => ((0.0, 0.0), (1.0, 0.0)),
+            crate::model::SketchAxis::Y => ((0.0, 0.0), (0.0, 1.0)),
+        }),
     }
 }
 
@@ -729,6 +738,7 @@ pub fn set_line_uv_endpoints(
         // Fixed by the body's own geometry, not by the sketch — mirrors how
         // `ConstraintEntity::Origin` is treated as a fixed, undraggable reference.
         ConstraintLine::FaceEdge { .. } => Err("Face edges are fixed and cannot be moved".to_string()),
+        ConstraintLine::OriginAxis(_) => Err("Origin axes are fixed and cannot be moved".to_string()),
     }
 }
 

@@ -166,6 +166,7 @@ fn scene_element_for_line(line: &ConstraintLine) -> SceneElement {
         // A face's own edge depends on the extrusion that produced the face — same
         // relationship `hierarchy::face_element` tracks for sketches placed on a body face.
         ConstraintLine::FaceEdge { face, .. } => scene_element_for_face(face),
+        ConstraintLine::OriginAxis(_) => SceneElement::ConstructionPlane(0),
     }
 }
 
@@ -287,6 +288,7 @@ fn geometry_elements_for_line(line: &ConstraintLine) -> Vec<SceneElement> {
         // A face's own edge isn't owned by anything markable-unstable in the usual sense (it
         // can't move); surface it via the extrusion instead, same as `scene_element_for_line`.
         ConstraintLine::FaceEdge { face, .. } => vec![scene_element_for_face(face)],
+        ConstraintLine::OriginAxis(_) => vec![SceneElement::ConstructionPlane(0)],
     }
 }
 

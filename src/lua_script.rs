@@ -224,6 +224,11 @@ fn parse_element_table(lua: &Lua, table: Table) -> mlua::Result<SceneElement> {
         }
         return Ok(SceneElement::Point(parse_constraint_point_table(table)?));
     }
+    // A sketch origin axis (#189): `{ kind = "axis", axis = "x" | "y" }`, selectable so a
+    // point can be constrained onto it.
+    if kind.eq_ignore_ascii_case("axis") {
+        return Ok(SceneElement::FaceEdge(parse_constraint_line_table(table)?));
+    }
     let index: usize = table.get("index")?;
     // Point-level selector (#68): a line endpoint (`end = "start"|"end"`), or an explicit
     // `point = true` (e.g. a circle's center) — otherwise
@@ -376,6 +381,15 @@ fn parse_constraint_line_table(table: Table) -> mlua::Result<ConstraintLine> {
         let face = parse_face_id_table(face_table)?;
         let index: usize = table.get("index")?;
         return Ok(ConstraintLine::FaceEdge { face, index });
+    }
+    if kind.eq_ignore_ascii_case("axis") {
+        // { kind = "axis", axis = "x" | "y" } — a sketch origin axis (#189).
+        let axis: String = table.get("axis")?;
+        return match axis.to_ascii_lowercase().as_str() {
+            "x" => Ok(ConstraintLine::OriginAxis(crate::model::SketchAxis::X)),
+            "y" => Ok(ConstraintLine::OriginAxis(crate::model::SketchAxis::Y)),
+            other => Err(mlua::Error::external(format!("unknown axis '{other}' (x|y)"))),
+        };
     }
     let index: usize = table.get("index")?;
     match kind.to_ascii_lowercase().as_str() {
@@ -2831,6 +2845,26 @@ mod tests {
                 assert(type(bearcad[name]) == "function", "bearcad." .. name .. " should stay top-level")
             end
         "#,
+        );
+    }
+
+    /// #189: selecting a point and a sketch origin axis, then applying Coincident, pins the
+    /// point onto that axis — the full select→constrain flow, no mouse simulation.
+    #[test]
+    fn lua_constrain_point_to_origin_axis() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.line{ x = 5, y = 5, x1 = 12, y1 = 8 }
+            bearcad.select{ kind = "line", index = 0, ["end"] = "start" }
+            bearcad.select({ kind = "axis", axis = "x" }, true)
+            bearcad.add_geometric_constraint("coincident")
+        "#,
+        );
+        assert!(
+            state.doc.lines[0].y0.abs() < 1e-3,
+            "the start point should be pinned to the X axis (v = 0), got y0={}",
+            state.doc.lines[0].y0
         );
     }
 

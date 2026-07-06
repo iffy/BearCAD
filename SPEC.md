@@ -146,12 +146,16 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   is memoized per document state (the DOF analysis builds a solver system per sketch).
   Construction (dashed grey) and projected (dashed teal, #140) styling take precedence.
 - **Snapping:** while drawing or dragging sketch geometry, the cursor snaps to nearby
-  vertices, line midpoints, and lines (vertices take priority, then midpoints, then
-  anywhere on a line). Leaving a point on a snap adds the implied constraint (coincident
-  for a vertex or on-line snap, midpoint for a midpoint snap), deduped against existing
-  constraints. A ring marks the active snap. Snapping is toggleable from the context pane
-  and the toggle only appears for tools that snap (Select, Line, Rectangle, Circle) while a
-  sketch is open.
+  vertices, line midpoints, lines, the sketch **origin**, and the sketch's two in-plane
+  **origin axes** (the X axis `v = 0` and Y axis `u = 0`, #189) — vertices/origin take
+  priority, then midpoints, then anywhere on a line or axis. Leaving a point on a snap adds
+  the implied constraint (coincident for a vertex/origin/on-line/on-axis snap, midpoint for a
+  midpoint snap), deduped against existing constraints. A point-on-axis snap is a point-on-line
+  coincidence against the origin axis, pinning that coordinate to 0. A ring marks the active
+  snap. Snapping is toggleable from the context pane and the toggle only appears for tools that
+  snap (Select, Line, Rectangle, Circle) while a sketch is open. The origin axes are also
+  selectable (`ConstraintLine::OriginAxis`) so a point can be constrained onto one from the
+  constraint tool, not just by snapping.
 - **Inference / extension snapping:** hovering a vertex while drawing arms its incident edges
   as extension guides; pulling away then snaps the point onto the **infinite extension** of
   those edges (within a perpendicular tolerance), with a dashed guide line from the edge to the
