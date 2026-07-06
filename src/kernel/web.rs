@@ -45,7 +45,33 @@ extern "C" {
     fn kernel_shape_free(h: u32);
     fn kernel_face_boolean_loop(a: &[f64], b: &[f64], op: i32) -> Option<Vec<f64>>;
     fn kernel_write_step(h: u32) -> Option<Vec<u8>>;
+    fn kernel_slvs_solve(
+        params: &[f64],
+        entities: &[f64],
+        constraints: &[f64],
+        dragged: &[f64],
+    ) -> Option<Vec<f64>>;
     fn kernel_read_step(bytes: &[u8]) -> u32;
+}
+
+/// Whether the kernel module (and with it the libslvs sketch solver) is loaded.
+pub fn slvs_available() -> bool {
+    kernel_available()
+}
+
+/// One libslvs solve via the kernel module. Returns the bridge's packed
+/// `[result, dof, nfaileds, ...failed, ...vals]` array, `None` when the module is
+/// missing (the sketch solver then falls back to the built-in LM solver).
+pub fn slvs_solve(
+    params: &[f64],
+    entities: &[f64],
+    constraints: &[f64],
+    dragged: &[f64],
+) -> Option<Vec<f64>> {
+    if !kernel_available() {
+        return None;
+    }
+    kernel_slvs_solve(params, entities, constraints, dragged)
 }
 
 pub fn box_volume(dx: f64, dy: f64, dz: f64) -> Option<f64> {

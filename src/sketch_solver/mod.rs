@@ -4,14 +4,10 @@
 //! that minimizes weighted residuals simultaneously. See `plan.md` for the full
 //! implementation roadmap.
 
-// With the slvs backend the native numeric path is mostly idle; keep it compiling
-// (it still provides DOF/rank analysis) without dead-code noise.
-#[cfg_attr(feature = "slvs", allow(dead_code))]
 mod bridge;
 mod dof;
 #[cfg(feature = "slvs")]
 pub(crate) mod slvs;
-#[cfg_attr(feature = "slvs", allow(dead_code))]
 mod newton;
 mod residuals;
 mod system;

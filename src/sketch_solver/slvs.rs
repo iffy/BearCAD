@@ -1,5 +1,9 @@
-//! EXPERIMENT (slvs-solver branch): SolveSpace's constraint solver (libslvs) as the
-//! numeric backend for sketch solving, behind `--features slvs`.
+//! SolveSpace's constraint solver (libslvs) — the sketch solver's numeric backend
+//! (`slvs` feature, on by default). Natively it is linked statically (build.rs); on the
+//! web it lives inside the emscripten kernel module and is reached through
+//! web/kernel-bridge.js. When neither is available (lean `--no-default-features` build,
+//! or the kernel module failed to load in the browser), sketch solving falls back to
+//! the built-in Levenberg-Marquardt solver in `newton.rs`.
 //!
 //! Only the *solve* is replaced: the document model, the constraint kinds, the DOF/rank
 //! analysis (`dof.rs`), and the drag plumbing stay as they are. This module maps one
@@ -94,25 +98,179 @@ struct SlvsConstraint {
     other2: i32,
 }
 
-#[repr(C)]
-struct SlvsSystem {
-    param: *mut SlvsParam,
-    params: i32,
-    entity: *mut SlvsEntity,
-    entities: i32,
-    constraint: *mut SlvsConstraint,
-    constraints: i32,
-    dragged: *mut u32,
-    ndragged: i32,
-    calculate_faileds: i32,
-    failed: *mut u32,
-    faileds: i32,
-    dof: i32,
+/// Raw solve result, decoded from the shim's flat outputs.
+struct RawSolve {
     result: i32,
+    dof: i32,
+    failed: Vec<u32>,
+    /// New parameter values, same order as the input params.
+    vals: Vec<f64>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 extern "C" {
-    fn Slvs_Solve(sys: *mut SlvsSystem, hg: u32);
+    // cpp/bearcad_slvs.cpp, compiled by build.rs.
+    fn bearcad_slvs_solve(
+        params: *const f64,
+        nparams: i32,
+        entities: *const f64,
+        nentities: i32,
+        constraints: *const f64,
+        nconstraints: i32,
+        dragged: *const f64,
+        ndragged: i32,
+        out_vals: *mut f64,
+        out_failed: *mut u32,
+        max_faileds: i32,
+        out_nfaileds: *mut i32,
+        out_dof: *mut i32,
+    ) -> i32;
+}
+
+/// Whether the libslvs backend can run right now. Native builds link it statically, so
+/// always; the web build reaches it inside the kernel module, which can fail to load
+/// (the caller then falls back to the built-in LM solver).
+pub fn available() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        true
+    }
+    #[cfg(all(target_arch = "wasm32", feature = "occt"))]
+    {
+        crate::kernel::slvs_available()
+    }
+    #[cfg(all(target_arch = "wasm32", not(feature = "occt")))]
+    {
+        false
+    }
+}
+
+fn flatten_params(params: &[SlvsParam]) -> Vec<f64> {
+    let mut out = Vec::with_capacity(params.len() * 3);
+    for p in params {
+        out.extend_from_slice(&[p.h as f64, p.group as f64, p.val]);
+    }
+    out
+}
+
+fn flatten_entities(entities: &[SlvsEntity]) -> Vec<f64> {
+    let mut out = Vec::with_capacity(entities.len() * 14);
+    for e in entities {
+        out.extend_from_slice(&[
+            e.h as f64,
+            e.group as f64,
+            e.type_ as f64,
+            e.wrkpl as f64,
+            e.point[0] as f64,
+            e.point[1] as f64,
+            e.point[2] as f64,
+            e.point[3] as f64,
+            e.normal as f64,
+            e.distance as f64,
+            e.param[0] as f64,
+            e.param[1] as f64,
+            e.param[2] as f64,
+            e.param[3] as f64,
+        ]);
+    }
+    out
+}
+
+fn flatten_constraints(constraints: &[SlvsConstraint]) -> Vec<f64> {
+    let mut out = Vec::with_capacity(constraints.len() * 13);
+    for c in constraints {
+        out.extend_from_slice(&[
+            c.h as f64,
+            c.group as f64,
+            c.type_ as f64,
+            c.wrkpl as f64,
+            c.val_a,
+            c.pt_a as f64,
+            c.pt_b as f64,
+            c.entity_a as f64,
+            c.entity_b as f64,
+            c.entity_c as f64,
+            c.entity_d as f64,
+            c.other as f64,
+            c.other2 as f64,
+        ]);
+    }
+    out
+}
+
+/// Run one solve through the shim. `None` when the backend isn't reachable (web build
+/// with the kernel module missing).
+fn raw_solve(b: &Builder) -> Option<RawSolve> {
+    let params = flatten_params(&b.params);
+    let entities = flatten_entities(&b.entities);
+    let constraints = flatten_constraints(&b.constraints);
+    let dragged: Vec<f64> = b.dragged.iter().map(|&h| h as f64).collect();
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut vals = vec![0.0f64; b.params.len()];
+        let mut failed = vec![0u32; b.constraints.len().max(1)];
+        let mut nfaileds: i32 = 0;
+        let mut dof: i32 = 0;
+        // libslvs is not thread-safe (its temporary arena is process-global state), so
+        // serialize solves. The app only solves from the UI thread; this protects
+        // parallel test runs.
+        static SOLVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let result = {
+            let _guard = SOLVE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+            unsafe {
+                bearcad_slvs_solve(
+                    params.as_ptr(),
+                    b.params.len() as i32,
+                    entities.as_ptr(),
+                    b.entities.len() as i32,
+                    constraints.as_ptr(),
+                    b.constraints.len() as i32,
+                    dragged.as_ptr(),
+                    dragged.len() as i32,
+                    vals.as_mut_ptr(),
+                    failed.as_mut_ptr(),
+                    failed.len() as i32,
+                    &mut nfaileds,
+                    &mut dof,
+                )
+            }
+        };
+        failed.truncate(nfaileds.max(0) as usize);
+        Some(RawSolve {
+            result,
+            dof,
+            failed,
+            vals,
+        })
+    }
+    #[cfg(all(target_arch = "wasm32", feature = "occt"))]
+    {
+        // Packed as [result, dof, nfaileds, ...failed, ...vals] by web/kernel-bridge.js.
+        let out = crate::kernel::slvs_solve(&params, &entities, &constraints, &dragged)?;
+        if out.len() < 3 {
+            return None;
+        }
+        let result = out[0] as i32;
+        let dof = out[1] as i32;
+        let nfaileds = (out[2].max(0.0)) as usize;
+        if out.len() < 3 + nfaileds + b.params.len() {
+            return None;
+        }
+        let failed = out[3..3 + nfaileds].iter().map(|&h| h as u32).collect();
+        let vals = out[3 + nfaileds..3 + nfaileds + b.params.len()].to_vec();
+        Some(RawSolve {
+            result,
+            dof,
+            failed,
+            vals,
+        })
+    }
+    #[cfg(all(target_arch = "wasm32", not(feature = "occt")))]
+    {
+        let _ = (params, entities, constraints, dragged);
+        None
+    }
 }
 
 /// Outcome of one libslvs solve, before anything is written back to the document.
@@ -895,39 +1053,23 @@ pub fn solve_sketch(
     }
     b.dragged = dragged.into_iter().collect();
 
-    let mut failed = vec![0u32; b.constraints.len().max(1)];
-    let mut sys = SlvsSystem {
-        param: b.params.as_mut_ptr(),
-        params: b.params.len() as i32,
-        entity: b.entities.as_mut_ptr(),
-        entities: b.entities.len() as i32,
-        constraint: b.constraints.as_mut_ptr(),
-        constraints: b.constraints.len() as i32,
-        dragged: b.dragged.as_mut_ptr(),
-        ndragged: b.dragged.len() as i32,
-        calculate_faileds: 1,
-        failed: failed.as_mut_ptr(),
-        faileds: failed.len() as i32,
-        dof: 0,
-        result: 0,
-    };
-    // libslvs is not thread-safe (its temporary arena is process-global state), so
-    // serialize solves. The app only solves from the UI thread; this protects parallel
-    // test runs.
-    static SOLVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    {
-        let _guard = SOLVE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        unsafe { Slvs_Solve(&mut sys, GROUP_SOLVE) };
-    }
+    let raw = raw_solve(&b)
+        .ok_or_else(|| "libslvs backend unavailable (kernel module not loaded)".to_string())?;
 
     if std::env::var_os("SLVS_DEBUG").is_some() {
-        eprintln!("SLVSDBG result={} dof={} faileds={}", sys.result, sys.dof, sys.faileds);
+        eprintln!(
+            "SLVSDBG result={} dof={} faileds={}",
+            raw.result,
+            raw.dof,
+            raw.failed.len()
+        );
     }
-    let success = sys.result == SLVS_RESULT_OKAY || sys.result == SLVS_RESULT_REDUNDANT_OKAY;
+    let success = raw.result == SLVS_RESULT_OKAY || raw.result == SLVS_RESULT_REDUNDANT_OKAY;
     let failed_constraints = if success {
         Vec::new()
     } else {
-        let mut indices: Vec<usize> = failed[..(sys.faileds.max(0) as usize).min(failed.len())]
+        let mut indices: Vec<usize> = raw
+            .failed
             .iter()
             .filter(|&&h| h > 0)
             .filter(|&&h| h <= SECONDARY_HANDLE_BASE * 2)
@@ -952,8 +1094,8 @@ pub fn solve_sketch(
             (
                 point.clone(),
                 (
-                    b.params[*pu as usize - 1].val as f32,
-                    b.params[*pv as usize - 1].val as f32,
+                    raw.vals[*pu as usize - 1] as f32,
+                    raw.vals[*pv as usize - 1] as f32,
                 ),
             )
         })
@@ -961,12 +1103,12 @@ pub fn solve_sketch(
     let circle_radii = b
         .circles
         .iter()
-        .map(|(index, (_, r))| (*index, b.params[*r as usize - 1].val as f32))
+        .map(|(index, (_, r))| (*index, raw.vals[*r as usize - 1] as f32))
         .collect();
 
     Ok(SlvsOutcome {
         success,
-        dof: sys.dof,
+        dof: raw.dof,
         failed_constraints,
         moved_points,
         circle_radii,

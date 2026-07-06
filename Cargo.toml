@@ -17,9 +17,12 @@ path = "src/main.rs"
 # README.md "Building with the OCCT kernel"); to build the lean no-kernel fallback
 # instead — no C++ toolchain, no OCCT — use `--no-default-features` (this is what
 # the Windows release and the fast CI check do). See SPEC.md §10.
-default = ["occt"]
-# EXPERIMENT (slvs-solver branch): replace the hand-rolled sketch constraint solver
-# with SolveSpace's libslvs (third_party/solvespace, compiled by build.rs). Native-only.
+default = ["occt", "slvs"]
+# SolveSpace's constraint solver (libslvs, third_party/solvespace) as the sketch
+# solver backend. Native builds compile+link it directly (build.rs); the web build
+# reaches it inside the emscripten kernel module. Without this feature (or when the
+# web kernel module fails to load) sketch solving falls back to the built-in
+# Levenberg-Marquardt solver.
 slvs = []
 # Statically link the OpenCASCADE (OCCT) geometry kernel.
 occt = []

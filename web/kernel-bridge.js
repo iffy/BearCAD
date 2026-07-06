@@ -150,6 +150,42 @@ export function kernel_face_boolean_loop(a, b, op) {
   return doubles;
 }
 
+// SolveSpace constraint solve (libslvs, linked into this kernel module). Flat f64
+// arrays in (see cpp/bearcad_slvs.cpp for the row layouts); returns a Float64Array
+// packed as [result, dof, nfaileds, ...failedHandles, ...paramVals], or null when the
+// kernel module isn't loaded.
+export function kernel_slvs_solve(params, entities, constraints, dragged) {
+  const m = M();
+  if (!m) return null;
+  const nparams = params.length / 3;
+  const nconstraints = constraints.length / 13;
+  const pp = copyF64In(m, params);
+  const ep = copyF64In(m, entities);
+  const cp = copyF64In(m, constraints);
+  const dp = copyF64In(m, dragged);
+  const valsPtr = m._malloc(nparams * 8);
+  const failedPtr = m._malloc(Math.max(nconstraints, 1) * 4);
+  const nfailedsPtr = m._malloc(4);
+  const dofPtr = m._malloc(4);
+  const result = m._bearcad_slvs_solve(
+    pp, nparams, ep, entities.length / 14, cp, nconstraints, dp, dragged.length,
+    valsPtr, failedPtr, Math.max(nconstraints, 1), nfailedsPtr, dofPtr);
+  const ints = new Int32Array(m.HEAPU8.buffer);
+  const nfaileds = ints[nfailedsPtr / 4];
+  const dof = ints[dofPtr / 4];
+  const failed = new Uint32Array(m.HEAPU8.buffer).slice(failedPtr / 4, failedPtr / 4 + nfaileds);
+  const vals = m.HEAPF64.slice(valsPtr / 8, valsPtr / 8 + nparams);
+  m._free(pp); m._free(ep); m._free(cp); m._free(dp);
+  m._free(valsPtr); m._free(failedPtr); m._free(nfailedsPtr); m._free(dofPtr);
+  const out = new Float64Array(3 + nfaileds + nparams);
+  out[0] = result;
+  out[1] = dof;
+  out[2] = nfaileds;
+  out.set(Float64Array.from(failed), 3);
+  out.set(vals, 3 + nfaileds);
+  return out;
+}
+
 export function kernel_write_step(h) {
   const m = M();
   if (!m) return null;
