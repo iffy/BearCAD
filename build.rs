@@ -8,6 +8,13 @@ fn main() {
     {
         build_occt_shim();
     }
+    // libslvs links natively; the wasm32 app instead reaches it inside the
+    // emscripten-built kernel module (scripts/build-occt-wasm.sh + web/kernel-bridge.js).
+    if std::env::var_os("CARGO_FEATURE_SLVS").is_some()
+        && std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("wasm32")
+    {
+        build_slvs();
+    }
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
@@ -185,4 +192,59 @@ fn png_to_ico(png_path: &str, out_path: &std::path::Path) {
     icon_dir
         .write(BufWriter::new(file))
         .expect("write ico file");
+}
+/// Compile SolveSpace's constraint-solver library (libslvs) straight from the submodule
+/// sources — the same six translation units its own `slvs-solver`/`slvs-interface` CMake
+/// targets build, plus the flat-array shim (cpp/bearcad_slvs.cpp) and mimalloc
+/// (single-file amalgamation) for the solver's temporary arena. Header-only Eigen comes
+/// from the vendored extlib. On by default via the `slvs` feature; the wasm32 app gets
+/// libslvs from the emscripten kernel module instead (scripts/build-occt-wasm.sh).
+fn build_slvs() {
+    use std::path::PathBuf;
+    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let ss = manifest.join("third_party/solvespace");
+    if !ss.join("include/slvs.h").is_file() {
+        panic!(
+            "solvespace submodule missing: run\n  git submodule update --init --depth 1 third_party/solvespace\n  (cd third_party/solvespace && git submodule update --init --depth 1 extlib/eigen extlib/mimalloc)"
+        );
+    }
+
+    cc::Build::new()
+        .file(ss.join("extlib/mimalloc/src/static.c"))
+        .include(ss.join("extlib/mimalloc/include"))
+        .flag_if_supported("-Wno-unused-function")
+        .compile("slvs_mimalloc");
+
+    let mut b = cc::Build::new();
+    b.cpp(true)
+        .std("c++17")
+        .define("LIBRARY", None)
+        .include(ss.join("include"))
+        .include(ss.join("src"))
+        .include(ss.join("extlib/eigen"))
+        .include(ss.join("extlib/mimalloc/include"))
+        .flag_if_supported("-Wno-deprecated-declarations")
+        .flag_if_supported("-Wno-unused-parameter");
+    b.file("cpp/bearcad_slvs.cpp");
+    println!("cargo:rerun-if-changed=cpp/bearcad_slvs.cpp");
+    for f in [
+        "src/slvs/lib.cpp",
+        "src/constrainteq.cpp",
+        "src/entity.cpp",
+        "src/expr.cpp",
+        "src/platform/platformbase.cpp",
+        "src/system.cpp",
+        "src/util.cpp",
+    ] {
+        b.file(ss.join(f));
+        println!("cargo:rerun-if-changed={}", ss.join(f).display());
+    }
+    b.compile("slvs");
+
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os == "macos" {
+        println!("cargo:rustc-link-lib=dylib=c++");
+    } else if target_os == "linux" {
+        println!("cargo:rustc-link-lib=dylib=stdc++");
+    }
 }

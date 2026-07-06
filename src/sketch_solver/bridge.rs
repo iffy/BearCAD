@@ -770,6 +770,14 @@ pub fn sketch_conflicting_constraints(
     doc: &Document,
     sketch: SketchId,
 ) -> Result<Vec<usize>, String> {
+    #[cfg(feature = "slvs")]
+    if super::slvs::available() {
+        let outcome = super::slvs::solve_sketch(doc, sketch, &[])?;
+        if outcome.success {
+            return Ok(Vec::new());
+        }
+        return Ok(outcome.failed_constraints);
+    }
     let mut bridge = SketchBridge::from_document(doc, sketch, true)?;
     let report = bridge.solve();
     if report.success {
@@ -996,6 +1004,16 @@ fn solve_one_sketch(
         .filter(|(point, _)| point_sketch(doc, point.clone()) == Some(sketch))
         .cloned()
         .collect();
+    // The numeric solve is SolveSpace's libslvs (see super::slvs). The built-in LM
+    // solver below remains only as the fallback: the lean `--no-default-features`
+    // build, and a web session whose kernel module failed to load.
+    #[cfg(feature = "slvs")]
+    if super::slvs::available() {
+        let outcome = super::slvs::solve_sketch(doc, sketch, &sketch_pins)?;
+        outcome.apply_to_document(doc, sketch)?;
+        crate::model::refit_fillet_arc_handles(doc, sketch);
+        return Ok(());
+    }
     let hold_references = sketch_pins.is_empty();
     let mut bridge = SketchBridge::from_document(doc, sketch, hold_references)?;
     bridge.add_drag_pins(doc, &sketch_pins);

@@ -11,7 +11,7 @@
 #[cfg(all(feature = "occt", target_arch = "wasm32"))]
 mod web;
 #[cfg(all(feature = "occt", target_arch = "wasm32"))]
-pub use web::{face_boolean_loop, Shape};
+pub use web::{face_boolean_loop, slvs_available, slvs_solve, Shape};
 
 #[cfg(all(feature = "occt", not(target_arch = "wasm32")))]
 mod ffi {

@@ -21,6 +21,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 occt_src="$repo_root/third_party/OCCT"
 occt_build="$occt_src/occt-build-wasm"
 occt_install="$occt_src/occt-install-wasm"
+slvs_src="$repo_root/third_party/solvespace"
 
 command -v emcc >/dev/null 2>&1 || { echo "error: emcc (emscripten) not found on PATH" >&2; exit 1; }
 
@@ -75,14 +76,38 @@ else
   echo ">> OCCT wasm libs already present in $occt_install (delete to rebuild)"
 fi
 
+# The kernel module also carries SolveSpace's constraint solver (libslvs), which the
+# sketch solver calls through the same JS bridge (src/sketch_solver/slvs.rs).
+if [ ! -f "$slvs_src/include/slvs.h" ] || [ ! -f "$slvs_src/extlib/eigen/Eigen/Core" ] \
+   || [ ! -f "$slvs_src/extlib/mimalloc/src/static.c" ]; then
+  echo "error: solvespace submodule (or its eigen/mimalloc extlibs) missing" >&2
+  echo "       run: git submodule update --init --depth 1 third_party/solvespace" >&2
+  echo "            (cd third_party/solvespace && git submodule update --init --depth 1 extlib/eigen extlib/mimalloc)" >&2
+  exit 1
+fi
+
 echo ">> Linking the BearCAD kernel module (kernel.js/kernel.wasm) ..."
 mkdir -p "$repo_root/web/kernel"
 
 # The 16 extern "C" entry points the app bridge calls, plus malloc/free for
 # passing arrays through the module heap.
-exports='["_bearcad_kernel_box_volume","_bearcad_kernel_occt_version","_bearcad_shape_prism","_bearcad_shape_loft","_bearcad_shape_revolve","_bearcad_shape_cylinder","_bearcad_shape_boolean","_bearcad_shape_fillet","_bearcad_shape_chamfer","_bearcad_shape_volume","_bearcad_shape_tessellate","_bearcad_tri_free","_bearcad_shape_free","_bearcad_face_boolean_loop","_bearcad_pts_free","_bearcad_shape_write_step","_bearcad_read_step","_malloc","_free"]'
+exports='["_bearcad_slvs_solve","_bearcad_kernel_box_volume","_bearcad_kernel_occt_version","_bearcad_shape_prism","_bearcad_shape_loft","_bearcad_shape_revolve","_bearcad_shape_cylinder","_bearcad_shape_boolean","_bearcad_shape_fillet","_bearcad_shape_chamfer","_bearcad_shape_volume","_bearcad_shape_tessellate","_bearcad_tri_free","_bearcad_shape_free","_bearcad_face_boolean_loop","_bearcad_pts_free","_bearcad_shape_write_step","_bearcad_read_step","_malloc","_free"]'
 
 emcc "$repo_root/cpp/bearcad_kernel.cpp" \
+  "$repo_root/cpp/bearcad_slvs.cpp" \
+  "$slvs_src/src/slvs/lib.cpp" \
+  "$slvs_src/src/constrainteq.cpp" \
+  "$slvs_src/src/entity.cpp" \
+  "$slvs_src/src/expr.cpp" \
+  "$slvs_src/src/platform/platformbase.cpp" \
+  "$slvs_src/src/system.cpp" \
+  "$slvs_src/src/util.cpp" \
+  "$slvs_src/extlib/mimalloc/src/static.c" \
+  -DLIBRARY \
+  -I"$slvs_src/include" \
+  -I"$slvs_src/src" \
+  -I"$slvs_src/extlib/eigen" \
+  -I"$slvs_src/extlib/mimalloc/include" \
   -I"$occt_install/include/opencascade" \
   -L"$occt_install/lib" \
   -lTKDESTEP -lTKDE -lTKXSBase -lTKMesh -lTKFillet -lTKOffset -lTKBool -lTKBO \

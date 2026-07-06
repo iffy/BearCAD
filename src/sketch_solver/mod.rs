@@ -6,6 +6,8 @@
 
 mod bridge;
 mod dof;
+#[cfg(feature = "slvs")]
+pub(crate) mod slvs;
 mod newton;
 mod residuals;
 mod system;

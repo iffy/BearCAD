@@ -830,8 +830,17 @@ coincident, parallel, perpendicular, distance, angle, point-on-plane/line, etc. 
 back the assembly joints/mates (§2.3).
 
 ### 6.3 Solver
-- A native Rust numeric constraint solver (`sketch_solver`) resolves sketch constraint
-  systems by minimizing weighted residuals with dense Levenberg–Marquardt (SolveSpace-style).
+- Sketch constraint systems are solved by **SolveSpace's solver (libslvs)**, vendored as the
+  `third_party/solvespace` submodule and gated behind the default-on `slvs` feature. Native
+  builds link it statically; the web build reaches it inside the emscripten kernel module via
+  the same JS bridge as OCCT. The mapping (`sketch_solver/slvs.rs`) is one slvs constraint per
+  document constraint (handles = document indices, so slvs's failure report *is* the conflict
+  list); pins and reference-hold semantics ride libslvs's `dragged`-parameter mechanism.
+  libslvs is not thread-safe, so solves are serialized behind a mutex.
+- Fallback: the built-in native Rust numeric solver (dense Levenberg–Marquardt over weighted
+  residuals) still ships and takes over in the lean `--no-default-features` build and in a
+  browser session whose kernel module failed to load. DOF/rank analysis and drag-movability
+  checks always run on the native equation system (analysis only, no solving).
 - Rectangles are four constrained lines (eight endpoint variables, closed by coincident
   constraints); circles use centre point + radius variable.
 - Interactive drag adds high-weight pin residuals; reference geometry uses softer holds that
