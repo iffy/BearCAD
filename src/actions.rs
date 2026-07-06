@@ -1333,6 +1333,10 @@ pub struct EditingCommittedDim {
     pub target: DimEditTarget,
     pub text: String,
     pub pending_focus: bool,
+    /// Arc radius (screen px) chosen while placing a *new* angle dimension, applied to the
+    /// constraint's `dim_offset` on commit so the placed arc keeps the size the preview
+    /// showed (#188). `None` for distance dims and edits of existing dimensions.
+    pub dim_offset: Option<f32>,
 }
 
 /// Placement phase for a brand-new angle dimension: the preview follows the mouse,
@@ -1344,6 +1348,10 @@ pub struct PlacingAngleDimension {
     pub line_a: ConstraintLine,
     pub line_b: ConstraintLine,
     pub rotation_sign: crate::model::ConstraintSign,
+    /// Arc radius (screen px) the preview is currently drawn at — the cursor's distance
+    /// from the vertex, so the arc grows/shrinks as you move the mouse (#188). Persisted to
+    /// the constraint's `dim_offset` on commit.
+    pub arc_offset: Option<f32>,
 }
 
 /// Expression text shown when editing a committed dimension.
@@ -2628,6 +2636,7 @@ impl AppState {
                     line_a: line_a.clone(),
                     line_b: line_b.clone(),
                     rotation_sign: *rotation_sign,
+                    arc_offset: None,
                 });
                 self.status =
                     "Move the mouse to choose the angle, then click to place".to_string();
@@ -2664,6 +2673,7 @@ impl AppState {
             target: edit_target,
             text,
             pending_focus: true,
+            dim_offset: None,
         });
         self.status = format!(
             "Dimension {} • type {kind_label} • Enter commit • Esc cancel",
@@ -4111,6 +4121,7 @@ impl AppState {
                     target: DimEditTarget::Constraint(target),
                     text,
                     pending_focus: true,
+                    dim_offset: None,
                 });
                 self.status = "Edit dimension • Enter to commit • Esc to cancel".to_string();
                 ActionResult::Ok
@@ -4154,10 +4165,28 @@ impl AppState {
                 match apply_committed_dim_expression(
                     &mut self.doc,
                     session.sketch,
-                    target,
+                    target.clone(),
                     &text,
                 ) {
                     Ok(()) => {
+                        // Persist the arc radius chosen while placing a new angle dimension
+                        // so the committed arc keeps the size the preview showed (#188).
+                        if let (Some(offset), DimEditTarget::New(DimensionTarget::Angle {
+                            line_a,
+                            line_b,
+                            ..
+                        })) = (edit.dim_offset, &target)
+                        {
+                            if let Some(id) = crate::constraints::find_angle_constraint(
+                                &self.doc,
+                                line_a.clone(),
+                                line_b.clone(),
+                            ) {
+                                if let Some(c) = self.doc.constraints.get_mut(id) {
+                                    c.dim_offset = Some(offset);
+                                }
+                            }
+                        }
                         self.refresh_document_health();
                         self.status = "Updated dimension".to_string();
                         ActionResult::Ok
@@ -10146,6 +10175,7 @@ mod tests {
             target: DimEditTarget::Constraint(0),
             text: "90deg".to_string(),
             pending_focus: true,
+            dim_offset: None,
         });
         assert_eq!(
             angle_gizmo_constraint_for_edit(state.editing_committed_dim.as_ref(), &state.doc),
@@ -10159,6 +10189,7 @@ mod tests {
             }),
             text: "45deg".to_string(),
             pending_focus: true,
+            dim_offset: None,
         });
         assert_eq!(
             angle_gizmo_constraint_for_edit(state.editing_committed_dim.as_ref(), &state.doc),
@@ -10196,6 +10227,7 @@ mod tests {
                 line_a: ConstraintLine::Line(0),
                 line_b: ConstraintLine::Line(1),
                 rotation_sign: 1,
+                arc_offset: None,
             })
         );
 
@@ -10209,6 +10241,49 @@ mod tests {
         assert_eq!(
             state.editing_committed_dim.as_ref().unwrap().target,
             DimEditTarget::New(target)
+        );
+    }
+
+    #[test]
+    fn committing_a_placed_angle_dim_persists_its_arc_radius() {
+        use crate::model::{ConstraintLine, DimensionTarget};
+
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state
+            .doc
+            .lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state
+            .doc
+            .lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 10.0));
+        state.doc.shape_order.push(ShapeKind::Line);
+        state.doc.shape_order.push(ShapeKind::Line);
+        state.tool = Tool::Dimension;
+
+        let target = DimensionTarget::Angle {
+            line_a: ConstraintLine::Line(0),
+            line_b: ConstraintLine::Line(1),
+            rotation_sign: 1,
+        };
+        state.apply(Action::BeginDimensionEdit { target });
+        // The viewport carries the previewed arc radius onto the edit before commit.
+        let edit = state.editing_committed_dim.as_mut().unwrap();
+        edit.dim_offset = Some(52.0);
+        edit.text = "45deg".to_string();
+        assert!(matches!(state.apply(Action::CommitCommittedDim), ActionResult::Ok));
+
+        let id = crate::constraints::find_angle_constraint(
+            &state.doc,
+            ConstraintLine::Line(0),
+            ConstraintLine::Line(1),
+        )
+        .expect("angle constraint created");
+        assert_eq!(
+            state.doc.constraints[id].dim_offset,
+            Some(52.0),
+            "the placed arc radius should be persisted on the constraint"
         );
     }
 

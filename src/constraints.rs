@@ -1165,7 +1165,11 @@ fn line_angle_leg(
     let t = ca_u * dir_u + ca_v * dir_v;
     let da = (a0.0 - center_uv.0).hypot(a0.1 - center_uv.1);
     let db = (a1.0 - center_uv.0).hypot(a1.1 - center_uv.1);
-    let sign = if da >= db { 1.0 } else { -1.0 };
+    // Point the leg ray from the vertex toward the *farther* endpoint, i.e. along the
+    // visible segment away from the vertex. For two lines meeting at a shared endpoint (the
+    // common corner case) this keeps the arc — and its label — inside the wedge the geometry
+    // encloses, instead of drawing on the empty reflex side and sliding off screen (#188).
+    let sign = if db >= da { 1.0 } else { -1.0 };
     let ray_u = dir_u * sign;
     let ray_v = dir_v * sign;
     let dir = crate::dimensions::uv_dir_to_world(frame.u_axis, frame.v_axis, ray_u, ray_v);
@@ -1952,6 +1956,34 @@ mod tests {
         let hit = display.center + display.dir_b * 5.0;
         let angle = angle_rad_from_sketch_hit(&display, frame.normal, hit).unwrap();
         assert!((angle.to_degrees() - 45.0).abs() < 1.0, "angle={}", angle.to_degrees());
+    }
+
+    #[test]
+    fn angle_display_legs_point_into_the_wedge_for_a_shared_vertex() {
+        use crate::model::ConstraintLine;
+
+        // Two lines meeting at the origin: one along +X, one up-right at 45°. The arc's legs
+        // must point along the segments (into the up-right wedge the geometry encloses), so
+        // the bisector — where the label sits — lands inside the wedge, not on the empty
+        // reflex side where it would slide off screen at larger radii (#188).
+        let (mut doc, sketch) = sketch_doc();
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 10.0));
+        let line_a = ConstraintLine::Line(0);
+        let line_b = ConstraintLine::Line(1);
+        let sign = angle_constraint_natural_sign(&doc, line_a.clone(), line_b.clone()).unwrap();
+        let display = angle_constraint_display(&doc, line_a, line_b, sign).unwrap();
+
+        // Both legs point away from the vertex, into +X/+Y (the segments' side).
+        assert!(display.dir_a.x > 0.5, "dir_a should point along +X, got {:?}", display.dir_a);
+        assert!(display.dir_b.x > 0.0 && display.dir_b.y > 0.0, "dir_b={:?}", display.dir_b);
+        let bisector = (display.dir_a + display.dir_b).normalize();
+        assert!(
+            bisector.x > 0.0 && bisector.y > 0.0,
+            "the label bisector must fall inside the up-right wedge, got {bisector:?}"
+        );
     }
 
     #[test]

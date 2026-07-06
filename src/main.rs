@@ -7482,8 +7482,23 @@ impl App {
                                 }
                             }
                         }
+                        // The arc radius tracks the cursor's distance from the vertex, so the
+                        // preview grows/shrinks and clearly reads as an angle wedge (#188).
+                        if let Some(display) = crate::constraints::angle_constraint_display(
+                            &self.state.doc,
+                            placing.line_a.clone(),
+                            placing.line_b.clone(),
+                            placing.rotation_sign,
+                        ) {
+                            if let Some(center_px) = project(display.center) {
+                                let px = (pp - center_px).length();
+                                if let Some(p) = self.state.placing_angle_dimension.as_mut() {
+                                    p.arc_offset = Some(px);
+                                }
+                            }
+                        }
                     }
-                    // Re-read: the hover update above may have just flipped the sign.
+                    // Re-read: the hover update above may have just flipped the sign / resized.
                     let placing = self.state.placing_angle_dimension.clone().unwrap_or(placing);
                     let label = default_angle_expression(
                         &self.state.doc,
@@ -7500,13 +7515,14 @@ impl App {
                         placing.line_a.clone(),
                         placing.line_b.clone(),
                         placing.rotation_sign,
-                        None,
+                        placing.arc_offset,
                         &label,
                         false,
                         false,
                     );
                     let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
                     if primary_pressed && !over_committed_dim_label {
+                        let arc_offset = placing.arc_offset;
                         self.state.placing_angle_dimension = None;
                         self.state.apply(Action::BeginDimensionEdit {
                             target: model::DimensionTarget::Angle {
@@ -7515,6 +7531,10 @@ impl App {
                                 rotation_sign: placing.rotation_sign,
                             },
                         });
+                        // Carry the previewed radius onto the edit so commit persists it.
+                        if let Some(edit) = self.state.editing_committed_dim.as_mut() {
+                            edit.dim_offset = arc_offset;
+                        }
                     }
                 }
             }
