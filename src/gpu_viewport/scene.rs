@@ -756,6 +756,22 @@ impl ViewportScene {
             );
         }
 
+        // Origin marker (#189): a distinct dot at the active sketch's own origin so it's
+        // visible as a snappable/constrainable point — the axes cross here, but there is
+        // otherwise no point to aim at, so users couldn't tell the origin was selectable.
+        if let Some(session) = input.sketch_session {
+            if let Some(frame) = sketch_geometry_frame(input.doc, session.sketch) {
+                mesh.push_point_marker(
+                    frame.origin,
+                    WIREFRAME_LINE_COLOR,
+                    5.0,
+                    input.cam,
+                    input.viewport,
+                    &vp,
+                );
+            }
+        }
+
         mesh.push_selection(
             input.doc,
             input.document_health,
