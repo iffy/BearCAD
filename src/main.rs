@@ -1843,7 +1843,9 @@ impl App {
 
         // A click while following commits the treatment.
         if following && primary_pressed {
-            if let Some(cvt) = self.state.creating_vertex_treatment.take() {
+            if let Some(mut cvt) = self.state.creating_vertex_treatment.take() {
+                // #201: a typed amount can define a parameter (`name = expr`).
+                let _ = actions::commit_inline_parameter_defs(&mut self.state.doc, [&mut cvt.text]);
                 let amount = cvt.evaluated_amount(&self.state.doc);
                 self.state.apply(Action::CommitVertexTreatment {
                     point: cvt.point,
@@ -1976,7 +1978,9 @@ impl App {
                 });
         }
         if commit {
-            if let Some(cvt) = self.state.creating_vertex_treatment.take() {
+            if let Some(mut cvt) = self.state.creating_vertex_treatment.take() {
+                // #201: a typed amount can define a parameter (`name = expr`).
+                let _ = actions::commit_inline_parameter_defs(&mut self.state.doc, [&mut cvt.text]);
                 let amount = cvt.evaluated_amount(&self.state.doc);
                 self.state.apply(Action::CommitVertexTreatment {
                     point: cvt.point,
@@ -2649,7 +2653,9 @@ impl App {
 
         // A click while following commits the treatment set.
         if following && primary_pressed {
-            if let Some(cet) = self.state.creating_edge_treatment.take() {
+            if let Some(mut cet) = self.state.creating_edge_treatment.take() {
+                // #201: a typed amount can define a parameter (`name = expr`).
+                let _ = actions::commit_inline_parameter_defs(&mut self.state.doc, [&mut cet.text]);
                 let amount = cet.evaluated_amount(&self.state.doc);
                 self.state.apply(Action::CommitEdgeTreatments {
                     edges: cet.edges.clone(),
@@ -2781,7 +2787,9 @@ impl App {
                 });
         }
         if commit {
-            if let Some(cet) = self.state.creating_edge_treatment.take() {
+            if let Some(mut cet) = self.state.creating_edge_treatment.take() {
+                // #201: a typed amount can define a parameter (`name = expr`).
+                let _ = actions::commit_inline_parameter_defs(&mut self.state.doc, [&mut cet.text]);
                 let amount = cet.evaluated_amount(&self.state.doc);
                 self.state.apply(Action::CommitEdgeTreatments {
                     edges: cet.edges.clone(),
@@ -3848,7 +3856,9 @@ impl eframe::App for App {
             if let Some(image) = calibrate_begin {
                 self.state.apply(Action::BeginImageCalibration { image });
             }
-            if let Some((control, text)) = calibrate_apply {
+            if let Some((control, mut text)) = calibrate_apply {
+                // #201: a typed length can define a parameter (`name = expr`).
+                let _ = actions::commit_inline_parameter_defs(&mut self.state.doc, [&mut text]);
                 match crate::value::eval_parameter_in_doc(&text, &self.state.doc) {
                     Some(crate::value::EvaluatedParameter::LengthMm(length)) if length > 0.0 => {
                         self.state.apply(Action::CalibrateImage {

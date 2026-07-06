@@ -2517,6 +2517,23 @@ fn validate_repeat_inputs(doc: &Document, targets: &[usize]) -> Result<(), Strin
     Ok(())
 }
 
+/// Apply any inline `name = expr` parameter definitions in a tool's value-input text fields
+/// before they are evaluated or stored (#201). Empty fields are skipped; the first parse
+/// error is returned so the caller can restore its in-progress state. Every tool that reads a
+/// typed value should route its text through this (or [`try_commit_inline_parameter_definition`]
+/// directly) so expressions *and* variable definitions work everywhere by default.
+pub(crate) fn commit_inline_parameter_defs<'a>(
+    doc: &mut Document,
+    texts: impl IntoIterator<Item = &'a mut String>,
+) -> Result<(), String> {
+    for text in texts {
+        if !text.trim().is_empty() {
+            try_commit_inline_parameter_definition(doc, text)?;
+        }
+    }
+    Ok(())
+}
+
 /// Shared validation for creating/editing a slice operation. `editing` is the op being
 /// edited (its own inputs are shadow bodies, so re-picking them is allowed).
 fn validate_slice_inputs(
@@ -5576,9 +5593,17 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::CommitRepeat => {
-                let Some(cr) = self.creating_repeat.take() else {
+                let Some(mut cr) = self.creating_repeat.take() else {
                     return ActionResult::Err("No repeat in progress".to_string());
                 };
+                if let Err(e) = commit_inline_parameter_defs(
+                    &mut self.doc,
+                    [&mut cr.count, &mut cr.spacing, &mut cr.length],
+                ) {
+                    self.status = e.clone();
+                    self.creating_repeat = Some(cr);
+                    return ActionResult::Err(e);
+                }
                 let result = match cr.editing {
                     Some(op) => self.apply(Action::EditRepeatOperation {
                         op,
@@ -5744,9 +5769,17 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::CommitMove => {
-                let Some(cm) = self.creating_move.take() else {
+                let Some(mut cm) = self.creating_move.take() else {
                     return ActionResult::Err("No move in progress".to_string());
                 };
+                if let Err(e) = commit_inline_parameter_defs(
+                    &mut self.doc,
+                    [&mut cm.tx, &mut cm.ty, &mut cm.tz, &mut cm.angle],
+                ) {
+                    self.status = e.clone();
+                    self.creating_move = Some(cm);
+                    return ActionResult::Err(e);
+                }
                 let result = match cm.editing {
                     Some(op) => self.apply(Action::EditMoveOperation {
                         op,
@@ -6198,9 +6231,14 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::CommitRevolve => {
-                let Some(cr) = self.creating_revolve.take() else {
+                let Some(mut cr) = self.creating_revolve.take() else {
                     return ActionResult::Err("No revolve in progress".to_string());
                 };
+                if let Err(e) = commit_inline_parameter_defs(&mut self.doc, [&mut cr.text]) {
+                    self.status = e.clone();
+                    self.creating_revolve = Some(cr);
+                    return ActionResult::Err(e);
+                }
                 if cr.faces.is_empty() {
                     self.creating_revolve = Some(cr);
                     let e = "Pick at least one profile face to revolve".to_string();
@@ -9051,6 +9089,39 @@ mod tests {
         assert_eq!(op.outputs.len(), 3);
         let offsets = crate::extrude::repeat_offsets(&state.doc, &op).unwrap();
         assert_eq!(offsets.len(), 3);
+    }
+
+    /// #201: committing a repeat whose count is typed as `name = expr` defines the parameter
+    /// and stores the bare name, so the repeat stays parameter-driven.
+    #[test]
+    fn repeat_input_defines_inline_parameter() {
+        let mut state = two_box_state(false);
+        state.apply(Action::SetTool(Tool::Repeat));
+        {
+            let cr = state.creating_repeat.as_mut().unwrap();
+            cr.targets = vec![0];
+            cr.count = "n = 4".to_string();
+            cr.spacing = "10".to_string();
+        }
+        assert!(matches!(state.apply(Action::CommitRepeat), ActionResult::Ok), "{}", state.status);
+        assert!(state.doc.parameters.iter().any(|p| !p.deleted && p.name == "n"));
+        assert_eq!(state.doc.repeat_ops[0].count, "n", "the stored count should be the bare name");
+        assert_eq!(state.doc.repeat_ops[0].outputs.len(), 3, "n = 4 → 3 extra instances");
+    }
+
+    /// #201: a move offset typed as `name = expr` defines the parameter and stays parametric.
+    #[test]
+    fn move_input_defines_inline_parameter() {
+        let mut state = two_box_state(false);
+        state.apply(Action::SetTool(Tool::Move));
+        {
+            let cm = state.creating_move.as_mut().unwrap();
+            cm.targets = vec![0];
+            cm.tx = "dx = 25mm".to_string();
+        }
+        assert!(matches!(state.apply(Action::CommitMove), ActionResult::Ok), "{}", state.status);
+        assert!(state.doc.parameters.iter().any(|p| !p.deleted && p.name == "dx"));
+        assert_eq!(state.doc.move_ops[0].tx, "dx", "the stored offset should be the bare name");
     }
 
     /// Adds an XY-parallel construction plane at `z` and returns its `FaceId`.
