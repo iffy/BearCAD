@@ -27,7 +27,7 @@ a drawing tool when you want to draw.
 | [Combine](/docs/tools/combine) | — | Boolean operations on bodies: merge, cut, intersect, difference. |
 | [Chamfer](/docs/tools/chamfer) | `K` | Cut a corner or edge flat. |
 | [Fillet](/docs/tools/fillet) | `F` | Round a corner or edge. |
-| Loft | — | Blend a solid through two or more cross-section profiles. |
+| [Loft](/docs/tools/loft) | — | Blend a solid through two or more cross-section profiles. |
 
 Reference images for tracing over (import, scale calibration) are covered in
 [Tracing images](/docs/tools/tracing).
