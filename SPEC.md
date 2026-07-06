@@ -98,9 +98,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   extrusion whose face it sits on. A solid cap occludes the datum plane behind it for picking.
   When several faces project onto the cursor (e.g. the near and far faces of a solid), face
   picking resolves to the one nearest the camera, so a hover/click never selects a face hidden
-  behind the body. Entering a sketch reorients the camera head-on to the face; for a near-vertical
-  face (such as a side wall) the view is oriented with world up (+Z) toward the top of the screen
-  so the ground stays at the bottom and orbit behaves normally, rather than rolling sideways.
+  behind the body. Entering a sketch reorients the camera head-on to the face and orients the
+  plane's own axes to the screen: the u-axis points screen-right and the v-axis screen-up, so a
+  **Horizontal** constraint (which fixes a line along u) reads horizontal and a **Vertical**
+  constraint (along v) reads vertical, regardless of the prior camera roll (#187). For a
+  near-vertical face (such as a side wall) the view instead orients with world up (+Z) toward the
+  top of the screen so the ground stays at the bottom and orbit behaves normally, rather than
+  rolling sideways.
 - **Constraining to the sketched-on face itself (#26/#27):** while a sketch is open on one of
   a body's own faces (an extrusion cap or side wall — not a construction plane), that face's
   own analytic boundary loop (the same one used for its cap/side-wall geometry) is available as

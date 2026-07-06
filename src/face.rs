@@ -323,12 +323,27 @@ pub fn sketch_view_up(
         } else {
             let u_screen_after = axis_screen_vec(u, target_look, hint);
             let v_screen_after = axis_screen_vec(v, target_look, hint);
-            sketch_view_up_score(
-                u_screen_before,
-                v_screen_before,
-                u_screen_after,
-                v_screen_after,
-            )
+            // The plane's u-axis pointing screen-right and v-axis screen-up is
+            // authoritative (#187): a Horizontal constraint fixes a line along u and a
+            // Vertical constraint along v, so this is the only orientation where those
+            // constraints read horizontal/vertical on screen. Roll-preservation only
+            // breaks ties among convention-matching orientations (there is normally just
+            // one, so it rarely matters), never overrides the convention.
+            // Far larger than any roll score, so a convention-matching orientation
+            // always wins; roll only orders ties among matching orientations.
+            let convention_penalty =
+                if axes_match_sketch_convention(u_screen_after, v_screen_after) {
+                    0.0
+                } else {
+                    1000.0
+                };
+            convention_penalty
+                + sketch_view_up_score(
+                    u_screen_before,
+                    v_screen_before,
+                    u_screen_after,
+                    v_screen_after,
+                )
         };
         if score < best_score {
             best_score = score;
@@ -1287,9 +1302,13 @@ mod tests {
     }
 
     #[test]
-    fn sketch_view_up_from_isometric_prefers_green_right_red_down() {
+    fn sketch_view_up_from_isometric_puts_u_axis_right_v_axis_up() {
         use crate::camera::Camera;
 
+        // Entering the ground (XY) sketch from the default isometric view must orient the
+        // plane's u-axis (+X) screen-right and v-axis (+Y) screen-up, so a Horizontal
+        // constraint (line along u) reads horizontal and a Vertical constraint (along v)
+        // reads vertical (#187) — not the prior roll-preserving "u-axis down" pick.
         let cam = Camera::default();
         let frame = SketchFrame {
             origin: Vec3::ZERO,
@@ -1301,38 +1320,19 @@ mod tests {
         let current_look = (Vec3::ZERO - cam.eye()).normalize_or_zero();
         let current_up = cam.view_up_hint();
         let target_look = (-view_dir).normalize_or_zero();
-        let u = frame.u_axis;
-        let v = frame.v_axis;
-        let u0 = axis_screen_vec(u, current_look, current_up);
-        let v0 = axis_screen_vec(v, current_look, current_up);
-
-        let score_neg_x = {
-            let h = -Vec3::X;
-            sketch_view_up_score(
-                u0,
-                v0,
-                axis_screen_vec(u, target_look, h),
-                axis_screen_vec(v, target_look, h),
-            )
-        };
-        let score_neg_y = {
-            let h = -Vec3::Y;
-            sketch_view_up_score(
-                u0,
-                v0,
-                axis_screen_vec(u, target_look, h),
-                axis_screen_vec(v, target_look, h),
-            )
-        };
-        assert!(
-            score_neg_x <= score_neg_y + 1e-4,
-            "±X hint should beat ±Y: score_neg_x={score_neg_x} score_neg_y={score_neg_y}"
-        );
 
         let hint = sketch_view_up(view_dir, &frame, current_look, current_up);
+        // The v-axis (+Y) becomes screen-up.
         assert!(
-            hint.dot(Vec3::X).abs() > 0.9,
-            "isometric entry should pick ±X up hint to preserve green right, got {hint:?}"
+            hint.dot(Vec3::Y) > 0.9,
+            "isometric entry should pick +Y (v-axis) up, got {hint:?}"
+        );
+        // And the u-axis (+X) lands screen-right with the v-axis screen-up.
+        let u_screen = axis_screen_vec(frame.u_axis, target_look, hint);
+        let v_screen = axis_screen_vec(frame.v_axis, target_look, hint);
+        assert!(
+            axes_match_sketch_convention(u_screen, v_screen),
+            "u should be screen-right and v screen-up: u={u_screen:?} v={v_screen:?}"
         );
     }
 

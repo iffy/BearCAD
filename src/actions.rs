@@ -10482,7 +10482,10 @@ mod tests {
     }
 
     #[test]
-    fn begin_sketch_from_isometric_uses_minimal_axis_rotation() {
+    fn begin_sketch_from_isometric_puts_u_axis_right_v_axis_up() {
+        // #187: entering a sketch orients the plane's u-axis screen-right and v-axis
+        // screen-up, so a Horizontal constraint (line along u) reads horizontal and a
+        // Vertical constraint (along v) reads vertical — regardless of the prior roll.
         let viewport =
             egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
         let mut state = AppState::default();
@@ -10500,18 +10503,10 @@ mod tests {
         while state.cam.tick_transition(0.05) {}
 
         let end = axis_layout(&state.cam, viewport).expect("sketch axes visible");
-        let minimal = [
-            (ScreenAxisDir::Down, ScreenAxisDir::Right),
-            (ScreenAxisDir::Right, ScreenAxisDir::Down),
-        ];
-        assert!(
-            minimal.contains(&end),
-            "sketch entry should use minimal roll: start={start:?} end={end:?}, expected one of {minimal:?}"
-        );
-        assert_ne!(
+        assert_eq!(
             end,
             (ScreenAxisDir::Right, ScreenAxisDir::Up),
-            "should not over-rotate to red right + green up"
+            "sketch entry should put the u-axis (red/X) right and v-axis (green/Y) up"
         );
 
         let frame = sketch_frame(&state.doc, FaceId::ConstructionPlane(0)).unwrap();
@@ -10525,17 +10520,8 @@ mod tests {
             .cam
             .project(frame.origin + frame.v_axis * 10.0, viewport, &vp)
             .unwrap();
-        match end {
-            (ScreenAxisDir::Down, ScreenAxisDir::Right) => {
-                assert!(u.y > base.y + 5.0, "u should point down on screen");
-                assert!(v.x > base.x + 5.0, "v should point right on screen");
-            }
-            (ScreenAxisDir::Right, ScreenAxisDir::Down) => {
-                assert!(u.x > base.x + 5.0, "u should point right on screen");
-                assert!(v.y > base.y + 5.0, "v should point down on screen");
-            }
-            other => panic!("unexpected end layout {other:?}"),
-        }
+        assert!(u.x > base.x + 5.0, "u should point right on screen");
+        assert!(v.y < base.y - 5.0, "v should point up on screen (egui y-down)");
     }
 
     #[test]
