@@ -509,6 +509,8 @@ pub struct CreatingRevolve {
     pub body_choice: RevolveBodyChoice,
     /// Bodies picked for Cut mode.
     pub cut_bodies: Vec<usize>,
+    /// `Some(op)` while re-editing a committed revolution (#211), else a fresh revolve.
+    pub editing: Option<usize>,
 }
 
 impl Default for CreatingRevolve {
@@ -524,6 +526,7 @@ impl Default for CreatingRevolve {
             symmetric: false,
             body_choice: RevolveBodyChoice::default(),
             cut_bodies: Vec::new(),
+            editing: None,
         }
     }
 }
@@ -2174,6 +2177,69 @@ impl AppState {
                 format!("Revolve cut {} body(ies) ({angle_deg:.0}°)", b.len())
             }
         };
+        ActionResult::Ok
+    }
+
+    /// Re-point an existing revolution (#211): replace its parameters in place (preserving its
+    /// name), then reconcile its output body — a `NewBody`-mode revolve owns one body via
+    /// `BodySource::Revolve`; `AddTo`/`Cut` own none (they fuse at recompute).
+    #[allow(clippy::too_many_arguments)]
+    fn edit_revolution(
+        &mut self,
+        op: usize,
+        sketch: SketchId,
+        faces: Vec<ExtrudeFace>,
+        axis: crate::model::RevolveAxis,
+        angle_deg: f32,
+        symmetric: bool,
+        mode: crate::model::RevolveMode,
+    ) -> ActionResult {
+        let Some(existing) = self.doc.revolutions.get(op).filter(|r| !r.deleted) else {
+            return ActionResult::Err(format!("no revolution {op}"));
+        };
+        let candidate = crate::model::Revolution {
+            sketch,
+            faces,
+            axis,
+            angle_deg,
+            symmetric,
+            mode: mode.clone(),
+            name: existing.name.clone(),
+            deleted: false,
+        };
+        if crate::extrude::revolve_mesh(&self.doc, &candidate).is_none() {
+            let e = "Revolve failed: profile must be a closed face and the axis a real line"
+                .to_string();
+            self.status = e.clone();
+            return ActionResult::Err(e);
+        }
+        self.doc.revolutions[op] = candidate;
+        // Reconcile the owned body with the (possibly changed) mode.
+        let has_body = self
+            .doc
+            .bodies
+            .iter()
+            .any(|b| !b.deleted && b.source == crate::model::BodySource::Revolve(op));
+        match (matches!(mode, crate::model::RevolveMode::NewBody), has_body) {
+            (true, false) => self.doc.bodies.push(crate::model::Body {
+                source: crate::model::BodySource::Revolve(op),
+                name: None,
+                deleted: false,
+                shadow: false,
+            }),
+            (false, true) => {
+                for body in self.doc.bodies.iter_mut() {
+                    if body.source == crate::model::BodySource::Revolve(op) {
+                        body.deleted = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+        self.creating_revolve = None;
+        self.tool = Tool::Select;
+        self.refresh_document_health();
+        self.status = format!("Revolve updated ({angle_deg:.0}°)");
         ActionResult::Ok
     }
 
@@ -6356,14 +6422,25 @@ impl AppState {
                         return ActionResult::Err(e);
                     }
                 };
-                let result = self.create_revolution(
-                    sketch,
-                    cr.faces.clone(),
-                    axis,
-                    angle,
-                    cr.symmetric,
-                    mode,
-                );
+                let result = match cr.editing {
+                    Some(op) => self.edit_revolution(
+                        op,
+                        sketch,
+                        cr.faces.clone(),
+                        axis,
+                        angle,
+                        cr.symmetric,
+                        mode,
+                    ),
+                    None => self.create_revolution(
+                        sketch,
+                        cr.faces.clone(),
+                        axis,
+                        angle,
+                        cr.symmetric,
+                        mode,
+                    ),
+                };
                 if matches!(result, ActionResult::Err(_)) {
                     self.creating_revolve = Some(cr);
                 }
@@ -7659,6 +7736,44 @@ mod tests {
         state.apply(Action::UndoLast);
         assert!(state.doc.revolutions.is_empty());
         assert!(state.doc.bodies.is_empty());
+    }
+
+    /// Editing a committed revolution (#211) re-points it in place: the angle changes, no new
+    /// revolution or body is created, and its NewBody output body is preserved.
+    #[test]
+    fn edit_revolve_updates_params_in_place() {
+        let mut state = AppState::default();
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let lines = crate::construction::add_line_rectangle(
+            &mut state.doc, sketch, 10.0, 0.0, 10.0, 10.0, [false; 4],
+        );
+        let faces = vec![crate::model::ExtrudeFace::Polygon(lines.to_vec())];
+        state.creating_revolve = Some(CreatingRevolve {
+            sketch: Some(sketch),
+            faces: faces.clone(),
+            axis: Some(crate::model::RevolveAxis::Y),
+            ..CreatingRevolve::default()
+        });
+        assert!(matches!(state.apply(Action::CommitRevolve), ActionResult::Ok));
+        assert_eq!(state.doc.revolutions.len(), 1);
+        let body_count = state.doc.bodies.len();
+
+        // Re-open the revolution for editing with a new (180°) sweep.
+        state.creating_revolve = Some(CreatingRevolve {
+            sketch: Some(sketch),
+            faces,
+            axis: Some(crate::model::RevolveAxis::Y),
+            text: "180".to_string(),
+            user_edited: true,
+            editing: Some(0),
+            ..CreatingRevolve::default()
+        });
+        assert!(matches!(state.apply(Action::CommitRevolve), ActionResult::Ok));
+        // Same revolution and body count; only the angle changed.
+        assert_eq!(state.doc.revolutions.len(), 1);
+        assert_eq!(state.doc.bodies.len(), body_count);
+        assert!((state.doc.revolutions[0].angle_deg - 180.0).abs() < 1e-3);
+        assert!(state.creating_revolve.is_none());
     }
 
     /// Cut mode without picked bodies is rejected and the in-progress state survives.
