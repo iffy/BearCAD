@@ -380,8 +380,8 @@ fn parse_extrude_target_table(table: &Table) -> mlua::Result<crate::model::Extru
 fn parse_constraint_line_table(table: Table) -> mlua::Result<ConstraintLine> {
     let kind: String = table.get("kind").or_else(|_| table.get("type"))?;
     if kind.eq_ignore_ascii_case("face") {
-        // { kind = "face", face = { kind = "extrude_cap", extrusion = 0, profile = "rect",
-        //   profile_index = 0, top = true }, index = 2 } — edge `index` of that face's own
+        // { kind = "face", face = { kind = "extrude_cap", extrusion = 0, profile = "polygon",
+        //   profile_lines = { 0, 1, 2, 3 }, top = true }, index = 2 } — edge `index` of that face's own
         // boundary loop (#26/#27's `FaceEdge`).
         let face_table: Table = table.get("face")?;
         let face = parse_face_id_table(face_table)?;

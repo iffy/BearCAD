@@ -50,7 +50,7 @@ constrained against the face it's drawn on (e.g. "30mm from the top edge"):
 ```lua
 bearcad.select{
     kind = "face",
-    face = { kind = "extrude_cap", extrusion = 0, profile = "rect", profile_index = 0, top = true },
+    face = { kind = "extrude_cap", extrusion = 0, profile = "polygon", profile_lines = { 0, 1, 2, 3 }, top = true },
     index = 2,
 }
 ```
@@ -64,7 +64,7 @@ body face. `index` numbers the face's boundary loop the same way `cap_polygon_wo
 ```lua
 bearcad.select{
     kind = "face",
-    face = { kind = "extrude_side", extrusion = 0, profile = "rect", profile_index = 0, edge = 0 },
+    face = { kind = "extrude_side", extrusion = 0, profile = "polygon", profile_lines = { 0, 1, 2, 3 }, edge = 0 },
     index = 0,
     edge = true,
 }
