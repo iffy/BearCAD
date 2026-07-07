@@ -274,11 +274,11 @@ pub enum ViewportHoverHighlight {
     /// whatever its kind — bodies/extrusions get their aura in the hover color, sketch
     /// entities their usual pick highlight.
     Element(crate::hierarchy::SceneElement),
-    /// A computed boolean-combined region (#16/#62): rendered as a filled/outlined polygon
-    /// directly from its resolved world-space loop, since (unlike `SketchFace`) it has no
-    /// `FaceId` of its own — it's not a stored shape, just `ExtrudeFace::Boolean`'s on-demand
-    /// geometry.
-    BooleanRegion { world_loop: Vec<Vec3> },
+    /// A closed world-space loop rendered as a filled/outlined polygon (#16/#62/#202): used
+    /// for a computed boolean-combined region (which, unlike `SketchFace`, has no `FaceId` of
+    /// its own — it's just `ExtrudeFace::Boolean`'s on-demand geometry) and for a Loft tool
+    /// cross-section profile under the cursor.
+    ClosedLoop { world_loop: Vec<Vec3> },
 }
 
 /// Prospective construction plane while creating or editing.
@@ -2241,7 +2241,7 @@ impl<'a> SceneMesh<'a> {
                 );
                 self.set_index_layer(restore_layer);
             }
-            ViewportHoverHighlight::BooleanRegion { world_loop } => {
+            ViewportHoverHighlight::ClosedLoop { world_loop } => {
                 if world_loop.len() >= 3 {
                     let eye = cam.eye();
                     let normal = (world_loop[1] - world_loop[0])

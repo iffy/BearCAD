@@ -1304,6 +1304,20 @@ pub fn loft_section_from_element(
     }
 }
 
+/// The sketch entities that make up a loft cross section, so a picked section can show its
+/// selection highlight in the viewport (#202): a circle section is its circle, a line-loop
+/// section is every line in the loop.
+pub fn loft_section_scene_elements(
+    section: &crate::model::LoftSection,
+) -> Vec<crate::hierarchy::SceneElement> {
+    use crate::hierarchy::SceneElement;
+    match &section.face {
+        ExtrudeFace::Circle(ci) => vec![SceneElement::Circle(*ci)],
+        ExtrudeFace::Polygon(lines) => lines.iter().map(|li| SceneElement::Line(*li)).collect(),
+        ExtrudeFace::Boolean { .. } => Vec::new(),
+    }
+}
+
 /// Order loft sections along the principal direction (the vector between the two
 /// most-distant section centroids), so the loft blends through space monotonically
 /// regardless of pick order.
@@ -3557,6 +3571,33 @@ mod tests {
             deleted: false,
         };
         assert!(loft_mesh(&doc, &loft).is_none());
+    }
+
+    /// A picked loft section maps back to the sketch entities that should show a selection
+    /// highlight (#202): a circle is itself; a line loop is every line in the loop.
+    #[test]
+    fn loft_section_scene_elements_covers_circle_and_polygon() {
+        use crate::hierarchy::SceneElement;
+        let circle = crate::model::LoftSection {
+            sketch: 0,
+            face: ExtrudeFace::Circle(3),
+        };
+        assert_eq!(
+            loft_section_scene_elements(&circle),
+            vec![SceneElement::Circle(3)]
+        );
+        let polygon = crate::model::LoftSection {
+            sketch: 0,
+            face: ExtrudeFace::Polygon(vec![4, 5, 6]),
+        };
+        assert_eq!(
+            loft_section_scene_elements(&polygon),
+            vec![
+                SceneElement::Line(4),
+                SceneElement::Line(5),
+                SceneElement::Line(6),
+            ]
+        );
     }
 
     /// Sections are re-ordered along the loft's principal direction, so pick order

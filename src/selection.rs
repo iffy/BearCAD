@@ -32,6 +32,23 @@ impl SceneSelection {
         self.elements.clear();
     }
 
+    /// Add an element to the selection (idempotent). Used to fold a tool's in-progress picked
+    /// set (e.g. Loft cross sections, #202) into the selection the viewport renders, so picked
+    /// elements show their selection highlight without touching the persistent selection.
+    pub fn insert(&mut self, element: SceneElement) {
+        self.elements.insert(element);
+    }
+
+    /// The selection as a deterministically ordered list (#202). The Select tool's selection
+    /// picker needs a stable row order, and — because the remove button is handled a frame
+    /// after the rows are built — index→element must agree across both. Sorting by each
+    /// element's debug form is a cheap total order that stays fixed while the set is unchanged.
+    pub fn ordered(&self) -> Vec<SceneElement> {
+        let mut elements: Vec<SceneElement> = self.elements.iter().cloned().collect();
+        elements.sort_by_key(|element| format!("{element:?}"));
+        elements
+    }
+
     /// The sole selected element, if exactly one is selected.
     pub fn single(&self) -> Option<SceneElement> {
         let mut iter = self.iter();

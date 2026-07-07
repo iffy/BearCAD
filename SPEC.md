@@ -676,7 +676,10 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
 - **Loft** *(implemented)* — blend a solid through two or more closed cross-section
   profiles (circles or line loops) on different planes. The **Loft** toolbar tool collects
   sections by clicking profiles in the viewport (a click on a loop's line picks the whole
-  loop; clicking a picked section removes it); the picked set shows in the context pane's
+  loop; clicking a picked section removes it); hovering a pickable profile highlights the
+  whole closed loop under the cursor, and each picked section shows the selection highlight
+  on its sketch entities, so the collected set is visible in 3D as well as in the pane. The
+  picked set also shows in the context pane's
   generic selection picker (§6.4-style rows with per-row remove and clear-all), seeded from
   any profiles already selected when the tool is chosen. **Enter** (with ≥ 2 sections)
   commits: sections are ordered along the loft's principal direction (so pick order doesn't
@@ -857,6 +860,12 @@ modeled on SolveSpace (https://solvespace.com).
   rebuild moves the edge, the selection simply drops — acceptable for ephemeral, never-
   persisted selection state. Selected body edges/vertices draw depth-test-disabled like
   their hover highlights (#153).
+- **Selection picker for the Select tool (#202):** while the Select tool is active with a
+  non-empty selection, the context pane shows the same generic selection picker other tools
+  use — one row per selected element (named like its Elements-pane row), each with a remove
+  button that deselects it, plus a clear-all. This gives every tool that gathers elements —
+  including plain selection — one consistent way to review and prune the set. Suppressed
+  while a draw construction is active (draw mode owns the pane then).
 - **No picking through bodies (#155):** while selecting (Select/Constraint tools, and picks
   made for a tool such as construction-plane references or dimension targets), geometry
   hidden **behind** a visible body under the cursor is not a pick candidate — clicking a

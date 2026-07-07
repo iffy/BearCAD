@@ -418,6 +418,27 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
                     }
                 })
             })
+        })
+        .or_else(|| {
+            // Select tool (#202): the current selection as an element picker, so any tool that
+            // gathers elements — including plain selection — presents them the same way, with
+            // per-row remove and clear-all. Suppressed while a draw construction is active
+            // (draw mode owns the pane then).
+            let drawing = input.draw_rect_construction.is_some()
+                || input.draw_line_construction.is_some()
+                || input.draw_circle_construction.is_some();
+            (input.tool == Tool::Select && !input.selection.is_empty() && !drawing).then(|| {
+                EdgePickerControl {
+                    heading: "Selection",
+                    hint: "Click an element to select it",
+                    rows: input
+                        .selection
+                        .ordered()
+                        .iter()
+                        .map(|element| crate::names::scene_element_label(input.doc, element))
+                        .collect(),
+                }
+            })
         });
     let calibrate_image = input.calibrate_image;
     let revolve = input.revolve.clone();
@@ -1708,6 +1729,54 @@ mod tests {
         assert_eq!(context_pane_content(&off).edge_picker, None);
     }
 
+    /// #202: the Select tool presents the current selection as an element picker, ordered
+    /// deterministically. No selection means no picker (nothing to manage).
+    #[test]
+    fn select_tool_selection_becomes_an_element_picker() {
+        use crate::hierarchy::SceneElement;
+        let doc = Document::default();
+        let mut selection = SceneSelection::default();
+        crate::selection::click_scene_selection(&mut selection, SceneElement::Line(0), true);
+        crate::selection::click_scene_selection(&mut selection, SceneElement::Circle(1), true);
+        let input = ContextInput {
+            doc: &doc,
+            selection: &selection,
+            tool: Tool::Select,
+            draw_rect_construction: None,
+            draw_line_construction: None,
+            draw_circle_construction: None,
+            draw_line_curve_mode: None,
+            draw_line_tangent_constraint: None,
+            in_sketch: false,
+            snapping_enabled: true,
+            extrude_merge_candidate: None,
+            extrude_body_mode: None,
+            edge_treatment_rows: None,
+            loft_rows: None,
+            calibrate_image: None,
+            revolve: None,
+            boolean_op: None,
+            boolean_edit_start: None,
+            move_op: None,
+            move_edit_start: None,
+            repeat_op: None,
+            repeat_edit_start: None,
+            slice_op: None,
+            slice_edit_start: None,
+            calibrate_start: None,
+            calibrate_pending: None,
+        };
+        let picker = context_pane_content(&input).edge_picker.expect("selection picker");
+        assert_eq!(picker.heading, "Selection");
+        // Rows follow `SceneSelection::ordered` (debug-string order): Circle before Line.
+        assert_eq!(picker.rows, vec!["Circle 1".to_string(), "Line 0".to_string()]);
+
+        // Empty selection: no picker to show.
+        let empty_selection = SceneSelection::default();
+        let empty = ContextInput { selection: &empty_selection, ..input };
+        assert_eq!(context_pane_content(&empty).edge_picker, None);
+    }
+
     #[test]
     fn edge_treatment_row_labels_name_the_extrusion_and_edge() {
         let doc = Document::default();
@@ -1895,7 +1964,12 @@ mod tests {
                 constraints: None,
                 snapping: None,
                 extrude_body: None,
-                edge_picker: None,
+                // #202: the Select tool now surfaces the selection as an element picker.
+                edge_picker: Some(EdgePickerControl {
+                    heading: "Selection",
+                    hint: "Click an element to select it",
+                    rows: vec!["Line 0".to_string()],
+                }),
                 calibrate_image: None,
                 revolve: None,
             boolean_op: None,
