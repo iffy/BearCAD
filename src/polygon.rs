@@ -183,6 +183,51 @@ pub fn loop_vertices_uv(doc: &Document, sketch: SketchId, lines: &[usize]) -> Op
     Some(vertices)
 }
 
+/// The loop's **corner** vertices — one per line, in loop order — without faceting curves
+/// (#178). Where [`loop_vertices_uv`] samples every bezier along the boundary, this returns
+/// only the analytic corners: `corner[i]` is the oriented start of `lines[i]`, so `lines[i]`'s
+/// span is `corner[i] -> corner[(i+1) % n]`. This is what lets a side wall be addressed by its
+/// profile-line index rather than a curve's faceted sub-edge index.
+pub fn loop_corner_vertices_uv(
+    doc: &Document,
+    sketch: SketchId,
+    lines: &[usize],
+) -> Option<Vec<(f32, f32)>> {
+    if lines.len() < 3 {
+        return None;
+    }
+    let keys: Vec<((usize, bool), (usize, bool))> = lines
+        .iter()
+        .map(|&i| {
+            (
+                vertex_key(doc, sketch, i, LineEnd::Start),
+                vertex_key(doc, sketch, i, LineEnd::End),
+            )
+        })
+        .collect();
+
+    let mut corners = Vec::with_capacity(lines.len());
+    for i in 0..lines.len() {
+        let prev = (i + lines.len() - 1) % lines.len();
+        let (prev_start, prev_end) = keys[prev];
+        let (start, end) = keys[i];
+        let reversed = if start == prev_start || start == prev_end {
+            false
+        } else if end == prev_start || end == prev_end {
+            true
+        } else {
+            return None;
+        };
+        let line = doc.lines.get(lines[i])?;
+        corners.push(if reversed {
+            (line.x1, line.y1)
+        } else {
+            (line.x0, line.y0)
+        });
+    }
+    Some(corners)
+}
+
 /// Ear-clipping triangulation of a simple (possibly concave) 2D polygon. `vertices` are
 /// ordered boundary points; returns `n - 2` triangles as index triples into `vertices`.
 pub fn triangulate_uv(vertices: &[(f32, f32)]) -> Vec<[usize; 3]> {

@@ -2161,6 +2161,12 @@ pub fn side_face_count(profile: &ExtrudeFace) -> usize {
 /// World-space quad of an extrusion side wall, swept by `edge` of a polygonal profile.
 /// Ordered `[base_a, base_b, top_b, top_a]`. `None` for circular profiles, out-of-range
 /// edges, or a deleted/foreign extrusion.
+///
+/// `edge` addresses the profile's lines **analytically** (#178): `edge` is a profile-line
+/// index (`0..lines.len()`), so `edge` k is the flat wall of line k regardless of how the
+/// curved lines between it are faceted. A curved line has no flat wall, so it resolves to
+/// `None` — like a circular profile's curved wall. For an all-straight profile this is
+/// identical to the old faceted addressing (each straight line is exactly one faceted edge).
 pub fn side_quad_world(
     doc: &Document,
     extrusion: usize,
@@ -2171,13 +2177,26 @@ pub fn side_quad_world(
     if ext.deleted || !ext.faces.contains(profile) || edge >= side_face_count(profile) {
         return None;
     }
-    let (poly, normal) = face_profile_world(doc, profile)?;
-    let n = poly.len();
+    let ExtrudeFace::Polygon(lines) = profile else {
+        return None;
+    };
+    // A curved line's swept wall isn't a flat, sketchable face — skip it (mirrors circles).
+    if doc.lines.get(*lines.get(edge)?)?.is_curved() {
+        return None;
+    }
+    let first = doc.lines.get(*lines.first()?)?;
+    let frame = sketch_geometry_frame(doc, first.sketch)?;
+    let corners = crate::polygon::loop_corner_vertices_uv(doc, first.sketch, lines)?;
+    let n = corners.len();
     if edge >= n {
         return None;
     }
-    let a = poly[edge];
-    let b = poly[(edge + 1) % n];
+    let a = local_to_world(&frame, corners[edge].0, corners[edge].1);
+    let b = {
+        let (u, v) = corners[(edge + 1) % n];
+        local_to_world(&frame, u, v)
+    };
+    let normal = frame.normal;
     // The top edge follows the (possibly slanted) target plane, so the wall stays planar.
     let distance = effective_distance(doc, ext);
     let top_a = extruded_top_point(doc, ext, normal, a, distance);

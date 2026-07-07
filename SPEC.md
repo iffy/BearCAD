@@ -229,11 +229,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     existing curved line.
   - A curved line is faceted into `BEZIER_SEGMENTS` (24) straight sub-segments for rendering,
     hit-testing, and — when part of a closed polygon loop — extrusion tessellation (the same
-    style of approximation already used for circular profiles). Side walls of an extrusion
-    swept from a curved profile edge are correspondingly multi-faceted, not a single flat quad;
-    however, per-edge affordances that still assume one edge = one flat quad (e.g. sketching on
-    an extrusion's side-wall face) are not curve-aware — sketching on the side wall of a curved
-    extrusion edge is not currently supported. Inference/extension snapping onto a curved line
+    style of approximation already used for circular profiles). A side-wall face is addressed
+    by its **profile-line index** (analytic, #178): each straight profile line has one flat
+    side wall, sketchable and pickable by that line's position in the loop, regardless of how
+    many facets any curved bridge between walls carries. A curved (bezier) profile edge sweeps
+    a multi-faceted, non-flat wall, so — like a circular profile's curved wall — it isn't a
+    flat sketch face. Inference/extension snapping onto a curved line
     still uses its straight chord (not the true curve) for the midpoint/on-line snap targets.
   - **Length semantics (#111):** a curved line's reported length is its true **arc length**
     (summed over the same `BEZIER_SEGMENTS` tessellation) everywhere it's displayed or
@@ -358,8 +359,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     option, only engages when the OCCT kernel is present. Deleting one extrusion of a multi-extrusion body only drops that
     extrusion's contribution — the body survives as long as it still has at least one added
     extrusion. Scriptable via `bearcad.extrude{ ..., body = "merge" | "cut" }` (`"merge"` joins,
-    `"cut"` subtracts from, the face's body if there is one; omitted or any other value always
-    creates a new body, matching the declarative/OpenSCAD-style default).
+    `"cut"` subtracts from, the face's body). An explicit `"merge"`/`"cut"` requires the sketch
+    to sit on a body face: with no such body it is a hard error (#178), never a silent
+    fall-through to a new body. Omitted or any other value always creates a new body, matching
+    the declarative/OpenSCAD-style default.
   - **Boolean-region face picking (#16/#62)**: when exactly two coplanar sketch shapes overlap
     with nonzero area (and no third shape also overlaps that pair — see scope below), clicking
     inside their combined footprint with the Extrude tool resolves to the specific atomic region

@@ -3644,6 +3644,89 @@ mod tests {
         assert_eq!(state.doc.bodies[0].source.cut_extrusion_indices(), [1]);
     }
 
+    /// #178 part 1: `body = "cut"` (or `"merge"`) explicitly requested, but the sketch isn't
+    /// on a body face, must error rather than silently degrading to a standalone new body
+    /// (which produces no holes and raises nothing). Nothing is created.
+    #[test]
+    fn lua_extrude_cut_without_a_candidate_body_errors() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.circle{ x = 0, y = 0, r = 5 }
+            local ok, err = pcall(bearcad.extrude, { circle = 0, distance = -3, body = "cut" })
+            assert(not ok, "cut with no body to cut should error")
+            assert(tostring(err):find("cut"), "unexpected error: " .. tostring(err))
+            assert(bearcad.count("extrusion") == 0, "no extrusion should be created")
+            assert(bearcad.count("body") == 0, "no body should be created")
+        "#,
+        );
+        assert_eq!(state.doc.extrusions.len(), 0);
+        assert_eq!(state.doc.bodies.len(), 0);
+    }
+
+    /// #178 part 2: a cut sketched on a *flat side wall* of a curved-profile (fillet-bridge)
+    /// extrusion resolves the host body and subtracts from it — the side-face `edge` index is
+    /// analytic (per profile line), so every flat wall is reachable regardless of how the
+    /// curved bridge is faceted.
+    #[test]
+    fn lua_extrude_cut_on_a_curved_profile_side_wall_subtracts_from_the_host() {
+        // Rect 0..3, fillet a corner -> bridge line 4 (curved); loop order [0,4,1,2,3].
+        // edge 2 addresses profile line 1 (a straight wall), not a curve facet.
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 30, height = 30 }
+            bearcad.fillet_vertex{ point = { kind = "line", index = 0, ["end"] = "end" }, radius = 5 }
+            bearcad.extrude{ polygon = {0, 4, 1, 2, 3}, distance = 10 }
+            bearcad.begin_sketch{ kind = "extrude_side", extrusion = 0,
+                profile = "polygon", profile_lines = {0, 4, 1, 2, 3}, edge = 2 }
+            bearcad.circle{ x = 5, y = 5, r = 2 }
+            bearcad.exit_sketch()
+            bearcad.extrude{ circle = 0, distance = -3, body = "cut" }
+        "#,
+        );
+        assert_eq!(state.doc.bodies.len(), 1, "the cut must not create a new body");
+        assert_eq!(state.doc.bodies[0].source.extrusion_indices(), [0]);
+        assert_eq!(state.doc.bodies[0].source.cut_extrusion_indices(), [1]);
+    }
+
+    /// #178 part 2: `side_quad_world`'s `edge` indexes the profile's lines analytically. The
+    /// curved fillet bridge (a non-flat wall) resolves to `None`; each straight line resolves
+    /// to a flat quad whose base edge is that line's actual world endpoints — not a curve
+    /// facet. This is what makes every flat side wall addressable by a stable, script-visible
+    /// index.
+    #[test]
+    fn side_quad_world_addresses_profile_lines_analytically() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 30, height = 30 }
+            bearcad.fillet_vertex{ point = { kind = "line", index = 0, ["end"] = "end" }, radius = 5 }
+            bearcad.extrude{ polygon = {0, 4, 1, 2, 3}, distance = 10 }
+        "#,
+        );
+        let loop_lines = vec![0usize, 4, 1, 2, 3];
+        let profile = crate::model::ExtrudeFace::Polygon(loop_lines.clone());
+        assert_eq!(crate::extrude::side_face_count(&profile), loop_lines.len());
+        let frame = crate::face::sketch_geometry_frame(&state.doc, 0).unwrap();
+        for (edge, &li) in loop_lines.iter().enumerate() {
+            let line = &state.doc.lines[li];
+            let quad = crate::extrude::side_quad_world(&state.doc, 0, &profile, edge);
+            if line.is_curved() {
+                assert!(quad.is_none(), "curved bridge (line {li}) is not a flat wall");
+                continue;
+            }
+            let quad = quad.unwrap_or_else(|| panic!("straight line {li} has a flat wall"));
+            // The wall's base edge is line `li`'s two world endpoints (in some order).
+            let ws = crate::face::local_to_world(&frame, line.x0, line.y0);
+            let we = crate::face::local_to_world(&frame, line.x1, line.y1);
+            let base = [quad[0], quad[1]];
+            let matches = (base[0].distance(ws) < 1e-3 && base[1].distance(we) < 1e-3)
+                || (base[0].distance(we) < 1e-3 && base[1].distance(ws) < 1e-3);
+            assert!(matches, "edge {edge} wall base {base:?} != line {li} endpoints");
+        }
+    }
+
     #[test]
     fn lua_extrude_without_body_merge_creates_a_new_body() {
         let state = run_lua(

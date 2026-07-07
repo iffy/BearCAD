@@ -1,0 +1,1 @@
+Scripted cut/merge extrude now errors when the sketch isn't on a body face, instead of silently making a new body; extrusion side-wall faces are addressed by profile-line index so every flat wall is reachable on curved (filleted) profiles (#178)

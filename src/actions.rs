@@ -294,8 +294,9 @@ pub enum ExtrudeBodyMode {
 /// How a scripted / [`Action::CreateExtrusion`] extrude attaches to bodies, resolved against
 /// the extrusion's merge candidate at commit time (#35). Mirrors the Lua `body =` argument:
 /// omitted / `"new"` → [`New`](Self::New), `"merge"` → [`Merge`](Self::Merge),
-/// `"cut"` → [`Cut`](Self::Cut). When there's no candidate body, `Merge`/`Cut` fall back to a
-/// new body.
+/// `"cut"` → [`Cut`](Self::Cut). When there's no candidate body, `Merge`/`Cut` are a hard
+/// error (#178) — the sketch must sit on a body face — rather than silently degrading to a
+/// standalone new body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ExtrudeBodyChoice {
     #[default]
@@ -5093,14 +5094,23 @@ impl AppState {
                     }
                 }
                 let candidate = extrude_merge_candidate(&self.doc, sketch);
-                let body_mode = match body {
-                    ExtrudeBodyChoice::New => ExtrudeBodyMode::NewBody,
-                    ExtrudeBodyChoice::Merge => candidate
-                        .map(ExtrudeBodyMode::MergeInto)
-                        .unwrap_or(ExtrudeBodyMode::NewBody),
-                    ExtrudeBodyChoice::Cut => candidate
-                        .map(ExtrudeBodyMode::Cut)
-                        .unwrap_or(ExtrudeBodyMode::NewBody),
+                // An explicit merge/cut must have a body to attach to (#178): the sketch has to
+                // sit on a body's face. Silently degrading to a standalone new body produced no
+                // holes and raised nothing, hiding the mistake — so it's a hard error instead.
+                let body_mode = match (body, candidate) {
+                    (ExtrudeBodyChoice::New, _) => ExtrudeBodyMode::NewBody,
+                    (ExtrudeBodyChoice::Merge, Some(bi)) => ExtrudeBodyMode::MergeInto(bi),
+                    (ExtrudeBodyChoice::Cut, Some(bi)) => ExtrudeBodyMode::Cut(bi),
+                    (ExtrudeBodyChoice::Merge, None) => {
+                        let e = "Cannot merge: the sketch is not on a body face".to_string();
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                    (ExtrudeBodyChoice::Cut, None) => {
+                        let e = "Cannot cut: the sketch is not on a body face".to_string();
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
                 };
                 self.doc.extrusions.push(Extrusion {
                     sketch,
