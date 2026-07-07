@@ -57,6 +57,10 @@ mod lua_script;
 #[cfg(test)]
 mod release_artifacts;
 mod script;
+// The JSON command dispatcher (todoer #179) is the web build's scripting hook; until the
+// browser Lua module wires it in, it is exercised by its own tests.
+#[cfg(test)]
+mod script_json;
 mod selection;
 mod shortcuts;
 mod sketch_solver;
