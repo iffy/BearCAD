@@ -14,14 +14,17 @@
 //! layer pure makes it testable off-browser: every command here is checked against the
 //! `Instruction` its `bearcad.*` closure produces for the same inputs.
 
-use crate::actions::{DimLabelAxis, RectAxis, RevolveBodyChoice};
+use crate::actions::{DimLabelAxis, Pane, RectAxis, RevolveBodyChoice};
+use crate::camera::{GroundDisplay, ProjectionMode, ShadingMode, StandardView};
 use crate::construction::PlaneDim;
 use crate::geometric_constraints::GeometricConstraintType;
+use crate::hierarchy::HierarchyViewMode;
 use crate::model::{
     BooleanOpKind, ConstraintKind, DistanceTarget, Document, DrawingOrientation, ExtrudeFace,
     FaceId, RepeatMode, RevolveAxis,
 };
 use crate::script::Instruction;
+use crate::view_cube::{CubeCornerId, CubeEdgeId};
 use serde_json::{json, Map, Value};
 
 /// Commands that draw into a sketch and, like their mlua closures, begin one on the ground
@@ -304,6 +307,111 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
         "toggle_construction" => Ok(Instruction::ToggleConstruction),
         "delete_selection" => Ok(Instruction::DeleteSelection),
 
+        // ----- Camera / view navigation (the `bearcad.ui.*` verbs). -----
+        "orbit" => Ok(Instruction::Orbit {
+            dx: req_f32(o, "dx", "orbit")?,
+            dy: req_f32(o, "dy", "orbit")?,
+        }),
+        "pan" => Ok(Instruction::Pan {
+            dx: req_f32(o, "dx", "pan")?,
+            dy: req_f32(o, "dy", "pan")?,
+        }),
+        "wheel" => Ok(Instruction::Zoom { scroll: req_f32(o, "scroll", "wheel")? }),
+        "view" => {
+            // `view` names a projection mode, "edge"/"corner" (+ an `id`), or a standard view —
+            // the same dispatch order as the `_view` closure.
+            let name = req_str(o, "view", "view")?;
+            if let Some(mode) = ProjectionMode::from_name(&name) {
+                return Ok(Instruction::ProjectionMode(mode));
+            }
+            if name.eq_ignore_ascii_case("edge") {
+                let id = req_str(o, "id", "view edge")?;
+                let edge = CubeEdgeId::from_name(&id)
+                    .ok_or_else(|| format!("unknown view edge '{id}'"))?;
+                return Ok(Instruction::ViewEdge(edge));
+            }
+            if name.eq_ignore_ascii_case("corner") {
+                let id = req_str(o, "id", "view corner")?;
+                let corner = CubeCornerId::from_name(&id)
+                    .ok_or_else(|| format!("unknown view corner '{id}'"))?;
+                return Ok(Instruction::ViewCorner(corner));
+            }
+            let view = StandardView::from_name(&name)
+                .ok_or_else(|| format!("unknown standard view '{name}'"))?;
+            Ok(Instruction::View(view))
+        }
+        "view_home" => Ok(Instruction::ViewHome),
+        "set_home_view" => Ok(Instruction::SetHomeView),
+        "toggle_projection" => Ok(Instruction::ToggleProjectionMode),
+        "shading" => {
+            let name = req_str(o, "mode", "shading")?;
+            let mode = ShadingMode::from_name(&name)
+                .ok_or_else(|| format!("unknown shading mode '{name}'"))?;
+            Ok(Instruction::ShadingMode(mode))
+        }
+        "ground" => {
+            let name = req_str(o, "mode", "ground")?;
+            let mode = GroundDisplay::from_name(&name)
+                .ok_or_else(|| format!("unknown ground display '{name}'"))?;
+            Ok(Instruction::GroundDisplay(mode))
+        }
+        "camera" => {
+            let yaw = opt_f32(o, "yaw")?;
+            let pitch = opt_f32(o, "pitch")?;
+            let distance = opt_f32(o, "distance")?;
+            let target = match o.get("target") {
+                None | Some(Value::Null) => None,
+                Some(_) => Some(xyz(o, "target")?),
+            };
+            // With no pose keys the closure is a pure read of the live camera — that path
+            // needs `AppState`, so it belongs to the stateful dispatcher, not here.
+            if yaw.is_none() && pitch.is_none() && distance.is_none() && target.is_none() {
+                return Err("camera with no pose keys is a query, not an action".into());
+            }
+            Ok(Instruction::SetCamera { yaw, pitch, distance, target })
+        }
+        "zoom_fit" => Ok(Instruction::ZoomFit),
+        "elements_view" => {
+            let name = req_str(o, "mode", "elements_view")?;
+            let mode = HierarchyViewMode::from_name(&name).ok_or_else(|| {
+                format!("unknown elements view '{name}' (expected 'list', 'tree', or 'graph')")
+            })?;
+            Ok(Instruction::SetElementsView { mode })
+        }
+        "pane" => {
+            let pane = req_str(o, "pane", "pane")?;
+            let pane = Pane::from_name(&pane).ok_or_else(|| format!("unknown pane '{pane}'"))?;
+            Ok(Instruction::SetPane { pane, visible: visibility(o.get("visible"))? })
+        }
+        "palette" => match opt_str(o, "action")?.as_deref() {
+            None | Some("toggle") => Ok(Instruction::SetCommandPalette { open: None }),
+            Some("run") => Ok(Instruction::RunPaletteCommand {
+                query: req_str(o, "query", "palette run")?,
+            }),
+            Some("show") | Some("open") => {
+                Ok(Instruction::SetCommandPalette { open: Some(true) })
+            }
+            Some("hide") | Some("close") => {
+                Ok(Instruction::SetCommandPalette { open: Some(false) })
+            }
+            Some(other) => Err(format!("unknown palette action '{other}'")),
+        },
+
+        // ----- First-person mode (#91). -----
+        "fps" => Ok(Instruction::FpsMode { on: opt_bool(o, "on")? }),
+        "fps_look" => Ok(Instruction::FpsLook {
+            dx: req_f32(o, "dx", "fps_look")?,
+            dy: req_f32(o, "dy", "fps_look")?,
+        }),
+        "fps_move" => Ok(Instruction::FpsMove {
+            forward: opt_f32(o, "forward")?.unwrap_or(0.0),
+            strafe: opt_f32(o, "strafe")?.unwrap_or(0.0),
+        }),
+        "fps_jump" => Ok(Instruction::FpsJump),
+        "fps_fly" => Ok(Instruction::FpsFly { on: opt_bool(o, "on")? }),
+        "fps_advance" => Ok(Instruction::FpsAdvance { seconds: req_f32(o, "seconds", "fps_advance")? }),
+        "fps_scale" => Ok(Instruction::FpsScale { scale: req_f32(o, "scale", "fps_scale")? }),
+
         // ----- Technical drawings (#180). `drawing` returns the new index on the desktop,
         // but the Instruction it builds is a pure `CreateDrawing`; the handle return, like
         // every other element handle, is the caller's job. -----
@@ -347,6 +455,23 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
         }
 
         other => Err(format!("unknown command '{other}'")),
+    }
+}
+
+/// Parses a `visible` argument into `Some(true|false)` (show/hide) or `None` (toggle),
+/// mirroring the mlua `parse_visibility`: a boolean, one of the show/hide string aliases, or
+/// `"toggle"`/absent for a toggle.
+fn visibility(v: Option<&Value>) -> Result<Option<bool>, String> {
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(Value::String(s)) => match s.to_ascii_lowercase().as_str() {
+            "show" | "on" | "true" | "yes" | "1" => Ok(Some(true)),
+            "hide" | "off" | "false" | "no" | "0" => Ok(Some(false)),
+            "toggle" => Ok(None),
+            other => Err(format!("unknown visibility value '{other}'")),
+        },
+        Some(_) => Err("expected boolean or string for visibility".into()),
     }
 }
 
@@ -1426,6 +1551,103 @@ mod tests {
         assert_eq!(
             instruction_from_json("delete_selection", &json!({})),
             Ok(Instruction::DeleteSelection)
+        );
+    }
+
+    #[test]
+    fn navigation_and_view_verbs() {
+        assert_eq!(
+            instruction_from_json("orbit", &json!({ "dx": 10, "dy": -5 })),
+            Ok(Instruction::Orbit { dx: 10.0, dy: -5.0 })
+        );
+        assert_eq!(
+            instruction_from_json("wheel", &json!({ "scroll": 2 })),
+            Ok(Instruction::Zoom { scroll: 2.0 })
+        );
+        assert_eq!(
+            instruction_from_json("view", &json!({ "view": "top" })),
+            Ok(Instruction::View(StandardView::from_name("top").unwrap()))
+        );
+        assert_eq!(
+            instruction_from_json("view", &json!({ "view": "orthographic" })),
+            Ok(Instruction::ProjectionMode(ProjectionMode::from_name("orthographic").unwrap()))
+        );
+        assert_eq!(
+            instruction_from_json("view_home", &json!({})),
+            Ok(Instruction::ViewHome)
+        );
+        assert_eq!(
+            instruction_from_json("toggle_projection", &json!({})),
+            Ok(Instruction::ToggleProjectionMode)
+        );
+        assert_eq!(
+            instruction_from_json("shading", &json!({ "mode": "wireframe" })),
+            Ok(Instruction::ShadingMode(ShadingMode::from_name("wireframe").unwrap()))
+        );
+        assert!(instruction_from_json("view", &json!({ "view": "nope" })).is_err());
+        assert!(instruction_from_json("shading", &json!({ "mode": "nope" })).is_err());
+    }
+
+    #[test]
+    fn camera_pane_palette_and_fps() {
+        assert_eq!(
+            instruction_from_json("camera", &json!({ "yaw": 30, "target": [0, 0, 5] })),
+            Ok(Instruction::SetCamera {
+                yaw: Some(30.0),
+                pitch: None,
+                distance: None,
+                target: Some((0.0, 0.0, 5.0)),
+            })
+        );
+        // No pose keys is a read, not an action.
+        assert!(instruction_from_json("camera", &json!({})).is_err());
+        assert_eq!(
+            instruction_from_json("zoom_fit", &json!({})),
+            Ok(Instruction::ZoomFit)
+        );
+        assert_eq!(
+            instruction_from_json("pane", &json!({ "pane": "elements", "visible": "hide" })),
+            Ok(Instruction::SetPane {
+                pane: Pane::from_name("elements").unwrap(),
+                visible: Some(false),
+            })
+        );
+        // Absent `visible` means toggle.
+        assert_eq!(
+            instruction_from_json("pane", &json!({ "pane": "elements" })),
+            Ok(Instruction::SetPane {
+                pane: Pane::from_name("elements").unwrap(),
+                visible: None,
+            })
+        );
+        assert_eq!(
+            instruction_from_json("palette", &json!({})),
+            Ok(Instruction::SetCommandPalette { open: None })
+        );
+        assert_eq!(
+            instruction_from_json("palette", &json!({ "action": "run", "query": "extrude" })),
+            Ok(Instruction::RunPaletteCommand { query: "extrude".into() })
+        );
+        assert_eq!(
+            instruction_from_json("palette", &json!({ "action": "show" })),
+            Ok(Instruction::SetCommandPalette { open: Some(true) })
+        );
+        // fps family.
+        assert_eq!(
+            instruction_from_json("fps", &json!({ "on": true })),
+            Ok(Instruction::FpsMode { on: Some(true) })
+        );
+        assert_eq!(
+            instruction_from_json("fps", &json!({})),
+            Ok(Instruction::FpsMode { on: None })
+        );
+        assert_eq!(
+            instruction_from_json("fps_move", &json!({ "forward": 100 })),
+            Ok(Instruction::FpsMove { forward: 100.0, strafe: 0.0 })
+        );
+        assert_eq!(
+            instruction_from_json("fps_advance", &json!({ "seconds": 0.5 })),
+            Ok(Instruction::FpsAdvance { seconds: 0.5 })
         );
     }
 
