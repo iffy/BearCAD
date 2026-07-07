@@ -351,6 +351,7 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             construction: req_bool_flag(o, "construction", "apply_construction")?,
         }),
         "toggle_construction" => Ok(Instruction::ToggleConstruction),
+        "clear_selection" => Ok(Instruction::ClearSceneSelection),
         "delete_selection" => Ok(Instruction::DeleteSelection),
 
         // ----- Camera / view navigation (the `bearcad.ui.*` verbs). -----
@@ -1777,6 +1778,10 @@ mod tests {
         assert_eq!(
             instruction_from_json("toggle_construction", &json!({})),
             Ok(Instruction::ToggleConstruction)
+        );
+        assert_eq!(
+            instruction_from_json("clear_selection", &json!({})),
+            Ok(Instruction::ClearSceneSelection)
         );
         assert_eq!(
             instruction_from_json("delete_selection", &json!({})),
