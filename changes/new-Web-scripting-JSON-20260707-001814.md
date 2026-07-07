@@ -1,0 +1,1 @@
+Web scripting: JSON dispatcher covers sketch dimensions and constraints (set_dim/focus_dim/edit_dim/add_constraint/add_angle_constraint/add_geometric_constraint) plus plane-edit, naming, construction-flag, and delete verbs

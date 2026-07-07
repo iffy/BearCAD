@@ -14,9 +14,12 @@
 //! layer pure makes it testable off-browser: every command here is checked against the
 //! `Instruction` its `bearcad.*` closure produces for the same inputs.
 
-use crate::actions::RevolveBodyChoice;
+use crate::actions::{DimLabelAxis, RectAxis, RevolveBodyChoice};
+use crate::construction::PlaneDim;
+use crate::geometric_constraints::GeometricConstraintType;
 use crate::model::{
-    BooleanOpKind, ConstraintKind, Document, ExtrudeFace, FaceId, RepeatMode, RevolveAxis,
+    BooleanOpKind, ConstraintKind, DistanceTarget, Document, ExtrudeFace, FaceId, RepeatMode,
+    RevolveAxis,
 };
 use crate::script::Instruction;
 use serde_json::{json, Map, Value};
@@ -200,7 +203,135 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             Ok(Instruction::EditSliceOp { op, targets, cutters, extend_infinite })
         }
 
+        // ----- Sketch dimensions & constraints. -----
+        "set_dim" => {
+            let axis = req_str(o, "axis", "set_dim")?;
+            let value = req_expr(o, "value", "set_dim")?;
+            // Same dispatch order as the closure: rect axis, then line length, circle
+            // diameter, plane offset, plane angle.
+            if let Some(axis) = RectAxis::from_name(&axis) {
+                Ok(Instruction::SetDim { axis, value })
+            } else if axis.eq_ignore_ascii_case("length") || axis.eq_ignore_ascii_case("len") {
+                Ok(Instruction::SetLineLength { value })
+            } else if axis.eq_ignore_ascii_case("diameter") || axis.eq_ignore_ascii_case("diam") {
+                Ok(Instruction::SetCircleDiameter { value })
+            } else if axis.eq_ignore_ascii_case("offset") {
+                Ok(Instruction::SetPlaneOffset { value })
+            } else if axis.eq_ignore_ascii_case("angle") {
+                Ok(Instruction::SetPlaneAngle { value })
+            } else {
+                Err(format!("unknown dimension '{axis}'"))
+            }
+        }
+        "focus_dim" => {
+            let axis = req_str(o, "axis", "focus_dim")?;
+            if let Some(axis) = RectAxis::from_name(&axis) {
+                Ok(Instruction::FocusDim(axis))
+            } else if axis.eq_ignore_ascii_case("length") {
+                Ok(Instruction::FocusLineLength)
+            } else if axis.eq_ignore_ascii_case("diameter") {
+                Ok(Instruction::FocusCircleDiameter)
+            } else if let Some(dim) = PlaneDim::from_name(&axis) {
+                Ok(Instruction::FocusPlaneDim(dim))
+            } else {
+                Err(format!("unknown dimension '{axis}'"))
+            }
+        }
+        "edit_dim" => {
+            let axis = req_str(o, "axis", "edit_dim")?;
+            let axis = DimLabelAxis::from_name(&axis)
+                .ok_or_else(|| format!("unknown dimension '{axis}'"))?;
+            Ok(Instruction::BeginEditCommittedDim { axis })
+        }
+        "commit_dim" => Ok(Instruction::CommitCommittedDim),
+        "set_dim_label_offset" => {
+            let axis = req_str(o, "axis", "set_dim_label_offset")?;
+            let axis = DimLabelAxis::from_name(&axis)
+                .ok_or_else(|| format!("unknown dimension '{axis}'"))?;
+            Ok(Instruction::SetDimLabelOffset {
+                axis,
+                offset: req_f32(o, "offset", "set_dim_label_offset")?,
+            })
+        }
+        "add_constraint" => {
+            let target = o
+                .get("target")
+                .ok_or("add_constraint requires a `target`")?;
+            Ok(Instruction::AddDistanceConstraint {
+                target: distance_target_from_json(target)?,
+                expression: req_expr(o, "expression", "add_constraint")?,
+            })
+        }
+        "add_angle_constraint" => {
+            // `value` (an expression) or `angle` (a number) gives the angle; `sign` picks the
+            // wedge (default +1).
+            let expression = match (o.get("value"), o.get("angle")) {
+                (Some(v), _) if !v.is_null() => value_to_expr(v, "value")?,
+                (_, Some(a)) if !a.is_null() => value_to_expr(a, "angle")?,
+                _ => return Err("add_angle_constraint requires `value`".into()),
+            };
+            Ok(Instruction::AddAngleConstraint {
+                line_a: req_usize(o, "a", "add_angle_constraint")?,
+                line_b: req_usize(o, "b", "add_angle_constraint")?,
+                rotation_sign: opt_i8(o, "sign")?.unwrap_or(1),
+                expression,
+            })
+        }
+        "add_geometric_constraint" => {
+            let name = req_str(o, "name", "add_geometric_constraint")?;
+            let kind = geometric_constraint_from_name(&name)
+                .ok_or_else(|| format!("unknown geometric constraint '{name}'"))?;
+            Ok(Instruction::AddGeometricConstraint(kind))
+        }
+        "constraint_shortcut" => {
+            let key = req_str(o, "key", "constraint_shortcut")?;
+            let ch = key
+                .chars()
+                .next()
+                .ok_or("constraint_shortcut requires a key")?;
+            Ok(Instruction::ApplyConstraintShortcut(ch))
+        }
+
+        // ----- Construction-plane editing, naming, construction flag, deletion. -----
+        "edit_plane" => Ok(Instruction::BeginEditConstructionPlane {
+            index: req_usize(o, "index", "edit_plane")?,
+        }),
+        "commit_plane" => Ok(Instruction::CommitConstructionPlane),
+        "focus_name" => Ok(Instruction::FocusElementName),
+        "apply_construction" => Ok(Instruction::ApplyConstruction {
+            construction: req_bool_flag(o, "construction", "apply_construction")?,
+        }),
+        "toggle_construction" => Ok(Instruction::ToggleConstruction),
+        "delete_selection" => Ok(Instruction::DeleteSelection),
+
         other => Err(format!("unknown command '{other}'")),
+    }
+}
+
+/// A distance-constraint target from a `{ kind, index }` object (mirrors
+/// `parse_distance_target`): a line's length or a circle's diameter.
+fn distance_target_from_json(v: &Value) -> Result<DistanceTarget, String> {
+    let t = v.as_object().ok_or("constraint target must be an object")?;
+    let kind = req_str(t, "kind", "target")?;
+    let index = req_usize(t, "index", "target")?;
+    match kind.to_ascii_lowercase().as_str() {
+        "line" => Ok(DistanceTarget::LineLength(index)),
+        "circle" => Ok(DistanceTarget::CircleDiameter(index)),
+        other => Err(format!("unknown constraint target '{other}'")),
+    }
+}
+
+/// Maps a geometric-constraint name to its type (mirrors `parse_geometric_constraint`).
+fn geometric_constraint_from_name(name: &str) -> Option<GeometricConstraintType> {
+    match name.to_ascii_lowercase().as_str() {
+        "parallel" => Some(GeometricConstraintType::Parallel),
+        "perpendicular" => Some(GeometricConstraintType::Perpendicular),
+        "equal" => Some(GeometricConstraintType::Equal),
+        "coincident" => Some(GeometricConstraintType::Coincident),
+        "midpoint" => Some(GeometricConstraintType::Midpoint),
+        "horizontal" => Some(GeometricConstraintType::Horizontal),
+        "vertical" => Some(GeometricConstraintType::Vertical),
+        _ => None,
     }
 }
 
@@ -691,6 +822,51 @@ fn expr_arg(o: &Map<String, Value>, key: &str) -> Result<String, String> {
     }
 }
 
+/// An expression `Value` (string or number) stringified like [`expr_arg`], for a value that
+/// may be either. Used where a number is a shorthand for its literal expression.
+fn value_to_expr(v: &Value, key: &str) -> Result<String, String> {
+    match v {
+        Value::String(s) => Ok(s.clone()),
+        Value::Number(n) => Ok(match n.as_i64() {
+            Some(i) => i.to_string(),
+            None => n.as_f64().map(|f| f.to_string()).unwrap_or_default(),
+        }),
+        _ => Err(format!("`{key}` must be an expression string or a number")),
+    }
+}
+
+/// A required expression field (a dimension value): a string, or a number stringified.
+fn req_expr(o: &Map<String, Value>, key: &str, cmd: &str) -> Result<String, String> {
+    match o.get(key) {
+        None | Some(Value::Null) => Err(format!("{cmd} requires `{key}`")),
+        Some(v) => value_to_expr(v, key),
+    }
+}
+
+fn opt_i8(o: &Map<String, Value>, key: &str) -> Result<Option<i8>, String> {
+    match o.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_i64()
+            .map(|n| Some(n as i8))
+            .ok_or_else(|| format!("`{key}` must be an integer")),
+    }
+}
+
+/// A required boolean flag accepting `true`/`false` or the string forms the mlua `parse_bool`
+/// accepts (`on`/`off`, `yes`/`no`, `1`/`0`).
+fn req_bool_flag(o: &Map<String, Value>, key: &str, cmd: &str) -> Result<bool, String> {
+    match o.get(key) {
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(Value::String(s)) => match s.to_ascii_lowercase().as_str() {
+            "true" | "on" | "yes" | "1" => Ok(true),
+            "false" | "off" | "no" | "0" => Ok(false),
+            other => Err(format!("unknown {key} value '{other}'")),
+        },
+        _ => Err(format!("{cmd} requires a boolean `{key}`")),
+    }
+}
+
 /// A single non-negative integer element of an array, for the list helpers below.
 fn as_index(v: &Value, key: &str) -> Result<usize, String> {
     v.as_f64()
@@ -1058,6 +1234,141 @@ mod tests {
             })
         );
         assert!(instruction_from_json("repeat_bodies", &json!({ "mode": "nope" })).is_err());
+    }
+
+    #[test]
+    fn dimension_verbs_route_by_axis() {
+        assert_eq!(
+            instruction_from_json("set_dim", &json!({ "axis": "width", "value": "40" })),
+            Ok(Instruction::SetDim { axis: RectAxis::Width, value: "40".into() })
+        );
+        // A bare number for the value is stringified.
+        assert_eq!(
+            instruction_from_json("set_dim", &json!({ "axis": "length", "value": 25 })),
+            Ok(Instruction::SetLineLength { value: "25".into() })
+        );
+        assert_eq!(
+            instruction_from_json("set_dim", &json!({ "axis": "diameter", "value": "d" })),
+            Ok(Instruction::SetCircleDiameter { value: "d".into() })
+        );
+        assert_eq!(
+            instruction_from_json("set_dim", &json!({ "axis": "offset", "value": "5" })),
+            Ok(Instruction::SetPlaneOffset { value: "5".into() })
+        );
+        assert_eq!(
+            instruction_from_json("focus_dim", &json!({ "axis": "h" })),
+            Ok(Instruction::FocusDim(RectAxis::Height))
+        );
+        assert_eq!(
+            instruction_from_json("focus_dim", &json!({ "axis": "angle" })),
+            Ok(Instruction::FocusPlaneDim(PlaneDim::Angle))
+        );
+        assert_eq!(
+            instruction_from_json("edit_dim", &json!({ "axis": "length" })),
+            Ok(Instruction::BeginEditCommittedDim { axis: DimLabelAxis::Length })
+        );
+        assert_eq!(
+            instruction_from_json("commit_dim", &json!({})),
+            Ok(Instruction::CommitCommittedDim)
+        );
+        assert_eq!(
+            instruction_from_json("set_dim_label_offset", &json!({ "axis": "w", "offset": 3 })),
+            Ok(Instruction::SetDimLabelOffset { axis: DimLabelAxis::Width, offset: 3.0 })
+        );
+        assert!(instruction_from_json("set_dim", &json!({ "axis": "nope", "value": "1" })).is_err());
+    }
+
+    #[test]
+    fn constraint_verbs_map_to_instructions() {
+        assert_eq!(
+            instruction_from_json(
+                "add_constraint",
+                &json!({ "target": { "kind": "line", "index": 0 }, "expression": "40" })
+            ),
+            Ok(Instruction::AddDistanceConstraint {
+                target: DistanceTarget::LineLength(0),
+                expression: "40".into(),
+            })
+        );
+        assert_eq!(
+            instruction_from_json(
+                "add_constraint",
+                &json!({ "target": { "kind": "circle", "index": 2 }, "expression": 12 })
+            ),
+            Ok(Instruction::AddDistanceConstraint {
+                target: DistanceTarget::CircleDiameter(2),
+                expression: "12".into(),
+            })
+        );
+        // Angle: `value` string form, and `angle`-number form; default sign +1.
+        assert_eq!(
+            instruction_from_json(
+                "add_angle_constraint",
+                &json!({ "a": 0, "b": 5, "value": "120" })
+            ),
+            Ok(Instruction::AddAngleConstraint {
+                line_a: 0,
+                line_b: 5,
+                rotation_sign: 1,
+                expression: "120".into(),
+            })
+        );
+        assert_eq!(
+            instruction_from_json(
+                "add_angle_constraint",
+                &json!({ "a": 0, "b": 5, "angle": 90, "sign": -1 })
+            ),
+            Ok(Instruction::AddAngleConstraint {
+                line_a: 0,
+                line_b: 5,
+                rotation_sign: -1,
+                expression: "90".into(),
+            })
+        );
+        assert_eq!(
+            instruction_from_json("add_geometric_constraint", &json!({ "name": "parallel" })),
+            Ok(Instruction::AddGeometricConstraint(GeometricConstraintType::Parallel))
+        );
+        assert_eq!(
+            instruction_from_json("constraint_shortcut", &json!({ "key": "p" })),
+            Ok(Instruction::ApplyConstraintShortcut('p'))
+        );
+        assert!(
+            instruction_from_json("add_geometric_constraint", &json!({ "name": "nope" })).is_err()
+        );
+        assert!(instruction_from_json("add_angle_constraint", &json!({ "a": 0, "b": 5 })).is_err());
+    }
+
+    #[test]
+    fn plane_edit_naming_and_deletion_verbs() {
+        assert_eq!(
+            instruction_from_json("edit_plane", &json!({ "index": 1 })),
+            Ok(Instruction::BeginEditConstructionPlane { index: 1 })
+        );
+        assert_eq!(
+            instruction_from_json("commit_plane", &json!({})),
+            Ok(Instruction::CommitConstructionPlane)
+        );
+        assert_eq!(
+            instruction_from_json("focus_name", &json!({})),
+            Ok(Instruction::FocusElementName)
+        );
+        assert_eq!(
+            instruction_from_json("apply_construction", &json!({ "construction": true })),
+            Ok(Instruction::ApplyConstruction { construction: true })
+        );
+        assert_eq!(
+            instruction_from_json("apply_construction", &json!({ "construction": "off" })),
+            Ok(Instruction::ApplyConstruction { construction: false })
+        );
+        assert_eq!(
+            instruction_from_json("toggle_construction", &json!({})),
+            Ok(Instruction::ToggleConstruction)
+        );
+        assert_eq!(
+            instruction_from_json("delete_selection", &json!({})),
+            Ok(Instruction::DeleteSelection)
+        );
     }
 
     fn doc_with(lines: Value, circles: Value) -> Document {
