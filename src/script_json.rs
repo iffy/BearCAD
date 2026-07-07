@@ -52,6 +52,55 @@ pub fn scene_element_from_kind(kind: &str, index: usize) -> Option<SceneElement>
     }
 }
 
+/// The script kind name for any scene element (mirrors `lua_script::element_kind_name`), for
+/// the `selection` query. Covers every variant, including the point/edge selectors that have
+/// no flat `(kind, index)` handle.
+pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
+    match element {
+        SceneElement::ConstructionPlane(_) => "construction_plane",
+        SceneElement::Sketch(_) => "sketch",
+        SceneElement::Line(_) => "line",
+        SceneElement::Circle(_) => "circle",
+        SceneElement::Constraint(_) => "constraint",
+        SceneElement::Point(_) => "point",
+        SceneElement::Extrusion(_) => "extrusion",
+        SceneElement::Body(_) => "body",
+        SceneElement::FaceEdge(_) => "face_edge",
+        SceneElement::Origin => "origin",
+        SceneElement::BodyEdge { .. } => "body_edge",
+        SceneElement::BodyVertex { .. } => "body_vertex",
+        SceneElement::Image(_) => "image",
+        SceneElement::BooleanOp(_) => "boolean_op",
+        SceneElement::MoveOp(_) => "move_op",
+        SceneElement::RepeatOp(_) => "repeat_op",
+        SceneElement::SliceOp(_) => "slice_op",
+    }
+}
+
+/// The index reported for a selected element (mirrors the `selection` query): the element's
+/// index, or `None` for the point/edge selectors that name a sub-feature of another element
+/// rather than a whole element (`Point`/`FaceEdge`).
+pub fn scene_element_selection_index(element: &SceneElement) -> Option<usize> {
+    match element {
+        SceneElement::Point(_) | SceneElement::FaceEdge(_) => None,
+        SceneElement::ConstructionPlane(i)
+        | SceneElement::Sketch(i)
+        | SceneElement::Line(i)
+        | SceneElement::Circle(i)
+        | SceneElement::Constraint(i)
+        | SceneElement::Extrusion(i)
+        | SceneElement::Body(i)
+        | SceneElement::Image(i)
+        | SceneElement::BooleanOp(i)
+        | SceneElement::MoveOp(i)
+        | SceneElement::RepeatOp(i)
+        | SceneElement::SliceOp(i) => Some(*i),
+        SceneElement::Origin
+        | SceneElement::BodyEdge { .. }
+        | SceneElement::BodyVertex { .. } => Some(0),
+    }
+}
+
 /// The script name for a whole scene element's kind, for `find`'s return value. `None` for
 /// element variants that `scene_element_from_kind` can't round-trip.
 pub fn scene_element_kind_name(element: &SceneElement) -> Option<(&'static str, usize)> {
@@ -1875,7 +1924,15 @@ mod tests {
         {
             let el = scene_element_from_kind(kind, idx).unwrap();
             assert_eq!(scene_element_kind_name(&el), Some((kind, idx)));
+            assert_eq!(scene_element_selection_index(&el), Some(idx));
         }
+        // Full kind name covers non-round-tripping variants too.
+        assert_eq!(
+            scene_element_full_kind_name(&SceneElement::Body(0)),
+            "body"
+        );
+        assert_eq!(scene_element_full_kind_name(&SceneElement::Origin), "origin");
+        assert_eq!(scene_element_selection_index(&SceneElement::Origin), Some(0));
         assert!(scene_element_from_kind("nope", 0).is_none());
         // The `construction_plane` alias resolves to the `plane` element.
         assert_eq!(

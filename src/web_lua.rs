@@ -151,6 +151,28 @@ fn run_command(
         return run_parameter(&args, runner, state, synthetic, viewport, ctx);
     }
 
+    // Reads and actions that need `AppState` beyond the document (or take a positional
+    // sketch arg), handled before the generic positional adaptor.
+    match name {
+        "status" => return Ok(json!(state.status)),
+        "selection" => return Ok(selection_json(state)),
+        "sketch_dof" => {
+            let sketch = arg_sketch(&args, state)?;
+            return crate::constraints::sketch_degrees_of_freedom(&state.doc, sketch).map(|d| json!(d));
+        }
+        "sketch_conflicts" => {
+            let sketch = arg_sketch(&args, state)?;
+            return crate::constraints::sketch_conflicting_constraints(&state.doc, sketch)
+                .map(|v| json!(v));
+        }
+        "set_units" => {
+            let instr = set_units_instruction(&args, &state.doc)?;
+            exec(runner, instr, state, synthetic, viewport, ctx)?;
+            return Ok(Value::Null);
+        }
+        _ => {}
+    }
+
     // Positional calls arrive as `{ "__args": [...] }`; map them to named arguments.
     if let Some(arr) = args.get("__args").and_then(Value::as_array).cloned() {
         args = script_json::positional_to_named(name, &arr)?;
@@ -327,6 +349,69 @@ fn run_parameter(
             )
         }
         other => Err(format!("unknown parameter action '{other}'")),
+    }
+}
+
+/// The `selection` query: the live scene selection as an array of `{ kind, index? }`.
+fn selection_json(state: &AppState) -> Value {
+    let items: Vec<Value> = state
+        .scene_selection
+        .iter()
+        .map(|el| {
+            let mut m = serde_json::Map::new();
+            m.insert("kind".into(), json!(script_json::scene_element_full_kind_name(&el)));
+            if let Some(index) = script_json::scene_element_selection_index(&el) {
+                m.insert("index".into(), json!(index));
+            }
+            Value::Object(m)
+        })
+        .collect();
+    json!(items)
+}
+
+/// The sketch a `sketch_dof`/`sketch_conflicts` call targets: an explicit index (positional
+/// `__args[0]` or a `sketch` field) or the active sketch session.
+fn arg_sketch(args: &Value, state: &AppState) -> Result<usize, String> {
+    let explicit = args
+        .get("__args")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .and_then(Value::as_u64)
+        .or_else(|| args.get("sketch").and_then(Value::as_u64));
+    match explicit {
+        Some(n) => Ok(n as usize),
+        None => state
+            .sketch_session
+            .map(|s| s.sketch)
+            .ok_or_else(|| "no active sketch".to_string()),
+    }
+}
+
+/// Build a `set_units` instruction: a per-sketch override when `sketch` is given, else the
+/// document default (unset fields keep the current document value).
+fn set_units_instruction(args: &Value, doc: &Document) -> Result<Instruction, String> {
+    let o = args.as_object().ok_or("set_units expects a table")?;
+    let length = match o.get("length").and_then(Value::as_str) {
+        Some(n) => Some(
+            crate::value::LengthUnit::from_name(n)
+                .ok_or_else(|| format!("unknown length unit '{n}'"))?,
+        ),
+        None => None,
+    };
+    let angle = match o.get("angle").and_then(Value::as_str) {
+        Some(n) => Some(
+            crate::value::AngleUnit::from_name(n)
+                .ok_or_else(|| format!("unknown angle unit '{n}'"))?,
+        ),
+        None => None,
+    };
+    if let Some(sketch) = o.get("sketch").and_then(Value::as_u64) {
+        Ok(Instruction::SetSketchUnits { sketch: sketch as usize, length, angle })
+    } else {
+        Ok(Instruction::SetDocumentUnits {
+            length: length.unwrap_or(doc.default_length_unit),
+            angle: angle.unwrap_or(doc.default_angle_unit),
+        })
     }
 }
 
