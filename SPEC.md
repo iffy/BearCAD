@@ -958,7 +958,11 @@ modeled on SolveSpace (https://solvespace.com).
     silhouette being outlined (depth-compared per contour stretch); a body behind the
     selection does not.
 - **Context pane:** While the constraint tool is active, the context pane lists geometric
-  constraint types as buttons (text labels for now; icons later).
+  constraint types as buttons (text labels for now; icons later), and below them shows the
+  unified **element picker** (§7, #213) for the geometry being constrained. The constraint
+  picker is configured to accept only constrainable geometry — points, lines, circles, and
+  body/face edges — so it rejects bodies, planes, and operations; it mirrors the live
+  selection, and removing a row (or Clear-all) deselects that geometry.
   - **Always all types:** every constraint type is **always listed**, in fixed order.
     Types the current selection cannot satisfy (including when nothing is selected) appear
     **disabled/faded**, with a hint beside the button describing what must be selected

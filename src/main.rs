@@ -3698,6 +3698,7 @@ impl eframe::App for App {
             let mut extrude_body_mode_change: Option<actions::ExtrudeBodyMode> = None;
             let mut units_change: Option<context::UnitsChoice> = None;
             let mut edge_picker_edit: Option<Option<usize>> = None;
+            let mut selection_edit: Option<context::SelectionEdit> = None;
             let mut calibrate_apply: Option<(context::CalibrateImageControl, String)> = None;
             let mut calibrate_begin: Option<usize> = None;
             let mut revolve_edit: Option<context::RevolveEdit> = None;
@@ -3739,6 +3740,7 @@ impl eframe::App for App {
                         &mut |mode| extrude_body_mode_change = Some(mode),
                         &mut |choice| units_change = Some(choice),
                         &mut |edit| edge_picker_edit = Some(edit),
+                        &mut |edit| selection_edit = Some(edit),
                         &mut |edit| revolve_edit = Some(edit),
                         &mut |edit| boolean_edit = Some(edit),
                         &mut |op| boolean_edit_begin = Some(op),
@@ -4017,25 +4019,6 @@ impl eframe::App for App {
                         }
                         None => self.state.creating_loft = None,
                     }
-                } else if self.state.tool == Tool::Select {
-                    // Select tool (#202): the picker rows mirror the current selection in the
-                    // same deterministic order used to build them, so removing row `index`
-                    // deselects that element (clicking it, which toggles it off since it's
-                    // already selected). "Clear all" empties the selection.
-                    match edit {
-                        Some(index) => {
-                            if let Some(element) =
-                                self.state.scene_selection.ordered().get(index).cloned()
-                            {
-                                selection::click_scene_selection(
-                                    &mut self.state.scene_selection,
-                                    element,
-                                    true,
-                                );
-                            }
-                        }
-                        None => self.state.scene_selection.clear(),
-                    }
                 } else {
                     match edit {
                         Some(index) => {
@@ -4050,6 +4033,21 @@ impl eframe::App for App {
                         }
                         None => self.state.creating_edge_treatment = None,
                     }
+                }
+            }
+            if let Some(edit) = selection_edit {
+                // The unified selection picker (#213, Select/Constraint tools): its rows mirror
+                // the live selection, so removing one deselects that element (toggle-off) and
+                // Clear empties the selection.
+                match edit {
+                    context::SelectionEdit::Remove(element) => {
+                        selection::click_scene_selection(
+                            &mut self.state.scene_selection,
+                            element,
+                            true,
+                        );
+                    }
+                    context::SelectionEdit::Clear => self.state.scene_selection.clear(),
                 }
             }
             if let Some(enabled) = snapping_change {

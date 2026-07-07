@@ -2,7 +2,7 @@
 
 use crate::actions::{ExtrudeBodyMode, Tool};
 use crate::document_health::{health_status_label, selection_frozen_summary, DocumentHealth, HealthStatus};
-use crate::element_picker::ElementPicker;
+use crate::element_picker::{ElementFilter, ElementKind, ElementPicker, PickLimit};
 use crate::geometric_constraints::{constraint_pane_rows, ConstraintPaneRow};
 use crate::hierarchy::SceneElement;
 use crate::model::{Document, SketchId};
@@ -388,6 +388,46 @@ pub struct ConstructionControl {
     pub target_count: usize,
 }
 
+/// A user edit from the unified selection element picker (#213): drop one element from the
+/// selection, or clear it. Element-based (not row-index-based) so a filtered picker — whose
+/// visible rows are a subset of the raw selection — always removes the right element.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SelectionEdit {
+    Remove(SceneElement),
+    Clear,
+}
+
+/// The selection element picker to show for `tool`, if any — the unified control every
+/// selection-driven tool uses. Both variants mirror the live `selection`; they differ only in
+/// which kinds they accept and their placeholder, demonstrating the per-instance configuration.
+fn selection_picker_for(tool: Tool, selection: &SceneSelection) -> Option<ElementPicker> {
+    let mut picker = match tool {
+        // Select: accepts everything, always shown, never loses focus.
+        Tool::Select => ElementPicker::select_everything(),
+        // Constraint: only sketch geometry is constrainable, so restrict the picker to points,
+        // lines, circles, and body/face edges (bodies, planes, operations are rejected).
+        Tool::Constraint => {
+            let mut p = ElementPicker::new(
+                ElementFilter::kinds(&[
+                    ElementKind::Vertex,
+                    ElementKind::Line,
+                    ElementKind::Circle,
+                    ElementKind::Edge,
+                ]),
+                PickLimit::Infinite,
+            )
+            .with_placeholder("Pick geometry to constrain");
+            p.set_focused(true);
+            p
+        }
+        _ => return None,
+    };
+    // Mirror the live selection, keeping only what this picker accepts (its filter drops the
+    // rest); `set_picked` preserves order so the popup rows line up with `picked()`.
+    picker.set_picked(selection.ordered());
+    Some(picker)
+}
+
 pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let name = single_nameable_from_selection(input.selection).map(|element| NameControl { element });
     let snapping =
@@ -429,17 +469,14 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
                 })
             })
         });
-    // Select tool (#213): the current selection as the unified element picker — an
-    // always-present, always-focused "select everything" input (placeholder when empty).
-    // Suppressed while a draw construction owns the pane.
+    // The unified selection element picker (#213), mirroring the live selection for the tools
+    // that operate on it. Suppressed while a draw construction owns the pane.
     let drawing = input.draw_rect_construction.is_some()
         || input.draw_line_construction.is_some()
         || input.draw_circle_construction.is_some();
-    let selection_picker = (input.tool == Tool::Select && !drawing).then(|| {
-        let mut picker = ElementPicker::select_everything();
-        picker.set_picked(input.selection.ordered());
-        picker
-    });
+    let selection_picker = (!drawing)
+        .then(|| selection_picker_for(input.tool, input.selection))
+        .flatten();
     let calibrate_image = input.calibrate_image;
     let revolve = input.revolve.clone();
     let boolean_op = input.boolean_op.clone();
@@ -780,6 +817,7 @@ pub fn show_pane(
     on_extrude_body_mode_changed: &mut impl FnMut(ExtrudeBodyMode),
     on_units_changed: &mut impl FnMut(UnitsChoice),
     on_edge_picker_edit: &mut impl FnMut(Option<usize>),
+    on_selection_edit: &mut impl FnMut(SelectionEdit),
     on_revolve_edit: &mut impl FnMut(RevolveEdit),
     on_boolean_edit: &mut impl FnMut(BooleanEdit),
     on_boolean_edit_start: &mut impl FnMut(usize),
@@ -1498,10 +1536,16 @@ pub fn show_pane(
         ui.add_enabled_ui(controls_enabled, |ui| {
             if let Some(event) = crate::element_picker::show(ui, picker, doc, "selection_picker") {
                 match event {
-                    // The Select picker is sticky-focused, so a click doesn't change focus.
+                    // A sticky-focused (Select) picker ignores focus; others take it on click.
                     crate::element_picker::PickerEvent::Focus => {}
-                    crate::element_picker::PickerEvent::Remove(i) => on_edge_picker_edit(Some(i)),
-                    crate::element_picker::PickerEvent::Clear => on_edge_picker_edit(None),
+                    crate::element_picker::PickerEvent::Remove(i) => {
+                        if let Some(element) = picker.picked().get(i).cloned() {
+                            on_selection_edit(SelectionEdit::Remove(element));
+                        }
+                    }
+                    crate::element_picker::PickerEvent::Clear => {
+                        on_selection_edit(SelectionEdit::Clear)
+                    }
                 }
             }
         });
@@ -1828,6 +1872,27 @@ mod tests {
             .expect("always-present select picker");
         assert!(empty_picker.is_empty());
         assert_eq!(context_pane_content(&empty).edge_picker, None);
+    }
+
+    #[test]
+    fn constraint_tool_picker_filters_to_constrainable_geometry() {
+        use crate::hierarchy::SceneElement;
+        let doc = Document::default();
+        let mut selection = SceneSelection::default();
+        // A constrainable line plus a body (which the constraint picker should reject).
+        crate::selection::click_scene_selection(&mut selection, SceneElement::Line(0), true);
+        crate::selection::click_scene_selection(&mut selection, SceneElement::Body(3), true);
+        let input = ContextInput {
+            tool: Tool::Constraint,
+            ..input(&doc, &selection)
+        };
+        let picker = context_pane_content(&input)
+            .selection_picker
+            .expect("constraint picker");
+        assert_eq!(picker.picked(), &[SceneElement::Line(0)], "body filtered out");
+        assert!(!picker.has_sticky_focus());
+        assert!(picker.is_focused(), "active tool's picker is focused");
+        assert!(!picker.accepts(&SceneElement::Body(0)));
     }
 
     #[test]

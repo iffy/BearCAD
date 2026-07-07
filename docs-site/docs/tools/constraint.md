@@ -28,6 +28,12 @@ The pane always lists every constraint; ones the current selection can't satisfy
 faded, with a hint about what they need. Many constraints also happen automatically while
 you draw — snapping a line's end onto a point keeps them attached.
 
+Below the buttons, the context pane shows the **element picker** for the geometry you're
+constraining — the same combo-box control the [Select](./select.md) tool uses, but limited to
+what's constrainable (points, lines, circles, and body/face edges). It reads out what you've
+picked as a summary by kind; click it to review each item and remove any you didn't mean to
+include.
+
 When a sketch is drawn on a body's face, the face's own corners and edges can be
 constrained against too — pin a point to the face's corner, or keep a line on its edge.
 
