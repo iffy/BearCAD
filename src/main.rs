@@ -8498,21 +8498,63 @@ impl App {
                 }
             }
         }
-        // Loft tool (#202): render the picked cross sections with their selection highlight —
-        // "every element that is selected should show it" — without disturbing the persistent
-        // selection. Fold the sections' sketch entities into a throwaway selection for the
-        // scene only.
-        let render_selection = match self.state.creating_loft.as_ref() {
-            Some(cl) if self.state.tool == Tool::Loft && !cl.sections.is_empty() => {
-                let mut sel = self.state.scene_selection.clone();
-                for section in &cl.sections {
-                    for element in extrude::loft_section_scene_elements(section) {
-                        sel.insert(element);
+        // Every tool that gathers a set through an element picker (#213) shows that picked set
+        // with the selection highlight in the viewport — "all currently selected elements on a
+        // focused element picker should be styled as selected" — without disturbing the
+        // persistent selection. Fold each active tool's picked SceneElements into a throwaway
+        // selection used only for the scene. (Chamfer/Fillet edges are highlighted separately
+        // via `creating_edge_treatment` passed to the scene builder.)
+        let mut folded: Vec<SceneElement> = Vec::new();
+        match self.state.tool {
+            Tool::Loft => {
+                if let Some(cl) = self.state.creating_loft.as_ref() {
+                    for section in &cl.sections {
+                        folded.extend(extrude::loft_section_scene_elements(section));
                     }
                 }
-                std::borrow::Cow::Owned(sel)
             }
-            _ => std::borrow::Cow::Borrowed(&self.state.scene_selection),
+            Tool::Combine => {
+                if let Some(cb) = self.state.creating_boolean.as_ref() {
+                    folded.extend(cb.a.iter().chain(&cb.b).map(|&bi| SceneElement::Body(bi)));
+                }
+            }
+            Tool::Move => {
+                if let Some(cm) = self.state.creating_move.as_ref() {
+                    folded.extend(cm.targets.iter().map(|&bi| SceneElement::Body(bi)));
+                }
+            }
+            Tool::Repeat => {
+                if let Some(cr) = self.state.creating_repeat.as_ref() {
+                    folded.extend(cr.targets.iter().map(|&bi| SceneElement::Body(bi)));
+                }
+            }
+            Tool::Slice => {
+                if let Some(cs) = self.state.creating_slice.as_ref() {
+                    folded.extend(cs.targets.iter().map(|&bi| SceneElement::Body(bi)));
+                    // Construction-plane cutters map to a scene element; face cutters don't.
+                    folded.extend(cs.cutters.iter().filter_map(|f| match f {
+                        model::FaceId::ConstructionPlane(i) => {
+                            Some(SceneElement::ConstructionPlane(*i))
+                        }
+                        _ => None,
+                    }));
+                }
+            }
+            Tool::Revolve => {
+                if let Some(cr) = self.state.creating_revolve.as_ref() {
+                    folded.extend(cr.cut_bodies.iter().map(|&bi| SceneElement::Body(bi)));
+                }
+            }
+            _ => {}
+        }
+        let render_selection = if folded.is_empty() {
+            std::borrow::Cow::Borrowed(&self.state.scene_selection)
+        } else {
+            let mut sel = self.state.scene_selection.clone();
+            for element in folded {
+                sel.insert(element);
+            }
+            std::borrow::Cow::Owned(sel)
         };
         let scene_input = build_viewport_scene_input(
             doc,

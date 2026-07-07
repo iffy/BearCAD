@@ -921,7 +921,13 @@ modeled on SolveSpace (https://solvespace.com).
   kinds it accepts (planes, lines, circles, vertices, edges, bodies, constraints, operations —
   and, for operations, which sub-kinds), a pick limit (a whole number or unlimited), and an
   optional override of the selected-element highlight color (defaulting to the theme selection
-  color). Other tools move onto this control tool-by-tool.
+  color). The Select and Constraint tools mirror the live selection; the construction tools
+  (Combine, Move, Repeat, Slice, Revolve-cut, Loft, Chamfer/Fillet) each present their own
+  in-progress picked set through the same control — with the currently-active picker focused
+  (a tool with several, e.g. Combine's A/B sides or Slice's bodies/cutters, switches which is
+  focused when you click it). Whatever a picker holds is **styled as selected in the viewport**
+  while the tool is active (folded into the scene's highlight set, not the persistent
+  selection).
 - **No picking through bodies (#155):** while selecting (Select/Constraint tools, and picks
   made for a tool such as construction-plane references or dimension targets), geometry
   hidden **behind** a visible body under the cursor is not a pick candidate — clicking a
