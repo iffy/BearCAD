@@ -18,7 +18,7 @@ use crate::actions::{DimLabelAxis, ExtrudeBodyChoice, Pane, RectAxis, RevolveBod
 use crate::camera::{GroundDisplay, ProjectionMode, ShadingMode, StandardView};
 use crate::construction::PlaneDim;
 use crate::geometric_constraints::GeometricConstraintType;
-use crate::hierarchy::HierarchyViewMode;
+use crate::hierarchy::{HierarchyViewMode, SceneElement};
 use crate::model::{
     BooleanOp, BooleanOpKind, ConstraintKind, ConstraintPoint, DistanceTarget, Document,
     DrawingOrientation, ExtrudeFace, ExtrudeTarget, FaceId, LineEnd, RepeatMode, RevolveAxis,
@@ -32,6 +32,39 @@ use serde_json::{json, Map, Value};
 /// prepends [`Instruction::BeginSketch`] before executing the returned instruction.
 pub fn opens_sketch_when_none_active(name: &str) -> bool {
     matches!(name, "rect" | "line" | "circle")
+}
+
+/// A whole scene element from a `(kind, index)` pair (mirrors `lua_script::
+/// scene_element_from_kind`). Used to resolve `select`/`set_name`/`set_visible`/
+/// `set_construction`/`find` element arguments in the stateful dispatch path.
+pub fn scene_element_from_kind(kind: &str, index: usize) -> Option<SceneElement> {
+    match kind.to_ascii_lowercase().as_str() {
+        "plane" | "construction_plane" | "constructionplane" => {
+            Some(SceneElement::ConstructionPlane(index))
+        }
+        "sketch" => Some(SceneElement::Sketch(index)),
+        "line" => Some(SceneElement::Line(index)),
+        "circle" => Some(SceneElement::Circle(index)),
+        "constraint" => Some(SceneElement::Constraint(index)),
+        "extrusion" => Some(SceneElement::Extrusion(index)),
+        "body" => Some(SceneElement::Body(index)),
+        _ => None,
+    }
+}
+
+/// The script name for a whole scene element's kind, for `find`'s return value. `None` for
+/// element variants that `scene_element_from_kind` can't round-trip.
+pub fn scene_element_kind_name(element: &SceneElement) -> Option<(&'static str, usize)> {
+    match element {
+        SceneElement::ConstructionPlane(i) => Some(("plane", *i)),
+        SceneElement::Sketch(i) => Some(("sketch", *i)),
+        SceneElement::Line(i) => Some(("line", *i)),
+        SceneElement::Circle(i) => Some(("circle", *i)),
+        SceneElement::Constraint(i) => Some(("constraint", *i)),
+        SceneElement::Extrusion(i) => Some(("extrusion", *i)),
+        SceneElement::Body(i) => Some(("body", *i)),
+        _ => None,
+    }
 }
 
 /// Map a positional argument list to the named-argument object the dispatcher expects.
@@ -64,8 +97,14 @@ pub fn positional_to_named(name: &str, args: &[Value]) -> Result<Value, String> 
         "set_dim_label_offset" => &["axis", "offset"],
         "add_geometric_constraint" => &["name"],
         "constraint_shortcut" => &["key"],
+        "add_constraint" => &["target", "expression"],
         "view" => &["view", "id"],
         "palette" => &["action", "query"],
+        "select" => &["element", "additive"],
+        "set_name" => &["element", "name"],
+        "set_visible" => &["element", "visible"],
+        "set_construction" => &["element", "construction"],
+        "find" => &["name"],
         _ => return Err(format!("'{name}' expects named arguments (a table)")),
     };
     let mut map = Map::new();
@@ -1820,8 +1859,29 @@ mod tests {
             instruction_from_json("set_dim", &mapped),
             Ok(Instruction::SetDim { axis: RectAxis::Width, value: "40".into() })
         );
+        // Element verbs carry the element object through positionally.
+        assert_eq!(
+            positional_to_named("set_name", &[json!({ "kind": "body", "index": 0 }), json!("Lid")]),
+            Ok(json!({ "element": { "kind": "body", "index": 0 }, "name": "Lid" }))
+        );
         // A table-only verb has no positional form.
         assert!(positional_to_named("extrude", &[json!(1)]).is_err());
+    }
+
+    #[test]
+    fn scene_element_kind_round_trips() {
+        for (kind, idx) in [("plane", 2), ("sketch", 0), ("line", 5), ("circle", 1),
+            ("constraint", 3), ("extrusion", 0), ("body", 4)]
+        {
+            let el = scene_element_from_kind(kind, idx).unwrap();
+            assert_eq!(scene_element_kind_name(&el), Some((kind, idx)));
+        }
+        assert!(scene_element_from_kind("nope", 0).is_none());
+        // The `construction_plane` alias resolves to the `plane` element.
+        assert_eq!(
+            scene_element_from_kind("construction_plane", 1),
+            scene_element_from_kind("plane", 1)
+        );
     }
 
     #[test]

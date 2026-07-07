@@ -15,7 +15,9 @@
 //! returns a JSON result (`{ok, value?}` or `{error}`).
 
 use crate::actions::AppState;
-use crate::model::FaceId;
+use crate::hierarchy::SceneElement;
+use crate::model::{Document, FaceId};
+use crate::names::find_element_by_name;
 use crate::script::{Instruction, ScriptRunner, SyntheticInput};
 use crate::script_json;
 use eframe::egui;
@@ -159,6 +161,58 @@ fn run_command(
         return Ok(Value::Null);
     }
 
+    // `find` resolves a name to an element handle `{ kind, index }` (or null).
+    if name == "find" {
+        let query = args
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or("find requires a `name`")?;
+        return Ok(match find_element_by_name(&state.doc, query) {
+            Some(el) => match script_json::scene_element_kind_name(&el) {
+                Some((kind, index)) => json!({ "kind": kind, "index": index }),
+                None => Value::Null,
+            },
+            None => Value::Null,
+        });
+    }
+
+    // Element-referencing verbs resolve their `element` argument against the live document
+    // (by name or `{kind, index}`), which instruction_from_json can't do on its own.
+    if matches!(name, "select" | "set_name" | "set_visible" | "set_construction") {
+        let element = resolve_element(
+            args.get("element").ok_or_else(|| format!("{name} requires an `element`"))?,
+            &state.doc,
+        )?;
+        let instr = match name {
+            "select" => Instruction::SelectSceneElement {
+                element,
+                additive: args.get("additive").and_then(Value::as_bool).unwrap_or(false),
+            },
+            "set_name" => Instruction::SetElementName {
+                element,
+                name: args
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .ok_or("set_name requires a `name`")?
+                    .to_string(),
+            },
+            "set_visible" => Instruction::SetElementVisible {
+                element,
+                visible: parse_visible(args.get("visible")),
+            },
+            "set_construction" => Instruction::SetShapeConstruction {
+                element,
+                construction: args
+                    .get("construction")
+                    .and_then(Value::as_bool)
+                    .ok_or("set_construction requires a boolean `construction`")?,
+            },
+            _ => unreachable!(),
+        };
+        exec(runner, instr, state, synthetic, viewport, ctx)?;
+        return Ok(Value::Null);
+    }
+
     // Sketch primitives auto-open a sketch on the ground plane when none is active, exactly
     // as the desktop `rect`/`line`/`circle` closures do.
     if script_json::opens_sketch_when_none_active(name) && state.sketch_session.is_none() {
@@ -192,6 +246,47 @@ fn exec(
     match runner.last_action_error.take() {
         Some(e) => Err(e),
         None => Ok(()),
+    }
+}
+
+/// Resolve an element argument (a name string, `{ name }`, or `{ kind, index }`) to a
+/// `SceneElement` against the live document — the web analogue of `lua_script::resolve_element`
+/// for whole elements.
+fn resolve_element(v: &Value, doc: &Document) -> Result<SceneElement, String> {
+    match v {
+        Value::String(name) => {
+            find_element_by_name(doc, name).ok_or_else(|| format!("no element named '{name}'"))
+        }
+        Value::Object(o) => {
+            if let Some(name) = o.get("name").and_then(Value::as_str) {
+                return find_element_by_name(doc, name)
+                    .ok_or_else(|| format!("no element named '{name}'"));
+            }
+            let kind = o
+                .get("kind")
+                .and_then(Value::as_str)
+                .ok_or("element requires a `kind` or `name`")?;
+            let index = o
+                .get("index")
+                .and_then(Value::as_u64)
+                .ok_or("element requires an `index`")? as usize;
+            script_json::scene_element_from_kind(kind, index)
+                .ok_or_else(|| format!("unknown element kind '{kind}'"))
+        }
+        _ => Err("expected an element (name string or {kind, index})".to_string()),
+    }
+}
+
+/// A `visible` argument → `Some(true|false)` (show/hide) or `None` (toggle).
+fn parse_visible(v: Option<&Value>) -> Option<bool> {
+    match v {
+        Some(Value::Bool(b)) => Some(*b),
+        Some(Value::String(s)) => match s.to_ascii_lowercase().as_str() {
+            "show" | "on" | "true" | "yes" | "1" => Some(true),
+            "hide" | "off" | "false" | "no" | "0" => Some(false),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
