@@ -12,11 +12,11 @@ splitting a model into printable pieces.
 
 ## How to use it
 
-1. Pick the **Slice** tool. The context pane starts on the **Bodies** picker — click one or
-   more bodies to slice.
-2. Switch the *Picking* control to **Cutters**, then click the planes or planar faces to cut
-   with: any construction plane, or a flat face of a body. Each side you pick lists in the
-   context pane with a remove button.
+1. Pick the **Slice** tool. The context pane shows two element pickers, **Bodies** and
+   **Cutters**. The **Bodies** picker is focused to start — click one or more bodies to slice.
+2. Click the **Cutters** picker to make it active (a focus ring marks which picker your next
+   click feeds), then click the planes or planar faces to cut with: any construction plane, or
+   a flat face of a body. Expand either picker to review its set and remove items.
 3. Press **Enter** (or the **Slice** button).
 
 Each target is cut independently. With several cutters, each one divides whatever pieces the

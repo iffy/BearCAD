@@ -321,8 +321,10 @@ pub struct ContextPaneContent {
 pub struct EdgePickerControl {
     /// Set-count heading, e.g. "Edges" or "Sections".
     pub heading: &'static str,
-    /// Hint shown while the set is empty.
+    /// Hint shown while the set is empty (the picker's placeholder).
     pub hint: &'static str,
+    /// Icon shown for every row/summary chip (these sets are single-kind).
+    pub icon: crate::icons::IconId,
     pub rows: Vec<String>,
 }
 
@@ -514,12 +516,14 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         .map(|rows| EdgePickerControl {
             heading: "Edges",
             hint: "Click an edge — Shift+click adds more",
+            icon: crate::icons::IconId::Line,
             rows,
         })
         .or_else(|| {
             input.loft_rows.clone().map(|rows| EdgePickerControl {
                 heading: "Sections",
                 hint: "Click a closed profile (circle or loop)",
+                icon: crate::icons::IconId::Circle,
                 rows,
             })
         });
@@ -1434,57 +1438,36 @@ pub fn show_pane(
             egui::RichText::new(if control.editing { "Edit slice" } else { "Slice" }).strong(),
         );
         let mut pending: Option<SliceEdit> = None;
-        // Which picker the next viewport click lands on.
-        ui.horizontal(|ui| {
-            ui.label("Picking");
-            let mut picking_cutter = control.picking_cutter;
-            if ui
-                .selectable_label(!picking_cutter, "Bodies")
-                .clicked()
-            {
-                picking_cutter = false;
-            }
-            if ui.selectable_label(picking_cutter, "Cutters").clicked() {
-                picking_cutter = true;
-            }
-            if picking_cutter != control.picking_cutter {
-                pending = Some(SliceEdit::PickingCutter(picking_cutter));
-            }
-        });
-        ui.label(
-            egui::RichText::new(format!("Bodies ({})", control.target_rows.len())).strong(),
-        );
-        if control.target_rows.is_empty() {
-            ui.label(
-                egui::RichText::new("Click bodies in the viewport")
-                    .color(egui::Color32::from_gray(140))
-                    .size(11.0),
-            );
-        }
-        for (i, row) in control.target_rows.iter().enumerate() {
-            ui.horizontal(|ui| {
-                if ui.small_button("✕").on_hover_text("Remove from set").clicked() {
-                    pending = Some(SliceEdit::RemoveTarget(Some(i)));
-                }
-                ui.label(row);
+        // Two element pickers; the focused one is the side the next viewport click lands on
+        // (clicking a picker makes it active, replacing the old Bodies/Cutters toggle).
+        ui.label(egui::RichText::new("Bodies").strong());
+        if let Some(event) = crate::element_picker::show_labeled(
+            ui,
+            "slice_targets",
+            !control.picking_cutter,
+            "Click bodies in the viewport",
+            crate::icons::IconId::Body,
+            &control.target_rows,
+        ) {
+            pending = Some(match event {
+                crate::element_picker::PickerEvent::Focus => SliceEdit::PickingCutter(false),
+                crate::element_picker::PickerEvent::Remove(i) => SliceEdit::RemoveTarget(Some(i)),
+                crate::element_picker::PickerEvent::Clear => SliceEdit::RemoveTarget(None),
             });
         }
-        ui.label(
-            egui::RichText::new(format!("Cutters ({})", control.cutter_rows.len())).strong(),
-        );
-        if control.cutter_rows.is_empty() {
-            ui.label(
-                egui::RichText::new("Switch to Cutters, then click planes or faces")
-                    .color(egui::Color32::from_gray(140))
-                    .size(11.0),
-            );
-        }
-        for (i, row) in control.cutter_rows.iter().enumerate() {
-            ui.horizontal(|ui| {
-                if ui.small_button("✕").on_hover_text("Remove cutter").clicked() {
-                    pending = Some(SliceEdit::RemoveCutter(Some(i)));
-                }
-                ui.label(row);
+        ui.label(egui::RichText::new("Cutters").strong());
+        if let Some(event) = crate::element_picker::show_labeled(
+            ui,
+            "slice_cutters",
+            control.picking_cutter,
+            "Click planes or faces to cut with",
+            crate::icons::IconId::Plane,
+            &control.cutter_rows,
+        ) {
+            pending = Some(match event {
+                crate::element_picker::PickerEvent::Focus => SliceEdit::PickingCutter(true),
+                crate::element_picker::PickerEvent::Remove(i) => SliceEdit::RemoveCutter(Some(i)),
+                crate::element_picker::PickerEvent::Clear => SliceEdit::RemoveCutter(None),
             });
         }
         let mut extend = control.extend_infinite;
@@ -1610,27 +1593,24 @@ pub fn show_pane(
     if let Some(picker) = &content.edge_picker {
         any_control = true;
         ui.separator();
-        ui.label(
-            egui::RichText::new(format!("{} ({})", picker.heading, picker.rows.len())).strong(),
-        );
-        if picker.rows.is_empty() {
-            ui.label(
-                egui::RichText::new(picker.hint)
-                    .color(egui::Color32::from_gray(140))
-                    .size(11.0),
-            );
-        }
-        for (i, row) in picker.rows.iter().enumerate() {
-            ui.horizontal(|ui| {
-                if ui.small_button("✕").on_hover_text("Remove from set").clicked() {
-                    on_edge_picker_edit(Some(i));
+        ui.label(egui::RichText::new(picker.heading).strong());
+        ui.add_enabled_ui(controls_enabled, |ui| {
+            // The active tool's picker is focused (its viewport clicks feed this set).
+            if let Some(event) = crate::element_picker::show_labeled(
+                ui,
+                picker.heading,
+                true,
+                picker.hint,
+                picker.icon,
+                &picker.rows,
+            ) {
+                match event {
+                    crate::element_picker::PickerEvent::Focus => {}
+                    crate::element_picker::PickerEvent::Remove(i) => on_edge_picker_edit(Some(i)),
+                    crate::element_picker::PickerEvent::Clear => on_edge_picker_edit(None),
                 }
-                ui.label(row);
-            });
-        }
-        if picker.rows.len() > 1 && ui.small_button("Clear all").clicked() {
-            on_edge_picker_edit(None);
-        }
+            }
+        });
     }
 
     if let Some(control) = &content.extrude_body {
@@ -1855,6 +1835,7 @@ mod tests {
         let edges_picker = |rows: Vec<String>| EdgePickerControl {
             heading: "Edges",
             hint: "Click an edge — Shift+click adds more",
+            icon: crate::icons::IconId::Line,
             rows,
         };
         assert_eq!(

@@ -481,21 +481,26 @@ pub enum PickerEvent {
 
 const ROW_ICON_SIZE: f32 = 14.0;
 
-/// Render the picker as a focusable, combo-box-style input in `ui`.
-///
-/// Collapsed, it looks like a text input: the "no selection" placeholder when empty, otherwise
-/// a `N ⟨icon⟩` chip per present kind. A focused picker draws an accent ring. Clicking opens a
-/// popup listing each picked element (icon + label + ✕ remove) with a Clear-all footer. Returns
-/// the interaction, if any, for the caller to apply to the picker + tool state.
-pub fn show(
+fn row_icon(ui: &mut egui::Ui, icon: IconId) {
+    ui.add(
+        egui::Image::new(crate::icons::sized_texture(ui.ctx(), icon))
+            .fit_to_exact_size(egui::vec2(ROW_ICON_SIZE, ROW_ICON_SIZE)),
+    );
+}
+
+/// The shared combo-box rendering (#213) behind both the [`ElementPicker`] widget and the
+/// label-only [`show_labeled`] path: a focusable input strip with a `N ⟨icon⟩` collapsed
+/// summary and an expandable popup of `⟨icon⟩ label ✕` rows. Fully data-driven so any tool's
+/// picked set renders identically.
+fn render_combo(
     ui: &mut egui::Ui,
-    picker: &ElementPicker,
-    doc: &Document,
     id_source: impl std::hash::Hash,
+    focused: bool,
+    placeholder: &str,
+    summary: &[(IconId, usize)],
+    rows: &[(IconId, String)],
 ) -> Option<PickerEvent> {
     let mut event = None;
-
-    let focused = picker.is_focused();
     let ring = if focused {
         egui::Stroke::new(2.0, crate::theme::FOCUS_ACCENT)
     } else {
@@ -512,24 +517,22 @@ pub fn show(
     let inner = frame.show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.set_min_width(ui.available_width().max(120.0));
-            if picker.is_empty() {
+            if rows.is_empty() {
                 ui.add(
                     egui::Label::new(
-                        egui::RichText::new(picker.placeholder())
+                        egui::RichText::new(placeholder)
                             .color(Color32::from_gray(130))
                             .italics(),
                     )
                     .selectable(false),
                 );
             } else {
-                for (icon, count) in picker.summary() {
+                for &(icon, count) in summary {
                     ui.add(
                         egui::Label::new(egui::RichText::new(count.to_string()).strong())
                             .selectable(false),
                     );
-                    ui.add(egui::Image::new(crate::icons::sized_texture(ui.ctx(), icon)).fit_to_exact_size(
-                        egui::vec2(ROW_ICON_SIZE, ROW_ICON_SIZE),
-                    ));
+                    row_icon(ui, icon);
                     ui.add_space(4.0);
                 }
             }
@@ -562,34 +565,20 @@ pub fn show(
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
             ui.set_min_width(180.0);
-            if picker.is_empty() {
-                ui.label(
-                    egui::RichText::new("Nothing picked yet")
-                        .weak()
-                        .italics(),
-                );
+            if rows.is_empty() {
+                ui.label(egui::RichText::new("Nothing picked yet").weak().italics());
                 return;
             }
-            for (i, element) in picker.picked().iter().enumerate() {
+            for (i, (icon, label)) in rows.iter().enumerate() {
                 ui.horizontal(|ui| {
-                    if ui
-                        .small_button("✕")
-                        .on_hover_text("Remove")
-                        .clicked()
-                    {
+                    if ui.small_button("✕").on_hover_text("Remove").clicked() {
                         event = Some(PickerEvent::Remove(i));
                     }
-                    ui.add(
-                        egui::Image::new(crate::icons::sized_texture(
-                            ui.ctx(),
-                            ElementKind::of(element).icon(),
-                        ))
-                        .fit_to_exact_size(egui::vec2(ROW_ICON_SIZE, ROW_ICON_SIZE)),
-                    );
-                    ui.label(crate::names::scene_element_label(doc, element));
+                    row_icon(ui, *icon);
+                    ui.label(label);
                 });
             }
-            if picker.len() > 1 {
+            if rows.len() > 1 {
                 ui.separator();
                 if ui.small_button("Clear all").clicked() {
                     event = Some(PickerEvent::Clear);
@@ -598,6 +587,57 @@ pub fn show(
         });
 
     event
+}
+
+/// Render an [`ElementPicker`] as a focusable, combo-box-style input in `ui`.
+///
+/// Collapsed, it looks like a text input: the "no selection" placeholder when empty, otherwise
+/// a `N ⟨icon⟩` chip per present kind. A focused picker draws an accent ring. Clicking opens a
+/// popup listing each picked element (icon + label + ✕ remove) with a Clear-all footer.
+pub fn show(
+    ui: &mut egui::Ui,
+    picker: &ElementPicker,
+    doc: &Document,
+    id_source: impl std::hash::Hash,
+) -> Option<PickerEvent> {
+    let rows: Vec<(IconId, String)> = picker
+        .picked()
+        .iter()
+        .map(|element| {
+            (
+                ElementKind::of(element).icon(),
+                crate::names::scene_element_label(doc, element),
+            )
+        })
+        .collect();
+    render_combo(
+        ui,
+        id_source,
+        picker.is_focused(),
+        picker.placeholder(),
+        &picker.summary(),
+        &rows,
+    )
+}
+
+/// Render a label-only picker (#213) with the same combo-box look as [`show`], for tool sets
+/// whose items are not [`SceneElement`]s (Chamfer/Fillet edges, Loft sections, Slice cutters,
+/// …). All rows share one `icon`; `labels` are the popup rows in order.
+pub fn show_labeled(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash,
+    focused: bool,
+    placeholder: &str,
+    icon: IconId,
+    labels: &[String],
+) -> Option<PickerEvent> {
+    let summary = if labels.is_empty() {
+        Vec::new()
+    } else {
+        vec![(icon, labels.len())]
+    };
+    let rows: Vec<(IconId, String)> = labels.iter().map(|l| (icon, l.clone())).collect();
+    render_combo(ui, id_source, focused, placeholder, &summary, &rows)
 }
 
 /// Apply a widget [`PickerEvent`] to a picker's own state. Focus is handled by the caller (it
