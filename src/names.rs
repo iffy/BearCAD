@@ -333,6 +333,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::Sketch(i) => format!("Sketch {i}"),
         SceneElement::Line(i) => format!("Line {i}"),
         SceneElement::Circle(i) => format!("Circle {i}"),
+        SceneElement::Origin => "Origin".to_string(),
         SceneElement::Point(_) => "Point".to_string(),
         SceneElement::Constraint(i) => format!("Constraint {i}"),
         SceneElement::Extrusion(i) => format!("Extrusion {i}"),
