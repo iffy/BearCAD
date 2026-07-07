@@ -67,6 +67,8 @@ pub struct ContextInput<'a> {
     pub slice_op: Option<SliceControl>,
     /// "Edit slice" entry point.
     pub slice_edit_start: Option<usize>,
+    /// "Edit revolve" entry point (#211): `Some(op)` when exactly one revolution is selected.
+    pub revolve_edit_start: Option<usize>,
     /// Guided calibration entry point (#163): `Some(image)` when exactly one tracing image
     /// is selected and no calibration is running — renders the "Calibrate scale" button.
     pub calibrate_start: Option<usize>,
@@ -297,6 +299,8 @@ pub struct ContextPaneContent {
     pub slice_op: Option<SliceControl>,
     /// "Edit slice" button target.
     pub slice_edit_start: Option<usize>,
+    /// "Edit revolve" button target (#211).
+    pub revolve_edit_start: Option<usize>,
     /// "Calibrate scale" start button (#163): the selected tracing image.
     pub calibrate_start: Option<usize>,
     /// Guided-calibration hint: points placed so far (of 2).
@@ -450,6 +454,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let repeat_edit_start = input.repeat_edit_start;
     let slice_op = input.slice_op.clone();
     let slice_edit_start = input.slice_edit_start;
+    let revolve_edit_start = input.revolve_edit_start;
     let calibrate_start = input.calibrate_start;
     let calibrate_pending = input.calibrate_pending;
 
@@ -477,6 +482,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             repeat_edit_start,
             slice_op: slice_op.clone(),
             slice_edit_start,
+            revolve_edit_start,
         calibrate_start,
             calibrate_pending,
         };
@@ -505,6 +511,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             repeat_edit_start,
             slice_op: slice_op.clone(),
             slice_edit_start,
+            revolve_edit_start,
         calibrate_start,
             calibrate_pending,
         };
@@ -533,6 +540,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             repeat_edit_start,
             slice_op: slice_op.clone(),
             slice_edit_start,
+            revolve_edit_start,
         calibrate_start,
             calibrate_pending,
         };
@@ -564,6 +572,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         repeat_edit_start,
         slice_op,
         slice_edit_start,
+        revolve_edit_start,
         calibrate_start,
         calibrate_pending,
     }
@@ -779,6 +788,7 @@ pub fn show_pane(
     on_repeat_edit_start: &mut impl FnMut(usize),
     on_slice_edit: &mut impl FnMut(SliceEdit),
     on_slice_edit_start: &mut impl FnMut(usize),
+    on_revolve_edit_start: &mut impl FnMut(usize),
     on_calibrate_start: &mut impl FnMut(usize),
     on_calibrate_image: &mut impl FnMut(CalibrateImageControl, String),
 ) {
@@ -1418,6 +1428,19 @@ pub fn show_pane(
         );
     }
 
+    if let Some(op) = content.revolve_edit_start {
+        any_control = true;
+        ui.separator();
+        if ui.button("Edit revolve").clicked() {
+            on_revolve_edit_start(op);
+        }
+        ui.label(
+            egui::RichText::new("Re-open the Revolve tool to change this operation")
+                .color(egui::Color32::from_gray(140))
+                .size(11.0),
+        );
+    }
+
     if let Some(image) = content.calibrate_start {
         any_control = true;
         ui.separator();
@@ -1670,6 +1693,7 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            revolve_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         }
@@ -1706,6 +1730,7 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            revolve_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         };
@@ -1763,6 +1788,7 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            revolve_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         };
@@ -1822,6 +1848,7 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            revolve_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: Some(UnitsControl {
@@ -1865,6 +1892,7 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            revolve_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -1892,6 +1920,7 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            revolve_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: Some(UnitsControl {
@@ -1935,6 +1964,7 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            revolve_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -1980,6 +2010,7 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            revolve_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: None,
@@ -2070,6 +2101,7 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            revolve_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -2111,6 +2143,7 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            revolve_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -2140,6 +2173,7 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            revolve_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: None,
@@ -2175,6 +2209,7 @@ mod tests {
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
+            revolve_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });

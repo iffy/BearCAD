@@ -3618,6 +3618,20 @@ impl eframe::App for App {
                         })
                     })
                     .flatten(),
+                revolve_edit_start: (self.state.tool != Tool::Revolve)
+                    .then(|| {
+                        let mut only = None;
+                        for element in self.state.scene_selection.iter() {
+                            match (element, only) {
+                                (SceneElement::Revolution(i), None) => only = Some(i),
+                                _ => return None,
+                            }
+                        }
+                        only.filter(|&i| {
+                            self.state.doc.revolutions.get(i).is_some_and(|r| !r.deleted)
+                        })
+                    })
+                    .flatten(),
                 revolve: (self.state.tool == Tool::Revolve).then(|| {
                     let cr = self.state.creating_revolve.as_ref();
                     context::RevolveControl {
@@ -3694,6 +3708,7 @@ impl eframe::App for App {
             let mut repeat_edit_begin: Option<usize> = None;
             let mut slice_edit: Option<context::SliceEdit> = None;
             let mut slice_edit_begin: Option<usize> = None;
+            let mut revolve_edit_begin: Option<usize> = None;
             egui::SidePanel::right("context")
                 .resizable(true)
                 .default_width(200.0)
@@ -3731,6 +3746,7 @@ impl eframe::App for App {
                         &mut |op| repeat_edit_begin = Some(op),
                         &mut |edit| slice_edit = Some(edit),
                         &mut |op| slice_edit_begin = Some(op),
+                        &mut |op| revolve_edit_begin = Some(op),
                         &mut |image| calibrate_begin = Some(image),
                         &mut |control, text| calibrate_apply = Some((control, text)),
                     );
@@ -3923,6 +3939,35 @@ impl eframe::App for App {
                         editing: Some(op),
                     });
                     self.state.apply(Action::SetTool(Tool::Combine));
+                }
+            }
+            if let Some(op) = revolve_edit_begin {
+                if let Some(existing) = self.state.doc.revolutions.get(op).cloned() {
+                    let (body_choice, cut_bodies) = match &existing.mode {
+                        model::RevolveMode::NewBody => {
+                            (actions::RevolveBodyChoice::NewBody, Vec::new())
+                        }
+                        model::RevolveMode::AddTo(_) => {
+                            (actions::RevolveBodyChoice::AddTouching, Vec::new())
+                        }
+                        model::RevolveMode::Cut(b) => {
+                            (actions::RevolveBodyChoice::Cut, b.clone())
+                        }
+                    };
+                    self.state.creating_revolve = Some(actions::CreatingRevolve {
+                        sketch: Some(existing.sketch),
+                        faces: existing.faces,
+                        axis: Some(existing.axis),
+                        angle_live: existing.angle_deg,
+                        text: format!("{:.0}", existing.angle_deg),
+                        user_edited: true,
+                        pending_focus: false,
+                        symmetric: existing.symmetric,
+                        body_choice,
+                        cut_bodies,
+                        editing: Some(op),
+                    });
+                    self.state.apply(Action::SetTool(Tool::Revolve));
                 }
             }
             if let Some(image) = calibrate_begin {
