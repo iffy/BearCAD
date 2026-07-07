@@ -4486,6 +4486,7 @@ fn build_viewport_scene_input<'a>(
     dimension_labels: &'a [gpu_viewport::ViewportDimLabel],
     dim_label_view: Option<PlanarLabelView>,
     constraint_graphics: Option<&'a [constraint_viewport::ConstraintViewportGraphic]>,
+    cut_highlight_bodies: Vec<usize>,
 ) -> gpu_viewport::ViewportSceneInput<'a> {
     let preview_rect = creating_rect.and_then(|cr| {
         let session = sketch_session?;
@@ -4682,6 +4683,7 @@ fn build_viewport_scene_input<'a>(
         },
         sketch_session,
         selection,
+        cut_highlight_bodies,
         element_visibility,
         preview_rect,
         preview_line,
@@ -8505,6 +8507,9 @@ impl App {
         // selection used only for the scene. (Chamfer/Fillet edges are highlighted separately
         // via `creating_edge_treatment` passed to the scene builder.)
         let mut folded: Vec<SceneElement> = Vec::new();
+        // Bodies picked into a destructive (cut) picker are highlighted red instead of the
+        // blue selection style (#213), so they aren't folded into `render_selection`.
+        let mut cut_highlight_bodies: Vec<usize> = Vec::new();
         match self.state.tool {
             Tool::Loft => {
                 if let Some(cl) = self.state.creating_loft.as_ref() {
@@ -8515,7 +8520,13 @@ impl App {
             }
             Tool::Combine => {
                 if let Some(cb) = self.state.creating_boolean.as_ref() {
-                    folded.extend(cb.a.iter().chain(&cb.b).map(|&bi| SceneElement::Body(bi)));
+                    folded.extend(cb.a.iter().map(|&bi| SceneElement::Body(bi)));
+                    // In a Cut, the B side is carved away — highlight it red; otherwise blue.
+                    if cb.kind == model::BooleanOpKind::Cut {
+                        cut_highlight_bodies.extend(cb.b.iter().copied());
+                    } else {
+                        folded.extend(cb.b.iter().map(|&bi| SceneElement::Body(bi)));
+                    }
                 }
             }
             Tool::Move => {
@@ -8542,7 +8553,8 @@ impl App {
             }
             Tool::Revolve => {
                 if let Some(cr) = self.state.creating_revolve.as_ref() {
-                    folded.extend(cr.cut_bodies.iter().map(|&bi| SceneElement::Body(bi)));
+                    // Revolve's cut bodies are consumed destructively → red.
+                    cut_highlight_bodies.extend(cr.cut_bodies.iter().copied());
                 }
             }
             _ => {}
@@ -8581,6 +8593,7 @@ impl App {
             &gpu_dim_labels,
             planar_label_view,
             Some(&constraint_graphics),
+            cut_highlight_bodies,
         );
         let scene = gpu_viewport::ViewportScene::build(&scene_input);
         let gpu_drawn =
@@ -10521,6 +10534,7 @@ mod tests {
             &[],
             None,
             None,
+            Vec::new(),
         );
         assert_eq!(
             scene_input.preview_extrusion.as_ref().map(|e| e.target.clone()),
@@ -10607,6 +10621,7 @@ mod tests {
                 &[],
                 None,
                 None,
+                Vec::new(),
             )
             .preview_solid
             .is_some()
@@ -10688,6 +10703,7 @@ mod tests {
             &[],
             None,
             None,
+            Vec::new(),
         );
         let preview = scene_input.preview_extrusion.as_ref().expect("expected a ghost preview");
         assert_eq!(preview.edge_treatments.len(), 1);

@@ -68,6 +68,9 @@ const SHADOW_BODY_OPACITY: f32 = 0.30;
 /// Fill for a **selected** body (#174): a more saturated blue than the neutral body grey,
 /// so selection reads on the body itself, not just its aura outline.
 pub const SOLID_FILL_SELECTED: Color32 = Color32::from_rgb(112, 152, 224);
+/// Fill for a body picked into a destructive (cut) element picker (#213) — the red highlight
+/// override, e.g. Revolve's cut bodies or a Combine **Cut**'s B side.
+pub const SOLID_FILL_CUT: Color32 = Color32::from_rgb(210, 120, 120);
 /// Highlighted fill for the in-progress extrusion preview.
 pub const SOLID_PREVIEW_FILL: Color32 = Color32::from_rgb(120, 215, 230);
 /// Opacity of the in-progress extrusion preview body (before it is committed).
@@ -325,6 +328,10 @@ pub struct ViewportSceneInput<'a> {
     pub palette: ViewportPalette,
     pub sketch_session: Option<SketchSession>,
     pub selection: &'a SceneSelection,
+    /// Bodies to fill in the red "cut" highlight (#213): the active tool's destructive picker
+    /// contents (Revolve cut bodies, a Combine Cut's B side). Takes precedence over the blue
+    /// selection fill.
+    pub cut_highlight_bodies: Vec<usize>,
     pub element_visibility: &'a ElementVisibility,
     pub preview_rect: Option<PreviewRect>,
     pub preview_line: Option<Line>,
@@ -568,9 +575,12 @@ impl ViewportScene {
                 );
                 continue;
             }
-            // A selected body fills in the saturated selection blue (#174); the aura
-            // outline still draws on top via `push_selection`.
-            let fill = if input.selection.is_selected(SceneElement::Body(bi)) {
+            // A body picked into a destructive picker fills red (#213); otherwise a selected
+            // body fills the saturated selection blue (#174). The aura outline still draws on
+            // top via `push_selection`.
+            let fill = if input.cut_highlight_bodies.contains(&bi) {
+                SOLID_FILL_CUT
+            } else if input.selection.is_selected(SceneElement::Body(bi)) {
                 SOLID_FILL_SELECTED
             } else {
                 SOLID_FILL
@@ -4152,6 +4162,7 @@ mod tests {
             palette: ViewportPalette::default(),
             sketch_session: None,
             selection: &state.scene_selection,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -4603,6 +4614,7 @@ mod tests {
             palette: ViewportPalette::default(),
             sketch_session: None,
             selection: &state.scene_selection,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -4633,6 +4645,7 @@ mod tests {
             palette: ViewportPalette::default(),
             sketch_session: None,
             selection: &state.scene_selection,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -4677,6 +4690,7 @@ mod tests {
             palette: ViewportPalette::default(),
             sketch_session: None,
             selection: &state.scene_selection,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -4706,6 +4720,7 @@ mod tests {
             palette: ViewportPalette::default(),
             sketch_session: None,
             selection: &state.scene_selection,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -4754,6 +4769,7 @@ mod tests {
                 palette: ViewportPalette::default(),
                 sketch_session: None,
                 selection: &state.scene_selection,
+                cut_highlight_bodies: Vec::new(),
                 element_visibility: &state.element_visibility,
                 preview_rect: None,
                 preview_line: None,
@@ -4810,6 +4826,7 @@ mod tests {
             palette: ViewportPalette::default(),
             sketch_session: None,
             selection: &state.scene_selection,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -4850,6 +4867,7 @@ mod tests {
             palette: ViewportPalette::default(),
             sketch_session: None,
             selection: &state.scene_selection,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -4891,6 +4909,7 @@ mod tests {
             palette: ViewportPalette::default(),
             sketch_session: None,
             selection: &state.scene_selection,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -4938,6 +4957,7 @@ mod tests {
             palette: ViewportPalette::default(),
             sketch_session: None,
             selection: &state.scene_selection,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -4988,6 +5008,7 @@ mod tests {
             palette: ViewportPalette::default(),
             sketch_session: None,
             selection: &state.scene_selection,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -5145,6 +5166,7 @@ mod tests {
                 palette: ViewportPalette::default(),
                 sketch_session: None,
                 selection: &state.scene_selection,
+                cut_highlight_bodies: Vec::new(),
                 element_visibility: &state.element_visibility,
                 preview_rect: None,
                 preview_line: None,
@@ -5311,6 +5333,7 @@ mod tests {
             palette: ViewportPalette::default(),
             sketch_session: None,
             selection: &state.scene_selection,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -5432,6 +5455,7 @@ mod tests {
             palette: ViewportPalette::default(),
             sketch_session: None,
             selection: &state.scene_selection,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -5536,6 +5560,7 @@ mod tests {
             palette: ViewportPalette::default(),
             sketch_session: None,
             selection: &state.scene_selection,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -5586,6 +5611,7 @@ mod tests {
             palette: ViewportPalette::default(),
             sketch_session: None,
             selection: &state.scene_selection,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -5746,6 +5772,7 @@ mod tests {
             palette,
             sketch_session: None,
             selection: &empty_selection,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -5775,6 +5802,7 @@ mod tests {
             palette,
             sketch_session: None,
             selection: &selected,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -5943,6 +5971,7 @@ mod tests {
                 palette: ViewportPalette::default(),
                 sketch_session: None,
                 selection: &state.scene_selection,
+                cut_highlight_bodies: Vec::new(),
                 element_visibility: &state.element_visibility,
                 preview_rect: None,
                 preview_line: None,
@@ -6016,6 +6045,7 @@ mod tests {
                 palette: ViewportPalette::default(),
                 sketch_session: None,
                 selection: sel,
+                cut_highlight_bodies: Vec::new(),
                 element_visibility: &state.element_visibility,
                 preview_rect: None,
                 preview_line: None,
@@ -6043,6 +6073,70 @@ mod tests {
         let with_selection = build(&selected);
         assert!(!has_selected_hue(&base), "unselected body must keep the neutral fill");
         assert!(has_selected_hue(&with_selection), "selected body must use the saturated blue");
+    }
+
+    /// #213: a body in a destructive picker's `cut_highlight_bodies` fills the red cut hue,
+    /// taking precedence over the blue selection fill.
+    #[test]
+    fn cut_highlight_body_fill_uses_red() {
+        let state = state_with_one_body();
+        let mut selected = SceneSelection::default();
+        crate::selection::click_scene_selection(
+            &mut selected,
+            crate::hierarchy::SceneElement::Body(0),
+            false,
+        );
+        // SOLID_FILL_CUT (210:120:120) has r > g ≈ b; flat shading preserves channel ratios.
+        let has_cut_hue = |scene: &ViewportScene| {
+            scene.vertices.iter().any(|v| {
+                let [r, g, b, _] = v.color;
+                r > 0.05
+                    && (g / r - 120.0 / 210.0).abs() < 0.02
+                    && (b / r - 120.0 / 210.0).abs() < 0.02
+            })
+        };
+        let cam = state.cam.clone();
+        let viewport = test_viewport();
+        let build = |cut: Vec<usize>, sel: &SceneSelection| {
+            ViewportScene::build(&ViewportSceneInput {
+                doc: &state.doc,
+                cam: &cam,
+                viewport,
+                palette: ViewportPalette::default(),
+                sketch_session: None,
+                selection: sel,
+                cut_highlight_bodies: cut,
+                element_visibility: &state.element_visibility,
+                preview_rect: None,
+                preview_line: None,
+                preview_circle: None,
+                preview_extrusion: None,
+                preview_solid: None,
+                preview_cut_body: None,
+                editing_extrusion: None,
+                plane_preview: None,
+                active_sketch_face: None,
+                dimension_labels: &[],
+                dim_label_view: None,
+                plane_gizmo: None,
+                extrude_gizmo: None,
+                vertex_treatment_gizmo: None,
+                vertex_treatment_preview: None,
+                hover_highlight: None,
+                hover_color: Color32::WHITE,
+                document_health: &DocumentHealth::default(),
+                constraint_graphics: None,
+                constraint_connector_color: None,
+            })
+        };
+        assert!(
+            !has_cut_hue(&build(Vec::new(), &selected)),
+            "a merely-selected body must not use the red cut fill"
+        );
+        assert!(
+            has_cut_hue(&build(vec![0], &selected)),
+            "a cut-highlighted body must fill red even when also selected"
+        );
     }
 
     /// #145: selecting a body draws a glowing blue silhouette outline in the overlay layer.
@@ -6085,6 +6179,7 @@ mod tests {
                 palette,
                 sketch_session: None,
                 selection: sel,
+                cut_highlight_bodies: Vec::new(),
                 element_visibility: &state.element_visibility,
                 preview_rect: None,
                 preview_line: None,
@@ -6169,6 +6264,7 @@ mod tests {
             palette: ViewportPalette::default(),
             sketch_session: None,
             selection: &selection,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -6198,6 +6294,7 @@ mod tests {
             palette: ViewportPalette::default(),
             sketch_session: None,
             selection: &selection,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -6372,6 +6469,7 @@ mod tests {
             palette: ViewportPalette::default(),
             sketch_session: Some(session),
             selection: &state.scene_selection,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -6405,6 +6503,7 @@ mod tests {
             palette: ViewportPalette::default(),
             sketch_session: Some(session),
             selection: &state.scene_selection,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -6505,6 +6604,7 @@ mod tests {
             palette: scene_fields.2,
             sketch_session: scene_fields.3,
             selection: scene_fields.4,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: scene_fields.5,
             preview_rect: None,
             preview_line: None,
@@ -6536,6 +6636,7 @@ mod tests {
             palette: scene_fields.2,
             sketch_session: scene_fields.3,
             selection: scene_fields.4,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: scene_fields.5,
             preview_rect: None,
             preview_line: None,
@@ -6565,6 +6666,7 @@ mod tests {
             palette: scene_fields.2,
             sketch_session: scene_fields.3,
             selection: scene_fields.4,
+            cut_highlight_bodies: Vec::new(),
             element_visibility: scene_fields.5,
             preview_rect: None,
             preview_line: None,
@@ -6648,6 +6750,7 @@ mod perf_probe {
                 sketch_session: None,
                 element_visibility: &ElementVisibility::default(),
                 selection: sel,
+                cut_highlight_bodies: Vec::new(),
                 preview_rect: None,
                 preview_line: None,
                 preview_circle: None,
