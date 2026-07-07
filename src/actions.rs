@@ -5791,6 +5791,7 @@ impl AppState {
                     count,
                     spacing,
                     length,
+                    length_target: None,
                     outputs: Vec::new(),
                     name: None,
                     deleted: false,

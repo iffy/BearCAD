@@ -3482,6 +3482,7 @@ impl eframe::App for App {
                             count: c.count.clone(),
                             spacing: c.spacing.clone(),
                             length: c.length.clone(),
+                            length_target: None,
                             outputs: Vec::new(),
                             name: None,
                             deleted: false,

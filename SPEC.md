@@ -468,10 +468,15 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   exactly at the end (stud spacing). Count/spacing/length are **expressions** (parameters
   work); the context pane shows the live instance count as they change; instance counts
   clamp at 512. End-to-start measurements use the targets' combined extent along the axis.
-  "Edit repeat" re-opens the tool and resizes the output list. Scripting:
+  "Edit repeat" re-opens the tool and resizes the output list. The fill length `L` may instead
+  be **bound to a target's extended plane** (`RepeatOperation::length_target`, an
+  `ExtrudeTarget` like an extrusion's "up to face" #126): `L` is then the along-axis distance
+  from the pattern start to that plane and follows the face if it moves, overriding the `length`
+  expression (#186). Scripting:
   `bearcad.repeat_bodies{ bodies, axis, mode, count?, spacing?, length?, name? }` /
   `bearcad.edit_repeat{ index, … }`. Repeating sketches/planes/operations, 2D in-sketch
-  repeats, and picking the length endpoint from a face are the tracked follow-up (#186).
+  repeats, the viewport ghost preview, and the GUI/scripting to *pick* the length face are the
+  tracked follow-up (#186).
 
 - **Slice tool (#181):** cuts whole bodies with planar cutters. Two pickers — **Bodies**
   (the targets, multi-select) and **Cutters** (construction planes and/or planar body

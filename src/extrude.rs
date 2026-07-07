@@ -600,6 +600,18 @@ pub fn repeat_offsets(doc: &Document, op: &crate::model::RepeatOperation) -> Opt
         }
         crate::value::eval_length_mm_in_doc(expr, doc)
     };
+    // Fill length `L`: a face/plane target derives it from the along-axis distance to that
+    // target's extended plane (so it follows the face, #186), overriding the expression.
+    let length = || -> Option<f32> {
+        if let Some(target) = &op.length_target {
+            // Measure from the pattern's start (instance 0's near end) along the axis.
+            let start = dir * min_p;
+            if let Some(d) = target_distance(doc, start, dir, target) {
+                return Some(d.abs());
+            }
+        }
+        eval(&op.length)
+    };
     let count = || -> Option<usize> {
         let n = crate::value::eval_parameter_in_doc(&op.count, doc).and_then(|v| match v {
             crate::value::EvaluatedParameter::LengthMm(n) => Some(n),
@@ -623,7 +635,7 @@ pub fn repeat_offsets(doc: &Document, op: &crate::model::RepeatOperation) -> Opt
             if n < 2 {
                 return Some(Vec::new());
             }
-            let total = eval(&op.length)?;
+            let total = length()?;
             offsets(n, (total - extent) / (n as f32 - 1.0))
         }
         RepeatMode::CountFitCenters => {
@@ -631,11 +643,11 @@ pub fn repeat_offsets(doc: &Document, op: &crate::model::RepeatOperation) -> Opt
             if n < 2 {
                 return Some(Vec::new());
             }
-            let span = eval(&op.length)?;
+            let span = length()?;
             offsets(n, span / (n as f32 - 1.0))
         }
         RepeatMode::FillGap => {
-            let l = eval(&op.length)?;
+            let l = length()?;
             let gap = eval(&op.spacing)?;
             let step = extent + gap;
             if step <= 1e-6 {
@@ -645,7 +657,7 @@ pub fn repeat_offsets(doc: &Document, op: &crate::model::RepeatOperation) -> Opt
             offsets(n.min(MAX_INSTANCES), step)
         }
         RepeatMode::FillPitch => {
-            let l = eval(&op.length)?;
+            let l = length()?;
             let pitch = eval(&op.spacing)?;
             if pitch <= 1e-6 {
                 return None;
@@ -655,7 +667,7 @@ pub fn repeat_offsets(doc: &Document, op: &crate::model::RepeatOperation) -> Opt
         }
         RepeatMode::FillMaxPitch => {
             // Stud spacing: last instance lands exactly at the end of L, pitch <= D.
-            let l = eval(&op.length)?;
+            let l = length()?;
             let max_pitch = eval(&op.spacing)?;
             if max_pitch <= 1e-6 {
                 return None;
@@ -3151,6 +3163,62 @@ mod tests {
         let profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
         let ext = extrusion(sketch, vec![profile], 5.0);
         (doc, sketch, ext)
+    }
+
+    /// #186: a repeat's fill length can be bound to a target's extended plane (like an
+    /// extrusion's "up to face"), so `L` is the along-axis distance to that plane and follows
+    /// it — overriding the `length` expression.
+    #[test]
+    #[cfg(feature = "occt")]
+    fn repeat_fill_length_follows_a_face_target() {
+        use crate::model::{Body, BodySource, ExtrudeTarget, RepeatMode, RepeatOperation, RevolveAxis};
+        let (mut doc, sketch, ext) = box_doc(); // 10x10x5 box, x∈[0,10]
+        let _ = sketch;
+        doc.extrusions.push(ext);
+        doc.bodies.push(Body {
+            source: BodySource::Solid { add: vec![0], cut: vec![] },
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        // A target plane at x = 30, normal +X (an X-facing wall the repeat fills up to).
+        doc.construction_planes.push(crate::construction::plane_from_definition(
+            &crate::construction::definition_from_reference(
+                &crate::construction::PlaneReference::Face {
+                    origin: glam::Vec3::new(30.0, 0.0, 0.0),
+                    normal: glam::Vec3::X,
+                    label: "wall".to_string(),
+                },
+                0.0,
+                0.0,
+            ),
+            crate::model::ConstructionPlaneParent::Root,
+        ));
+        let plane_index = doc.construction_planes.len() - 1;
+
+        let mut op = RepeatOperation {
+            targets: vec![0],
+            axis: RevolveAxis::X,
+            mode: RepeatMode::FillPitch,
+            count: String::new(),
+            spacing: "10".to_string(),
+            length: "999".to_string(), // deliberately wrong; the target must win
+            length_target: Some(ExtrudeTarget::Plane(plane_index)),
+            outputs: Vec::new(),
+            name: None,
+            deleted: false,
+        };
+        // L = 30 (x=0 start → x=30 plane), pitch 10, extent 10 → n = ((30-10)/10)+1 = 3.
+        assert_eq!(repeat_offsets(&doc, &op), Some(vec![10.0, 20.0]));
+
+        // Move the plane out to x = 50: L follows → n = ((50-10)/10)+1 = 5 → 4 extra instances.
+        doc.construction_planes[plane_index].origin = glam::Vec3::new(50.0, 0.0, 0.0);
+        assert_eq!(repeat_offsets(&doc, &op), Some(vec![10.0, 20.0, 30.0, 40.0]));
+
+        // Clearing the target falls back to the (wrong) expression → many instances.
+        op.length_target = None;
+        let fallback = repeat_offsets(&doc, &op).expect("expression length");
+        assert!(fallback.len() > 4, "expression length 999 should place many instances");
     }
 
     /// #146: exporting a document with two *intersecting* bodies unions them, so the exported

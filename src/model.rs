@@ -1354,6 +1354,11 @@ pub struct RepeatOperation {
     /// Fill length expression `L` (fill and fit modes).
     #[serde(default)]
     pub length: String,
+    /// When set, the fill length `L` is derived from the along-axis distance to this target's
+    /// extended plane (like an extrusion's "up to face" #126), so `L` follows the face if it
+    /// moves — overriding the `length` expression (#186).
+    #[serde(default)]
+    pub length_target: Option<ExtrudeTarget>,
     /// Output body indices: instance-major, then target (instance 1 of each target, then
     /// instance 2 of each target, …).
     #[serde(default)]
