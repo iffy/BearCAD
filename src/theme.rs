@@ -26,6 +26,10 @@ const SELECTION_TEXT: Color32 = Color32::WHITE;
 /// Accent for a focused input's ring and, by default, an element picker's selected-element
 /// highlight (#213). A picker may override the selected-highlight color (e.g. Slice cutters red).
 pub const FOCUS_ACCENT: Color32 = Color32::from_rgb(120, 170, 240);
+/// Selected-highlight color for a picker whose elements are consumed destructively (cut away),
+/// e.g. the Slice cutters or the Revolve cut bodies (#213) — the red override that a picker can
+/// set in place of the default [`FOCUS_ACCENT`].
+pub const CUT_ACCENT: Color32 = Color32::from_rgb(220, 90, 90);
 /// Input-like control background (matches text inputs' `extreme_bg_color`).
 pub const INPUT_BG: Color32 = Color32::from_gray(18);
 /// Resting outline for an input-like control.

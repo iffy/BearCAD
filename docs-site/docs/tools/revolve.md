@@ -23,7 +23,9 @@ Revolve spins a flat profile around an axis into a solid — rings, shafts, vase
    - **New body** — the revolve stands alone.
    - **Add to touching bodies** — it fuses into whatever bodies it touches.
    - **Cut bodies** — it's subtracted from bodies you pick: click bodies in the viewport
-     to add them to the cut list shown in the pane (each row has a remove button).
+     to add them to the **Cut bodies** element picker in the pane. It's the same combo-box
+     picker every tool uses, here accepting only bodies and highlighting them in **red** to
+     signal they'll be cut away; expand it to review the list and remove any body.
 5. **Enter** commits; **Esc** cancels.
 
 ## Notes

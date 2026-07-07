@@ -87,7 +87,8 @@ pub struct RevolveControl {
     pub axis_label: Option<String>,
     pub symmetric: bool,
     pub body_choice: crate::actions::RevolveBodyChoice,
-    pub cut_rows: Vec<String>,
+    /// In Cut mode, the picked bodies to cut (rendered through the unified element picker, #213).
+    pub cut_bodies: Vec<usize>,
 }
 
 /// What the Combine tool's context section shows: the operation kind, both picker
@@ -285,6 +286,10 @@ pub struct ContextPaneContent {
     /// [`ElementPicker`] — currently the Select tool's "select everything" picker, which is
     /// always shown (placeholder when empty) and never loses focus.
     pub selection_picker: Option<ElementPicker>,
+    /// Tool-owned element pickers (#213): the sets a construction tool is gathering (e.g. the
+    /// Revolve tool's cut bodies), each rendered by the same combo-box widget. Extensible: a
+    /// tool may show several (Combine's A/B sides). Empty for tools not yet migrated.
+    pub tool_pickers: Vec<ToolPickerView>,
     /// Image scale calibration (#171).
     pub calibrate_image: Option<CalibrateImageControl>,
     /// Revolve tool controls (#revolve).
@@ -388,6 +393,25 @@ pub struct ConstructionControl {
     pub target_count: usize,
 }
 
+/// One tool-owned element picker to render in the context pane (#213): its heading, the
+/// [`ElementPicker`] state built from the tool's in-progress set, and which set it edits so
+/// removals route back correctly.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ToolPickerView {
+    pub heading: &'static str,
+    pub picker: ElementPicker,
+    pub target: PickerTarget,
+}
+
+/// Which tool-owned set a [`ToolPickerView`]'s removals apply to. Grows as tools migrate onto
+/// the unified picker; the active tool disambiguates, but this stays explicit so a tool with
+/// several pickers (e.g. Combine's two sides) routes each correctly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickerTarget {
+    /// The Revolve tool's cut bodies (`CreatingRevolve::cut_bodies`).
+    RevolveCut,
+}
+
 /// A user edit from the unified selection element picker (#213): drop one element from the
 /// selection, or clear it. Element-based (not row-index-based) so a filtered picker — whose
 /// visible rows are a subset of the raw selection — always removes the right element.
@@ -457,17 +481,6 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
                 hint: "Click a closed profile (circle or loop)",
                 rows,
             })
-        })
-        .or_else(|| {
-            input.revolve.as_ref().and_then(|r| {
-                (r.body_choice == crate::actions::RevolveBodyChoice::Cut).then(|| {
-                    EdgePickerControl {
-                        heading: "Cut bodies",
-                        hint: "Click a body to cut",
-                        rows: r.cut_rows.clone(),
-                    }
-                })
-            })
         });
     // The unified selection element picker (#213), mirroring the live selection for the tools
     // that operate on it. Suppressed while a draw construction owns the pane.
@@ -477,6 +490,26 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let selection_picker = (!drawing)
         .then(|| selection_picker_for(input.tool, input.selection))
         .flatten();
+    // Tool-owned element pickers (#213). Revolve's cut bodies use a Body-filtered picker with
+    // the red "cut" highlight override — the picked bodies are consumed destructively.
+    let mut tool_pickers = Vec::new();
+    if let Some(r) = input.revolve.as_ref() {
+        if r.body_choice == crate::actions::RevolveBodyChoice::Cut {
+            let mut picker = ElementPicker::new(
+                ElementFilter::kind(ElementKind::Body),
+                PickLimit::Infinite,
+            )
+            .with_placeholder("Click a body to cut")
+            .with_selected_color(crate::theme::CUT_ACCENT);
+            picker.set_focused(true);
+            picker.set_picked(r.cut_bodies.iter().map(|&bi| SceneElement::Body(bi)));
+            tool_pickers.push(ToolPickerView {
+                heading: "Cut bodies",
+                picker,
+                target: PickerTarget::RevolveCut,
+            });
+        }
+    }
     let calibrate_image = input.calibrate_image;
     let revolve = input.revolve.clone();
     let boolean_op = input.boolean_op.clone();
@@ -506,6 +539,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             units,
             edge_picker: edge_picker.clone(),
             selection_picker: None,
+            tool_pickers: Vec::new(),
             calibrate_image,
             revolve: revolve.clone(),
             boolean_op: boolean_op.clone(),
@@ -536,6 +570,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             units,
             edge_picker: edge_picker.clone(),
             selection_picker: None,
+            tool_pickers: Vec::new(),
             calibrate_image,
             revolve: revolve.clone(),
             boolean_op: boolean_op.clone(),
@@ -566,6 +601,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             units,
             edge_picker: edge_picker.clone(),
             selection_picker: None,
+            tool_pickers: Vec::new(),
             calibrate_image,
             revolve: revolve.clone(),
             boolean_op: boolean_op.clone(),
@@ -599,6 +635,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         units,
         edge_picker,
         selection_picker,
+        tool_pickers,
         calibrate_image,
         revolve,
         boolean_op,
@@ -818,6 +855,7 @@ pub fn show_pane(
     on_units_changed: &mut impl FnMut(UnitsChoice),
     on_edge_picker_edit: &mut impl FnMut(Option<usize>),
     on_selection_edit: &mut impl FnMut(SelectionEdit),
+    on_tool_picker_edit: &mut impl FnMut(PickerTarget, Option<usize>),
     on_revolve_edit: &mut impl FnMut(RevolveEdit),
     on_boolean_edit: &mut impl FnMut(BooleanEdit),
     on_boolean_edit_start: &mut impl FnMut(usize),
@@ -1551,6 +1589,26 @@ pub fn show_pane(
         });
     }
 
+    for view in &content.tool_pickers {
+        any_control = true;
+        ui.separator();
+        ui.label(egui::RichText::new(view.heading).strong());
+        ui.add_enabled_ui(controls_enabled, |ui| {
+            if let Some(event) = crate::element_picker::show(ui, &view.picker, doc, view.heading) {
+                match event {
+                    crate::element_picker::PickerEvent::Focus => {}
+                    // Tool-owned sets are ordered vectors, so a row index maps straight through.
+                    crate::element_picker::PickerEvent::Remove(i) => {
+                        on_tool_picker_edit(view.target, Some(i))
+                    }
+                    crate::element_picker::PickerEvent::Clear => {
+                        on_tool_picker_edit(view.target, None)
+                    }
+                }
+            }
+        });
+    }
+
     if let Some(picker) = &content.edge_picker {
         any_control = true;
         ui.separator();
@@ -1896,6 +1954,53 @@ mod tests {
     }
 
     #[test]
+    fn revolve_cut_mode_yields_a_red_body_picker() {
+        use crate::hierarchy::SceneElement;
+        let doc = Document::default();
+        let selection = SceneSelection::default();
+        let cut_input = ContextInput {
+            tool: Tool::Revolve,
+            revolve: Some(RevolveControl {
+                face_count: 1,
+                axis_label: Some("the Y axis".to_string()),
+                symmetric: false,
+                body_choice: crate::actions::RevolveBodyChoice::Cut,
+                cut_bodies: vec![2, 5],
+            }),
+            ..input(&doc, &selection)
+        };
+        let content = context_pane_content(&cut_input);
+        assert_eq!(content.tool_pickers.len(), 1);
+        let view = &content.tool_pickers[0];
+        assert_eq!(view.target, PickerTarget::RevolveCut);
+        assert_eq!(
+            view.picker.picked(),
+            &[SceneElement::Body(2), SceneElement::Body(5)]
+        );
+        // Body-only filter, and the red "cut" highlight override in place of the default.
+        assert!(view.picker.accepts(&SceneElement::Body(0)));
+        assert!(!view.picker.accepts(&SceneElement::Line(0)));
+        assert_eq!(
+            view.picker.selected_color(crate::theme::FOCUS_ACCENT),
+            crate::theme::CUT_ACCENT
+        );
+
+        // Non-Cut mode shows no tool picker.
+        let new_body_input = ContextInput {
+            tool: Tool::Revolve,
+            revolve: Some(RevolveControl {
+                body_choice: crate::actions::RevolveBodyChoice::NewBody,
+                face_count: 1,
+                axis_label: None,
+                symmetric: false,
+                cut_bodies: vec![],
+            }),
+            ..input(&doc, &selection)
+        };
+        assert!(context_pane_content(&new_body_input).tool_pickers.is_empty());
+    }
+
+    #[test]
     fn edge_treatment_row_labels_name_the_extrusion_and_edge() {
         let doc = Document::default();
         assert_eq!(
@@ -1931,6 +2036,7 @@ mod tests {
                 extrude_body: None,
                 edge_picker: None,
                 selection_picker: Some(ElementPicker::select_everything()),
+                tool_pickers: Vec::new(),
                 calibrate_image: None,
                 revolve: None,
             boolean_op: None,
@@ -2004,6 +2110,7 @@ mod tests {
                 extrude_body: None,
                 edge_picker: None,
                 selection_picker: None,
+            tool_pickers: Vec::new(),
                 calibrate_image: None,
                 revolve: None,
             boolean_op: None,
@@ -2095,6 +2202,7 @@ mod tests {
                     p.set_picked([SceneElement::Line(0)]);
                     p
                 }),
+                tool_pickers: Vec::new(),
                 calibrate_image: None,
                 revolve: None,
             boolean_op: None,
@@ -2259,6 +2367,7 @@ mod tests {
                 extrude_body: None,
                 edge_picker: None,
                 selection_picker: None,
+            tool_pickers: Vec::new(),
                 calibrate_image: None,
                 revolve: None,
             boolean_op: None,

@@ -3650,21 +3650,7 @@ impl eframe::App for App {
                         }),
                         symmetric: cr.map(|c| c.symmetric).unwrap_or(false),
                         body_choice: cr.map(|c| c.body_choice).unwrap_or_default(),
-                        cut_rows: cr
-                            .map(|c| {
-                                c.cut_bodies
-                                    .iter()
-                                    .map(|&bi| {
-                                        names::element_name(
-                                            &self.state.doc,
-                                            SceneElement::Body(bi),
-                                        )
-                                        .map(|n| n.to_string())
-                                        .unwrap_or_else(|| format!("Body {bi}"))
-                                    })
-                                    .collect()
-                            })
-                            .unwrap_or_default(),
+                        cut_bodies: cr.map(|c| c.cut_bodies.clone()).unwrap_or_default(),
                     }
                 }),
                 calibrate_start: (self.state.creating_calibration.is_none()).then(|| {
@@ -3699,6 +3685,7 @@ impl eframe::App for App {
             let mut units_change: Option<context::UnitsChoice> = None;
             let mut edge_picker_edit: Option<Option<usize>> = None;
             let mut selection_edit: Option<context::SelectionEdit> = None;
+            let mut tool_picker_edit: Option<(context::PickerTarget, Option<usize>)> = None;
             let mut calibrate_apply: Option<(context::CalibrateImageControl, String)> = None;
             let mut calibrate_begin: Option<usize> = None;
             let mut revolve_edit: Option<context::RevolveEdit> = None;
@@ -3741,6 +3728,7 @@ impl eframe::App for App {
                         &mut |choice| units_change = Some(choice),
                         &mut |edit| edge_picker_edit = Some(edit),
                         &mut |edit| selection_edit = Some(edit),
+                        &mut |target, edit| tool_picker_edit = Some((target, edit)),
                         &mut |edit| revolve_edit = Some(edit),
                         &mut |edit| boolean_edit = Some(edit),
                         &mut |op| boolean_edit_begin = Some(op),
@@ -3994,21 +3982,26 @@ impl eframe::App for App {
                     }
                 }
             }
+            if let Some((target, edit)) = tool_picker_edit {
+                // Remove one row (or clear) from a tool-owned element picker (#213).
+                match target {
+                    context::PickerTarget::RevolveCut => {
+                        if let Some(cr) = self.state.creating_revolve.as_mut() {
+                            match edit {
+                                Some(index) if index < cr.cut_bodies.len() => {
+                                    cr.cut_bodies.remove(index);
+                                }
+                                Some(_) => {}
+                                None => cr.cut_bodies.clear(),
+                            }
+                        }
+                    }
+                }
+            }
             if let Some(edit) = edge_picker_edit {
                 // Remove one row (or clear the set) from the active tool's picked set
                 // (#167); dropping the last edge cancels the treatment entirely.
-                if self.state.tool == Tool::Revolve {
-                    if let Some(cr) = self.state.creating_revolve.as_mut() {
-                        match edit {
-                            Some(index) => {
-                                if index < cr.cut_bodies.len() {
-                                    cr.cut_bodies.remove(index);
-                                }
-                            }
-                            None => cr.cut_bodies.clear(),
-                        }
-                    }
-                } else if self.state.tool == Tool::Loft {
+                if self.state.tool == Tool::Loft {
                     match edit {
                         Some(index) => {
                             if let Some(cl) = self.state.creating_loft.as_mut() {
