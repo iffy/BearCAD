@@ -22,10 +22,11 @@ another, keep only their overlap, or keep everything *except* the overlap.
 ## How to use it
 
 1. Pick the **Combine** tool and choose the operation in the context pane.
-2. Click bodies in the viewport to add them. **Combine** has a single picked set; the
-   other operations have **A** and **B** sides — the *Picking* switch in the context pane
-   chooses where the next click lands, and each side can hold several bodies. Re-clicking
-   a body removes it.
+2. Click bodies in the viewport to add them. **Combine** has a single body picker; the
+   other operations show **Side A** and **Side B** element pickers, each holding several
+   bodies. Clicking a picker makes it the active side (a focus ring marks it), so the next
+   viewport click lands there — and in a **Cut**, Side B is highlighted red to signal it gets
+   carved away. Re-clicking a body removes it, or expand a picker to remove from its list.
 3. For the two-sided operations, **Keep B** leaves the B-side bodies as real bodies after
    the operation (by default all inputs become shadow bodies).
 4. Press **Enter** (or the **Create** button) to commit.

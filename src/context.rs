@@ -96,8 +96,9 @@ pub struct RevolveControl {
 #[derive(Clone, Debug, PartialEq)]
 pub struct BooleanControl {
     pub kind: crate::model::BooleanOpKind,
-    pub a_rows: Vec<String>,
-    pub b_rows: Vec<String>,
+    /// Side-A / side-B picked bodies (rendered through the unified element picker, #213).
+    pub a: Vec<usize>,
+    pub b: Vec<usize>,
     pub picking_b: bool,
     pub keep_b: bool,
     /// `true` while re-editing a committed operation (changes the commit label).
@@ -188,12 +189,7 @@ pub enum SliceEdit {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BooleanEdit {
     Kind(crate::model::BooleanOpKind),
-    PickingB(bool),
     KeepB(bool),
-    /// Remove row `i` from side A (`None` clears the side).
-    RemoveA(Option<usize>),
-    /// Remove row `i` from side B (`None` clears the side).
-    RemoveB(Option<usize>),
     Commit,
 }
 
@@ -414,6 +410,22 @@ pub enum PickerTarget {
     MoveTargets,
     /// The Repeat tool's target bodies (`CreatingRepeat::targets`).
     RepeatTargets,
+    /// The Combine tool's side-A bodies (`CreatingBoolean::a`).
+    CombineA,
+    /// The Combine tool's side-B bodies (`CreatingBoolean::b`).
+    CombineB,
+}
+
+/// An interaction with a [`ToolPickerView`] to apply to its backing tool set (#213).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolPickerAction {
+    /// The user clicked the picker input; make it the active one (for tools whose viewport
+    /// clicks land on one of several pickers, e.g. Combine's A/B sides).
+    Focus,
+    /// Remove the picked element at this row index.
+    Remove(usize),
+    /// Clear the whole set.
+    Clear,
 }
 
 /// A user edit from the unified selection element picker (#213): drop one element from the
@@ -465,13 +477,14 @@ fn body_tool_picker(
     bodies: &[usize],
     placeholder: &str,
     selected_color: Option<eframe::egui::Color32>,
+    focused: bool,
 ) -> ToolPickerView {
     let mut picker = ElementPicker::new(ElementFilter::kind(ElementKind::Body), PickLimit::Infinite)
         .with_placeholder(placeholder.to_string());
     if let Some(color) = selected_color {
         picker = picker.with_selected_color(color);
     }
-    picker.set_focused(true);
+    picker.set_focused(focused);
     picker.set_picked(bodies.iter().map(|&bi| SceneElement::Body(bi)));
     ToolPickerView {
         heading,
@@ -529,6 +542,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
                 &r.cut_bodies,
                 "Click a body to cut",
                 Some(crate::theme::CUT_ACCENT),
+                true,
             ));
         }
     }
@@ -539,6 +553,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             &m.targets,
             "Click bodies in the viewport",
             None,
+            true,
         ));
     }
     if let Some(r) = input.repeat_op.as_ref() {
@@ -548,7 +563,32 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             &r.targets,
             "Click bodies in the viewport",
             None,
+            true,
         ));
+    }
+    if let Some(b) = input.boolean_op.as_ref() {
+        // Combine mode uses one picker (side A only); Cut/Intersect/Difference use two sides.
+        // The focused side is the one the next viewport click lands on, toggled by clicking a
+        // picker (its Focus event). Side B (the tool that gets consumed in Cut) is styled red.
+        let two_sided = b.kind != crate::model::BooleanOpKind::Combine;
+        tool_pickers.push(body_tool_picker(
+            if two_sided { "Side A" } else { "Bodies" },
+            PickerTarget::CombineA,
+            &b.a,
+            "Click bodies in the viewport",
+            None,
+            !b.picking_b,
+        ));
+        if two_sided {
+            tool_pickers.push(body_tool_picker(
+                "Side B",
+                PickerTarget::CombineB,
+                &b.b,
+                "Click bodies in the viewport",
+                (b.kind == crate::model::BooleanOpKind::Cut).then_some(crate::theme::CUT_ACCENT),
+                b.picking_b,
+            ));
+        }
     }
     let calibrate_image = input.calibrate_image;
     let revolve = input.revolve.clone();
@@ -895,7 +935,7 @@ pub fn show_pane(
     on_units_changed: &mut impl FnMut(UnitsChoice),
     on_edge_picker_edit: &mut impl FnMut(Option<usize>),
     on_selection_edit: &mut impl FnMut(SelectionEdit),
-    on_tool_picker_edit: &mut impl FnMut(PickerTarget, Option<usize>),
+    on_tool_picker_edit: &mut impl FnMut(PickerTarget, ToolPickerAction),
     on_revolve_edit: &mut impl FnMut(RevolveEdit),
     on_boolean_edit: &mut impl FnMut(BooleanEdit),
     on_boolean_edit_start: &mut impl FnMut(usize),
@@ -1098,13 +1138,15 @@ pub fn show_pane(
         ui.add_enabled_ui(controls_enabled, |ui| {
             if let Some(event) = crate::element_picker::show(ui, &view.picker, doc, view.heading) {
                 match event {
-                    crate::element_picker::PickerEvent::Focus => {}
+                    crate::element_picker::PickerEvent::Focus => {
+                        on_tool_picker_edit(view.target, ToolPickerAction::Focus)
+                    }
                     // Tool-owned sets are ordered vectors, so a row index maps straight through.
                     crate::element_picker::PickerEvent::Remove(i) => {
-                        on_tool_picker_edit(view.target, Some(i))
+                        on_tool_picker_edit(view.target, ToolPickerAction::Remove(i))
                     }
                     crate::element_picker::PickerEvent::Clear => {
-                        on_tool_picker_edit(view.target, None)
+                        on_tool_picker_edit(view.target, ToolPickerAction::Clear)
                     }
                 }
             }
@@ -1162,61 +1204,9 @@ pub fn show_pane(
             }
         }
         let two_sided = control.kind != crate::model::BooleanOpKind::Combine;
+        // The side-A / side-B body sets render as element pickers above (see `tool_pickers`);
+        // clicking a picker makes it the active side. Only the "keep B" toggle stays here.
         if two_sided {
-            ui.horizontal(|ui| {
-                ui.label("Picking");
-                if ui.selectable_label(!control.picking_b, "A").clicked() {
-                    on_boolean_edit(BooleanEdit::PickingB(false));
-                }
-                if ui.selectable_label(control.picking_b, "B").clicked() {
-                    on_boolean_edit(BooleanEdit::PickingB(true));
-                }
-            });
-        }
-        let side = |ui: &mut egui::Ui,
-                    heading: String,
-                    rows: &[String],
-                    hint: &str,
-                    remove: &mut dyn FnMut(Option<usize>)| {
-            ui.label(egui::RichText::new(heading).strong());
-            if rows.is_empty() {
-                ui.label(
-                    egui::RichText::new(hint)
-                        .color(egui::Color32::from_gray(140))
-                        .size(11.0),
-                );
-            }
-            for (i, row) in rows.iter().enumerate() {
-                ui.horizontal(|ui| {
-                    if ui.small_button("✕").on_hover_text("Remove from set").clicked() {
-                        remove(Some(i));
-                    }
-                    ui.label(row);
-                });
-            }
-            if rows.len() > 1 && ui.small_button("Clear").clicked() {
-                remove(None);
-            }
-        };
-        side(
-            ui,
-            format!(
-                "{} ({})",
-                if two_sided { "Side A" } else { "Bodies" },
-                control.a_rows.len()
-            ),
-            &control.a_rows,
-            "Click bodies in the viewport",
-            &mut |i| on_boolean_edit(BooleanEdit::RemoveA(i)),
-        );
-        if two_sided {
-            side(
-                ui,
-                format!("Side B ({})", control.b_rows.len()),
-                &control.b_rows,
-                "Switch Picking to B, then click bodies",
-                &mut |i| on_boolean_edit(BooleanEdit::RemoveB(i)),
-            );
             let mut keep_b = control.keep_b;
             if ui
                 .checkbox(&mut keep_b, "Keep B bodies")
@@ -2061,6 +2051,57 @@ mod tests {
         assert_eq!(pickers.len(), 1);
         assert_eq!(pickers[0].target, PickerTarget::RepeatTargets);
         assert_eq!(pickers[0].picker.picked(), &[SceneElement::Body(7)]);
+    }
+
+    #[test]
+    fn combine_shows_one_or_two_body_pickers_by_kind() {
+        use crate::hierarchy::SceneElement;
+        let doc = Document::default();
+        let selection = SceneSelection::default();
+        let make = |kind, a: Vec<usize>, b: Vec<usize>, picking_b| ContextInput {
+            tool: Tool::Combine,
+            boolean_op: Some(BooleanControl {
+                kind,
+                a,
+                b,
+                picking_b,
+                keep_b: false,
+                editing: false,
+                can_commit: false,
+            }),
+            ..input(&doc, &selection)
+        };
+
+        // Combine kind: a single side-A picker, default highlight, focused.
+        let single = context_pane_content(&make(
+            crate::model::BooleanOpKind::Combine,
+            vec![0, 1],
+            vec![],
+            false,
+        ))
+        .tool_pickers;
+        assert_eq!(single.len(), 1);
+        assert_eq!(single[0].target, PickerTarget::CombineA);
+        assert!(single[0].picker.is_focused());
+
+        // Cut kind, picking B: two pickers; B is focused and red (it gets consumed).
+        let cut = context_pane_content(&make(
+            crate::model::BooleanOpKind::Cut,
+            vec![0],
+            vec![2],
+            true,
+        ))
+        .tool_pickers;
+        assert_eq!(cut.len(), 2);
+        assert_eq!(cut[0].target, PickerTarget::CombineA);
+        assert!(!cut[0].picker.is_focused());
+        assert_eq!(cut[1].target, PickerTarget::CombineB);
+        assert!(cut[1].picker.is_focused());
+        assert_eq!(cut[1].picker.picked(), &[SceneElement::Body(2)]);
+        assert_eq!(
+            cut[1].picker.selected_color(crate::theme::FOCUS_ACCENT),
+            crate::theme::CUT_ACCENT
+        );
     }
 
     #[test]

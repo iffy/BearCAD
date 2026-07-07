@@ -3401,25 +3401,13 @@ impl eframe::App for App {
                 // else, no calibration already running.
                 boolean_op: (self.state.tool == Tool::Combine).then(|| {
                     let cb = self.state.creating_boolean.as_ref();
-                    let rows = |list: Option<&Vec<usize>>| -> Vec<String> {
-                        list.map(|l| {
-                            l.iter()
-                                .map(|&bi| {
-                                    names::element_name(&self.state.doc, SceneElement::Body(bi))
-                                        .map(|n| n.to_string())
-                                        .unwrap_or_else(|| format!("Body {bi}"))
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default()
-                    };
                     let kind = cb.map(|c| c.kind).unwrap_or(model::BooleanOpKind::Combine);
                     let a_len = cb.map(|c| c.a.len()).unwrap_or(0);
                     let b_len = cb.map(|c| c.b.len()).unwrap_or(0);
                     context::BooleanControl {
                         kind,
-                        a_rows: rows(cb.map(|c| &c.a)),
-                        b_rows: rows(cb.map(|c| &c.b)),
+                        a: cb.map(|c| c.a.clone()).unwrap_or_default(),
+                        b: cb.map(|c| c.b.clone()).unwrap_or_default(),
                         picking_b: cb.map(|c| c.picking_b).unwrap_or(false),
                         keep_b: cb.map(|c| c.keep_b).unwrap_or(false),
                         editing: cb.map(|c| c.editing.is_some()).unwrap_or(false),
@@ -3657,7 +3645,8 @@ impl eframe::App for App {
             let mut units_change: Option<context::UnitsChoice> = None;
             let mut edge_picker_edit: Option<Option<usize>> = None;
             let mut selection_edit: Option<context::SelectionEdit> = None;
-            let mut tool_picker_edit: Option<(context::PickerTarget, Option<usize>)> = None;
+            let mut tool_picker_edit: Option<(context::PickerTarget, context::ToolPickerAction)> =
+                None;
             let mut calibrate_apply: Option<(context::CalibrateImageControl, String)> = None;
             let mut calibrate_begin: Option<usize> = None;
             let mut revolve_edit: Option<context::RevolveEdit> = None;
@@ -3749,20 +3738,7 @@ impl eframe::App for App {
                                     cb.picking_b = false;
                                 }
                             }
-                            context::BooleanEdit::PickingB(v) => cb.picking_b = v,
                             context::BooleanEdit::KeepB(v) => cb.keep_b = v,
-                            context::BooleanEdit::RemoveA(Some(i)) => {
-                                if i < cb.a.len() {
-                                    cb.a.remove(i);
-                                }
-                            }
-                            context::BooleanEdit::RemoveA(None) => cb.a.clear(),
-                            context::BooleanEdit::RemoveB(Some(i)) => {
-                                if i < cb.b.len() {
-                                    cb.b.remove(i);
-                                }
-                            }
-                            context::BooleanEdit::RemoveB(None) => cb.b.clear(),
                             context::BooleanEdit::Commit => unreachable!(),
                         }
                     }
@@ -3958,6 +3934,26 @@ impl eframe::App for App {
                     context::PickerTarget::RepeatTargets => {
                         if let Some(cr) = self.state.creating_repeat.as_mut() {
                             remove_or_clear(&mut cr.targets, edit);
+                        }
+                    }
+                    // Combine's A/B sides: clicking a picker (Focus) makes it the active side
+                    // the next viewport click lands on; otherwise remove/clear that side.
+                    context::PickerTarget::CombineA => {
+                        if let Some(cb) = self.state.creating_boolean.as_mut() {
+                            if edit == context::ToolPickerAction::Focus {
+                                cb.picking_b = false;
+                            } else {
+                                remove_or_clear(&mut cb.a, edit);
+                            }
+                        }
+                    }
+                    context::PickerTarget::CombineB => {
+                        if let Some(cb) = self.state.creating_boolean.as_mut() {
+                            if edit == context::ToolPickerAction::Focus {
+                                cb.picking_b = true;
+                            } else {
+                                remove_or_clear(&mut cb.b, edit);
+                            }
                         }
                     }
                 }
@@ -4276,15 +4272,17 @@ fn build_gpu_dimension_labels(
 const SIDE_PANEL_IDS: &[&str] = &["tree", "parameters", "context"];
 
 /// True while the pointer is on a side-panel resize grip (don't override its cursor).
-/// Apply a tool-owned element picker's removal (#213) to its backing body-index vector:
-/// `Some(i)` drops row `i`, `None` clears the whole set.
-fn remove_or_clear(bodies: &mut Vec<usize>, edit: Option<usize>) {
-    match edit {
-        Some(index) if index < bodies.len() => {
+/// Apply a tool-owned element picker's row action (#213) to its backing body-index vector:
+/// `Remove(i)` drops row `i`, `Clear` empties the set, `Focus` is a no-op here (the caller
+/// handles active-picker switching for multi-picker tools).
+fn remove_or_clear(bodies: &mut Vec<usize>, action: context::ToolPickerAction) {
+    match action {
+        context::ToolPickerAction::Focus => {}
+        context::ToolPickerAction::Remove(index) if index < bodies.len() => {
             bodies.remove(index);
         }
-        Some(_) => {}
-        None => bodies.clear(),
+        context::ToolPickerAction::Remove(_) => {}
+        context::ToolPickerAction::Clear => bodies.clear(),
     }
 }
 
