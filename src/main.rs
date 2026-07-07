@@ -3128,6 +3128,7 @@ impl eframe::App for App {
             let mut edit_plane: Option<usize> = None;
             let mut import_image_on_plane: Option<usize> = None;
             let mut edit_extrusion: Option<usize> = None;
+            let mut edit_edge_treatment: Option<(usize, usize, f32)> = None;
             let mut export_body: Option<usize> = None;
             let mut export_body_step: Option<usize> = None;
             let mut click_element: Option<(SceneElement, bool)> = None;
@@ -3149,6 +3150,10 @@ impl eframe::App for App {
                     let mut queue_edit_extrusion = |index: usize| {
                         edit_extrusion = Some(index);
                     };
+                    let mut queue_edit_edge_treatment =
+                        |extrusion: usize, index: usize, amount: f32| {
+                            edit_edge_treatment = Some((extrusion, index, amount));
+                        };
                     let mut queue_export_body = |index: usize| {
                         export_body = Some(index);
                     };
@@ -3179,6 +3184,7 @@ impl eframe::App for App {
                         &mut queue_edit_plane,
                         &mut queue_import_image_on_plane,
                         &mut queue_edit_extrusion,
+                        &mut queue_edit_edge_treatment,
                         &mut queue_export_body,
                         &mut queue_export_body_step,
                         &mut noop_visibility,
@@ -3205,6 +3211,25 @@ impl eframe::App for App {
             }
             if let Some(index) = edit_extrusion {
                 self.state.apply(Action::EditExtrusion { index });
+            }
+            if let Some((extrusion, index, amount)) = edit_edge_treatment {
+                // Re-commit the existing edge treatment with the new amount (#192); the edge and
+                // kind come from the stored treatment, which `CommitEdgeTreatment` updates in place.
+                if let Some((edge, kind)) = self
+                    .state
+                    .doc
+                    .extrusions
+                    .get(extrusion)
+                    .and_then(|ext| ext.edge_treatments.get(index))
+                    .map(|t| (t.edge, t.kind))
+                {
+                    self.state.apply(Action::CommitEdgeTreatment {
+                        extrusion,
+                        edge,
+                        kind,
+                        amount,
+                    });
+                }
             }
             if let Some(index) = export_body {
                 self.export_stl_body(index);
