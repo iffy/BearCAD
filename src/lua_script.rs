@@ -101,6 +101,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::MoveOp(_) => "move_op",
         SceneElement::RepeatOp(_) => "repeat_op",
         SceneElement::SliceOp(_) => "slice_op",
+        SceneElement::Revolution(_) => "revolution",
     }
 }
 
@@ -117,7 +118,8 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::BooleanOp(i)
         | SceneElement::MoveOp(i)
         | SceneElement::RepeatOp(i)
-        | SceneElement::SliceOp(i) => i,
+        | SceneElement::SliceOp(i)
+        | SceneElement::Revolution(i) => i,
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::Origin

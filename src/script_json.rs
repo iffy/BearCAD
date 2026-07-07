@@ -75,6 +75,7 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
         SceneElement::MoveOp(_) => "move_op",
         SceneElement::RepeatOp(_) => "repeat_op",
         SceneElement::SliceOp(_) => "slice_op",
+        SceneElement::Revolution(_) => "revolution",
     }
 }
 
@@ -95,7 +96,8 @@ pub fn scene_element_selection_index(element: &SceneElement) -> Option<usize> {
         | SceneElement::BooleanOp(i)
         | SceneElement::MoveOp(i)
         | SceneElement::RepeatOp(i)
-        | SceneElement::SliceOp(i) => Some(*i),
+        | SceneElement::SliceOp(i)
+        | SceneElement::Revolution(i) => Some(*i),
         SceneElement::Origin
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. } => Some(0),

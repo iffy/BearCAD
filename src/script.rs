@@ -1106,6 +1106,11 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        SceneElement::Revolution(i) => ElementScriptTokens {
+            kind: "revolution",
+            index: i,
+            point: None,
+        },
         SceneElement::Origin => ElementScriptTokens {
             kind: "origin",
             index: 0,

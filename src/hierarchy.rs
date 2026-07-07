@@ -48,6 +48,8 @@ pub enum HierarchyNode {
     RepeatOp(usize),
     /// A slice operation on bodies (Slice tool); its fragment bodies nest under it.
     SliceOp(usize),
+    /// A revolved solid (Revolve tool); its output body nests under it (#211).
+    Revolution(usize),
     /// A technical drawing (#180). A display-only top-level leaf (no [`SceneElement`], like
     /// [`HierarchyNode::Document`]): it has its own icon and is right-clickable to edit
     /// (opening the drawing pane), but isn't a selectable/hideable scene element.
@@ -101,6 +103,8 @@ pub enum SceneElement {
     RepeatOp(usize),
     /// A slice operation on bodies (Slice tool).
     SliceOp(usize),
+    /// A revolved solid (Revolve tool, #211).
+    Revolution(usize),
     /// The origin, selectable in a sketch so a point can be constrained coincident to it from
     /// the constraint tool (#189). Fixed geometry with no owning entity, like `FaceEdge`.
     Origin,
@@ -143,6 +147,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::MoveOp(i) => SceneElement::MoveOp(i),
         HierarchyNode::RepeatOp(i) => SceneElement::RepeatOp(i),
         HierarchyNode::SliceOp(i) => SceneElement::SliceOp(i),
+        HierarchyNode::Revolution(i) => SceneElement::Revolution(i),
     })
 }
 
@@ -236,6 +241,7 @@ impl ElementVisibility {
             SceneElement::MoveOp(_) => true,
             SceneElement::RepeatOp(_) => true,
             SceneElement::SliceOp(_) => true,
+            SceneElement::Revolution(_) => true,
             // The origin is always visible while sketching (#189).
             SceneElement::Origin => true,
         }
@@ -717,6 +723,7 @@ fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
         HierarchyNode::MoveOp(_) => usize::MAX,
         HierarchyNode::RepeatOp(_) => usize::MAX,
         HierarchyNode::SliceOp(_) => usize::MAX,
+        HierarchyNode::Revolution(_) => usize::MAX,
         // Edge treatments order by their index within the extrusion, after the bodies/sketches.
         HierarchyNode::EdgeTreatment { index, .. } => index,
         // Drawings list after ranked nodes (#180), like images and operations.
@@ -866,6 +873,27 @@ pub fn build_hierarchy(
             children,
         });
     }
+    // Revolved solids (Revolve tool, #211): the operation is its own element, with its output
+    // body (linked by `BodySource::Revolve`) nested beneath it.
+    for (oi, rev) in doc.revolutions.iter().enumerate() {
+        if rev.deleted {
+            continue;
+        }
+        let children = doc
+            .bodies
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| !b.deleted && b.source == crate::model::BodySource::Revolve(oi))
+            .map(|(bi, _)| HierarchyEntry {
+                node: HierarchyNode::Body(bi),
+                children: Vec::new(),
+            })
+            .collect();
+        roots.push(HierarchyEntry {
+            node: HierarchyNode::Revolution(oi),
+            children,
+        });
+    }
     // Technical drawings (#180): top-level leaves (they reference bodies but aren't part of
     // the geometry DAG), each right-clickable to open its drawing pane.
     for (di, drawing) in doc.drawings.iter().enumerate() {
@@ -992,6 +1020,7 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
         SceneElement::MoveOp(_) => None,
         SceneElement::RepeatOp(_) => None,
         SceneElement::SliceOp(_) => None,
+        SceneElement::Revolution(_) => None,
     }
 }
 
@@ -1117,6 +1146,16 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                 for &output in &op.outputs {
                     out.insert(SceneElement::Body(output));
                     collect_descendants(doc, SceneElement::Body(output), out);
+                }
+            }
+        }
+        SceneElement::Revolution(index) => {
+            // The revolved solid's output body is linked by `BodySource::Revolve`, not an
+            // `outputs` list.
+            for (bi, body) in doc.bodies.iter().enumerate() {
+                if !body.deleted && body.source == crate::model::BodySource::Revolve(index) {
+                    out.insert(SceneElement::Body(bi));
+                    collect_descendants(doc, SceneElement::Body(bi), out);
                 }
             }
         }
@@ -1385,6 +1424,7 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         HierarchyNode::MoveOp(_) => IconId::Move,
         HierarchyNode::RepeatOp(_) => IconId::Repeat,
         HierarchyNode::SliceOp(_) => IconId::Slice,
+        HierarchyNode::Revolution(_) => IconId::Revolve,
         HierarchyNode::EdgeTreatment { extrusion, index } => {
             match edge_treatment_at(doc, extrusion, index).map(|t| t.kind) {
                 Some(crate::model::VertexTreatmentKind::Chamfer) => IconId::Chamfer,
@@ -2223,7 +2263,8 @@ fn show_row(
             | HierarchyNode::BooleanOp(_)
             | HierarchyNode::MoveOp(_)
             | HierarchyNode::RepeatOp(_)
-            | HierarchyNode::SliceOp(_) => {
+            | HierarchyNode::SliceOp(_)
+            | HierarchyNode::Revolution(_) => {
                 if response.clicked() {
                     let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
                     on_click_element(element, additive);
@@ -2974,5 +3015,44 @@ mod tests {
         layout.sync_and_step(&root_only, 300.0, 1, 0.16);
         assert_eq!(layout.nodes.len(), 1);
         assert!(layout.pos_of(HierarchyNode::Document).is_some());
+    }
+
+    #[test]
+    fn revolution_appears_in_the_tree_with_its_body(){
+        use crate::model::{Body, BodySource, Revolution, RevolveAxis, RevolveMode};
+        let mut doc = Document::default();
+        doc.revolutions.push(Revolution {
+            sketch: 0,
+            faces: Vec::new(),
+            axis: RevolveAxis::X,
+            angle_deg: 360.0,
+            symmetric: false,
+            mode: RevolveMode::NewBody,
+            name: None,
+            deleted: false,
+        });
+        doc.bodies.push(Body {
+            source: BodySource::Revolve(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+
+        let tree = build_hierarchy(&doc, None);
+        let root = &tree[0];
+        let rev = root
+            .children
+            .iter()
+            .find(|e| e.node == HierarchyNode::Revolution(0))
+            .expect("the revolution is a top-level element (#211)");
+        assert!(
+            rev.children.iter().any(|c| c.node == HierarchyNode::Body(0)),
+            "the revolved body nests under the revolution",
+        );
+        // It maps to a selectable scene element.
+        assert_eq!(
+            scene_element_for_node(HierarchyNode::Revolution(0)),
+            Some(SceneElement::Revolution(0))
+        );
     }
 }

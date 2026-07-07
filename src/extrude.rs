@@ -1428,6 +1428,18 @@ pub fn selection_world_bounds(
                     }
                 }
             }
+            SceneElement::Revolution(op) => {
+                // The revolved solid's body is linked by `BodySource::Revolve` (NewBody mode).
+                for bi in 0..doc.bodies.len() {
+                    if doc.bodies[bi].source == crate::model::BodySource::Revolve(op) {
+                        if let Some((min, max)) = body_solid_mesh(doc, bi).and_then(|m| m.bounds())
+                        {
+                            extend(min);
+                            extend(max);
+                        }
+                    }
+                }
+            }
             SceneElement::Body(bi) => {
                 if let Some((min, max)) = body_solid_mesh(doc, bi).and_then(|m| m.bounds()) {
                     extend(min);

@@ -19,7 +19,8 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::BooleanOp(_)
         | SceneElement::MoveOp(_)
         | SceneElement::RepeatOp(_)
-        | SceneElement::SliceOp(_) => Some(element),
+        | SceneElement::SliceOp(_)
+        | SceneElement::Revolution(_) => Some(element),
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::Origin
@@ -107,6 +108,7 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         SceneElement::MoveOp(index) => doc.move_ops.get(index)?.name.as_deref(),
         SceneElement::RepeatOp(index) => doc.repeat_ops.get(index)?.name.as_deref(),
         SceneElement::SliceOp(index) => doc.slice_ops.get(index)?.name.as_deref(),
+        SceneElement::Revolution(index) => doc.revolutions.get(index)?.name.as_deref(),
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::Origin
@@ -208,6 +210,13 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 .ok_or_else(|| format!("slice operation {index} not found"))?;
             op.name = stored;
         }
+        SceneElement::Revolution(index) => {
+            let rev = doc
+                .revolutions
+                .get_mut(index)
+                .ok_or_else(|| format!("revolution {index} not found"))?;
+            rev.name = stored;
+        }
         SceneElement::Image(index) => {
             let image = doc
                 .tracing_images
@@ -291,6 +300,7 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
         HierarchyNode::MoveOp(i) => format!("Move {i}"),
         HierarchyNode::RepeatOp(i) => format!("Repeat {i}"),
         HierarchyNode::SliceOp(i) => format!("Slice {i}"),
+        HierarchyNode::Revolution(i) => format!("Revolve {i}"),
         HierarchyNode::Drawing(i) => doc
             .drawings
             .get(i)
@@ -353,6 +363,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::MoveOp(i) => format!("Move {i}"),
         SceneElement::RepeatOp(i) => format!("Repeat {i}"),
         SceneElement::SliceOp(i) => format!("Slice {i}"),
+        SceneElement::Revolution(i) => format!("Revolve {i}"),
     }
 }
 
