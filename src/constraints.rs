@@ -1392,6 +1392,47 @@ mod tests {
         (doc, sketch)
     }
 
+    /// Two lines constrained coincident become collinear (they lie on the same line).
+    #[test]
+    fn coincident_lines_become_collinear() {
+        use crate::model::{ConstraintEntity, ConstraintKind, ConstraintLine};
+
+        let (mut doc, sketch) = sketch_doc();
+        // Line 0 along the X axis; line 1 offset and tilted.
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 2.0, 5.0, 8.0, 7.0));
+        doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line]);
+        doc.constraints.push(crate::model::Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Line(ConstraintLine::Line(0)),
+                b: ConstraintEntity::Line(ConstraintLine::Line(1)),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+        solve_document_constraints(&mut doc).unwrap();
+        // The two lines are now collinear: line 1's endpoints lie on line 0's infinite line
+        // (neither line was independently fixed, so both may have moved — collinearity is the
+        // invariant, not a specific position).
+        let a = (doc.lines[0].x0, doc.lines[0].y0);
+        let b = (doc.lines[0].x1, doc.lines[0].y1);
+        let dir = (b.0 - a.0, b.1 - a.1);
+        let off_line = |p: (f32, f32)| (dir.0 * (p.1 - a.1) - dir.1 * (p.0 - a.0)).abs()
+            / (dir.0.hypot(dir.1).max(1e-6));
+        assert!(
+            off_line((doc.lines[1].x0, doc.lines[1].y0)) < 1e-2
+                && off_line((doc.lines[1].x1, doc.lines[1].y1)) < 1e-2,
+            "line 1's endpoints should lie on line 0's line; offsets {} and {}",
+            off_line((doc.lines[1].x0, doc.lines[1].y0)),
+            off_line((doc.lines[1].x1, doc.lines[1].y1))
+        );
+    }
+
     /// #189: constraining a line endpoint onto the sketch's X axis pins that point to `v = 0`,
     /// and onto the Y axis pins it to `u = 0` — the solver treats the axes as fixed reference
     /// lines through the origin.

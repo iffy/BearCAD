@@ -2655,6 +2655,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::MoveOp(i) => format!("Move operation {i}"),
         SceneElement::RepeatOp(i) => format!("Repeat operation {i}"),
         SceneElement::SliceOp(i) => format!("Slice operation {i}"),
+        SceneElement::Origin => "Origin".to_string(),
     }
 }
 
@@ -9032,6 +9033,40 @@ mod tests {
         assert_eq!(op.outputs.len(), 3);
         let offsets = crate::extrude::repeat_offsets(&state.doc, &op).unwrap();
         assert_eq!(offsets.len(), 3);
+    }
+
+    /// #189: selecting a point and the origin, then applying Coincident, pins the point to the
+    /// origin — the constraint-tool flow the user asked for (not just snapping).
+    #[test]
+    fn selecting_a_point_and_the_origin_constrains_coincident() {
+        use crate::geometric_constraints::GeometricConstraintType;
+        use crate::model::{ConstraintPoint, LineEnd};
+
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state
+            .doc
+            .lines
+            .push(Line::from_local_endpoints(sketch, 5.0, 5.0, 12.0, 8.0));
+        state.doc.shape_order.push(ShapeKind::Line);
+        state.refresh_document_health();
+
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Point(ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::Start }),
+            additive: false,
+        });
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Origin,
+            additive: true,
+        });
+        let result = state.apply(Action::AddGeometricConstraint(GeometricConstraintType::Coincident));
+        assert!(matches!(result, ActionResult::Ok), "{}", state.status);
+        assert!(
+            state.doc.lines[0].x0.abs() < 1e-3 && state.doc.lines[0].y0.abs() < 1e-3,
+            "start should be pinned to the origin, got ({}, {})",
+            state.doc.lines[0].x0,
+            state.doc.lines[0].y0
+        );
     }
 
     /// #198: with a circle drawn on a body face, selecting the circle's center and one of the

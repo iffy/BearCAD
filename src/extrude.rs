@@ -1477,6 +1477,7 @@ pub fn selection_world_bounds(
             | SceneElement::ConstructionPlane(_)
             | SceneElement::Constraint(_)
             | SceneElement::FaceEdge(_)
+            | SceneElement::Origin
             | SceneElement::Image(_) => {}
         }
     }

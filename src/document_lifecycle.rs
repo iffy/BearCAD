@@ -47,6 +47,8 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         SceneElement::Extrusion(index) => extrusion_alive(doc, index),
         SceneElement::Body(index) => body_alive(doc, index),
         SceneElement::FaceEdge(line) => constraint_line_alive(doc, &line),
+        // The origin always exists (#189).
+        SceneElement::Origin => true,
         // Geometry-keyed 3D sub-elements (#156): alive as long as their body is (an exact
         // edge/vertex existence check would need a mesh rebuild; a stale selection is
         // harmless because it simply stops matching anything).
@@ -181,6 +183,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         }
         // Fixed by the body's own geometry — deleting it is a no-op, same as `FaceVertex`.
         SceneElement::FaceEdge(_)
+        | SceneElement::Origin
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. } => {}
         SceneElement::RepeatOp(index) => {

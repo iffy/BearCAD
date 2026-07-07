@@ -761,14 +761,43 @@ impl ViewportScene {
         // otherwise no point to aim at, so users couldn't tell the origin was selectable.
         if let Some(session) = input.sketch_session {
             if let Some(frame) = sketch_geometry_frame(input.doc, session.sketch) {
-                mesh.push_point_marker(
-                    frame.origin,
-                    WIREFRAME_LINE_COLOR,
-                    5.0,
-                    input.cam,
-                    input.viewport,
-                    &vp,
-                );
+                // Highlight (bigger, in the selection color) when the origin is selected (#189).
+                let selected = input.selection.is_selected(SceneElement::Origin);
+                let (color, size) = if selected {
+                    (input.palette.dim_edge_highlight, 8.0)
+                } else {
+                    (WIREFRAME_LINE_COLOR, 5.0)
+                };
+                mesh.push_point_marker(frame.origin, color, size, input.cam, input.viewport, &vp);
+
+                // A selected origin axis highlights along its direction (#189) — push_selection
+                // can't draw it (it lacks the sketch frame), so it's handled here. The half-length
+                // tracks the visible viewport (scaled by zoom) so the highlight always spans the
+                // view without using an absolute extent large enough to fall outside clip space.
+                use crate::model::{ConstraintLine, SketchAxis};
+                let aspect =
+                    (input.viewport.width() / input.viewport.height().max(1.0)).max(0.01);
+                let (half_w, half_h) = input.cam.viewport_half_extents(aspect);
+                let axis_hl = half_w.hypot(half_h) * 2.5;
+                for (axis, dir) in [
+                    (SketchAxis::X, frame.u_axis),
+                    (SketchAxis::Y, frame.v_axis),
+                ] {
+                    if input
+                        .selection
+                        .is_selected(SceneElement::FaceEdge(ConstraintLine::OriginAxis(axis)))
+                    {
+                        mesh.push_line_segment(
+                            frame.origin - dir * axis_hl,
+                            frame.origin + dir * axis_hl,
+                            input.palette.dim_edge_highlight,
+                            3.0,
+                            input.cam,
+                            input.viewport,
+                            &vp,
+                        );
+                    }
+                }
             }
         }
 
@@ -2446,6 +2475,7 @@ impl<'a> SceneMesh<'a> {
                 );
             }
             SceneElement::FaceEdge(_)
+            | SceneElement::Origin
             | SceneElement::Image(_)
             | SceneElement::BooleanOp(_)
             | SceneElement::MoveOp(_)

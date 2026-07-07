@@ -6101,6 +6101,19 @@ fn handle_vertex_drag(
                 });
                 return true;
             }
+            // The origin is a fixed, selectable point (#189) — no drag. Only when no real
+            // vertex is nearer (that pick returned above), so a coincident vertex still wins.
+            if let Some(frame) = sketch_geometry_frame(&state.doc, session.sketch) {
+                let near_origin = project(frame.origin)
+                    .is_some_and(|op| (op - pp).length() <= construction::POINT_PICK_RADIUS_PX);
+                if near_origin {
+                    state.apply(Action::ClickSceneElement {
+                        element: SceneElement::Origin,
+                        additive: ui.input(|i| additive_click_modifiers(&i.modifiers)),
+                    });
+                    return true;
+                }
+            }
         }
     }
 

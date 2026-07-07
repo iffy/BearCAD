@@ -75,21 +75,37 @@ Both are fixed by the body's own geometry — not draggable or settable — but 
 Picking (interactive or scripted) is scoped to the *sketch's own face* only, not arbitrary other
 faces in the scene; imported STL/STEP bodies have no analytic boundary to reference here.
 
-## Selecting the origin axes
+## Selecting the origin and its axes
 
-Every sketch has two in-plane axes through its origin — the X axis (`v = 0`) and the Y axis
-(`u = 0`). Select one to constrain a point onto it (which pins that coordinate to 0):
+The origin and the two in-plane axes through it — the X axis (`v = 0`) and the Y axis
+(`u = 0`) — are selectable. Select an axis to constrain a point onto it (which pins that
+coordinate to 0), or select the origin to pin a point directly to it:
 
 ```lua
 bearcad.line{ x = 5, y = 5, x1 = 12, y1 = 8 }
 bearcad.select{ kind = "line", index = 0, ["end"] = "start" }
 bearcad.select({ kind = "axis", axis = "x" }, true)   -- add the X axis
 bearcad.add_geometric_constraint("coincident")         -- start point now sits on the X axis
+
+bearcad.select{ kind = "line", index = 0, ["end"] = "end" }
+bearcad.select({ kind = "origin" }, true)              -- add the origin
+bearcad.add_geometric_constraint("coincident")         -- end point now sits on the origin
 ```
 
-Interactively, dragging a point near an axis snaps it on; leaving it there adds the same
-point-on-axis constraint. The origin itself snaps as a vertex (a coincidence to the sketch
-origin).
+Interactively, dragging a point near an axis or the origin snaps it on; leaving it there adds
+the same constraint. In the constraint tool you can also click the origin marker or an axis
+directly — both highlight when selected.
+
+## Making two lines collinear
+
+Select two lines and apply `Coincident` to make them collinear (each line's endpoints are held
+on the other's carrier):
+
+```lua
+bearcad.select{ kind = "line", index = 0 }
+bearcad.select({ kind = "line", index = 1 }, true)
+bearcad.add_geometric_constraint("coincident")         -- the two lines are now collinear
+```
 
 ## Additive selection
 

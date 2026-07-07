@@ -1036,6 +1036,11 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        SceneElement::Origin => ElementScriptTokens {
+            kind: "origin",
+            index: 0,
+            point: None,
+        },
     }
 }
 
