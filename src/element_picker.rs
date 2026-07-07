@@ -1,0 +1,598 @@
+//! A reusable element-picker control (#213): the single, consistent way every tool gathers
+//! the scene elements it operates on.
+//!
+//! Historically each tool grew its own bespoke selection state (`creating_boolean.a`,
+//! `creating_loft.sections`, the Chamfer/Fillet edge set, the constraint tool reading
+//! `scene_selection` directly, …) with subtly different click, limit, and highlight rules.
+//! [`ElementPicker`] replaces all of that with one configurable control:
+//!
+//! - it accepts a configurable **subset of element kinds** (planes, lines, bodies, operations,
+//!   …), and can further restrict the [`OperationKind`]s it will take;
+//! - it enforces a **pick limit** (a whole number, or [`PickLimit::Infinite`]);
+//! - it renders like a focusable combo-box input with a "no selection" placeholder, a collapsed
+//!   `N ⟨icon⟩` summary per kind, and an expandable popup with a remove button per row (the
+//!   rendering lives in the context pane; this module is the state + rules it drives);
+//! - it carries a **selected-highlight color** that defaults to the theme's selection color but
+//!   can be overridden per picker (e.g. the Slice tool paints its cutters red).
+//!
+//! This module is deliberately free of egui widget code so the pick/limit/filter rules can be
+//! unit-tested in isolation; only the small [`Color32`]/[`IconId`] value types are borrowed.
+
+#![allow(dead_code)]
+
+use crate::hierarchy::SceneElement;
+use crate::icons::IconId;
+use eframe::egui::Color32;
+
+/// A user-facing category of selectable scene element. Every [`SceneElement`] maps to exactly
+/// one kind (see [`ElementKind::of`]); a picker accepts a configurable subset of kinds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ElementKind {
+    /// A construction plane (or, for now, a tracing image sitting on one).
+    Plane,
+    Sketch,
+    /// A straight sketch segment.
+    Line,
+    Circle,
+    /// A point: a sketch/constraint point, a body corner, or the origin.
+    Vertex,
+    /// An edge of a body/face boundary (as opposed to a free sketch [`Line`](ElementKind::Line)).
+    Edge,
+    Constraint,
+    /// A solid body.
+    Body,
+    Image,
+    /// A history operation (extrude, boolean, move, repeat, slice, revolve). Restrict which ones
+    /// with [`ElementFilter::operations`].
+    Operation,
+}
+
+impl ElementKind {
+    /// Kinds in the canonical order used for filter membership and the collapsed summary, so a
+    /// picker accepting several kinds always renders them in the same, stable order.
+    pub const ORDER: [ElementKind; 9] = [
+        ElementKind::Plane,
+        ElementKind::Sketch,
+        ElementKind::Line,
+        ElementKind::Circle,
+        ElementKind::Vertex,
+        ElementKind::Edge,
+        ElementKind::Constraint,
+        ElementKind::Body,
+        ElementKind::Operation,
+    ];
+
+    /// The kind an element belongs to. Total: every [`SceneElement`] has exactly one kind.
+    pub fn of(element: &SceneElement) -> ElementKind {
+        match element {
+            SceneElement::ConstructionPlane(_) => ElementKind::Plane,
+            SceneElement::Image(_) => ElementKind::Image,
+            SceneElement::Sketch(_) => ElementKind::Sketch,
+            SceneElement::Line(_) => ElementKind::Line,
+            SceneElement::Circle(_) => ElementKind::Circle,
+            SceneElement::Point(_) | SceneElement::BodyVertex { .. } | SceneElement::Origin => {
+                ElementKind::Vertex
+            }
+            SceneElement::FaceEdge(_) | SceneElement::BodyEdge { .. } => ElementKind::Edge,
+            SceneElement::Constraint(_) => ElementKind::Constraint,
+            SceneElement::Body(_) => ElementKind::Body,
+            SceneElement::Extrusion(_)
+            | SceneElement::BooleanOp(_)
+            | SceneElement::MoveOp(_)
+            | SceneElement::RepeatOp(_)
+            | SceneElement::SliceOp(_)
+            | SceneElement::Revolution(_) => ElementKind::Operation,
+        }
+    }
+
+    /// A representative icon for a collapsed summary chip of this kind.
+    pub fn icon(self) -> IconId {
+        match self {
+            ElementKind::Plane => IconId::Plane,
+            ElementKind::Image => IconId::Plane,
+            ElementKind::Sketch => IconId::Sketch,
+            ElementKind::Line => IconId::Line,
+            ElementKind::Circle => IconId::Circle,
+            // No dedicated point glyph; the coincident icon reads as "a point".
+            ElementKind::Vertex => IconId::Coincident,
+            ElementKind::Edge => IconId::Line,
+            ElementKind::Constraint => IconId::Constraint,
+            ElementKind::Body => IconId::Body,
+            ElementKind::Operation => IconId::Gear,
+        }
+    }
+
+    /// A short human label for hints and tooltips.
+    pub fn label(self) -> &'static str {
+        match self {
+            ElementKind::Plane => "plane",
+            ElementKind::Image => "image",
+            ElementKind::Sketch => "sketch",
+            ElementKind::Line => "line",
+            ElementKind::Circle => "circle",
+            ElementKind::Vertex => "vertex",
+            ElementKind::Edge => "edge",
+            ElementKind::Constraint => "constraint",
+            ElementKind::Body => "body",
+            ElementKind::Operation => "operation",
+        }
+    }
+}
+
+/// A history-operation sub-kind, so a picker can accept e.g. only bodies produced by a boolean
+/// while rejecting move/repeat operations (the user's "limit it to selecting only certain
+/// operations").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum OperationKind {
+    Extrude,
+    Boolean,
+    Move,
+    Repeat,
+    Slice,
+    Revolution,
+}
+
+impl OperationKind {
+    /// The operation sub-kind of an element, or `None` if the element is not an operation.
+    pub fn of(element: &SceneElement) -> Option<OperationKind> {
+        Some(match element {
+            SceneElement::Extrusion(_) => OperationKind::Extrude,
+            SceneElement::BooleanOp(_) => OperationKind::Boolean,
+            SceneElement::MoveOp(_) => OperationKind::Move,
+            SceneElement::RepeatOp(_) => OperationKind::Repeat,
+            SceneElement::SliceOp(_) => OperationKind::Slice,
+            SceneElement::Revolution(_) => OperationKind::Revolution,
+            _ => return None,
+        })
+    }
+}
+
+/// Which elements a picker will accept.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ElementFilter {
+    /// Accept every kind and every operation. The Select tool's "select everything" picker.
+    everything: bool,
+    /// Accepted kinds (ignored when `everything`). Ordered per [`ElementKind::ORDER`].
+    kinds: Vec<ElementKind>,
+    /// When `Some`, an [`ElementKind::Operation`] element is accepted only if its
+    /// [`OperationKind`] is listed. `None` accepts every operation (subject to `kinds`).
+    operations: Option<Vec<OperationKind>>,
+}
+
+impl ElementFilter {
+    /// Accept anything selectable — used by the Select tool.
+    pub fn everything() -> ElementFilter {
+        ElementFilter {
+            everything: true,
+            kinds: Vec::new(),
+            operations: None,
+        }
+    }
+
+    /// Accept exactly the given kinds (deduplicated, canonically ordered).
+    pub fn kinds(kinds: &[ElementKind]) -> ElementFilter {
+        let mut ordered = Vec::new();
+        for &k in ElementKind::ORDER.iter() {
+            if kinds.contains(&k) {
+                ordered.push(k);
+            }
+        }
+        // Image shares the Plane row in ORDER; accept it explicitly when Plane is requested so a
+        // "planes" picker also takes tracing images sitting on a plane.
+        ElementFilter {
+            everything: false,
+            kinds: ordered,
+            operations: None,
+        }
+    }
+
+    /// A single-kind filter (the common case, e.g. "bodies only").
+    pub fn kind(kind: ElementKind) -> ElementFilter {
+        ElementFilter::kinds(&[kind])
+    }
+
+    /// Restrict accepted operations to the given sub-kinds. Implies [`ElementKind::Operation`].
+    pub fn operations(mut self, ops: &[OperationKind]) -> ElementFilter {
+        if !self.everything && !self.kinds.contains(&ElementKind::Operation) {
+            self.kinds.push(ElementKind::Operation);
+        }
+        self.operations = Some(ops.to_vec());
+        self
+    }
+
+    /// Whether a whole kind is (potentially) acceptable — drives hover styling of every element
+    /// of that category while the picker is focused.
+    pub fn accepts_kind(&self, kind: ElementKind) -> bool {
+        if self.everything {
+            return true;
+        }
+        // Image is accepted wherever Plane is (see `kinds`).
+        self.kinds.contains(&kind) || (kind == ElementKind::Image && self.kinds.contains(&ElementKind::Plane))
+    }
+
+    /// Whether a specific element is acceptable, honoring the operation restriction.
+    pub fn accepts(&self, element: &SceneElement) -> bool {
+        if self.everything {
+            return true;
+        }
+        let kind = ElementKind::of(element);
+        if !self.accepts_kind(kind) {
+            return false;
+        }
+        if kind == ElementKind::Operation {
+            if let Some(allowed) = &self.operations {
+                return OperationKind::of(element).is_some_and(|op| allowed.contains(&op));
+            }
+        }
+        true
+    }
+}
+
+/// How many elements a picker will hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickLimit {
+    /// At most `n` elements. `Finite(1)` is single-select: a new pick replaces the current one.
+    Finite(usize),
+    /// No cap.
+    Infinite,
+}
+
+impl PickLimit {
+    /// Whether one more element could be added when `current` are already picked.
+    pub fn has_room(self, current: usize) -> bool {
+        match self {
+            PickLimit::Finite(n) => current < n,
+            PickLimit::Infinite => true,
+        }
+    }
+
+    /// Single-select pickers replace rather than reject on a new pick.
+    pub fn is_single(self) -> bool {
+        matches!(self, PickLimit::Finite(1))
+    }
+}
+
+/// What happened when an element was offered to a picker via [`ElementPicker::pick`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickOutcome {
+    /// Newly added to the set.
+    Added,
+    /// Already present, so the click toggled it off.
+    Removed,
+    /// The picker replaced its single held element (a `Finite(1)` picker).
+    Replaced,
+    /// Rejected: wrong kind/operation for this picker's filter.
+    NotAccepted,
+    /// Rejected: the set is already at its (multi-element) limit.
+    Full,
+}
+
+/// A configurable, focusable element-selection control. Holds both the configuration (filter,
+/// limit, placeholder, highlight color, focus stickiness) and the live picked set + focus state.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ElementPicker {
+    filter: ElementFilter,
+    limit: PickLimit,
+    /// Shown, greyed, when the picker is empty ("no selection").
+    placeholder: String,
+    /// Overrides the theme selection color for this picker's highlights (e.g. Slice cutters red).
+    selected_color: Option<Color32>,
+    /// The Select tool's picker is always focused and cannot lose focus; `set_focused(false)` is
+    /// a no-op for it.
+    sticky_focus: bool,
+
+    /// Picked elements in click order (stable for the popup rows and remove-by-index).
+    picked: Vec<SceneElement>,
+    focused: bool,
+}
+
+impl ElementPicker {
+    /// A picker with the given filter and limit, unfocused, empty, default highlight color.
+    pub fn new(filter: ElementFilter, limit: PickLimit) -> ElementPicker {
+        ElementPicker {
+            filter,
+            limit,
+            placeholder: "No selection".to_string(),
+            selected_color: None,
+            sticky_focus: false,
+            picked: Vec::new(),
+            focused: false,
+        }
+    }
+
+    /// The Select tool's picker: accepts everything, unbounded, and permanently focused.
+    pub fn select_everything() -> ElementPicker {
+        let mut picker = ElementPicker::new(ElementFilter::everything(), PickLimit::Infinite);
+        picker.sticky_focus = true;
+        picker.focused = true;
+        picker.placeholder = "Nothing selected".to_string();
+        picker
+    }
+
+    // ---- builders -------------------------------------------------------------------------
+
+    pub fn with_placeholder(mut self, placeholder: impl Into<String>) -> ElementPicker {
+        self.placeholder = placeholder.into();
+        self
+    }
+
+    pub fn with_selected_color(mut self, color: Color32) -> ElementPicker {
+        self.selected_color = Some(color);
+        self
+    }
+
+    // ---- configuration accessors ----------------------------------------------------------
+
+    pub fn filter(&self) -> &ElementFilter {
+        &self.filter
+    }
+
+    pub fn limit(&self) -> PickLimit {
+        self.limit
+    }
+
+    pub fn placeholder(&self) -> &str {
+        &self.placeholder
+    }
+
+    /// The highlight color for this picker's selected elements, resolving the per-picker override
+    /// against the caller-supplied theme default.
+    pub fn selected_color(&self, default: Color32) -> Color32 {
+        self.selected_color.unwrap_or(default)
+    }
+
+    /// Whether this element is one this picker would accept (delegates to the filter).
+    pub fn accepts(&self, element: &SceneElement) -> bool {
+        self.filter.accepts(element)
+    }
+
+    // ---- focus ----------------------------------------------------------------------------
+
+    pub fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    /// Focus or blur the picker. A sticky (Select-tool) picker ignores blur requests.
+    pub fn set_focused(&mut self, focused: bool) {
+        if self.sticky_focus {
+            self.focused = true;
+        } else {
+            self.focused = focused;
+        }
+    }
+
+    pub fn has_sticky_focus(&self) -> bool {
+        self.sticky_focus
+    }
+
+    // ---- picked set -----------------------------------------------------------------------
+
+    pub fn picked(&self) -> &[SceneElement] {
+        &self.picked
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &SceneElement> {
+        self.picked.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.picked.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.picked.is_empty()
+    }
+
+    pub fn contains(&self, element: &SceneElement) -> bool {
+        self.picked.contains(element)
+    }
+
+    /// Whether the set is at its limit (a `Finite` limit that's reached; never for `Infinite`).
+    pub fn is_full(&self) -> bool {
+        !self.limit.has_room(self.picked.len())
+    }
+
+    /// Offer an element to the picker. Toggles off if already present; otherwise adds it when the
+    /// filter accepts it and there is room, replacing the sole element for a single-select picker.
+    pub fn pick(&mut self, element: SceneElement) -> PickOutcome {
+        if let Some(pos) = self.picked.iter().position(|e| e == &element) {
+            self.picked.remove(pos);
+            return PickOutcome::Removed;
+        }
+        if !self.filter.accepts(&element) {
+            return PickOutcome::NotAccepted;
+        }
+        if self.is_full() {
+            if self.limit.is_single() {
+                self.picked.clear();
+                self.picked.push(element);
+                return PickOutcome::Replaced;
+            }
+            return PickOutcome::Full;
+        }
+        self.picked.push(element);
+        PickOutcome::Added
+    }
+
+    /// Remove a specific element if present; returns whether it was there.
+    pub fn remove(&mut self, element: &SceneElement) -> bool {
+        if let Some(pos) = self.picked.iter().position(|e| e == element) {
+            self.picked.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Remove the element at a popup-row index (the popup builds rows from [`picked`]).
+    pub fn remove_index(&mut self, index: usize) -> Option<SceneElement> {
+        (index < self.picked.len()).then(|| self.picked.remove(index))
+    }
+
+    pub fn clear(&mut self) {
+        self.picked.clear();
+    }
+
+    /// Replace the whole picked set (e.g. re-syncing an edit session from a committed operation).
+    /// Elements the filter rejects are dropped, and the limit is honored.
+    pub fn set_picked(&mut self, elements: impl IntoIterator<Item = SceneElement>) {
+        self.picked.clear();
+        for element in elements {
+            if self.is_full() {
+                break;
+            }
+            if self.filter.accepts(&element) && !self.picked.contains(&element) {
+                self.picked.push(element);
+            }
+        }
+    }
+
+    /// The collapsed summary: one `(icon, count)` chip per present kind, in canonical kind order.
+    /// This is what the un-expanded control shows, e.g. `2 ⟨line⟩  1 ⟨body⟩`.
+    pub fn summary(&self) -> Vec<(IconId, usize)> {
+        let mut chips = Vec::new();
+        for &kind in ElementKind::ORDER.iter() {
+            let count = self
+                .picked
+                .iter()
+                .filter(|e| ElementKind::of(e) == kind)
+                .count();
+            if count > 0 {
+                chips.push((kind.icon(), count));
+            }
+        }
+        chips
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn body(i: usize) -> SceneElement {
+        SceneElement::Body(i)
+    }
+    fn line(i: usize) -> SceneElement {
+        SceneElement::Line(i)
+    }
+
+    #[test]
+    fn kind_of_covers_operations_and_geometry() {
+        assert_eq!(ElementKind::of(&SceneElement::Body(0)), ElementKind::Body);
+        assert_eq!(ElementKind::of(&SceneElement::Line(0)), ElementKind::Line);
+        assert_eq!(ElementKind::of(&SceneElement::Origin), ElementKind::Vertex);
+        assert_eq!(
+            ElementKind::of(&SceneElement::BooleanOp(0)),
+            ElementKind::Operation
+        );
+        assert_eq!(
+            ElementKind::of(&SceneElement::ConstructionPlane(0)),
+            ElementKind::Plane
+        );
+    }
+
+    #[test]
+    fn everything_filter_accepts_all() {
+        let f = ElementFilter::everything();
+        assert!(f.accepts(&body(0)));
+        assert!(f.accepts(&SceneElement::Origin));
+        assert!(f.accepts(&SceneElement::MoveOp(3)));
+        assert!(f.accepts_kind(ElementKind::Constraint));
+    }
+
+    #[test]
+    fn kind_filter_rejects_other_kinds() {
+        let f = ElementFilter::kind(ElementKind::Body);
+        assert!(f.accepts(&body(0)));
+        assert!(!f.accepts(&line(0)));
+        assert!(!f.accepts_kind(ElementKind::Line));
+    }
+
+    #[test]
+    fn plane_filter_also_accepts_images() {
+        let f = ElementFilter::kind(ElementKind::Plane);
+        assert!(f.accepts(&SceneElement::ConstructionPlane(0)));
+        assert!(f.accepts(&SceneElement::Image(0)));
+    }
+
+    #[test]
+    fn operation_restriction_filters_by_sub_kind() {
+        let f = ElementFilter::kinds(&[ElementKind::Body])
+            .operations(&[OperationKind::Boolean, OperationKind::Slice]);
+        assert!(f.accepts(&SceneElement::BooleanOp(0)));
+        assert!(f.accepts(&SceneElement::SliceOp(0)));
+        assert!(!f.accepts(&SceneElement::MoveOp(0)));
+        // Body still accepted alongside the operations.
+        assert!(f.accepts(&body(0)));
+    }
+
+    #[test]
+    fn pick_toggles_and_respects_kind() {
+        let mut p = ElementPicker::new(ElementFilter::kind(ElementKind::Body), PickLimit::Infinite);
+        assert_eq!(p.pick(body(0)), PickOutcome::Added);
+        assert_eq!(p.pick(line(0)), PickOutcome::NotAccepted);
+        assert_eq!(p.pick(body(1)), PickOutcome::Added);
+        assert_eq!(p.len(), 2);
+        assert_eq!(p.pick(body(0)), PickOutcome::Removed);
+        assert_eq!(p.len(), 1);
+        assert!(p.contains(&body(1)));
+    }
+
+    #[test]
+    fn finite_limit_blocks_when_full() {
+        let mut p = ElementPicker::new(ElementFilter::everything(), PickLimit::Finite(2));
+        assert_eq!(p.pick(body(0)), PickOutcome::Added);
+        assert_eq!(p.pick(body(1)), PickOutcome::Added);
+        assert!(p.is_full());
+        assert_eq!(p.pick(body(2)), PickOutcome::Full);
+        assert_eq!(p.len(), 2);
+    }
+
+    #[test]
+    fn single_select_replaces() {
+        let mut p = ElementPicker::new(ElementFilter::everything(), PickLimit::Finite(1));
+        assert_eq!(p.pick(body(0)), PickOutcome::Added);
+        assert_eq!(p.pick(body(1)), PickOutcome::Replaced);
+        assert_eq!(p.picked(), &[body(1)]);
+    }
+
+    #[test]
+    fn select_everything_picker_is_stuck_focused() {
+        let mut p = ElementPicker::select_everything();
+        assert!(p.is_focused());
+        p.set_focused(false);
+        assert!(p.is_focused(), "select-tool picker must not lose focus");
+        assert!(p.accepts(&SceneElement::Sketch(0)));
+    }
+
+    #[test]
+    fn summary_groups_by_kind_in_canonical_order() {
+        let mut p = ElementPicker::new(ElementFilter::everything(), PickLimit::Infinite);
+        p.pick(body(0));
+        p.pick(line(0));
+        p.pick(line(1));
+        // Canonical order puts lines before bodies.
+        let summary = p.summary();
+        assert_eq!(summary.len(), 2);
+        assert_eq!(summary[0].1, 2, "two lines first");
+        assert_eq!(summary[1].1, 1, "one body second");
+    }
+
+    #[test]
+    fn selected_color_override_wins() {
+        let default = Color32::from_rgb(1, 2, 3);
+        let red = Color32::from_rgb(200, 0, 0);
+        let plain = ElementPicker::new(ElementFilter::everything(), PickLimit::Infinite);
+        assert_eq!(plain.selected_color(default), default);
+        let cutters = ElementPicker::new(ElementFilter::everything(), PickLimit::Infinite)
+            .with_selected_color(red);
+        assert_eq!(cutters.selected_color(default), red);
+    }
+
+    #[test]
+    fn set_picked_drops_rejected_and_honors_limit() {
+        let mut p = ElementPicker::new(ElementFilter::kind(ElementKind::Body), PickLimit::Finite(2));
+        p.set_picked([body(0), line(0), body(1), body(2)]);
+        assert_eq!(p.picked(), &[body(0), body(1)]);
+    }
+}

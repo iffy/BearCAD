@@ -31,6 +31,7 @@ mod construction;
 mod dimensions;
 mod drawing;
 mod document_health;
+mod element_picker;
 mod document_lifecycle;
 mod expression_input;
 mod extrude;
