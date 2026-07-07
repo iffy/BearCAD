@@ -143,6 +143,14 @@ fn run_command(
     } else {
         serde_json::from_str(args_json).map_err(|e| format!("bad arguments: {e}"))?
     };
+
+    // `parameter(action, ...)` has an action-dependent positional shape, so it's handled
+    // before the generic positional adaptor. `add`/`from_line_length` are actions; `get`/
+    // `get_expression` are reads.
+    if name == "parameter" {
+        return run_parameter(&args, runner, state, synthetic, viewport, ctx);
+    }
+
     // Positional calls arrive as `{ "__args": [...] }`; map them to named arguments.
     if let Some(arr) = args.get("__args").and_then(Value::as_array).cloned() {
         args = script_json::positional_to_named(name, &arr)?;
@@ -246,6 +254,88 @@ fn exec(
     match runner.last_action_error.take() {
         Some(e) => Err(e),
         None => Ok(()),
+    }
+}
+
+/// `bearcad.parameter(action, ...)`: `add`/`from_line_length` are actions; `get`/
+/// `get_expression` read the document. Mirrors the desktop `parameter` closure.
+fn run_parameter(
+    args: &Value,
+    runner: &mut ScriptRunner,
+    state: &mut AppState,
+    synthetic: &mut SyntheticInput,
+    viewport: Option<egui::Rect>,
+    ctx: &egui::Context,
+) -> Result<Value, String> {
+    let a = args.get("__args").and_then(Value::as_array).cloned().unwrap_or_default();
+    let action = a.first().and_then(Value::as_str).ok_or("parameter requires an action")?;
+    match action {
+        "add" => {
+            let name = a
+                .get(1)
+                .and_then(Value::as_str)
+                .ok_or("parameter add requires a name")?
+                .to_string();
+            let expression = a
+                .get(2)
+                .and_then(value_to_string)
+                .ok_or("parameter add requires an expression")?;
+            exec(
+                runner,
+                Instruction::AddParameter { name, expression },
+                state,
+                synthetic,
+                viewport,
+                ctx,
+            )?;
+            Ok(Value::Null)
+        }
+        "from_line_length" => {
+            let line_index = a
+                .get(1)
+                .and_then(Value::as_u64)
+                .ok_or("parameter from_line_length requires a line index")? as usize;
+            let name = a.get(2).and_then(Value::as_str).map(str::to_string);
+            exec(
+                runner,
+                Instruction::CreateParameterFromLineLength { line_index, name },
+                state,
+                synthetic,
+                viewport,
+                ctx,
+            )?;
+            Ok(Value::Null)
+        }
+        "get" | "get_expression" => {
+            let name = a
+                .get(1)
+                .and_then(Value::as_str)
+                .ok_or("parameter get requires a parameter name")?;
+            let Some(param) = state.doc.parameters.iter().find(|p| !p.deleted && p.name == name)
+            else {
+                return Ok(Value::Null);
+            };
+            if action == "get_expression" {
+                return Ok(json!(param.expression));
+            }
+            Ok(
+                match crate::value::eval_parameter_in_doc(&param.expression, &state.doc) {
+                    Some(crate::value::EvaluatedParameter::LengthMm(v))
+                    | Some(crate::value::EvaluatedParameter::AngleRad(v)) => json!(v),
+                    None => Value::Null,
+                },
+            )
+        }
+        other => Err(format!("unknown parameter action '{other}'")),
+    }
+}
+
+/// An expression `Value` (string or number) as a string, for a parameter's expression.
+fn value_to_string(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
     }
 }
 
