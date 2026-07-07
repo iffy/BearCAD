@@ -21,7 +21,8 @@ use crate::geometric_constraints::GeometricConstraintType;
 use crate::hierarchy::{HierarchyViewMode, SceneElement};
 use crate::model::{
     BooleanOp, BooleanOpKind, ConstraintKind, ConstraintPoint, DistanceTarget, Document,
-    DrawingOrientation, ExtrudeFace, ExtrudeTarget, FaceId, LineEnd, RepeatMode, RevolveAxis,
+    DrawingOrientation, ExtrudeFace, ExtrudeTarget, ExtrusionEdgeRef, FaceId, LineEnd, RepeatMode,
+    RevolveAxis, VertexTreatmentKind,
 };
 use crate::script::Instruction;
 use crate::view_cube::{CubeCornerId, CubeEdgeId};
@@ -442,6 +443,39 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
         "clear_selection" => Ok(Instruction::ClearSceneSelection),
         "delete_selection" => Ok(Instruction::DeleteSelection),
 
+        // ----- Chamfer/fillet a sketch vertex (#37/#38) or an extrusion's 3D edge (#77). -----
+        "chamfer_vertex" | "fillet_vertex" => {
+            let point = constraint_point_from_json(
+                o.get("point").ok_or_else(|| format!("{name} requires a `point`"))?,
+            )?;
+            let (kind, amount_key) = if name == "chamfer_vertex" {
+                (VertexTreatmentKind::Chamfer, "distance")
+            } else {
+                (VertexTreatmentKind::Fillet, "radius")
+            };
+            Ok(Instruction::VertexTreatment {
+                point,
+                kind,
+                amount: req_f32(o, amount_key, name)?,
+            })
+        }
+        "chamfer_edge" | "fillet_edge" => {
+            let edge = extrusion_edge_from_json(
+                o.get("edge").ok_or_else(|| format!("{name} requires an `edge`"))?,
+            )?;
+            let (kind, amount_key) = if name == "chamfer_edge" {
+                (VertexTreatmentKind::Chamfer, "distance")
+            } else {
+                (VertexTreatmentKind::Fillet, "radius")
+            };
+            Ok(Instruction::EdgeTreatment {
+                extrusion: req_usize(o, "extrusion", name)?,
+                edge,
+                kind,
+                amount: req_f32(o, amount_key, name)?,
+            })
+        }
+
         // ----- Camera / view navigation (the `bearcad.ui.*` verbs). -----
         "orbit" => Ok(Instruction::Orbit {
             dx: req_f32(o, "dx", "orbit")?,
@@ -807,6 +841,30 @@ fn constraint_point_from_json(v: &Value) -> Result<ConstraintPoint, String> {
         }
         "circle" => Ok(ConstraintPoint::CircleCenter(index)),
         other => Err(format!("unknown point parent '{other}'")),
+    }
+}
+
+/// An `ExtrusionEdgeRef` from an `edge = {...}` object (mirrors `parse_extrusion_edge_table`):
+/// `{kind="vertical", face, edge}` or `{kind="cap", face, edge, top?}`.
+fn extrusion_edge_from_json(v: &Value) -> Result<ExtrusionEdgeRef, String> {
+    let t = v.as_object().ok_or("edge spec must be an object")?;
+    let kind = t
+        .get("kind")
+        .or_else(|| t.get("type"))
+        .and_then(Value::as_str)
+        .ok_or("edge spec requires a string `kind`")?;
+    let face = req_usize(t, "face", "edge")?;
+    let edge = req_usize(t, "edge", "edge")?;
+    match kind.to_ascii_lowercase().as_str() {
+        "vertical" => Ok(ExtrusionEdgeRef::Vertical { face, edge }),
+        "cap" => Ok(ExtrusionEdgeRef::Cap {
+            face,
+            edge,
+            top: opt_bool(t, "top")?.unwrap_or(false),
+        }),
+        other => Err(format!(
+            "unknown extrusion edge kind '{other}' (expected 'vertical' or 'cap')"
+        )),
     }
 }
 
@@ -2036,6 +2094,57 @@ mod tests {
             instruction_from_json("fps_advance", &json!({ "seconds": 0.5 })),
             Ok(Instruction::FpsAdvance { seconds: 0.5 })
         );
+    }
+
+    #[test]
+    fn chamfer_and_fillet_verbs() {
+        assert_eq!(
+            instruction_from_json(
+                "chamfer_vertex",
+                &json!({ "point": { "kind": "line", "index": 0, "end": "start" }, "distance": 2 })
+            ),
+            Ok(Instruction::VertexTreatment {
+                point: ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::Start },
+                kind: VertexTreatmentKind::Chamfer,
+                amount: 2.0,
+            })
+        );
+        assert_eq!(
+            instruction_from_json(
+                "fillet_vertex",
+                &json!({ "point": { "kind": "circle", "index": 1 }, "radius": 3 })
+            ),
+            Ok(Instruction::VertexTreatment {
+                point: ConstraintPoint::CircleCenter(1),
+                kind: VertexTreatmentKind::Fillet,
+                amount: 3.0,
+            })
+        );
+        assert_eq!(
+            instruction_from_json(
+                "fillet_edge",
+                &json!({ "extrusion": 0, "edge": { "kind": "vertical", "face": 0, "edge": 2 }, "radius": 1.5 })
+            ),
+            Ok(Instruction::EdgeTreatment {
+                extrusion: 0,
+                edge: ExtrusionEdgeRef::Vertical { face: 0, edge: 2 },
+                kind: VertexTreatmentKind::Fillet,
+                amount: 1.5,
+            })
+        );
+        assert_eq!(
+            instruction_from_json(
+                "chamfer_edge",
+                &json!({ "extrusion": 1, "edge": { "kind": "cap", "face": 0, "edge": 3, "top": true }, "distance": 2 })
+            ),
+            Ok(Instruction::EdgeTreatment {
+                extrusion: 1,
+                edge: ExtrusionEdgeRef::Cap { face: 0, edge: 3, top: true },
+                kind: VertexTreatmentKind::Chamfer,
+                amount: 2.0,
+            })
+        );
+        assert!(instruction_from_json("chamfer_vertex", &json!({ "distance": 2 })).is_err());
     }
 
     #[test]
