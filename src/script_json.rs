@@ -18,8 +18,8 @@ use crate::actions::{DimLabelAxis, RectAxis, RevolveBodyChoice};
 use crate::construction::PlaneDim;
 use crate::geometric_constraints::GeometricConstraintType;
 use crate::model::{
-    BooleanOpKind, ConstraintKind, DistanceTarget, Document, ExtrudeFace, FaceId, RepeatMode,
-    RevolveAxis,
+    BooleanOpKind, ConstraintKind, DistanceTarget, Document, DrawingOrientation, ExtrudeFace,
+    FaceId, RepeatMode, RevolveAxis,
 };
 use crate::script::Instruction;
 use serde_json::{json, Map, Value};
@@ -304,8 +304,66 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
         "toggle_construction" => Ok(Instruction::ToggleConstruction),
         "delete_selection" => Ok(Instruction::DeleteSelection),
 
+        // ----- Technical drawings (#180). `drawing` returns the new index on the desktop,
+        // but the Instruction it builds is a pure `CreateDrawing`; the handle return, like
+        // every other element handle, is the caller's job. -----
+        "drawing" => Ok(Instruction::CreateDrawing { name: opt_str(o, "name")? }),
+        "drawing_view" => {
+            let orientation = match opt_str(o, "orientation")? {
+                Some(name) => DrawingOrientation::from_name(&name)
+                    .ok_or_else(|| format!("unknown drawing orientation '{name}'"))?,
+                None => DrawingOrientation::default(),
+            };
+            Ok(Instruction::AddDrawingView {
+                drawing: req_usize(o, "drawing", "drawing_view")?,
+                body: req_usize(o, "body", "drawing_view")?,
+                orientation,
+            })
+        }
+        "export_drawing_svg" => Ok(Instruction::ExportDrawingSvg {
+            drawing: req_usize(o, "drawing", "export_drawing_svg")?,
+            path: req_str(o, "path", "export_drawing_svg")?,
+        }),
+        "drawing_dimension" => Ok(Instruction::ToggleDrawingDimension {
+            drawing: req_usize(o, "drawing", "drawing_dimension")?,
+            view: req_usize(o, "view", "drawing_dimension")?,
+            a: xyz(o, "a")?,
+            b: xyz(o, "b")?,
+        }),
+        "drawing_angle" => {
+            let edge = |key: &str| -> Result<((f32, f32, f32), (f32, f32, f32)), String> {
+                let t = o
+                    .get(key)
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| format!("drawing_angle `{key}` must be an edge object"))?;
+                Ok((xyz(t, "a")?, xyz(t, "b")?))
+            };
+            Ok(Instruction::ToggleDrawingAngle {
+                drawing: req_usize(o, "drawing", "drawing_angle")?,
+                view: req_usize(o, "view", "drawing_angle")?,
+                edge1: edge("edge1")?,
+                edge2: edge("edge2")?,
+            })
+        }
+
         other => Err(format!("unknown command '{other}'")),
     }
+}
+
+/// A world-space `[x, y, z]` point (drawing dimension/angle endpoints).
+fn xyz(o: &Map<String, Value>, key: &str) -> Result<(f32, f32, f32), String> {
+    let arr = o
+        .get(key)
+        .and_then(Value::as_array)
+        .filter(|a| a.len() == 3)
+        .ok_or_else(|| format!("`{key}` must be a {{x, y, z}} point"))?;
+    let coord = |i: usize| {
+        arr[i]
+            .as_f64()
+            .map(|n| n as f32)
+            .ok_or_else(|| format!("`{key}` point needs numeric x, y, z"))
+    };
+    Ok((coord(0)?, coord(1)?, coord(2)?))
 }
 
 /// A distance-constraint target from a `{ kind, index }` object (mirrors
@@ -1368,6 +1426,79 @@ mod tests {
         assert_eq!(
             instruction_from_json("delete_selection", &json!({})),
             Ok(Instruction::DeleteSelection)
+        );
+    }
+
+    #[test]
+    fn drawing_verbs_map_to_instructions() {
+        assert_eq!(
+            instruction_from_json("drawing", &json!({ "name": "Plate" })),
+            Ok(Instruction::CreateDrawing { name: Some("Plate".into()) })
+        );
+        assert_eq!(
+            instruction_from_json("drawing", &json!({})),
+            Ok(Instruction::CreateDrawing { name: None })
+        );
+        // orientation defaults to Front; "iso" is accepted.
+        assert_eq!(
+            instruction_from_json("drawing_view", &json!({ "drawing": 0, "body": 1 })),
+            Ok(Instruction::AddDrawingView {
+                drawing: 0,
+                body: 1,
+                orientation: DrawingOrientation::Front,
+            })
+        );
+        assert_eq!(
+            instruction_from_json(
+                "drawing_view",
+                &json!({ "drawing": 0, "body": 0, "orientation": "iso" })
+            ),
+            Ok(Instruction::AddDrawingView {
+                drawing: 0,
+                body: 0,
+                orientation: DrawingOrientation::Isometric,
+            })
+        );
+        assert_eq!(
+            instruction_from_json(
+                "export_drawing_svg",
+                &json!({ "drawing": 2, "path": "plate.svg" })
+            ),
+            Ok(Instruction::ExportDrawingSvg { drawing: 2, path: "plate.svg".into() })
+        );
+        assert_eq!(
+            instruction_from_json(
+                "drawing_dimension",
+                &json!({ "drawing": 0, "view": 1, "a": [0, 0, 0], "b": [40, 0, 0] })
+            ),
+            Ok(Instruction::ToggleDrawingDimension {
+                drawing: 0,
+                view: 1,
+                a: (0.0, 0.0, 0.0),
+                b: (40.0, 0.0, 0.0),
+            })
+        );
+        assert_eq!(
+            instruction_from_json(
+                "drawing_angle",
+                &json!({ "drawing": 0, "view": 0,
+                         "edge1": { "a": [0, 0, 0], "b": [40, 0, 0] },
+                         "edge2": { "a": [0, 0, 0], "b": [0, 0, 15] } })
+            ),
+            Ok(Instruction::ToggleDrawingAngle {
+                drawing: 0,
+                view: 0,
+                edge1: ((0.0, 0.0, 0.0), (40.0, 0.0, 0.0)),
+                edge2: ((0.0, 0.0, 0.0), (0.0, 0.0, 15.0)),
+            })
+        );
+        assert!(
+            instruction_from_json("drawing_view", &json!({ "drawing": 0, "body": 0, "orientation": "nope" }))
+                .is_err()
+        );
+        assert!(
+            instruction_from_json("drawing_dimension", &json!({ "drawing": 0, "view": 0, "a": [0, 0], "b": [1, 1, 1] }))
+                .is_err()
         );
     }
 
