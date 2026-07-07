@@ -173,6 +173,16 @@ fn run_command(
         _ => {}
     }
 
+    // GUI input-simulation, semantic-gizmo drags, and path imports assume the native
+    // frame-by-frame runner (or a host filesystem); web Load Script runs a whole script
+    // synchronously in one frame, so these are deliberately unavailable here (#209).
+    if is_native_only_verb(name) {
+        return Err(format!(
+            "'{name}' isn't available in browser scripting (GUI-simulation / import verbs run \
+             only in the desktop app)"
+        ));
+    }
+
     // Positional calls arrive as `{ "__args": [...] }`; map them to named arguments.
     if let Some(arr) = args.get("__args").and_then(Value::as_array).cloned() {
         args = script_json::positional_to_named(name, &arr)?;
@@ -463,6 +473,32 @@ fn parse_visible(v: Option<&Value>) -> Option<bool> {
         },
         _ => None,
     }
+}
+
+/// Verbs that only make sense in the desktop app: synthetic GUI input (which needs the native
+/// frame-by-frame runner to sequence across frames), the frame-pump/screenshot verbs, the
+/// semantic-gizmo drags, and path-based import (#209).
+fn is_native_only_verb(name: &str) -> bool {
+    matches!(
+        name,
+        "move"
+            | "click"
+            | "move_ground"
+            | "click_ground"
+            | "drag"
+            | "right_drag"
+            | "right_drag_pan"
+            | "key"
+            | "keydown"
+            | "keyup"
+            | "type"
+            | "wait"
+            | "wait_ms"
+            | "screenshot"
+            | "drag_vertex"
+            | "drag_line"
+            | "import"
+    )
 }
 
 fn error_json(msg: &str) -> String {

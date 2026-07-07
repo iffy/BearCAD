@@ -65,7 +65,10 @@ bearcad --script examples/rectangle.lua --exit
 
 Both the desktop and browser apps also run a script interactively through **File → Load
 Script…** — pick a `.lua` file and it executes against the current document, reporting completion
-or the error in the status line.
+or the error in the status line. Browser Load Script runs the full modeling API (geometry,
+constraints, drawings, queries, camera); the GUI-simulation verbs under `bearcad.ui.*`
+(`move`/`click`/`key`/`type`/`wait`/`screenshot`, the semantic drags) run in the desktop app,
+where a script plays out across frames.
 
 Other useful flags:
 
