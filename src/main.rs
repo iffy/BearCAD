@@ -308,8 +308,7 @@ fn run_app(script_opts: script::ScriptOptions) -> eframe::Result<()> {
         Box::new(move |cc| {
             theme::apply(&cc.egui_ctx);
             let native_menu = NativeMenu::install(cc).map_err(|e| {
-                eframe::Error::AppCreation(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                eframe::Error::AppCreation(Box::new(std::io::Error::other(
                     e.to_string(),
                 )))
             })?;

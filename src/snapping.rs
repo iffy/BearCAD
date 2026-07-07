@@ -92,7 +92,7 @@ pub fn find_snap(
 
     let excluded_lines: Vec<ConstraintLine> = exclude
         .iter()
-        .flat_map(|point| owning_lines(point))
+        .flat_map(owning_lines)
         .collect();
 
     // Nearest line midpoint (next priority).
@@ -374,7 +374,7 @@ pub fn find_extension_snap(
     let perp_tol_sq = perp_tol * perp_tol;
     let excluded_lines: Vec<ConstraintLine> = exclude
         .iter()
-        .flat_map(|point| owning_lines(point))
+        .flat_map(owning_lines)
         .collect();
 
     let mut best: Option<(f32, Snap)> = None;
@@ -430,7 +430,7 @@ pub fn find_normal_at_midpoint_snap(
     }
     let excluded_lines: Vec<ConstraintLine> = exclude
         .iter()
-        .flat_map(|point| owning_lines(point))
+        .flat_map(owning_lines)
         .collect();
     if excluded_lines.contains(&anchor) {
         return None;

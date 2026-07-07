@@ -185,7 +185,7 @@ pub fn format_unknown_variable_error(name: &str) -> String {
     format!("Unknown variable: {name}")
 }
 
-pub fn document_parameter_names<'a>(doc: &'a Document) -> Vec<&'a str> {
+pub fn document_parameter_names(doc: &Document) -> Vec<&str> {
     doc.parameters.iter().map(|p| p.name.as_str()).collect()
 }
 

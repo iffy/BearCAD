@@ -356,7 +356,7 @@ TopoDS_Shape apply_edge_treatment(const TopoDS_Shape& shape, const double* edges
     // CLOSED edges (a cylinder cap's rim circle has a seam vertex, so endpoint matching
     // can't see it); callers request such an edge as two distinct points on the curve.
     auto on_curve = [tol](const TopoDS_Edge& edge, const gp_Pnt& a, const gp_Pnt& b) {
-        Standard_Real f, l;
+        double f, l;
         Handle(Geom_Curve) curve = BRep_Tool::Curve(edge, f, l);
         if (curve.IsNull()) {
             return false;
@@ -428,7 +428,7 @@ TopoDS_Shape apply_edge_treatment(const TopoDS_Shape& shape, const double* edges
             double radius = ra.Distance(rb) / 2.0;
             for (int k = 1; k <= edgeMap.Extent(); ++k) {
                 const TopoDS_Edge& edge = TopoDS::Edge(edgeMap(k));
-                Standard_Real f, l;
+                double f, l;
                 Handle(Geom_Curve) curve = BRep_Tool::Curve(edge, f, l);
                 if (curve.IsNull()) {
                     continue;

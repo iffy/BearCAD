@@ -15,8 +15,6 @@ use muda::AboutMetadata;
 use raw_window_handle::HasWindowHandle;
 use std::sync::{Mutex, OnceLock};
 
-/// What the user chose from the native menu bar.
-
 /// Stable menu-item ids for mapping [`MenuEvent`]s to [`MenuCommand`]s.
 #[derive(Clone, Debug)]
 pub struct MenuIds {
@@ -372,13 +370,13 @@ impl NativeMenu {
     /// Keep pane checkmarks aligned with application state.
     pub fn sync_pane_checks(&self, is_visible: impl Fn(Pane) -> bool) {
         for &(pane, ref check) in &self.pane_checks {
-            let _ = check.set_checked(is_visible(pane));
+            check.set_checked(is_visible(pane));
         }
     }
 
     /// Keep the View ▸ FPS Mode checkmark aligned with whether FPS mode is active (#118).
     pub fn sync_fps_mode(&self, active: bool) {
-        let _ = self.fps_mode.set_checked(active);
+        self.fps_mode.set_checked(active);
     }
 }
 
