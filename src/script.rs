@@ -120,6 +120,8 @@ pub enum Instruction {
     Loft { faces: Vec<crate::model::ExtrudeFace> },
     /// Create a technical drawing (#180), optionally named.
     CreateDrawing { name: Option<String> },
+    /// Export a technical drawing to a vector SVG file.
+    ExportDrawingSvg { drawing: usize, path: String },
     /// Add a body view (in an orientation) to a drawing.
     AddDrawingView {
         drawing: usize,
@@ -535,6 +537,9 @@ impl Instruction {
                 Some(n) => format!("bearcad.drawing{{ name = {:?} }}", n),
                 None => "bearcad.drawing{}".to_string(),
             },
+            Instruction::ExportDrawingSvg { drawing, path } => {
+                format!("bearcad.export_drawing_svg{{ drawing = {drawing}, path = {path:?} }}")
+            }
             Instruction::AddDrawingView {
                 drawing,
                 body,
@@ -3069,6 +3074,11 @@ impl ScriptRunner {
             }
             Instruction::CreateDrawing { name } => {
                 let result = state.apply(Action::CreateDrawing { name });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::ExportDrawingSvg { drawing, path } => {
+                let result = state.apply(Action::ExportDrawingSvg { drawing, path });
                 self.record_action_error(result);
                 StepResult::Continue
             }

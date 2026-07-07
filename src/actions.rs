@@ -683,6 +683,8 @@ pub enum Action {
     Save { path: Option<String> },
     /// Export bodies to an STL file. `body` names a single body; `None` exports all bodies.
     ExportStl { path: String, body: Option<String> },
+    /// Export a technical drawing (#180) to a vector SVG file (prints to PDF).
+    ExportDrawingSvg { drawing: usize, path: String },
     /// Export a single body (by index) to an STL file — used by the body row's context menu,
     /// which has the index in hand and works for unnamed bodies too.
     ExportStlBody { path: String, body: usize },
@@ -3015,6 +3017,22 @@ impl AppState {
                     ),
                 };
                 self.write_stl_file(&path, &name, mesh)
+            }
+            Action::ExportDrawingSvg { drawing, path } => {
+                let Some(svg) = crate::drawing::drawing_to_svg(&self.doc, drawing) else {
+                    self.status = format!("Export failed: no drawing {drawing}");
+                    return ActionResult::Err(self.status.clone());
+                };
+                match std::fs::write(&path, svg) {
+                    Ok(()) => {
+                        self.status = format!("Exported drawing {drawing} to {path}");
+                        ActionResult::Ok
+                    }
+                    Err(e) => {
+                        self.status = format!("Export failed: {e}");
+                        ActionResult::Err(self.status.clone())
+                    }
+                }
             }
             Action::ExportStlBody { path, body } => {
                 let Some(b) = self.doc.bodies.get(body).filter(|b| !b.deleted) else {

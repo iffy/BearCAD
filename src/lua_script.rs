@@ -2589,6 +2589,18 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Export a technical drawing to a vector SVG file (#180) — prints to PDF via any print
+    // dialog. `bearcad.export_drawing_svg{ drawing, path }`.
+    api.set(
+        "export_drawing_svg",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let drawing: usize = opts.get("drawing")?;
+            let path: String = opts.get("path")?;
+            unsafe { tick.exec(Instruction::ExportDrawingSvg { drawing, path }) }
+        })?,
+    )?;
+
     // Toggle a view's edge length dimension (#180): the edge is named by its two world
     // endpoints `a`/`b` (`{x, y, z}`), matched to the body's projected feature edge.
     api.set(
@@ -4719,6 +4731,50 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.drawings[0].views[0].angle_dims.len(), 0);
+    }
+
+    /// #180: a drawing exports to a self-contained SVG with its title, view captions,
+    /// projected edge lines, and shown dimensions.
+    #[test]
+    fn drawing_svg_export_has_lines_and_dimensions() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 40, height = 25 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15 }
+            local d = bearcad.drawing{ name = "Plate" }
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+            bearcad.drawing_dimension{ drawing = d, view = 0, a = {0,0,0}, b = {40,0,0} }
+        "#,
+        );
+        let svg = crate::drawing::drawing_to_svg(&state.doc, 0).expect("svg");
+        assert!(svg.starts_with("<svg"), "is an svg document");
+        assert!(svg.contains("<line"), "has projected edge lines");
+        assert!(svg.contains("Plate"), "has the drawing title");
+        assert!(svg.contains("Front"), "has the view caption");
+        assert!(svg.contains("40"), "has the 40 mm length dimension");
+        assert!(svg.trim_end().ends_with("</svg>"));
+    }
+
+    /// #180: `bearcad.export_drawing_svg{}` writes the SVG to disk.
+    #[test]
+    fn lua_export_drawing_svg_writes_a_file() {
+        let path = std::env::temp_dir()
+            .join(format!("bearcad_drawing_{}.svg", std::process::id()));
+        let p = path.to_string_lossy().replace('\\', "/");
+        run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.rect{{ width = 20, height = 20 }}
+            bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 10 }}
+            local d = bearcad.drawing{{}}
+            bearcad.drawing_view{{ drawing = d, body = 0, orientation = "iso" }}
+            bearcad.export_drawing_svg{{ drawing = d, path = "{p}" }}
+        "#
+        ));
+        let content = std::fs::read_to_string(&path).expect("svg file was written");
+        assert!(content.contains("<svg"));
+        let _ = std::fs::remove_file(&path);
     }
 
     /// #116: `bearcad.plane{}` declaratively adds a construction plane offset along the

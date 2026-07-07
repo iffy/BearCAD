@@ -29,6 +29,7 @@ mod geometric_constraints;
 mod context;
 mod construction;
 mod dimensions;
+mod drawing;
 mod document_health;
 mod document_lifecycle;
 mod expression_input;
@@ -4030,27 +4031,6 @@ impl eframe::App for App {
     }
 }
 
-/// In-plane `(right, up)` world axes a technical-drawing view (#180) projects onto: a point
-/// `p` maps to screen coordinates `(p·right, p·up)`. The six orthographic directions plus a
-/// standard isometric three-quarter view.
-fn drawing_view_axes(orientation: model::DrawingOrientation) -> (Vec3, Vec3) {
-    use model::DrawingOrientation as O;
-    match orientation {
-        O::Front => (Vec3::X, Vec3::Z),
-        O::Back => (-Vec3::X, Vec3::Z),
-        O::Right => (Vec3::Y, Vec3::Z),
-        O::Left => (-Vec3::Y, Vec3::Z),
-        O::Top => (Vec3::X, -Vec3::Y),
-        O::Bottom => (Vec3::X, Vec3::Y),
-        O::Isometric => {
-            let out = Vec3::new(1.0, 1.0, 1.0).normalize();
-            let right = Vec3::Z.cross(out).normalize();
-            let up = out.cross(right).normalize();
-            (right, up)
-        }
-    }
-}
-
 /// Suppress unmodified keyboard shortcuts while a [`egui::TextEdit`] (or other focused text input)
 /// is active.
 fn keyboard_shortcuts_suppressed(ctx: &egui::Context) -> bool {
@@ -6750,6 +6730,8 @@ impl App {
         ui.painter().rect_filled(area, 0.0, egui::Color32::WHITE);
 
         let mut close = false;
+        #[allow(unused_mut)] // only mutated by the native-only Export SVG button
+        let mut export_svg = false;
         let mut add_view: Option<(usize, DrawingOrientation)> = None;
         let mut remove_view: Option<usize> = None;
         let mut toggle_dim: Option<(usize, [i32; 3], [i32; 3])> = None;
@@ -6771,6 +6753,13 @@ impl App {
             let title =
                 crate::names::node_label(&self.state.doc, hierarchy::HierarchyNode::Drawing(drawing));
             ui.label(egui::RichText::new(title).color(INK).strong());
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                ui.separator();
+                if ui.button("Export SVG…").on_hover_text("Vector SVG — prints to PDF").clicked() {
+                    export_svg = true;
+                }
+            }
         });
         ui.separator();
 
@@ -6888,7 +6877,7 @@ impl App {
                     cell.min + egui::vec2(10.0, 26.0),
                     cell.max - egui::vec2(10.0, 10.0),
                 );
-                let (right, up) = drawing_view_axes(view.orientation);
+                let (right, up) = crate::drawing::view_axes(view.orientation);
                 let project = |p: Vec3| egui::vec2(p.dot(right), p.dot(up));
                 let world_edges: Vec<(Vec3, Vec3)> =
                     crate::extrude::body_solid_mesh(&self.state.doc, view.body)
@@ -7052,6 +7041,22 @@ impl App {
             Some(p) => ui.data_mut(|d| d.insert_temp(pending_angle_id, p)),
             None => ui.data_mut(|d| d.remove::<(usize, model::DrawingEdgeKey)>(pending_angle_id)),
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        if export_svg {
+            let name = crate::names::node_label(&self.state.doc, hierarchy::HierarchyNode::Drawing(drawing));
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("SVG drawing", &["svg"])
+                .set_file_name(format!("{name}.svg"))
+                .save_file()
+            {
+                self.state.apply(Action::ExportDrawingSvg {
+                    drawing,
+                    path: path.to_string_lossy().to_string(),
+                });
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = export_svg;
         if close {
             self.state.apply(Action::EditDrawing { drawing: None });
         }
@@ -10268,8 +10273,7 @@ fn draw_ground(
 mod tests {
     use super::actions::CreatingRect;
     use super::{
-        build_viewport_scene_input, clip_segment_to_rect, col, drawing_view_axes,
-        initial_launch_maximize_frames,
+        build_viewport_scene_input, clip_segment_to_rect, col, initial_launch_maximize_frames,
         native_options, script_finished_close_action, should_commit_sketch_on_click,
         should_select_all_rect_value, side_panel_resize_active, tick_launch_maximize,
         uses_deferred_launch_maximize, vertex_treatment_preview_points, ConstraintPoint, Line,
@@ -10407,12 +10411,12 @@ mod tests {
     #[test]
     fn drawing_view_axes_project_as_expected() {
         use crate::model::DrawingOrientation;
-        let (r, u) = drawing_view_axes(DrawingOrientation::Front);
+        let (r, u) = crate::drawing::view_axes(DrawingOrientation::Front);
         assert_eq!((r, u), (Vec3::X, Vec3::Z));
         let p = Vec3::new(3.0, 99.0, 7.0);
         assert!((p.dot(r) - 3.0).abs() < 1e-6 && (p.dot(u) - 7.0).abs() < 1e-6);
 
-        let (r, u) = drawing_view_axes(DrawingOrientation::Isometric);
+        let (r, u) = crate::drawing::view_axes(DrawingOrientation::Isometric);
         assert!((r.length() - 1.0).abs() < 1e-6, "right is unit");
         assert!((u.length() - 1.0).abs() < 1e-6, "up is unit");
         assert!(r.dot(u).abs() < 1e-6, "right ⟂ up");
