@@ -1551,6 +1551,23 @@ pub struct DrawingView {
     /// rebuilds, like [`crate::hierarchy::SceneElement::BodyEdge`]. Empty by default.
     #[serde(default)]
     pub dimensioned_edges: Vec<([i32; 3], [i32; 3])>,
+    /// Pairs of edges whose **angle** is shown (#180), each edge a quantized-endpoint key like
+    /// `dimensioned_edges`; the pair itself is order-normalized.
+    #[serde(default)]
+    pub angle_dims: Vec<(([i32; 3], [i32; 3]), ([i32; 3], [i32; 3]))>,
+}
+
+/// A quantized body-edge key: a pair of quantized world endpoints, order-normalized so the
+/// two endpoints compare equal regardless of which was clicked first (#180).
+pub type DrawingEdgeKey = ([i32; 3], [i32; 3]);
+
+/// Order-normalize an edge's two quantized endpoints (smaller first).
+pub fn normalized_edge_key(a: [i32; 3], b: [i32; 3]) -> DrawingEdgeKey {
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
 }
 
 /// A technical drawing (#180): a black-on-white sheet showing one or more body views for

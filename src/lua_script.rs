@@ -2619,6 +2619,40 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Toggle a view's angle dimension between two edges (#180): `edge1`/`edge2` are each
+    // `{ a = {x,y,z}, b = {x,y,z} }` (the edge's world endpoints).
+    api.set(
+        "drawing_angle",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let drawing: usize = opts.get("drawing")?;
+            let view: usize = opts.get("view")?;
+            let point = |t: &Table, key: &str| -> mlua::Result<(f32, f32, f32)> {
+                let v: Vec<f32> = t.get(key)?;
+                if v.len() != 3 {
+                    return Err(mlua::Error::external(format!(
+                        "drawing_angle edge `{key}` must be a {{x, y, z}} point"
+                    )));
+                }
+                Ok((v[0], v[1], v[2]))
+            };
+            let edge = |key: &str| -> mlua::Result<((f32, f32, f32), (f32, f32, f32))> {
+                let t: Table = opts.get(key)?;
+                Ok((point(&t, "a")?, point(&t, "b")?))
+            };
+            let edge1 = edge("edge1")?;
+            let edge2 = edge("edge2")?;
+            unsafe {
+                tick.exec(Instruction::ToggleDrawingAngle {
+                    drawing,
+                    view,
+                    edge1,
+                    edge2,
+                })
+            }
+        })?,
+    )?;
+
     // Semantic push/pull of an existing extrusion (#114) — the scripted extrusion gizmo.
     // `distance = d` sets an absolute depth (clearing any snap target), `by = d` pulls the
     // handle by a delta from the current effective depth, and `to = {...}` snaps to a
@@ -4644,6 +4678,47 @@ mod tests {
             0,
             "toggling the same edge twice hides it again"
         );
+    }
+
+    /// #180: `bearcad.drawing_angle{}` toggles the angle dimension between two edges of a view,
+    /// keyed by the edges' endpoints; a second call on the same pair hides it.
+    #[test]
+    fn lua_drawing_angle_toggles_between_two_edges() {
+        let script = |repeats: usize| {
+            let toggles = "bearcad.drawing_angle{ drawing = d, view = 0, edge1 = { a = {0,0,0}, b = {40,0,0} }, edge2 = { a = {0,0,0}, b = {0,0,15} } }\n".repeat(repeats);
+            format!(
+                r#"
+                bearcad.new()
+                bearcad.rect{{ x = 0, y = 0, width = 40, height = 25 }}
+                bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 15 }}
+                local d = bearcad.drawing{{}}
+                bearcad.drawing_view{{ drawing = d, body = 0, orientation = "front" }}
+                {toggles}
+            "#
+            )
+        };
+        let shown = run_lua(&script(1));
+        assert_eq!(shown.doc.drawings[0].views[0].angle_dims.len(), 1);
+        let hidden = run_lua(&script(2));
+        assert_eq!(hidden.doc.drawings[0].views[0].angle_dims.len(), 0);
+    }
+
+    /// #180: an angle needs two *different* edges.
+    #[test]
+    fn lua_drawing_angle_rejects_a_single_edge() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 40, height = 25 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+            local ok = pcall(bearcad.drawing_angle, { drawing = d, view = 0,
+                edge1 = { a = {0,0,0}, b = {40,0,0} }, edge2 = { a = {0,0,0}, b = {40,0,0} } })
+            assert(not ok, "same edge twice should error")
+        "#,
+        );
+        assert_eq!(state.doc.drawings[0].views[0].angle_dims.len(), 0);
     }
 
     /// #116: `bearcad.plane{}` declaratively adds a construction plane offset along the

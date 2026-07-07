@@ -6753,6 +6753,11 @@ impl App {
         let mut add_view: Option<(usize, DrawingOrientation)> = None;
         let mut remove_view: Option<usize> = None;
         let mut toggle_dim: Option<(usize, [i32; 3], [i32; 3])> = None;
+        let mut toggle_angle: Option<(usize, model::DrawingEdgeKey, model::DrawingEdgeKey)> = None;
+        // First edge of an in-progress angle pick (Shift+click), kept across frames per drawing.
+        let pending_angle_id = ui.make_persistent_id(("drawing_angle_pending", drawing));
+        let mut pending_angle: Option<(usize, model::DrawingEdgeKey)> =
+            ui.data(|d| d.get_temp(pending_angle_id));
 
         let body_label = |doc: &model::Document, bi: usize| {
             crate::names::node_label(doc, hierarchy::HierarchyNode::Body(bi))
@@ -6821,6 +6826,10 @@ impl App {
         }
         ui.separator();
 
+        ui.colored_label(
+            egui::Color32::from_gray(120),
+            "Click an edge for its length · Shift+click two edges for their angle",
+        );
         // The sheet: each view is a cell with its caption and a projected wireframe of its body.
         let views = self
             .state
@@ -6917,7 +6926,8 @@ impl App {
                     if qa <= qb { (qa, qb) } else { (qb, qa) }
                 };
 
-                // Click near an edge to toggle its length dimension (#180).
+                // Click near an edge to toggle its length dimension; Shift+click two edges to
+                // toggle the angle between them (#180).
                 let resp = ui.interact(
                     draw_area,
                     ui.make_persistent_id(("drawing_view_pick", drawing, vi)),
@@ -6935,11 +6945,22 @@ impl App {
                         if let Some((d, i)) = best {
                             if d <= 8.0 {
                                 let (wa, wb) = world_edges[i];
-                                toggle_dim = Some((
-                                    vi,
-                                    hierarchy::quantize_body_point(wa),
-                                    hierarchy::quantize_body_point(wb),
-                                ));
+                                let key = edge_key(wa, wb);
+                                if ui.input(|inp| inp.modifiers.shift) {
+                                    match pending_angle {
+                                        Some((pv, pk)) if pv == vi && pk != key => {
+                                            toggle_angle = Some((vi, pk, key));
+                                            pending_angle = None;
+                                        }
+                                        _ => pending_angle = Some((vi, key)),
+                                    }
+                                } else {
+                                    toggle_dim = Some((
+                                        vi,
+                                        hierarchy::quantize_body_point(wa),
+                                        hierarchy::quantize_body_point(wb),
+                                    ));
+                                }
                             }
                         }
                     }
@@ -6947,11 +6968,19 @@ impl App {
 
                 let dims = view.dimensioned_edges.clone();
                 let unit = self.state.doc.default_length_unit;
+                let pending_here = pending_angle.filter(|(pv, _)| *pv == vi).map(|(_, k)| k);
                 for (i, (a, b)) in proj.iter().enumerate() {
                     let (sa, sb) = (to_screen(*a), to_screen(*b));
-                    painter.line_segment([sa, sb], egui::Stroke::new(1.2, INK));
                     let (wa, wb) = world_edges[i];
-                    if dims.contains(&edge_key(wa, wb)) {
+                    let key = edge_key(wa, wb);
+                    // The first edge of an in-progress angle pick glows so it's clear it's armed.
+                    let stroke = if pending_here == Some(key) {
+                        egui::Stroke::new(2.4, egui::Color32::from_rgb(30, 90, 200))
+                    } else {
+                        egui::Stroke::new(1.2, INK)
+                    };
+                    painter.line_segment([sa, sb], stroke);
+                    if dims.contains(&key) {
                         let length = (wa - wb).length();
                         let mid = sa + (sb - sa) * 0.5;
                         let seg = sb - sa;
@@ -6969,6 +6998,34 @@ impl App {
                         );
                     }
                 }
+                // Angle dimensions between edge pairs: the degree value at (or near) the corner.
+                let dequant = |q: [i32; 3]| Vec3::new(q[0] as f32, q[1] as f32, q[2] as f32) / 100.0;
+                for (k1, k2) in &view.angle_dims {
+                    let (a0, a1) = (dequant(k1.0), dequant(k1.1));
+                    let (b0, b1) = (dequant(k2.0), dequant(k2.1));
+                    let d1 = (a1 - a0).normalize_or_zero();
+                    let d2 = (b1 - b0).normalize_or_zero();
+                    if d1.length_squared() < 0.5 || d2.length_squared() < 0.5 {
+                        continue;
+                    }
+                    let angle = d1.angle_between(d2).to_degrees();
+                    // Anchor at a shared corner if the edges touch, else between their midpoints.
+                    let shared = [k1.0, k1.1]
+                        .into_iter()
+                        .find(|e| *e == k2.0 || *e == k2.1)
+                        .map(dequant);
+                    let anchor = shared.unwrap_or_else(|| {
+                        ((a0 + a1) * 0.5 + (b0 + b1) * 0.5) * 0.5
+                    });
+                    let sp = to_screen(project(anchor));
+                    painter.text(
+                        sp + egui::vec2(0.0, -12.0),
+                        egui::Align2::CENTER_CENTER,
+                        format!("{angle:.0}°"),
+                        egui::FontId::proportional(11.0),
+                        INK,
+                    );
+                }
             }
         }
 
@@ -6985,6 +7042,15 @@ impl App {
         if let Some((view, a, b)) = toggle_dim {
             self.state
                 .apply(Action::ToggleDrawingDimension { drawing, view, a, b });
+        }
+        if let Some((view, edge1, edge2)) = toggle_angle {
+            self.state
+                .apply(Action::ToggleDrawingAngle { drawing, view, edge1, edge2 });
+        }
+        // Persist the in-progress angle pick (armed first edge) across frames.
+        match pending_angle {
+            Some(p) => ui.data_mut(|d| d.insert_temp(pending_angle_id, p)),
+            None => ui.data_mut(|d| d.remove::<(usize, model::DrawingEdgeKey)>(pending_angle_id)),
         }
         if close {
             self.state.apply(Action::EditDrawing { drawing: None });

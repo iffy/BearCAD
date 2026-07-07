@@ -719,13 +719,15 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   orthographically/isometrically projected and auto-fit into its cell; views are laid out in
   a grid and added/removed from the drawing pane.
 - **Dimensions:** clicking an edge in a view toggles its **length dimension** — the measured
-  length is drawn beside the edge. It's keyed to the edge's quantized world endpoints (a
-  geometry identity that survives rebuilds), stored per view.
+  length is drawn beside the edge. **Shift+click** two edges toggles the **angle** between
+  them (the degree value is drawn at their corner). Both are keyed to the edges' quantized
+  world endpoints (a geometry identity that survives rebuilds), stored per view.
 - **Scripting:** `bearcad.drawing{ name? }` creates a drawing (returning its index),
   `bearcad.drawing_view{ drawing, body, orientation? }` adds a view (`orientation` is
-  `"front"`/`"top"`/`"iso"`/…, default front), and
+  `"front"`/`"top"`/`"iso"`/…, default front),
   `bearcad.drawing_dimension{ drawing, view, a = {x,y,z}, b = {x,y,z} }` toggles an edge's
-  length dimension. `bearcad.count("drawing")` counts drawings.
+  length dimension, and `bearcad.drawing_angle{ drawing, view, edge1 = { a, b }, edge2 = { a,
+  b } }` toggles the angle between two edges. `bearcad.count("drawing")` counts drawings.
 
 ---
 

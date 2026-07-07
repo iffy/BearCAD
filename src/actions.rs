@@ -1024,6 +1024,13 @@ pub enum Action {
         a: [i32; 3],
         b: [i32; 3],
     },
+    /// Toggle the angle dimension between two edges (each by quantized world endpoints).
+    ToggleDrawingAngle {
+        drawing: usize,
+        view: usize,
+        edge1: crate::model::DrawingEdgeKey,
+        edge2: crate::model::DrawingEdgeKey,
+    },
     /// Open a drawing in the drawing pane (`Some`) or close the pane (`None`).
     EditDrawing { drawing: Option<usize> },
     /// Finalize the in-progress revolve (reads `creating_revolve`).
@@ -5544,6 +5551,7 @@ impl AppState {
                     body,
                     orientation,
                     dimensioned_edges: Vec::new(),
+                    angle_dims: Vec::new(),
                 });
                 self.status = format!(
                     "Added {} view of body {body} to drawing {drawing}",
@@ -5585,6 +5593,39 @@ impl AppState {
                 } else {
                     v.dimensioned_edges.push(key);
                     self.status = "Showed edge dimension".to_string();
+                }
+                ActionResult::Ok
+            }
+            Action::ToggleDrawingAngle {
+                drawing,
+                view,
+                edge1,
+                edge2,
+            } => {
+                if edge1 == edge2 {
+                    return ActionResult::Err("An angle needs two different edges".to_string());
+                }
+                // Order-normalize the pair so (e1, e2) == (e2, e1).
+                let key = if edge1 <= edge2 {
+                    (edge1, edge2)
+                } else {
+                    (edge2, edge1)
+                };
+                let Some(v) = self
+                    .doc
+                    .drawings
+                    .get_mut(drawing)
+                    .filter(|d| !d.deleted)
+                    .and_then(|d| d.views.get_mut(view))
+                else {
+                    return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
+                };
+                if let Some(pos) = v.angle_dims.iter().position(|e| *e == key) {
+                    v.angle_dims.remove(pos);
+                    self.status = "Hid angle dimension".to_string();
+                } else {
+                    v.angle_dims.push(key);
+                    self.status = "Showed angle dimension".to_string();
                 }
                 ActionResult::Ok
             }

@@ -133,6 +133,13 @@ pub enum Instruction {
         a: (f32, f32, f32),
         b: (f32, f32, f32),
     },
+    /// Toggle the angle dimension between two of a view's edges, each named by its endpoints.
+    ToggleDrawingAngle {
+        drawing: usize,
+        view: usize,
+        edge1: ((f32, f32, f32), (f32, f32, f32)),
+        edge2: ((f32, f32, f32), (f32, f32, f32)),
+    },
     /// Revolve profiles around an axis (SPEC §3.5 Revolve). Sketch inferred per face.
     Revolve {
         faces: Vec<crate::model::ExtrudeFace>,
@@ -546,6 +553,22 @@ impl Instruction {
                  a = {{ {}, {}, {} }}, b = {{ {}, {}, {} }} }}",
                 a.0, a.1, a.2, b.0, b.1, b.2
             ),
+            Instruction::ToggleDrawingAngle {
+                drawing,
+                view,
+                edge1,
+                edge2,
+            } => {
+                let pt = |p: (f32, f32, f32)| format!("{{ {}, {}, {} }}", p.0, p.1, p.2);
+                let edge = |e: ((f32, f32, f32), (f32, f32, f32))| {
+                    format!("{{ a = {}, b = {} }}", pt(e.0), pt(e.1))
+                };
+                format!(
+                    "bearcad.drawing_angle{{ drawing = {drawing}, view = {view}, edge1 = {}, edge2 = {} }}",
+                    edge(*edge1),
+                    edge(*edge2)
+                )
+            }
             Instruction::Revolve {
                 faces,
                 axis,
@@ -3076,6 +3099,27 @@ impl ScriptRunner {
                     view,
                     a: q(a),
                     b: q(b),
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::ToggleDrawingAngle {
+                drawing,
+                view,
+                edge1,
+                edge2,
+            } => {
+                let q = |p: (f32, f32, f32)| {
+                    crate::hierarchy::quantize_body_point(glam::Vec3::new(p.0, p.1, p.2))
+                };
+                let key = |e: ((f32, f32, f32), (f32, f32, f32))| {
+                    crate::model::normalized_edge_key(q(e.0), q(e.1))
+                };
+                let result = state.apply(Action::ToggleDrawingAngle {
+                    drawing,
+                    view,
+                    edge1: key(edge1),
+                    edge2: key(edge2),
                 });
                 self.record_action_error(result);
                 StepResult::Continue
