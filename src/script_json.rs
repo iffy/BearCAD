@@ -34,6 +34,52 @@ pub fn opens_sketch_when_none_active(name: &str) -> bool {
     matches!(name, "rect" | "line" | "circle")
 }
 
+/// Map a positional argument list to the named-argument object the dispatcher expects.
+///
+/// Many desktop verbs take positional arguments (`bearcad.tool("circle")`,
+/// `bearcad.orbit(dx, dy)`) rather than a table. The web prelude forwards those as an
+/// `__args` array (see `cpp/bearcad_lua.cpp`); this assigns them to the same keys the table
+/// form uses, so both call styles reach the identical [`instruction_from_json`] path. Keys
+/// are positional and trailing ones may be omitted (a missing optional argument). A verb with
+/// no positional form here reports that it needs a table.
+pub fn positional_to_named(name: &str, args: &[Value]) -> Result<Value, String> {
+    let keys: &[&str] = match name {
+        "tool" => &["name"],
+        "open" | "import_stl" | "import_step" => &["path"],
+        "save" => &["path"],
+        "export_stl" | "export_step" => &["path", "body"],
+        "open_sketch" => &["sketch"],
+        "begin_sketch" => &["kind", "index"],
+        "count" => &["kind"],
+        "body_stats" => &["index"],
+        "shading" | "ground" | "elements_view" => &["mode"],
+        "pane" => &["pane", "visible"],
+        "orbit" | "pan" | "fps_look" => &["dx", "dy"],
+        "wheel" => &["scroll"],
+        "fps" | "fps_fly" => &["on"],
+        "fps_advance" => &["seconds"],
+        "fps_scale" => &["scale"],
+        "set_dim" => &["axis", "value"],
+        "focus_dim" | "edit_dim" => &["axis"],
+        "set_dim_label_offset" => &["axis", "offset"],
+        "add_geometric_constraint" => &["name"],
+        "constraint_shortcut" => &["key"],
+        "view" => &["view", "id"],
+        "palette" => &["action", "query"],
+        _ => return Err(format!("'{name}' expects named arguments (a table)")),
+    };
+    let mut map = Map::new();
+    for (i, key) in keys.iter().enumerate() {
+        match args.get(i) {
+            None | Some(Value::Null) => {}
+            Some(v) => {
+                map.insert((*key).to_string(), v.clone());
+            }
+        }
+    }
+    Ok(Value::Object(map))
+}
+
 /// Translate one `bearcad.<name>{ ...args }` call into its [`Instruction`]. `args` is the
 /// JSON object of named arguments (an empty object for no-arg calls). Returns a
 /// human-readable message for an unknown command or a bad argument, which the web runner
@@ -1552,6 +1598,41 @@ mod tests {
             instruction_from_json("delete_selection", &json!({})),
             Ok(Instruction::DeleteSelection)
         );
+    }
+
+    #[test]
+    fn positional_args_map_to_named_and_reach_instructions() {
+        // `bearcad.tool("circle")` → { name = "circle" } → the tool instruction.
+        assert_eq!(
+            positional_to_named("tool", &[json!("circle")]),
+            Ok(json!({ "name": "circle" }))
+        );
+        // Trailing optional args may be omitted; `save()` → {}.
+        assert_eq!(positional_to_named("save", &[]), Ok(json!({})));
+        assert_eq!(
+            positional_to_named("export_stl", &[json!("a.stl")]),
+            Ok(json!({ "path": "a.stl" }))
+        );
+        assert_eq!(
+            positional_to_named("export_stl", &[json!("a.stl"), json!("Body")]),
+            Ok(json!({ "path": "a.stl", "body": "Body" }))
+        );
+        assert_eq!(
+            positional_to_named("orbit", &[json!(10), json!(-5)]),
+            Ok(json!({ "dx": 10, "dy": -5 }))
+        );
+        assert_eq!(
+            positional_to_named("view", &[json!("edge"), json!("fr")]),
+            Ok(json!({ "view": "edge", "id": "fr" }))
+        );
+        // The mapped object drives the same instruction as the table form.
+        let mapped = positional_to_named("set_dim", &[json!("width"), json!("40")]).unwrap();
+        assert_eq!(
+            instruction_from_json("set_dim", &mapped),
+            Ok(Instruction::SetDim { axis: RectAxis::Width, value: "40".into() })
+        );
+        // A table-only verb has no positional form.
+        assert!(positional_to_named("extrude", &[json!(1)]).is_err());
     }
 
     #[test]

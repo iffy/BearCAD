@@ -440,6 +440,7 @@ dependencies = [
  "glam",
  "ico",
  "image",
+ "js-sys",
  "log",
  "mlua",
  "muda",

@@ -50,6 +50,15 @@
     } catch (err) {
       console.warn("BearCAD: geometry kernel failed to load; running lean:", err);
     }
+    // The Lua interpreter is a third wasm module (Emscripten); load it so File → Load
+    // Script can run .lua files. If it fails, the app still runs — scripting is just
+    // unavailable, reported when you try to load a script.
+    try {
+      const { default: BearcadLua } = await import("./lua.js");
+      globalThis.bearcadLua = await BearcadLua();
+    } catch (err) {
+      console.warn("BearCAD: Lua interpreter failed to load; scripting disabled:", err);
+    }
     const { default: init } = await import("./bearcad.js");
     init()
       .then(() => document.getElementById("loading")?.remove())

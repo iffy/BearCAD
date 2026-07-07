@@ -52,14 +52,16 @@ mod menu_command;
 mod native_menu;
 #[cfg(target_arch = "wasm32")]
 mod web_menu;
+#[cfg(target_arch = "wasm32")]
+mod web_lua;
 #[cfg(not(target_arch = "wasm32"))]
 mod lua_script;
 #[cfg(test)]
 mod release_artifacts;
 mod script;
-// The JSON command dispatcher (todoer #179) is the web build's scripting hook; until the
-// browser Lua module wires it in, it is exercised by its own tests.
-#[cfg(test)]
+// The JSON command dispatcher (todoer #179) is the web build's scripting hook: on wasm it
+// backs `web_lua`'s bearcad_call dispatch; on native it's exercised by its own tests.
+#[cfg(any(test, target_arch = "wasm32"))]
 mod script_json;
 mod selection;
 mod shortcuts;
@@ -511,6 +513,7 @@ enum WebIoEvent {
     ImportStl { name: String, bytes: Vec<u8> },
     ImportStep { name: String, bytes: Vec<u8> },
     ImportImage { name: String, bytes: Vec<u8>, plane: Option<usize> },
+    RunScript { bytes: Vec<u8> },
     Status(String),
 }
 
@@ -849,7 +852,7 @@ impl App {
 
     /// Apply the results of finished async browser dialogs (web build).
     #[cfg(target_arch = "wasm32")]
-    fn drain_web_io(&mut self) {
+    fn drain_web_io(&mut self, ctx: &egui::Context) {
         let events: Vec<WebIoEvent> = self.web_io.borrow_mut().drain(..).collect();
         for event in events {
             match event {
@@ -865,9 +868,35 @@ impl App {
                 WebIoEvent::ImportImage { name, bytes, plane } => {
                     self.state.import_image_bytes(&name, bytes, plane);
                 }
+                WebIoEvent::RunScript { bytes } => {
+                    self.run_web_script(ctx, &bytes);
+                }
                 WebIoEvent::Status(message) => self.state.status = message,
             }
         }
+    }
+
+    /// Run a picked `.lua` script's bytes through the Lua interpreter module against the live
+    /// document, then report the outcome in the status line.
+    #[cfg(target_arch = "wasm32")]
+    fn run_web_script(&mut self, ctx: &egui::Context, bytes: &[u8]) {
+        let src = match std::str::from_utf8(bytes) {
+            Ok(s) => s,
+            Err(_) => {
+                self.state.status = "Script isn't valid UTF-8 text".to_string();
+                return;
+            }
+        };
+        self.state.status = match web_lua::run_script(
+            &mut self.state,
+            &mut self.synthetic,
+            self.last_viewport,
+            ctx,
+            src,
+        ) {
+            Ok(()) => "Script complete".to_string(),
+            Err(err) => format!("Script error: {err}"),
+        };
     }
 
     /// Browser open dialog → queue the picked file's bytes as `make_event`'s event.
@@ -1088,13 +1117,19 @@ impl App {
         }
     }
 
-    /// Running Lua in the browser needs a Lua interpreter module (todoer #179); until then
-    /// the menu item explains itself instead of silently doing nothing.
+    /// Pick a `.lua` file and run it in the browser through the Lua interpreter module
+    /// (todoer #179/#207). The picked bytes are queued and run in `drain_web_io`, where the
+    /// egui context needed to drive instruction execution is in scope.
     #[cfg(target_arch = "wasm32")]
     fn load_script(&mut self) {
-        self.state.status =
-            "Running Lua scripts in the browser isn't supported yet — use the desktop app"
-                .to_string();
+        if !web_lua::available() {
+            self.state.status =
+                "Lua scripting is unavailable — the interpreter module didn't load".to_string();
+            return;
+        }
+        self.web_pick_file("Lua script", &["lua"], |_name, bytes| WebIoEvent::RunScript {
+            bytes,
+        });
     }
 
     /// Dispatch one menu command — shared by the native OS menu bar and the web build's
@@ -2895,7 +2930,7 @@ impl eframe::App for App {
             if let Some(command) = web_menu::bar(ctx, |pane| panes.is_visible(pane)) {
                 self.handle_menu_command(ctx, command);
             }
-            self.drain_web_io();
+            self.drain_web_io(ctx);
         }
 
         egui::TopBottomPanel::top("toolbar")

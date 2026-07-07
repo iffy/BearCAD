@@ -634,15 +634,20 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   If the kernel module fails to load, the app still runs with the lean fallbacks, and the
   boot status line reports the kernel self-check either way.
 - **No SQLite; Lua runs as a side module** — bundled C doesn't compile for
-  wasm32-unknown-unknown, and mlua's bindings can't cross a module boundary, so the REPL/CLI
-  are compiled out and SQLite storage is JSON instead (below). Browser scripting mirrors the
-  OCCT kernel: the Lua interpreter ships as a *second* Emscripten module that forwards every
-  `bearcad.*` call to one hook, `bearcad_call(name, json_args) -> json`, and the Rust side
-  translates that command name + JSON arguments into the same `Instruction` the desktop
-  mlua closures build (`src/script_json.rs`), so both frontends drive the identical
-  Instruction/Action layer. **File → Load Script…** exists on both platforms — desktop runs
-  the `.lua` through mlua, web feeds it to the Lua module and routes the hook back into the
-  dispatcher.
+  wasm32-unknown-unknown, and mlua's bindings can't cross a module boundary, so mlua's
+  REPL/CLI are compiled out and SQLite storage is JSON instead (below). Browser scripting
+  mirrors the OCCT kernel: the Lua interpreter (Lua 5.4, vendored in `third_party/lua/`) ships
+  as a *second* Emscripten module (`cpp/bearcad_lua.cpp`, built by
+  `scripts/build-lua-wasm.sh` into `web/lua/`). A small Lua prelude in that module makes every
+  `bearcad.*` call forward its name plus JSON-encoded arguments through one hook back to the
+  app — `globalThis.bearcadDispatch(name, json_args) -> json` — and the Rust side
+  (`src/web_lua.rs`) routes it through `src/script_json.rs`, which turns the command name +
+  JSON arguments into the same `Instruction`/query the desktop mlua closures drive, executed
+  against the live `AppState`. So both frontends drive the identical Instruction/Action layer.
+  **File → Load Script…** exists on both platforms — desktop runs the `.lua` through mlua, web
+  picks the file and feeds it to the Lua module, which routes each call back into the
+  dispatcher. If the Lua module fails to load, scripting is reported unavailable and the rest
+  of the app runs normally.
 - **In-window menu bar** (`src/web_menu.rs`): the browser has no OS menu bar, so File/Edit/
   View/Help render as an egui menu strip emitting the same `MenuCommand`s
   (`src/menu_command.rs`, shared with the muda native menus) through one dispatch path.

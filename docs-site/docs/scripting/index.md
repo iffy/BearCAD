@@ -63,6 +63,10 @@ Once installed as `bearcad` on your `PATH` (**Help → Install "bearcad" Command
 bearcad --script examples/rectangle.lua --exit
 ```
 
+Both the desktop and browser apps also run a script interactively through **File → Load
+Script…** — pick a `.lua` file and it executes against the current document, reporting completion
+or the error in the status line.
+
 Other useful flags:
 
 - `--timeout <seconds>` — force-exit (non-zero) if the app hasn't closed on its own within the

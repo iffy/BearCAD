@@ -42,4 +42,5 @@ block.step
 # Web (wasm) build output; built by scripts/build-web.sh, deployed by CI
 /web/dist/
 /web/kernel/
+/web/lua/
 /docs-site/static/app/
