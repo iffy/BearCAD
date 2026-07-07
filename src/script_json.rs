@@ -14,14 +14,14 @@
 //! layer pure makes it testable off-browser: every command here is checked against the
 //! `Instruction` its `bearcad.*` closure produces for the same inputs.
 
-use crate::actions::{DimLabelAxis, Pane, RectAxis, RevolveBodyChoice};
+use crate::actions::{DimLabelAxis, ExtrudeBodyChoice, Pane, RectAxis, RevolveBodyChoice};
 use crate::camera::{GroundDisplay, ProjectionMode, ShadingMode, StandardView};
 use crate::construction::PlaneDim;
 use crate::geometric_constraints::GeometricConstraintType;
 use crate::hierarchy::HierarchyViewMode;
 use crate::model::{
-    BooleanOpKind, ConstraintKind, DistanceTarget, Document, DrawingOrientation, ExtrudeFace,
-    FaceId, RepeatMode, RevolveAxis,
+    BooleanOp, BooleanOpKind, ConstraintKind, ConstraintPoint, DistanceTarget, Document,
+    DrawingOrientation, ExtrudeFace, ExtrudeTarget, FaceId, LineEnd, RepeatMode, RevolveAxis,
 };
 use crate::script::Instruction;
 use crate::view_cube::{CubeCornerId, CubeEdgeId};
@@ -535,6 +535,190 @@ fn xyz(o: &Map<String, Value>, key: &str) -> Result<(f32, f32, f32), String> {
             .ok_or_else(|| format!("`{key}` point needs numeric x, y, z"))
     };
     Ok((coord(0)?, coord(1)?, coord(2)?))
+}
+
+/// The doc-dependent extrude verbs (`extrude`/`extrude_face`/`edit_extrusion`): unlike the
+/// pure verbs, these read the live document — `extrude` infers the owning sketch from the
+/// first face's geometry, and `edit_extrusion`'s `by` delta reads the extrusion's current
+/// effective depth — so they take `doc` and live on the stateful dispatch path
+/// ([`crate::web_lua`]) rather than in [`instruction_from_json`].
+pub fn extrude_instruction(name: &str, args: &Value, doc: &Document) -> Result<Instruction, String> {
+    let o = as_object(args)?;
+    match name {
+        "extrude" => {
+            let target = extrude_target_opt(o)?;
+            let distance = match opt_f32(o, "distance")? {
+                Some(d) => d,
+                None if target.is_some() => 0.0,
+                None => return Err("extrude requires a `distance` or `to`".into()),
+            };
+            let mut faces = Vec::new();
+            if let Some(i) = opt_usize(o, "circle")? {
+                faces.push(ExtrudeFace::Circle(i));
+            }
+            for i in usize_list(o, "circles")? {
+                faces.push(ExtrudeFace::Circle(i));
+            }
+            if let Some(lines) = opt_usize_array(o, "polygon")? {
+                faces.push(ExtrudeFace::Polygon(lines));
+            }
+            if let Some(b) = o.get("boolean") {
+                if !b.is_null() {
+                    faces.push(boolean_face_from_json(b)?);
+                }
+            }
+            if faces.is_empty() {
+                return Err(
+                    "extrude requires a `circle`/`polygon`/`boolean` or `circles` face list".into(),
+                );
+            }
+            let body = body_choice(o);
+            let sketch = crate::actions::extrude_face_sketch(doc, &faces[0])
+                .ok_or("extrude face does not exist")?;
+            Ok(Instruction::Extrude { sketch, faces, distance, body, target })
+        }
+        "extrude_face" => {
+            let face = face_id_from_json(
+                o.get("face").ok_or("extrude_face requires a `face` table")?,
+            )?;
+            let target = extrude_target_opt(o)?;
+            let distance = match opt_f32(o, "distance")? {
+                Some(d) => d,
+                None if target.is_some() => 0.0,
+                None => return Err("extrude_face requires a `distance` or `to`".into()),
+            };
+            Ok(Instruction::ExtrudeBodyFace { face, distance, body: body_choice(o), target })
+        }
+        "edit_extrusion" => {
+            let extrusion = req_usize(o, "extrusion", "edit_extrusion")?;
+            let mut distance = opt_f32(o, "distance")?;
+            let by = opt_f32(o, "by")?;
+            let target = extrude_target_opt(o)?;
+            if let Some(by) = by {
+                if distance.is_some() {
+                    return Err("edit_extrusion takes `distance` or `by`, not both".into());
+                }
+                let ext = doc
+                    .extrusions
+                    .get(extrusion)
+                    .filter(|e| !e.deleted)
+                    .ok_or_else(|| format!("no extrusion {extrusion}"))?;
+                distance = Some(crate::extrude::effective_distance(doc, ext) + by);
+            }
+            if distance.is_none() && target.is_none() {
+                return Err("edit_extrusion requires `distance`, `by`, or `to`".into());
+            }
+            Ok(Instruction::UpdateExtrusion { extrusion, distance, target })
+        }
+        other => Err(format!("unknown extrude verb '{other}'")),
+    }
+}
+
+/// `body = "merge" | "cut"` attaches the extrusion (else a new body), matching the closures.
+fn body_choice(o: &Map<String, Value>) -> ExtrudeBodyChoice {
+    match o.get("body").and_then(Value::as_str) {
+        Some("merge") => ExtrudeBodyChoice::Merge,
+        Some("cut") => ExtrudeBodyChoice::Cut,
+        _ => ExtrudeBodyChoice::New,
+    }
+}
+
+/// An optional `to = {...}` extrude target.
+fn extrude_target_opt(o: &Map<String, Value>) -> Result<Option<ExtrudeTarget>, String> {
+    match o.get("to") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => Ok(Some(extrude_target_from_json(v)?)),
+    }
+}
+
+/// An `ExtrudeTarget` from a `to = {...}` object (mirrors `parse_extrude_target_table`):
+/// `{plane=i}`, `{face=<face spec | FaceId>}`, or `{vertex=<point>}`.
+fn extrude_target_from_json(v: &Value) -> Result<ExtrudeTarget, String> {
+    let t = v.as_object().ok_or("extrude `to` must be an object")?;
+    if let Some(i) = opt_usize(t, "plane")? {
+        return Ok(ExtrudeTarget::Plane(i));
+    }
+    if let Some(face) = t.get("face") {
+        if !face.is_null() {
+            let fo = face.as_object().ok_or("extrude `to.face` must be an object")?;
+            // A `kind`/`type` key marks a 3D body face (FaceId); otherwise it's a flat profile.
+            if fo.contains_key("kind") || fo.contains_key("type") {
+                return Ok(ExtrudeTarget::BodyFace(face_id_from_json(face)?));
+            }
+            return Ok(ExtrudeTarget::Face(extrude_face_from_json(face)?));
+        }
+    }
+    if let Some(vertex) = t.get("vertex") {
+        if !vertex.is_null() {
+            return Ok(ExtrudeTarget::Vertex(constraint_point_from_json(vertex)?));
+        }
+    }
+    Err("extrude target requires one of plane/face/vertex".into())
+}
+
+/// An `ExtrudeFace` from a face-spec object: `{circle=i}`, `{polygon=[..]}`, or a nested
+/// `{boolean={op,a,b}}` (mirrors `parse_extrude_face_table`).
+fn extrude_face_from_json(v: &Value) -> Result<ExtrudeFace, String> {
+    let t = v.as_object().ok_or("face spec must be an object")?;
+    if let Some(i) = opt_usize(t, "circle")? {
+        return Ok(ExtrudeFace::Circle(i));
+    }
+    if let Some(lines) = opt_usize_array(t, "polygon")? {
+        return Ok(ExtrudeFace::Polygon(lines));
+    }
+    if let Some(b) = t.get("boolean") {
+        if !b.is_null() {
+            return boolean_face_from_json(b);
+        }
+    }
+    Err("face spec requires one of circle/polygon/boolean".into())
+}
+
+/// A `{ op, a, b }` boolean region (mirrors `parse_boolean_face_table`).
+fn boolean_face_from_json(v: &Value) -> Result<ExtrudeFace, String> {
+    let t = v.as_object().ok_or("boolean face must be an object")?;
+    let op = match req_str(t, "op", "boolean")?.to_ascii_lowercase().as_str() {
+        "intersection" => BooleanOp::Intersection,
+        "difference" => BooleanOp::Difference,
+        other => {
+            return Err(format!(
+                "unknown boolean op '{other}' (expected 'intersection' or 'difference')"
+            ))
+        }
+    };
+    let a = extrude_face_from_json(t.get("a").ok_or("boolean face requires `a`")?)?;
+    let b = extrude_face_from_json(t.get("b").ok_or("boolean face requires `b`")?)?;
+    Ok(ExtrudeFace::Boolean { op, a: Box::new(a), b: Box::new(b) })
+}
+
+/// A `ConstraintPoint` from a point object (mirrors `parse_constraint_point_table`): a line
+/// endpoint (`{kind="line", index, end}`), a circle center (`{kind="circle", index}`), or a
+/// body-face vertex (`{kind="face", face={...}, index}`).
+fn constraint_point_from_json(v: &Value) -> Result<ConstraintPoint, String> {
+    let t = v.as_object().ok_or("point must be an object")?;
+    let kind = t
+        .get("kind")
+        .or_else(|| t.get("type"))
+        .and_then(Value::as_str)
+        .ok_or("point requires a string `kind`")?;
+    if kind.eq_ignore_ascii_case("face") {
+        let face = face_id_from_json(t.get("face").ok_or("face vertex requires `face`")?)?;
+        let index = req_usize(t, "index", "point")?;
+        return Ok(ConstraintPoint::FaceVertex { face, index });
+    }
+    let index = req_usize(t, "index", "point")?;
+    match kind.to_ascii_lowercase().as_str() {
+        "line" => {
+            let end = match req_str(t, "end", "point")?.to_ascii_lowercase().as_str() {
+                "start" | "0" => LineEnd::Start,
+                "end" | "1" => LineEnd::End,
+                other => return Err(format!("unknown line endpoint '{other}'")),
+            };
+            Ok(ConstraintPoint::LineEndpoint { line: index, end })
+        }
+        "circle" => Ok(ConstraintPoint::CircleCenter(index)),
+        other => Err(format!("unknown point parent '{other}'")),
+    }
 }
 
 /// A distance-constraint target from a `{ kind, index }` object (mirrors
@@ -1847,6 +2031,45 @@ mod tests {
         assert_eq!(circle["r"], json!(2.0));
         assert_eq!(circle["diameter"], json!(4.0));
         assert_eq!(circle["sketch"], json!(1));
+    }
+
+    #[test]
+    fn extrude_infers_sketch_and_reads_targets() {
+        let doc = doc_with(json!([]), json!([{ "sketch": 0, "cx": 0, "cy": 0, "r": 5 }]));
+        assert_eq!(
+            extrude_instruction("extrude", &json!({ "circle": 0, "distance": 10 }), &doc),
+            Ok(Instruction::Extrude {
+                sketch: 0,
+                faces: vec![ExtrudeFace::Circle(0)],
+                distance: 10.0,
+                body: ExtrudeBodyChoice::New,
+                target: None,
+            })
+        );
+        // A `to` target lets distance default to 0.
+        let instr =
+            extrude_instruction("extrude", &json!({ "circle": 0, "to": { "plane": 1 } }), &doc)
+                .unwrap();
+        assert!(matches!(
+            instr,
+            Instruction::Extrude { distance, target: Some(ExtrudeTarget::Plane(1)), .. }
+                if distance == 0.0
+        ));
+        // extrude_face pushes/pulls a body face (here a construction plane) with a cut.
+        assert_eq!(
+            extrude_instruction(
+                "extrude_face",
+                &json!({ "face": { "kind": "plane", "index": 0 }, "distance": 5, "body": "cut" }),
+                &doc
+            ),
+            Ok(Instruction::ExtrudeBodyFace {
+                face: FaceId::ConstructionPlane(0),
+                distance: 5.0,
+                body: ExtrudeBodyChoice::Cut,
+                target: None,
+            })
+        );
+        assert!(extrude_instruction("extrude", &json!({ "distance": 10 }), &doc).is_err());
     }
 
     #[test]

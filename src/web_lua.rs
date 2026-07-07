@@ -151,6 +151,14 @@ fn run_command(
         return script_json::query_from_json(name, &args, &state.doc);
     }
 
+    // The extrude verbs read the live document (sketch inference, current depth), so they
+    // build their instruction from the doc rather than through instruction_from_json.
+    if matches!(name, "extrude" | "extrude_face" | "edit_extrusion") {
+        let instr = script_json::extrude_instruction(name, &args, &state.doc)?;
+        exec(runner, instr, state, synthetic, viewport, ctx)?;
+        return Ok(Value::Null);
+    }
+
     // Sketch primitives auto-open a sketch on the ground plane when none is active, exactly
     // as the desktop `rect`/`line`/`circle` closures do.
     if script_json::opens_sketch_when_none_active(name) && state.sketch_session.is_none() {
