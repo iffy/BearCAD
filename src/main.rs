@@ -4864,7 +4864,6 @@ fn line_dim_top_left(
     center - size * 0.5
 }
 
-#[cfg(test)]
 fn dist_point_to_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
     let ab = b - a;
     if ab.length_sq() < 1e-8 {
@@ -6753,6 +6752,7 @@ impl App {
         let mut close = false;
         let mut add_view: Option<(usize, DrawingOrientation)> = None;
         let mut remove_view: Option<usize> = None;
+        let mut toggle_dim: Option<(usize, [i32; 3], [i32; 3])> = None;
 
         let body_label = |doc: &model::Document, bi: usize| {
             crate::names::node_label(doc, hierarchy::HierarchyNode::Body(bi))
@@ -6881,20 +6881,19 @@ impl App {
                 );
                 let (right, up) = drawing_view_axes(view.orientation);
                 let project = |p: Vec3| egui::vec2(p.dot(right), p.dot(up));
-                let edges: Vec<(egui::Vec2, egui::Vec2)> =
+                let world_edges: Vec<(Vec3, Vec3)> =
                     crate::extrude::body_solid_mesh(&self.state.doc, view.body)
-                        .map(|mesh| {
-                            gpu_viewport::solid_mesh_unique_edges(&mesh)
-                                .into_iter()
-                                .map(|(a, b)| (project(a), project(b)))
-                                .collect()
-                        })
+                        .map(|mesh| gpu_viewport::solid_mesh_unique_edges(&mesh))
                         .unwrap_or_default();
-                if edges.is_empty() {
+                if world_edges.is_empty() {
                     continue;
                 }
+                let proj: Vec<(egui::Vec2, egui::Vec2)> = world_edges
+                    .iter()
+                    .map(|(a, b)| (project(*a), project(*b)))
+                    .collect();
                 let (mut min, mut max) = (egui::vec2(f32::MAX, f32::MAX), egui::vec2(f32::MIN, f32::MIN));
-                for (a, b) in &edges {
+                for (a, b) in &proj {
                     for p in [a, b] {
                         min = min.min(*p);
                         max = max.max(*p);
@@ -6910,11 +6909,65 @@ impl App {
                     let d = (p - bbox_center) * scale;
                     draw_area.center() + egui::vec2(d.x, -d.y)
                 };
-                for (a, b) in &edges {
-                    painter.line_segment(
-                        [to_screen(*a), to_screen(*b)],
-                        egui::Stroke::new(1.2, INK),
+                let edge_key = |wa: Vec3, wb: Vec3| {
+                    let (qa, qb) = (
+                        hierarchy::quantize_body_point(wa),
+                        hierarchy::quantize_body_point(wb),
                     );
+                    if qa <= qb { (qa, qb) } else { (qb, qa) }
+                };
+
+                // Click near an edge to toggle its length dimension (#180).
+                let resp = ui.interact(
+                    draw_area,
+                    ui.make_persistent_id(("drawing_view_pick", drawing, vi)),
+                    egui::Sense::click(),
+                );
+                if resp.clicked() {
+                    if let Some(pos) = resp.interact_pointer_pos() {
+                        let mut best: Option<(f32, usize)> = None;
+                        for (i, (a, b)) in proj.iter().enumerate() {
+                            let d = dist_point_to_segment(pos, to_screen(*a), to_screen(*b));
+                            if best.is_none_or(|(bd, _)| d < bd) {
+                                best = Some((d, i));
+                            }
+                        }
+                        if let Some((d, i)) = best {
+                            if d <= 8.0 {
+                                let (wa, wb) = world_edges[i];
+                                toggle_dim = Some((
+                                    vi,
+                                    hierarchy::quantize_body_point(wa),
+                                    hierarchy::quantize_body_point(wb),
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                let dims = view.dimensioned_edges.clone();
+                let unit = self.state.doc.default_length_unit;
+                for (i, (a, b)) in proj.iter().enumerate() {
+                    let (sa, sb) = (to_screen(*a), to_screen(*b));
+                    painter.line_segment([sa, sb], egui::Stroke::new(1.2, INK));
+                    let (wa, wb) = world_edges[i];
+                    if dims.contains(&edge_key(wa, wb)) {
+                        let length = (wa - wb).length();
+                        let mid = sa + (sb - sa) * 0.5;
+                        let seg = sb - sa;
+                        let perp = if seg.length() > 1e-3 {
+                            egui::vec2(-seg.y, seg.x).normalized()
+                        } else {
+                            egui::vec2(0.0, -1.0)
+                        };
+                        painter.text(
+                            mid + perp * 11.0,
+                            egui::Align2::CENTER_CENTER,
+                            crate::value::format_length_display_in(length, unit),
+                            egui::FontId::proportional(11.0),
+                            INK,
+                        );
+                    }
                 }
             }
         }
@@ -6928,6 +6981,10 @@ impl App {
         }
         if let Some(view) = remove_view {
             self.state.apply(Action::RemoveDrawingView { drawing, view });
+        }
+        if let Some((view, a, b)) = toggle_dim {
+            self.state
+                .apply(Action::ToggleDrawingDimension { drawing, view, a, b });
         }
         if close {
             self.state.apply(Action::EditDrawing { drawing: None });

@@ -17,7 +17,9 @@ you like, and each one collects **views** — a body shown from a chosen directi
    (Front, Back, Left, Right, Top, Bottom) or **Isometric** — and click **Add**. Each view
    draws the body as a black wireframe, projected and scaled to fit its cell. Repeat to place
    several views of the same or different bodies; they lay out in a grid.
-3. Remove a view with the **×** beside it. Click **← Back to model** to return to the 3D
+3. **Dimensions:** click an edge in any view to show its length; click it again to hide it.
+   The measured length is drawn beside the edge.
+4. Remove a view with the **×** beside it. Click **← Back to model** to return to the 3D
    view. Reopen a drawing any time by clicking its row (or right-click → **Edit drawing**).
 
 ## Scripting
@@ -29,6 +31,9 @@ bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
 local d = bearcad.drawing{ name = "Plate" }
 bearcad.drawing_view{ drawing = d, body = 0, orientation = "top" }
 bearcad.drawing_view{ drawing = d, body = 0, orientation = "iso" }
+
+-- Dimension an edge of view 0 by its two world endpoints.
+bearcad.drawing_dimension{ drawing = d, view = 0, a = {0, 0, 0}, b = {40, 0, 0} }
 ```
 
 `bearcad.drawing{}` returns the drawing's index; `orientation` defaults to `"front"` and

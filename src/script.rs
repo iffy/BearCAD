@@ -126,6 +126,13 @@ pub enum Instruction {
         body: usize,
         orientation: crate::model::DrawingOrientation,
     },
+    /// Toggle the length dimension of a view's edge, named by its two world endpoints.
+    ToggleDrawingDimension {
+        drawing: usize,
+        view: usize,
+        a: (f32, f32, f32),
+        b: (f32, f32, f32),
+    },
     /// Revolve profiles around an axis (SPEC §3.5 Revolve). Sketch inferred per face.
     Revolve {
         faces: Vec<crate::model::ExtrudeFace>,
@@ -528,6 +535,16 @@ impl Instruction {
             } => format!(
                 "bearcad.drawing_view{{ drawing = {drawing}, body = {body}, orientation = {:?} }}",
                 orientation.label().to_ascii_lowercase()
+            ),
+            Instruction::ToggleDrawingDimension {
+                drawing,
+                view,
+                a,
+                b,
+            } => format!(
+                "bearcad.drawing_dimension{{ drawing = {drawing}, view = {view}, \
+                 a = {{ {}, {}, {} }}, b = {{ {}, {}, {} }} }}",
+                a.0, a.1, a.2, b.0, b.1, b.2
             ),
             Instruction::Revolve {
                 faces,
@@ -3041,6 +3058,24 @@ impl ScriptRunner {
                     drawing,
                     body,
                     orientation,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::ToggleDrawingDimension {
+                drawing,
+                view,
+                a,
+                b,
+            } => {
+                let q = |p: (f32, f32, f32)| {
+                    crate::hierarchy::quantize_body_point(glam::Vec3::new(p.0, p.1, p.2))
+                };
+                let result = state.apply(Action::ToggleDrawingDimension {
+                    drawing,
+                    view,
+                    a: q(a),
+                    b: q(b),
                 });
                 self.record_action_error(result);
                 StepResult::Continue

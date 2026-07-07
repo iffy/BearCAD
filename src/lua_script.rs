@@ -2589,6 +2589,36 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Toggle a view's edge length dimension (#180): the edge is named by its two world
+    // endpoints `a`/`b` (`{x, y, z}`), matched to the body's projected feature edge.
+    api.set(
+        "drawing_dimension",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let drawing: usize = opts.get("drawing")?;
+            let view: usize = opts.get("view")?;
+            let point = |key: &str| -> mlua::Result<(f32, f32, f32)> {
+                let v: Vec<f32> = opts.get(key)?;
+                if v.len() != 3 {
+                    return Err(mlua::Error::external(format!(
+                        "drawing_dimension `{key}` must be a {{x, y, z}} point"
+                    )));
+                }
+                Ok((v[0], v[1], v[2]))
+            };
+            let a = point("a")?;
+            let b = point("b")?;
+            unsafe {
+                tick.exec(Instruction::ToggleDrawingDimension {
+                    drawing,
+                    view,
+                    a,
+                    b,
+                })
+            }
+        })?,
+    )?;
+
     // Semantic push/pull of an existing extrusion (#114) — the scripted extrusion gizmo.
     // `distance = d` sets an absolute depth (clearing any snap target), `by = d` pulls the
     // handle by a delta from the current effective depth, and `to = {...}` snaps to a
@@ -4577,6 +4607,43 @@ mod tests {
         "#,
         );
         assert_eq!(state.doc.drawings[0].views.len(), 0);
+    }
+
+    /// #180: `bearcad.drawing_dimension{}` toggles a view edge's length dimension, keyed by the
+    /// edge's world endpoints; calling it again on the same edge hides it.
+    #[test]
+    fn lua_drawing_dimension_toggles_an_edge() {
+        let script = |repeats: usize| {
+            let toggles = "bearcad.drawing_dimension{ drawing = d, view = 0, a = {0,0,0}, b = {40,0,0} }\n".repeat(repeats);
+            format!(
+                r#"
+                bearcad.new()
+                bearcad.rect{{ x = 0, y = 0, width = 40, height = 25 }}
+                bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 15 }}
+                local d = bearcad.drawing{{}}
+                bearcad.drawing_view{{ drawing = d, body = 0, orientation = "front" }}
+                {toggles}
+            "#
+            )
+        };
+        let shown = run_lua(&script(1));
+        assert_eq!(
+            shown.doc.drawings[0].views[0].dimensioned_edges.len(),
+            1,
+            "one toggle shows the dimension"
+        );
+        // The stored key is the quantized endpoints (order-normalized).
+        let qa = crate::hierarchy::quantize_body_point(glam::Vec3::ZERO);
+        let qb = crate::hierarchy::quantize_body_point(glam::Vec3::new(40.0, 0.0, 0.0));
+        let expected = if qa <= qb { (qa, qb) } else { (qb, qa) };
+        assert_eq!(shown.doc.drawings[0].views[0].dimensioned_edges[0], expected);
+
+        let hidden = run_lua(&script(2));
+        assert_eq!(
+            hidden.doc.drawings[0].views[0].dimensioned_edges.len(),
+            0,
+            "toggling the same edge twice hides it again"
+        );
     }
 
     /// #116: `bearcad.plane{}` declaratively adds a construction plane offset along the

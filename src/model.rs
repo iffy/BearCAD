@@ -1546,6 +1546,11 @@ pub struct DrawingView {
     pub body: usize,
     #[serde(default)]
     pub orientation: DrawingOrientation,
+    /// Body edges whose length dimension is shown, keyed by their quantized world endpoints
+    /// (order-normalized, smaller endpoint first) — a geometry identity that survives
+    /// rebuilds, like [`crate::hierarchy::SceneElement::BodyEdge`]. Empty by default.
+    #[serde(default)]
+    pub dimensioned_edges: Vec<([i32; 3], [i32; 3])>,
 }
 
 /// A technical drawing (#180): a black-on-white sheet showing one or more body views for

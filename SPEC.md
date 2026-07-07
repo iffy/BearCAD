@@ -718,9 +718,14 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   three-quarter view. Each view renders as a black wireframe of the body's feature edges,
   orthographically/isometrically projected and auto-fit into its cell; views are laid out in
   a grid and added/removed from the drawing pane.
-- **Scripting:** `bearcad.drawing{ name? }` creates a drawing (returning its index) and
+- **Dimensions:** clicking an edge in a view toggles its **length dimension** — the measured
+  length is drawn beside the edge. It's keyed to the edge's quantized world endpoints (a
+  geometry identity that survives rebuilds), stored per view.
+- **Scripting:** `bearcad.drawing{ name? }` creates a drawing (returning its index),
   `bearcad.drawing_view{ drawing, body, orientation? }` adds a view (`orientation` is
-  `"front"`/`"top"`/`"iso"`/…, default front). `bearcad.count("drawing")` counts them.
+  `"front"`/`"top"`/`"iso"`/…, default front), and
+  `bearcad.drawing_dimension{ drawing, view, a = {x,y,z}, b = {x,y,z} }` toggles an edge's
+  length dimension. `bearcad.count("drawing")` counts drawings.
 
 ---
 

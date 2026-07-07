@@ -1017,6 +1017,13 @@ pub enum Action {
     },
     /// Remove a body view from a drawing by its index.
     RemoveDrawingView { drawing: usize, view: usize },
+    /// Toggle the length dimension of one edge (by quantized world endpoints) in a drawing view.
+    ToggleDrawingDimension {
+        drawing: usize,
+        view: usize,
+        a: [i32; 3],
+        b: [i32; 3],
+    },
     /// Open a drawing in the drawing pane (`Some`) or close the pane (`None`).
     EditDrawing { drawing: Option<usize> },
     /// Finalize the in-progress revolve (reads `creating_revolve`).
@@ -5533,7 +5540,11 @@ impl AppState {
                 let Some(d) = self.doc.drawings.get_mut(drawing).filter(|d| !d.deleted) else {
                     return ActionResult::Err(format!("No drawing {drawing}"));
                 };
-                d.views.push(crate::model::DrawingView { body, orientation });
+                d.views.push(crate::model::DrawingView {
+                    body,
+                    orientation,
+                    dimensioned_edges: Vec::new(),
+                });
                 self.status = format!(
                     "Added {} view of body {body} to drawing {drawing}",
                     orientation.label()
@@ -5549,6 +5560,32 @@ impl AppState {
                 }
                 d.views.remove(view);
                 self.status = format!("Removed view {view} from drawing {drawing}");
+                ActionResult::Ok
+            }
+            Action::ToggleDrawingDimension {
+                drawing,
+                view,
+                a,
+                b,
+            } => {
+                // Order-normalize so the key is independent of which endpoint was clicked.
+                let key = if a <= b { (a, b) } else { (b, a) };
+                let Some(v) = self
+                    .doc
+                    .drawings
+                    .get_mut(drawing)
+                    .filter(|d| !d.deleted)
+                    .and_then(|d| d.views.get_mut(view))
+                else {
+                    return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
+                };
+                if let Some(pos) = v.dimensioned_edges.iter().position(|e| *e == key) {
+                    v.dimensioned_edges.remove(pos);
+                    self.status = "Hid edge dimension".to_string();
+                } else {
+                    v.dimensioned_edges.push(key);
+                    self.status = "Showed edge dimension".to_string();
+                }
                 ActionResult::Ok
             }
             Action::EditDrawing { drawing } => {
