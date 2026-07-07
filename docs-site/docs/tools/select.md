@@ -35,7 +35,13 @@ in the viewport.
 
 ## Reviewing the selection
 
-Once you've picked something, the **context pane** lists the selection as an element picker —
-one row per selected element, each with a remove button, plus a **Clear all**. It's the same
-picker the tools that gather elements (like Loft or Fillet) use, so pruning a selection works
-the same way everywhere.
+The **context pane** shows your selection in the **element picker** — a combo-box-style input
+that looks and focuses like any other field. Empty, it reads "Nothing selected"; once you've
+picked things it shows a compact summary of counts by kind (for example `2 ⟨line⟩ · 1 ⟨body⟩`).
+Click it to expand a popup that lists each picked element by name, with a remove button on
+every row and a **Clear all** at the bottom.
+
+It's the same control every tool that gathers elements uses (Loft, Fillet, and the rest), so
+reviewing and pruning a selection works the same way everywhere. Each tool configures its own
+picker — which kinds of element it will accept and how many — but the look and the interaction
+are always the same.

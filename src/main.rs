@@ -3723,6 +3723,7 @@ impl eframe::App for App {
                         &mut self.state.context_pane,
                         &self.state.document_health,
                         &self.state.scene_selection,
+                        &self.state.doc,
                         &mut |element, name| name_commit = Some((element, name)),
                         &mut |curve_mode| {
                             curve_mode_change = Some(curve_mode);

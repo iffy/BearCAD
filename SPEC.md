@@ -909,12 +909,19 @@ modeled on SolveSpace (https://solvespace.com).
   rebuild moves the edge, the selection simply drops — acceptable for ephemeral, never-
   persisted selection state. Selected body edges/vertices draw depth-test-disabled like
   their hover highlights (#153).
-- **Selection picker for the Select tool (#202):** while the Select tool is active with a
-  non-empty selection, the context pane shows the same generic selection picker other tools
-  use — one row per selected element (named like its Elements-pane row), each with a remove
-  button that deselects it, plus a clear-all. This gives every tool that gathers elements —
-  including plain selection — one consistent way to review and prune the set. Suppressed
-  while a draw construction is active (draw mode owns the pane then).
+- **Element picker for the Select tool (#202/#213):** while the Select tool is active the
+  context pane shows the unified **element picker** — a focusable, combo-box-style input that
+  is the single, consistent way every tool gathers the elements it operates on. Collapsed it
+  reads like a text input: a "Nothing selected" placeholder when empty, otherwise a compact
+  `N ⟨icon⟩` summary per element kind (e.g. `2 ⟨line⟩ · 1 ⟨body⟩`). Clicking it opens a popup
+  listing each picked element (kind icon + name) with a per-row remove button and a clear-all.
+  The Select tool's instance is configured to accept **every** element kind and is
+  **always shown and always focused** (it never blurs). Suppressed only while a draw
+  construction owns the pane. Each picker instance is configured with: the subset of element
+  kinds it accepts (planes, lines, circles, vertices, edges, bodies, constraints, operations —
+  and, for operations, which sub-kinds), a pick limit (a whole number or unlimited), and an
+  optional override of the selected-element highlight color (defaulting to the theme selection
+  color). Other tools move onto this control tool-by-tool.
 - **No picking through bodies (#155):** while selecting (Select/Constraint tools, and picks
   made for a tool such as construction-plane references or dimension targets), geometry
   hidden **behind** a visible body under the cursor is not a pick candidate — clicking a

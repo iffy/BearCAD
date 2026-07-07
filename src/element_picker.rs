@@ -22,7 +22,8 @@
 
 use crate::hierarchy::SceneElement;
 use crate::icons::IconId;
-use eframe::egui::Color32;
+use crate::model::Document;
+use eframe::egui::{self, Color32};
 
 /// A user-facing category of selectable scene element. Every [`SceneElement`] maps to exactly
 /// one kind (see [`ElementKind::of`]); a picker accepts a configurable subset of kinds.
@@ -465,6 +466,155 @@ impl ElementPicker {
     }
 }
 
+/// A user interaction with the picker widget in a frame, applied by the caller against the
+/// owning [`ElementPicker`] (the widget borrows the picker immutably so the caller keeps
+/// control of tool-specific side effects of a removal).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickerEvent {
+    /// The user clicked the input; it should take focus (and peers should blur).
+    Focus,
+    /// Remove the picked element at this popup-row index.
+    Remove(usize),
+    /// Clear the whole set.
+    Clear,
+}
+
+const ROW_ICON_SIZE: f32 = 14.0;
+
+/// Render the picker as a focusable, combo-box-style input in `ui`.
+///
+/// Collapsed, it looks like a text input: the "no selection" placeholder when empty, otherwise
+/// a `N ⟨icon⟩` chip per present kind. A focused picker draws an accent ring. Clicking opens a
+/// popup listing each picked element (icon + label + ✕ remove) with a Clear-all footer. Returns
+/// the interaction, if any, for the caller to apply to the picker + tool state.
+pub fn show(
+    ui: &mut egui::Ui,
+    picker: &ElementPicker,
+    doc: &Document,
+    id_source: impl std::hash::Hash,
+) -> Option<PickerEvent> {
+    let mut event = None;
+
+    let focused = picker.is_focused();
+    let ring = if focused {
+        egui::Stroke::new(2.0, crate::theme::FOCUS_ACCENT)
+    } else {
+        egui::Stroke::new(1.0, crate::theme::INPUT_BORDER)
+    };
+
+    let frame = egui::Frame::NONE
+        .fill(crate::theme::INPUT_BG)
+        .stroke(ring)
+        .inner_margin(egui::Margin::symmetric(6, 4))
+        .corner_radius(egui::CornerRadius::same(3));
+
+    // The whole framed strip is one click target that toggles the popup.
+    let inner = frame.show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.set_min_width(ui.available_width().max(120.0));
+            if picker.is_empty() {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(picker.placeholder())
+                            .color(Color32::from_gray(130))
+                            .italics(),
+                    )
+                    .selectable(false),
+                );
+            } else {
+                for (icon, count) in picker.summary() {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(count.to_string()).strong())
+                            .selectable(false),
+                    );
+                    ui.add(egui::Image::new(crate::icons::sized_texture(ui.ctx(), icon)).fit_to_exact_size(
+                        egui::vec2(ROW_ICON_SIZE, ROW_ICON_SIZE),
+                    ));
+                    ui.add_space(4.0);
+                }
+            }
+            // Right-aligned dropdown caret (painted — the ▾ glyph is missing from the font).
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                let c = rect.center();
+                ui.painter().add(egui::Shape::convex_polygon(
+                    vec![
+                        egui::pos2(c.x - 3.0, c.y - 2.0),
+                        egui::pos2(c.x + 3.0, c.y - 2.0),
+                        egui::pos2(c.x, c.y + 2.5),
+                    ],
+                    Color32::from_gray(150),
+                    egui::Stroke::NONE,
+                ));
+            });
+        });
+    });
+
+    // One interactable over the whole strip (click to focus + toggle popup).
+    let response = ui
+        .interact(inner.response.rect, ui.make_persistent_id(&id_source), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if response.clicked() {
+        event = Some(PickerEvent::Focus);
+    }
+
+    egui::Popup::from_toggle_button_response(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(180.0);
+            if picker.is_empty() {
+                ui.label(
+                    egui::RichText::new("Nothing picked yet")
+                        .weak()
+                        .italics(),
+                );
+                return;
+            }
+            for (i, element) in picker.picked().iter().enumerate() {
+                ui.horizontal(|ui| {
+                    if ui
+                        .small_button("✕")
+                        .on_hover_text("Remove")
+                        .clicked()
+                    {
+                        event = Some(PickerEvent::Remove(i));
+                    }
+                    ui.add(
+                        egui::Image::new(crate::icons::sized_texture(
+                            ui.ctx(),
+                            ElementKind::of(element).icon(),
+                        ))
+                        .fit_to_exact_size(egui::vec2(ROW_ICON_SIZE, ROW_ICON_SIZE)),
+                    );
+                    ui.label(crate::names::scene_element_label(doc, element));
+                });
+            }
+            if picker.len() > 1 {
+                ui.separator();
+                if ui.small_button("Clear all").clicked() {
+                    event = Some(PickerEvent::Clear);
+                }
+            }
+        });
+
+    event
+}
+
+/// Apply a widget [`PickerEvent`] to a picker's own state. Focus is handled by the caller (it
+/// also needs to blur peer pickers), so `Focus` is a no-op here and returns `false`; `Remove`
+/// and `Clear` mutate the set and return `true` so the caller can react (e.g. re-preview).
+pub fn apply_event(picker: &mut ElementPicker, event: PickerEvent) -> bool {
+    match event {
+        PickerEvent::Focus => false,
+        PickerEvent::Remove(i) => picker.remove_index(i).is_some(),
+        PickerEvent::Clear => {
+            let had = !picker.is_empty();
+            picker.clear();
+            had
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -587,6 +737,18 @@ mod tests {
         let cutters = ElementPicker::new(ElementFilter::everything(), PickLimit::Infinite)
             .with_selected_color(red);
         assert_eq!(cutters.selected_color(default), red);
+    }
+
+    #[test]
+    fn apply_event_removes_and_clears() {
+        let mut p = ElementPicker::new(ElementFilter::everything(), PickLimit::Infinite);
+        p.pick(body(0));
+        p.pick(line(0));
+        assert!(apply_event(&mut p, PickerEvent::Remove(0)));
+        assert_eq!(p.picked(), &[line(0)]);
+        assert!(!apply_event(&mut p, PickerEvent::Focus));
+        assert!(apply_event(&mut p, PickerEvent::Clear));
+        assert!(p.is_empty());
     }
 
     #[test]

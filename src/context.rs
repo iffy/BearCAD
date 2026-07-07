@@ -2,6 +2,7 @@
 
 use crate::actions::{ExtrudeBodyMode, Tool};
 use crate::document_health::{health_status_label, selection_frozen_summary, DocumentHealth, HealthStatus};
+use crate::element_picker::ElementPicker;
 use crate::geometric_constraints::{constraint_pane_rows, ConstraintPaneRow};
 use crate::hierarchy::SceneElement;
 use crate::model::{Document, SketchId};
@@ -278,7 +279,12 @@ pub struct ContextPaneContent {
     /// selected (#52).
     pub units: Option<UnitsControl>,
     /// Generalized selection picker (#157/#167): the elements the active tool operates on.
+    /// Legacy row-list form; being replaced tool-by-tool with [`ContextPaneContent::selection_picker`].
     pub edge_picker: Option<EdgePickerControl>,
+    /// The unified element-picker control (#213). Populated for tools already migrated to
+    /// [`ElementPicker`] — currently the Select tool's "select everything" picker, which is
+    /// always shown (placeholder when empty) and never loses focus.
+    pub selection_picker: Option<ElementPicker>,
     /// Image scale calibration (#171).
     pub calibrate_image: Option<CalibrateImageControl>,
     /// Revolve tool controls (#revolve).
@@ -422,28 +428,18 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
                     }
                 })
             })
-        })
-        .or_else(|| {
-            // Select tool (#202): the current selection as an element picker, so any tool that
-            // gathers elements — including plain selection — presents them the same way, with
-            // per-row remove and clear-all. Suppressed while a draw construction is active
-            // (draw mode owns the pane then).
-            let drawing = input.draw_rect_construction.is_some()
-                || input.draw_line_construction.is_some()
-                || input.draw_circle_construction.is_some();
-            (input.tool == Tool::Select && !input.selection.is_empty() && !drawing).then(|| {
-                EdgePickerControl {
-                    heading: "Selection",
-                    hint: "Click an element to select it",
-                    rows: input
-                        .selection
-                        .ordered()
-                        .iter()
-                        .map(|element| crate::names::scene_element_label(input.doc, element))
-                        .collect(),
-                }
-            })
         });
+    // Select tool (#213): the current selection as the unified element picker — an
+    // always-present, always-focused "select everything" input (placeholder when empty).
+    // Suppressed while a draw construction owns the pane.
+    let drawing = input.draw_rect_construction.is_some()
+        || input.draw_line_construction.is_some()
+        || input.draw_circle_construction.is_some();
+    let selection_picker = (input.tool == Tool::Select && !drawing).then(|| {
+        let mut picker = ElementPicker::select_everything();
+        picker.set_picked(input.selection.ordered());
+        picker
+    });
     let calibrate_image = input.calibrate_image;
     let revolve = input.revolve.clone();
     let boolean_op = input.boolean_op.clone();
@@ -472,6 +468,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             extrude_body,
             units,
             edge_picker: edge_picker.clone(),
+            selection_picker: None,
             calibrate_image,
             revolve: revolve.clone(),
             boolean_op: boolean_op.clone(),
@@ -501,6 +498,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             extrude_body,
             units,
             edge_picker: edge_picker.clone(),
+            selection_picker: None,
             calibrate_image,
             revolve: revolve.clone(),
             boolean_op: boolean_op.clone(),
@@ -530,6 +528,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             extrude_body,
             units,
             edge_picker: edge_picker.clone(),
+            selection_picker: None,
             calibrate_image,
             revolve: revolve.clone(),
             boolean_op: boolean_op.clone(),
@@ -562,6 +561,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         extrude_body,
         units,
         edge_picker,
+        selection_picker,
         calibrate_image,
         revolve,
         boolean_op,
@@ -770,6 +770,7 @@ pub fn show_pane(
     pane_state: &mut ContextPaneState,
     health: &DocumentHealth,
     selection: &SceneSelection,
+    doc: &Document,
     on_name_committed: &mut impl FnMut(SceneElement, String),
     on_curve_mode_changed: &mut impl FnMut(bool),
     on_tangent_constraint_changed: &mut impl FnMut(bool),
@@ -1490,6 +1491,22 @@ pub fn show_pane(
         });
     }
 
+    if let Some(picker) = &content.selection_picker {
+        any_control = true;
+        ui.separator();
+        ui.label(egui::RichText::new("Selection").strong());
+        ui.add_enabled_ui(controls_enabled, |ui| {
+            if let Some(event) = crate::element_picker::show(ui, picker, doc, "selection_picker") {
+                match event {
+                    // The Select picker is sticky-focused, so a click doesn't change focus.
+                    crate::element_picker::PickerEvent::Focus => {}
+                    crate::element_picker::PickerEvent::Remove(i) => on_edge_picker_edit(Some(i)),
+                    crate::element_picker::PickerEvent::Clear => on_edge_picker_edit(None),
+                }
+            }
+        });
+    }
+
     if let Some(picker) = &content.edge_picker {
         any_control = true;
         ui.separator();
@@ -1792,14 +1809,24 @@ mod tests {
             calibrate_start: None,
             calibrate_pending: None,
         };
-        let picker = context_pane_content(&input).edge_picker.expect("selection picker");
-        assert_eq!(picker.heading, "Selection");
-        // Rows follow `SceneSelection::ordered` (debug-string order): Circle before Line.
-        assert_eq!(picker.rows, vec!["Circle 1".to_string(), "Line 0".to_string()]);
+        let picker = context_pane_content(&input)
+            .selection_picker
+            .expect("selection picker");
+        // Picked set follows `SceneSelection::ordered` (debug-string order): Circle before Line.
+        assert_eq!(
+            picker.picked(),
+            &[SceneElement::Circle(1), SceneElement::Line(0)]
+        );
+        assert!(picker.has_sticky_focus(), "Select picker never loses focus");
+        assert!(picker.accepts(&SceneElement::Body(0)), "Select accepts everything");
 
-        // Empty selection: no picker to show.
+        // Empty selection: the picker is still shown (an always-present input), just empty.
         let empty_selection = SceneSelection::default();
         let empty = ContextInput { selection: &empty_selection, ..input };
+        let empty_picker = context_pane_content(&empty)
+            .selection_picker
+            .expect("always-present select picker");
+        assert!(empty_picker.is_empty());
         assert_eq!(context_pane_content(&empty).edge_picker, None);
     }
 
@@ -1838,6 +1865,7 @@ mod tests {
                 snapping: None,
                 extrude_body: None,
                 edge_picker: None,
+                selection_picker: Some(ElementPicker::select_everything()),
                 calibrate_image: None,
                 revolve: None,
             boolean_op: None,
@@ -1910,6 +1938,7 @@ mod tests {
                 snapping: None,
                 extrude_body: None,
                 edge_picker: None,
+                selection_picker: None,
                 calibrate_image: None,
                 revolve: None,
             boolean_op: None,
@@ -1994,11 +2023,12 @@ mod tests {
                 constraints: None,
                 snapping: None,
                 extrude_body: None,
-                // #202: the Select tool now surfaces the selection as an element picker.
-                edge_picker: Some(EdgePickerControl {
-                    heading: "Selection",
-                    hint: "Click an element to select it",
-                    rows: vec!["Line 0".to_string()],
+                // #213: the Select tool surfaces the selection through the unified element picker.
+                edge_picker: None,
+                selection_picker: Some({
+                    let mut p = ElementPicker::select_everything();
+                    p.set_picked([SceneElement::Line(0)]);
+                    p
                 }),
                 calibrate_image: None,
                 revolve: None,
@@ -2163,6 +2193,7 @@ mod tests {
                 snapping: None,
                 extrude_body: None,
                 edge_picker: None,
+                selection_picker: None,
                 calibrate_image: None,
                 revolve: None,
             boolean_op: None,

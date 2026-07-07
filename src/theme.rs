@@ -23,6 +23,14 @@ const BORDER: Color32 = Color32::from_gray(55);
 const SELECTION_BG: Color32 = Color32::from_rgba_premultiplied(55, 95, 170, 48);
 const SELECTION_TEXT: Color32 = Color32::WHITE;
 
+/// Accent for a focused input's ring and, by default, an element picker's selected-element
+/// highlight (#213). A picker may override the selected-highlight color (e.g. Slice cutters red).
+pub const FOCUS_ACCENT: Color32 = Color32::from_rgb(120, 170, 240);
+/// Input-like control background (matches text inputs' `extreme_bg_color`).
+pub const INPUT_BG: Color32 = Color32::from_gray(18);
+/// Resting outline for an input-like control.
+pub const INPUT_BORDER: Color32 = BORDER;
+
 fn set_widget_visuals(
     w: &mut WidgetVisuals,
     bg: Color32,
