@@ -4406,6 +4406,7 @@ fn build_viewport_scene_input<'a>(
     creating_extrusion: Option<&CreatingExtrusion>,
     creating_edge_treatment: Option<&CreatingEdgeTreatment>,
     creating_revolve: Option<&actions::CreatingRevolve>,
+    creating_loft: Option<&actions::CreatingLoft>,
     pending_extrude_target: Option<model::ExtrudeTarget>,
     plane_gizmo: Option<gpu_viewport::ViewportPlaneGizmo>,
     extrude_gizmo: Option<gpu_viewport::ViewportExtrudeGizmo>,
@@ -4528,6 +4529,21 @@ fn build_viewport_scene_input<'a>(
             deleted: false,
         };
         extrude::revolve_mesh(doc, &probe)
+    })
+    .or_else(|| {
+        // Live ghost of the in-progress loft (#203): mesh the picked sections the same way a
+        // commit would (ordered along the principal direction), so the blended solid previews
+        // and updates as sections are added or removed. Needs at least two sections.
+        let cl = creating_loft?;
+        if cl.sections.len() < 2 {
+            return None;
+        }
+        let loft = model::Loft {
+            sections: extrude::order_loft_sections(doc, cl.sections.clone()),
+            name: None,
+            deleted: false,
+        };
+        extrude::loft_mesh(doc, &loft)
     });
 
     let preview_extrusion = creating_extrusion
@@ -8059,6 +8075,7 @@ impl App {
             self.state.creating_extrusion.as_ref(),
             self.state.creating_edge_treatment.as_ref(),
             self.state.creating_revolve.as_ref(),
+            self.state.creating_loft.as_ref(),
             self.pending_extrude_target.clone(),
             plane_gizmo,
             extrude_gizmo,
@@ -9998,6 +10015,7 @@ mod tests {
             state.creating_extrusion.as_ref(),
             None,
             None,
+            None,
             pending.clone(),
             None,
             None,
@@ -10013,6 +10031,86 @@ mod tests {
             Some(pending),
             "ghost preview should pick up the live pending target before commit"
         );
+    }
+
+    /// #203: while the Loft tool is collecting cross sections, the scene shows a live ghost of
+    /// the blended solid, appearing once two sections are picked and dropping back to nothing
+    /// with only one.
+    #[test]
+    fn loft_tool_previews_the_blended_solid_from_picked_sections() {
+        use crate::actions::{AppState, CreatingLoft, Tool};
+        use crate::model::{Circle, ExtrudeFace, FaceId, LoftSection};
+
+        let mut state = AppState::default();
+        // Two circles on planes 10 mm apart, so the loft blends through real space.
+        let s0 = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        state.doc.circles.push(Circle::from_local_center_radius(s0, 0.0, 0.0, 5.0, 0.0));
+        state.doc.construction_planes.push(crate::construction::plane_from_definition(
+            &crate::construction::definition_from_reference(
+                &crate::construction::PlaneReference::Face {
+                    origin: glam::Vec3::ZERO,
+                    normal: glam::Vec3::Z,
+                    label: "Ground".to_string(),
+                },
+                10.0,
+                0.0,
+            ),
+            crate::model::ConstructionPlaneParent::Root,
+        ));
+        let s1 = state.doc.add_sketch(FaceId::ConstructionPlane(1));
+        state.doc.circles.push(Circle::from_local_center_radius(s1, 0.0, 0.0, 3.0, 0.0));
+        state.tool = Tool::Loft;
+
+        let cam = state.cam.clone();
+        let element_visibility = state.element_visibility.clone();
+        let selection = state.scene_selection.clone();
+        let health = state.document_health.clone();
+
+        let build = |state: &AppState| {
+            build_viewport_scene_input(
+                &state.doc,
+                &cam,
+                test_viewport_rect(),
+                None,
+                &element_visibility,
+                &selection,
+                &health,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                state.creating_loft.as_ref(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &[],
+                None,
+                None,
+            )
+            .preview_solid
+            .is_some()
+        };
+
+        // One section: nothing to blend yet, no preview.
+        state.creating_loft = Some(CreatingLoft {
+            sections: vec![LoftSection { sketch: s0, face: ExtrudeFace::Circle(0) }],
+        });
+        assert!(!build(&state), "a single section shouldn't preview a loft");
+
+        // Two sections: the blended solid previews.
+        state.creating_loft = Some(CreatingLoft {
+            sections: vec![
+                LoftSection { sketch: s0, face: ExtrudeFace::Circle(0) },
+                LoftSection { sketch: s1, face: ExtrudeFace::Circle(1) },
+            ],
+        });
+        assert!(build(&state), "two sections should preview the blended solid");
     }
 
     #[test]
@@ -10064,6 +10162,7 @@ mod tests {
             None,
             None,
             state.creating_edge_treatment.as_ref(),
+            None,
             None,
             None,
             None,

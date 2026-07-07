@@ -20,8 +20,9 @@ horns, hulls, funnels, transitions between shapes.
    a loop picks the whole loop; clicking a picked section removes it. Picked sections stay
    highlighted in the viewport and are listed in the context pane, with per-row remove
    buttons.
-3. With two or more sections picked, press **Enter**. The sections are blended in order
-   along the loft's direction — pick order doesn't matter.
+3. With two or more sections picked, a translucent preview of the blended solid appears and
+   updates as you add or remove sections. Press **Enter** to commit it. The sections are
+   blended in order along the loft's direction — pick order doesn't matter.
 
 ## Good to know
 

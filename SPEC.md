@@ -684,7 +684,10 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   on its sketch entities, so the collected set is visible in 3D as well as in the pane. The
   picked set also shows in the context pane's
   generic selection picker (§6.4-style rows with per-row remove and clear-all), seeded from
-  any profiles already selected when the tool is chosen. **Enter** (with ≥ 2 sections)
+  any profiles already selected when the tool is chosen. Once two or more sections are
+  picked, a translucent **ghost preview** of the blended solid renders live and updates as
+  sections are added or removed (#203), meshed exactly the way a commit would. **Enter**
+  (with ≥ 2 sections)
   commits: sections are ordered along the loft's principal direction (so pick order doesn't
   tangle the blend), and a new `Loft` feature plus its body land under a single undo marker.
   The mesh is a ruled loft rebuilt parametrically from the live profiles: each section
