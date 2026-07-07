@@ -14,7 +14,8 @@
 //! layer pure makes it testable off-browser: every command here is checked against the
 //! `Instruction` its `bearcad.*` closure produces for the same inputs.
 
-use crate::model::FaceId;
+use crate::actions::RevolveBodyChoice;
+use crate::model::{BooleanOpKind, ExtrudeFace, FaceId, RepeatMode, RevolveAxis};
 use crate::script::Instruction;
 use serde_json::{Map, Value};
 
@@ -30,9 +31,15 @@ pub fn opens_sketch_when_none_active(name: &str) -> bool {
 /// human-readable message for an unknown command or a bad argument, which the web runner
 /// surfaces the way native mlua raises a Lua error.
 ///
-/// Coverage is the sketch-building core (document/tool actions and 2D primitives); the
-/// heavier modeling verbs (extrude/revolve/loft/booleans/move/repeat/slice, drawings) are
-/// tracked separately and land on top of this same mechanism.
+/// Coverage is every `bearcad.*` verb whose `Instruction` is a pure function of its
+/// arguments: the document/IO actions, tool actions, 2D primitives, and the declarative
+/// modeling ops (revolve, loft, booleans, move, repeat, slice, and their `edit_*` forms).
+///
+/// `extrude`/`extrude_face` are intentionally absent: their closures read the live document
+/// to infer the owning sketch (`extrude_face_sketch`) before building the `Instruction`, so
+/// they can't be a pure `(name, args)` function — they belong to the stateful dispatch path
+/// alongside the query getters. Likewise the read-back getters (`get`/`count`/`selection`/
+/// `body_stats`/`sketch_dof`) return JSON data rather than an `Instruction`.
 pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, String> {
     let o = as_object(args)?;
     match name {
@@ -98,7 +105,271 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             let dimension = parse_dimension(o, x0, y0, x1, y1)?;
             Ok(Instruction::CreateLine { x0, y0, x1, y1, bezier, dimension })
         }
+
+        // ----- File / import-export (mirrors the desktop closures, which take positional
+        // path strings; over JSON every argument is named). -----
+        "open" => Ok(Instruction::Open(req_str(o, "path", "open")?)),
+        "save" => Ok(Instruction::Save(opt_str(o, "path")?)),
+        "export_stl" => Ok(Instruction::ExportStl {
+            path: req_str(o, "path", "export_stl")?,
+            body: opt_str(o, "body")?,
+        }),
+        "export_step" => Ok(Instruction::ExportStep {
+            path: req_str(o, "path", "export_step")?,
+            body: opt_str(o, "body")?,
+        }),
+        "import_stl" => Ok(Instruction::ImportStl { path: req_str(o, "path", "import_stl")? }),
+        "import_step" => Ok(Instruction::ImportStep { path: req_str(o, "path", "import_step")? }),
+        "import_image" => Ok(Instruction::ImportImage {
+            path: req_str(o, "path", "import_image")?,
+            plane: opt_usize(o, "plane")?,
+        }),
+        "calibrate_image" => Ok(Instruction::CalibrateImage {
+            image: req_usize(o, "image", "calibrate_image")?,
+            a: xy_pair(o, "from")?,
+            b: xy_pair(o, "to")?,
+            length: req_f32(o, "length", "calibrate_image")?,
+        }),
+
+        // ----- Declarative 3D modeling ops. -----
+        "revolve" => {
+            let faces = collect_profile_faces(o, false)?;
+            if faces.is_empty() {
+                return Err("revolve requires a `circle`/`circles`/`polygon` face".into());
+            }
+            let axis = match o.get("axis") {
+                None | Some(Value::Null) => {
+                    return Err("revolve requires `axis` (\"x\"|\"y\"|\"z\" or {line = i})".into())
+                }
+                Some(v) => revolve_axis_from_value(v)?,
+            };
+            let angle_deg = opt_f32(o, "angle")?.unwrap_or(360.0);
+            let symmetric = opt_bool(o, "symmetric")?.unwrap_or(false);
+            let bodies = usize_list(o, "bodies")?;
+            // Same mapping as the closure: "add"→AddTouching, "cut"→Cut, else NewBody.
+            let body = match opt_str(o, "body")?.as_deref() {
+                Some("add") => RevolveBodyChoice::AddTouching,
+                Some("cut") => RevolveBodyChoice::Cut,
+                _ => RevolveBodyChoice::NewBody,
+            };
+            Ok(Instruction::Revolve { faces, axis, angle_deg, symmetric, body, bodies })
+        }
+        "loft" => {
+            let faces = collect_profile_faces(o, true)?;
+            if faces.len() < 2 {
+                return Err("loft requires at least two sections (`circles`/`polygons`)".into());
+            }
+            Ok(Instruction::Loft { faces })
+        }
+        "combine" => {
+            let (kind, a, b, keep_b) = boolean_op_args(o)?;
+            Ok(Instruction::CreateBooleanOp { kind, a, b, keep_b })
+        }
+        "edit_boolean" => {
+            let op = req_usize(o, "index", "edit_boolean")?;
+            let (kind, a, b, keep_b) = boolean_op_args(o)?;
+            Ok(Instruction::EditBooleanOp { op, kind, a, b, keep_b })
+        }
+        "move_bodies" => {
+            let (targets, tx, ty, tz, axis, angle) = move_op_args(o)?;
+            Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle })
+        }
+        "edit_move" => {
+            let op = req_usize(o, "index", "edit_move")?;
+            let (targets, tx, ty, tz, axis, angle) = move_op_args(o)?;
+            Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle })
+        }
+        "repeat_bodies" => {
+            let (targets, axis, mode, count, spacing, length) = repeat_op_args(o)?;
+            Ok(Instruction::CreateRepeatOp { targets, axis, mode, count, spacing, length })
+        }
+        "edit_repeat" => {
+            let op = req_usize(o, "index", "edit_repeat")?;
+            let (targets, axis, mode, count, spacing, length) = repeat_op_args(o)?;
+            Ok(Instruction::EditRepeatOp { op, targets, axis, mode, count, spacing, length })
+        }
+        "slice" => {
+            let (targets, cutters, extend_infinite) = slice_op_args(o)?;
+            Ok(Instruction::CreateSliceOp { targets, cutters, extend_infinite })
+        }
+        "edit_slice" => {
+            let op = req_usize(o, "index", "edit_slice")?;
+            let (targets, cutters, extend_infinite) = slice_op_args(o)?;
+            Ok(Instruction::EditSliceOp { op, targets, cutters, extend_infinite })
+        }
+
         other => Err(format!("unknown command '{other}'")),
+    }
+}
+
+/// Collect the profile faces shared by `revolve`/`loft` (and, in the stateful path,
+/// `extrude`): a single `circle`, a `circles` list, a single `polygon` loop, and — only for
+/// `loft` (`allow_polygons`) — a `polygons` list of loops. Order matches the closures: single
+/// circle, circles list, polygon, polygons.
+fn collect_profile_faces(o: &Map<String, Value>, allow_polygons: bool) -> Result<Vec<ExtrudeFace>, String> {
+    let mut faces = Vec::new();
+    if let Some(i) = opt_usize(o, "circle")? {
+        faces.push(ExtrudeFace::Circle(i));
+    }
+    for i in usize_list(o, "circles")? {
+        faces.push(ExtrudeFace::Circle(i));
+    }
+    if let Some(lines) = opt_usize_array(o, "polygon")? {
+        faces.push(ExtrudeFace::Polygon(lines));
+    }
+    if allow_polygons {
+        for lines in usize_array_list(o, "polygons")? {
+            faces.push(ExtrudeFace::Polygon(lines));
+        }
+    }
+    Ok(faces)
+}
+
+/// `combine`/`edit_boolean` shared arguments: op kind (default "combine"), the A and B body
+/// lists, and the keep-B flag.
+fn boolean_op_args(o: &Map<String, Value>) -> Result<(BooleanOpKind, Vec<usize>, Vec<usize>, bool), String> {
+    let op_name = opt_str(o, "op")?.unwrap_or_else(|| "combine".to_string());
+    let kind = BooleanOpKind::from_name(&op_name)
+        .ok_or_else(|| format!("unknown boolean op '{op_name}' (combine|cut|intersect|difference)"))?;
+    Ok((kind, usize_list(o, "a")?, usize_list(o, "b")?, opt_bool(o, "keep_b")?.unwrap_or(false)))
+}
+
+/// `move_bodies`/`edit_move` shared arguments: target bodies, X/Y/Z/angle expression fields,
+/// and an optional rotation axis.
+#[allow(clippy::type_complexity)]
+fn move_op_args(
+    o: &Map<String, Value>,
+) -> Result<(Vec<usize>, String, String, String, Option<RevolveAxis>, String), String> {
+    let targets = usize_list(o, "bodies")?;
+    let axis = match o.get("axis") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(revolve_axis_from_value(v)?),
+    };
+    Ok((
+        targets,
+        expr_arg(o, "x")?,
+        expr_arg(o, "y")?,
+        expr_arg(o, "z")?,
+        axis,
+        expr_arg(o, "angle")?,
+    ))
+}
+
+/// `repeat_bodies`/`edit_repeat` shared arguments: target bodies, axis (default X), mode
+/// (default "count_gap"), and count/spacing/length expression fields.
+fn repeat_op_args(
+    o: &Map<String, Value>,
+) -> Result<(Vec<usize>, RevolveAxis, RepeatMode, String, String, String), String> {
+    let targets = usize_list(o, "bodies")?;
+    let axis = match o.get("axis") {
+        None | Some(Value::Null) => RevolveAxis::X,
+        Some(v) => revolve_axis_from_value(v)?,
+    };
+    let mode_name = opt_str(o, "mode")?.unwrap_or_else(|| "count_gap".to_string());
+    let mode = RepeatMode::from_name(&mode_name).ok_or_else(|| {
+        format!(
+            "unknown repeat mode '{mode_name}' (count_gap|count_fit_ends|count_fit_centers|\
+             fill_gap|fill_pitch|fill_max_pitch)"
+        )
+    })?;
+    Ok((
+        targets,
+        axis,
+        mode,
+        expr_arg(o, "count")?,
+        expr_arg(o, "spacing")?,
+        expr_arg(o, "length")?,
+    ))
+}
+
+/// `slice`/`edit_slice` shared arguments: target bodies, the planar cutters (face-spec
+/// objects), and the extend-to-infinity flag (default true).
+fn slice_op_args(o: &Map<String, Value>) -> Result<(Vec<usize>, Vec<FaceId>, bool), String> {
+    let targets = usize_list(o, "bodies")?;
+    let mut cutters = Vec::new();
+    match o.get("cutters") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(list)) => {
+            for t in list {
+                cutters.push(face_id_from_json(t)?);
+            }
+        }
+        Some(_) => return Err("slice `cutters` must be a list of face specs".into()),
+    }
+    Ok((targets, cutters, opt_bool(o, "extend")?.unwrap_or(true)))
+}
+
+/// A rotation/revolve axis from `"x"`/`"y"`/`"z"` or an object `{ line = i }`.
+fn revolve_axis_from_value(v: &Value) -> Result<RevolveAxis, String> {
+    match v {
+        Value::String(s) => match s.to_ascii_lowercase().as_str() {
+            "x" => Ok(RevolveAxis::X),
+            "y" => Ok(RevolveAxis::Y),
+            "z" => Ok(RevolveAxis::Z),
+            other => Err(format!("unknown axis '{other}' (x|y|z or {{line = i}})")),
+        },
+        Value::Object(t) => {
+            let line = req_usize(t, "line", "axis")?;
+            Ok(RevolveAxis::Line(line))
+        }
+        _ => Err("axis must be \"x\"|\"y\"|\"z\" or {line = i}".into()),
+    }
+}
+
+/// A `FaceId` from a face-spec object (slice cutters; also the stateful path's targets).
+/// Mirrors `parse_face_id_table`: a body cap/side wall (`extrude_cap`/`extrude_side`, with
+/// its extrusion + profile descriptors) or, otherwise, a plain `(kind, index)` via
+/// [`FaceId::from_script`] (a construction plane or a circle profile).
+fn face_id_from_json(v: &Value) -> Result<FaceId, String> {
+    let t = v.as_object().ok_or("face spec must be an object")?;
+    let kind = t
+        .get("kind")
+        .or_else(|| t.get("type"))
+        .and_then(Value::as_str)
+        .ok_or("face spec requires a string `kind`")?;
+    match kind.to_ascii_lowercase().as_str() {
+        "extrude_cap" | "extrude_side" => {
+            let extrusion = req_usize(t, "extrusion", "face")?;
+            let profile_kind = t
+                .get("profile")
+                .or_else(|| t.get("profile_kind"))
+                .and_then(Value::as_str)
+                .ok_or("extrude face spec requires a `profile`")?;
+            let profile_index = match opt_usize(t, "profile_index")? {
+                Some(i) => i,
+                None => opt_usize(t, "index")?.unwrap_or(0),
+            };
+            let profile = match profile_kind.to_ascii_lowercase().as_str() {
+                "circle" => ExtrudeFace::Circle(profile_index),
+                "polygon" => {
+                    let lines = match opt_usize_array(t, "profile_lines")? {
+                        Some(l) => l,
+                        None => opt_usize_array(t, "lines")?
+                            .ok_or("polygon profile requires `profile_lines`")?,
+                    };
+                    ExtrudeFace::Polygon(lines)
+                }
+                other => return Err(format!("unknown extrude profile kind '{other}'")),
+            };
+            if kind.eq_ignore_ascii_case("extrude_cap") {
+                Ok(FaceId::ExtrudeCap {
+                    extrusion,
+                    profile,
+                    top: opt_bool(t, "top")?.unwrap_or(true),
+                })
+            } else {
+                Ok(FaceId::ExtrudeSide {
+                    extrusion,
+                    profile,
+                    edge: opt_usize(t, "edge")?.unwrap_or(0) as u8,
+                })
+            }
+        }
+        _ => {
+            let index = req_usize(t, "index", "face")?;
+            FaceId::from_script(kind, index)
+                .ok_or_else(|| format!("unknown sketch face kind '{kind}'"))
+        }
     }
 }
 
@@ -187,6 +458,102 @@ fn req_str(o: &Map<String, Value>, key: &str, cmd: &str) -> Result<String, Strin
         Some(Value::String(s)) => Ok(s.clone()),
         _ => Err(format!("{cmd} requires a string `{key}`")),
     }
+}
+
+fn opt_str(o: &Map<String, Value>, key: &str) -> Result<Option<String>, String> {
+    match o.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(format!("`{key}` must be a string")),
+    }
+}
+
+fn opt_bool(o: &Map<String, Value>, key: &str) -> Result<Option<bool>, String> {
+    match o.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => Err(format!("`{key}` must be a boolean")),
+    }
+}
+
+/// An expression field (move/repeat translation, angle, count, spacing, length): a string
+/// expression, or a number stringified the way the mlua closures stringify Lua numbers
+/// (integers without a decimal point). Missing/null → empty string, matching the closures'
+/// `Value::Nil => String::new()`.
+fn expr_arg(o: &Map<String, Value>, key: &str) -> Result<String, String> {
+    match o.get(key) {
+        None | Some(Value::Null) => Ok(String::new()),
+        Some(Value::String(s)) => Ok(s.clone()),
+        Some(Value::Number(n)) => match n.as_i64() {
+            Some(i) => Ok(i.to_string()),
+            None => Ok(n.as_f64().map(|f| f.to_string()).unwrap_or_default()),
+        },
+        Some(_) => Err(format!("`{key}` must be an expression string or a number")),
+    }
+}
+
+/// A single non-negative integer element of an array, for the list helpers below.
+fn as_index(v: &Value, key: &str) -> Result<usize, String> {
+    v.as_f64()
+        .filter(|n| *n >= 0.0)
+        .map(|n| n.round() as usize)
+        .ok_or_else(|| format!("`{key}` must be non-negative integers"))
+}
+
+/// A list of non-negative integer indices (`bodies`, `a`, `b`, `circles`). Missing/null →
+/// empty (matching the closures' `unwrap_or_default()` on an optional `Vec<usize>`).
+fn usize_list(o: &Map<String, Value>, key: &str) -> Result<Vec<usize>, String> {
+    match o.get(key) {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(arr)) => arr.iter().map(|v| as_index(v, key)).collect(),
+        Some(_) => Err(format!("`{key}` must be a list of non-negative integers")),
+    }
+}
+
+/// A single required-when-present integer array (a `polygon` line loop). `None` when absent.
+fn opt_usize_array(o: &Map<String, Value>, key: &str) -> Result<Option<Vec<usize>>, String> {
+    match o.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(arr)) => {
+            arr.iter().map(|v| as_index(v, key)).collect::<Result<_, _>>().map(Some)
+        }
+        Some(_) => Err(format!("`{key}` must be a list of line indices")),
+    }
+}
+
+/// A list of integer arrays (`polygons`: several line loops). Missing/null → empty.
+fn usize_array_list(o: &Map<String, Value>, key: &str) -> Result<Vec<Vec<usize>>, String> {
+    match o.get(key) {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .map(|loop_v| {
+                loop_v
+                    .as_array()
+                    .ok_or_else(|| format!("`{key}` must be a list of line-index lists"))?
+                    .iter()
+                    .map(|v| as_index(v, key))
+                    .collect()
+            })
+            .collect(),
+        Some(_) => Err(format!("`{key}` must be a list of line-index lists")),
+    }
+}
+
+/// A plane-local `[x, y]` point pair (`calibrate_image`'s `from`/`to`).
+fn xy_pair(o: &Map<String, Value>, key: &str) -> Result<(f32, f32), String> {
+    let arr = o
+        .get(key)
+        .and_then(Value::as_array)
+        .filter(|a| a.len() == 2)
+        .ok_or_else(|| format!("`{key}` must be a two-element [x, y] point"))?;
+    let coord = |i: usize| {
+        arr[i]
+            .as_f64()
+            .map(|n| n as f32)
+            .ok_or_else(|| format!("`{key}` point needs numeric x and y"))
+    };
+    Ok((coord(0)?, coord(1)?))
 }
 
 #[cfg(test)]
@@ -314,5 +681,217 @@ mod tests {
         assert!(instruction_from_json("frobnicate", &json!({})).is_err());
         assert!(instruction_from_json("rect", &json!("not an object")).is_err());
         assert!(instruction_from_json("tool", &json!({})).is_err());
+    }
+
+    #[test]
+    fn io_commands_map_to_instructions() {
+        assert_eq!(
+            instruction_from_json("open", &json!({ "path": "part.bcad" })),
+            Ok(Instruction::Open("part.bcad".into()))
+        );
+        assert_eq!(instruction_from_json("save", &json!({})), Ok(Instruction::Save(None)));
+        assert_eq!(
+            instruction_from_json("save", &json!({ "path": "out.bcad" })),
+            Ok(Instruction::Save(Some("out.bcad".into())))
+        );
+        assert_eq!(
+            instruction_from_json("export_stl", &json!({ "path": "a.stl", "body": "Plate" })),
+            Ok(Instruction::ExportStl { path: "a.stl".into(), body: Some("Plate".into()) })
+        );
+        assert_eq!(
+            instruction_from_json("export_step", &json!({ "path": "a.step" })),
+            Ok(Instruction::ExportStep { path: "a.step".into(), body: None })
+        );
+        assert_eq!(
+            instruction_from_json("import_image", &json!({ "path": "p.png", "plane": 2 })),
+            Ok(Instruction::ImportImage { path: "p.png".into(), plane: Some(2) })
+        );
+        assert_eq!(
+            instruction_from_json(
+                "calibrate_image",
+                &json!({ "image": 0, "from": [0, 0], "to": [10, 0], "length": 25 })
+            ),
+            Ok(Instruction::CalibrateImage {
+                image: 0,
+                a: (0.0, 0.0),
+                b: (10.0, 0.0),
+                length: 25.0,
+            })
+        );
+    }
+
+    #[test]
+    fn revolve_defaults_match_the_closure() {
+        // Bare `bearcad.revolve{ polygon = {0,1,2,3}, axis = "y" }`: angle 360, not symmetric,
+        // new body, no explicit body list.
+        assert_eq!(
+            instruction_from_json("revolve", &json!({ "polygon": [0, 1, 2, 3], "axis": "y" })),
+            Ok(Instruction::Revolve {
+                faces: vec![ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
+                axis: RevolveAxis::Y,
+                angle_deg: 360.0,
+                symmetric: false,
+                body: RevolveBodyChoice::NewBody,
+                bodies: vec![],
+            })
+        );
+        assert_eq!(
+            instruction_from_json(
+                "revolve",
+                &json!({ "circle": 0, "axis": { "line": 3 }, "angle": 90, "symmetric": true,
+                         "body": "cut", "bodies": [1, 2] })
+            ),
+            Ok(Instruction::Revolve {
+                faces: vec![ExtrudeFace::Circle(0)],
+                axis: RevolveAxis::Line(3),
+                angle_deg: 90.0,
+                symmetric: true,
+                body: RevolveBodyChoice::Cut,
+                bodies: vec![1, 2],
+            })
+        );
+        assert!(instruction_from_json("revolve", &json!({ "circle": 0 })).is_err());
+        assert!(instruction_from_json("revolve", &json!({ "axis": "x" })).is_err());
+    }
+
+    #[test]
+    fn loft_gathers_circles_and_polygons() {
+        assert_eq!(
+            instruction_from_json(
+                "loft",
+                &json!({ "circles": [0, 1], "polygons": [[2, 3, 4, 5]] })
+            ),
+            Ok(Instruction::Loft {
+                faces: vec![
+                    ExtrudeFace::Circle(0),
+                    ExtrudeFace::Circle(1),
+                    ExtrudeFace::Polygon(vec![2, 3, 4, 5]),
+                ],
+            })
+        );
+        // Fewer than two sections is rejected, as in the closure.
+        assert!(instruction_from_json("loft", &json!({ "circle": 0 })).is_err());
+    }
+
+    #[test]
+    fn combine_defaults_and_edit() {
+        assert_eq!(
+            instruction_from_json("combine", &json!({ "a": [0], "b": [1] })),
+            Ok(Instruction::CreateBooleanOp {
+                kind: BooleanOpKind::Combine,
+                a: vec![0],
+                b: vec![1],
+                keep_b: false,
+            })
+        );
+        assert_eq!(
+            instruction_from_json(
+                "edit_boolean",
+                &json!({ "index": 2, "op": "cut", "a": [0], "b": [1], "keep_b": true })
+            ),
+            Ok(Instruction::EditBooleanOp {
+                op: 2,
+                kind: BooleanOpKind::Cut,
+                a: vec![0],
+                b: vec![1],
+                keep_b: true,
+            })
+        );
+        assert!(instruction_from_json("combine", &json!({ "op": "nope" })).is_err());
+    }
+
+    #[test]
+    fn move_bodies_stringifies_expression_fields() {
+        assert_eq!(
+            instruction_from_json(
+                "move_bodies",
+                &json!({ "bodies": [0], "x": 10, "y": "w/2", "angle": 45, "axis": "z" })
+            ),
+            Ok(Instruction::CreateMoveOp {
+                targets: vec![0],
+                tx: "10".into(),
+                ty: "w/2".into(),
+                tz: String::new(),
+                axis: Some(RevolveAxis::Z),
+                angle: "45".into(),
+            })
+        );
+        // No axis → no rotation; omitted expression fields become empty strings.
+        assert_eq!(
+            instruction_from_json("edit_move", &json!({ "index": 1, "bodies": [0], "z": 5 })),
+            Ok(Instruction::EditMoveOp {
+                op: 1,
+                targets: vec![0],
+                tx: String::new(),
+                ty: String::new(),
+                tz: "5".into(),
+                axis: None,
+                angle: String::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn repeat_bodies_defaults_axis_and_mode() {
+        assert_eq!(
+            instruction_from_json("repeat_bodies", &json!({ "bodies": [0], "count": 5, "spacing": 20 })),
+            Ok(Instruction::CreateRepeatOp {
+                targets: vec![0],
+                axis: RevolveAxis::X,
+                mode: RepeatMode::CountGap,
+                count: "5".into(),
+                spacing: "20".into(),
+                length: String::new(),
+            })
+        );
+        assert_eq!(
+            instruction_from_json(
+                "repeat_bodies",
+                &json!({ "bodies": [0], "axis": "y", "mode": "fill_pitch", "length": 100, "spacing": 12 })
+            ),
+            Ok(Instruction::CreateRepeatOp {
+                targets: vec![0],
+                axis: RevolveAxis::Y,
+                mode: RepeatMode::FillPitch,
+                count: String::new(),
+                spacing: "12".into(),
+                length: "100".into(),
+            })
+        );
+        assert!(instruction_from_json("repeat_bodies", &json!({ "mode": "nope" })).is_err());
+    }
+
+    #[test]
+    fn slice_reads_plane_and_body_cutters() {
+        assert_eq!(
+            instruction_from_json(
+                "slice",
+                &json!({ "bodies": [0], "cutters": [{ "kind": "plane", "index": 1 }] })
+            ),
+            Ok(Instruction::CreateSliceOp {
+                targets: vec![0],
+                cutters: vec![FaceId::ConstructionPlane(1)],
+                extend_infinite: true,
+            })
+        );
+        // A body cap cutter, and the extend flag turned off.
+        assert_eq!(
+            instruction_from_json(
+                "edit_slice",
+                &json!({ "index": 0, "bodies": [1], "extend": false,
+                         "cutters": [{ "kind": "extrude_cap", "extrusion": 0, "profile": "polygon",
+                                       "profile_lines": [0, 1, 2, 3], "top": false }] })
+            ),
+            Ok(Instruction::EditSliceOp {
+                op: 0,
+                targets: vec![1],
+                cutters: vec![FaceId::ExtrudeCap {
+                    extrusion: 0,
+                    profile: ExtrudeFace::Polygon(vec![0, 1, 2, 3]),
+                    top: false,
+                }],
+                extend_infinite: false,
+            })
+        );
     }
 }
