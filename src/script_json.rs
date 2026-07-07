@@ -15,9 +15,11 @@
 //! `Instruction` its `bearcad.*` closure produces for the same inputs.
 
 use crate::actions::RevolveBodyChoice;
-use crate::model::{BooleanOpKind, ExtrudeFace, FaceId, RepeatMode, RevolveAxis};
+use crate::model::{
+    BooleanOpKind, ConstraintKind, Document, ExtrudeFace, FaceId, RepeatMode, RevolveAxis,
+};
 use crate::script::Instruction;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 /// Commands that draw into a sketch and, like their mlua closures, begin one on the ground
 /// (XY) construction plane when no sketch is active. The caller checks live state and
@@ -370,6 +372,203 @@ fn face_id_from_json(v: &Value) -> Result<FaceId, String> {
             FaceId::from_script(kind, index)
                 .ok_or_else(|| format!("unknown sketch face kind '{kind}'"))
         }
+    }
+}
+
+/// The read-back query verbs (#107): pure reads of the live document that return JSON data
+/// rather than an [`Instruction`]. `count` → a number; `get` and `body_stats` → an object, or
+/// JSON `null` when the index doesn't resolve. Mirrors the `count`/`get`/`body_stats` mlua
+/// closures exactly.
+///
+/// The `selection`/`status`/`sketch_dof`/`sketch_conflicts` reads additionally need
+/// `AppState` (the live selection / sketch session) beyond the document, so they join the
+/// stateful dispatch path; this document-only slice is what's testable off-browser.
+pub fn query_from_json(name: &str, args: &Value, doc: &Document) -> Result<Value, String> {
+    let o = as_object(args)?;
+    match name {
+        "count" => {
+            let kind = req_str(o, "kind", "count")?;
+            let n = match kind.to_ascii_lowercase().as_str() {
+                "line" => doc.lines.iter().filter(|e| !e.deleted).count(),
+                "circle" => doc.circles.iter().filter(|e| !e.deleted).count(),
+                "sketch" => doc.sketches.iter().filter(|e| !e.deleted).count(),
+                "constraint" => doc.constraints.iter().filter(|e| !e.deleted).count(),
+                "construction_plane" | "plane" => {
+                    doc.construction_planes.iter().filter(|e| !e.deleted).count()
+                }
+                "extrusion" => doc.extrusions.iter().filter(|e| !e.deleted).count(),
+                "body" => doc.bodies.iter().filter(|e| !e.deleted).count(),
+                "drawing" => doc.drawings.iter().filter(|e| !e.deleted).count(),
+                "parameter" => doc.parameters.iter().filter(|e| !e.deleted).count(),
+                other => {
+                    return Err(format!(
+                        "unknown count kind '{other}' (valid kinds: line, circle, sketch, \
+                         constraint, construction_plane, extrusion, body, drawing, parameter)"
+                    ))
+                }
+            };
+            Ok(json!(n))
+        }
+        "get" => {
+            let kind = req_str(o, "kind", "get")?;
+            let index = req_usize(o, "index", "get")?;
+            Ok(get_element(doc, &kind, index)?)
+        }
+        "body_stats" => {
+            let index = req_usize(o, "index", "body_stats")?;
+            if !doc.bodies.get(index).is_some_and(|b| !b.deleted) {
+                return Ok(Value::Null);
+            }
+            let Some(mesh) = crate::extrude::body_solid_mesh(doc, index) else {
+                return Ok(Value::Null);
+            };
+            let Some((min, max)) = mesh.bounds() else {
+                return Ok(Value::Null);
+            };
+            Ok(json!({
+                "volume": crate::extrude::mesh_signed_volume(&mesh).abs(),
+                "triangles": mesh.triangles.len(),
+                "bbox": { "min": vec3_json(min), "max": vec3_json(max) },
+            }))
+        }
+        other => Err(format!("unknown query '{other}'")),
+    }
+}
+
+/// Body of `get`: the JSON object for one element, or `Value::Null` when it doesn't resolve.
+fn get_element(doc: &Document, kind: &str, index: usize) -> Result<Value, String> {
+    let mut t = Map::new();
+    match kind.to_ascii_lowercase().as_str() {
+        "line" => {
+            let Some(line) = doc.lines.get(index).filter(|e| !e.deleted) else {
+                return Ok(Value::Null);
+            };
+            t.insert("x0".into(), json!(line.x0));
+            t.insert("y0".into(), json!(line.y0));
+            t.insert("x1".into(), json!(line.x1));
+            t.insert("y1".into(), json!(line.y1));
+            t.insert("construction".into(), json!(line.construction));
+            t.insert("curved".into(), json!(line.is_curved()));
+            if let Some([c0, c1]) = line.bezier {
+                t.insert("bezier".into(), json!([[c0.0, c0.1], [c1.0, c1.1]]));
+            }
+            t.insert("length".into(), json!(line.length()));
+            if let Some(name) = &line.name {
+                t.insert("name".into(), json!(name));
+            }
+            t.insert("sketch".into(), json!(line.sketch));
+        }
+        "circle" => {
+            let Some(circle) = doc.circles.get(index).filter(|e| !e.deleted) else {
+                return Ok(Value::Null);
+            };
+            t.insert("x".into(), json!(circle.cx));
+            t.insert("y".into(), json!(circle.cy));
+            t.insert("r".into(), json!(circle.r));
+            t.insert("diameter".into(), json!(circle.diameter()));
+            t.insert("construction".into(), json!(circle.construction));
+            if let Some(name) = &circle.name {
+                t.insert("name".into(), json!(name));
+            }
+            t.insert("sketch".into(), json!(circle.sketch));
+        }
+        "sketch" => {
+            let Some(sketch) = doc.sketches.get(index).filter(|e| !e.deleted) else {
+                return Ok(Value::Null);
+            };
+            t.insert("face".into(), json!(face_kind_name(&sketch.face)));
+            if let Some(name) = &sketch.name {
+                t.insert("name".into(), json!(name));
+            }
+        }
+        "constraint" => {
+            let Some(constraint) = doc.constraints.get(index).filter(|e| !e.deleted) else {
+                return Ok(Value::Null);
+            };
+            t.insert("kind".into(), json!(constraint_kind_name(&constraint.kind)));
+            t.insert("expression".into(), json!(constraint.expression));
+            if let Some(name) = &constraint.name {
+                t.insert("name".into(), json!(name));
+            }
+            t.insert("sketch".into(), json!(constraint.sketch));
+        }
+        "construction_plane" | "plane" => {
+            let Some(plane) = doc.construction_planes.get(index).filter(|e| !e.deleted) else {
+                return Ok(Value::Null);
+            };
+            t.insert("origin".into(), vec3_json(plane.origin));
+            t.insert("normal".into(), vec3_json(plane.normal));
+            if let Some(name) = &plane.name {
+                t.insert("name".into(), json!(name));
+            }
+        }
+        "extrusion" => {
+            let Some(extrusion) = doc.extrusions.get(index).filter(|e| !e.deleted) else {
+                return Ok(Value::Null);
+            };
+            t.insert("distance".into(), json!(extrusion.distance));
+            t.insert("sketch".into(), json!(extrusion.sketch));
+            t.insert("faces".into(), json!(extrusion.faces.len()));
+            if let Some(name) = &extrusion.name {
+                t.insert("name".into(), json!(name));
+            }
+        }
+        "body" => {
+            let Some(body) = doc.bodies.get(index).filter(|e| !e.deleted) else {
+                return Ok(Value::Null);
+            };
+            if let Some(name) = &body.name {
+                t.insert("name".into(), json!(name));
+            }
+            t.insert("add".into(), json!(body.source.extrusion_indices()));
+            t.insert("cut".into(), json!(body.source.cut_extrusion_indices()));
+        }
+        "parameter" => {
+            let Some(param) = doc.parameters.get(index).filter(|e| !e.deleted) else {
+                return Ok(Value::Null);
+            };
+            t.insert("name".into(), json!(param.name));
+            t.insert("expression".into(), json!(param.expression));
+        }
+        other => {
+            return Err(format!(
+                "unknown get kind '{other}' (valid kinds: line, circle, sketch, constraint, \
+                 construction_plane, extrusion, body, parameter)"
+            ))
+        }
+    }
+    Ok(Value::Object(t))
+}
+
+/// A world-space vector as a positional JSON triple `[x, y, z]` (matching the mlua getters'
+/// `vec3_lua`, which returns a 1-based Lua array).
+fn vec3_json(v: glam::Vec3) -> Value {
+    json!([v.x, v.y, v.z])
+}
+
+/// Short script name for the face a sketch is hosted on (mirrors `lua_script::face_kind_name`).
+fn face_kind_name(face: &FaceId) -> &'static str {
+    match face {
+        FaceId::Circle(_) => "circle",
+        FaceId::Polygon(_) => "polygon",
+        FaceId::ConstructionPlane(_) => "construction_plane",
+        FaceId::ExtrudeCap { .. } => "extrude_cap",
+        FaceId::ExtrudeSide { .. } => "extrude_side",
+    }
+}
+
+/// Short script name for a constraint's kind (mirrors `lua_script::constraint_kind_name`).
+fn constraint_kind_name(kind: &ConstraintKind) -> &'static str {
+    match kind {
+        ConstraintKind::Distance { .. } => "distance",
+        ConstraintKind::Parallel { .. } => "parallel",
+        ConstraintKind::Perpendicular { .. } => "perpendicular",
+        ConstraintKind::Equal { .. } => "equal",
+        ConstraintKind::Coincident { .. } => "coincident",
+        ConstraintKind::Midpoint { .. } => "midpoint",
+        ConstraintKind::Horizontal { .. } => "horizontal",
+        ConstraintKind::Vertical { .. } => "vertical",
+        ConstraintKind::Angle { .. } => "angle",
     }
 }
 
@@ -859,6 +1058,65 @@ mod tests {
             })
         );
         assert!(instruction_from_json("repeat_bodies", &json!({ "mode": "nope" })).is_err());
+    }
+
+    fn doc_with(lines: Value, circles: Value) -> Document {
+        let mut doc = Document::default();
+        doc.lines = serde_json::from_value(lines).unwrap();
+        doc.circles = serde_json::from_value(circles).unwrap();
+        doc
+    }
+
+    #[test]
+    fn count_ignores_deleted_entities() {
+        let doc = doc_with(
+            json!([
+                { "sketch": 0, "x0": 0, "y0": 0, "x1": 30, "y1": 0 },
+                { "sketch": 0, "x0": 0, "y0": 0, "x1": 0, "y1": 10, "deleted": true },
+                { "sketch": 0, "x0": 0, "y0": 10, "x1": 30, "y1": 10 },
+            ]),
+            json!([{ "sketch": 0, "cx": 5, "cy": 5, "r": 3 }]),
+        );
+        assert_eq!(query_from_json("count", &json!({ "kind": "line" }), &doc), Ok(json!(2)));
+        assert_eq!(query_from_json("count", &json!({ "kind": "circle" }), &doc), Ok(json!(1)));
+        assert_eq!(query_from_json("count", &json!({ "kind": "body" }), &doc), Ok(json!(0)));
+        assert!(query_from_json("count", &json!({ "kind": "nope" }), &doc).is_err());
+    }
+
+    #[test]
+    fn get_line_and_circle_report_geometry() {
+        let doc = doc_with(
+            json!([{ "sketch": 0, "x0": 0, "y0": 0, "x1": 3, "y1": 4 }]),
+            json!([{ "sketch": 1, "cx": 5, "cy": 6, "r": 2 }]),
+        );
+        let line = query_from_json("get", &json!({ "kind": "line", "index": 0 }), &doc).unwrap();
+        assert_eq!(line["x1"], json!(3.0));
+        assert_eq!(line["y1"], json!(4.0));
+        assert_eq!(line["length"], json!(5.0));
+        assert_eq!(line["construction"], json!(false));
+        assert_eq!(line["curved"], json!(false));
+        assert_eq!(line["sketch"], json!(0));
+
+        let circle = query_from_json("get", &json!({ "kind": "circle", "index": 0 }), &doc).unwrap();
+        assert_eq!(circle["x"], json!(5.0));
+        assert_eq!(circle["r"], json!(2.0));
+        assert_eq!(circle["diameter"], json!(4.0));
+        assert_eq!(circle["sketch"], json!(1));
+    }
+
+    #[test]
+    fn get_out_of_range_index_is_null() {
+        let doc = doc_with(json!([]), json!([]));
+        assert_eq!(
+            query_from_json("get", &json!({ "kind": "line", "index": 7 }), &doc),
+            Ok(Value::Null)
+        );
+        assert_eq!(
+            query_from_json("body_stats", &json!({ "index": 0 }), &doc),
+            Ok(Value::Null)
+        );
+        assert!(query_from_json("get", &json!({ "kind": "nope", "index": 0 }), &doc).is_err());
+        assert!(query_from_json("frobnicate", &json!({}), &doc).is_err());
     }
 
     #[test]
