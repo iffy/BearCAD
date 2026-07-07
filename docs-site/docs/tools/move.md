@@ -13,7 +13,8 @@ part, space out duplicates, or angle a bracket into place.
 ## How to use it
 
 1. Pick the **Move** tool and click one or more bodies. Re-clicking removes one; the
-   picked set is listed in the context pane.
+   picked set shows in the context pane's **Bodies** element picker (the same combo-box
+   control the other tools use), where you can review and remove them.
 2. Type the translation **X / Y / Z** amounts. These are expressions — numbers,
    parameters, arithmetic — so the move stays parametric.
 3. To rotate, pick an **axis** (the X/Y/Z buttons, or click any line in the viewport) and

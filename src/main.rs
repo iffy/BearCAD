@@ -3450,21 +3450,7 @@ impl eframe::App for App {
                 move_op: (self.state.tool == Tool::Move).then(|| {
                     let cm = self.state.creating_move.as_ref();
                     context::MoveControl {
-                        target_rows: cm
-                            .map(|c| {
-                                c.targets
-                                    .iter()
-                                    .map(|&bi| {
-                                        names::element_name(
-                                            &self.state.doc,
-                                            SceneElement::Body(bi),
-                                        )
-                                        .map(|n| n.to_string())
-                                        .unwrap_or_else(|| format!("Body {bi}"))
-                                    })
-                                    .collect()
-                            })
-                            .unwrap_or_default(),
+                        targets: cm.map(|c| c.targets.clone()).unwrap_or_default(),
                         tx: cm.map(|c| c.tx.clone()).unwrap_or_default(),
                         ty: cm.map(|c| c.ty.clone()).unwrap_or_default(),
                         tz: cm.map(|c| c.tz.clone()).unwrap_or_default(),
@@ -3518,21 +3504,7 @@ impl eframe::App for App {
                             .map(|offsets| offsets.len() + 1)
                     });
                     context::RepeatControl {
-                        target_rows: cr
-                            .map(|c| {
-                                c.targets
-                                    .iter()
-                                    .map(|&bi| {
-                                        names::element_name(
-                                            &self.state.doc,
-                                            SceneElement::Body(bi),
-                                        )
-                                        .map(|n| n.to_string())
-                                        .unwrap_or_else(|| format!("Body {bi}"))
-                                    })
-                                    .collect()
-                            })
-                            .unwrap_or_default(),
+                        targets: cr.map(|c| c.targets.clone()).unwrap_or_default(),
                         axis_label: cr
                             .map(|c| match c.axis {
                                 model::RevolveAxis::Line(li) => names::element_name(
@@ -3812,12 +3784,6 @@ impl eframe::App for App {
                             context::MoveEdit::Tz(v) => cm.tz = v,
                             context::MoveEdit::Angle(v) => cm.angle = v,
                             context::MoveEdit::Axis(a) => cm.axis = a,
-                            context::MoveEdit::RemoveTarget(Some(i)) => {
-                                if i < cm.targets.len() {
-                                    cm.targets.remove(i);
-                                }
-                            }
-                            context::MoveEdit::RemoveTarget(None) => cm.targets.clear(),
                             context::MoveEdit::Commit => unreachable!(),
                         }
                     }
@@ -3853,12 +3819,6 @@ impl eframe::App for App {
                             context::RepeatEdit::Count(v) => cr.count = v,
                             context::RepeatEdit::Spacing(v) => cr.spacing = v,
                             context::RepeatEdit::Length(v) => cr.length = v,
-                            context::RepeatEdit::RemoveTarget(Some(i)) => {
-                                if i < cr.targets.len() {
-                                    cr.targets.remove(i);
-                                }
-                            }
-                            context::RepeatEdit::RemoveTarget(None) => cr.targets.clear(),
                             context::RepeatEdit::Commit => unreachable!(),
                         }
                     }
@@ -3987,13 +3947,17 @@ impl eframe::App for App {
                 match target {
                     context::PickerTarget::RevolveCut => {
                         if let Some(cr) = self.state.creating_revolve.as_mut() {
-                            match edit {
-                                Some(index) if index < cr.cut_bodies.len() => {
-                                    cr.cut_bodies.remove(index);
-                                }
-                                Some(_) => {}
-                                None => cr.cut_bodies.clear(),
-                            }
+                            remove_or_clear(&mut cr.cut_bodies, edit);
+                        }
+                    }
+                    context::PickerTarget::MoveTargets => {
+                        if let Some(cm) = self.state.creating_move.as_mut() {
+                            remove_or_clear(&mut cm.targets, edit);
+                        }
+                    }
+                    context::PickerTarget::RepeatTargets => {
+                        if let Some(cr) = self.state.creating_repeat.as_mut() {
+                            remove_or_clear(&mut cr.targets, edit);
                         }
                     }
                 }
@@ -4312,6 +4276,18 @@ fn build_gpu_dimension_labels(
 const SIDE_PANEL_IDS: &[&str] = &["tree", "parameters", "context"];
 
 /// True while the pointer is on a side-panel resize grip (don't override its cursor).
+/// Apply a tool-owned element picker's removal (#213) to its backing body-index vector:
+/// `Some(i)` drops row `i`, `None` clears the whole set.
+fn remove_or_clear(bodies: &mut Vec<usize>, edit: Option<usize>) {
+    match edit {
+        Some(index) if index < bodies.len() => {
+            bodies.remove(index);
+        }
+        Some(_) => {}
+        None => bodies.clear(),
+    }
+}
+
 fn side_panel_resize_active(ctx: &egui::Context) -> bool {
     SIDE_PANEL_IDS.iter().any(|id| {
         ctx.read_response(egui::Id::new(*id).with("__resize"))

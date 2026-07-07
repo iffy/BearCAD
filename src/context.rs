@@ -109,7 +109,8 @@ pub struct BooleanControl {
 /// component expressions, the rotation axis + angle expression.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MoveControl {
-    pub target_rows: Vec<String>,
+    /// Picked bodies to move (rendered through the unified element picker, #213).
+    pub targets: Vec<usize>,
     pub tx: String,
     pub ty: String,
     pub tz: String,
@@ -127,14 +128,14 @@ pub enum MoveEdit {
     Tz(String),
     Angle(String),
     Axis(Option<crate::model::RevolveAxis>),
-    RemoveTarget(Option<usize>),
     Commit,
 }
 
 /// What the Repeat tool's context section shows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RepeatControl {
-    pub target_rows: Vec<String>,
+    /// Picked bodies to repeat (rendered through the unified element picker, #213).
+    pub targets: Vec<usize>,
     pub axis_label: String,
     pub mode: crate::model::RepeatMode,
     pub count: String,
@@ -154,7 +155,6 @@ pub enum RepeatEdit {
     Count(String),
     Spacing(String),
     Length(String),
-    RemoveTarget(Option<usize>),
     Commit,
 }
 
@@ -410,6 +410,10 @@ pub struct ToolPickerView {
 pub enum PickerTarget {
     /// The Revolve tool's cut bodies (`CreatingRevolve::cut_bodies`).
     RevolveCut,
+    /// The Move tool's target bodies (`CreatingMove::targets`).
+    MoveTargets,
+    /// The Repeat tool's target bodies (`CreatingRepeat::targets`).
+    RepeatTargets,
 }
 
 /// A user edit from the unified selection element picker (#213): drop one element from the
@@ -452,6 +456,30 @@ fn selection_picker_for(tool: Tool, selection: &SceneSelection) -> Option<Elemen
     Some(picker)
 }
 
+/// Build a Body-filtered tool picker (#213) from a tool's picked body-index set. `selected_color`
+/// overrides the highlight (e.g. red for bodies that get cut). Focused, since it's the set the
+/// active tool's viewport clicks feed.
+fn body_tool_picker(
+    heading: &'static str,
+    target: PickerTarget,
+    bodies: &[usize],
+    placeholder: &str,
+    selected_color: Option<eframe::egui::Color32>,
+) -> ToolPickerView {
+    let mut picker = ElementPicker::new(ElementFilter::kind(ElementKind::Body), PickLimit::Infinite)
+        .with_placeholder(placeholder.to_string());
+    if let Some(color) = selected_color {
+        picker = picker.with_selected_color(color);
+    }
+    picker.set_focused(true);
+    picker.set_picked(bodies.iter().map(|&bi| SceneElement::Body(bi)));
+    ToolPickerView {
+        heading,
+        picker,
+        target,
+    }
+}
+
 pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let name = single_nameable_from_selection(input.selection).map(|element| NameControl { element });
     let snapping =
@@ -490,25 +518,37 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let selection_picker = (!drawing)
         .then(|| selection_picker_for(input.tool, input.selection))
         .flatten();
-    // Tool-owned element pickers (#213). Revolve's cut bodies use a Body-filtered picker with
-    // the red "cut" highlight override — the picked bodies are consumed destructively.
+    // Tool-owned element pickers (#213). Each is a Body-filtered picker built from the tool's
+    // in-progress set. Bodies consumed destructively (Revolve cut) get the red highlight override.
     let mut tool_pickers = Vec::new();
     if let Some(r) = input.revolve.as_ref() {
         if r.body_choice == crate::actions::RevolveBodyChoice::Cut {
-            let mut picker = ElementPicker::new(
-                ElementFilter::kind(ElementKind::Body),
-                PickLimit::Infinite,
-            )
-            .with_placeholder("Click a body to cut")
-            .with_selected_color(crate::theme::CUT_ACCENT);
-            picker.set_focused(true);
-            picker.set_picked(r.cut_bodies.iter().map(|&bi| SceneElement::Body(bi)));
-            tool_pickers.push(ToolPickerView {
-                heading: "Cut bodies",
-                picker,
-                target: PickerTarget::RevolveCut,
-            });
+            tool_pickers.push(body_tool_picker(
+                "Cut bodies",
+                PickerTarget::RevolveCut,
+                &r.cut_bodies,
+                "Click a body to cut",
+                Some(crate::theme::CUT_ACCENT),
+            ));
         }
+    }
+    if let Some(m) = input.move_op.as_ref() {
+        tool_pickers.push(body_tool_picker(
+            "Bodies",
+            PickerTarget::MoveTargets,
+            &m.targets,
+            "Click bodies in the viewport",
+            None,
+        ));
+    }
+    if let Some(r) = input.repeat_op.as_ref() {
+        tool_pickers.push(body_tool_picker(
+            "Bodies",
+            PickerTarget::RepeatTargets,
+            &r.targets,
+            "Click bodies in the viewport",
+            None,
+        ));
     }
     let calibrate_image = input.calibrate_image;
     let revolve = input.revolve.clone();
@@ -1049,6 +1089,28 @@ pub fn show_pane(
         );
     }
 
+    // Tool-owned element pickers (#213) render at the top of the active tool's section, above
+    // its parameter controls — the picked set is the tool's primary input.
+    for view in &content.tool_pickers {
+        any_control = true;
+        ui.separator();
+        ui.label(egui::RichText::new(view.heading).strong());
+        ui.add_enabled_ui(controls_enabled, |ui| {
+            if let Some(event) = crate::element_picker::show(ui, &view.picker, doc, view.heading) {
+                match event {
+                    crate::element_picker::PickerEvent::Focus => {}
+                    // Tool-owned sets are ordered vectors, so a row index maps straight through.
+                    crate::element_picker::PickerEvent::Remove(i) => {
+                        on_tool_picker_edit(view.target, Some(i))
+                    }
+                    crate::element_picker::PickerEvent::Clear => {
+                        on_tool_picker_edit(view.target, None)
+                    }
+                }
+            }
+        });
+    }
+
     if let Some(control) = &content.revolve {
         any_control = true;
         ui.separator();
@@ -1200,24 +1262,7 @@ pub fn show_pane(
         ui.label(
             egui::RichText::new(if control.editing { "Edit move" } else { "Move" }).strong(),
         );
-        ui.label(
-            egui::RichText::new(format!("Bodies ({})", control.target_rows.len())).strong(),
-        );
-        if control.target_rows.is_empty() {
-            ui.label(
-                egui::RichText::new("Click bodies in the viewport")
-                    .color(egui::Color32::from_gray(140))
-                    .size(11.0),
-            );
-        }
-        for (i, row) in control.target_rows.iter().enumerate() {
-            ui.horizontal(|ui| {
-                if ui.small_button("✕").on_hover_text("Remove from set").clicked() {
-                    on_move_edit(MoveEdit::RemoveTarget(Some(i)));
-                }
-                ui.label(row);
-            });
-        }
+        // The picked bodies render through the unified element picker (see `tool_pickers`).
         let mut pending: Option<MoveEdit> = None;
         {
             let mut field = |ui: &mut egui::Ui,
@@ -1302,24 +1347,7 @@ pub fn show_pane(
             egui::RichText::new(if control.editing { "Edit repeat" } else { "Linear repeat" })
                 .strong(),
         );
-        ui.label(
-            egui::RichText::new(format!("Bodies ({})", control.target_rows.len())).strong(),
-        );
-        if control.target_rows.is_empty() {
-            ui.label(
-                egui::RichText::new("Click bodies in the viewport")
-                    .color(egui::Color32::from_gray(140))
-                    .size(11.0),
-            );
-        }
-        for (i, row) in control.target_rows.iter().enumerate() {
-            ui.horizontal(|ui| {
-                if ui.small_button("✕").on_hover_text("Remove from set").clicked() {
-                    on_repeat_edit(RepeatEdit::RemoveTarget(Some(i)));
-                }
-                ui.label(row);
-            });
-        }
+        // The picked bodies render through the unified element picker (see `tool_pickers`).
         let mut pending: Option<RepeatEdit> = None;
         ui.horizontal(|ui| {
             ui.label("Axis");
@@ -1583,26 +1611,6 @@ pub fn show_pane(
                     }
                     crate::element_picker::PickerEvent::Clear => {
                         on_selection_edit(SelectionEdit::Clear)
-                    }
-                }
-            }
-        });
-    }
-
-    for view in &content.tool_pickers {
-        any_control = true;
-        ui.separator();
-        ui.label(egui::RichText::new(view.heading).strong());
-        ui.add_enabled_ui(controls_enabled, |ui| {
-            if let Some(event) = crate::element_picker::show(ui, &view.picker, doc, view.heading) {
-                match event {
-                    crate::element_picker::PickerEvent::Focus => {}
-                    // Tool-owned sets are ordered vectors, so a row index maps straight through.
-                    crate::element_picker::PickerEvent::Remove(i) => {
-                        on_tool_picker_edit(view.target, Some(i))
-                    }
-                    crate::element_picker::PickerEvent::Clear => {
-                        on_tool_picker_edit(view.target, None)
                     }
                 }
             }
@@ -1998,6 +2006,61 @@ mod tests {
             ..input(&doc, &selection)
         };
         assert!(context_pane_content(&new_body_input).tool_pickers.is_empty());
+    }
+
+    #[test]
+    fn move_and_repeat_yield_body_pickers_without_cut_override() {
+        use crate::hierarchy::SceneElement;
+        let doc = Document::default();
+        let selection = SceneSelection::default();
+
+        let move_input = ContextInput {
+            tool: Tool::Move,
+            move_op: Some(MoveControl {
+                targets: vec![1, 4],
+                tx: String::new(),
+                ty: String::new(),
+                tz: String::new(),
+                axis_label: None,
+                angle: String::new(),
+                editing: false,
+                can_commit: true,
+            }),
+            ..input(&doc, &selection)
+        };
+        let pickers = context_pane_content(&move_input).tool_pickers;
+        assert_eq!(pickers.len(), 1);
+        assert_eq!(pickers[0].target, PickerTarget::MoveTargets);
+        assert_eq!(
+            pickers[0].picker.picked(),
+            &[SceneElement::Body(1), SceneElement::Body(4)]
+        );
+        assert!(!pickers[0].picker.accepts(&SceneElement::Line(0)));
+        // Move doesn't consume its bodies, so it keeps the default (non-red) highlight.
+        assert_eq!(
+            pickers[0].picker.selected_color(crate::theme::FOCUS_ACCENT),
+            crate::theme::FOCUS_ACCENT
+        );
+
+        let repeat_input = ContextInput {
+            tool: Tool::Repeat,
+            repeat_op: Some(RepeatControl {
+                targets: vec![7],
+                axis_label: "the X axis".to_string(),
+                mode: crate::model::RepeatMode::CountGap,
+                count: "3".to_string(),
+                spacing: String::new(),
+                length: String::new(),
+                preview_instances: Some(3),
+                editing: false,
+                can_commit: true,
+            }),
+            ..input(&doc, &selection)
+        };
+        let pickers = context_pane_content(&repeat_input).tool_pickers;
+        assert_eq!(pickers.len(), 1);
+        assert_eq!(pickers[0].target, PickerTarget::RepeatTargets);
+        assert_eq!(pickers[0].picker.picked(), &[SceneElement::Body(7)]);
     }
 
     #[test]

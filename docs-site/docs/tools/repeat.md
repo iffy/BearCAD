@@ -12,7 +12,9 @@ wall, teeth on a rack.
 
 ## How to use it
 
-1. Pick the **Repeat** tool and click one or more bodies.
+1. Pick the **Repeat** tool and click one or more bodies. The picked set shows in the context
+   pane's **Bodies** element picker — the same combo-box control the other tools use — where
+   you can review and remove them.
 2. Pick the **axis**: the X/Y/Z buttons in the context pane, or click any line in the
    viewport.
 3. Choose how to space the copies (see the modes below) and fill in the values — every
