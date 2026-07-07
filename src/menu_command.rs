@@ -25,6 +25,8 @@ pub enum MenuCommand {
     Quit,
     UndoLast,
     Clear,
+    /// Create a new technical drawing (CAD menu, #210).
+    NewDrawing,
     About,
     /// Open the third-party open-source licenses document (Help menu). See #86.
     Licenses,
@@ -55,6 +57,7 @@ impl MenuCommand {
             MenuCommand::Quit => None,
             MenuCommand::UndoLast => Some(Action::UndoLast),
             MenuCommand::Clear => Some(Action::Clear),
+            MenuCommand::NewDrawing => Some(Action::CreateDrawing { name: None }),
             MenuCommand::About => None,
             // Opens a URL in the browser, handled in the app frame loop.
             MenuCommand::Licenses => None,

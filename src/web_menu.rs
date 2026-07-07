@@ -71,6 +71,12 @@ pub fn bar(ctx: &egui::Context, pane_visible: impl Fn(Pane) -> bool) -> Option<M
                     ui.close();
                 }
             });
+            ui.menu_button("CAD", |ui| {
+                if ui.button("New Drawing").clicked() {
+                    picked = Some(MenuCommand::NewDrawing);
+                    ui.close();
+                }
+            });
             ui.menu_button("View", |ui| {
                 if ui.button("Zoom to fit").clicked() {
                     picked = Some(MenuCommand::ZoomToFit);

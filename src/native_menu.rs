@@ -33,6 +33,7 @@ pub struct MenuIds {
     pub quit: MenuId,
     pub undo: MenuId,
     pub clear: MenuId,
+    pub new_drawing: MenuId,
     pub about: MenuId,
     pub licenses: MenuId,
     pub install_cli: MenuId,
@@ -116,6 +117,9 @@ pub fn command_for_id(
     if ids.clear == id {
         return Some(MenuCommand::Clear);
     }
+    if id == &ids.new_drawing {
+        return Some(MenuCommand::NewDrawing);
+    }
     if ids.about == id {
         return Some(MenuCommand::About);
     }
@@ -196,6 +200,7 @@ impl NativeMenu {
 
         let file_menu = Submenu::new("File", true);
         let edit_menu = Submenu::new("Edit", true);
+        let cad_menu = Submenu::new("CAD", true);
         let view_menu = Submenu::new("View", true);
         let panes_menu = Submenu::new("Panes", true);
         let help_menu = Submenu::new("Help", true);
@@ -247,6 +252,7 @@ impl NativeMenu {
             Some(Accelerator::new(Some(primary), Code::KeyZ)),
         );
         let clear = MenuItem::with_id("clear", "Clear", true, None);
+        let new_drawing = MenuItem::with_id("new_drawing", "New Drawing", true, None);
         let command_palette = MenuItem::with_id(
             "command_palette",
             "Command Palette…",
@@ -305,6 +311,8 @@ impl NativeMenu {
         edit_menu.append(&PredefinedMenuItem::separator())?;
         edit_menu.append(&clear)?;
 
+        cad_menu.append(&new_drawing)?;
+
         let pane_item_refs: Vec<&dyn muda::IsMenuItem> = pane_checks
             .iter()
             .map(|(_, item)| item as &dyn muda::IsMenuItem)
@@ -321,7 +329,7 @@ impl NativeMenu {
         help_menu.append(&licenses)?;
         help_menu.append(&about)?;
 
-        menu.append_items(&[&file_menu, &edit_menu, &view_menu, &help_menu])?;
+        menu.append_items(&[&file_menu, &edit_menu, &cad_menu, &view_menu, &help_menu])?;
 
         attach_to_platform(&menu, cc)?;
 
@@ -344,6 +352,7 @@ impl NativeMenu {
             quit: quit.id().clone(),
             undo: undo.id().clone(),
             clear: clear.id().clone(),
+            new_drawing: new_drawing.id().clone(),
             about: about.id().clone(),
             licenses: licenses.id().clone(),
             install_cli: install_cli.id().clone(),
@@ -447,6 +456,7 @@ mod tests {
             quit: MenuId::new("quit"),
             undo: MenuId::new("undo"),
             clear: MenuId::new("clear"),
+            new_drawing: MenuId::new("new_drawing"),
             about: MenuId::new("about"),
             licenses: MenuId::new("licenses"),
             install_cli: MenuId::new("install_cli"),

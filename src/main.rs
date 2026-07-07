@@ -3170,7 +3170,6 @@ impl eframe::App for App {
             let mut edit_extrusion: Option<usize> = None;
             let mut edit_edge_treatment: Option<(usize, usize, f32)> = None;
             let mut edit_drawing: Option<usize> = None;
-            let mut create_drawing = false;
             let mut export_body: Option<usize> = None;
             let mut export_body_step: Option<usize> = None;
             let mut click_element: Option<(SceneElement, bool)> = None;
@@ -3238,17 +3237,8 @@ impl eframe::App for App {
                         &mut queue_hover,
                         &highlight_elements,
                     );
-                    // Create a technical drawing (#180); it appears in the tree above and opens
-                    // in the drawing pane.
-                    ui.separator();
-                    if ui.button("＋ New Drawing").clicked() {
-                        create_drawing = true;
-                    }
                 });
             self.pane_hovered_element = pane_hovered_element;
-            if create_drawing {
-                self.state.apply(Action::CreateDrawing { name: None });
-            }
             if let Some((element, additive)) = click_element {
                 self.state.apply(Action::ClickSceneElement { element, additive });
             }

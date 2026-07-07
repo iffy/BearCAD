@@ -10,7 +10,7 @@ you like, and each one collects **views** — a body shown from a chosen directi
 
 ## How to use it
 
-1. In the **Elements** pane, click **＋ New Drawing**. The drawing appears in the tree with
+1. From the **CAD** menu, choose **New Drawing**. The drawing appears in the Elements tree with
    its own icon and opens in the drawing pane, which takes over the central area with a white
    sheet.
 2. **Add view:** pick a body and an orientation — one of the six straight-on directions
