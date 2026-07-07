@@ -4030,6 +4030,27 @@ impl eframe::App for App {
     }
 }
 
+/// In-plane `(right, up)` world axes a technical-drawing view (#180) projects onto: a point
+/// `p` maps to screen coordinates `(p·right, p·up)`. The six orthographic directions plus a
+/// standard isometric three-quarter view.
+fn drawing_view_axes(orientation: model::DrawingOrientation) -> (Vec3, Vec3) {
+    use model::DrawingOrientation as O;
+    match orientation {
+        O::Front => (Vec3::X, Vec3::Z),
+        O::Back => (-Vec3::X, Vec3::Z),
+        O::Right => (Vec3::Y, Vec3::Z),
+        O::Left => (-Vec3::Y, Vec3::Z),
+        O::Top => (Vec3::X, -Vec3::Y),
+        O::Bottom => (Vec3::X, Vec3::Y),
+        O::Isometric => {
+            let out = Vec3::new(1.0, 1.0, 1.0).normalize();
+            let right = Vec3::Z.cross(out).normalize();
+            let up = out.cross(right).normalize();
+            (right, up)
+        }
+    }
+}
+
 /// Suppress unmodified keyboard shortcuts while a [`egui::TextEdit`] (or other focused text input)
 /// is active.
 fn keyboard_shortcuts_suppressed(ctx: &egui::Context) -> bool {
@@ -6718,9 +6739,9 @@ impl App {
         }
     }
 
-    /// The technical-drawing pane (#180): a black-on-white sheet for the open drawing. This is
-    /// the editable scaffold — add/remove body views in chosen orientations; the projected
-    /// geometry rendering of each view is layered on next.
+    /// The technical-drawing pane (#180): a black-on-white sheet for the open drawing. Each
+    /// view renders its body as an orthographic/isometric wireframe (feature edges), laid out
+    /// in a grid; views are added and removed from the controls at the top.
     fn draw_drawing_pane(&mut self, ui: &mut egui::Ui, drawing: usize) {
         use crate::model::DrawingOrientation;
         const INK: egui::Color32 = egui::Color32::from_gray(20);
@@ -6800,7 +6821,7 @@ impl App {
         }
         ui.separator();
 
-        // The sheet's current views (scaffold: labelled rows; projected geometry comes next).
+        // The sheet: each view is a cell with its caption and a projected wireframe of its body.
         let views = self
             .state
             .doc
@@ -6811,20 +6832,90 @@ impl App {
         if views.is_empty() {
             ui.colored_label(INK, "No views yet — add one above.");
         } else {
+            let sheet = ui.available_rect_before_wrap();
+            let cols = if views.len() == 1 { 1 } else { 2 };
+            let rows = views.len().div_ceil(cols);
+            let cell_w = sheet.width() / cols as f32;
+            let cell_h = (sheet.height() / rows as f32).max(80.0);
+            let painter = ui.painter().clone();
             for (vi, view) in views.iter().enumerate() {
-                ui.horizontal(|ui| {
-                    if ui.small_button("×").clicked() {
-                        remove_view = Some(vi);
+                let (col, row) = (vi % cols, vi / cols);
+                let cell = egui::Rect::from_min_size(
+                    sheet.min + egui::vec2(col as f32 * cell_w, row as f32 * cell_h),
+                    egui::vec2(cell_w, cell_h),
+                );
+                painter.rect_stroke(
+                    cell.shrink(2.0),
+                    2.0,
+                    egui::Stroke::new(1.0, egui::Color32::from_gray(200)),
+                    egui::StrokeKind::Inside,
+                );
+                let caption = format!(
+                    "{} — {}",
+                    body_label(&self.state.doc, view.body),
+                    view.orientation.label()
+                );
+                painter.text(
+                    cell.min + egui::vec2(8.0, 6.0),
+                    egui::Align2::LEFT_TOP,
+                    caption,
+                    egui::FontId::proportional(12.0),
+                    INK,
+                );
+                // Remove button in the cell's top-right corner.
+                let x_rect = egui::Rect::from_min_size(
+                    egui::pos2(cell.max.x - 24.0, cell.min.y + 4.0),
+                    egui::vec2(20.0, 20.0),
+                );
+                if ui
+                    .put(x_rect, egui::Button::new("×").small())
+                    .on_hover_text("Remove view")
+                    .clicked()
+                {
+                    remove_view = Some(vi);
+                }
+                // Project the body's feature edges into the cell (below the caption).
+                let draw_area = egui::Rect::from_min_max(
+                    cell.min + egui::vec2(10.0, 26.0),
+                    cell.max - egui::vec2(10.0, 10.0),
+                );
+                let (right, up) = drawing_view_axes(view.orientation);
+                let project = |p: Vec3| egui::vec2(p.dot(right), p.dot(up));
+                let edges: Vec<(egui::Vec2, egui::Vec2)> =
+                    crate::extrude::body_solid_mesh(&self.state.doc, view.body)
+                        .map(|mesh| {
+                            gpu_viewport::solid_mesh_unique_edges(&mesh)
+                                .into_iter()
+                                .map(|(a, b)| (project(a), project(b)))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                if edges.is_empty() {
+                    continue;
+                }
+                let (mut min, mut max) = (egui::vec2(f32::MAX, f32::MAX), egui::vec2(f32::MIN, f32::MIN));
+                for (a, b) in &edges {
+                    for p in [a, b] {
+                        min = min.min(*p);
+                        max = max.max(*p);
                     }
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{} — {} view",
-                            body_label(&self.state.doc, view.body),
-                            view.orientation.label()
-                        ))
-                        .color(INK),
+                }
+                let extent = (max - min).max(egui::vec2(1e-3, 1e-3));
+                let scale = (draw_area.width() / extent.x)
+                    .min(draw_area.height() / extent.y)
+                    * 0.9;
+                let bbox_center = (min + max) * 0.5;
+                // Model +up maps to screen -y; center the fitted bbox in the draw area.
+                let to_screen = |p: egui::Vec2| {
+                    let d = (p - bbox_center) * scale;
+                    draw_area.center() + egui::vec2(d.x, -d.y)
+                };
+                for (a, b) in &edges {
+                    painter.line_segment(
+                        [to_screen(*a), to_screen(*b)],
+                        egui::Stroke::new(1.2, INK),
                     );
-                });
+                }
             }
         }
 
@@ -10054,7 +10145,8 @@ fn draw_ground(
 mod tests {
     use super::actions::CreatingRect;
     use super::{
-        build_viewport_scene_input, clip_segment_to_rect, col, initial_launch_maximize_frames,
+        build_viewport_scene_input, clip_segment_to_rect, col, drawing_view_axes,
+        initial_launch_maximize_frames,
         native_options, script_finished_close_action, should_commit_sketch_on_click,
         should_select_all_rect_value, side_panel_resize_active, tick_launch_maximize,
         uses_deferred_launch_maximize, vertex_treatment_preview_points, ConstraintPoint, Line,
@@ -10184,6 +10276,25 @@ mod tests {
             Some(pending),
             "ghost preview should pick up the live pending target before commit"
         );
+    }
+
+    /// #180: drawing-view projection axes are orthonormal and orient as expected — a Front
+    /// view maps world X→right and Z→up (ignoring depth Y); the isometric basis is a proper
+    /// horizontal-right / up frame.
+    #[test]
+    fn drawing_view_axes_project_as_expected() {
+        use crate::model::DrawingOrientation;
+        let (r, u) = drawing_view_axes(DrawingOrientation::Front);
+        assert_eq!((r, u), (Vec3::X, Vec3::Z));
+        let p = Vec3::new(3.0, 99.0, 7.0);
+        assert!((p.dot(r) - 3.0).abs() < 1e-6 && (p.dot(u) - 7.0).abs() < 1e-6);
+
+        let (r, u) = drawing_view_axes(DrawingOrientation::Isometric);
+        assert!((r.length() - 1.0).abs() < 1e-6, "right is unit");
+        assert!((u.length() - 1.0).abs() < 1e-6, "up is unit");
+        assert!(r.dot(u).abs() < 1e-6, "right ⟂ up");
+        assert!(r.z.abs() < 1e-6, "iso right stays horizontal");
+        assert!(u.z > 0.0, "iso up points upward");
     }
 
     /// #203: while the Loft tool is collecting cross sections, the scene shows a live ghost of

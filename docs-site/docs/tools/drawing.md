@@ -14,8 +14,9 @@ you like, and each one collects **views** — a body shown from a chosen directi
    its own icon and opens in the drawing pane, which takes over the central area with a white
    sheet.
 2. **Add view:** pick a body and an orientation — one of the six straight-on directions
-   (Front, Back, Left, Right, Top, Bottom) or **Isometric** — and click **Add**. Repeat to
-   place several views of the same or different bodies.
+   (Front, Back, Left, Right, Top, Bottom) or **Isometric** — and click **Add**. Each view
+   draws the body as a black wireframe, projected and scaled to fit its cell. Repeat to place
+   several views of the same or different bodies; they lay out in a grid.
 3. Remove a view with the **×** beside it. Click **← Back to model** to return to the 3D
    view. Reopen a drawing any time by clicking its row (or right-click → **Edit drawing**).
 

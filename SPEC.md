@@ -715,7 +715,9 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   **opens it** in the drawing pane, which takes over the central area with a white sheet.
 - **Views:** a drawing collects **views**, each a chosen body shown in one orientation — the
   six straight-on directions (Front/Back/Left/Right/Top/Bottom) or an **Isometric**
-  three-quarter view. Views are added and removed from the drawing pane.
+  three-quarter view. Each view renders as a black wireframe of the body's feature edges,
+  orthographically/isometrically projected and auto-fit into its cell; views are laid out in
+  a grid and added/removed from the drawing pane.
 - **Scripting:** `bearcad.drawing{ name? }` creates a drawing (returning its index) and
   `bearcad.drawing_view{ drawing, body, orientation? }` adds a view (`orientation` is
   `"front"`/`"top"`/`"iso"`/…, default front). `bearcad.count("drawing")` counts them.
