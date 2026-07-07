@@ -1,0 +1,1 @@
+Technical drawings (#180): create black-on-white drawing sheets from the Elements pane, add body views in orthographic/isometric orientations, editable in a drawing pane; scriptable via bearcad.drawing/drawing_view

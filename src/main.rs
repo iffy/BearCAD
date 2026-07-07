@@ -3129,6 +3129,8 @@ impl eframe::App for App {
             let mut import_image_on_plane: Option<usize> = None;
             let mut edit_extrusion: Option<usize> = None;
             let mut edit_edge_treatment: Option<(usize, usize, f32)> = None;
+            let mut edit_drawing: Option<usize> = None;
+            let mut create_drawing = false;
             let mut export_body: Option<usize> = None;
             let mut export_body_step: Option<usize> = None;
             let mut click_element: Option<(SceneElement, bool)> = None;
@@ -3154,6 +3156,9 @@ impl eframe::App for App {
                         |extrusion: usize, index: usize, amount: f32| {
                             edit_edge_treatment = Some((extrusion, index, amount));
                         };
+                    let mut queue_edit_drawing = |index: usize| {
+                        edit_drawing = Some(index);
+                    };
                     let mut queue_export_body = |index: usize| {
                         export_body = Some(index);
                     };
@@ -3185,6 +3190,7 @@ impl eframe::App for App {
                         &mut queue_import_image_on_plane,
                         &mut queue_edit_extrusion,
                         &mut queue_edit_edge_treatment,
+                        &mut queue_edit_drawing,
                         &mut queue_export_body,
                         &mut queue_export_body_step,
                         &mut noop_visibility,
@@ -3192,8 +3198,17 @@ impl eframe::App for App {
                         &mut queue_hover,
                         &highlight_elements,
                     );
+                    // Create a technical drawing (#180); it appears in the tree above and opens
+                    // in the drawing pane.
+                    ui.separator();
+                    if ui.button("＋ New Drawing").clicked() {
+                        create_drawing = true;
+                    }
                 });
             self.pane_hovered_element = pane_hovered_element;
+            if create_drawing {
+                self.state.apply(Action::CreateDrawing { name: None });
+            }
             if let Some((element, additive)) = click_element {
                 self.state.apply(Action::ClickSceneElement { element, additive });
             }
@@ -3211,6 +3226,9 @@ impl eframe::App for App {
             }
             if let Some(index) = edit_extrusion {
                 self.state.apply(Action::EditExtrusion { index });
+            }
+            if let Some(drawing) = edit_drawing {
+                self.state.apply(Action::EditDrawing { drawing: Some(drawing) });
             }
             if let Some((extrusion, index, amount)) = edit_edge_treatment {
                 // Re-commit the existing edge treatment with the new amount (#192); the edge and
@@ -3997,7 +4015,17 @@ impl eframe::App for App {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
-                self.draw_viewport(ui, render_state);
+                // A technical drawing open (#180) takes over the central area with its
+                // black-on-white sheet; otherwise the 3D viewport renders as usual.
+                match self.state.editing_drawing {
+                    Some(di) if self.state.doc.drawings.get(di).is_some_and(|d| !d.deleted) => {
+                        self.draw_drawing_pane(ui, di);
+                    }
+                    _ => {
+                        self.state.editing_drawing = None;
+                        self.draw_viewport(ui, render_state);
+                    }
+                }
             });
     }
 }
@@ -6687,6 +6715,131 @@ impl App {
 
         if self.state.editing_committed_dim.is_some() && tab_pressed {
             ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
+        }
+    }
+
+    /// The technical-drawing pane (#180): a black-on-white sheet for the open drawing. This is
+    /// the editable scaffold — add/remove body views in chosen orientations; the projected
+    /// geometry rendering of each view is layered on next.
+    fn draw_drawing_pane(&mut self, ui: &mut egui::Ui, drawing: usize) {
+        use crate::model::DrawingOrientation;
+        const INK: egui::Color32 = egui::Color32::from_gray(20);
+
+        // White sheet across the whole central area.
+        let area = ui.available_rect_before_wrap();
+        ui.painter().rect_filled(area, 0.0, egui::Color32::WHITE);
+
+        let mut close = false;
+        let mut add_view: Option<(usize, DrawingOrientation)> = None;
+        let mut remove_view: Option<usize> = None;
+
+        let body_label = |doc: &model::Document, bi: usize| {
+            crate::names::node_label(doc, hierarchy::HierarchyNode::Body(bi))
+        };
+
+        ui.horizontal(|ui| {
+            if ui.button("← Back to model").clicked() {
+                close = true;
+            }
+            ui.separator();
+            let title =
+                crate::names::node_label(&self.state.doc, hierarchy::HierarchyNode::Drawing(drawing));
+            ui.label(egui::RichText::new(title).color(INK).strong());
+        });
+        ui.separator();
+
+        // Add-view controls: pick a body + orientation. Selections persist across frames.
+        let live_bodies: Vec<usize> = self
+            .state
+            .doc
+            .bodies
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| !b.deleted && !b.shadow)
+            .map(|(i, _)| i)
+            .collect();
+        if live_bodies.is_empty() {
+            ui.colored_label(
+                INK,
+                "Add a body to the model first, then add its views to this drawing.",
+            );
+        } else {
+            let body_id = ui.make_persistent_id(("drawing_add_body", drawing));
+            let orient_id = ui.make_persistent_id(("drawing_add_orient", drawing));
+            let mut sel_body = ui
+                .data_mut(|d| d.get_temp::<usize>(body_id))
+                .filter(|b| live_bodies.contains(b))
+                .unwrap_or(live_bodies[0]);
+            let mut sel_orient = ui
+                .data_mut(|d| d.get_temp::<DrawingOrientation>(orient_id))
+                .unwrap_or_default();
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Add view:").color(INK));
+                egui::ComboBox::from_id_salt(body_id)
+                    .selected_text(body_label(&self.state.doc, sel_body))
+                    .show_ui(ui, |ui| {
+                        for bi in &live_bodies {
+                            ui.selectable_value(&mut sel_body, *bi, body_label(&self.state.doc, *bi));
+                        }
+                    });
+                egui::ComboBox::from_id_salt(orient_id)
+                    .selected_text(sel_orient.label())
+                    .show_ui(ui, |ui| {
+                        for o in DrawingOrientation::ALL {
+                            ui.selectable_value(&mut sel_orient, *o, o.label());
+                        }
+                    });
+                if ui.button("Add").clicked() {
+                    add_view = Some((sel_body, sel_orient));
+                }
+            });
+            ui.data_mut(|d| {
+                d.insert_temp(body_id, sel_body);
+                d.insert_temp(orient_id, sel_orient);
+            });
+        }
+        ui.separator();
+
+        // The sheet's current views (scaffold: labelled rows; projected geometry comes next).
+        let views = self
+            .state
+            .doc
+            .drawings
+            .get(drawing)
+            .map(|d| d.views.clone())
+            .unwrap_or_default();
+        if views.is_empty() {
+            ui.colored_label(INK, "No views yet — add one above.");
+        } else {
+            for (vi, view) in views.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    if ui.small_button("×").clicked() {
+                        remove_view = Some(vi);
+                    }
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} — {} view",
+                            body_label(&self.state.doc, view.body),
+                            view.orientation.label()
+                        ))
+                        .color(INK),
+                    );
+                });
+            }
+        }
+
+        if let Some((body, orientation)) = add_view {
+            self.state.apply(Action::AddDrawingView {
+                drawing,
+                body,
+                orientation,
+            });
+        }
+        if let Some(view) = remove_view {
+            self.state.apply(Action::RemoveDrawingView { drawing, view });
+        }
+        if close {
+            self.state.apply(Action::EditDrawing { drawing: None });
         }
     }
 

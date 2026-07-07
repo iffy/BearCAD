@@ -118,6 +118,14 @@ pub enum Instruction {
     /// Loft a solid through two or more closed cross-section profiles (SPEC §3.5).
     /// Each face's owning sketch is inferred at execution time, like `bearcad.extrude`.
     Loft { faces: Vec<crate::model::ExtrudeFace> },
+    /// Create a technical drawing (#180), optionally named.
+    CreateDrawing { name: Option<String> },
+    /// Add a body view (in an orientation) to a drawing.
+    AddDrawingView {
+        drawing: usize,
+        body: usize,
+        orientation: crate::model::DrawingOrientation,
+    },
     /// Revolve profiles around an axis (SPEC §3.5 Revolve). Sketch inferred per face.
     Revolve {
         faces: Vec<crate::model::ExtrudeFace>,
@@ -509,6 +517,18 @@ impl Instruction {
                 }
                 format!("bearcad.loft{{ {} }}", parts.join(", "))
             }
+            Instruction::CreateDrawing { name } => match name {
+                Some(n) => format!("bearcad.drawing{{ name = {:?} }}", n),
+                None => "bearcad.drawing{}".to_string(),
+            },
+            Instruction::AddDrawingView {
+                drawing,
+                body,
+                orientation,
+            } => format!(
+                "bearcad.drawing_view{{ drawing = {drawing}, body = {body}, orientation = {:?} }}",
+                orientation.label().to_ascii_lowercase()
+            ),
             Instruction::Revolve {
                 faces,
                 axis,
@@ -3004,6 +3024,24 @@ impl ScriptRunner {
                     self.record_action_error(result);
                 }
                 let result = state.apply(Action::CommitLoft);
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::CreateDrawing { name } => {
+                let result = state.apply(Action::CreateDrawing { name });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::AddDrawingView {
+                drawing,
+                body,
+                orientation,
+            } => {
+                let result = state.apply(Action::AddDrawingView {
+                    drawing,
+                    body,
+                    orientation,
+                });
                 self.record_action_error(result);
                 StepResult::Continue
             }

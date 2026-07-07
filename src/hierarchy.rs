@@ -48,6 +48,10 @@ pub enum HierarchyNode {
     RepeatOp(usize),
     /// A slice operation on bodies (Slice tool); its fragment bodies nest under it.
     SliceOp(usize),
+    /// A technical drawing (#180). A display-only top-level leaf (no [`SceneElement`], like
+    /// [`HierarchyNode::Document`]): it has its own icon and is right-clickable to edit
+    /// (opening the drawing pane), but isn't a selectable/hideable scene element.
+    Drawing(usize),
     /// A 3D edge chamfer/fillet applied to an extrusion (#77); `index` is into that
     /// extrusion's `edge_treatments`. A display-only leaf (like [`HierarchyNode::Document`]
     /// it has no [`SceneElement`]): it nests under its extrusion and is right-clickable to
@@ -123,8 +127,10 @@ pub fn dequantize_body_point(p: [i32; 3]) -> glam::Vec3 {
 /// has no independent selectable/hideable identity of its own.
 pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
     Some(match node {
-        // Display-only leaves with no independent selectable/hideable identity (#192).
-        HierarchyNode::Document | HierarchyNode::EdgeTreatment { .. } => return None,
+        // Display-only leaves with no independent selectable/hideable identity (#192/#180).
+        HierarchyNode::Document
+        | HierarchyNode::EdgeTreatment { .. }
+        | HierarchyNode::Drawing(_) => return None,
         HierarchyNode::ConstructionPlane(i) => SceneElement::ConstructionPlane(i),
         HierarchyNode::Sketch(i) => SceneElement::Sketch(i),
         HierarchyNode::Line(i) => SceneElement::Line(i),
@@ -713,6 +719,8 @@ fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
         HierarchyNode::SliceOp(_) => usize::MAX,
         // Edge treatments order by their index within the extrusion, after the bodies/sketches.
         HierarchyNode::EdgeTreatment { index, .. } => index,
+        // Drawings list after ranked nodes (#180), like images and operations.
+        HierarchyNode::Drawing(_) => usize::MAX,
     }
 }
 
@@ -857,6 +865,16 @@ pub fn build_hierarchy(
             node: HierarchyNode::SliceOp(oi),
             children,
         });
+    }
+    // Technical drawings (#180): top-level leaves (they reference bodies but aren't part of
+    // the geometry DAG), each right-clickable to open its drawing pane.
+    for (di, drawing) in doc.drawings.iter().enumerate() {
+        if !drawing.deleted {
+            roots.push(HierarchyEntry {
+                node: HierarchyNode::Drawing(di),
+                children: Vec::new(),
+            });
+        }
     }
     vec![HierarchyEntry {
         node: HierarchyNode::Document,
@@ -1373,6 +1391,7 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
                 _ => IconId::Fillet,
             }
         }
+        HierarchyNode::Drawing(_) => IconId::Drawing,
     })
 }
 
@@ -1603,6 +1622,7 @@ pub fn show_pane(
     on_import_image_on_plane: &mut impl FnMut(usize),
     on_edit_extrusion: &mut impl FnMut(usize),
     on_edit_edge_treatment: &mut impl FnMut(usize, usize, f32),
+    on_edit_drawing: &mut impl FnMut(usize),
     on_export_body: &mut impl FnMut(usize),
     on_export_body_step: &mut impl FnMut(usize),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
@@ -1651,6 +1671,7 @@ pub fn show_pane(
                         on_import_image_on_plane,
                         on_edit_extrusion,
                         on_edit_edge_treatment,
+                        on_edit_drawing,
                         on_export_body,
                         on_export_body_step,
                         on_toggle_visibility,
@@ -1682,6 +1703,7 @@ pub fn show_pane(
                     on_import_image_on_plane,
                     on_edit_extrusion,
                     on_edit_edge_treatment,
+                    on_edit_drawing,
                     on_export_body,
                     on_export_body_step,
                     on_toggle_visibility,
@@ -1729,6 +1751,7 @@ fn show_tree_entries(
     on_import_image_on_plane: &mut impl FnMut(usize),
     on_edit_extrusion: &mut impl FnMut(usize),
     on_edit_edge_treatment: &mut impl FnMut(usize, usize, f32),
+    on_edit_drawing: &mut impl FnMut(usize),
     on_export_body: &mut impl FnMut(usize),
     on_export_body_step: &mut impl FnMut(usize),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
@@ -1753,6 +1776,7 @@ fn show_tree_entries(
             on_import_image_on_plane,
             on_edit_extrusion,
             on_edit_edge_treatment,
+            on_edit_drawing,
             on_export_body,
             on_export_body_step,
             on_toggle_visibility,
@@ -1776,6 +1800,7 @@ fn show_tree_entries(
             on_import_image_on_plane,
             on_edit_extrusion,
             on_edit_edge_treatment,
+            on_edit_drawing,
             on_export_body,
             on_export_body_step,
             on_toggle_visibility,
@@ -1991,6 +2016,7 @@ fn show_row(
     on_import_image_on_plane: &mut impl FnMut(usize),
     on_edit_extrusion: &mut impl FnMut(usize),
     on_edit_edge_treatment: &mut impl FnMut(usize, usize, f32),
+    on_edit_drawing: &mut impl FnMut(usize),
     on_export_body: &mut impl FnMut(usize),
     on_export_body_step: &mut impl FnMut(usize),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
@@ -2048,6 +2074,28 @@ fn show_row(
                 if ui.button("Apply").clicked() {
                     on_edit_edge_treatment(extrusion, index, value);
                     ui.data_mut(|d| d.remove::<f32>(id));
+                    ui.close();
+                }
+            });
+        });
+        return;
+    }
+
+    // A technical drawing (#180): a display-only leaf with no `SceneElement`. Clicking the row
+    // or its right-click "Edit drawing" opens the drawing pane.
+    if let HierarchyNode::Drawing(index) = node {
+        ui.horizontal(|ui| {
+            ui.add_space(depth as f32 * 18.0);
+            if let Some(icon) = icon_for_hierarchy_node(doc, node) {
+                ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
+            }
+            let response = ui.selectable_label(false, node_label(doc, node));
+            if response.clicked() {
+                on_edit_drawing(index);
+            }
+            response.context_menu(|ui| {
+                if ui.button("Edit drawing").clicked() {
+                    on_edit_drawing(index);
                     ui.close();
                 }
             });
@@ -2182,7 +2230,7 @@ fn show_row(
                 }
             }
             // Handled by the early return above (no SceneElement).
-            HierarchyNode::EdgeTreatment { .. } => unreachable!(),
+            HierarchyNode::EdgeTreatment { .. } | HierarchyNode::Drawing(_) => unreachable!(),
         }
     });
 }

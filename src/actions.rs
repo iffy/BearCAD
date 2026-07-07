@@ -1007,6 +1007,18 @@ pub enum Action {
     ToggleLoftSection { section: crate::model::LoftSection },
     /// Finalize the in-progress loft: blend the picked sections into a new body.
     CommitLoft,
+    /// Create a new technical drawing (#180) and open it in the drawing pane.
+    CreateDrawing { name: Option<String> },
+    /// Add a body view (in a given orientation) to a drawing.
+    AddDrawingView {
+        drawing: usize,
+        body: usize,
+        orientation: crate::model::DrawingOrientation,
+    },
+    /// Remove a body view from a drawing by its index.
+    RemoveDrawingView { drawing: usize, view: usize },
+    /// Open a drawing in the drawing pane (`Some`) or close the pane (`None`).
+    EditDrawing { drawing: Option<usize> },
     /// Finalize the in-progress revolve (reads `creating_revolve`).
     CommitRevolve,
     /// Scripted/replayed revolve creation with an explicit payload. `bodies` is the
@@ -1133,6 +1145,7 @@ impl Action {
                     | Action::SetElementVisible { .. }
                     | Action::ToggleElementVisibility(_)
                     | Action::ToggleFpsMode
+                    | Action::EditDrawing { .. }
             )
     }
 
@@ -1512,6 +1525,10 @@ pub struct AppState {
     pub creating_repeat: Option<CreatingRepeat>,
     /// In-progress slice operation (Slice tool).
     pub creating_slice: Option<CreatingSlice>,
+    /// The technical drawing (#180) currently open in the drawing pane, if any. UI state
+    /// (never persisted): while `Some`, the central area shows that drawing instead of the
+    /// 3D viewport.
+    pub editing_drawing: Option<usize>,
     /// In-progress image scale calibration (#163/#171): Some while the user is placing
     /// the two reference points / typing the real length.
     pub creating_calibration: Option<CreatingCalibration>,
@@ -1626,6 +1643,7 @@ impl Default for AppState {
             creating_move: None,
             creating_repeat: None,
             creating_slice: None,
+            editing_drawing: None,
             creating_calibration: None,
             viewport_aspect: 16.0 / 9.0,
             draw_construction: false,
@@ -5488,6 +5506,58 @@ impl AppState {
                 self.tool = Tool::Select;
                 self.status = format!("Added loft ({count} sections)");
                 self.refresh_document_health();
+                ActionResult::Ok
+            }
+            Action::CreateDrawing { name } => {
+                self.doc.drawings.push(crate::model::Drawing {
+                    name: name.and_then(|n| {
+                        let t = n.trim().to_string();
+                        (!t.is_empty()).then_some(t)
+                    }),
+                    views: Vec::new(),
+                    deleted: false,
+                });
+                let index = self.doc.drawings.len() - 1;
+                self.editing_drawing = Some(index);
+                self.status = format!("Added drawing {index}");
+                ActionResult::Ok
+            }
+            Action::AddDrawingView {
+                drawing,
+                body,
+                orientation,
+            } => {
+                if self.doc.bodies.get(body).is_none_or(|b| b.deleted) {
+                    return ActionResult::Err(format!("No body {body}"));
+                }
+                let Some(d) = self.doc.drawings.get_mut(drawing).filter(|d| !d.deleted) else {
+                    return ActionResult::Err(format!("No drawing {drawing}"));
+                };
+                d.views.push(crate::model::DrawingView { body, orientation });
+                self.status = format!(
+                    "Added {} view of body {body} to drawing {drawing}",
+                    orientation.label()
+                );
+                ActionResult::Ok
+            }
+            Action::RemoveDrawingView { drawing, view } => {
+                let Some(d) = self.doc.drawings.get_mut(drawing).filter(|d| !d.deleted) else {
+                    return ActionResult::Err(format!("No drawing {drawing}"));
+                };
+                if view >= d.views.len() {
+                    return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
+                }
+                d.views.remove(view);
+                self.status = format!("Removed view {view} from drawing {drawing}");
+                ActionResult::Ok
+            }
+            Action::EditDrawing { drawing } => {
+                if let Some(di) = drawing {
+                    if self.doc.drawings.get(di).is_none_or(|d| d.deleted) {
+                        return ActionResult::Err(format!("No drawing {di}"));
+                    }
+                }
+                self.editing_drawing = drawing;
                 ActionResult::Ok
             }
             Action::CommitRepeat => {

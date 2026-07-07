@@ -1,0 +1,35 @@
+---
+sidebar_position: 17
+title: Drawings
+---
+
+# Technical drawings
+
+A drawing is a black-on-white sheet of a part for printing. A document can hold as many as
+you like, and each one collects **views** — a body shown from a chosen direction.
+
+## How to use it
+
+1. In the **Elements** pane, click **＋ New Drawing**. The drawing appears in the tree with
+   its own icon and opens in the drawing pane, which takes over the central area with a white
+   sheet.
+2. **Add view:** pick a body and an orientation — one of the six straight-on directions
+   (Front, Back, Left, Right, Top, Bottom) or **Isometric** — and click **Add**. Repeat to
+   place several views of the same or different bodies.
+3. Remove a view with the **×** beside it. Click **← Back to model** to return to the 3D
+   view. Reopen a drawing any time by clicking its row (or right-click → **Edit drawing**).
+
+## Scripting
+
+```lua
+bearcad.rect{ width = 40, height = 20 }
+bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+
+local d = bearcad.drawing{ name = "Plate" }
+bearcad.drawing_view{ drawing = d, body = 0, orientation = "top" }
+bearcad.drawing_view{ drawing = d, body = 0, orientation = "iso" }
+```
+
+`bearcad.drawing{}` returns the drawing's index; `orientation` defaults to `"front"` and
+accepts `front`/`back`/`left`/`right`/`top`/`bottom`/`iso`. `bearcad.count("drawing")` returns
+how many drawings the document has.

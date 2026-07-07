@@ -1128,11 +1128,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 }
                 "extrusion" => doc.extrusions.iter().filter(|e| !e.deleted).count(),
                 "body" => doc.bodies.iter().filter(|e| !e.deleted).count(),
+                "drawing" => doc.drawings.iter().filter(|e| !e.deleted).count(),
                 "parameter" => doc.parameters.iter().filter(|e| !e.deleted).count(),
                 other => {
                     return Err(mlua::Error::external(format!(
                         "unknown count kind '{other}' (valid kinds: line, circle, sketch, \
-                         constraint, construction_plane, extrusion, body, parameter)"
+                         constraint, construction_plane, extrusion, body, drawing, parameter)"
                     )))
                 }
             };
@@ -2546,6 +2547,45 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 tick.state().doc.bodies.len().saturating_sub(1)
             });
             apply_optional_name(lua, element, Some(opts))
+        })?,
+    )?;
+
+    // Technical drawings (#180): `bearcad.drawing{ name? }` creates a drawing (and opens its
+    // pane), returning its index; `bearcad.drawing_view{ drawing, body, orientation? }` adds a
+    // body view in an orientation ("front"/"top"/"iso"/…, default front).
+    api.set(
+        "drawing",
+        lua.create_function(|lua, opts: Option<Table>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let name: Option<String> = match &opts {
+                Some(t) => t.get("name")?,
+                None => None,
+            };
+            unsafe {
+                tick.exec(Instruction::CreateDrawing { name })?;
+            }
+            Ok(unsafe { tick.state().doc.drawings.len().saturating_sub(1) })
+        })?,
+    )?;
+    api.set(
+        "drawing_view",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let drawing: usize = opts.get("drawing")?;
+            let body: usize = opts.get("body")?;
+            let orientation = match opts.get::<Option<String>>("orientation")? {
+                Some(name) => crate::model::DrawingOrientation::from_name(&name).ok_or_else(|| {
+                    mlua::Error::external(format!("unknown drawing orientation '{name}'"))
+                })?,
+                None => crate::model::DrawingOrientation::default(),
+            };
+            unsafe {
+                tick.exec(Instruction::AddDrawingView {
+                    drawing,
+                    body,
+                    orientation,
+                })
+            }
         })?,
     )?;
 
@@ -4485,6 +4525,58 @@ mod tests {
             assert(tostring(err):find("two sections"), tostring(err))
         "#,
         );
+    }
+
+    /// #180: `bearcad.drawing{}` creates a technical drawing (opening its pane) and
+    /// `bearcad.drawing_view{}` adds body views in orientations. The drawing shows up in the
+    /// Elements pane as a `Drawing` node with its name.
+    #[test]
+    fn lua_drawing_creates_a_drawing_with_views() {
+        use crate::hierarchy::HierarchyNode;
+        use crate::model::DrawingOrientation;
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 20, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            local d = bearcad.drawing{ name = "Plan" }
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "top" }
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "iso" }
+            assert(bearcad.count("drawing") == 1, "one drawing")
+        "#,
+        );
+        assert_eq!(state.doc.drawings.len(), 1);
+        assert_eq!(state.doc.drawings[0].name.as_deref(), Some("Plan"));
+        assert_eq!(state.doc.drawings[0].views.len(), 2);
+        assert_eq!(state.doc.drawings[0].views[0].orientation, DrawingOrientation::Top);
+        assert_eq!(
+            state.doc.drawings[0].views[1].orientation,
+            DrawingOrientation::Isometric
+        );
+        // Creating a drawing opens it in the drawing pane.
+        assert_eq!(state.editing_drawing, Some(0));
+        // It appears in the Elements pane, labelled by its name.
+        let list = crate::hierarchy::build_element_list(&state.doc, None);
+        assert!(list.iter().any(|n| matches!(n, HierarchyNode::Drawing(0))));
+        assert!(
+            crate::names::node_label(&state.doc, HierarchyNode::Drawing(0)).starts_with("Plan")
+        );
+    }
+
+    /// #180: adding a view of a body that doesn't exist errors instead of storing a dangling
+    /// reference.
+    #[test]
+    fn lua_drawing_view_rejects_a_missing_body() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            local d = bearcad.drawing{}
+            local ok, err = pcall(bearcad.drawing_view, { drawing = d, body = 5, orientation = "front" })
+            assert(not ok, "a view of a nonexistent body should error")
+            assert(tostring(err):find("body"), "unexpected error: " .. tostring(err))
+        "#,
+        );
+        assert_eq!(state.doc.drawings[0].views.len(), 0);
     }
 
     /// #116: `bearcad.plane{}` declaratively adds a construction plane offset along the

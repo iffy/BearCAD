@@ -291,6 +291,13 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
         HierarchyNode::MoveOp(i) => format!("Move {i}"),
         HierarchyNode::RepeatOp(i) => format!("Repeat {i}"),
         HierarchyNode::SliceOp(i) => format!("Slice {i}"),
+        HierarchyNode::Drawing(i) => doc
+            .drawings
+            .get(i)
+            .and_then(|d| d.name.as_deref())
+            .filter(|n| !n.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("Drawing {i}")),
         HierarchyNode::EdgeTreatment { extrusion, index } => {
             match doc
                 .extrusions

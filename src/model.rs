@@ -1488,6 +1488,79 @@ pub enum ShapeKind {
     EdgeTreatmentEdit,
 }
 
+/// The orientation a body is projected from in a technical drawing view (#180). The six
+/// orthographic "straight-on" directions plus an isometric three-quarter view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum DrawingOrientation {
+    #[default]
+    Front,
+    Back,
+    Left,
+    Right,
+    Top,
+    Bottom,
+    Isometric,
+}
+
+impl DrawingOrientation {
+    pub const ALL: &'static [DrawingOrientation] = &[
+        DrawingOrientation::Front,
+        DrawingOrientation::Back,
+        DrawingOrientation::Left,
+        DrawingOrientation::Right,
+        DrawingOrientation::Top,
+        DrawingOrientation::Bottom,
+        DrawingOrientation::Isometric,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DrawingOrientation::Front => "Front",
+            DrawingOrientation::Back => "Back",
+            DrawingOrientation::Left => "Left",
+            DrawingOrientation::Right => "Right",
+            DrawingOrientation::Top => "Top",
+            DrawingOrientation::Bottom => "Bottom",
+            DrawingOrientation::Isometric => "Isometric",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "front" => Some(DrawingOrientation::Front),
+            "back" | "rear" => Some(DrawingOrientation::Back),
+            "left" => Some(DrawingOrientation::Left),
+            "right" => Some(DrawingOrientation::Right),
+            "top" => Some(DrawingOrientation::Top),
+            "bottom" => Some(DrawingOrientation::Bottom),
+            "isometric" | "iso" | "diagonal" => Some(DrawingOrientation::Isometric),
+            _ => None,
+        }
+    }
+}
+
+/// One view on a technical [`Drawing`] (#180): a body projected in a fixed orientation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DrawingView {
+    /// Index into [`Document::bodies`].
+    pub body: usize,
+    #[serde(default)]
+    pub orientation: DrawingOrientation,
+}
+
+/// A technical drawing (#180): a black-on-white sheet showing one or more body views for
+/// print/PDF output. It references bodies but produces no solid geometry of its own, so it
+/// lives outside the shape/undo-group DAG (undo is snapshot-based, #194).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub struct Drawing {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub views: Vec<DrawingView>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
 /// The whole document: sketches, sketch primitives, constraints, and construction planes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Document {
@@ -1524,6 +1597,9 @@ pub struct Document {
     /// Slice operations on bodies (the Slice tool, #181).
     #[serde(default)]
     pub slice_ops: Vec<SliceOperation>,
+    /// Technical drawings (#180): black-on-white projected sheets of bodies for print/PDF.
+    #[serde(default)]
+    pub drawings: Vec<Drawing>,
     pub shape_order: Vec<ShapeKind>,
     /// Undo-group sizes (#105): entry k is how many [`shape_order`](Self::shape_order)
     /// entries the k-th user-level action created, maintained by `AppState::apply` under
@@ -1565,6 +1641,7 @@ impl Default for Document {
             move_ops: Vec::new(),
             repeat_ops: Vec::new(),
             slice_ops: Vec::new(),
+            drawings: Vec::new(),
             shape_order: Vec::new(),
             undo_groups: Vec::new(),
             default_length_unit: LengthUnit::default(),

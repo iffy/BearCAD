@@ -704,6 +704,22 @@ Each operation is exposed identically through the GUI, the action DAG, and the s
 API (§8). Failures from the kernel (e.g. a fillet that can't be applied) must surface as a
 recoverable error on the relevant feature node, not a crash.
 
+### 3.6 Technical drawings (#180)
+
+A **technical drawing** is a black-on-white sheet for print/PDF output. A document holds any
+number of them; each references bodies but produces no solid geometry, so drawings live
+outside the shape/undo DAG (undo is snapshot-based, §4.3).
+
+- **Create & manage:** the Elements pane has a **＋ New Drawing** button (and a `Drawing`
+  node, with its own icon, per drawing). Right-clicking a drawing — or clicking its row —
+  **opens it** in the drawing pane, which takes over the central area with a white sheet.
+- **Views:** a drawing collects **views**, each a chosen body shown in one orientation — the
+  six straight-on directions (Front/Back/Left/Right/Top/Bottom) or an **Isometric**
+  three-quarter view. Views are added and removed from the drawing pane.
+- **Scripting:** `bearcad.drawing{ name? }` creates a drawing (returning its index) and
+  `bearcad.drawing_view{ drawing, body, orientation? }` adds a view (`orientation` is
+  `"front"`/`"top"`/`"iso"`/…, default front). `bearcad.count("drawing")` counts them.
+
 ---
 
 ## 4. Action DAG (history & non-linear undo)
