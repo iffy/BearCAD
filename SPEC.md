@@ -732,16 +732,20 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   length is drawn beside the edge. **Shift+click** two edges toggles the **angle** between
   them (the degree value is drawn at their corner). Both are keyed to the edges' quantized
   world endpoints (a geometry identity that survives rebuilds), stored per view.
-- **Export:** a drawing exports to a self-contained black-on-white vector **SVG** (title,
-  view captions, projected edges, dimensions) — which prints to PDF through any browser/OS
-  print dialog. The drawing pane has an **Export SVG…** button.
+- **Export:** a drawing exports to a self-contained black-on-white vector document (title,
+  view captions, projected edges, dimensions) as either a single-page **PDF** or an **SVG**
+  (which also prints to PDF through any browser/OS print dialog). Both backends share the same
+  layout through a `Canvas` trait in `src/drawing.rs`; the PDF is hand-rolled (no dependency),
+  so it works identically on native and web (download in the browser). The drawing pane has
+  **Export PDF…** and (native) **Export SVG…** buttons.
 - **Scripting:** `bearcad.drawing{ name? }` creates a drawing (returning its index),
   `bearcad.drawing_view{ drawing, body, orientation? }` adds a view (`orientation` is
   `"front"`/`"top"`/`"iso"`/…, default front),
   `bearcad.drawing_dimension{ drawing, view, a = {x,y,z}, b = {x,y,z} }` toggles an edge's
   length dimension, `bearcad.drawing_angle{ drawing, view, edge1 = { a, b }, edge2 = { a, b } }`
-  toggles the angle between two edges, and `bearcad.export_drawing_svg{ drawing, path }` writes
-  the SVG. `bearcad.count("drawing")` counts drawings.
+  toggles the angle between two edges, and `bearcad.export_drawing_pdf{ drawing, path }` /
+  `bearcad.export_drawing_svg{ drawing, path }` write the PDF/SVG. `bearcad.count("drawing")`
+  counts drawings.
 
 ---
 

@@ -6771,6 +6771,7 @@ impl App {
         let mut close = false;
         #[allow(unused_mut)] // only mutated by the native-only Export SVG button
         let mut export_svg = false;
+        let mut export_pdf = false;
         let mut add_view: Option<(usize, DrawingOrientation)> = None;
         let mut remove_view: Option<usize> = None;
         let mut toggle_dim: Option<(usize, [i32; 3], [i32; 3])> = None;
@@ -6798,6 +6799,10 @@ impl App {
                 if ui.button("Export SVG…").on_hover_text("Vector SVG — prints to PDF").clicked() {
                     export_svg = true;
                 }
+            }
+            ui.separator();
+            if ui.button("Export PDF…").on_hover_text("Single-page vector PDF").clicked() {
+                export_pdf = true;
             }
         });
         ui.separator();
@@ -7096,8 +7101,44 @@ impl App {
         }
         #[cfg(target_arch = "wasm32")]
         let _ = export_svg;
+
+        if export_pdf {
+            self.export_drawing_pdf(drawing);
+        }
+
         if close {
             self.state.apply(Action::EditDrawing { drawing: None });
+        }
+    }
+
+    /// Native: pick a path and write the drawing PDF. Web: generate the bytes and download.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn export_drawing_pdf(&mut self, drawing: usize) {
+        let name = crate::names::node_label(&self.state.doc, hierarchy::HierarchyNode::Drawing(drawing));
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("PDF drawing", &["pdf"])
+            .set_file_name(format!("{name}.pdf"))
+            .save_file()
+        {
+            self.state.apply(Action::ExportDrawingPdf {
+                drawing,
+                path: path.to_string_lossy().to_string(),
+            });
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn export_drawing_pdf(&mut self, drawing: usize) {
+        let name = crate::names::node_label(&self.state.doc, hierarchy::HierarchyNode::Drawing(drawing));
+        match crate::drawing::drawing_to_pdf(&self.state.doc, drawing) {
+            Some(bytes) => self.web_save_bytes(
+                "PDF drawing",
+                &["pdf"],
+                format!("{name}.pdf"),
+                bytes,
+                format!("Exported {name}"),
+            ),
+            None => self.state.status = format!("Export failed: no drawing {drawing}"),
         }
     }
 

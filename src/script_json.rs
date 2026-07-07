@@ -601,6 +601,10 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             drawing: req_usize(o, "drawing", "export_drawing_svg")?,
             path: req_str(o, "path", "export_drawing_svg")?,
         }),
+        "export_drawing_pdf" => Ok(Instruction::ExportDrawingPdf {
+            drawing: req_usize(o, "drawing", "export_drawing_pdf")?,
+            path: req_str(o, "path", "export_drawing_pdf")?,
+        }),
         "drawing_dimension" => Ok(Instruction::ToggleDrawingDimension {
             drawing: req_usize(o, "drawing", "drawing_dimension")?,
             view: req_usize(o, "view", "drawing_dimension")?,
@@ -2183,6 +2187,13 @@ mod tests {
                 &json!({ "drawing": 2, "path": "plate.svg" })
             ),
             Ok(Instruction::ExportDrawingSvg { drawing: 2, path: "plate.svg".into() })
+        );
+        assert_eq!(
+            instruction_from_json(
+                "export_drawing_pdf",
+                &json!({ "drawing": 2, "path": "plate.pdf" })
+            ),
+            Ok(Instruction::ExportDrawingPdf { drawing: 2, path: "plate.pdf".into() })
         );
         assert_eq!(
             instruction_from_json(

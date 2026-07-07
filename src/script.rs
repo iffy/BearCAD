@@ -122,6 +122,8 @@ pub enum Instruction {
     CreateDrawing { name: Option<String> },
     /// Export a technical drawing to a vector SVG file.
     ExportDrawingSvg { drawing: usize, path: String },
+    /// Export a technical drawing to a single-page vector PDF file.
+    ExportDrawingPdf { drawing: usize, path: String },
     /// Add a body view (in an orientation) to a drawing.
     AddDrawingView {
         drawing: usize,
@@ -537,6 +539,9 @@ impl Instruction {
                 Some(n) => format!("bearcad.drawing{{ name = {:?} }}", n),
                 None => "bearcad.drawing{}".to_string(),
             },
+            Instruction::ExportDrawingPdf { drawing, path } => {
+                format!("bearcad.export_drawing_pdf{{ drawing = {drawing}, path = {path:?} }}")
+            }
             Instruction::ExportDrawingSvg { drawing, path } => {
                 format!("bearcad.export_drawing_svg{{ drawing = {drawing}, path = {path:?} }}")
             }
@@ -3079,6 +3084,11 @@ impl ScriptRunner {
             }
             Instruction::ExportDrawingSvg { drawing, path } => {
                 let result = state.apply(Action::ExportDrawingSvg { drawing, path });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::ExportDrawingPdf { drawing, path } => {
+                let result = state.apply(Action::ExportDrawingPdf { drawing, path });
                 self.record_action_error(result);
                 StepResult::Continue
             }

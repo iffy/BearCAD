@@ -22,8 +22,8 @@ you like, and each one collects **views** — a body shown from a chosen directi
    between them (Shift+click either again to hide it).
 4. Remove a view with the **×** beside it. Click **← Back to model** to return to the 3D
    view. Reopen a drawing any time by clicking its row (or right-click → **Edit drawing**).
-5. **Export** with **Export SVG…** — a vector SVG you can open in any browser and **print to
-   PDF**.
+5. **Export** with **Export PDF…** for a single-page vector PDF, or **Export SVG…** for a
+   vector SVG you can open in any browser and print. Both are black-on-white and scale losslessly.
 
 ## Scripting
 
@@ -43,7 +43,8 @@ bearcad.drawing_angle{ drawing = d, view = 0,
   edge1 = { a = {0, 0, 0}, b = {40, 0, 0} },
   edge2 = { a = {0, 0, 0}, b = {0, 0, 15} } }
 
--- Export the drawing as a vector SVG (print it to PDF from your browser).
+-- Export the drawing as a vector PDF, or as an SVG.
+bearcad.export_drawing_pdf{ drawing = d, path = "plate.pdf" }
 bearcad.export_drawing_svg{ drawing = d, path = "plate.svg" }
 ```
 

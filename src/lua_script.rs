@@ -2601,6 +2601,18 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Export a technical drawing to a single-page vector PDF file (#180).
+    // `bearcad.export_drawing_pdf{ drawing, path }`.
+    api.set(
+        "export_drawing_pdf",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let drawing: usize = opts.get("drawing")?;
+            let path: String = opts.get("path")?;
+            unsafe { tick.exec(Instruction::ExportDrawingPdf { drawing, path }) }
+        })?,
+    )?;
+
     // Toggle a view's edge length dimension (#180): the edge is named by its two world
     // endpoints `a`/`b` (`{x, y, z}`), matched to the body's projected feature edge.
     api.set(
