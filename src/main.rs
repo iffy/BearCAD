@@ -2563,7 +2563,7 @@ impl App {
                 .state
                 .creating_repeat
                 .as_ref()
-                .is_some_and(|c| !c.targets.is_empty())
+                .is_some_and(|c| !c.targets.is_empty() || !c.plane_targets.is_empty())
             && !ui.ctx().wants_keyboard_input()
         {
             self.state.apply(Action::CommitRepeat);
@@ -4705,6 +4705,7 @@ fn build_viewport_scene_input<'a>(
     creating_edge_treatment: Option<&CreatingEdgeTreatment>,
     creating_revolve: Option<&actions::CreatingRevolve>,
     creating_loft: Option<&actions::CreatingLoft>,
+    creating_repeat: Option<&actions::CreatingRepeat>,
     pending_extrude_target: Option<model::ExtrudeTarget>,
     plane_gizmo: Option<gpu_viewport::ViewportPlaneGizmo>,
     extrude_gizmo: Option<gpu_viewport::ViewportExtrudeGizmo>,
@@ -4891,6 +4892,48 @@ fn build_viewport_scene_input<'a>(
         _ => None,
     });
 
+    // #223: while the Repeat tool is collecting bodies and its count/spacing change, ghost the
+    // would-be instances — each picked body's mesh translated to every instance offset along the
+    // axis — so the pattern previews live before commit. Reuses `repeat_offsets`, the same
+    // evaluation a commit runs, so the ghosts land exactly where the copies will.
+    let repeat_ghosts: Vec<extrude::SolidMesh> = creating_repeat
+        .filter(|c| !c.targets.is_empty())
+        .and_then(|c| {
+            let probe = model::RepeatOperation {
+                targets: c.targets.clone(),
+                plane_targets: c.plane_targets.clone(),
+                axis: c.axis,
+                mode: c.mode,
+                count: c.count.clone(),
+                spacing: c.spacing.clone(),
+                length: c.length.clone(),
+                length_target: None,
+                outputs: Vec::new(),
+                plane_outputs: Vec::new(),
+                name: None,
+                deleted: false,
+            };
+            let (_, dir) = extrude::axis_world(doc, c.axis)?;
+            let offsets = extrude::repeat_offsets(doc, &probe)?;
+            let mut ghosts = Vec::new();
+            for &bi in &c.targets {
+                if let Some(base) = extrude::body_solid_mesh(doc, bi) {
+                    for &off in &offsets {
+                        let t = dir * off;
+                        ghosts.push(extrude::SolidMesh {
+                            triangles: base
+                                .triangles
+                                .iter()
+                                .map(|[a, b, c]| [*a + t, *b + t, *c + t])
+                                .collect(),
+                        });
+                    }
+                }
+            }
+            (!ghosts.is_empty()).then_some(ghosts)
+        })
+        .unwrap_or_default();
+
     gpu_viewport::ViewportSceneInput {
         doc,
         cam,
@@ -4920,6 +4963,7 @@ fn build_viewport_scene_input<'a>(
         preview_circle,
         preview_extrusion,
         preview_solid,
+        repeat_ghosts,
         editing_extrusion,
         preview_cut_body,
         plane_preview,
@@ -8864,6 +8908,7 @@ impl App {
             self.state.creating_edge_treatment.as_ref(),
             self.state.creating_revolve.as_ref(),
             self.state.creating_loft.as_ref(),
+            self.state.creating_repeat.as_ref(),
             self.pending_extrude_target.clone(),
             plane_gizmo,
             extrude_gizmo,
@@ -10834,6 +10879,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             pending.clone(),
             None,
             None,
@@ -10852,6 +10898,78 @@ mod tests {
             Some(pending),
             "ghost preview should pick up the live pending target before commit"
         );
+    }
+
+    /// #223: while the Repeat tool holds picked bodies and an evaluable count, the scene carries a
+    /// ghost mesh per would-be instance (count − 1 copies of each target).
+    #[test]
+    fn repeat_tool_ghosts_the_would_be_instances() {
+        use crate::actions::{Action, AppState, CreatingRepeat, Tool};
+        use crate::model::{ExtrudeFace, RepeatMode, RevolveAxis};
+
+        let mut state = AppState::default();
+        // Build one real body: a rectangle extruded into a block.
+        state.apply(Action::BeginSketch {
+            face: crate::model::FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        let sketch = state.sketch_session.unwrap().sketch;
+        crate::construction::add_line_rectangle(&mut state.doc, sketch, 0.0, 0.0, 10.0, 5.0, [false; 4]);
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace {
+            face: ExtrudeFace::Polygon(vec![0, 1, 2, 3]),
+        });
+        state.apply(Action::CommitExtrusion);
+        assert!(state.doc.bodies.iter().any(|b| !b.deleted), "an extruded body exists");
+
+        state.tool = Tool::Repeat;
+        state.creating_repeat = Some(CreatingRepeat {
+            targets: vec![0],
+            axis: RevolveAxis::X,
+            mode: RepeatMode::CountGap,
+            count: "3".to_string(),
+            spacing: "10".to_string(),
+            ..CreatingRepeat::default()
+        });
+
+        let cam = state.cam.clone();
+        let element_visibility = state.element_visibility.clone();
+        let selection = state.scene_selection.clone();
+        let health = state.document_health.clone();
+
+        let scene_input = build_viewport_scene_input(
+            &state.doc,
+            &cam,
+            test_viewport_rect(),
+            None,
+            &element_visibility,
+            &selection,
+            &health,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            state.creating_repeat.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            None,
+            &[],
+            None,
+            None,
+            Vec::new(),
+        );
+        // 3 instances = original + 2 ghosts; each ghost is a non-empty translated copy.
+        assert_eq!(scene_input.repeat_ghosts.len(), 2);
+        assert!(scene_input.repeat_ghosts.iter().all(|g| !g.is_empty()));
     }
 
     /// #180: drawing-view projection axes are orthonormal and orient as expected — a Front
@@ -10923,6 +11041,7 @@ mod tests {
                 None,
                 None,
                 state.creating_loft.as_ref(),
+                None,
                 None,
                 None,
                 None,
@@ -11005,6 +11124,7 @@ mod tests {
             None,
             None,
             state.creating_edge_treatment.as_ref(),
+            None,
             None,
             None,
             None,

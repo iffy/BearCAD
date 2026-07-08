@@ -491,7 +491,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   (end-to-start), count fit-to-end, count fit start-to-start, fill-length by gap,
   fill-length by pitch, and fill-length with a *maximum* pitch that lands an instance
   exactly at the end (stud spacing). Count/spacing/length are **expressions** (parameters
-  work); the context pane shows the live instance count as they change; instance counts
+  work); the context pane shows the live instance count as they change, and the viewport shows
+  translucent **ghost previews** of the would-be instances while count/spacing change (#223, the
+  picked bodies' meshes translated to each `repeat_offsets` offset); instance counts
   clamp at 512. End-to-start measurements use the targets' combined extent along the axis.
   "Edit repeat" re-opens the tool and resizes the output list. The fill length `L` may instead
   be **bound to a target's extended plane** (`RepeatOperation::length_target`, an
@@ -509,8 +511,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     Instances are grouped under the repeat op in the Elements pane, and go away with it. Count
     and spacing are the same expressions/modes as body repeats; a repeat may target bodies and
     planes at once.
-  Repeating sketches (#226) and operations (#220), 2D in-sketch repeats (#222), the viewport
-  ghost preview (#223), and the GUI/scripting to *pick* the length face are tracked follow-ups.
+  Repeating sketches (#226) and operations (#220), 2D in-sketch repeats (#222), and the
+  GUI/scripting to *pick* the length face are tracked follow-ups.
 
 - **Slice tool (#181):** cuts whole bodies with planar cutters. Two pickers — **Bodies**
   (the targets, multi-select) and **Cutters** (construction planes and/or planar body

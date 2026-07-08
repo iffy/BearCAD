@@ -19,7 +19,8 @@ wall, teeth on a rack.
    viewport.
 3. Choose how to space the copies (see the modes below) and fill in the values — every
    value is an expression, so parameters work. The context pane shows the live instance
-   count as you type.
+   count as you type, and the viewport shows translucent ghosts of the copies so you can see
+   the pattern before committing.
 4. Press **Enter** (or the **Repeat** button).
 
 ## Spacing modes
