@@ -3684,6 +3684,7 @@ impl eframe::App for App {
                         targets: cr.map(|c| c.targets.clone()).unwrap_or_default(),
                         plane_targets: cr.map(|c| c.plane_targets.clone()).unwrap_or_default(),
                         sketch_targets: cr.map(|c| c.sketch_targets.clone()).unwrap_or_default(),
+                        extrusion_targets: cr.map(|c| c.extrusion_targets.clone()).unwrap_or_default(),
                         axis_label: cr
                             .map(|c| match c.axis {
                                 model::RevolveAxis::Line(li) => names::element_name(

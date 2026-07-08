@@ -517,8 +517,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     to punch N holes, and an **add** extrusion's solid is fused again (`occt_fused_extrusions`) to
     grow N bumps. No output bodies; the extra ops fold into the target body's shape at build time
     (spacing is center-to-center, extent 0). Scripting: `bearcad.repeat_cut{ cuts = {ei}, axis,
-    mode, count?, spacing?, length? }` (works for add or cut targets). Picking the operation in the
-    viewport and pane grouping are the tracked GUI follow-up.
+    mode, count?, spacing?, length? }` (works for add or cut targets). The Repeat tool picks an
+    extrusion operand by clicking it (Elements pane / selection → `extrusion_targets`, shown as an
+    operation count in the context pane, #235); the op is a selectable/deletable `RepeatOp` whose
+    deletion drops the replay.
   - **Repeating whole sketches (#226):** `RepeatOperation::sketch_targets` copies a
     construction-plane-hosted sketch at each offset. Each copy rides a fresh construction plane
     parallel to the source's, translated along the axis (`rebuild_repeated_sketches`), and carries

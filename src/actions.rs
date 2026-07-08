@@ -6997,6 +6997,20 @@ impl AppState {
                         }
                         true
                     }
+                    // An extrusion clicked with the Repeat tool joins its replay set (#220/#235):
+                    // its cut/add effect is replayed at each offset.
+                    SceneElement::Extrusion(ei) if self.tool == Tool::Repeat => {
+                        let set = &mut self
+                            .creating_repeat
+                            .get_or_insert_with(CreatingRepeat::default)
+                            .extrusion_targets;
+                        if let Some(pos) = set.iter().position(|e| e == ei) {
+                            set.remove(pos);
+                        } else {
+                            set.push(*ei);
+                        }
+                        true
+                    }
                     // A tracing image clicked with the Move tool joins its image set (#217).
                     SceneElement::Image(ii) if self.tool == Tool::Move => {
                         let set = &mut self
@@ -11075,6 +11089,27 @@ mod tests {
             additive: false,
         });
         assert!(state.creating_repeat.as_ref().unwrap().sketch_targets.is_empty());
+    }
+
+    /// #235: clicking an extrusion while the Repeat tool is active adds it to the replay set, so
+    /// its cut/add effect is repeated along the axis.
+    #[test]
+    fn repeat_tool_click_toggles_extrusion_target() {
+        let mut state = two_box_state(false);
+        state.apply(Action::SetTool(Tool::Repeat));
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Extrusion(0),
+            additive: false,
+        });
+        assert_eq!(
+            state.creating_repeat.as_ref().unwrap().extrusion_targets,
+            vec![0],
+        );
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Extrusion(0),
+            additive: false,
+        });
+        assert!(state.creating_repeat.as_ref().unwrap().extrusion_targets.is_empty());
     }
 
     /// #221: repeating a construction plane ×3 along X emits two offset instance planes at the
