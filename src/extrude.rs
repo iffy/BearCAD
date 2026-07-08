@@ -571,9 +571,87 @@ fn occt_moved_output_shape(
 /// — instance 0 is the original at offset 0. `None` when an expression doesn't evaluate,
 /// the axis died, or the configuration is degenerate. Instance counts are clamped to a
 /// sane ceiling so a bad expression can't wedge the app.
-pub fn repeat_offsets(doc: &Document, op: &crate::model::RepeatOperation) -> Option<Vec<f32>> {
+/// Upper bound on how many instances any linear repeat (3D body #182 or 2D in-sketch #222)
+/// will generate, guarding against a runaway fill length / tiny pitch.
+pub const MAX_REPEAT_INSTANCES: usize = 512;
+
+/// The along-direction offsets of a linear repeat's extra instances (instance 1..n-1; instance 0
+/// is the original at offset 0), given the spacing `mode`, the operands' `extent` along the
+/// direction, and the already-evaluated `count` / `gap` / `length` inputs each mode needs
+/// (`None` when the relevant expression didn't evaluate). This is the pure spacing-mode math
+/// shared by the 3D body repeat ([`repeat_offsets`]) and the 2D in-sketch repeat (#222); it has
+/// no notion of what is being repeated. Returns `None` when the configuration can't produce a
+/// valid step, and an empty `Vec` for count-fit modes with `count < 2` (just the original).
+pub fn spacing_offsets(
+    mode: crate::model::RepeatMode,
+    extent: f32,
+    count: Option<usize>,
+    gap: Option<f32>,
+    length: Option<f32>,
+) -> Option<Vec<f32>> {
     use crate::model::RepeatMode;
-    const MAX_INSTANCES: usize = 512;
+    let offsets = |n: usize, step: f32| -> Option<Vec<f32>> {
+        (n >= 1 && step.is_finite() && step > 1e-6).then(|| (1..n).map(|i| step * i as f32).collect())
+    };
+    match mode {
+        RepeatMode::CountGap => {
+            let n = count?;
+            let gap = gap?;
+            offsets(n, extent + gap)
+        }
+        RepeatMode::CountFitEnds => {
+            let n = count?;
+            if n < 2 {
+                return Some(Vec::new());
+            }
+            let total = length?;
+            offsets(n, (total - extent) / (n as f32 - 1.0))
+        }
+        RepeatMode::CountFitCenters => {
+            let n = count?;
+            if n < 2 {
+                return Some(Vec::new());
+            }
+            let span = length?;
+            offsets(n, span / (n as f32 - 1.0))
+        }
+        RepeatMode::FillGap => {
+            let l = length?;
+            let gap = gap?;
+            let step = extent + gap;
+            if step <= 1e-6 {
+                return None;
+            }
+            let n = (((l - extent) / step).floor() as isize + 1).max(1) as usize;
+            offsets(n.min(MAX_REPEAT_INSTANCES), step)
+        }
+        RepeatMode::FillPitch => {
+            let l = length?;
+            let pitch = gap?;
+            if pitch <= 1e-6 {
+                return None;
+            }
+            let n = (((l - extent) / pitch).floor() as isize + 1).max(1) as usize;
+            offsets(n.min(MAX_REPEAT_INSTANCES), pitch)
+        }
+        RepeatMode::FillMaxPitch => {
+            // Stud spacing: last instance lands exactly at the end of L, pitch <= D.
+            let l = length?;
+            let max_pitch = gap?;
+            if max_pitch <= 1e-6 {
+                return None;
+            }
+            let span = (l - extent).max(0.0);
+            if span <= 1e-6 {
+                return Some(Vec::new());
+            }
+            let n = ((span / max_pitch).ceil() as usize + 1).min(MAX_REPEAT_INSTANCES);
+            offsets(n, span / (n as f32 - 1.0))
+        }
+    }
+}
+
+pub fn repeat_offsets(doc: &Document, op: &crate::model::RepeatOperation) -> Option<Vec<f32>> {
     let (_, dir) = axis_world(doc, op.axis)?;
     // The targets' combined extent along the axis (end-to-start measurements need it).
     let mut min_p = f32::INFINITY;
@@ -624,69 +702,11 @@ pub fn repeat_offsets(doc: &Document, op: &crate::model::RepeatOperation) -> Opt
             crate::value::EvaluatedParameter::LengthMm(n) => Some(n),
             crate::value::EvaluatedParameter::AngleRad(_) => None,
         })?;
-        (n >= 1.0).then_some((n.round() as usize).min(MAX_INSTANCES))
+        (n >= 1.0).then_some((n.round() as usize).min(MAX_REPEAT_INSTANCES))
     };
-    let offsets = |n: usize, step: f32| -> Option<Vec<f32>> {
-        (n >= 1 && step.is_finite() && step > 1e-6).then(|| {
-            (1..n).map(|i| step * i as f32).collect()
-        })
-    };
-    match op.mode {
-        RepeatMode::CountGap => {
-            let n = count()?;
-            let gap = eval(&op.spacing)?;
-            offsets(n, extent + gap)
-        }
-        RepeatMode::CountFitEnds => {
-            let n = count()?;
-            if n < 2 {
-                return Some(Vec::new());
-            }
-            let total = length()?;
-            offsets(n, (total - extent) / (n as f32 - 1.0))
-        }
-        RepeatMode::CountFitCenters => {
-            let n = count()?;
-            if n < 2 {
-                return Some(Vec::new());
-            }
-            let span = length()?;
-            offsets(n, span / (n as f32 - 1.0))
-        }
-        RepeatMode::FillGap => {
-            let l = length()?;
-            let gap = eval(&op.spacing)?;
-            let step = extent + gap;
-            if step <= 1e-6 {
-                return None;
-            }
-            let n = (((l - extent) / step).floor() as isize + 1).max(1) as usize;
-            offsets(n.min(MAX_INSTANCES), step)
-        }
-        RepeatMode::FillPitch => {
-            let l = length()?;
-            let pitch = eval(&op.spacing)?;
-            if pitch <= 1e-6 {
-                return None;
-            }
-            let n = (((l - extent) / pitch).floor() as isize + 1).max(1) as usize;
-            offsets(n.min(MAX_INSTANCES), pitch)
-        }
-        RepeatMode::FillMaxPitch => {
-            // Stud spacing: last instance lands exactly at the end of L, pitch <= D.
-            let l = length()?;
-            let max_pitch = eval(&op.spacing)?;
-            if max_pitch <= 1e-6 {
-                return None;
-            }
-            let span = (l - extent).max(0.0);
-            if span <= 1e-6 {
-                return Some(Vec::new());
-            }
-            let n = ((span / max_pitch).ceil() as usize + 1).min(MAX_INSTANCES);
-            offsets(n, span / (n as f32 - 1.0))
-        }
-    }
+    // Fill modes never read `count`, and count modes never read `length`, but evaluating both
+    // eagerly is side-effect-free and lets the shared spacing math stay input-only.
+    spacing_offsets(op.mode, extent, count(), eval(&op.spacing), length())
 }
 
 /// The BREP solid of one repeat output: the input body's shape translated to its instance
@@ -3173,6 +3193,29 @@ mod tests {
     }
 
     /// #186: a repeat's fill length can be bound to a target's extended plane (like an
+    /// The extracted spacing-mode math (#222) is input-only and covers every mode: count×gap
+    /// steps by extent+gap; the fit modes divide the span; the fill modes count how many fit.
+    #[test]
+    fn spacing_offsets_covers_every_mode() {
+        use crate::model::RepeatMode;
+        let f = super::spacing_offsets;
+        // Count × gap: extent 10, gap 5 → step 15; 3 instances → offsets 15, 30.
+        assert_eq!(f(RepeatMode::CountGap, 10.0, Some(3), Some(5.0), None), Some(vec![15.0, 30.0]));
+        // Count fit-to-end: 3 instances across L=40 with extent 10 → step (40-10)/2 = 15.
+        assert_eq!(f(RepeatMode::CountFitEnds, 10.0, Some(3), None, Some(40.0)), Some(vec![15.0, 30.0]));
+        // Count fit start-to-start: 3 instances across span 40 → step 20.
+        assert_eq!(f(RepeatMode::CountFitCenters, 0.0, Some(3), None, Some(40.0)), Some(vec![20.0, 40.0]));
+        // Count-fit with < 2 instances is just the original (empty extras).
+        assert_eq!(f(RepeatMode::CountFitEnds, 10.0, Some(1), None, Some(40.0)), Some(Vec::new()));
+        // Fill by gap: L=40, extent 10, gap 5 → step 15 → n = floor((40-10)/15)+1 = 3.
+        assert_eq!(f(RepeatMode::FillGap, 10.0, None, Some(5.0), Some(40.0)), Some(vec![15.0, 30.0]));
+        // Fill by pitch: L=40, pitch 10 → n = floor((40-0)/10)+1 = 5 with extent 0.
+        assert_eq!(f(RepeatMode::FillPitch, 0.0, None, Some(10.0), Some(40.0)), Some(vec![10.0, 20.0, 30.0, 40.0]));
+        // Missing inputs / degenerate steps don't evaluate.
+        assert_eq!(f(RepeatMode::CountGap, 10.0, None, Some(5.0), None), None);
+        assert_eq!(f(RepeatMode::CountGap, 10.0, Some(3), None, None), None);
+    }
+
     /// extrusion's "up to face"), so `L` is the along-axis distance to that plane and follows
     /// it — overriding the `length` expression.
     #[test]
