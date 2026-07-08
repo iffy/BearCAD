@@ -571,8 +571,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     The operation is a first-class pane element (`SceneElement::SketchSliceOp`/
     `HierarchyNode::SketchSliceOp`, #229): its fragment lines nest under it (excluded from the
     sketch's own listing; shadowed originals stay listed, dimmed), and it is selectable, nameable,
-    and deletable (delete un-shadows the originals and removes the fragments). Curve and face
-    targets, and the interactive in-sketch tool, are tracked follow-ups.
+    and deletable (delete un-shadows the originals and removes the fragments). **Curved** targets
+    and cutters work too (#233): crossings are found by intersecting the entities' sampled
+    polylines, and a curved target is split with de Casteljau so each fragment keeps its bezier
+    shape. Circle targets, face (loop) slicing, and the interactive in-sketch tool are tracked
+    follow-ups.
   Picking side-wall faces as cutters remains a tracked follow-up (#191).
 
 ### 3.4 Modifying solids

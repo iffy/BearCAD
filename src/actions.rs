@@ -8176,11 +8176,65 @@ fn segment_crossing_t(
     (t > EPS && t < 1.0 - EPS && u > EPS && u < 1.0 - EPS).then_some(t)
 }
 
-/// (Re)generate the fragments of an in-sketch slice (#224) at `op_index`. Each straight target
-/// line is split at its interior crossings with the cutter lines: the original is flagged
-/// `shadow` (kept, but no longer face-forming) and its pieces become fresh lines. Targets with no
-/// crossing (or curved targets, deferred) are left untouched. Returns `false` — leaving the op
-/// untouched — when nothing actually splits.
+/// Split a cubic bezier `[p0, c0, c1, p3]` at parameter `t ∈ (0,1)` via de Casteljau, returning
+/// the two sub-cubics (each `[P0, C0, C1, P3]`).
+fn split_cubic(
+    p: [(f32, f32); 4],
+    t: f32,
+) -> ([(f32, f32); 4], [(f32, f32); 4]) {
+    let lerp = |a: (f32, f32), b: (f32, f32)| (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+    let q0 = lerp(p[0], p[1]);
+    let q1 = lerp(p[1], p[2]);
+    let q2 = lerp(p[2], p[3]);
+    let r0 = lerp(q0, q1);
+    let r1 = lerp(q1, q2);
+    let s = lerp(r0, r1);
+    ([p[0], q0, r0, s], [s, r1, q2, p[3]])
+}
+
+/// Split a cubic at each (sorted, in-(0,1)) parameter, returning the pieces left-to-right.
+fn split_cubic_multi(mut cur: [(f32, f32); 4], params: &[f32]) -> Vec<[(f32, f32); 4]> {
+    let mut pieces = Vec::new();
+    let mut prev = 0.0f32;
+    for &t in params {
+        let local = ((t - prev) / (1.0 - prev)).clamp(0.0, 1.0);
+        let (left, right) = split_cubic(cur, local);
+        pieces.push(left);
+        cur = right;
+        prev = t;
+    }
+    pieces.push(cur);
+    pieces
+}
+
+/// The target-line parameters (`0..1` along the target) where a cutter crosses it, found by
+/// intersecting their sampled polylines — so it works for straight *or* curved (#233) targets and
+/// cutters. Sorted and de-duplicated.
+fn curve_crossing_params(target: &crate::model::Line, cutter: &crate::model::Line) -> Vec<f32> {
+    let tp = target.sample_local(crate::model::BEZIER_SEGMENTS);
+    let cp = cutter.sample_local(crate::model::BEZIER_SEGMENTS);
+    let n = (tp.len() - 1) as f32;
+    let mut params = Vec::new();
+    for i in 0..tp.len() - 1 {
+        for j in 0..cp.len() - 1 {
+            if let Some(s) = segment_crossing_t(
+                tp[i].0, tp[i].1, tp[i + 1].0, tp[i + 1].1,
+                cp[j].0, cp[j].1, cp[j + 1].0, cp[j + 1].1,
+            ) {
+                params.push((i as f32 + s) / n);
+            }
+        }
+    }
+    params.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    params.dedup_by(|a, b| (*a - *b).abs() < 1e-4);
+    params
+}
+
+/// (Re)generate the fragments of an in-sketch slice (#224/#233) at `op_index`. Each target line —
+/// straight or curved — is split at its interior crossings with the cutter lines: the original is
+/// flagged `shadow` (kept, but no longer face-forming) and its pieces become fresh lines (curved
+/// pieces keep their bezier shape via de Casteljau). Targets with no crossing are left untouched.
+/// Returns `false` — leaving the op untouched — when nothing actually splits.
 fn rebuild_sketch_slice(doc: &mut crate::model::Document, op_index: usize) -> bool {
     let Some(op) = doc.sketch_slice_ops.get(op_index).filter(|o| !o.deleted).cloned() else {
         return false;
@@ -8199,10 +8253,8 @@ fn rebuild_sketch_slice(doc: &mut crate::model::Document, op_index: usize) -> bo
     let mut outputs = Vec::new();
     for &a in &op.line_targets {
         let al = doc.lines[a].clone();
-        // Curved targets are a follow-up; only straight lines split here.
-        if al.bezier.is_some() {
-            continue;
-        }
+        // Gather all crossing parameters along the target across every cutter (works for straight
+        // and curved targets/cutters, #233).
         let mut ts: Vec<f32> = Vec::new();
         for &b in &op.cutter_lines {
             if b == a {
@@ -8211,34 +8263,45 @@ fn rebuild_sketch_slice(doc: &mut crate::model::Document, op_index: usize) -> bo
             let Some(bl) = doc.lines.get(b).filter(|l| !l.deleted) else {
                 continue;
             };
-            if let Some(t) =
-                segment_crossing_t(al.x0, al.y0, al.x1, al.y1, bl.x0, bl.y0, bl.x1, bl.y1)
-            {
-                ts.push(t);
-            }
+            ts.extend(curve_crossing_params(&al, bl));
         }
         if ts.is_empty() {
             continue;
         }
         ts.sort_by(|p, q| p.partial_cmp(q).unwrap_or(std::cmp::Ordering::Equal));
-        ts.dedup_by(|p, q| (*p - *q).abs() < 1e-5);
-        // Shadow the split original; emit a fragment for each [prev, t] span up to the far end.
+        ts.dedup_by(|p, q| (*p - *q).abs() < 1e-4);
         doc.lines[a].shadow = true;
-        let point_at = |t: f32| (al.x0 + (al.x1 - al.x0) * t, al.y0 + (al.y1 - al.y0) * t);
-        let mut prev = 0.0f32;
-        for &t in ts.iter().chain(std::iter::once(&1.0)) {
-            let (px, py) = point_at(prev);
-            let (qx, qy) = point_at(t);
+        let mut push_frag = |x0: f32, y0: f32, x1: f32, y1: f32, bezier: Option<[(f32, f32); 2]>| {
             let mut frag = shifted_line_copy(&al, 0.0, 0.0);
-            frag.x0 = px;
-            frag.y0 = py;
-            frag.x1 = qx;
-            frag.y1 = qy;
+            frag.x0 = x0;
+            frag.y0 = y0;
+            frag.x1 = x1;
+            frag.y1 = y1;
+            frag.bezier = bezier;
             frag.shadow = false;
             outputs.push(doc.lines.len());
             doc.lines.push(frag);
             doc.shape_order.push(crate::model::ShapeKind::Line);
-            prev = t;
+        };
+        match al.bezier {
+            None => {
+                // Straight: split into segments by linear interpolation at each param.
+                let point_at = |t: f32| (al.x0 + (al.x1 - al.x0) * t, al.y0 + (al.y1 - al.y0) * t);
+                let mut prev = 0.0f32;
+                for &t in ts.iter().chain(std::iter::once(&1.0)) {
+                    let (px, py) = point_at(prev);
+                    let (qx, qy) = point_at(t);
+                    push_frag(px, py, qx, qy, None);
+                    prev = t;
+                }
+            }
+            Some([c0, c1]) => {
+                // Curved: de Casteljau split; each piece keeps its own bezier handles.
+                let pieces = split_cubic_multi([(al.x0, al.y0), c0, c1, (al.x1, al.y1)], &ts);
+                for piece in pieces {
+                    push_frag(piece[0].0, piece[0].1, piece[3].0, piece[3].1, Some([piece[1], piece[2]]));
+                }
+            }
         }
     }
     if outputs.is_empty() {
@@ -11065,6 +11128,42 @@ mod tests {
         assert_eq!(op.outputs.len(), 3);
         let offsets = crate::extrude::repeat_offsets(&state.doc, &op).unwrap();
         assert_eq!(offsets.len(), 3);
+    }
+
+    /// #233: slicing a curved (bezier) line by a crossing cutter splits it into two curved
+    /// fragments via de Casteljau — each keeps a bezier, and they meet on the curve at the cut.
+    #[test]
+    fn sketch_slice_splits_a_curved_line() {
+        let mut state = AppState::default();
+        let si = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        // A symmetric arch from (0,0) to (10,0), handles pulling it up.
+        let mut target = crate::model::Line::from_local_endpoints(si, 0.0, 0.0, 10.0, 0.0);
+        target.bezier = Some([(3.0, 5.0), (7.0, 5.0)]);
+        state.doc.lines.push(target); // line 0
+        // A vertical cutter at x = 4 (off the symmetric apex vertex, so the crossing lands mid-segment).
+        state
+            .doc
+            .lines
+            .push(crate::model::Line::from_local_endpoints(si, 4.0, -1.0, 4.0, 10.0)); // line 1
+
+        let result = state.apply(Action::CreateSketchSliceOperation {
+            sketch: si,
+            line_targets: vec![0],
+            cutter_lines: vec![1],
+        });
+        assert!(matches!(result, ActionResult::Ok));
+        assert!(state.doc.lines[0].shadow);
+        let op = state.doc.sketch_slice_ops[0].clone();
+        assert_eq!(op.line_outputs.len(), 2);
+        let f0 = &state.doc.lines[op.line_outputs[0]];
+        let f1 = &state.doc.lines[op.line_outputs[1]];
+        assert!(f0.bezier.is_some() && f1.bezier.is_some(), "fragments stay curved");
+        // The pieces meet at the cut point, which lies on the vertical cutter (x = 4).
+        assert!((f0.x1 - f1.x0).abs() < 1e-3 && (f0.y1 - f1.y0).abs() < 1e-3);
+        assert!((f0.x1 - 4.0).abs() < 0.15, "split at x≈4, got {}", f0.x1);
+        // The first piece starts at the curve's start; the second ends at its end.
+        assert_eq!((f0.x0, f0.y0), (0.0, 0.0));
+        assert_eq!((f1.x1, f1.y1), (10.0, 0.0));
     }
 
     /// #234: clicking a sketch while the Repeat tool is active adds it to the operand set
