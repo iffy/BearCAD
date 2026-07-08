@@ -3218,7 +3218,7 @@ impl ScriptRunner {
             }
             Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle } => {
                 let result =
-                    state.apply(Action::CreateMoveOperation { targets, plane_targets: Vec::new(), tx, ty, tz, axis, angle });
+                    state.apply(Action::CreateMoveOperation { targets, plane_targets: Vec::new(), image_targets: Vec::new(), tx, ty, tz, axis, angle });
                 self.record_action_error(result);
                 StepResult::Continue
             }
@@ -3227,6 +3227,7 @@ impl ScriptRunner {
                     op,
                     targets,
                     plane_targets: Vec::new(),
+                    image_targets: Vec::new(),
                     tx,
                     ty,
                     tz,

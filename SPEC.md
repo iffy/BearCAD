@@ -467,13 +467,21 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   is its base definition composed with the move, so everything anchored to it (sketches,
   images) follows, since that geometry is stored plane-local and projected through the plane
   frame. Planes are picked into the move set from the Elements pane / selection like bodies.
-  **Coalescing (#217):** re-moving the same element (the same planes, or the moved-output bodies
-  of an existing move) folds into that move op instead of stacking a new one, so a run of test
-  nudges stays a single operation — for the representable cases: translations add, and same-axis
-  rotations add their angles (a differing-axis rotation or a translate+rotate mix starts a fresh
-  op, since `MoveOperation`'s single-axis representation can't express an arbitrary composition).
-  Extending to tracing images and moving sub-body geometry (faces/edges/vertices) remain
-  follow-ups (#185).
+  **Moving tracing images (#217):** a Move op can likewise target a tracing image
+  (`MoveOperation::image_targets`) — at recompute the image's plane-local `origin` is its
+  pristine authored base (`TracingImage::base_origin`, the base/cache split planes have between
+  `definition` and their cached frame) projected onto its host plane frame and pushed through the
+  move, then read back in the plane's u/v axes. In-plane translation slides the image; out-of-plane
+  translation is dropped (the image can't leave its plane); an image on a plane that also moved
+  follows the plane and then takes its own move on top (image recompute runs after plane recompute).
+  Dropping an image from a move restores its authored base. Images join the move set from the
+  Elements pane / selection like bodies and planes. **Coalescing (#217):** re-moving the same
+  element (the same planes, the same images, or the moved-output bodies of an existing move) folds
+  into that move op instead of stacking a new one, so a run of test nudges stays a single operation
+  — for the representable cases: translations add, and same-axis rotations add their angles (a
+  differing-axis rotation or a translate+rotate mix starts a fresh op, since `MoveOperation`'s
+  single-axis representation can't express an arbitrary composition). Moving sub-body geometry
+  (faces/edges/vertices) remains a follow-up (#185).
 
 - **Linear repeat tool (#182):** copies of whole bodies spaced along an axis (global or a
   clicked line). One multi-select body picker; the original stays as instance 0; each

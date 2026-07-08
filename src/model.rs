@@ -1262,6 +1262,10 @@ pub struct MoveOperation {
     /// sketches/images anchored to them follow. No output bodies — the plane itself moves.
     #[serde(default)]
     pub plane_targets: Vec<usize>,
+    /// Tracing images moved by this op (#217): their plane-local origin is transformed in
+    /// place at recompute (projected onto the host plane), like a plane. No output bodies.
+    #[serde(default)]
+    pub image_targets: Vec<usize>,
     /// Translation components (mm expressions; empty = 0).
     #[serde(default)]
     pub tx: String,
@@ -1415,6 +1419,12 @@ pub struct TracingImage {
     pub plane: usize,
     /// Image lower-left corner in plane-local mm.
     pub origin: (f32, f32),
+    /// Authored lower-left before any Move op (#217). `None` = no move applied, so `origin`
+    /// itself is the base. Set when the image first becomes a move target, so editing a move
+    /// op recomputes `origin` from a pristine base — the same base/cache split construction
+    /// planes have between `definition` and their cached frame.
+    #[serde(default)]
+    pub base_origin: Option<(f32, f32)>,
     /// Displayed size in mm. Import seeds 1 px = 1 mm; calibration (#171) rescales.
     pub width_mm: f32,
     pub height_mm: f32,

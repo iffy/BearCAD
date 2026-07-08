@@ -488,6 +488,8 @@ pub struct CreatingMove {
     pub targets: Vec<usize>,
     /// Construction planes being moved (#217).
     pub plane_targets: Vec<usize>,
+    /// Tracing images being moved (#217).
+    pub image_targets: Vec<usize>,
     pub tx: String,
     pub ty: String,
     pub tz: String,
@@ -1081,6 +1083,8 @@ pub enum Action {
         targets: Vec<usize>,
         #[allow(dead_code)]
         plane_targets: Vec<usize>,
+        #[allow(dead_code)]
+        image_targets: Vec<usize>,
         tx: String,
         ty: String,
         tz: String,
@@ -1093,6 +1097,8 @@ pub enum Action {
         targets: Vec<usize>,
         #[allow(dead_code)]
         plane_targets: Vec<usize>,
+        #[allow(dead_code)]
+        image_targets: Vec<usize>,
         tx: String,
         ty: String,
         tz: String,
@@ -2028,6 +2034,7 @@ impl AppState {
             name: None,
             deleted: false,
             calibration: None,
+            base_origin: None,
         });
         self.doc.shape_order.push(crate::model::ShapeKind::Image);
         self.refresh_document_health();
@@ -3227,6 +3234,12 @@ impl AppState {
                     mid.0 + (img.origin.0 - mid.0) * factor,
                     mid.1 + (img.origin.1 - mid.1) * factor,
                 );
+                // If the image has already been moved, rescale its pristine base too so a later
+                // move-op edit still recomputes to the calibrated position (#217).
+                if let Some((bx, by)) = img.base_origin {
+                    img.base_origin =
+                        Some((mid.0 + (bx - mid.0) * factor, mid.1 + (by - mid.1) * factor));
+                }
                 img.width_mm *= factor;
                 img.height_mm *= factor;
                 img.calibration = Some(calibration);
@@ -3313,6 +3326,7 @@ impl AppState {
                     name: None,
                     deleted: false,
                     calibration: None,
+                    base_origin: None,
                 });
                 self.doc.shape_order.push(crate::model::ShapeKind::Image);
                 self.refresh_document_health();
@@ -5940,6 +5954,7 @@ impl AppState {
                         op,
                         targets: cm.targets.clone(),
                         plane_targets: cm.plane_targets.clone(),
+                        image_targets: cm.image_targets.clone(),
                         tx: cm.tx.clone(),
                         ty: cm.ty.clone(),
                         tz: cm.tz.clone(),
@@ -5958,6 +5973,7 @@ impl AppState {
                                     op,
                                     targets: self.doc.move_ops[op].targets.clone(),
                                     plane_targets: self.doc.move_ops[op].plane_targets.clone(),
+                                    image_targets: self.doc.move_ops[op].image_targets.clone(),
                                     tx,
                                     ty,
                                     tz,
@@ -5968,6 +5984,7 @@ impl AppState {
                             None => self.apply(Action::CreateMoveOperation {
                                 targets: cm.targets.clone(),
                                 plane_targets: cm.plane_targets.clone(),
+                                image_targets: cm.image_targets.clone(),
                                 tx: cm.tx.clone(),
                                 ty: cm.ty.clone(),
                                 tz: cm.tz.clone(),
@@ -5984,9 +6001,9 @@ impl AppState {
                 }
                 result
             }
-            Action::CreateMoveOperation { targets, plane_targets, tx, ty, tz, axis, angle } => {
-                if targets.is_empty() && plane_targets.is_empty() {
-                    let e = "Pick at least one body or plane to move".to_string();
+            Action::CreateMoveOperation { targets, plane_targets, image_targets, tx, ty, tz, axis, angle } => {
+                if targets.is_empty() && plane_targets.is_empty() && image_targets.is_empty() {
+                    let e = "Pick at least one body, plane, or image to move".to_string();
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
@@ -6000,6 +6017,7 @@ impl AppState {
                 self.doc.move_ops.push(crate::model::MoveOperation {
                     targets: targets.clone(),
                     plane_targets: plane_targets.clone(),
+                    image_targets: image_targets.clone(),
                     tx,
                     ty,
                     tz,
@@ -6039,15 +6057,12 @@ impl AppState {
                     }
                 }
                 recompute_moved_planes(&mut self.doc);
+                recompute_moved_images(&mut self.doc);
                 self.refresh_document_health();
-                self.status = match (targets.len(), plane_targets.len()) {
-                    (b, 0) => format!("Moved {b} body(ies)"),
-                    (0, p) => format!("Moved {p} plane(s)"),
-                    (b, p) => format!("Moved {b} body(ies), {p} plane(s)"),
-                };
+                self.status = move_status(targets.len(), plane_targets.len(), image_targets.len());
                 ActionResult::Ok
             }
-            Action::EditMoveOperation { op, targets, plane_targets, tx, ty, tz, axis, angle } => {
+            Action::EditMoveOperation { op, targets, plane_targets, image_targets, tx, ty, tz, axis, angle } => {
                 if self.doc.move_ops.get(op).filter(|o| !o.deleted).is_none() {
                     let e = format!("Move operation {op} not found");
                     self.status = e.clone();
@@ -6069,6 +6084,7 @@ impl AppState {
                     let entry = &mut self.doc.move_ops[op];
                     entry.targets = targets.clone();
                     entry.plane_targets = plane_targets.clone();
+                    entry.image_targets = image_targets.clone();
                     entry.tx = tx;
                     entry.ty = ty;
                     entry.tz = tz;
@@ -6127,6 +6143,7 @@ impl AppState {
                     }
                 }
                 recompute_moved_planes(&mut self.doc);
+                recompute_moved_images(&mut self.doc);
                 self.refresh_document_health();
                 self.status = "Edited move".to_string();
                 ActionResult::Ok
@@ -6555,6 +6572,19 @@ impl AppState {
                             set.remove(pos);
                         } else {
                             set.push(*pi);
+                        }
+                        true
+                    }
+                    // A tracing image clicked with the Move tool joins its image set (#217).
+                    SceneElement::Image(ii) if self.tool == Tool::Move => {
+                        let set = &mut self
+                            .creating_move
+                            .get_or_insert_with(CreatingMove::default)
+                            .image_targets;
+                        if let Some(pos) = set.iter().position(|i| i == ii) {
+                            set.remove(pos);
+                        } else {
+                            set.push(*ii);
                         }
                         true
                     }
@@ -7374,15 +7404,27 @@ fn coalescible_move_op(doc: &Document, cm: &CreatingMove) -> Option<usize> {
         if op.deleted {
             return false;
         }
+        // Coalesce only a pure re-move of the exact same single kind of element set, so the
+        // folded op keeps one clean target list (mixed-kind moves stack a fresh op).
         let planes_again = !cm.plane_targets.is_empty()
             && cm.targets.is_empty()
+            && cm.image_targets.is_empty()
             && op.targets.is_empty()
+            && op.image_targets.is_empty()
             && same_move_set(&op.plane_targets, &cm.plane_targets);
         let bodies_again = !cm.targets.is_empty()
             && cm.plane_targets.is_empty()
+            && cm.image_targets.is_empty()
             && op.plane_targets.is_empty()
+            && op.image_targets.is_empty()
             && same_move_set(&op.outputs, &cm.targets);
-        planes_again || bodies_again
+        let images_again = !cm.image_targets.is_empty()
+            && cm.targets.is_empty()
+            && cm.plane_targets.is_empty()
+            && op.targets.is_empty()
+            && op.plane_targets.is_empty()
+            && same_move_set(&op.image_targets, &cm.image_targets);
+        planes_again || bodies_again || images_again
     })
 }
 
@@ -7490,6 +7532,85 @@ pub fn recompute_moved_planes(doc: &mut crate::model::Document) {
         p.u_axis = u;
         p.v_axis = v;
     }
+}
+
+/// Recompute the plane-local origins of tracing images moved by a Move op (#217). Each targeted
+/// image's `origin` is its pristine `base_origin` projected onto the (already-recomputed) host
+/// plane frame and pushed through every non-deleted Move op targeting the image, in op order.
+/// Because the base corner is projected through the *current* plane frame, an image on a plane
+/// that also moved follows the plane and then takes its own move on top. Untargeted images that
+/// were previously moved are restored to their authored base and cleared; others are untouched.
+///
+/// Must run *after* [`recompute_moved_planes`], so the host plane frame is up to date.
+pub fn recompute_moved_images(doc: &mut crate::model::Document) {
+    use std::collections::BTreeSet;
+    let targeted: BTreeSet<usize> = doc
+        .move_ops
+        .iter()
+        .filter(|o| !o.deleted)
+        .flat_map(|o| o.image_targets.iter().copied())
+        .collect();
+    // Precompute each op's world transform (immutable borrow, before mutating images).
+    let transforms: Vec<Option<glam::Mat4>> = doc
+        .move_ops
+        .iter()
+        .map(|op| {
+            (!op.deleted && !op.image_targets.is_empty())
+                .then(|| crate::extrude::move_op_transform(doc, op))
+                .flatten()
+        })
+        .collect();
+    // (image index, new origin, new base_origin).
+    let mut updates: Vec<(usize, (f32, f32), Option<(f32, f32)>)> = Vec::new();
+    for (i, img) in doc.tracing_images.iter().enumerate() {
+        if img.deleted {
+            continue;
+        }
+        if targeted.contains(&i) {
+            // Lock in the pristine base the first time the image is targeted (its `origin`
+            // has no move applied yet at that moment), then always recompute from it.
+            let base = img.base_origin.unwrap_or(img.origin);
+            let Some(frame) =
+                crate::face::sketch_frame(doc, crate::model::FaceId::ConstructionPlane(img.plane))
+            else {
+                continue;
+            };
+            let mut world = frame.origin + frame.u_axis * base.0 + frame.v_axis * base.1;
+            for (op_idx, op) in doc.move_ops.iter().enumerate() {
+                if op.deleted || !op.image_targets.contains(&i) {
+                    continue;
+                }
+                if let Some(m) = transforms[op_idx] {
+                    world = m.transform_point3(world);
+                }
+            }
+            let d = world - frame.origin;
+            updates.push((i, (d.dot(frame.u_axis), d.dot(frame.v_axis)), Some(base)));
+        } else if let Some(base) = img.base_origin {
+            // No longer moved by any op → snap back to the authored position and forget the base.
+            updates.push((i, base, None));
+        }
+    }
+    for (i, origin, base) in updates {
+        let img = &mut doc.tracing_images[i];
+        img.origin = origin;
+        img.base_origin = base;
+    }
+}
+
+/// Status line after a Move commits, summarizing however many bodies/planes/images it touched.
+fn move_status(bodies: usize, planes: usize, images: usize) -> String {
+    let mut parts = Vec::new();
+    if bodies > 0 {
+        parts.push(format!("{bodies} body(ies)"));
+    }
+    if planes > 0 {
+        parts.push(format!("{planes} plane(s)"));
+    }
+    if images > 0 {
+        parts.push(format!("{images} image(s)"));
+    }
+    format!("Moved {}", parts.join(", "))
 }
 
 /// Toggle a body into the active body-gathering tool's set (#218): the Elements pane (and any
@@ -7750,6 +7871,7 @@ mod tests {
         let result = state.apply(Action::CreateMoveOperation {
             targets: vec![],
             plane_targets: vec![0],
+            image_targets: vec![],
             tx: String::new(),
             ty: String::new(),
             tz: "40mm".to_string(),
@@ -7770,6 +7892,7 @@ mod tests {
             op,
             targets: vec![],
             plane_targets: vec![0],
+            image_targets: vec![],
             tx: String::new(),
             ty: String::new(),
             tz: String::new(),
@@ -7808,6 +7931,115 @@ mod tests {
         assert!(
             (state.doc.construction_planes[0].origin.z - base - 50.0).abs() < 1e-3,
             "translations add up to +50"
+        );
+    }
+
+    /// #217: a Move op can target a tracing image, translating its plane-local origin in place
+    /// on its host plane. In-plane translation shifts the origin; editing the op back to zero and
+    /// then dropping the image from the op returns it to its authored base.
+    #[test]
+    fn moving_a_tracing_image_shifts_its_plane_local_origin() {
+        let mut state = AppState::default();
+        state.doc.tracing_images.push(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: 0,
+            origin: (0.0, 0.0),
+            width_mm: 100.0,
+            height_mm: 60.0,
+            name: None,
+            deleted: false,
+            calibration: None,
+            base_origin: None,
+        });
+        // Plane 0 is the XY ground (u = X, v = Y), so a +25 world-X move lands +25 in the
+        // image's plane-local x, and a world-Z move (out of plane) doesn't touch the origin.
+        let result = state.apply(Action::CreateMoveOperation {
+            targets: vec![],
+            plane_targets: vec![],
+            image_targets: vec![0],
+            tx: "25mm".to_string(),
+            ty: String::new(),
+            tz: "7mm".to_string(),
+            axis: None,
+            angle: String::new(),
+        });
+        assert!(matches!(result, ActionResult::Ok), "{}", state.status);
+        let img = &state.doc.tracing_images[0];
+        assert!(
+            (img.origin.0 - 25.0).abs() < 1e-3 && img.origin.1.abs() < 1e-3,
+            "origin should shift +25 in plane x only, got {:?}",
+            img.origin
+        );
+        assert_eq!(img.base_origin, Some((0.0, 0.0)), "authored base is locked in");
+
+        let op = state.doc.move_ops.len() - 1;
+        // Editing the op back to zero returns the image home (still targeted, base kept).
+        state.apply(Action::EditMoveOperation {
+            op,
+            targets: vec![],
+            plane_targets: vec![],
+            image_targets: vec![0],
+            tx: String::new(),
+            ty: String::new(),
+            tz: String::new(),
+            axis: None,
+            angle: String::new(),
+        });
+        assert!(state.doc.tracing_images[0].origin.0.abs() < 1e-3);
+
+        // Dropping the image from the op restores its authored base and forgets it.
+        state.apply(Action::EditMoveOperation {
+            op,
+            targets: vec![],
+            plane_targets: vec![0],
+            image_targets: vec![],
+            tx: "25mm".to_string(),
+            ty: String::new(),
+            tz: String::new(),
+            axis: None,
+            angle: String::new(),
+        });
+        let img = &state.doc.tracing_images[0];
+        assert_eq!(img.origin, (0.0, 0.0), "image snaps back to authored base");
+        assert_eq!(img.base_origin, None, "base is forgotten once untargeted");
+    }
+
+    /// #217: consecutive moves on the same tracing image coalesce into one op (translations add).
+    #[test]
+    fn consecutive_image_moves_coalesce() {
+        let mut state = AppState::default();
+        state.doc.tracing_images.push(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "trace".to_string(),
+            plane: 0,
+            origin: (0.0, 0.0),
+            width_mm: 100.0,
+            height_mm: 60.0,
+            name: None,
+            deleted: false,
+            calibration: None,
+            base_origin: None,
+        });
+        let move_image = |state: &mut AppState, tx: &str| {
+            state.creating_move = Some(CreatingMove {
+                image_targets: vec![0],
+                tx: tx.to_string(),
+                ..Default::default()
+            });
+            assert!(matches!(state.apply(Action::CommitMove), ActionResult::Ok), "{}", state.status);
+        };
+        move_image(&mut state, "25mm");
+        move_image(&mut state, "5mm");
+        assert_eq!(
+            state.doc.move_ops.iter().filter(|o| !o.deleted).count(),
+            1,
+            "second move on the same image coalesces into the first op"
+        );
+        assert!(
+            (state.doc.tracing_images[0].origin.0 - 30.0).abs() < 1e-3,
+            "translations add up to +30, got {:?}",
+            state.doc.tracing_images[0].origin
         );
     }
 
@@ -7894,6 +8126,7 @@ mod tests {
         state.creating_move = Some(CreatingMove {
             targets: vec![],
             plane_targets: vec![],
+            image_targets: vec![],
             tx: "5mm".to_string(),
             ty: String::new(),
             tz: String::new(),
@@ -9793,6 +10026,7 @@ mod tests {
         let result = state.apply(Action::CreateMoveOperation {
             targets: vec![0, 1],
             plane_targets: vec![],
+            image_targets: vec![],
             tx: "25".to_string(),
             ty: String::new(),
             tz: String::new(),
@@ -9830,6 +10064,7 @@ mod tests {
         state.apply(Action::CreateMoveOperation {
             targets: vec![0],
             plane_targets: vec![],
+            image_targets: vec![],
             tx: "5".to_string(),
             ty: String::new(),
             tz: String::new(),
@@ -9841,6 +10076,7 @@ mod tests {
             op: 0,
             targets: vec![0, 1],
             plane_targets: vec![],
+            image_targets: vec![],
             tx: "5".to_string(),
             ty: "2".to_string(),
             tz: String::new(),
@@ -9863,6 +10099,7 @@ mod tests {
         let result = state.apply(Action::CreateMoveOperation {
             targets: vec![0],
             plane_targets: vec![],
+            image_targets: vec![],
             tx: "gap".to_string(),
             ty: String::new(),
             tz: String::new(),
@@ -10511,6 +10748,7 @@ mod tests {
             name: None,
             deleted: false,
             calibration: None,
+            base_origin: None,
         });
         // Out-of-range image is rejected; a point without a session is rejected.
         assert!(matches!(
@@ -10569,6 +10807,7 @@ mod tests {
             name: None,
             deleted: false,
             calibration: None,
+            base_origin: None,
         });
         // A feature spanning 40 mm on screen is declared to really be 80 mm → 2x.
         let result = state.apply(Action::CalibrateImage {

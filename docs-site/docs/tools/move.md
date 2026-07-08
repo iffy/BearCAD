@@ -31,6 +31,21 @@ originals.
 
 Because the amounts are expressions, editing a parameter re-places every body moved by it.
 
+## Moving construction planes and tracing images
+
+The Move tool also moves **construction planes** and **tracing images** — pick one from the
+Elements pane (or select it) with the Move tool active, then set the translation and rotation
+just like a body.
+
+- A **construction plane** moves in place: its frame shifts, and everything anchored to it —
+  sketches built on the plane, images hosted on it, extrusions grown from those sketches —
+  moves with it. Move a plane and the whole feature tree that lives on it follows.
+- A **tracing image** slides in place on its host plane. In-plane translation repositions the
+  image over your model; it stays flush on its plane. (An image sitting on a plane you move
+  follows the plane, and can then be nudged on its own on top of that.)
+
+Editing the move back to zero, or removing the plane/image from the move, returns it home.
+
 ## Scripting
 
 ```lua

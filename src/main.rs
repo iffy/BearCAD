@@ -2498,7 +2498,7 @@ impl App {
                 .state
                 .creating_move
                 .as_ref()
-                .is_some_and(|c| !c.targets.is_empty() || !c.plane_targets.is_empty())
+                .is_some_and(|c| !c.targets.is_empty() || !c.plane_targets.is_empty() || !c.image_targets.is_empty())
             && !ui.ctx().wants_keyboard_input()
         {
             self.state.apply(Action::CommitMove);
@@ -3631,7 +3631,7 @@ impl eframe::App for App {
                         angle: cm.map(|c| c.angle.clone()).unwrap_or_default(),
                         editing: cm.map(|c| c.editing.is_some()).unwrap_or(false),
                         can_commit: cm
-                            .map(|c| !c.targets.is_empty() || !c.plane_targets.is_empty())
+                            .map(|c| !c.targets.is_empty() || !c.plane_targets.is_empty() || !c.image_targets.is_empty())
                             .unwrap_or(false),
                     }
                 }),
@@ -3948,6 +3948,7 @@ impl eframe::App for App {
                     self.state.creating_move = Some(actions::CreatingMove {
                         targets: existing.targets,
                         plane_targets: existing.plane_targets,
+                        image_targets: existing.image_targets,
                         tx: existing.tx,
                         ty: existing.ty,
                         tz: existing.tz,
