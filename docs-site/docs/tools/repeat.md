@@ -73,6 +73,19 @@ bearcad.edit_sketch_repeat{ index = 0, circles = {0}, angle = 0,
 The direction is an `angle` in degrees (0 = the sketch's +X/u), or an explicit `dir = {du, dv}`.
 `mode`, `count`, `spacing`, and `length` work exactly like the 3D repeat above.
 
+## Repeating a cut (drilling a row of holes)
+
+Instead of copying a solid, a repeat can replay a **cut** along the axis — punch the same hole
+through a body N times. Point it at the cutting extrusion and it subtracts that tool at every
+instance position, so one hole becomes a row of holes. Available from scripts:
+
+```lua
+-- extrusion 1 is a hole cut through a plate; drill it 4 times, 12mm apart along X:
+bearcad.repeat_cut{ cuts = {1}, axis = "x", mode = "count_gap", count = 4, spacing = 12 }
+```
+
+Spacing is centre-to-centre. The same `mode`/`count`/`spacing`/`length` options apply.
+
 ## Scripting
 
 ```lua

@@ -1372,6 +1372,12 @@ pub struct RepeatOperation {
     /// a [`RepeatPlaneInstance`], not a [`BodySource::Repeated`] body.
     #[serde(default)]
     pub plane_targets: Vec<usize>,
+    /// Cut **extrusion** indices whose *effect* is replayed at each offset (#220): the cutting
+    /// tool is subtracted from its body again at every instance position (punching N holes),
+    /// rather than copying a solid. No output bodies — the extra cuts fold into the target body's
+    /// shape at build time (`occt_body_shape_from_indices`).
+    #[serde(default)]
+    pub extrusion_targets: Vec<usize>,
     pub axis: RevolveAxis,
     pub mode: RepeatMode,
     /// Instance count expression (count modes).

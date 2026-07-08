@@ -434,6 +434,23 @@ fn occt_body_shape_from_indices(
         });
         let cut = occt_extrusion_shape_overshoot(doc, &tool, distance, CUT_TOOL_OVERSHOOT)?;
         solid = solid.boolean(&cut, BoolOp::Cut)?;
+        // Repeat-operation replay (#220): any non-deleted repeat op that targets this cut
+        // extrusion subtracts the same tool again at each instance offset along its axis —
+        // punching N holes rather than copying a solid.
+        for op in doc.repeat_ops.iter() {
+            if op.deleted || !op.extrusion_targets.contains(&ei) {
+                continue;
+            }
+            if let (Some((_, dir)), Some(offsets)) =
+                (axis_world(doc, op.axis), repeat_offsets(doc, op))
+            {
+                for off in offsets {
+                    let m = glam::Mat4::from_translation(dir * off);
+                    let moved = cut.transformed(&mat4_to_rows_3x4(&m))?;
+                    solid = solid.boolean(&moved, BoolOp::Cut)?;
+                }
+            }
+        }
         if !rim_fillets.0.is_empty() {
             solid = solid.fillet(&rim_fillets.0, &rim_fillets.1)?;
         }
@@ -722,10 +739,10 @@ pub fn repeat_offsets(doc: &Document, op: &crate::model::RepeatOperation) -> Opt
         }
     }
     if !min_p.is_finite() || !max_p.is_finite() {
-        // No body extent. Plane targets (#221) are zero-thickness references, so a plane-only
-        // repeat has no along-axis extent — treat it as a point pattern spaced purely by the
-        // gap/pitch. (Sketch targets, #226, are likewise zero-extent.)
-        if op.plane_targets.is_empty() {
+        // No body extent. Plane targets (#221) and replayed cut extrusions (#220) have no
+        // along-axis extent of their own — treat as a point pattern spaced purely by the
+        // gap/pitch (holes step center-to-center).
+        if op.plane_targets.is_empty() && op.extrusion_targets.is_empty() {
             return None;
         }
         min_p = 0.0;
@@ -1629,6 +1646,10 @@ fn document_mesh_fingerprint(doc: &Document) -> u64 {
             &doc.construction_planes,
             &doc.extrusions,
             &doc.bodies,
+            // Repeat ops feed body meshes: repeated-body offsets and, for #220, the extra cut
+            // tools a cut-extrusion replay subtracts. Without this, changing a repeat's
+            // spacing/count/targets leaves stale cached meshes.
+            &doc.repeat_ops,
         ),
     )
     .ok();
@@ -3302,6 +3323,7 @@ mod tests {
         let mut op = RepeatOperation {
             targets: vec![0],
             plane_targets: Vec::new(),
+            extrusion_targets: Vec::new(),
             axis: RevolveAxis::X,
             mode: RepeatMode::FillPitch,
             count: String::new(),
@@ -3417,6 +3439,51 @@ mod tests {
         assert!(
             (vol - expected).abs() < 3.0,
             "expected ~{expected} (rounded hole edge), got {vol} (plain would be ~{plain})"
+        );
+    }
+
+    /// #220: repeating a cut extrusion replays the hole along the axis — a plate with one hole
+    /// repeated ×3 loses three holes' worth of material, not one.
+    #[test]
+    #[cfg(feature = "occt")]
+    fn repeat_cut_extrusion_punches_n_holes() {
+        use crate::model::{RepeatMode, RepeatOperation, RevolveAxis};
+        let (mut doc, sketch) = sketch_doc();
+        let plate = rect_profile(&mut doc, sketch, -10.0, -10.0, 20.0, 20.0); // 20×20×5
+        doc.extrusions.push(extrusion(sketch, vec![plate], 5.0));
+        // A 2.5mm-radius hole at x = -6.
+        doc.circles.push(Circle::from_local_center_radius(sketch, -6.0, 0.0, 2.5, 0.0));
+        doc.extrusions.push(extrusion(sketch, vec![ExtrudeFace::Circle(0)], 6.0));
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Solid { add: vec![0], cut: vec![1] },
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        let one_hole = 2000.0 - std::f32::consts::PI * 2.5 * 2.5 * 5.0;
+        assert!((mesh_signed_volume(&body_solid_mesh(&doc, 0).unwrap()).abs() - one_hole).abs() < 3.0);
+
+        // Replay the hole (extrusion 1) ×3 along X at 6mm gap → holes at x = -6, 0, +6.
+        doc.repeat_ops.push(RepeatOperation {
+            targets: Vec::new(),
+            plane_targets: Vec::new(),
+            extrusion_targets: vec![1],
+            axis: RevolveAxis::X,
+            mode: RepeatMode::CountGap,
+            count: "3".to_string(),
+            spacing: "6".to_string(),
+            length: String::new(),
+            length_target: None,
+            outputs: Vec::new(),
+            plane_outputs: Vec::new(),
+            name: None,
+            deleted: false,
+        });
+        let three_holes = 2000.0 - 3.0 * std::f32::consts::PI * 2.5 * 2.5 * 5.0;
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).unwrap()).abs();
+        assert!(
+            (vol - three_holes).abs() < 6.0,
+            "expected ~{three_holes} (3 holes), got {vol} (one hole is ~{one_hole})"
         );
     }
 

@@ -3655,6 +3655,7 @@ impl eframe::App for App {
                         let probe = model::RepeatOperation {
                             targets: c.targets.clone(),
                             plane_targets: c.plane_targets.clone(),
+                            extrusion_targets: c.extrusion_targets.clone(),
                             axis: c.axis,
                             mode: c.mode,
                             count: c.count.clone(),
@@ -3988,6 +3989,7 @@ impl eframe::App for App {
                     self.state.creating_repeat = Some(actions::CreatingRepeat {
                         targets: existing.targets,
                         plane_targets: existing.plane_targets,
+                        extrusion_targets: existing.extrusion_targets,
                         axis: existing.axis,
                         mode: existing.mode,
                         count: existing.count,
@@ -4902,6 +4904,7 @@ fn build_viewport_scene_input<'a>(
             let probe = model::RepeatOperation {
                 targets: c.targets.clone(),
                 plane_targets: c.plane_targets.clone(),
+                extrusion_targets: c.extrusion_targets.clone(),
                 axis: c.axis,
                 mode: c.mode,
                 count: c.count.clone(),

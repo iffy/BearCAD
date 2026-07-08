@@ -2533,6 +2533,33 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Repeat-operation replay (#220): replay a cut extrusion's effect along an axis, punching N
+    // holes. `cuts` are the cut-extrusion indices; axis/mode/count/spacing/length as repeat_bodies.
+    api.set(
+        "repeat_cut",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let cuts: Vec<usize> = opts.get::<Option<Vec<usize>>>("cuts")?.unwrap_or_default();
+            let (_targets, axis, mode, count, spacing, length) = parse_repeat_op_args(&opts)?;
+            let result = unsafe {
+                tick.state().apply(crate::actions::Action::CreateRepeatOperation {
+                    targets: Vec::new(),
+                    plane_targets: Vec::new(),
+                    extrusion_targets: cuts,
+                    axis,
+                    mode,
+                    count,
+                    spacing,
+                    length,
+                })
+            };
+            if let crate::actions::ActionResult::Err(e) = result {
+                return Err(mlua::Error::external(e));
+            }
+            Ok(())
+        })?,
+    )?;
+
     // 2D in-sketch slice (#224): split `lines` where `cutters` cross them. `sketch` selects the
     // sketch; both lists are line index lists. Runs directly through the action.
     api.set(

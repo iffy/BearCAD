@@ -434,6 +434,8 @@ pub struct CreatingRepeat {
     pub targets: Vec<usize>,
     /// Picked source construction planes to repeat as offset copies (#221).
     pub plane_targets: Vec<usize>,
+    /// Picked cut extrusions whose effect is replayed at each offset (#220).
+    pub extrusion_targets: Vec<usize>,
     pub axis: crate::model::RevolveAxis,
     pub mode: crate::model::RepeatMode,
     pub count: String,
@@ -448,6 +450,7 @@ impl Default for CreatingRepeat {
         Self {
             targets: Vec::new(),
             plane_targets: Vec::new(),
+            extrusion_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "3".to_string(),
@@ -1114,6 +1117,7 @@ pub enum Action {
     CreateRepeatOperation {
         targets: Vec<usize>,
         plane_targets: Vec<usize>,
+        extrusion_targets: Vec<usize>,
         axis: crate::model::RevolveAxis,
         mode: crate::model::RepeatMode,
         count: String,
@@ -1125,6 +1129,7 @@ pub enum Action {
         op: usize,
         targets: Vec<usize>,
         plane_targets: Vec<usize>,
+        extrusion_targets: Vec<usize>,
         axis: crate::model::RevolveAxis,
         mode: crate::model::RepeatMode,
         count: String,
@@ -2784,9 +2789,15 @@ fn validate_repeat_inputs(
     doc: &Document,
     targets: &[usize],
     plane_targets: &[usize],
+    extrusion_targets: &[usize],
 ) -> Result<(), String> {
-    if targets.is_empty() && plane_targets.is_empty() {
-        return Err("Pick at least one body or plane to repeat".to_string());
+    if targets.is_empty() && plane_targets.is_empty() && extrusion_targets.is_empty() {
+        return Err("Pick at least one body, plane, or cut to repeat".to_string());
+    }
+    for &ei in extrusion_targets {
+        if doc.extrusions.get(ei).filter(|e| !e.deleted).is_none() {
+            return Err(format!("Extrusion {ei} not found"));
+        }
     }
     let mut seen = std::collections::HashSet::new();
     for &bi in targets {
@@ -5907,6 +5918,7 @@ impl AppState {
                         op,
                         targets: cr.targets.clone(),
                         plane_targets: cr.plane_targets.clone(),
+                        extrusion_targets: cr.extrusion_targets.clone(),
                         axis: cr.axis,
                         mode: cr.mode,
                         count: cr.count.clone(),
@@ -5916,6 +5928,7 @@ impl AppState {
                     None => self.apply(Action::CreateRepeatOperation {
                         targets: cr.targets.clone(),
                         plane_targets: cr.plane_targets.clone(),
+                        extrusion_targets: cr.extrusion_targets.clone(),
                         axis: cr.axis,
                         mode: cr.mode,
                         count: cr.count.clone(),
@@ -5930,8 +5943,8 @@ impl AppState {
                 }
                 result
             }
-            Action::CreateRepeatOperation { targets, plane_targets, axis, mode, count, spacing, length } => {
-                if let Err(e) = validate_repeat_inputs(&self.doc, &targets, &plane_targets) {
+            Action::CreateRepeatOperation { targets, plane_targets, extrusion_targets, axis, mode, count, spacing, length } => {
+                if let Err(e) = validate_repeat_inputs(&self.doc, &targets, &plane_targets, &extrusion_targets) {
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
@@ -5939,6 +5952,7 @@ impl AppState {
                 self.doc.repeat_ops.push(crate::model::RepeatOperation {
                     targets: targets.clone(),
                     plane_targets: plane_targets.clone(),
+                    extrusion_targets: extrusion_targets.clone(),
                     axis,
                     mode,
                     count,
@@ -6008,24 +6022,25 @@ impl AppState {
                 self.refresh_document_health();
                 self.status = format!(
                     "Repeated {} × {} instances",
-                    repeat_input_status(targets.len(), plane_targets.len()),
+                    repeat_input_status(targets.len(), plane_targets.len(), extrusion_targets.len()),
                     offsets.len() + 1
                 );
                 ActionResult::Ok
             }
-            Action::EditRepeatOperation { op, targets, plane_targets, axis, mode, count, spacing, length } => {
+            Action::EditRepeatOperation { op, targets, plane_targets, extrusion_targets, axis, mode, count, spacing, length } => {
                 if self.doc.repeat_ops.get(op).filter(|o| !o.deleted).is_none() {
                     let e = format!("Repeat operation {op} not found");
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
-                if let Err(e) = validate_repeat_inputs(&self.doc, &targets, &plane_targets) {
+                if let Err(e) = validate_repeat_inputs(&self.doc, &targets, &plane_targets, &extrusion_targets) {
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
                 let old = self.doc.repeat_ops[op].clone();
                 {
                     let entry = &mut self.doc.repeat_ops[op];
+                    entry.extrusion_targets = extrusion_targets.clone();
                     entry.targets = targets.clone();
                     entry.plane_targets = plane_targets.clone();
                     entry.axis = axis;
@@ -8026,14 +8041,17 @@ pub fn recompute_repeated_planes(doc: &mut crate::model::Document) {
     }
 }
 
-/// The "N body(ies)[, M plane(s)]" fragment for a Repeat op's status line (#221).
-fn repeat_input_status(bodies: usize, planes: usize) -> String {
+/// The "N body(ies)[, M plane(s)][, K cut(s)]" fragment for a Repeat op's status line (#221/#220).
+fn repeat_input_status(bodies: usize, planes: usize, cuts: usize) -> String {
     let mut parts = Vec::new();
     if bodies > 0 {
         parts.push(format!("{bodies} body(ies)"));
     }
     if planes > 0 {
         parts.push(format!("{planes} plane(s)"));
+    }
+    if cuts > 0 {
+        parts.push(format!("{cuts} cut(s)"));
     }
     parts.join(", ")
 }
@@ -10768,6 +10786,7 @@ mod tests {
         let result = state.apply(Action::CreateRepeatOperation {
             targets: vec![0],
             plane_targets: Vec::new(),
+            extrusion_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "3".to_string(),
@@ -10806,6 +10825,7 @@ mod tests {
         let result = state.apply(Action::CreateRepeatOperation {
             targets: vec![0],
             plane_targets: Vec::new(),
+            extrusion_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::FillMaxPitch,
             count: String::new(),
@@ -10828,6 +10848,7 @@ mod tests {
         state.apply(Action::CreateRepeatOperation {
             targets: vec![0],
             plane_targets: Vec::new(),
+            extrusion_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "2".to_string(),
@@ -10839,6 +10860,7 @@ mod tests {
             op: 0,
             targets: vec![0],
             plane_targets: Vec::new(),
+            extrusion_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "5".to_string(),
@@ -10860,6 +10882,7 @@ mod tests {
         state.apply(Action::CreateRepeatOperation {
             targets: vec![0],
             plane_targets: Vec::new(),
+            extrusion_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "n".to_string(),
@@ -10883,6 +10906,7 @@ mod tests {
         let result = state.apply(Action::CreateRepeatOperation {
             targets: Vec::new(),
             plane_targets: vec![0],
+            extrusion_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "3".to_string(),
@@ -10919,6 +10943,7 @@ mod tests {
         state.apply(Action::CreateRepeatOperation {
             targets: Vec::new(),
             plane_targets: vec![0],
+            extrusion_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "2".to_string(),
@@ -10953,6 +10978,7 @@ mod tests {
         state.apply(Action::CreateRepeatOperation {
             targets: Vec::new(),
             plane_targets: vec![0],
+            extrusion_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "2".to_string(),
@@ -10964,6 +10990,7 @@ mod tests {
             op: 0,
             targets: Vec::new(),
             plane_targets: vec![0],
+            extrusion_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "4".to_string(),

@@ -511,6 +511,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     Instances are grouped under the repeat op in the Elements pane, and go away with it. Count
     and spacing are the same expressions/modes as body repeats; a repeat may target bodies and
     planes at once.
+  - **Repeating an operation (#220):** a repeat can target a **cut extrusion**
+    (`RepeatOperation::extrusion_targets`) and replay its *effect* — the cutting tool is
+    subtracted from its body again at each offset (`occt_body_shape_from_indices`), punching N
+    holes rather than copying a solid. No output bodies; the extra cuts fold into the target
+    body's shape at build time (spacing is center-to-center, extent 0). Scripting:
+    `bearcad.repeat_cut{ cuts = {ei}, axis, mode, count?, spacing?, length? }`. Picking the cut in
+    the viewport and pane grouping are the tracked GUI follow-up.
   - **2D in-sketch repeat (#222):** `SketchRepeatOperation` (`Document::sketch_repeat_ops`)
     duplicates selected sketch **lines/circles** along an in-plane direction as generated
     entities in the same sketch, reusing the shared spacing math
@@ -519,8 +526,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     and edit. Scripting: `bearcad.repeat_sketch{ sketch, lines?, circles?, angle?|dir?, mode,
     count?, spacing?, length? }` / `bearcad.edit_sketch_repeat{ index, … }`. The interactive
     in-sketch tool (entity + direction picking, pane grouping) is the tracked GUI follow-up.
-  Repeating sketches (#226) and operations (#220), and the GUI/scripting to *pick* the length
-  face are tracked follow-ups.
+  Repeating sketches (#226) and the GUI/scripting to *pick* the length face are tracked
+  follow-ups.
 
 - **Slice tool (#181):** cuts whole bodies with planar cutters. Two pickers — **Bodies**
   (the targets, multi-select) and **Cutters** (construction planes and/or planar body
