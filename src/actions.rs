@@ -6487,15 +6487,25 @@ impl AppState {
                 }
             }
             Action::ClickSceneElement { element, additive } => {
-                click_scene_selection(&mut self.scene_selection, element, additive);
-                if let Some((health_status, reason)) =
-                    selection_frozen_summary(&self.document_health, &self.scene_selection)
-                {
-                    self.status = format!(
-                        "{} — {}",
-                        health_status_label(health_status),
-                        reason
-                    );
+                // A body clicked while a body-gathering tool is active feeds that tool's set
+                // (#218) — the Elements pane picks bodies regardless of viewport sub-element
+                // picking — rather than touching the persistent selection.
+                let consumed_by_tool = matches!(&element, SceneElement::Body(_))
+                    && match &element {
+                        SceneElement::Body(bi) => toggle_body_in_active_tool(self, *bi),
+                        _ => false,
+                    };
+                if !consumed_by_tool {
+                    click_scene_selection(&mut self.scene_selection, element, additive);
+                    if let Some((health_status, reason)) =
+                        selection_frozen_summary(&self.document_health, &self.scene_selection)
+                    {
+                        self.status = format!(
+                            "{} — {}",
+                            health_status_label(health_status),
+                            reason
+                        );
+                    }
                 }
                 ActionResult::Ok
             }
@@ -7277,6 +7287,57 @@ impl AppState {
     }
 }
 
+/// Toggle a body into the active body-gathering tool's set (#218): the Elements pane (and any
+/// body selection) feeds bodies into whatever tool is collecting them — Move/Repeat/Slice
+/// targets, Combine's active side, or a Revolve Cut's bodies — regardless of the viewport's
+/// sub-element picking. Returns whether a tool consumed the click (so it shouldn't also change
+/// the persistent selection). Shadow/deleted bodies aren't usable targets.
+pub fn toggle_body_in_active_tool(state: &mut AppState, bi: usize) -> bool {
+    if state.doc.bodies.get(bi).is_none_or(|b| b.deleted || b.shadow) {
+        return false;
+    }
+    fn toggle(set: &mut Vec<usize>, bi: usize) {
+        if let Some(pos) = set.iter().position(|b| *b == bi) {
+            set.remove(pos);
+        } else {
+            set.push(bi);
+        }
+    }
+    match state.tool {
+        Tool::Move => {
+            toggle(&mut state.creating_move.get_or_insert_with(CreatingMove::default).targets, bi);
+            true
+        }
+        Tool::Repeat => {
+            toggle(&mut state.creating_repeat.get_or_insert_with(CreatingRepeat::default).targets, bi);
+            true
+        }
+        Tool::Slice => {
+            toggle(&mut state.creating_slice.get_or_insert_with(CreatingSlice::default).targets, bi);
+            true
+        }
+        Tool::Combine => {
+            let cb = state.creating_boolean.get_or_insert_with(CreatingBoolean::default);
+            if cb.picking_b {
+                toggle(&mut cb.b, bi);
+            } else {
+                toggle(&mut cb.a, bi);
+            }
+            true
+        }
+        Tool::Revolve => {
+            let cr = state.creating_revolve.get_or_insert_with(CreatingRevolve::default);
+            if cr.body_choice == RevolveBodyChoice::Cut {
+                toggle(&mut cr.cut_bodies, bi);
+                true
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
 /// A viewport gizmo currently available given the tool/creation state (#214). Each gizmo is a
 /// drag that writes one scalar; scripting can enumerate them (`bearcad.gizmos()`) and drive
 /// their value (`set_gizmo`/`drag_gizmo`) so gizmo tools are automatable/testable headlessly.
@@ -7432,6 +7493,41 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #218: while a body-gathering tool is active, clicking a body (Elements pane / `select`)
+    /// toggles it into the tool's set instead of the persistent selection — you can pick bodies
+    /// from the pane regardless of the viewport's sub-element picking.
+    #[test]
+    fn body_click_feeds_the_active_tool_set() {
+        use crate::model::{ExtrudeFace, FaceId};
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch { face: FaceId::ConstructionPlane(0), viewport: None });
+        let sketch = state.sketch_session.unwrap().sketch;
+        let lines =
+            crate::construction::add_line_rectangle(&mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
+        state.apply(Action::CreateExtrusion {
+            sketch,
+            faces: vec![ExtrudeFace::Polygon(lines.to_vec())],
+            distance: 5.0,
+            body: ExtrudeBodyChoice::New,
+            target: None,
+        });
+        assert_eq!(state.doc.bodies.len(), 1);
+
+        state.apply(Action::SetTool(Tool::Move));
+        // A body click lands in the Move set, not the persistent selection.
+        state.apply(Action::ClickSceneElement { element: SceneElement::Body(0), additive: false });
+        assert_eq!(state.creating_move.as_ref().unwrap().targets, vec![0]);
+        assert!(state.scene_selection.is_empty(), "tool click must not touch the selection");
+        // Clicking again toggles it back out.
+        state.apply(Action::ClickSceneElement { element: SceneElement::Body(0), additive: false });
+        assert!(state.creating_move.as_ref().unwrap().targets.is_empty());
+
+        // With the Select tool, a body click is an ordinary selection.
+        state.apply(Action::SetTool(Tool::Select));
+        state.apply(Action::ClickSceneElement { element: SceneElement::Body(0), additive: false });
+        assert!(state.scene_selection.is_selected(SceneElement::Body(0)));
+    }
 
     /// #214: the extrude tool's in-progress push/pull depth is exposed as a gizmo and driven by
     /// `set_gizmo_action`, so scripting can enumerate and move it.

@@ -936,6 +936,14 @@ modeled on SolveSpace (https://solvespace.com).
   focused when you click it). Whatever a picker holds is **styled as selected in the viewport**
   while the tool is active (folded into the scene's highlight set, not the persistent
   selection).
+- **Whole-body vs. sub-element picking (#218):** a viewport click picks a **whole body** only
+  when the focused picker's accepted types exclude edges, faces, and vertices — so the
+  body-set tools (Move/Repeat/Slice/Combine, Revolve cut), whose pickers accept only bodies,
+  select a whole body by clicking anywhere on it (edge, corner, or flat face); the Select tool,
+  which accepts sub-elements, picks the edge/vertex/face instead. Regardless of that, a body
+  **clicked in the Elements pane** (or otherwise selected) always feeds the active body-set
+  tool's picker — so you can gather bodies from the pane even for tools where the viewport is
+  picking sub-elements.
 - **No picking through bodies (#155):** while selecting (Select/Constraint tools, and picks
   made for a tool such as construction-plane references or dimension targets), geometry
   hidden **behind** a visible body under the cursor is not a pick candidate — clicking a
