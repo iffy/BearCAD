@@ -6489,12 +6489,18 @@ impl AppState {
             Action::ClickSceneElement { element, additive } => {
                 // A body clicked while a body-gathering tool is active feeds that tool's set
                 // (#218) — the Elements pane picks bodies regardless of viewport sub-element
-                // picking — rather than touching the persistent selection.
-                let consumed_by_tool = matches!(&element, SceneElement::Body(_))
-                    && match &element {
-                        SceneElement::Body(bi) => toggle_body_in_active_tool(self, *bi),
-                        _ => false,
-                    };
+                // picking — rather than touching the persistent selection. A line clicked while
+                // the Move tool is active sets its rotation axis (#216), like a viewport pick.
+                let consumed_by_tool = match &element {
+                    SceneElement::Body(bi) => toggle_body_in_active_tool(self, *bi),
+                    SceneElement::Line(li) if self.tool == Tool::Move => {
+                        self.creating_move
+                            .get_or_insert_with(CreatingMove::default)
+                            .axis = Some(crate::model::RevolveAxis::Line(*li));
+                        true
+                    }
+                    _ => false,
+                };
                 if !consumed_by_tool {
                     click_scene_selection(&mut self.scene_selection, element, additive);
                     if let Some((health_status, reason)) =
@@ -7522,6 +7528,13 @@ mod tests {
         // Clicking again toggles it back out.
         state.apply(Action::ClickSceneElement { element: SceneElement::Body(0), additive: false });
         assert!(state.creating_move.as_ref().unwrap().targets.is_empty());
+
+        // A line clicked with the Move tool sets the rotation axis (#216).
+        state.apply(Action::ClickSceneElement { element: SceneElement::Line(0), additive: false });
+        assert_eq!(
+            state.creating_move.as_ref().unwrap().axis,
+            Some(crate::model::RevolveAxis::Line(0))
+        );
 
         // With the Select tool, a body click is an ordinary selection.
         state.apply(Action::SetTool(Tool::Select));

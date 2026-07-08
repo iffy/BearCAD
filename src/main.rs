@@ -418,6 +418,14 @@ struct MoveGizmoDrag {
     start_screen: egui::Pos2,
 }
 
+/// A drag on the Move tool's rotation ring (#216): the cursor's angle around the ring centre
+/// and the move angle when the grab started; the ring turns with the cursor.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MoveRotationDrag {
+    start_cursor_angle: f32,
+    start_angle_deg: f32,
+}
+
 struct VertexDrag {
     point: ConstraintPoint,
 }
@@ -505,6 +513,8 @@ struct App {
     revolve_gizmo_drag: Option<(egui::Pos2, f32)>,
     /// In-flight Move translation-arrow drag (#215).
     move_gizmo_drag: Option<MoveGizmoDrag>,
+    /// In-flight Move rotation-ring drag (#216).
+    move_rotation_drag: Option<MoveRotationDrag>,
     launch_maximize_frames_remaining: u8,
     gpu_viewport: bool,
     gpu_view_cube: bool,
@@ -602,6 +612,7 @@ impl App {
             edge_treatment_gizmo_drag: None,
             revolve_gizmo_drag: None,
             move_gizmo_drag: None,
+            move_rotation_drag: None,
             vertex_drag: None,
             bezier_handle_drag: None,
             selected_bezier_handle: None,
@@ -2366,6 +2377,27 @@ impl App {
         })
     }
 
+    /// The Move rotation-ring gizmo geometry (#216): `(centre, axis direction, radius)`, once a
+    /// rotation axis and at least one body are picked. `None` otherwise.
+    fn move_rotation_geom(&self) -> Option<(Vec3, Vec3, f32)> {
+        let cm = self.state.creating_move.as_ref()?;
+        let axis = cm.axis?;
+        let (center, _) = self.move_gizmo_arrows()?; // shares the picked-targets centroid
+        let doc = &self.state.doc;
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        for &bi in &cm.targets {
+            if let Some((lo, hi)) = extrude::body_solid_mesh(doc, bi).and_then(|m| m.bounds()) {
+                min = min.min(lo);
+                max = max.max(hi);
+            }
+        }
+        let radius = ((max - min).length() * 0.5).max(1.0) * 1.15;
+        let (_, dir) = extrude::axis_world(doc, axis)?;
+        let dir = dir.normalize_or_zero();
+        (dir != Vec3::ZERO).then_some((center, dir, radius))
+    }
+
     fn handle_move_tool(
         &mut self,
         ui: &egui::Ui,
@@ -2423,6 +2455,44 @@ impl App {
             // Targets changed out from under an active drag; drop it.
             self.move_gizmo_drag = None;
         }
+
+        // Rotation-ring gizmo (#216): the ring turns with the cursor's angle around its centre.
+        if let Some((center, axis, radius)) = self.move_rotation_geom() {
+            let cursor_angle = |pp: egui::Pos2| {
+                project(center).map(|c| (pp.y - c.y).atan2(pp.x - c.x))
+            };
+            if let Some(drag) = self.move_rotation_drag {
+                if ui.input(|i| i.pointer.primary_down()) {
+                    if let Some(angle) = pointer_screen.and_then(cursor_angle) {
+                        let delta_deg = (angle - drag.start_cursor_angle).to_degrees();
+                        let new_deg = drag.start_angle_deg + delta_deg;
+                        crate::actions::set_gizmo(&mut self.state, "move_angle", new_deg.to_radians());
+                    }
+                } else {
+                    self.move_rotation_drag = None;
+                }
+                return;
+            }
+            if ui.input(|i| i.pointer.primary_pressed()) {
+                if let Some(pp) = pointer_screen {
+                    if rotation_ring_hit(pp, &project, center, axis, radius) {
+                        if let Some(angle) = cursor_angle(pp) {
+                            let start_deg = crate::actions::gizmo_value(&self.state, "move_angle")
+                                .unwrap_or(0.0)
+                                .to_degrees();
+                            self.move_rotation_drag = Some(MoveRotationDrag {
+                                start_cursor_angle: angle,
+                                start_angle_deg: start_deg,
+                            });
+                            return;
+                        }
+                    }
+                }
+            }
+        } else if self.move_rotation_drag.is_some() {
+            self.move_rotation_drag = None;
+        }
+
         if ui.input(|i| i.key_pressed(egui::Key::Enter))
             && self
                 .state
@@ -4378,6 +4448,39 @@ fn build_gpu_dimension_labels(
 const SIDE_PANEL_IDS: &[&str] = &["tree", "parameters", "context"];
 
 /// True while the pointer is on a side-panel resize grip (don't override its cursor).
+/// Whether the cursor is near the Move rotation ring's projected circle (#216): sample the
+/// circle and test the cursor's distance to the projected polyline.
+fn rotation_ring_hit(
+    pp: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    center: Vec3,
+    axis: Vec3,
+    radius: f32,
+) -> bool {
+    const TOL_PX: f32 = 8.0;
+    let n = axis.normalize_or_zero();
+    if n == Vec3::ZERO {
+        return false;
+    }
+    let reference = if n.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+    let u = n.cross(reference).normalize_or_zero();
+    let v = n.cross(u);
+    const SEG: usize = 48;
+    let mut prev: Option<egui::Pos2> = None;
+    for i in 0..=SEG {
+        let t = i as f32 / SEG as f32 * std::f32::consts::TAU;
+        let world = center + (u * t.cos() + v * t.sin()) * radius;
+        let sp = project(world);
+        if let (Some(a), Some(b)) = (prev, sp) {
+            if dist_point_to_segment(pp, a, b) < TOL_PX {
+                return true;
+            }
+        }
+        prev = sp;
+    }
+    false
+}
+
 /// The body index a pick target identifies, if it's a body sub-element (#218): an edge, vertex,
 /// or face all belong to one body.
 fn body_index_from_pick(kind: &construction::PickTargetKind) -> Option<usize> {
@@ -4599,6 +4702,7 @@ fn build_viewport_scene_input<'a>(
     extrude_gizmo: Option<gpu_viewport::ViewportExtrudeGizmo>,
     vertex_treatment_gizmo: Option<gpu_viewport::ViewportExtrudeGizmo>,
     move_gizmos: Vec<gpu_viewport::ViewportExtrudeGizmo>,
+    move_rotation_gizmo: Option<gpu_viewport::MoveRotationGizmo>,
     vertex_treatment_preview: Option<Vec<Vec3>>,
     hover_highlight: Option<gpu_viewport::ViewportHoverHighlight>,
     dimension_labels: &'a [gpu_viewport::ViewportDimLabel],
@@ -4818,6 +4922,7 @@ fn build_viewport_scene_input<'a>(
         extrude_gizmo,
         vertex_treatment_gizmo,
         move_gizmos,
+        move_rotation_gizmo,
         vertex_treatment_preview: vertex_treatment_preview
             .map(|points| gpu_viewport::VertexTreatmentPreviewGeom { points }),
         hover_highlight,
@@ -8718,6 +8823,23 @@ impl App {
         } else {
             Vec::new()
         };
+        // Move rotation-ring gizmo (#216): a circle around the picked axis at the centroid.
+        let move_rotation_gizmo = (self.state.tool == Tool::Move)
+            .then(|| self.move_rotation_geom())
+            .flatten()
+            .map(|(center, axis, radius)| {
+                let hovered = self.move_rotation_drag.is_some()
+                    || pointer_screen.is_some_and(|pp| {
+                        rotation_ring_hit(pp, &project, center, axis, radius)
+                    });
+                gpu_viewport::MoveRotationGizmo {
+                    center,
+                    axis,
+                    radius,
+                    color: col::PREVIEW,
+                    hovered,
+                }
+            });
         let scene_input = build_viewport_scene_input(
             doc,
             &cam,
@@ -8739,6 +8861,7 @@ impl App {
             extrude_gizmo,
             vertex_treatment_gizmo,
             move_gizmos,
+            move_rotation_gizmo,
             vertex_treatment_preview,
             hover_highlight,
             &gpu_dim_labels,
@@ -10710,6 +10833,7 @@ mod tests {
             Vec::new(),
             None,
             None,
+            None,
             &[],
             None,
             None,
@@ -10798,6 +10922,7 @@ mod tests {
                 Vec::new(),
                 None,
                 None,
+                None,
                 &[],
                 None,
                 None,
@@ -10879,6 +11004,7 @@ mod tests {
             None,
             None,
             Vec::new(),
+            None,
             None,
             None,
             &[],

@@ -456,10 +456,14 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   into booleans and export as real BREP. **Translation drag gizmos (#215):** with bodies
   picked, three axis arrows (X red, Y green, Z blue) at the targets' bounding-box centre drag
   to set the translation — the same offset-arrow handle as the extrude gizmo, driving the
-  `move_x`/`move_y`/`move_z` values (so scriptable/testable via the gizmo API, §8). Scripting:
+  `move_x`/`move_y`/`move_z` values (so scriptable/testable via the gizmo API, §8).
+  **Rotation ring (#216):** once a rotation axis is picked, a circle in the plane perpendicular
+  to that axis (at the centroid, sized to the bodies) drags round to set the angle, driving
+  `move_angle`. A **line selected while the Move tool is active** (Elements pane or viewport)
+  sets the rotation axis, alongside the context pane's X/Y/Z buttons. Scripting:
   `bearcad.move_bodies{ bodies = {…}, x?, y?, z?, axis?, angle?, name? }` and
   `bearcad.edit_move{ index, … }`. Extending the move to faces/edges/vertices/planes/images
-  (#217), the rotation-ring gizmo (#216), and moving sub-body geometry remain follow-ups (#185).
+  (#217) and moving sub-body geometry remain follow-ups (#185).
 
 - **Linear repeat tool (#182):** copies of whole bodies spaced along an axis (global or a
   clicked line). One multi-select body picker; the original stays as instance 0; each
