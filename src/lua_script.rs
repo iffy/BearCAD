@@ -101,6 +101,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::MoveOp(_) => "move_op",
         SceneElement::RepeatOp(_) => "repeat_op",
         SceneElement::SketchRepeatOp(_) => "sketch_repeat_op",
+        SceneElement::SketchSliceOp(_) => "sketch_slice_op",
         SceneElement::SliceOp(_) => "slice_op",
         SceneElement::Revolution(_) => "revolution",
     }
@@ -120,6 +121,7 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::MoveOp(i)
         | SceneElement::RepeatOp(i)
         | SceneElement::SketchRepeatOp(i)
+        | SceneElement::SketchSliceOp(i)
         | SceneElement::SliceOp(i)
         | SceneElement::Revolution(i) => i,
         SceneElement::Point(_)
@@ -3283,6 +3285,41 @@ mod tests {
         assert_eq!(frag(0), (0.0, 0.0, 5.0, 0.0));
         assert_eq!(frag(1), (5.0, 0.0, 10.0, 0.0));
         assert!(!state.doc.lines[op.line_outputs[0]].shadow, "fragments are not shadow");
+    }
+
+    /// #229: an in-sketch slice op is a first-class pane element — its fragments nest under it,
+    /// and deleting the op un-shadows the original and removes the fragments.
+    #[test]
+    fn sketch_slice_op_groups_and_deletes_in_hierarchy() {
+        use crate::hierarchy::{build_hierarchy, HierarchyNode, SceneElement};
+        let mut state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
+            bearcad.line{ x = 5, y = -5, x1 = 5, y1 = 5 }
+            bearcad.slice_sketch{ sketch = 0, lines = {0}, cutters = {1} }
+            "#,
+        );
+        let op = state.doc.sketch_slice_ops[0].clone();
+        assert_eq!(op.line_outputs.len(), 2);
+        assert!(state.doc.lines[0].shadow);
+        let tree = build_hierarchy(&state.doc, None);
+        fn count_nodes(entries: &[crate::hierarchy::HierarchyEntry], f: &dyn Fn(&HierarchyNode) -> bool) -> usize {
+            entries.iter().map(|e| f(&e.node) as usize + count_nodes(&e.children, f)).sum()
+        }
+        assert_eq!(count_nodes(&tree, &|n| matches!(n, HierarchyNode::SketchSliceOp(_))), 1);
+        for &li in &op.line_outputs {
+            assert_eq!(
+                count_nodes(&tree, &|n| matches!(n, HierarchyNode::Line(l) if *l == li)),
+                1,
+                "fragment line {li} listed once (under the op)"
+            );
+        }
+        crate::document_lifecycle::tombstone_element(&mut state.doc, SceneElement::SketchSliceOp(0));
+        assert!(!state.doc.lines[0].shadow, "delete un-shadows the original");
+        for &li in &op.line_outputs {
+            assert!(state.doc.lines[li].deleted, "fragment {li} removed");
+        }
     }
 
     /// #224: a shadowed (sliced) line no longer forms a polygon face — its fragments do. Slicing

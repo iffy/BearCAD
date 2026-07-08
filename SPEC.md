@@ -560,8 +560,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     `polygon::closed_line_loops` skips shadow lines), and its pieces become fresh `Line` entries
     grouped under the op (`rebuild_sketch_slice`, `segment_crossing_t`). Scripting:
     `bearcad.slice_sketch{ sketch, lines, cutters }` / `bearcad.edit_sketch_slice{ index, … }`.
-    Curve and face targets, and the interactive in-sketch tool + pane grouping, are tracked
-    follow-ups.
+    The operation is a first-class pane element (`SceneElement::SketchSliceOp`/
+    `HierarchyNode::SketchSliceOp`, #229): its fragment lines nest under it (excluded from the
+    sketch's own listing; shadowed originals stay listed, dimmed), and it is selectable, nameable,
+    and deletable (delete un-shadows the originals and removes the fragments). Curve and face
+    targets, and the interactive in-sketch tool, are tracked follow-ups.
   Picking side-wall faces as cutters remains a tracked follow-up (#191).
 
 ### 3.4 Modifying solids

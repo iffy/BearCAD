@@ -1122,6 +1122,11 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        SceneElement::SketchSliceOp(i) => ElementScriptTokens {
+            kind: "sketch_slice_op",
+            index: i,
+            point: None,
+        },
         SceneElement::SliceOp(i) => ElementScriptTokens {
             kind: "slice_op",
             index: i,

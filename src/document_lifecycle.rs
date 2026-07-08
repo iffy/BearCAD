@@ -71,6 +71,10 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             .sketch_repeat_ops
             .get(index)
             .is_some_and(|op| !op.deleted),
+        SceneElement::SketchSliceOp(index) => doc
+            .sketch_slice_ops
+            .get(index)
+            .is_some_and(|op| !op.deleted),
         SceneElement::SliceOp(index) => doc
             .slice_ops
             .get(index)
@@ -247,6 +251,26 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                     for &out in &op.circle_outputs {
                         if let Some(c) = doc.circles.get_mut(out) {
                             c.deleted = true;
+                        }
+                    }
+                    changed = true;
+                }
+            }
+        }
+        SceneElement::SketchSliceOp(index) => {
+            if let Some(op) = doc.sketch_slice_ops.get_mut(index) {
+                if !op.deleted {
+                    op.deleted = true;
+                    let op = doc.sketch_slice_ops[index].clone();
+                    // Un-shadow the originals and remove the fragments (#224/#229).
+                    for &t in &op.line_targets {
+                        if let Some(l) = doc.lines.get_mut(t) {
+                            l.shadow = false;
+                        }
+                    }
+                    for &out in &op.line_outputs {
+                        if let Some(l) = doc.lines.get_mut(out) {
+                            l.deleted = true;
                         }
                     }
                     changed = true;
