@@ -7290,16 +7290,41 @@ pub struct GizmoInfo {
     pub value: f32,
 }
 
-/// The gizmos the current state exposes, with their live values (#214). Extends as tools gain
-/// gizmos; today the extrude tool's in-progress push/pull depth.
+/// The script handle for a chamfer/fillet amount gizmo, named for the actual treatment kind.
+fn treatment_gizmo_name(kind: crate::model::VertexTreatmentKind) -> &'static str {
+    match kind {
+        crate::model::VertexTreatmentKind::Chamfer => "chamfer",
+        crate::model::VertexTreatmentKind::Fillet => "fillet",
+    }
+}
+
+/// The gizmos the current state exposes, with their live values (#214). Push/pull and offset
+/// values are millimetres; rotate values are radians. At most one of each is active at a time.
 pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
     let mut gizmos = Vec::new();
     if let Some(ce) = &state.creating_extrusion {
+        gizmos.push(GizmoInfo { kind: "push_pull", name: "extrude", value: ce.distance });
+    }
+    // 2D (sketch vertex) and 3D (body edge) chamfer/fillet share a name by kind; only one runs.
+    if let Some(cvt) = &state.creating_vertex_treatment {
         gizmos.push(GizmoInfo {
             kind: "push_pull",
-            name: "extrude",
-            value: ce.distance,
+            name: treatment_gizmo_name(cvt.kind),
+            value: cvt.amount_live,
         });
+    }
+    if let Some(cet) = &state.creating_edge_treatment {
+        gizmos.push(GizmoInfo {
+            kind: "push_pull",
+            name: treatment_gizmo_name(cet.kind),
+            value: cet.amount_live,
+        });
+    }
+    if let Some(cr) = &state.creating_revolve {
+        gizmos.push(GizmoInfo { kind: "rotate", name: "revolve", value: cr.angle_live.to_radians() });
+    }
+    if let Some(cp) = &state.creating_plane {
+        gizmos.push(GizmoInfo { kind: "offset", name: "offset", value: cp.offset_live });
     }
     gizmos
 }
@@ -7312,12 +7337,61 @@ pub fn gizmo_value(state: &AppState, name: &str) -> Option<f32> {
         .map(|g| g.value)
 }
 
-/// The [`Action`] that sets a named gizmo's scalar to `value` (#214), or `None` if the name
-/// isn't a known gizmo.
-pub fn set_gizmo_action(name: &str, value: f32) -> Option<Action> {
+/// Drive a named gizmo's scalar to `value` the way a drag would (#214), returning whether that
+/// gizmo was available. Push/pull and offset take millimetres; rotate takes radians. The change
+/// is authoritative — it clears any typed override so the value takes effect on commit.
+pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
     match name {
-        "extrude" => Some(Action::SetExtrudeDistance { distance: value }),
-        _ => None,
+        "extrude" => {
+            if state.creating_extrusion.is_some() {
+                state.apply(Action::SetExtrudeDistance { distance: value });
+                true
+            } else {
+                false
+            }
+        }
+        "chamfer" | "fillet" => {
+            let unit = state.doc.default_length_unit;
+            let amount = value.max(0.0);
+            let text = crate::value::format_length_display_in(amount, unit);
+            if let Some(cvt) = state.creating_vertex_treatment.as_mut() {
+                if treatment_gizmo_name(cvt.kind) == name {
+                    cvt.amount_live = amount;
+                    cvt.user_edited = false;
+                    cvt.text = text.clone();
+                    return true;
+                }
+            }
+            if let Some(cet) = state.creating_edge_treatment.as_mut() {
+                if treatment_gizmo_name(cet.kind) == name {
+                    cet.amount_live = amount;
+                    cet.user_edited = false;
+                    cet.text = text;
+                    return true;
+                }
+            }
+            false
+        }
+        "revolve" => {
+            if let Some(cr) = state.creating_revolve.as_mut() {
+                cr.angle_live = value.to_degrees().clamp(1.0, 360.0);
+                cr.user_edited = false;
+                cr.text = format!("{:.0}", cr.angle_live);
+                true
+            } else {
+                false
+            }
+        }
+        "offset" => {
+            if state.creating_plane.is_some() {
+                // Force millimetres so the value matches the mm-valued `offset` gizmo reading.
+                state.apply(Action::SetPlaneOffset { value: format!("{value}mm") });
+                true
+            } else {
+                false
+            }
+        }
+        _ => false,
     }
 }
 
@@ -7355,13 +7429,48 @@ mod tests {
         );
 
         // Absolute set and relative nudge drive the live depth.
-        state.apply(set_gizmo_action("extrude", 15.0).expect("extrude gizmo action"));
+        assert!(set_gizmo(&mut state, "extrude", 15.0));
         assert_eq!(state.creating_extrusion.as_ref().unwrap().distance, 15.0);
         let cur = gizmo_value(&state, "extrude").unwrap();
-        state.apply(set_gizmo_action("extrude", cur + 5.0).unwrap());
+        assert!(set_gizmo(&mut state, "extrude", cur + 5.0));
         assert_eq!(state.creating_extrusion.as_ref().unwrap().distance, 20.0);
 
-        assert!(set_gizmo_action("nonesuch", 1.0).is_none());
+        assert!(!set_gizmo(&mut state, "nonesuch", 1.0));
+    }
+
+    /// #214: the revolve angle (rotate, radians) and construction-plane offset (mm) gizmos are
+    /// enumerated and driven the same way.
+    #[test]
+    fn gizmos_cover_revolve_angle_and_plane_offset() {
+        use std::f32::consts::PI;
+
+        let mut state = AppState::default();
+        state.creating_revolve = Some(CreatingRevolve {
+            angle_live: 90.0,
+            ..CreatingRevolve::default()
+        });
+        let revolve = available_gizmos(&state)
+            .into_iter()
+            .find(|g| g.name == "revolve")
+            .expect("revolve gizmo");
+        assert_eq!(revolve.kind, "rotate");
+        assert!((revolve.value - 90f32.to_radians()).abs() < 1e-5);
+        assert!(set_gizmo(&mut state, "revolve", PI)); // half turn
+        assert!((state.creating_revolve.as_ref().unwrap().angle_live - 180.0).abs() < 1e-3);
+
+        let mut state = AppState::default();
+        state.apply(Action::BeginConstructionPlane {
+            reference: PlaneReference::Face {
+                origin: Vec3::ZERO,
+                normal: glam::Vec3::Z,
+                label: "p".to_string(),
+            },
+            parent: ConstructionPlaneParent::Root,
+        });
+        assert!(state.creating_plane.is_some());
+        assert!(set_gizmo(&mut state, "offset", 12.0));
+        assert!((state.creating_plane.as_ref().unwrap().offset_live - 12.0).abs() < 1e-3);
+        assert!((gizmo_value(&state, "offset").unwrap() - 12.0).abs() < 1e-3);
     }
     use crate::face::SketchFrame;
 

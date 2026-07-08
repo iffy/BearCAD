@@ -1131,9 +1131,11 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   current tool/creation state (`{ kind, name, value }` per handle; `kind` is `"push_pull"`,
   `"rotate"`, or `"offset"`; push/pull and offset in mm, rotate in radians). `bearcad.set_gizmo{
   name, value }` sets the scalar; `bearcad.drag_gizmo{ name, by }` nudges it by a delta. The
-  value is applied through the same action a drag uses (the semantic path). Current coverage:
-  the extrude tool's in-progress push/pull depth (`name = "extrude"`); further gizmos
-  (chamfer/fillet, revolve, plane, and Move #185) extend the same registry.
+  value is applied the same way a drag does (the semantic path). Current coverage: the extrude
+  push/pull depth (`"extrude"`), the chamfer/fillet amount (2D sketch-vertex and 3D body-edge,
+  named `"chamfer"`/`"fillet"` by kind), the revolve sweep angle (`"revolve"`, radians), and the
+  construction-plane offset (`"offset"`). The Move tool's gizmos (#185) extend the same registry
+  once they exist.
 - `bearcad.ui.screenshot([path], [whole_window])` captures the 3D viewport only by default (the
   view bear (the view-cube HUD) is suppressed for that frame); passing `whole_window = true` captures the
   entire window. With no `path`, the image is written to `screenshot-bearcad.png`.

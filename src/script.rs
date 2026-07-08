@@ -3815,14 +3815,10 @@ impl ScriptRunner {
                 } else {
                     value
                 };
-                match crate::actions::set_gizmo_action(&name, target) {
-                    Some(action) => {
-                        let result = state.apply(action);
-                        self.record_action_error(result);
-                    }
-                    None => self.record_action_error(crate::actions::ActionResult::Err(format!(
-                        "unknown gizmo '{name}'"
-                    ))),
+                if !crate::actions::set_gizmo(state, &name, target) {
+                    self.record_action_error(crate::actions::ActionResult::Err(format!(
+                        "no gizmo named '{name}' is active"
+                    )));
                 }
                 StepResult::Continue
             }
