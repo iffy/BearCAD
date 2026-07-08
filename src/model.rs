@@ -125,6 +125,11 @@ pub struct Line {
     /// Reference geometry (dashed, construction color); not solid model geometry.
     #[serde(default)]
     pub construction: bool,
+    /// Consumed by a 2D in-sketch slice (#224): the original is kept (for editing/undo) but no
+    /// longer participates in solid geometry — its split fragments do. Excluded from face/profile
+    /// detection wherever [`construction`](Self::construction) is.
+    #[serde(default)]
+    pub shadow: bool,
     /// User-visible label in the Elements pane; empty uses the default.
     #[serde(default)]
     pub name: Option<String>,
@@ -183,6 +188,7 @@ impl Line {
             length_dim_offset: None,
             length_expr: None,
             construction: false,
+            shadow: false,
             name: None,
             deleted: false,
             bezier: None,
@@ -530,6 +536,9 @@ pub struct Circle {
     /// Reference geometry (dashed, construction color); not solid model geometry.
     #[serde(default)]
     pub construction: bool,
+    /// Consumed by a 2D in-sketch slice (#224); see [`Line::shadow`].
+    #[serde(default)]
+    pub shadow: bool,
     /// User-visible label in the Elements pane; empty uses the default.
     #[serde(default)]
     pub name: Option<String>,
@@ -555,6 +564,7 @@ impl Circle {
             diameter_expr: None,
             diameter_dim_angle,
             construction: false,
+            shadow: false,
             name: None,
             deleted: false,
         }
@@ -1475,6 +1485,30 @@ pub struct SketchRepeatOperation {
     pub deleted: bool,
 }
 
+/// A 2D in-sketch slice (#224): splits the target sketch **lines** at their interior crossings
+/// with the cutter lines, shadowing each split original and emitting its fragments as new lines
+/// in the same sketch, grouped under the operation. The sketch-space analogue of the 3D
+/// [`SliceOperation`] — shadowed originals behave like shadow bodies (kept for editing, excluded
+/// from face detection). Curve and face targets are a tracked follow-up.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SketchSliceOperation {
+    /// The sketch the operands live in.
+    pub sketch: SketchId,
+    /// Target line indices (the A side); each is split where the cutters cross it.
+    #[serde(default)]
+    pub line_targets: Vec<usize>,
+    /// Cutter line indices (the B side); interior crossings with these divide each target.
+    #[serde(default)]
+    pub cutter_lines: Vec<usize>,
+    /// Generated fragment-line indices, target-major (all fragments of target 0, then target 1…).
+    #[serde(default)]
+    pub line_outputs: Vec<usize>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
 /// A reference image imported for tracing (#163/#169), hosted on a construction plane.
 /// The encoded file bytes are embedded (base64 in the saved JSON) so documents stay
 /// self-contained, like imported meshes.
@@ -1571,6 +1605,8 @@ pub enum ShapeKind {
     /// A 2D in-sketch linear repeat (#222): its duplicated lines/circles are separate
     /// `Line`/`Circle` entries.
     SketchRepeatOperation,
+    /// A 2D in-sketch slice (#224): its fragment lines are separate `Line` entries.
+    SketchSliceOperation,
     /// An in-place edit of an existing construction plane (undo restores the prior planes).
     /// Transient: never persisted (storage rebuilds `shape_order` from created shapes only).
     ConstructionPlaneEdit,
@@ -1714,6 +1750,9 @@ pub struct Document {
     /// 2D in-sketch linear repeats (#222): duplicated sketch entities grouped under an op.
     #[serde(default)]
     pub sketch_repeat_ops: Vec<SketchRepeatOperation>,
+    /// 2D in-sketch slices (#224): split sketch entities grouped under an op.
+    #[serde(default)]
+    pub sketch_slice_ops: Vec<SketchSliceOperation>,
     /// Technical drawings (#180): black-on-white projected sheets of bodies for print/PDF.
     #[serde(default)]
     pub drawings: Vec<Drawing>,
@@ -1759,6 +1798,7 @@ impl Default for Document {
             repeat_ops: Vec::new(),
             slice_ops: Vec::new(),
             sketch_repeat_ops: Vec::new(),
+            sketch_slice_ops: Vec::new(),
             drawings: Vec::new(),
             shape_order: Vec::new(),
             undo_groups: Vec::new(),

@@ -2533,6 +2533,50 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // 2D in-sketch slice (#224): split `lines` where `cutters` cross them. `sketch` selects the
+    // sketch; both lists are line index lists. Runs directly through the action.
+    api.set(
+        "slice_sketch",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let sketch: usize = opts.get::<Option<usize>>("sketch")?.unwrap_or(0);
+            let line_targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("lines")?.unwrap_or_default();
+            let cutter_lines: Vec<usize> = opts.get::<Option<Vec<usize>>>("cutters")?.unwrap_or_default();
+            let result = unsafe {
+                tick.state().apply(crate::actions::Action::CreateSketchSliceOperation {
+                    sketch,
+                    line_targets,
+                    cutter_lines,
+                })
+            };
+            if let crate::actions::ActionResult::Err(e) = result {
+                return Err(mlua::Error::external(e));
+            }
+            Ok(())
+        })?,
+    )?;
+
+    api.set(
+        "edit_sketch_slice",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let op: usize = opts.get("index")?;
+            let line_targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("lines")?.unwrap_or_default();
+            let cutter_lines: Vec<usize> = opts.get::<Option<Vec<usize>>>("cutters")?.unwrap_or_default();
+            let result = unsafe {
+                tick.state().apply(crate::actions::Action::EditSketchSliceOperation {
+                    op,
+                    line_targets,
+                    cutter_lines,
+                })
+            };
+            if let crate::actions::ActionResult::Err(e) = result {
+                return Err(mlua::Error::external(e));
+            }
+            Ok(())
+        })?,
+    )?;
+
     api.set(
         "move_bodies",
         lua.create_function(|lua, opts: Table| {
@@ -3087,6 +3131,55 @@ mod tests {
             runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
         }
         assert!(runner.error.is_none(), "script error: {:?}", runner.error);
+    }
+
+    /// #224: slicing a line by a crossing line shadows the original and emits two fragments that
+    /// meet at the crossing point.
+    #[test]
+    fn sketch_slice_splits_a_line_at_a_crossing() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
+            bearcad.line{ x = 5, y = -5, x1 = 5, y1 = 5 }
+            bearcad.slice_sketch{ sketch = 0, lines = {0}, cutters = {1} }
+            "#,
+        );
+        // The original is shadowed (kept, not face-forming); its two fragments are real lines.
+        assert!(state.doc.lines[0].shadow, "sliced original becomes a shadow line");
+        let op = &state.doc.sketch_slice_ops[0];
+        assert_eq!(op.line_outputs.len(), 2, "one crossing → two fragments");
+        let frag = |i: usize| {
+            let l = &state.doc.lines[op.line_outputs[i]];
+            (l.x0, l.y0, l.x1, l.y1)
+        };
+        assert_eq!(frag(0), (0.0, 0.0, 5.0, 0.0));
+        assert_eq!(frag(1), (5.0, 0.0, 10.0, 0.0));
+        assert!(!state.doc.lines[op.line_outputs[0]].shadow, "fragments are not shadow");
+    }
+
+    /// #224: a shadowed (sliced) line no longer forms a polygon face — its fragments do. Slicing
+    /// one edge of a rectangle drops the original 4-line loop but the 5 pieces still close it.
+    #[test]
+    fn sketch_slice_shadow_line_is_excluded_from_faces() {
+        let mut doc = crate::model::Document::default();
+        doc.sketches.push(crate::model::Sketch {
+            face: crate::model::FaceId::ConstructionPlane(0),
+            name: None,
+            deleted: false,
+            length_unit: None,
+            angle_unit: None,
+        });
+        // A closed square: 4 lines forming one loop.
+        crate::construction::add_line_rectangle(&mut doc, 0, 0.0, 0.0, 10.0, 10.0, [false; 4]);
+        assert_eq!(crate::polygon::closed_line_loops(&doc, 0).len(), 1);
+        // Shadow the bottom edge (line 0): the original loop is no longer detected.
+        doc.lines[0].shadow = true;
+        assert_eq!(
+            crate::polygon::closed_line_loops(&doc, 0).len(),
+            0,
+            "a shadow edge breaks the loop until its fragments replace it"
+        );
     }
 
     /// #222: a 2D in-sketch repeat duplicates a circle along +u at a fixed pitch — the copies'

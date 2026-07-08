@@ -536,8 +536,16 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   slicing runs through the OCCT kernel (half-space booleans); a cutter that misses a body
   leaves it whole. "Edit slice" re-opens the tool and resizes the fragment list; the whole
   slice undoes as one step. Scripting: `bearcad.slice{ bodies, cutters, extend?, name? }` /
-  `bearcad.edit_slice{ index, … }`. The 2D in-sketch version (shadow shapes), line/curve/
-  face targets, and picking side-wall faces as cutters are the tracked follow-up (#191).
+  `bearcad.edit_slice{ index, … }`.
+  - **2D in-sketch slice (#224):** `SketchSliceOperation` (`Document::sketch_slice_ops`) splits
+    target sketch **lines** at their interior crossings with cutter lines. Each split original is
+    flagged `shadow` (kept for editing but excluded from face detection, like a shadow body —
+    `polygon::closed_line_loops` skips shadow lines), and its pieces become fresh `Line` entries
+    grouped under the op (`rebuild_sketch_slice`, `segment_crossing_t`). Scripting:
+    `bearcad.slice_sketch{ sketch, lines, cutters }` / `bearcad.edit_sketch_slice{ index, … }`.
+    Curve and face targets, and the interactive in-sketch tool + pane grouping, are tracked
+    follow-ups.
+  Picking side-wall faces as cutters remains a tracked follow-up (#191).
 
 ### 3.4 Modifying solids
 - **Fillet** and **Chamfer**, 2D sketch vertices: the tools described in §3.1 (#37/#38) —

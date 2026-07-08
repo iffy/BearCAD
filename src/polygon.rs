@@ -34,7 +34,9 @@ pub fn closed_line_loops(doc: &Document, sketch: SketchId) -> Vec<Vec<usize>> {
         .lines
         .iter()
         .enumerate()
-        .filter(|(i, l)| l.sketch == sketch && line_alive(doc, *i))
+        // Shadow lines (#224, consumed by an in-sketch slice) keep existing for editing but no
+        // longer form faces — their split fragments do.
+        .filter(|(i, l)| l.sketch == sketch && !l.shadow && line_alive(doc, *i))
         .map(|(i, _)| i)
         .collect();
     if lines.len() < 3 {

@@ -54,3 +54,22 @@ bearcad.edit_slice{ index = 0, bodies = {0},
 
 A cutter is a face-spec table, the same shape `bearcad.begin_sketch` accepts — a construction
 plane or a planar body cap face.
+
+## Slicing sketch geometry in 2D
+
+You can also slice **inside a sketch**: split lines where other lines cross them. The sliced
+line is kept as a *shadow* — no longer part of any solid face, but still there to edit or restore
+— and each crossing produces a new fragment line. This is available from scripts today:
+
+```lua
+-- Split line 0 wherever line 1 crosses it, in sketch 0:
+bearcad.slice_sketch{ sketch = 0, lines = {0}, cutters = {1} }
+
+-- Slice several targets with several cutters at once, then re-point:
+bearcad.slice_sketch{ sketch = 0, lines = {0, 2}, cutters = {1, 3} }
+bearcad.edit_sketch_slice{ index = 0, lines = {0}, cutters = {1} }
+```
+
+`lines` are the targets to cut; `cutters` are the lines that divide them. A shadowed original no
+longer forms a face — its fragments do — so you can carve a profile into pieces that extrude
+independently.

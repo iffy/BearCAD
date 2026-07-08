@@ -698,7 +698,8 @@ fn build_creation_ranks(doc: &Document) -> CreationRanks {
             | ShapeKind::MoveOperation
             | ShapeKind::RepeatOperation
             | ShapeKind::SliceOperation
-            | ShapeKind::SketchRepeatOperation => {}
+            | ShapeKind::SketchRepeatOperation
+            | ShapeKind::SketchSliceOperation => {}
             // Edits are not created shapes; they only mark undoable in-place changes.
             ShapeKind::ConstructionPlaneEdit | ShapeKind::EdgeTreatmentEdit => {}
         }

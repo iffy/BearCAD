@@ -1156,6 +1156,19 @@ pub enum Action {
         spacing: String,
         length: String,
     },
+    /// Create a 2D in-sketch slice (#224): split the target lines where the cutter lines cross
+    /// them, shadowing the originals and grouping the fragments under a `SketchSliceOperation`.
+    CreateSketchSliceOperation {
+        sketch: usize,
+        line_targets: Vec<usize>,
+        cutter_lines: Vec<usize>,
+    },
+    /// Re-point an existing in-sketch slice (#224).
+    EditSketchSliceOperation {
+        op: usize,
+        line_targets: Vec<usize>,
+        cutter_lines: Vec<usize>,
+    },
     /// Commit the in-progress Slice-tool operation.
     CommitSlice,
     /// Scripted/replayed slice with an explicit payload (also what `CommitSlice` lowers to).
@@ -2732,6 +2745,36 @@ fn validate_sketch_repeat_inputs(
         }
         if !seen_circles.insert(ci) {
             return Err(format!("Circle {ci} is picked twice"));
+        }
+    }
+    Ok(())
+}
+
+/// Validate a 2D in-sketch slice's operands (#224): a live sketch, ≥1 target line and ≥1 cutter
+/// line, all live and belonging to that sketch.
+fn validate_sketch_slice_inputs(
+    doc: &Document,
+    sketch: usize,
+    line_targets: &[usize],
+    cutter_lines: &[usize],
+) -> Result<(), String> {
+    if doc.sketches.get(sketch).filter(|s| !s.deleted).is_none() {
+        return Err(format!("Sketch {sketch} not found"));
+    }
+    if line_targets.is_empty() {
+        return Err("Pick at least one line to slice".to_string());
+    }
+    if cutter_lines.is_empty() {
+        return Err("Pick at least one cutter line".to_string());
+    }
+    for (label, list) in [("Line", line_targets), ("Cutter", cutter_lines)] {
+        for &li in list {
+            let Some(line) = doc.lines.get(li).filter(|l| !l.deleted) else {
+                return Err(format!("{label} {li} not found"));
+            };
+            if line.sketch != sketch {
+                return Err(format!("{label} {li} is not in sketch {sketch}"));
+            }
         }
     }
     Ok(())
@@ -6187,6 +6230,67 @@ impl AppState {
                 self.status = "Edited sketch repeat".to_string();
                 ActionResult::Ok
             }
+            Action::CreateSketchSliceOperation { sketch, line_targets, cutter_lines } => {
+                if let Err(e) =
+                    validate_sketch_slice_inputs(&self.doc, sketch, &line_targets, &cutter_lines)
+                {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let op_index = self.doc.sketch_slice_ops.len();
+                self.doc.sketch_slice_ops.push(crate::model::SketchSliceOperation {
+                    sketch,
+                    line_targets,
+                    cutter_lines,
+                    line_outputs: Vec::new(),
+                    name: None,
+                    deleted: false,
+                });
+                self.doc.shape_order.push(ShapeKind::SketchSliceOperation);
+                if !rebuild_sketch_slice(&mut self.doc, op_index) {
+                    self.doc.sketch_slice_ops.pop();
+                    self.doc.shape_order.pop();
+                    let e = "Slice produces no cuts (no cutter crosses a target line)".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let frags = self.doc.sketch_slice_ops[op_index].line_outputs.len();
+                self.refresh_document_health();
+                self.status = format!("Sliced into {frags} fragment(s)");
+                ActionResult::Ok
+            }
+            Action::EditSketchSliceOperation { op, line_targets, cutter_lines } => {
+                let Some(sketch) =
+                    self.doc.sketch_slice_ops.get(op).filter(|o| !o.deleted).map(|o| o.sketch)
+                else {
+                    let e = format!("Sketch slice {op} not found");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                if let Err(e) =
+                    validate_sketch_slice_inputs(&self.doc, sketch, &line_targets, &cutter_lines)
+                {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let old = self.doc.sketch_slice_ops[op].clone();
+                {
+                    let entry = &mut self.doc.sketch_slice_ops[op];
+                    entry.line_targets = line_targets;
+                    entry.cutter_lines = cutter_lines;
+                }
+                if !rebuild_sketch_slice(&mut self.doc, op) {
+                    // Restore prior state, including re-shadowing whatever it had shadowed.
+                    self.doc.sketch_slice_ops[op] = old;
+                    rebuild_sketch_slice(&mut self.doc, op);
+                    let e = "Slice produces no cuts (no cutter crosses a target line)".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                self.refresh_document_health();
+                self.status = "Edited sketch slice".to_string();
+                ActionResult::Ok
+            }
             Action::CommitMove => {
                 let Some(mut cm) = self.creating_move.take() else {
                     return ActionResult::Err("No move in progress".to_string());
@@ -7948,6 +8052,7 @@ fn shifted_line_copy(src: &crate::model::Line, dx: f32, dy: f32) -> crate::model
         length_dim_offset: None,
         length_expr: None,
         construction: src.construction,
+        shadow: src.shadow,
         name: None,
         deleted: false,
         bezier: src.bezier.map(|[a, b]| [(a.0 + dx, a.1 + dy), (b.0 + dx, b.1 + dy)]),
@@ -7969,9 +8074,108 @@ fn shifted_circle_copy(src: &crate::model::Circle, dx: f32, dy: f32) -> crate::m
         diameter_expr: None,
         diameter_dim_angle: src.diameter_dim_angle,
         construction: src.construction,
+        shadow: src.shadow,
         name: None,
         deleted: false,
     }
+}
+
+/// The parameter `t ∈ (0, 1)` along segment A where it crosses segment B in their interior, or
+/// `None` if they are parallel or only meet at (or beyond) an endpoint. Used by the 2D in-sketch
+/// slice (#224) to find where a cutter divides a target line.
+fn segment_crossing_t(
+    ax0: f32,
+    ay0: f32,
+    ax1: f32,
+    ay1: f32,
+    bx0: f32,
+    by0: f32,
+    bx1: f32,
+    by1: f32,
+) -> Option<f32> {
+    let (rx, ry) = (ax1 - ax0, ay1 - ay0);
+    let (sx, sy) = (bx1 - bx0, by1 - by0);
+    let denom = rx * sy - ry * sx;
+    if denom.abs() < 1e-9 {
+        return None; // parallel or degenerate
+    }
+    let (qpx, qpy) = (bx0 - ax0, by0 - ay0);
+    let t = (qpx * sy - qpy * sx) / denom;
+    let u = (qpx * ry - qpy * rx) / denom;
+    const EPS: f32 = 1e-5;
+    (t > EPS && t < 1.0 - EPS && u > EPS && u < 1.0 - EPS).then_some(t)
+}
+
+/// (Re)generate the fragments of an in-sketch slice (#224) at `op_index`. Each straight target
+/// line is split at its interior crossings with the cutter lines: the original is flagged
+/// `shadow` (kept, but no longer face-forming) and its pieces become fresh lines. Targets with no
+/// crossing (or curved targets, deferred) are left untouched. Returns `false` — leaving the op
+/// untouched — when nothing actually splits.
+fn rebuild_sketch_slice(doc: &mut crate::model::Document, op_index: usize) -> bool {
+    let Some(op) = doc.sketch_slice_ops.get(op_index).filter(|o| !o.deleted).cloned() else {
+        return false;
+    };
+    // Reset any prior run: un-shadow every target, tombstone old fragments.
+    for &a in &op.line_targets {
+        if let Some(l) = doc.lines.get_mut(a) {
+            l.shadow = false;
+        }
+    }
+    for &f in &op.line_outputs {
+        if let Some(l) = doc.lines.get_mut(f) {
+            l.deleted = true;
+        }
+    }
+    let mut outputs = Vec::new();
+    for &a in &op.line_targets {
+        let al = doc.lines[a].clone();
+        // Curved targets are a follow-up; only straight lines split here.
+        if al.bezier.is_some() {
+            continue;
+        }
+        let mut ts: Vec<f32> = Vec::new();
+        for &b in &op.cutter_lines {
+            if b == a {
+                continue;
+            }
+            let Some(bl) = doc.lines.get(b).filter(|l| !l.deleted) else {
+                continue;
+            };
+            if let Some(t) =
+                segment_crossing_t(al.x0, al.y0, al.x1, al.y1, bl.x0, bl.y0, bl.x1, bl.y1)
+            {
+                ts.push(t);
+            }
+        }
+        if ts.is_empty() {
+            continue;
+        }
+        ts.sort_by(|p, q| p.partial_cmp(q).unwrap_or(std::cmp::Ordering::Equal));
+        ts.dedup_by(|p, q| (*p - *q).abs() < 1e-5);
+        // Shadow the split original; emit a fragment for each [prev, t] span up to the far end.
+        doc.lines[a].shadow = true;
+        let point_at = |t: f32| (al.x0 + (al.x1 - al.x0) * t, al.y0 + (al.y1 - al.y0) * t);
+        let mut prev = 0.0f32;
+        for &t in ts.iter().chain(std::iter::once(&1.0)) {
+            let (px, py) = point_at(prev);
+            let (qx, qy) = point_at(t);
+            let mut frag = shifted_line_copy(&al, 0.0, 0.0);
+            frag.x0 = px;
+            frag.y0 = py;
+            frag.x1 = qx;
+            frag.y1 = qy;
+            frag.shadow = false;
+            outputs.push(doc.lines.len());
+            doc.lines.push(frag);
+            doc.shape_order.push(crate::model::ShapeKind::Line);
+            prev = t;
+        }
+    }
+    if outputs.is_empty() {
+        return false;
+    }
+    doc.sketch_slice_ops[op_index].line_outputs = outputs;
+    true
 }
 
 /// (Re)generate the duplicated entities of an in-sketch repeat (#222) at `op_index`, resizing the
