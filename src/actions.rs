@@ -5946,15 +5946,36 @@ impl AppState {
                         axis: cm.axis,
                         angle: cm.angle.clone(),
                     }),
-                    None => self.apply(Action::CreateMoveOperation {
-                        targets: cm.targets.clone(),
-                        plane_targets: cm.plane_targets.clone(),
-                        tx: cm.tx.clone(),
-                        ty: cm.ty.clone(),
-                        tz: cm.tz.clone(),
-                        axis: cm.axis,
-                        angle: cm.angle.clone(),
-                    }),
+                    None => {
+                        // Coalesce (#217): re-moving the same element folds into its existing
+                        // move op (when the combined transform is representable) instead of
+                        // stacking a new tiny op.
+                        match coalescible_move_op(&self.doc, &cm)
+                            .and_then(|op| compose_move_values(&self.doc, &self.doc.move_ops[op], &cm).map(|v| (op, v)))
+                        {
+                            Some((op, (tx, ty, tz, axis, angle))) => {
+                                self.apply(Action::EditMoveOperation {
+                                    op,
+                                    targets: self.doc.move_ops[op].targets.clone(),
+                                    plane_targets: self.doc.move_ops[op].plane_targets.clone(),
+                                    tx,
+                                    ty,
+                                    tz,
+                                    axis,
+                                    angle,
+                                })
+                            }
+                            None => self.apply(Action::CreateMoveOperation {
+                                targets: cm.targets.clone(),
+                                plane_targets: cm.plane_targets.clone(),
+                                tx: cm.tx.clone(),
+                                ty: cm.ty.clone(),
+                                tz: cm.tz.clone(),
+                                axis: cm.axis,
+                                angle: cm.angle.clone(),
+                            }),
+                        }
+                    }
                 };
                 if matches!(result, ActionResult::Err(_)) {
                     self.creating_move = Some(cm);
@@ -7331,6 +7352,91 @@ impl AppState {
     }
 }
 
+/// Two index lists as equal sets (order-independent), for coalescing detection.
+fn same_move_set(a: &[usize], b: &[usize]) -> bool {
+    a.len() == b.len() && {
+        let mut a: Vec<usize> = a.to_vec();
+        let mut b: Vec<usize> = b.to_vec();
+        a.sort_unstable();
+        b.sort_unstable();
+        a == b
+    }
+}
+
+/// The existing Move op the in-progress move is re-moving, if any (#217): the same construction
+/// planes moved again, or bodies whose targets are exactly an op's moved outputs. Consecutive
+/// moves on the same element fold into one op instead of stacking tiny ops.
+fn coalescible_move_op(doc: &Document, cm: &CreatingMove) -> Option<usize> {
+    if cm.editing.is_some() {
+        return None;
+    }
+    doc.move_ops.iter().position(|op| {
+        if op.deleted {
+            return false;
+        }
+        let planes_again = !cm.plane_targets.is_empty()
+            && cm.targets.is_empty()
+            && op.targets.is_empty()
+            && same_move_set(&op.plane_targets, &cm.plane_targets);
+        let bodies_again = !cm.targets.is_empty()
+            && cm.plane_targets.is_empty()
+            && op.plane_targets.is_empty()
+            && same_move_set(&op.outputs, &cm.targets);
+        planes_again || bodies_again
+    })
+}
+
+/// Whether a move's translation is non-zero.
+fn move_translates(doc: &Document, tx: &str, ty: &str, tz: &str) -> bool {
+    let v = |e: &str| crate::value::eval_length_mm_in_doc(e, doc).unwrap_or(0.0);
+    v(tx).abs() > 1e-9 || v(ty).abs() > 1e-9 || v(tz).abs() > 1e-9
+}
+
+/// Whether a move's rotation is non-zero.
+fn move_rotates(doc: &Document, axis: Option<crate::model::RevolveAxis>, angle: &str) -> bool {
+    axis.is_some()
+        && !angle.trim().is_empty()
+        && crate::value::eval_angle_rad_in_doc(angle, doc).unwrap_or(0.0).abs() > 1e-9
+}
+
+/// Compose an existing move op with a new one into a single set of move values (#217), or `None`
+/// if the composition isn't representable as translation + single-axis rotation (differing axes,
+/// or a translation-plus-rotation mix). Values are combined numerically (coalescing bakes them).
+fn compose_move_values(
+    doc: &Document,
+    op: &crate::model::MoveOperation,
+    cm: &CreatingMove,
+) -> Option<(String, String, String, Option<crate::model::RevolveAxis>, String)> {
+    let len = |e: &str| crate::value::eval_length_mm_in_doc(e, doc).unwrap_or(0.0);
+    let ang = |e: &str| crate::value::eval_angle_rad_in_doc(e, doc).unwrap_or(0.0);
+    let op_rot = move_rotates(doc, op.axis, &op.angle);
+    let cm_rot = move_rotates(doc, cm.axis, &cm.angle);
+    let op_tr = move_translates(doc, &op.tx, &op.ty, &op.tz);
+    let cm_tr = move_translates(doc, &cm.tx, &cm.ty, &cm.tz);
+    // Pure translation on both → add the translations.
+    if !op_rot && !cm_rot {
+        return Some((
+            format!("{}mm", len(&op.tx) + len(&cm.tx)),
+            format!("{}mm", len(&op.ty) + len(&cm.ty)),
+            format!("{}mm", len(&op.tz) + len(&cm.tz)),
+            None,
+            String::new(),
+        ));
+    }
+    // Pure rotation on both about the same axis → add the angles.
+    if !op_tr && !cm_tr && op.axis == cm.axis {
+        let combined = (ang(&op.angle) + ang(&cm.angle)).to_degrees();
+        return Some((
+            String::new(),
+            String::new(),
+            String::new(),
+            op.axis,
+            format!("{combined}"),
+        ));
+    }
+    None
+}
+
 /// Recompute the frames of construction planes moved by a Move op (#217): each targeted plane's
 /// frame is its base definition composed with every (non-deleted) Move op targeting it, in op
 /// order. Everything anchored to the plane (sketches, tracing images) then follows, since that
@@ -7671,6 +7777,38 @@ mod tests {
             angle: String::new(),
         });
         assert!((state.doc.construction_planes[0].origin.z - base.z).abs() < 1e-3);
+    }
+
+    /// #217: consecutive moves on the same plane coalesce into one op (translations add) instead
+    /// of stacking tiny ops.
+    #[test]
+    fn consecutive_plane_moves_coalesce() {
+        let mut state = AppState::default();
+        let base = state.doc.construction_planes[0].origin.z;
+        let move_plane = |state: &mut AppState, tz: &str| {
+            state.creating_move = Some(CreatingMove {
+                plane_targets: vec![0],
+                tz: tz.to_string(),
+                ..Default::default()
+            });
+            assert!(matches!(state.apply(Action::CommitMove), ActionResult::Ok), "{}", state.status);
+        };
+        move_plane(&mut state, "40mm");
+        assert_eq!(
+            state.doc.move_ops.iter().filter(|o| !o.deleted).count(),
+            1,
+            "first move creates one op"
+        );
+        move_plane(&mut state, "10mm");
+        assert_eq!(
+            state.doc.move_ops.iter().filter(|o| !o.deleted).count(),
+            1,
+            "second move on the same plane coalesces into the first op"
+        );
+        assert!(
+            (state.doc.construction_planes[0].origin.z - base - 50.0).abs() < 1e-3,
+            "translations add up to +50"
+        );
     }
 
     /// #214: the extrude tool's in-progress push/pull depth is exposed as a gizmo and driven by

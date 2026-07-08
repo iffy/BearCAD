@@ -467,6 +467,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   is its base definition composed with the move, so everything anchored to it (sketches,
   images) follows, since that geometry is stored plane-local and projected through the plane
   frame. Planes are picked into the move set from the Elements pane / selection like bodies.
+  **Coalescing (#217):** re-moving the same element (the same planes, or the moved-output bodies
+  of an existing move) folds into that move op instead of stacking a new one, so a run of test
+  nudges stays a single operation — for the representable cases: translations add, and same-axis
+  rotations add their angles (a differing-axis rotation or a translate+rotate mix starts a fresh
+  op, since `MoveOperation`'s single-axis representation can't express an arbitrary composition).
   Extending to tracing images and moving sub-body geometry (faces/edges/vertices) remain
   follow-ups (#185).
 
