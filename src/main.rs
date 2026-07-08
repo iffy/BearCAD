@@ -3724,6 +3724,34 @@ impl eframe::App for App {
                         })
                     })
                     .flatten(),
+                // In-sketch repeat (#232): while a sketch is open, offer to repeat the selected
+                // lines/circles of that sketch along an axis.
+                sketch_repeat_start: self.state.sketch_session.and_then(|s| {
+                    let sketch = s.sketch;
+                    let mut lines = Vec::new();
+                    let mut circles = Vec::new();
+                    for element in self.state.scene_selection.iter() {
+                        match element {
+                            SceneElement::Line(li)
+                                if self.state.doc.lines.get(li).is_some_and(|l| {
+                                    !l.deleted && l.sketch == sketch
+                                }) =>
+                            {
+                                lines.push(li);
+                            }
+                            SceneElement::Circle(ci)
+                                if self.state.doc.circles.get(ci).is_some_and(|c| {
+                                    !c.deleted && c.sketch == sketch
+                                }) =>
+                            {
+                                circles.push(ci);
+                            }
+                            _ => {}
+                        }
+                    }
+                    (!lines.is_empty() || !circles.is_empty())
+                        .then_some((sketch, lines, circles))
+                }),
                 slice_op: (self.state.tool == Tool::Slice).then(|| {
                     let cs = self.state.creating_slice.as_ref();
                     let target_rows = cs
@@ -3848,6 +3876,7 @@ impl eframe::App for App {
             let mut move_edit_begin: Option<usize> = None;
             let mut repeat_edit: Option<context::RepeatEdit> = None;
             let mut repeat_edit_begin: Option<usize> = None;
+            let mut sketch_repeat_begin: Option<(usize, Vec<usize>, Vec<usize>)> = None;
             let mut slice_edit: Option<context::SliceEdit> = None;
             let mut slice_edit_begin: Option<usize> = None;
             let mut revolve_edit_begin: Option<usize> = None;
@@ -3889,6 +3918,9 @@ impl eframe::App for App {
                         &mut |op| move_edit_begin = Some(op),
                         &mut |edit| repeat_edit = Some(edit),
                         &mut |op| repeat_edit_begin = Some(op),
+                        &mut |sketch, lines, circles| {
+                            sketch_repeat_begin = Some((sketch, lines, circles))
+                        },
                         &mut |edit| slice_edit = Some(edit),
                         &mut |op| slice_edit_begin = Some(op),
                         &mut |op| revolve_edit_begin = Some(op),
@@ -4010,6 +4042,21 @@ impl eframe::App for App {
                     });
                     self.state.apply(Action::SetTool(Tool::Repeat));
                 }
+            }
+            if let Some((sketch, lines, circles)) = sketch_repeat_begin {
+                // #232: create an in-sketch repeat from the selection with sensible defaults
+                // (along +X, ×3 at 10mm); the op is then editable via the pane / scripting.
+                self.state.apply(Action::CreateSketchRepeatOperation {
+                    sketch,
+                    line_targets: lines,
+                    circle_targets: circles,
+                    dir_u: 1.0,
+                    dir_v: 0.0,
+                    mode: model::RepeatMode::CountGap,
+                    count: "3".to_string(),
+                    spacing: "10".to_string(),
+                    length: String::new(),
+                });
             }
             if let Some(edit) = slice_edit {
                 match edit {
