@@ -1171,12 +1171,14 @@ pub enum Action {
     CreateSketchSliceOperation {
         sketch: usize,
         line_targets: Vec<usize>,
+        circle_targets: Vec<usize>,
         cutter_lines: Vec<usize>,
     },
     /// Re-point an existing in-sketch slice (#224).
     EditSketchSliceOperation {
         op: usize,
         line_targets: Vec<usize>,
+        circle_targets: Vec<usize>,
         cutter_lines: Vec<usize>,
     },
     /// Commit the in-progress Slice-tool operation.
@@ -2766,13 +2768,14 @@ fn validate_sketch_slice_inputs(
     doc: &Document,
     sketch: usize,
     line_targets: &[usize],
+    circle_targets: &[usize],
     cutter_lines: &[usize],
 ) -> Result<(), String> {
     if doc.sketches.get(sketch).filter(|s| !s.deleted).is_none() {
         return Err(format!("Sketch {sketch} not found"));
     }
-    if line_targets.is_empty() {
-        return Err("Pick at least one line to slice".to_string());
+    if line_targets.is_empty() && circle_targets.is_empty() {
+        return Err("Pick at least one line or circle to slice".to_string());
     }
     if cutter_lines.is_empty() {
         return Err("Pick at least one cutter line".to_string());
@@ -2785,6 +2788,14 @@ fn validate_sketch_slice_inputs(
             if line.sketch != sketch {
                 return Err(format!("{label} {li} is not in sketch {sketch}"));
             }
+        }
+    }
+    for &ci in circle_targets {
+        let Some(circle) = doc.circles.get(ci).filter(|c| !c.deleted) else {
+            return Err(format!("Circle {ci} not found"));
+        };
+        if circle.sketch != sketch {
+            return Err(format!("Circle {ci} is not in sketch {sketch}"));
         }
     }
     Ok(())
@@ -6270,10 +6281,10 @@ impl AppState {
                 self.status = "Edited sketch repeat".to_string();
                 ActionResult::Ok
             }
-            Action::CreateSketchSliceOperation { sketch, line_targets, cutter_lines } => {
-                if let Err(e) =
-                    validate_sketch_slice_inputs(&self.doc, sketch, &line_targets, &cutter_lines)
-                {
+            Action::CreateSketchSliceOperation { sketch, line_targets, circle_targets, cutter_lines } => {
+                if let Err(e) = validate_sketch_slice_inputs(
+                    &self.doc, sketch, &line_targets, &circle_targets, &cutter_lines,
+                ) {
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
@@ -6282,6 +6293,7 @@ impl AppState {
                     sketch,
                     line_targets,
                     cutter_lines,
+                    circle_targets,
                     line_outputs: Vec::new(),
                     name: None,
                     deleted: false,
@@ -6299,7 +6311,7 @@ impl AppState {
                 self.status = format!("Sliced into {frags} fragment(s)");
                 ActionResult::Ok
             }
-            Action::EditSketchSliceOperation { op, line_targets, cutter_lines } => {
+            Action::EditSketchSliceOperation { op, line_targets, circle_targets, cutter_lines } => {
                 let Some(sketch) =
                     self.doc.sketch_slice_ops.get(op).filter(|o| !o.deleted).map(|o| o.sketch)
                 else {
@@ -6307,9 +6319,9 @@ impl AppState {
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 };
-                if let Err(e) =
-                    validate_sketch_slice_inputs(&self.doc, sketch, &line_targets, &cutter_lines)
-                {
+                if let Err(e) = validate_sketch_slice_inputs(
+                    &self.doc, sketch, &line_targets, &circle_targets, &cutter_lines,
+                ) {
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
@@ -6317,6 +6329,7 @@ impl AppState {
                 {
                     let entry = &mut self.doc.sketch_slice_ops[op];
                     entry.line_targets = line_targets;
+                    entry.circle_targets = circle_targets;
                     entry.cutter_lines = cutter_lines;
                 }
                 if !rebuild_sketch_slice(&mut self.doc, op) {
@@ -8230,6 +8243,52 @@ fn curve_crossing_params(target: &crate::model::Line, cutter: &crate::model::Lin
     params
 }
 
+/// Parameters `t ∈ (0,1)` where segment `a→b` crosses the circle `(cx,cy,r)`, returned as the
+/// crossing points' angles (atan2 from the centre). Up to two per segment.
+fn segment_circle_angles(a: (f32, f32), b: (f32, f32), cx: f32, cy: f32, r: f32) -> Vec<f32> {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let (fx, fy) = (a.0 - cx, a.1 - cy);
+    let aa = dx * dx + dy * dy;
+    if aa < 1e-12 {
+        return Vec::new();
+    }
+    let bb = 2.0 * (fx * dx + fy * dy);
+    let cc = fx * fx + fy * fy - r * r;
+    let disc = bb * bb - 4.0 * aa * cc;
+    if disc < 0.0 {
+        return Vec::new();
+    }
+    let sq = disc.sqrt();
+    let mut out = Vec::new();
+    for t in [(-bb - sq) / (2.0 * aa), (-bb + sq) / (2.0 * aa)] {
+        if t > 1e-5 && t < 1.0 - 1e-5 {
+            let (px, py) = (a.0 + dx * t, a.1 + dy * t);
+            out.push((py - cy).atan2(px - cx));
+        }
+    }
+    out
+}
+
+/// Approximate the CCW arc of circle `(cx,cy,r)` from angle `a0` to `a1` (`a1 > a0`) with cubic
+/// beziers, one per ≤90° chunk (standard `k = 4/3·tan(θ/4)` handle length). Each is `[P0,C0,C1,P3]`.
+fn arc_to_beziers(cx: f32, cy: f32, r: f32, a0: f32, a1: f32) -> Vec<[(f32, f32); 4]> {
+    let span = a1 - a0;
+    let n = (span.abs() / std::f32::consts::FRAC_PI_2).ceil().max(1.0) as usize;
+    let step = span / n as f32;
+    let k = 4.0 / 3.0 * (step / 4.0).tan();
+    let mut out = Vec::new();
+    for i in 0..n {
+        let s = a0 + step * i as f32;
+        let e = s + step;
+        let p0 = (cx + r * s.cos(), cy + r * s.sin());
+        let p3 = (cx + r * e.cos(), cy + r * e.sin());
+        let c0 = (p0.0 - k * r * s.sin(), p0.1 + k * r * s.cos());
+        let c1 = (p3.0 + k * r * e.sin(), p3.1 - k * r * e.cos());
+        out.push([p0, c0, c1, p3]);
+    }
+    out
+}
+
 /// (Re)generate the fragments of an in-sketch slice (#224/#233) at `op_index`. Each target line —
 /// straight or curved — is split at its interior crossings with the cutter lines: the original is
 /// flagged `shadow` (kept, but no longer face-forming) and its pieces become fresh lines (curved
@@ -8243,6 +8302,11 @@ fn rebuild_sketch_slice(doc: &mut crate::model::Document, op_index: usize) -> bo
     for &a in &op.line_targets {
         if let Some(l) = doc.lines.get_mut(a) {
             l.shadow = false;
+        }
+    }
+    for &c in &op.circle_targets {
+        if let Some(circle) = doc.circles.get_mut(c) {
+            circle.shadow = false;
         }
     }
     for &f in &op.line_outputs {
@@ -8301,6 +8365,49 @@ fn rebuild_sketch_slice(doc: &mut crate::model::Document, op_index: usize) -> bo
                 for piece in pieces {
                     push_frag(piece[0].0, piece[0].1, piece[3].0, piece[3].1, Some([piece[1], piece[2]]));
                 }
+            }
+        }
+    }
+    // Circle targets (#237): split each circle into arcs at the cutter crossings, emitting the
+    // arcs as bezier fragment lines and shadowing the circle.
+    for &ci in &op.circle_targets {
+        let Some(circ) = doc.circles.get(ci).filter(|c| !c.deleted).cloned() else {
+            continue;
+        };
+        let mut angles: Vec<f32> = Vec::new();
+        for &b in &op.cutter_lines {
+            let Some(bl) = doc.lines.get(b).filter(|l| !l.deleted) else {
+                continue;
+            };
+            let cp = bl.sample_local(crate::model::BEZIER_SEGMENTS);
+            for w in cp.windows(2) {
+                angles.extend(segment_circle_angles(w[0], w[1], circ.cx, circ.cy, circ.r));
+            }
+        }
+        for a in angles.iter_mut() {
+            if *a < 0.0 {
+                *a += std::f32::consts::TAU;
+            }
+        }
+        angles.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        angles.dedup_by(|a, b| (*a - *b).abs() < 1e-4);
+        if angles.len() < 2 {
+            continue; // a tangent/single touch doesn't split the circle
+        }
+        doc.circles[ci].shadow = true;
+        let m = angles.len();
+        for k in 0..m {
+            let a0 = angles[k];
+            let a1 = if k + 1 < m { angles[k + 1] } else { angles[0] + std::f32::consts::TAU };
+            for piece in arc_to_beziers(circ.cx, circ.cy, circ.r, a0, a1) {
+                let mut frag = crate::model::Line::from_local_endpoints(
+                    circ.sketch, piece[0].0, piece[0].1, piece[3].0, piece[3].1,
+                );
+                frag.bezier = Some([piece[1], piece[2]]);
+                frag.construction = circ.construction;
+                outputs.push(doc.lines.len());
+                doc.lines.push(frag);
+                doc.shape_order.push(crate::model::ShapeKind::Line);
             }
         }
     }
@@ -11149,6 +11256,7 @@ mod tests {
         let result = state.apply(Action::CreateSketchSliceOperation {
             sketch: si,
             line_targets: vec![0],
+            circle_targets: Vec::new(),
             cutter_lines: vec![1],
         });
         assert!(matches!(result, ActionResult::Ok));
@@ -11164,6 +11272,44 @@ mod tests {
         // The first piece starts at the curve's start; the second ends at its end.
         assert_eq!((f0.x0, f0.y0), (0.0, 0.0));
         assert_eq!((f1.x1, f1.y1), (10.0, 0.0));
+    }
+
+    /// #237: slicing a circle by a line through it shadows the circle and emits arc fragments
+    /// (curved bezier lines) whose endpoints lie on the circle at the two crossings.
+    #[test]
+    fn sketch_slice_splits_a_circle_into_arcs() {
+        let mut state = AppState::default();
+        let si = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        // A circle of radius 5 at the origin.
+        state
+            .doc
+            .circles
+            .push(crate::model::Circle::from_local_center_radius(si, 0.0, 0.0, 5.0, 0.0)); // circle 0
+        // A horizontal cutter through the centre (crosses at (−5,0) and (5,0)).
+        state
+            .doc
+            .lines
+            .push(crate::model::Line::from_local_endpoints(si, -8.0, 0.0, 8.0, 0.0)); // line 0
+
+        let result = state.apply(Action::CreateSketchSliceOperation {
+            sketch: si,
+            line_targets: Vec::new(),
+            circle_targets: vec![0],
+            cutter_lines: vec![0],
+        });
+        assert!(matches!(result, ActionResult::Ok));
+        assert!(state.doc.circles[0].shadow, "sliced circle becomes shadow");
+        let op = state.doc.sketch_slice_ops[0].clone();
+        // Two arcs (each split into ≤90° bezier chunks → 2 pieces per semicircle = 4 fragments).
+        assert!(!op.line_outputs.is_empty());
+        for &o in &op.line_outputs {
+            let l = &state.doc.lines[o];
+            assert!(l.bezier.is_some(), "arc fragments are curved");
+            // Every fragment endpoint lies on the circle (radius 5 from origin).
+            for (x, y) in [(l.x0, l.y0), (l.x1, l.y1)] {
+                assert!(((x * x + y * y).sqrt() - 5.0).abs() < 0.05, "endpoint on circle");
+            }
+        }
     }
 
     /// #234: clicking a sketch while the Repeat tool is active adds it to the operand set

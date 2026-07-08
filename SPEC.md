@@ -574,8 +574,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     and deletable (delete un-shadows the originals and removes the fragments). **Curved** targets
     and cutters work too (#233): crossings are found by intersecting the entities' sampled
     polylines, and a curved target is split with de Casteljau so each fragment keeps its bezier
-    shape. Circle targets, face (loop) slicing, and the interactive in-sketch tool are tracked
-    follow-ups.
+    shape. **Circle targets** (#237) split too: line↔circle crossings give the arc angles, the
+    circle is shadowed, and each arc is emitted as bezier fragment lines (≤90° per cubic). Face
+    (loop) slicing and the interactive in-sketch tool are tracked follow-ups.
   Picking side-wall faces as cutters remains a tracked follow-up (#191).
 
 ### 3.4 Modifying solids

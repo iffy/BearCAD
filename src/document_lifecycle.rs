@@ -262,10 +262,15 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                 if !op.deleted {
                     op.deleted = true;
                     let op = doc.sketch_slice_ops[index].clone();
-                    // Un-shadow the originals and remove the fragments (#224/#229).
+                    // Un-shadow the originals and remove the fragments (#224/#229/#237).
                     for &t in &op.line_targets {
                         if let Some(l) = doc.lines.get_mut(t) {
                             l.shadow = false;
+                        }
+                    }
+                    for &t in &op.circle_targets {
+                        if let Some(c) = doc.circles.get_mut(t) {
+                            c.shadow = false;
                         }
                     }
                     for &out in &op.line_outputs {

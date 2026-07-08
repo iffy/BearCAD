@@ -68,7 +68,13 @@ bearcad.slice_sketch{ sketch = 0, lines = {0}, cutters = {1} }
 -- Slice several targets with several cutters at once, then re-point:
 bearcad.slice_sketch{ sketch = 0, lines = {0, 2}, cutters = {1, 3} }
 bearcad.edit_sketch_slice{ index = 0, lines = {0}, cutters = {1} }
+
+-- Circles and curves slice too — a line through circle 0 splits it into arcs:
+bearcad.slice_sketch{ sketch = 0, circles = {0}, cutters = {1} }
 ```
+
+`lines`/`circles` are the targets; `cutters` are the lines that divide them. Curved (bezier)
+targets stay curved when split, and a sliced circle becomes arc pieces.
 
 `lines` are the targets to cut; `cutters` are the lines that divide them. A shadowed original no
 longer forms a face — its fragments do — so you can carve a profile into pieces that extrude

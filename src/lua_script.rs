@@ -2602,11 +2602,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let sketch: usize = opts.get::<Option<usize>>("sketch")?.unwrap_or(0);
             let line_targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("lines")?.unwrap_or_default();
+            let circle_targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("circles")?.unwrap_or_default();
             let cutter_lines: Vec<usize> = opts.get::<Option<Vec<usize>>>("cutters")?.unwrap_or_default();
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::CreateSketchSliceOperation {
                     sketch,
                     line_targets,
+                    circle_targets,
                     cutter_lines,
                 })
             };
@@ -2623,11 +2625,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let op: usize = opts.get("index")?;
             let line_targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("lines")?.unwrap_or_default();
+            let circle_targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("circles")?.unwrap_or_default();
             let cutter_lines: Vec<usize> = opts.get::<Option<Vec<usize>>>("cutters")?.unwrap_or_default();
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::EditSketchSliceOperation {
                     op,
                     line_targets,
+                    circle_targets,
                     cutter_lines,
                 })
             };

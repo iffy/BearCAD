@@ -1519,7 +1519,12 @@ pub struct SketchSliceOperation {
     /// Cutter line indices (the B side); interior crossings with these divide each target.
     #[serde(default)]
     pub cutter_lines: Vec<usize>,
+    /// Target circle indices (#237); each is split into arcs where the cutters cross it. The arcs
+    /// are emitted as curved (bezier) fragment lines, the source circle is shadowed.
+    #[serde(default)]
+    pub circle_targets: Vec<usize>,
     /// Generated fragment-line indices, target-major (all fragments of target 0, then target 1…).
+    /// Both split lines *and* split-circle arcs land here (arcs are bezier `Line`s).
     #[serde(default)]
     pub line_outputs: Vec<usize>,
     #[serde(default)]
