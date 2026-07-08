@@ -527,8 +527,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     (#231): the copy plane is synthesized from the source sketch's frame either way. Regenerated
     on create/edit; the copies (planes, sketches, entities) go away when the op is deleted, and
     they nest under the repeat op in the Elements pane (host planes grouped under the op, not at
-    the top level). Scripting: `bearcad.repeat_sketches{ sketches = {si}, axis, mode, count?,
-    spacing?, length? }`. Viewport picking is the tracked GUI follow-up.
+    the top level). The Repeat tool picks a sketch operand the same way it picks bodies/planes
+    (Elements-pane / selection click → `sketch_targets`, shown as a count in the context pane,
+    #234). Scripting: `bearcad.repeat_sketches{ sketches = {si}, axis, mode, count?, spacing?,
+    length? }`.
   - **2D in-sketch repeat (#222):** `SketchRepeatOperation` (`Document::sketch_repeat_ops`)
     duplicates selected sketch **lines/circles** along an in-plane direction as generated
     entities in the same sketch, reusing the shared spacing math

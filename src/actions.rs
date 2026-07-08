@@ -6984,6 +6984,19 @@ impl AppState {
                         }
                         true
                     }
+                    // A sketch clicked with the Repeat tool joins its sketch set (#231/#234).
+                    SceneElement::Sketch(si) if self.tool == Tool::Repeat => {
+                        let set = &mut self
+                            .creating_repeat
+                            .get_or_insert_with(CreatingRepeat::default)
+                            .sketch_targets;
+                        if let Some(pos) = set.iter().position(|s| s == si) {
+                            set.remove(pos);
+                        } else {
+                            set.push(*si);
+                        }
+                        true
+                    }
                     // A tracing image clicked with the Move tool joins its image set (#217).
                     SceneElement::Image(ii) if self.tool == Tool::Move => {
                         let set = &mut self
@@ -11038,6 +11051,30 @@ mod tests {
         assert_eq!(op.outputs.len(), 3);
         let offsets = crate::extrude::repeat_offsets(&state.doc, &op).unwrap();
         assert_eq!(offsets.len(), 3);
+    }
+
+    /// #234: clicking a sketch while the Repeat tool is active adds it to the operand set
+    /// (mirrors plane/body picking), so it can be repeated along the axis.
+    #[test]
+    fn repeat_tool_click_toggles_sketch_target() {
+        let mut state = two_box_state(false);
+        let si = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        state.apply(Action::SetTool(Tool::Repeat));
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Sketch(si),
+            additive: false,
+        });
+        assert_eq!(
+            state.creating_repeat.as_ref().unwrap().sketch_targets,
+            vec![si],
+            "clicking a sketch adds it to the repeat's sketch set"
+        );
+        // Clicking again removes it.
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Sketch(si),
+            additive: false,
+        });
+        assert!(state.creating_repeat.as_ref().unwrap().sketch_targets.is_empty());
     }
 
     /// #221: repeating a construction plane ×3 along X emits two offset instance planes at the

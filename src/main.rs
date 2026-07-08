@@ -2563,7 +2563,12 @@ impl App {
                 .state
                 .creating_repeat
                 .as_ref()
-                .is_some_and(|c| !c.targets.is_empty() || !c.plane_targets.is_empty())
+                .is_some_and(|c| {
+                    !c.targets.is_empty()
+                        || !c.plane_targets.is_empty()
+                        || !c.sketch_targets.is_empty()
+                        || !c.extrusion_targets.is_empty()
+                })
             && !ui.ctx().wants_keyboard_input()
         {
             self.state.apply(Action::CommitRepeat);
@@ -3670,7 +3675,7 @@ impl eframe::App for App {
                             name: None,
                             deleted: false,
                         };
-                        (!c.targets.is_empty() || !c.plane_targets.is_empty())
+                        (!c.targets.is_empty() || !c.plane_targets.is_empty() || !c.sketch_targets.is_empty() || !c.extrusion_targets.is_empty())
                             .then(|| crate::extrude::repeat_offsets(&self.state.doc, &probe))
                             .flatten()
                             .map(|offsets| offsets.len() + 1)
@@ -3678,6 +3683,7 @@ impl eframe::App for App {
                     context::RepeatControl {
                         targets: cr.map(|c| c.targets.clone()).unwrap_or_default(),
                         plane_targets: cr.map(|c| c.plane_targets.clone()).unwrap_or_default(),
+                        sketch_targets: cr.map(|c| c.sketch_targets.clone()).unwrap_or_default(),
                         axis_label: cr
                             .map(|c| match c.axis {
                                 model::RevolveAxis::Line(li) => names::element_name(
@@ -3698,7 +3704,7 @@ impl eframe::App for App {
                         preview_instances: preview,
                         editing: cr.map(|c| c.editing.is_some()).unwrap_or(false),
                         can_commit: cr
-                            .map(|c| !c.targets.is_empty() || !c.plane_targets.is_empty())
+                            .map(|c| !c.targets.is_empty() || !c.plane_targets.is_empty() || !c.sketch_targets.is_empty() || !c.extrusion_targets.is_empty())
                             .unwrap_or(false)
                             && preview.is_some_and(|n| n > 1),
                     }

@@ -139,6 +139,8 @@ pub struct RepeatControl {
     pub targets: Vec<usize>,
     /// Picked construction planes to repeat as offset copies (#221).
     pub plane_targets: Vec<usize>,
+    /// Picked sketches to repeat as offset copies (#231/#234).
+    pub sketch_targets: Vec<usize>,
     pub axis_label: String,
     pub mode: crate::model::RepeatMode,
     pub count: String,
@@ -1357,6 +1359,16 @@ pub fn show_pane(
                 .size(11.0),
             );
         }
+        if !control.sketch_targets.is_empty() {
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} sketch(es) — copied along the axis",
+                    control.sketch_targets.len()
+                ))
+                .color(egui::Color32::from_gray(140))
+                .size(11.0),
+            );
+        }
         ui.horizontal(|ui| {
             ui.label("Axis");
             for (axis, label) in [
@@ -2032,6 +2044,7 @@ mod tests {
             repeat_op: Some(RepeatControl {
                 targets: vec![7],
                 plane_targets: Vec::new(),
+                sketch_targets: Vec::new(),
                 axis_label: "the X axis".to_string(),
                 mode: crate::model::RepeatMode::CountGap,
                 count: "3".to_string(),

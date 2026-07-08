@@ -90,8 +90,10 @@ Spacing is centre-to-centre. The same `mode`/`count`/`spacing`/`length` options 
 
 You can copy an entire sketch along an axis — each copy lands on its own construction plane,
 parallel to the original and offset down the axis, carrying copies of all the sketch's lines and
-circles. Handy for stacking a profile at intervals. Available from scripts (the source sketch
-must sit on a construction plane):
+circles. Handy for stacking a profile at intervals. With the Repeat tool active, click a sketch
+(in the Elements pane or the viewport) to add it — the context pane shows how many sketches are
+picked — then set the axis and spacing and commit. The source sketch can sit on a construction
+plane or a body face. From scripts:
 
 ```lua
 -- Copy sketch 0 three times, 10mm apart up the Z axis:
