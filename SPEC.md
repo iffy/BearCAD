@@ -1125,6 +1125,15 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   currently is, and `bearcad.drag_line{ line = <line>, du?, dv? }` translates a line. Both
   respect constraints — attempting to drag a fully constrained vertex/line raises a
   catchable Lua error, like the GUI refusing the drag.
+- **Scriptable gizmos (#214).** Viewport gizmos — a tool's drag handle for its live value,
+  each a single scalar — are enumerable and drivable from a script, so gizmo-driven tools are
+  automatable/testable without a mouse. `bearcad.gizmos()` returns the gizmos available in the
+  current tool/creation state (`{ kind, name, value }` per handle; `kind` is `"push_pull"`,
+  `"rotate"`, or `"offset"`; push/pull and offset in mm, rotate in radians). `bearcad.set_gizmo{
+  name, value }` sets the scalar; `bearcad.drag_gizmo{ name, by }` nudges it by a delta. The
+  value is applied through the same action a drag uses (the semantic path). Current coverage:
+  the extrude tool's in-progress push/pull depth (`name = "extrude"`); further gizmos
+  (chamfer/fillet, revolve, plane, and Move #185) extend the same registry.
 - `bearcad.ui.screenshot([path], [whole_window])` captures the 3D viewport only by default (the
   view bear (the view-cube HUD) is suppressed for that frame); passing `whole_window = true` captures the
   entire window. With no `path`, the image is written to `screenshot-bearcad.png`.

@@ -384,6 +384,15 @@ pub enum Instruction {
     KeyUp(Key),
     Type(String),
 
+    /// Set (or nudge) a viewport gizmo's scalar (#214): drives the in-progress gizmo the same
+    /// way a drag would, so gizmo tools are scriptable/testable. `relative` adds to the current
+    /// value instead of replacing it.
+    SetGizmo {
+        name: String,
+        value: f32,
+        relative: bool,
+    },
+
     // Sequencing
     WaitMs(u64),
     WaitFrames(u32),
@@ -940,6 +949,13 @@ impl Instruction {
                     format!("bearcad.ui.screenshot({path:?}, true)")
                 } else {
                     format!("bearcad.ui.screenshot({path:?})")
+                }
+            }
+            Instruction::SetGizmo { name, value, relative } => {
+                if *relative {
+                    format!("bearcad.drag_gizmo{{ name = {name:?}, by = {value} }}")
+                } else {
+                    format!("bearcad.set_gizmo{{ name = {name:?}, value = {value} }}")
                 }
             }
             Instruction::Quit => "bearcad.quit()".to_string(),
@@ -3785,6 +3801,31 @@ impl ScriptRunner {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
                 StepResult::Wait
             }
+            Instruction::SetGizmo { name, value, relative } => {
+                let target = if relative {
+                    match crate::actions::gizmo_value(state, &name) {
+                        Some(current) => current + value,
+                        None => {
+                            self.record_action_error(crate::actions::ActionResult::Err(format!(
+                                "no gizmo named '{name}' is active"
+                            )));
+                            return StepResult::Continue;
+                        }
+                    }
+                } else {
+                    value
+                };
+                match crate::actions::set_gizmo_action(&name, target) {
+                    Some(action) => {
+                        let result = state.apply(action);
+                        self.record_action_error(result);
+                    }
+                    None => self.record_action_error(crate::actions::ActionResult::Err(format!(
+                        "unknown gizmo '{name}'"
+                    ))),
+                }
+                StepResult::Continue
+            }
             Instruction::Quit => {
                 self.should_quit = true;
                 StepResult::Done
@@ -4064,6 +4105,38 @@ mod tests {
             .fold(f32::MAX, f32::min);
         assert!((max_x - min_x - 40.0).abs() < 1e-3, "width {}", max_x - min_x);
         assert!(!runner.done, "REPL stays alive between entries");
+    }
+
+    /// #214: `bearcad.set_gizmo`/`drag_gizmo` drive the in-progress extrude push/pull depth
+    /// through the Lua → Instruction → Action path (there's no Lua entry to *start* an
+    /// in-progress extrusion yet, so it's pre-seeded via the same action the tool uses).
+    #[test]
+    fn lua_gizmo_functions_drive_the_extrude_depth() {
+        let (mut runner, lines_tx, ready_rx) = repl_session();
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        let ctx = egui::Context::default();
+
+        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let lines = crate::construction::add_line_rectangle(
+            &mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4],
+        );
+        state.apply(crate::actions::Action::ToggleExtrudeFace {
+            face: crate::model::ExtrudeFace::Polygon(lines.to_vec()),
+        });
+        assert!(state.creating_extrusion.is_some());
+
+        lines_tx
+            .send("bearcad.set_gizmo{ name = 'extrude', value = 15 }\n".to_string())
+            .unwrap();
+        drive_to_prompt(&mut runner, &mut state, &mut synthetic, &ctx, &ready_rx);
+        assert_eq!(state.creating_extrusion.as_ref().unwrap().distance, 15.0);
+
+        lines_tx
+            .send("bearcad.drag_gizmo{ name = 'extrude', by = 5 }\n".to_string())
+            .unwrap();
+        drive_to_prompt(&mut runner, &mut state, &mut synthetic, &ctx, &ready_rx);
+        assert_eq!(state.creating_extrusion.as_ref().unwrap().distance, 20.0);
     }
 
     #[test]

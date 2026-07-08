@@ -136,6 +136,26 @@ Scripts run in a coroutine. Calls that need to wait for a frame or an animation 
 `bearcad.ui.wait_ms`, `bearcad.ui.screenshot`, and the `bearcad.ui.view(...)` camera commands —
 yield until the next frame rather than blocking.
 
+## Gizmos
+
+Viewport gizmos — the drag handles a tool shows for its live value, like the extrude tool's
+push/pull depth — are scriptable, so gizmo-driven tools can be automated and tested without a
+mouse. Each gizmo is one scalar you can enumerate and drive:
+
+```lua
+-- What gizmos does the current tool state expose?
+for _, g in ipairs(bearcad.gizmos()) do
+  print(g.kind, g.name, g.value)   -- e.g. "push_pull"  "extrude"  7.0
+end
+
+bearcad.set_gizmo{ name = "extrude", value = 15 }   -- set the depth outright
+bearcad.drag_gizmo{ name = "extrude", by = 5 }      -- nudge it (mirrors a drag delta)
+```
+
+`bearcad.gizmos()` returns only the gizmos available right now (an entry per handle, with its
+`kind`, `name`, and live `value`). Push/pull and offset values are in millimetres; rotate values
+are in radians.
+
 ## Where to go next
 
 - **[Declarative modeling](/docs/scripting/declarative-modeling)** — worked examples: sketch, draw,

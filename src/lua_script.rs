@@ -802,6 +802,43 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Gizmo introspection/control (#214): enumerate the viewport gizmos the current tool state
+    // exposes, and drive their scalar the way a drag would — so gizmo tools are scriptable.
+    api.set(
+        "gizmos",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            let arr = lua.create_table()?;
+            for (i, g) in crate::actions::available_gizmos(state).into_iter().enumerate() {
+                let entry = lua.create_table()?;
+                entry.set("kind", g.kind)?;
+                entry.set("name", g.name)?;
+                entry.set("value", g.value)?;
+                arr.set(i + 1, entry)?;
+            }
+            Ok(arr)
+        })?,
+    )?;
+    api.set(
+        "set_gizmo",
+        lua.create_function(|lua, opts: Table| {
+            let name: String = opts.get("name")?;
+            let value: f32 = opts.get("value")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::SetGizmo { name, value, relative: false }) }
+        })?,
+    )?;
+    api.set(
+        "drag_gizmo",
+        lua.create_function(|lua, opts: Table| {
+            let name: String = opts.get("name")?;
+            let by: f32 = opts.get("by")?;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::SetGizmo { name, value: by, relative: true }) }
+        })?,
+    )?;
+
     api.set(
         "tool",
         lua.create_function(|lua, name: String| {

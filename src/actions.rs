@@ -7277,9 +7277,92 @@ impl AppState {
     }
 }
 
+/// A viewport gizmo currently available given the tool/creation state (#214). Each gizmo is a
+/// drag that writes one scalar; scripting can enumerate them (`bearcad.gizmos()`) and drive
+/// their value (`set_gizmo`/`drag_gizmo`) so gizmo tools are automatable/testable headlessly.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GizmoInfo {
+    /// `"push_pull"`, `"rotate"`, or `"offset"`.
+    pub kind: &'static str,
+    /// Stable script handle, e.g. `"extrude"`.
+    pub name: &'static str,
+    /// The gizmo's live scalar (mm for push/pull and offset, radians for rotate).
+    pub value: f32,
+}
+
+/// The gizmos the current state exposes, with their live values (#214). Extends as tools gain
+/// gizmos; today the extrude tool's in-progress push/pull depth.
+pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
+    let mut gizmos = Vec::new();
+    if let Some(ce) = &state.creating_extrusion {
+        gizmos.push(GizmoInfo {
+            kind: "push_pull",
+            name: "extrude",
+            value: ce.distance,
+        });
+    }
+    gizmos
+}
+
+/// The current scalar of a named gizmo, if that gizmo is available (#214).
+pub fn gizmo_value(state: &AppState, name: &str) -> Option<f32> {
+    available_gizmos(state)
+        .into_iter()
+        .find(|g| g.name == name)
+        .map(|g| g.value)
+}
+
+/// The [`Action`] that sets a named gizmo's scalar to `value` (#214), or `None` if the name
+/// isn't a known gizmo.
+pub fn set_gizmo_action(name: &str, value: f32) -> Option<Action> {
+    match name {
+        "extrude" => Some(Action::SetExtrudeDistance { distance: value }),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #214: the extrude tool's in-progress push/pull depth is exposed as a gizmo and driven by
+    /// `set_gizmo_action`, so scripting can enumerate and move it.
+    #[test]
+    fn gizmos_expose_and_drive_the_extrude_push_pull_depth() {
+        use crate::model::{ExtrudeFace, FaceId};
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        let sketch = state.sketch_session.unwrap().sketch;
+        let lines =
+            crate::construction::add_line_rectangle(&mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
+        state.apply(Action::ExitSketch);
+        // No gizmo before an extrusion is in progress.
+        assert!(available_gizmos(&state).is_empty());
+
+        state.apply(Action::ToggleExtrudeFace {
+            face: ExtrudeFace::Polygon(lines.to_vec()),
+        });
+        let gizmos = available_gizmos(&state);
+        assert_eq!(gizmos.len(), 1);
+        assert_eq!(gizmos[0].name, "extrude");
+        assert_eq!(gizmos[0].kind, "push_pull");
+        assert_eq!(
+            gizmo_value(&state, "extrude"),
+            Some(state.creating_extrusion.as_ref().unwrap().distance)
+        );
+
+        // Absolute set and relative nudge drive the live depth.
+        state.apply(set_gizmo_action("extrude", 15.0).expect("extrude gizmo action"));
+        assert_eq!(state.creating_extrusion.as_ref().unwrap().distance, 15.0);
+        let cur = gizmo_value(&state, "extrude").unwrap();
+        state.apply(set_gizmo_action("extrude", cur + 5.0).unwrap());
+        assert_eq!(state.creating_extrusion.as_ref().unwrap().distance, 20.0);
+
+        assert!(set_gizmo_action("nonesuch", 1.0).is_none());
+    }
     use crate::face::SketchFrame;
 
     fn xy_frame() -> SketchFrame {
