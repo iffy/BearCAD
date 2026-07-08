@@ -137,6 +137,8 @@ pub enum MoveEdit {
 pub struct RepeatControl {
     /// Picked bodies to repeat (rendered through the unified element picker, #213).
     pub targets: Vec<usize>,
+    /// Picked construction planes to repeat as offset copies (#221).
+    pub plane_targets: Vec<usize>,
     pub axis_label: String,
     pub mode: crate::model::RepeatMode,
     pub count: String,
@@ -1342,7 +1344,19 @@ pub fn show_pane(
                 .strong(),
         );
         // The picked bodies render through the unified element picker (see `tool_pickers`).
+        // Construction-plane targets (#221) are picked via the Elements pane / viewport, like the
+        // Move tool's planes — surfaced here as a count so the picked set is visible.
         let mut pending: Option<RepeatEdit> = None;
+        if !control.plane_targets.is_empty() {
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} construction plane(s) — copied along the axis",
+                    control.plane_targets.len()
+                ))
+                .color(egui::Color32::from_gray(140))
+                .size(11.0),
+            );
+        }
         ui.horizontal(|ui| {
             ui.label("Axis");
             for (axis, label) in [
@@ -2017,6 +2031,7 @@ mod tests {
             tool: Tool::Repeat,
             repeat_op: Some(RepeatControl {
                 targets: vec![7],
+                plane_targets: Vec::new(),
                 axis_label: "the X axis".to_string(),
                 mode: crate::model::RepeatMode::CountGap,
                 count: "3".to_string(),

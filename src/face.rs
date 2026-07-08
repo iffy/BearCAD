@@ -37,6 +37,7 @@ pub fn default_xy_plane() -> ConstructionPlane {
         v_axis: Vec3::Y,
         parent: ConstructionPlaneParent::Root,
         definition: default_xy_plane_definition(),
+        repeat_instance: None,
         name: None,
         deleted: false,
     }

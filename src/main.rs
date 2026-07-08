@@ -3654,6 +3654,7 @@ impl eframe::App for App {
                     let preview = cr.and_then(|c| {
                         let probe = model::RepeatOperation {
                             targets: c.targets.clone(),
+                            plane_targets: c.plane_targets.clone(),
                             axis: c.axis,
                             mode: c.mode,
                             count: c.count.clone(),
@@ -3661,16 +3662,18 @@ impl eframe::App for App {
                             length: c.length.clone(),
                             length_target: None,
                             outputs: Vec::new(),
+                            plane_outputs: Vec::new(),
                             name: None,
                             deleted: false,
                         };
-                        (!c.targets.is_empty())
+                        (!c.targets.is_empty() || !c.plane_targets.is_empty())
                             .then(|| crate::extrude::repeat_offsets(&self.state.doc, &probe))
                             .flatten()
                             .map(|offsets| offsets.len() + 1)
                     });
                     context::RepeatControl {
                         targets: cr.map(|c| c.targets.clone()).unwrap_or_default(),
+                        plane_targets: cr.map(|c| c.plane_targets.clone()).unwrap_or_default(),
                         axis_label: cr
                             .map(|c| match c.axis {
                                 model::RevolveAxis::Line(li) => names::element_name(
@@ -3691,7 +3694,7 @@ impl eframe::App for App {
                         preview_instances: preview,
                         editing: cr.map(|c| c.editing.is_some()).unwrap_or(false),
                         can_commit: cr
-                            .map(|c| !c.targets.is_empty())
+                            .map(|c| !c.targets.is_empty() || !c.plane_targets.is_empty())
                             .unwrap_or(false)
                             && preview.is_some_and(|n| n > 1),
                     }
@@ -3984,6 +3987,7 @@ impl eframe::App for App {
                 if let Some(existing) = self.state.doc.repeat_ops.get(op).cloned() {
                     self.state.creating_repeat = Some(actions::CreatingRepeat {
                         targets: existing.targets,
+                        plane_targets: existing.plane_targets,
                         axis: existing.axis,
                         mode: existing.mode,
                         count: existing.count,

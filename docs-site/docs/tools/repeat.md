@@ -40,6 +40,15 @@ nested under the repeat element in the pane. Select the element and choose **Edi
 to change anything — the copies re-space, and the set grows or shrinks with the count.
 Because the values are expressions, editing a parameter re-spaces the whole pattern.
 
+## Repeating construction planes
+
+Repeat also copies **construction planes** along the axis. With the Repeat tool active, click a
+construction plane in the Elements pane (or select it) — the context pane shows how many planes
+are picked, and each copy steps along the axis by the gap or pitch you set. The copies nest under
+the repeat element, and a copy follows its source: move the original plane and its repeats move
+with it, each keeping its own offset on top. You can repeat bodies and planes in the same
+operation.
+
 ## Scripting
 
 ```lua

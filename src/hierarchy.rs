@@ -745,6 +745,10 @@ pub fn build_hierarchy(
         if plane.deleted || !matches!(plane.parent, ConstructionPlaneParent::Root) {
             continue;
         }
+        // Repeat-op plane instances (#221) are grouped under their operation, not at the top level.
+        if plane.repeat_instance.is_some() {
+            continue;
+        }
         let face = FaceId::ConstructionPlane(i);
         let mut children = build_face_sketches(doc, face, sketch_session);
         // Tracing images (#169) nest under their host plane.
@@ -839,7 +843,7 @@ pub fn build_hierarchy(
         if op.deleted {
             continue;
         }
-        let children = op
+        let mut children: Vec<HierarchyEntry> = op
             .outputs
             .iter()
             .filter(|&&bi| doc.bodies.get(bi).is_some_and(|b| !b.deleted))
@@ -848,6 +852,16 @@ pub fn build_hierarchy(
                 children: Vec::new(),
             })
             .collect();
+        // Generated construction-plane instances (#221) nest under the op too.
+        children.extend(
+            op.plane_outputs
+                .iter()
+                .filter(|&&pi| doc.construction_planes.get(pi).is_some_and(|p| !p.deleted))
+                .map(|&pi| HierarchyEntry {
+                    node: HierarchyNode::ConstructionPlane(pi),
+                    children: Vec::new(),
+                }),
+        );
         roots.push(HierarchyEntry {
             node: HierarchyNode::RepeatOp(oi),
             children,
@@ -1138,6 +1152,9 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                 for &output in &op.outputs {
                     out.insert(SceneElement::Body(output));
                     collect_descendants(doc, SceneElement::Body(output), out);
+                }
+                for &output in &op.plane_outputs {
+                    out.insert(SceneElement::ConstructionPlane(output));
                 }
             }
         }

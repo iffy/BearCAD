@@ -613,6 +613,12 @@ pub struct ConstructionPlane {
     pub v_axis: glam::Vec3,
     pub parent: ConstructionPlaneParent,
     pub definition: PlaneDefinition,
+    /// Set when this plane is a generated instance of a Repeat op (#221): a copy of a source
+    /// plane offset along the op's axis. Its cached frame is derived at recompute (see
+    /// [`RepeatPlaneInstance`]); the `definition` is a copy of the source's and is not used for
+    /// the instance's placement.
+    #[serde(default)]
+    pub repeat_instance: Option<RepeatPlaneInstance>,
     /// User-visible label in the Elements pane; empty uses the default.
     pub name: Option<String>,
     #[serde(default)]
@@ -1351,6 +1357,11 @@ impl RepeatMode {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RepeatOperation {
     pub targets: Vec<usize>,
+    /// Source construction plane indices to repeat as offset copies (#221). Separate from
+    /// `targets` (bodies) because a plane instance is a generated [`ConstructionPlane`] carrying
+    /// a [`RepeatPlaneInstance`], not a [`BodySource::Repeated`] body.
+    #[serde(default)]
+    pub plane_targets: Vec<usize>,
     pub axis: RevolveAxis,
     pub mode: RepeatMode,
     /// Instance count expression (count modes).
@@ -1371,10 +1382,30 @@ pub struct RepeatOperation {
     /// instance 2 of each target, …).
     #[serde(default)]
     pub outputs: Vec<usize>,
+    /// Generated construction-plane instance indices for [`plane_targets`] (#221), laid out
+    /// instance-major then target, exactly like [`outputs`]. Each entry is a
+    /// [`ConstructionPlane`] whose `repeat_instance` points back here.
+    #[serde(default)]
+    pub plane_outputs: Vec<usize>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
     pub deleted: bool,
+}
+
+/// Back-reference stamped on a generated construction plane that is one instance of a
+/// [`RepeatOperation`]'s plane repeat (#221). The instance's frame is derived at recompute from
+/// the source plane's *current* frame offset along the op's axis, so it follows the source if the
+/// source plane itself moves — the same "cache derived from another element" pattern moved images
+/// use (#217).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RepeatPlaneInstance {
+    /// Index into [`Document::repeat_ops`].
+    pub op: usize,
+    /// Index into the op's [`RepeatOperation::plane_targets`].
+    pub target: usize,
+    /// 1-based instance number; the along-axis offset is `repeat_offsets(op)[instance - 1]`.
+    pub instance: usize,
 }
 
 /// A slice operation (Slice tool, #181): cuts whole bodies with one or more planar

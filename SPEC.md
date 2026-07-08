@@ -499,9 +499,18 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   from the pattern start to that plane and follows the face if it moves, overriding the `length`
   expression (#186). Scripting:
   `bearcad.repeat_bodies{ bodies, axis, mode, count?, spacing?, length?, name? }` /
-  `bearcad.edit_repeat{ index, … }`. Repeating sketches/planes/operations, 2D in-sketch
-  repeats, the viewport ghost preview, and the GUI/scripting to *pick* the length face are the
-  tracked follow-up (#186).
+  `bearcad.edit_repeat{ index, … }`.
+  - **Repeating construction planes (#221):** a repeat can also target construction planes
+    (`RepeatOperation::plane_targets`), picked from the Elements pane / viewport with the tool
+    active. Each further instance is a generated `ConstructionPlane` carrying a
+    `RepeatPlaneInstance { op, target, instance }`; its cached frame is the source plane's
+    *current* frame offset along the axis, so instances step along the axis (planes are
+    zero-thickness, so the step is the bare gap/pitch) and follow the source if it moves.
+    Instances are grouped under the repeat op in the Elements pane, and go away with it. Count
+    and spacing are the same expressions/modes as body repeats; a repeat may target bodies and
+    planes at once.
+  Repeating sketches (#226) and operations (#220), 2D in-sketch repeats (#222), the viewport
+  ghost preview (#223), and the GUI/scripting to *pick* the length face are tracked follow-ups.
 
 - **Slice tool (#181):** cuts whole bodies with planar cutters. Two pickers — **Bodies**
   (the targets, multi-select) and **Cutters** (construction planes and/or planar body

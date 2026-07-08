@@ -200,6 +200,13 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                             body.deleted = true;
                         }
                     }
+                    // Generated plane instances go with the op (#221).
+                    let plane_outputs = doc.repeat_ops[index].plane_outputs.clone();
+                    for out in plane_outputs {
+                        if let Some(plane) = doc.construction_planes.get_mut(out) {
+                            plane.deleted = true;
+                        }
+                    }
                     changed = true;
                 }
             }

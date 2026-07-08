@@ -432,6 +432,8 @@ impl Default for CreatingBoolean {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CreatingRepeat {
     pub targets: Vec<usize>,
+    /// Picked source construction planes to repeat as offset copies (#221).
+    pub plane_targets: Vec<usize>,
     pub axis: crate::model::RevolveAxis,
     pub mode: crate::model::RepeatMode,
     pub count: String,
@@ -445,6 +447,7 @@ impl Default for CreatingRepeat {
     fn default() -> Self {
         Self {
             targets: Vec::new(),
+            plane_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "3".to_string(),
@@ -1110,6 +1113,7 @@ pub enum Action {
     /// Scripted/replayed linear repeat with an explicit payload.
     CreateRepeatOperation {
         targets: Vec<usize>,
+        plane_targets: Vec<usize>,
         axis: crate::model::RevolveAxis,
         mode: crate::model::RepeatMode,
         count: String,
@@ -1120,6 +1124,7 @@ pub enum Action {
     EditRepeatOperation {
         op: usize,
         targets: Vec<usize>,
+        plane_targets: Vec<usize>,
         axis: crate::model::RevolveAxis,
         mode: crate::model::RepeatMode,
         count: String,
@@ -2666,9 +2671,13 @@ fn validate_move_inputs(
 }
 
 /// Shared validation for creating/editing a repeat operation.
-fn validate_repeat_inputs(doc: &Document, targets: &[usize]) -> Result<(), String> {
-    if targets.is_empty() {
-        return Err("Pick at least one body to repeat".to_string());
+fn validate_repeat_inputs(
+    doc: &Document,
+    targets: &[usize],
+    plane_targets: &[usize],
+) -> Result<(), String> {
+    if targets.is_empty() && plane_targets.is_empty() {
+        return Err("Pick at least one body or plane to repeat".to_string());
     }
     let mut seen = std::collections::HashSet::new();
     for &bi in targets {
@@ -2683,6 +2692,18 @@ fn validate_repeat_inputs(doc: &Document, targets: &[usize]) -> Result<(), Strin
         }
         if !seen.insert(bi) {
             return Err(format!("Body {bi} is picked twice"));
+        }
+    }
+    let mut seen_planes = std::collections::HashSet::new();
+    for &pi in plane_targets {
+        let Some(plane) = doc.construction_planes.get(pi).filter(|p| !p.deleted) else {
+            return Err(format!("Plane {pi} not found"));
+        };
+        if plane.repeat_instance.is_some() {
+            return Err("Cannot repeat a repeat instance; edit the repeat instead".to_string());
+        }
+        if !seen_planes.insert(pi) {
+            return Err(format!("Plane {pi} is picked twice"));
         }
     }
     Ok(())
@@ -5776,6 +5797,7 @@ impl AppState {
                     Some(op) => self.apply(Action::EditRepeatOperation {
                         op,
                         targets: cr.targets.clone(),
+                        plane_targets: cr.plane_targets.clone(),
                         axis: cr.axis,
                         mode: cr.mode,
                         count: cr.count.clone(),
@@ -5784,6 +5806,7 @@ impl AppState {
                     }),
                     None => self.apply(Action::CreateRepeatOperation {
                         targets: cr.targets.clone(),
+                        plane_targets: cr.plane_targets.clone(),
                         axis: cr.axis,
                         mode: cr.mode,
                         count: cr.count.clone(),
@@ -5798,14 +5821,15 @@ impl AppState {
                 }
                 result
             }
-            Action::CreateRepeatOperation { targets, axis, mode, count, spacing, length } => {
-                if let Err(e) = validate_repeat_inputs(&self.doc, &targets) {
+            Action::CreateRepeatOperation { targets, plane_targets, axis, mode, count, spacing, length } => {
+                if let Err(e) = validate_repeat_inputs(&self.doc, &targets, &plane_targets) {
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
                 let op_index = self.doc.repeat_ops.len();
                 self.doc.repeat_ops.push(crate::model::RepeatOperation {
                     targets: targets.clone(),
+                    plane_targets: plane_targets.clone(),
                     axis,
                     mode,
                     count,
@@ -5813,6 +5837,7 @@ impl AppState {
                     length,
                     length_target: None,
                     outputs: Vec::new(),
+                    plane_outputs: Vec::new(),
                     name: None,
                     deleted: false,
                 });
@@ -5851,21 +5876,41 @@ impl AppState {
                     }
                 }
                 self.doc.repeat_ops[op_index].outputs = outputs;
+                // Generated plane instances (#221), same instance-major-then-target layout.
+                let mut plane_outputs = Vec::new();
+                for instance in 1..=offsets.len() {
+                    for (ti, &src) in plane_targets.iter().enumerate() {
+                        let mut plane = self.doc.construction_planes[src].clone();
+                        plane.repeat_instance = Some(crate::model::RepeatPlaneInstance {
+                            op: op_index,
+                            target: ti,
+                            instance,
+                        });
+                        // Instances group under the repeat op, not under the source's parent.
+                        plane.parent = crate::model::ConstructionPlaneParent::Root;
+                        plane.name = None;
+                        plane_outputs.push(self.doc.construction_planes.len());
+                        self.doc.construction_planes.push(plane);
+                        self.doc.shape_order.push(ShapeKind::ConstructionPlane);
+                    }
+                }
+                self.doc.repeat_ops[op_index].plane_outputs = plane_outputs;
+                recompute_repeated_planes(&mut self.doc);
                 self.refresh_document_health();
                 self.status = format!(
-                    "Repeated {} body(ies) × {} instances",
-                    targets.len(),
+                    "Repeated {} × {} instances",
+                    repeat_input_status(targets.len(), plane_targets.len()),
                     offsets.len() + 1
                 );
                 ActionResult::Ok
             }
-            Action::EditRepeatOperation { op, targets, axis, mode, count, spacing, length } => {
+            Action::EditRepeatOperation { op, targets, plane_targets, axis, mode, count, spacing, length } => {
                 if self.doc.repeat_ops.get(op).filter(|o| !o.deleted).is_none() {
                     let e = format!("Repeat operation {op} not found");
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
-                if let Err(e) = validate_repeat_inputs(&self.doc, &targets) {
+                if let Err(e) = validate_repeat_inputs(&self.doc, &targets, &plane_targets) {
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
@@ -5873,6 +5918,7 @@ impl AppState {
                 {
                     let entry = &mut self.doc.repeat_ops[op];
                     entry.targets = targets.clone();
+                    entry.plane_targets = plane_targets.clone();
                     entry.axis = axis;
                     entry.mode = mode;
                     entry.count = count;
@@ -5889,7 +5935,7 @@ impl AppState {
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 };
-                // Resize outputs to instance-count × targets (tombstone extras, grow new).
+                // Resize body outputs to instance-count × targets (tombstone extras, grow new).
                 let want = offsets.len() * targets.len();
                 let have = self.doc.repeat_ops[op].outputs.len();
                 if want > have {
@@ -5933,6 +5979,50 @@ impl AppState {
                         };
                     }
                 }
+                // Same resize/re-point for the generated plane instances (#221).
+                let want_p = offsets.len() * plane_targets.len();
+                let have_p = self.doc.repeat_ops[op].plane_outputs.len();
+                if want_p > have_p {
+                    let mut plane_outputs = self.doc.repeat_ops[op].plane_outputs.clone();
+                    for slot in have_p..want_p {
+                        let instance = slot / plane_targets.len() + 1;
+                        let ti = slot % plane_targets.len();
+                        let src = plane_targets[ti];
+                        let mut plane = self.doc.construction_planes[src].clone();
+                        plane.repeat_instance = Some(crate::model::RepeatPlaneInstance {
+                            op,
+                            target: ti,
+                            instance,
+                        });
+                        plane.parent = crate::model::ConstructionPlaneParent::Root;
+                        plane.name = None;
+                        plane_outputs.push(self.doc.construction_planes.len());
+                        self.doc.construction_planes.push(plane);
+                        self.doc.shape_order.push(ShapeKind::ConstructionPlane);
+                        self.doc.undo_groups.push(1);
+                    }
+                    self.doc.repeat_ops[op].plane_outputs = plane_outputs;
+                } else if want_p < have_p {
+                    let extras = self.doc.repeat_ops[op].plane_outputs.split_off(want_p);
+                    for out in extras {
+                        if let Some(plane) = self.doc.construction_planes.get_mut(out) {
+                            plane.deleted = true;
+                        }
+                    }
+                }
+                let plane_outputs = self.doc.repeat_ops[op].plane_outputs.clone();
+                for (slot, &out) in plane_outputs.iter().enumerate() {
+                    let instance = slot / plane_targets.len() + 1;
+                    let ti = slot % plane_targets.len();
+                    if let Some(plane) = self.doc.construction_planes.get_mut(out) {
+                        plane.repeat_instance = Some(crate::model::RepeatPlaneInstance {
+                            op,
+                            target: ti,
+                            instance,
+                        });
+                    }
+                }
+                recompute_repeated_planes(&mut self.doc);
                 self.refresh_document_health();
                 self.status = "Edited repeat".to_string();
                 ActionResult::Ok
@@ -6058,6 +6148,7 @@ impl AppState {
                 }
                 recompute_moved_planes(&mut self.doc);
                 recompute_moved_images(&mut self.doc);
+                recompute_repeated_planes(&mut self.doc);
                 self.refresh_document_health();
                 self.status = move_status(targets.len(), plane_targets.len(), image_targets.len());
                 ActionResult::Ok
@@ -6144,6 +6235,7 @@ impl AppState {
                 }
                 recompute_moved_planes(&mut self.doc);
                 recompute_moved_images(&mut self.doc);
+                recompute_repeated_planes(&mut self.doc);
                 self.refresh_document_health();
                 self.status = "Edited move".to_string();
                 ActionResult::Ok
@@ -6567,6 +6659,19 @@ impl AppState {
                         let set = &mut self
                             .creating_move
                             .get_or_insert_with(CreatingMove::default)
+                            .plane_targets;
+                        if let Some(pos) = set.iter().position(|p| p == pi) {
+                            set.remove(pos);
+                        } else {
+                            set.push(*pi);
+                        }
+                        true
+                    }
+                    // A construction plane clicked with the Repeat tool joins its plane set (#221).
+                    SceneElement::ConstructionPlane(pi) if self.tool == Tool::Repeat => {
+                        let set = &mut self
+                            .creating_repeat
+                            .get_or_insert_with(CreatingRepeat::default)
                             .plane_targets;
                         if let Some(pos) = set.iter().position(|p| p == pi) {
                             set.remove(pos);
@@ -7596,6 +7701,77 @@ pub fn recompute_moved_images(doc: &mut crate::model::Document) {
         img.origin = origin;
         img.base_origin = base;
     }
+}
+
+/// Recompute the cached frames of construction planes generated as Repeat-op instances (#221).
+/// Each such plane copies its source plane's *current* frame (origin/normal/u/v) and translates
+/// the origin by the instance's along-axis offset, so the copies step along the axis and follow
+/// the source plane if it moves.
+///
+/// Must run *after* [`recompute_moved_planes`], so a moved source plane's frame is up to date
+/// before its instances copy it.
+pub fn recompute_repeated_planes(doc: &mut crate::model::Document) {
+    // Precompute each op's axis direction and instance offsets (immutable borrow before mutating).
+    let op_data: Vec<Option<(glam::Vec3, Vec<f32>)>> = doc
+        .repeat_ops
+        .iter()
+        .map(|op| {
+            if op.deleted || op.plane_targets.is_empty() {
+                return None;
+            }
+            let (_, dir) = crate::extrude::axis_world(doc, op.axis)?;
+            let offsets = crate::extrude::repeat_offsets(doc, op)?;
+            Some((dir, offsets))
+        })
+        .collect();
+    let mut updates: Vec<(usize, glam::Vec3, glam::Vec3, glam::Vec3, glam::Vec3)> = Vec::new();
+    for (pi, plane) in doc.construction_planes.iter().enumerate() {
+        if plane.deleted {
+            continue;
+        }
+        let Some(inst) = plane.repeat_instance else {
+            continue;
+        };
+        let Some((dir, offsets)) = op_data.get(inst.op).and_then(|d| d.as_ref()) else {
+            continue;
+        };
+        let op = &doc.repeat_ops[inst.op];
+        let Some(&src) = op.plane_targets.get(inst.target) else {
+            continue;
+        };
+        let Some(offset) = inst
+            .instance
+            .checked_sub(1)
+            .and_then(|i| offsets.get(i))
+            .copied()
+        else {
+            continue;
+        };
+        let Some(source) = doc.construction_planes.get(src).filter(|p| !p.deleted) else {
+            continue;
+        };
+        let o = source.origin + *dir * offset;
+        updates.push((pi, o, source.normal, source.u_axis, source.v_axis));
+    }
+    for (i, o, n, u, v) in updates {
+        let p = &mut doc.construction_planes[i];
+        p.origin = o;
+        p.normal = n;
+        p.u_axis = u;
+        p.v_axis = v;
+    }
+}
+
+/// The "N body(ies)[, M plane(s)]" fragment for a Repeat op's status line (#221).
+fn repeat_input_status(bodies: usize, planes: usize) -> String {
+    let mut parts = Vec::new();
+    if bodies > 0 {
+        parts.push(format!("{bodies} body(ies)"));
+    }
+    if planes > 0 {
+        parts.push(format!("{planes} plane(s)"));
+    }
+    parts.join(", ")
 }
 
 /// Status line after a Move commits, summarizing however many bodies/planes/images it touched.
@@ -10119,6 +10295,7 @@ mod tests {
         let mut state = two_box_state(false);
         let result = state.apply(Action::CreateRepeatOperation {
             targets: vec![0],
+            plane_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "3".to_string(),
@@ -10156,6 +10333,7 @@ mod tests {
         // at even pitch 30.
         let result = state.apply(Action::CreateRepeatOperation {
             targets: vec![0],
+            plane_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::FillMaxPitch,
             count: String::new(),
@@ -10177,6 +10355,7 @@ mod tests {
         let mut state = two_box_state(false);
         state.apply(Action::CreateRepeatOperation {
             targets: vec![0],
+            plane_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "2".to_string(),
@@ -10187,6 +10366,7 @@ mod tests {
         let result = state.apply(Action::EditRepeatOperation {
             op: 0,
             targets: vec![0],
+            plane_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "5".to_string(),
@@ -10207,6 +10387,7 @@ mod tests {
         });
         state.apply(Action::CreateRepeatOperation {
             targets: vec![0],
+            plane_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "n".to_string(),
@@ -10217,6 +10398,110 @@ mod tests {
         assert_eq!(op.outputs.len(), 3);
         let offsets = crate::extrude::repeat_offsets(&state.doc, &op).unwrap();
         assert_eq!(offsets.len(), 3);
+    }
+
+    /// #221: repeating a construction plane ×3 along X emits two offset instance planes at the
+    /// gap and twice the gap, each copying the source frame and grouped under the op.
+    #[test]
+    fn repeat_copies_a_construction_plane_along_the_axis() {
+        let mut state = two_box_state(false);
+        // The default document ships one construction plane (the XY ground) at the origin.
+        let base = state.doc.construction_planes[0].origin;
+        let normal = state.doc.construction_planes[0].normal;
+        let result = state.apply(Action::CreateRepeatOperation {
+            targets: Vec::new(),
+            plane_targets: vec![0],
+            axis: crate::model::RevolveAxis::X,
+            mode: crate::model::RepeatMode::CountGap,
+            count: "3".to_string(),
+            spacing: "10".to_string(),
+            length: String::new(),
+        });
+        assert!(matches!(result, ActionResult::Ok));
+        let op = state.doc.repeat_ops[0].clone();
+        assert!(op.outputs.is_empty(), "a plane-only repeat makes no body copies");
+        assert_eq!(op.plane_outputs.len(), 2, "3 instances = original + 2 copies");
+        // Planes are zero-thickness, so the step is exactly the gap.
+        let p1 = state.doc.construction_planes[op.plane_outputs[0]].origin;
+        let p2 = state.doc.construction_planes[op.plane_outputs[1]].origin;
+        assert!((p1.x - base.x - 10.0).abs() < 1e-3);
+        assert!((p2.x - base.x - 20.0).abs() < 1e-3);
+        // Copies carry the back-reference and inherit the source orientation.
+        let inst = state.doc.construction_planes[op.plane_outputs[0]]
+            .repeat_instance
+            .expect("instance carries a back-reference");
+        assert_eq!((inst.op, inst.target, inst.instance), (0, 0, 1));
+        assert!((state.doc.construction_planes[op.plane_outputs[0]].normal - normal).length() < 1e-4);
+
+        // Undo removes the op and its instance planes.
+        state.apply(Action::UndoLast);
+        assert!(state.doc.repeat_ops.is_empty());
+        assert_eq!(state.doc.construction_planes.len(), 1);
+    }
+
+    /// #221: a plane instance follows its source plane when the source is moved (the instance's
+    /// frame is derived from the source's current frame at recompute).
+    #[test]
+    fn repeat_plane_instance_follows_a_moved_source() {
+        let mut state = two_box_state(false);
+        state.apply(Action::CreateRepeatOperation {
+            targets: Vec::new(),
+            plane_targets: vec![0],
+            axis: crate::model::RevolveAxis::X,
+            mode: crate::model::RepeatMode::CountGap,
+            count: "2".to_string(),
+            spacing: "10".to_string(),
+            length: String::new(),
+        });
+        let inst_idx = state.doc.repeat_ops[0].plane_outputs[0];
+        assert!((state.doc.construction_planes[inst_idx].origin.x - 10.0).abs() < 1e-3);
+        // Move the source plane +5 along X; the instance should sit at 5 + 10 = 15.
+        let result = state.apply(Action::CreateMoveOperation {
+            targets: Vec::new(),
+            plane_targets: vec![0],
+            image_targets: Vec::new(),
+            tx: "5".to_string(),
+            ty: String::new(),
+            tz: String::new(),
+            axis: None,
+            angle: String::new(),
+        });
+        assert!(matches!(result, ActionResult::Ok));
+        assert!((state.doc.construction_planes[0].origin.x - 5.0).abs() < 1e-3);
+        assert!(
+            (state.doc.construction_planes[inst_idx].origin.x - 15.0).abs() < 1e-3,
+            "instance follows the moved source and keeps its own offset on top"
+        );
+    }
+
+    /// #221: editing a plane-only repeat's count resizes the instance planes and re-points them.
+    #[test]
+    fn repeat_edit_resizes_plane_instances() {
+        let mut state = two_box_state(false);
+        state.apply(Action::CreateRepeatOperation {
+            targets: Vec::new(),
+            plane_targets: vec![0],
+            axis: crate::model::RevolveAxis::X,
+            mode: crate::model::RepeatMode::CountGap,
+            count: "2".to_string(),
+            spacing: "10".to_string(),
+            length: String::new(),
+        });
+        assert_eq!(state.doc.repeat_ops[0].plane_outputs.len(), 1);
+        let result = state.apply(Action::EditRepeatOperation {
+            op: 0,
+            targets: Vec::new(),
+            plane_targets: vec![0],
+            axis: crate::model::RevolveAxis::X,
+            mode: crate::model::RepeatMode::CountGap,
+            count: "4".to_string(),
+            spacing: "10".to_string(),
+            length: String::new(),
+        });
+        assert!(matches!(result, ActionResult::Ok));
+        let op = state.doc.repeat_ops[0].clone();
+        assert_eq!(op.plane_outputs.len(), 3, "4 instances = original + 3 copies");
+        assert!((state.doc.construction_planes[op.plane_outputs[2]].origin.x - 30.0).abs() < 1e-3);
     }
 
     /// #189: selecting a point and the origin, then applying Coincident, pins the point to the

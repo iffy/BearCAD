@@ -1192,7 +1192,9 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 angle: angle.clone(),
             })
         }
-        Action::CreateRepeatOperation { targets, axis, mode, count, spacing, length } => {
+        // The scripting Instruction DSL doesn't carry plane targets (#221), same as it omits
+        // the Move op's plane/image targets — they replay as body-only operations.
+        Action::CreateRepeatOperation { targets, plane_targets: _, axis, mode, count, spacing, length } => {
             Some(Instruction::CreateRepeatOp {
                 targets: targets.clone(),
                 axis: *axis,
@@ -1202,7 +1204,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 length: length.clone(),
             })
         }
-        Action::EditRepeatOperation { op, targets, axis, mode, count, spacing, length } => {
+        Action::EditRepeatOperation { op, targets, plane_targets: _, axis, mode, count, spacing, length } => {
             Some(Instruction::EditRepeatOp {
                 op: *op,
                 targets: targets.clone(),
@@ -3240,6 +3242,7 @@ impl ScriptRunner {
             Instruction::CreateRepeatOp { targets, axis, mode, count, spacing, length } => {
                 let result = state.apply(Action::CreateRepeatOperation {
                     targets,
+                    plane_targets: Vec::new(),
                     axis,
                     mode,
                     count,
@@ -3253,6 +3256,7 @@ impl ScriptRunner {
                 let result = state.apply(Action::EditRepeatOperation {
                     op,
                     targets,
+                    plane_targets: Vec::new(),
                     axis,
                     mode,
                     count,

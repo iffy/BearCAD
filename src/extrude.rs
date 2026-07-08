@@ -591,7 +591,14 @@ pub fn repeat_offsets(doc: &Document, op: &crate::model::RepeatOperation) -> Opt
         }
     }
     if !min_p.is_finite() || !max_p.is_finite() {
-        return None;
+        // No body extent. Plane targets (#221) are zero-thickness references, so a plane-only
+        // repeat has no along-axis extent — treat it as a point pattern spaced purely by the
+        // gap/pitch. (Sketch targets, #226, are likewise zero-extent.)
+        if op.plane_targets.is_empty() {
+            return None;
+        }
+        min_p = 0.0;
+        max_p = 0.0;
     }
     let extent = (max_p - min_p).max(0.0);
     let eval = |expr: &str| -> Option<f32> {
@@ -3198,6 +3205,7 @@ mod tests {
 
         let mut op = RepeatOperation {
             targets: vec![0],
+            plane_targets: Vec::new(),
             axis: RevolveAxis::X,
             mode: RepeatMode::FillPitch,
             count: String::new(),
@@ -3205,6 +3213,7 @@ mod tests {
             length: "999".to_string(), // deliberately wrong; the target must win
             length_target: Some(ExtrudeTarget::Plane(plane_index)),
             outputs: Vec::new(),
+            plane_outputs: Vec::new(),
             name: None,
             deleted: false,
         };
