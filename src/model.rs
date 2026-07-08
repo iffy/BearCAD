@@ -1378,6 +1378,19 @@ pub struct RepeatOperation {
     /// shape at build time (`occt_body_shape_from_indices`).
     #[serde(default)]
     pub extrusion_targets: Vec<usize>,
+    /// Source sketch indices to repeat as offset copies (#226). Each copy rides a generated
+    /// construction plane parallel to the source's, translated along the axis, so its entities
+    /// keep their plane-local coords and step by the offset in world. Restricted to
+    /// construction-plane-hosted sketches.
+    #[serde(default)]
+    pub sketch_targets: Vec<usize>,
+    /// Generated host-plane indices for the sketch copies (#226), instance-major then target.
+    #[serde(default)]
+    pub sketch_plane_outputs: Vec<usize>,
+    /// Generated copy-sketch indices (#226), instance-major then target. Each copy's lines and
+    /// circles are found by sketch membership (not tracked separately).
+    #[serde(default)]
+    pub sketch_outputs: Vec<usize>,
     pub axis: RevolveAxis,
     pub mode: RepeatMode,
     /// Instance count expression (count modes).

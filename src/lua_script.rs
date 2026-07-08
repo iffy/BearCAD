@@ -2546,6 +2546,36 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     targets: Vec::new(),
                     plane_targets: Vec::new(),
                     extrusion_targets: cuts,
+                    sketch_targets: Vec::new(),
+                    axis,
+                    mode,
+                    count,
+                    spacing,
+                    length,
+                })
+            };
+            if let crate::actions::ActionResult::Err(e) = result {
+                return Err(mlua::Error::external(e));
+            }
+            Ok(())
+        })?,
+    )?;
+
+    // Repeat whole sketches along an axis (#226): `sketches` are construction-plane-hosted sketch
+    // indices; each is copied at every offset onto a parallel offset plane. axis/mode/etc. as
+    // repeat_bodies.
+    api.set(
+        "repeat_sketches",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let sketches: Vec<usize> = opts.get::<Option<Vec<usize>>>("sketches")?.unwrap_or_default();
+            let (_targets, axis, mode, count, spacing, length) = parse_repeat_op_args(&opts)?;
+            let result = unsafe {
+                tick.state().apply(crate::actions::Action::CreateRepeatOperation {
+                    targets: Vec::new(),
+                    plane_targets: Vec::new(),
+                    extrusion_targets: Vec::new(),
+                    sketch_targets: sketches,
                     axis,
                     mode,
                     count,
@@ -3158,6 +3188,32 @@ mod tests {
             runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
         }
         assert!(runner.error.is_none(), "script error: {:?}", runner.error);
+    }
+
+    /// #226: repeating a whole sketch along an axis copies it onto parallel offset planes — the
+    /// copies' entities keep their plane-local coords, so they step by the offset in world.
+    #[test]
+    fn repeat_sketch_along_axis_copies_onto_offset_planes() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.circle{ x = 1, y = 2, r = 3 }
+            bearcad.repeat_sketches{ sketches = {0}, axis = "z",
+                                     mode = "count_gap", count = 3, spacing = 10 }
+            "#,
+        );
+        let op = &state.doc.repeat_ops[0];
+        assert_eq!(op.sketch_outputs.len(), 2, "3 instances = original + 2 copies");
+        assert_eq!(op.sketch_plane_outputs.len(), 2);
+        // Host planes step +z by the gap (extent 0 → step = gap).
+        let pz = |i: usize| state.doc.construction_planes[op.sketch_plane_outputs[i]].origin.z;
+        assert!((pz(0) - 10.0).abs() < 1e-4);
+        assert!((pz(1) - 20.0).abs() < 1e-4);
+        // Each copy sketch carries a circle with the source's plane-local centre/radius.
+        for &si in &op.sketch_outputs {
+            let c = state.doc.circles.iter().find(|c| c.sketch == si && !c.deleted).unwrap();
+            assert_eq!((c.cx, c.cy, c.r), (1.0, 2.0, 3.0));
+        }
     }
 
     /// #224: slicing a line by a crossing line shadows the original and emits two fragments that

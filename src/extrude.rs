@@ -739,10 +739,13 @@ pub fn repeat_offsets(doc: &Document, op: &crate::model::RepeatOperation) -> Opt
         }
     }
     if !min_p.is_finite() || !max_p.is_finite() {
-        // No body extent. Plane targets (#221) and replayed cut extrusions (#220) have no
-        // along-axis extent of their own — treat as a point pattern spaced purely by the
-        // gap/pitch (holes step center-to-center).
-        if op.plane_targets.is_empty() && op.extrusion_targets.is_empty() {
+        // No body extent. Plane targets (#221), replayed cut extrusions (#220), and repeated
+        // sketches (#226) have no along-axis extent of their own — treat as a point pattern
+        // spaced purely by the gap/pitch (instances step center-to-center).
+        if op.plane_targets.is_empty()
+            && op.extrusion_targets.is_empty()
+            && op.sketch_targets.is_empty()
+        {
             return None;
         }
         min_p = 0.0;
@@ -3324,6 +3327,7 @@ mod tests {
             targets: vec![0],
             plane_targets: Vec::new(),
             extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
             axis: RevolveAxis::X,
             mode: RepeatMode::FillPitch,
             count: String::new(),
@@ -3332,6 +3336,8 @@ mod tests {
             length_target: Some(ExtrudeTarget::Plane(plane_index)),
             outputs: Vec::new(),
             plane_outputs: Vec::new(),
+            sketch_plane_outputs: Vec::new(),
+            sketch_outputs: Vec::new(),
             name: None,
             deleted: false,
         };
@@ -3468,6 +3474,7 @@ mod tests {
             targets: Vec::new(),
             plane_targets: Vec::new(),
             extrusion_targets: vec![1],
+            sketch_targets: Vec::new(),
             axis: RevolveAxis::X,
             mode: RepeatMode::CountGap,
             count: "3".to_string(),
@@ -3476,6 +3483,8 @@ mod tests {
             length_target: None,
             outputs: Vec::new(),
             plane_outputs: Vec::new(),
+            sketch_plane_outputs: Vec::new(),
+            sketch_outputs: Vec::new(),
             name: None,
             deleted: false,
         });

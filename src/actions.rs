@@ -436,6 +436,8 @@ pub struct CreatingRepeat {
     pub plane_targets: Vec<usize>,
     /// Picked cut extrusions whose effect is replayed at each offset (#220).
     pub extrusion_targets: Vec<usize>,
+    /// Picked source sketches to repeat as offset copies (#226).
+    pub sketch_targets: Vec<usize>,
     pub axis: crate::model::RevolveAxis,
     pub mode: crate::model::RepeatMode,
     pub count: String,
@@ -451,6 +453,7 @@ impl Default for CreatingRepeat {
             targets: Vec::new(),
             plane_targets: Vec::new(),
             extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "3".to_string(),
@@ -1118,6 +1121,7 @@ pub enum Action {
         targets: Vec<usize>,
         plane_targets: Vec<usize>,
         extrusion_targets: Vec<usize>,
+        sketch_targets: Vec<usize>,
         axis: crate::model::RevolveAxis,
         mode: crate::model::RepeatMode,
         count: String,
@@ -1130,6 +1134,7 @@ pub enum Action {
         targets: Vec<usize>,
         plane_targets: Vec<usize>,
         extrusion_targets: Vec<usize>,
+        sketch_targets: Vec<usize>,
         axis: crate::model::RevolveAxis,
         mode: crate::model::RepeatMode,
         count: String,
@@ -2790,13 +2795,26 @@ fn validate_repeat_inputs(
     targets: &[usize],
     plane_targets: &[usize],
     extrusion_targets: &[usize],
+    sketch_targets: &[usize],
 ) -> Result<(), String> {
-    if targets.is_empty() && plane_targets.is_empty() && extrusion_targets.is_empty() {
-        return Err("Pick at least one body, plane, or cut to repeat".to_string());
+    if targets.is_empty()
+        && plane_targets.is_empty()
+        && extrusion_targets.is_empty()
+        && sketch_targets.is_empty()
+    {
+        return Err("Pick at least one body, plane, cut, or sketch to repeat".to_string());
     }
     for &ei in extrusion_targets {
         if doc.extrusions.get(ei).filter(|e| !e.deleted).is_none() {
             return Err(format!("Extrusion {ei} not found"));
+        }
+    }
+    for &si in sketch_targets {
+        let Some(sketch) = doc.sketches.get(si).filter(|s| !s.deleted) else {
+            return Err(format!("Sketch {si} not found"));
+        };
+        if !matches!(sketch.face, crate::model::FaceId::ConstructionPlane(_)) {
+            return Err("Only construction-plane sketches can be repeated (yet)".to_string());
         }
     }
     let mut seen = std::collections::HashSet::new();
@@ -5919,6 +5937,7 @@ impl AppState {
                         targets: cr.targets.clone(),
                         plane_targets: cr.plane_targets.clone(),
                         extrusion_targets: cr.extrusion_targets.clone(),
+                        sketch_targets: cr.sketch_targets.clone(),
                         axis: cr.axis,
                         mode: cr.mode,
                         count: cr.count.clone(),
@@ -5929,6 +5948,7 @@ impl AppState {
                         targets: cr.targets.clone(),
                         plane_targets: cr.plane_targets.clone(),
                         extrusion_targets: cr.extrusion_targets.clone(),
+                        sketch_targets: cr.sketch_targets.clone(),
                         axis: cr.axis,
                         mode: cr.mode,
                         count: cr.count.clone(),
@@ -5943,8 +5963,8 @@ impl AppState {
                 }
                 result
             }
-            Action::CreateRepeatOperation { targets, plane_targets, extrusion_targets, axis, mode, count, spacing, length } => {
-                if let Err(e) = validate_repeat_inputs(&self.doc, &targets, &plane_targets, &extrusion_targets) {
+            Action::CreateRepeatOperation { targets, plane_targets, extrusion_targets, sketch_targets, axis, mode, count, spacing, length } => {
+                if let Err(e) = validate_repeat_inputs(&self.doc, &targets, &plane_targets, &extrusion_targets, &sketch_targets) {
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
@@ -5953,6 +5973,7 @@ impl AppState {
                     targets: targets.clone(),
                     plane_targets: plane_targets.clone(),
                     extrusion_targets: extrusion_targets.clone(),
+                    sketch_targets: sketch_targets.clone(),
                     axis,
                     mode,
                     count,
@@ -5961,6 +5982,8 @@ impl AppState {
                     length_target: None,
                     outputs: Vec::new(),
                     plane_outputs: Vec::new(),
+                    sketch_plane_outputs: Vec::new(),
+                    sketch_outputs: Vec::new(),
                     name: None,
                     deleted: false,
                 });
@@ -6019,6 +6042,7 @@ impl AppState {
                 }
                 self.doc.repeat_ops[op_index].plane_outputs = plane_outputs;
                 recompute_repeated_planes(&mut self.doc);
+                rebuild_repeated_sketches(&mut self.doc, op_index);
                 self.refresh_document_health();
                 self.status = format!(
                     "Repeated {} × {} instances",
@@ -6027,13 +6051,13 @@ impl AppState {
                 );
                 ActionResult::Ok
             }
-            Action::EditRepeatOperation { op, targets, plane_targets, extrusion_targets, axis, mode, count, spacing, length } => {
+            Action::EditRepeatOperation { op, targets, plane_targets, extrusion_targets, sketch_targets, axis, mode, count, spacing, length } => {
                 if self.doc.repeat_ops.get(op).filter(|o| !o.deleted).is_none() {
                     let e = format!("Repeat operation {op} not found");
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
-                if let Err(e) = validate_repeat_inputs(&self.doc, &targets, &plane_targets, &extrusion_targets) {
+                if let Err(e) = validate_repeat_inputs(&self.doc, &targets, &plane_targets, &extrusion_targets, &sketch_targets) {
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
@@ -6041,6 +6065,7 @@ impl AppState {
                 {
                     let entry = &mut self.doc.repeat_ops[op];
                     entry.extrusion_targets = extrusion_targets.clone();
+                    entry.sketch_targets = sketch_targets.clone();
                     entry.targets = targets.clone();
                     entry.plane_targets = plane_targets.clone();
                     entry.axis = axis;
@@ -6147,6 +6172,7 @@ impl AppState {
                     }
                 }
                 recompute_repeated_planes(&mut self.doc);
+                rebuild_repeated_sketches(&mut self.doc, op);
                 self.refresh_document_health();
                 self.status = "Edited repeat".to_string();
                 ActionResult::Ok
@@ -8262,6 +8288,115 @@ fn rebuild_sketch_repeat(doc: &mut crate::model::Document, op_index: usize) -> b
     entry.line_outputs = line_outputs;
     entry.circle_outputs = circle_outputs;
     true
+}
+
+/// (Re)generate the offset copies of sketches repeated along an axis (#226) for repeat op
+/// `op_index`. Each copy rides a fresh construction plane parallel to the source's, translated by
+/// the instance offset, and carries copies of the source's lines/circles (plane-local coords
+/// unchanged, so they step by the offset in world). Regenerates from scratch each call: prior
+/// generated planes/sketches/entities are tombstoned first. Restricted to construction-plane
+/// hosted sketches; others are skipped.
+fn rebuild_repeated_sketches(doc: &mut crate::model::Document, op_index: usize) {
+    let Some(op) = doc.repeat_ops.get(op_index).filter(|o| !o.deleted).cloned() else {
+        return;
+    };
+    // Tombstone anything a previous run generated.
+    for &si in &op.sketch_outputs {
+        for l in doc.lines.iter_mut().filter(|l| l.sketch == si) {
+            l.deleted = true;
+        }
+        for c in doc.circles.iter_mut().filter(|c| c.sketch == si) {
+            c.deleted = true;
+        }
+        if let Some(s) = doc.sketches.get_mut(si) {
+            s.deleted = true;
+        }
+    }
+    for &pi in &op.sketch_plane_outputs {
+        if let Some(p) = doc.construction_planes.get_mut(pi) {
+            p.deleted = true;
+        }
+    }
+    doc.repeat_ops[op_index].sketch_plane_outputs.clear();
+    doc.repeat_ops[op_index].sketch_outputs.clear();
+    if op.sketch_targets.is_empty() {
+        return;
+    }
+    let (Some((_, dir)), Some(offsets)) =
+        (crate::extrude::axis_world(doc, op.axis), crate::extrude::repeat_offsets(doc, &op))
+    else {
+        return;
+    };
+    let mut plane_outputs = Vec::new();
+    let mut sketch_outputs = Vec::new();
+    for instance in 1..=offsets.len() {
+        let off = offsets[instance - 1];
+        for &src in &op.sketch_targets {
+            let Some(crate::model::FaceId::ConstructionPlane(host)) =
+                doc.sketches.get(src).filter(|s| !s.deleted).map(|s| s.face.clone())
+            else {
+                continue; // only construction-plane-hosted sketches are supported
+            };
+            let Some(src_plane) = doc.construction_planes.get(host).cloned() else {
+                continue;
+            };
+            // A parallel copy of the host plane, translated along the axis.
+            let mut plane = src_plane;
+            plane.origin += dir * off;
+            plane.parent = crate::model::ConstructionPlaneParent::Root;
+            plane.repeat_instance = None;
+            plane.name = None;
+            let plane_idx = doc.construction_planes.len();
+            doc.construction_planes.push(plane);
+            doc.shape_order.push(ShapeKind::ConstructionPlane);
+            plane_outputs.push(plane_idx);
+            // The copy sketch on that plane.
+            let (lu, au) = doc
+                .sketches
+                .get(src)
+                .map(|s| (s.length_unit, s.angle_unit))
+                .unwrap_or((None, None));
+            let sketch_idx = doc.sketches.len();
+            doc.sketches.push(crate::model::Sketch {
+                face: crate::model::FaceId::ConstructionPlane(plane_idx),
+                name: None,
+                deleted: false,
+                length_unit: lu,
+                angle_unit: au,
+            });
+            doc.shape_order.push(ShapeKind::Sketch);
+            sketch_outputs.push(sketch_idx);
+            // Copy the source's lines and circles (plane-local coords unchanged).
+            let src_lines: Vec<crate::model::Line> = doc
+                .lines
+                .iter()
+                .filter(|l| l.sketch == src && !l.deleted)
+                .cloned()
+                .collect();
+            for l in src_lines {
+                let mut copy = shifted_line_copy(&l, 0.0, 0.0);
+                copy.sketch = sketch_idx;
+                copy.shadow = false;
+                doc.lines.push(copy);
+                doc.shape_order.push(ShapeKind::Line);
+            }
+            let src_circles: Vec<crate::model::Circle> = doc
+                .circles
+                .iter()
+                .filter(|c| c.sketch == src && !c.deleted)
+                .cloned()
+                .collect();
+            for c in src_circles {
+                let mut copy = shifted_circle_copy(&c, 0.0, 0.0);
+                copy.sketch = sketch_idx;
+                copy.shadow = false;
+                doc.circles.push(copy);
+                doc.shape_order.push(ShapeKind::Circle);
+            }
+        }
+    }
+    doc.repeat_ops[op_index].sketch_plane_outputs = plane_outputs;
+    doc.repeat_ops[op_index].sketch_outputs = sketch_outputs;
 }
 
 /// Status line after a Move commits, summarizing however many bodies/planes/images it touched.
@@ -10787,6 +10922,7 @@ mod tests {
             targets: vec![0],
             plane_targets: Vec::new(),
             extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "3".to_string(),
@@ -10826,6 +10962,7 @@ mod tests {
             targets: vec![0],
             plane_targets: Vec::new(),
             extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::FillMaxPitch,
             count: String::new(),
@@ -10849,6 +10986,7 @@ mod tests {
             targets: vec![0],
             plane_targets: Vec::new(),
             extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "2".to_string(),
@@ -10861,6 +10999,7 @@ mod tests {
             targets: vec![0],
             plane_targets: Vec::new(),
             extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "5".to_string(),
@@ -10883,6 +11022,7 @@ mod tests {
             targets: vec![0],
             plane_targets: Vec::new(),
             extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "n".to_string(),
@@ -10907,6 +11047,7 @@ mod tests {
             targets: Vec::new(),
             plane_targets: vec![0],
             extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "3".to_string(),
@@ -10944,6 +11085,7 @@ mod tests {
             targets: Vec::new(),
             plane_targets: vec![0],
             extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "2".to_string(),
@@ -10979,6 +11121,7 @@ mod tests {
             targets: Vec::new(),
             plane_targets: vec![0],
             extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "2".to_string(),
@@ -10991,6 +11134,7 @@ mod tests {
             targets: Vec::new(),
             plane_targets: vec![0],
             extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
             axis: crate::model::RevolveAxis::X,
             mode: crate::model::RepeatMode::CountGap,
             count: "4".to_string(),

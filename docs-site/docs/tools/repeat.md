@@ -86,6 +86,20 @@ bearcad.repeat_cut{ cuts = {1}, axis = "x", mode = "count_gap", count = 4, spaci
 
 Spacing is centre-to-centre. The same `mode`/`count`/`spacing`/`length` options apply.
 
+## Repeating a whole sketch along an axis
+
+You can copy an entire sketch along an axis — each copy lands on its own construction plane,
+parallel to the original and offset down the axis, carrying copies of all the sketch's lines and
+circles. Handy for stacking a profile at intervals. Available from scripts (the source sketch
+must sit on a construction plane):
+
+```lua
+-- Copy sketch 0 three times, 10mm apart up the Z axis:
+bearcad.repeat_sketches{ sketches = {0}, axis = "z", mode = "count_gap", count = 3, spacing = 10 }
+```
+
+The copies (and their planes) are tied to the repeat element — delete it and they go away.
+
 ## Scripting
 
 ```lua

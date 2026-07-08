@@ -207,6 +207,24 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                             plane.deleted = true;
                         }
                     }
+                    // Repeated-sketch copies: their planes, sketches, and copied entities (#226).
+                    let op = doc.repeat_ops[index].clone();
+                    for out in &op.sketch_plane_outputs {
+                        if let Some(plane) = doc.construction_planes.get_mut(*out) {
+                            plane.deleted = true;
+                        }
+                    }
+                    for &si in &op.sketch_outputs {
+                        for l in doc.lines.iter_mut().filter(|l| l.sketch == si) {
+                            l.deleted = true;
+                        }
+                        for c in doc.circles.iter_mut().filter(|c| c.sketch == si) {
+                            c.deleted = true;
+                        }
+                        if let Some(s) = doc.sketches.get_mut(si) {
+                            s.deleted = true;
+                        }
+                    }
                     changed = true;
                 }
             }
