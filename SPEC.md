@@ -522,9 +522,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     construction-plane-hosted sketch at each offset. Each copy rides a fresh construction plane
     parallel to the source's, translated along the axis (`rebuild_repeated_sketches`), and carries
     copies of the source's lines/circles (plane-local coords unchanged, so entity world positions
-    step by the offset). Regenerated on create/edit; the copies (planes, sketches, entities) go
-    away when the op is deleted. Scripting: `bearcad.repeat_sketches{ sketches = {si}, axis, mode,
-    count?, spacing?, length? }`. Viewport picking + pane grouping are the tracked GUI follow-up.
+    step by the offset). The source may be hosted on a construction plane **or a body face**
+    (#231): the copy plane is synthesized from the source sketch's frame either way. Regenerated
+    on create/edit; the copies (planes, sketches, entities) go away when the op is deleted, and
+    they nest under the repeat op in the Elements pane (host planes grouped under the op, not at
+    the top level). Scripting: `bearcad.repeat_sketches{ sketches = {si}, axis, mode, count?,
+    spacing?, length? }`. Viewport picking is the tracked GUI follow-up.
   - **2D in-sketch repeat (#222):** `SketchRepeatOperation` (`Document::sketch_repeat_ops`)
     duplicates selected sketch **lines/circles** along an in-plane direction as generated
     entities in the same sketch, reusing the shared spacing math

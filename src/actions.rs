@@ -2810,11 +2810,8 @@ fn validate_repeat_inputs(
         }
     }
     for &si in sketch_targets {
-        let Some(sketch) = doc.sketches.get(si).filter(|s| !s.deleted) else {
+        if doc.sketches.get(si).filter(|s| !s.deleted).is_none() {
             return Err(format!("Sketch {si} not found"));
-        };
-        if !matches!(sketch.face, crate::model::FaceId::ConstructionPlane(_)) {
-            return Err("Only construction-plane sketches can be repeated (yet)".to_string());
         }
     }
     let mut seen = std::collections::HashSet::new();
@@ -8334,17 +8331,23 @@ fn rebuild_repeated_sketches(doc: &mut crate::model::Document, op_index: usize) 
     for instance in 1..=offsets.len() {
         let off = offsets[instance - 1];
         for &src in &op.sketch_targets {
-            let Some(crate::model::FaceId::ConstructionPlane(host)) =
-                doc.sketches.get(src).filter(|s| !s.deleted).map(|s| s.face.clone())
+            let Some(face) = doc.sketches.get(src).filter(|s| !s.deleted).map(|s| s.face.clone())
             else {
-                continue; // only construction-plane-hosted sketches are supported
-            };
-            let Some(src_plane) = doc.construction_planes.get(host).cloned() else {
                 continue;
             };
-            // A parallel copy of the host plane, translated along the axis.
-            let mut plane = src_plane;
-            plane.origin += dir * off;
+            // A construction plane parallel to the source sketch's frame, translated along the
+            // axis. Works for any host (construction plane or body face, #231): the copy carries
+            // the source frame's exact u/v/normal so the copied entities' local coords map the
+            // same, just offset.
+            let Some(frame) = crate::face::sketch_frame(doc, face) else {
+                continue;
+            };
+            let mut plane =
+                crate::construction::plane_from_face(0.0, frame.origin, frame.normal);
+            plane.origin = frame.origin + dir * off;
+            plane.u_axis = frame.u_axis;
+            plane.v_axis = frame.v_axis;
+            plane.normal = frame.normal;
             plane.parent = crate::model::ConstructionPlaneParent::Root;
             plane.repeat_instance = None;
             plane.name = None;

@@ -3260,6 +3260,60 @@ mod tests {
             let c = state.doc.circles.iter().find(|c| c.sketch == si && !c.deleted).unwrap();
             assert_eq!((c.cx, c.cy, c.r), (1.0, 2.0, 3.0));
         }
+
+        // #231: the generated host planes nest under the repeat op, not at the top level.
+        use crate::hierarchy::{build_hierarchy, HierarchyNode};
+        let tree = build_hierarchy(&state.doc, None);
+        let doc_root = &tree[0];
+        for &pi in &op.sketch_plane_outputs {
+            assert!(
+                !doc_root
+                    .children
+                    .iter()
+                    .any(|e| e.node == HierarchyNode::ConstructionPlane(pi)),
+                "host plane {pi} should not be a top-level node"
+            );
+        }
+        // The repeat-op node carries the host planes as children.
+        let repeat_node = doc_root
+            .children
+            .iter()
+            .find(|e| matches!(e.node, HierarchyNode::RepeatOp(_)))
+            .expect("repeat op node");
+        for &pi in &op.sketch_plane_outputs {
+            assert!(
+                repeat_node
+                    .children
+                    .iter()
+                    .any(|e| e.node == HierarchyNode::ConstructionPlane(pi)),
+                "host plane {pi} nests under the op"
+            );
+        }
+    }
+
+    /// #231: a sketch hosted on a body face (not a construction plane) can be repeated — the copy
+    /// rides a plane synthesized from the face frame, offset along the axis.
+    #[test]
+    fn repeat_sketch_hosted_on_a_body_face() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 20, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
+            bearcad.begin_sketch{ kind = "extrude_cap", extrusion = 0,
+                                  profile = "polygon", profile_lines = {0, 1, 2, 3}, top = true }
+            bearcad.circle{ x = 0, y = 0, r = 2 }
+            bearcad.repeat_sketches{ sketches = {1}, axis = "z",
+                                     mode = "count_gap", count = 2, spacing = 5 }
+            "#,
+        );
+        let op = &state.doc.repeat_ops[0];
+        assert_eq!(op.sketch_outputs.len(), 1, "2 instances = original + 1 copy");
+        // The cap sits at z = 10; the copy's host plane is +5 above it.
+        let pz = state.doc.construction_planes[op.sketch_plane_outputs[0]].origin.z;
+        assert!((pz - 15.0).abs() < 1e-3, "host plane at cap (10) + gap (5), got {pz}");
+        let si = op.sketch_outputs[0];
+        assert!(state.doc.circles.iter().any(|c| c.sketch == si && !c.deleted));
     }
 
     /// #224: slicing a line by a crossing line shadows the original and emits two fragments that
