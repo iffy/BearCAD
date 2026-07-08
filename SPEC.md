@@ -462,8 +462,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   `move_angle`. A **line selected while the Move tool is active** (Elements pane or viewport)
   sets the rotation axis, alongside the context pane's X/Y/Z buttons. Scripting:
   `bearcad.move_bodies{ bodies = {…}, x?, y?, z?, axis?, angle?, name? }` and
-  `bearcad.edit_move{ index, … }`. Extending the move to faces/edges/vertices/planes/images
-  (#217) and moving sub-body geometry remain follow-ups (#185).
+  `bearcad.edit_move{ index, … }`. **Moving construction planes (#217):** a Move op can also
+  target a construction plane (`MoveOperation::plane_targets`) — at recompute the plane's frame
+  is its base definition composed with the move, so everything anchored to it (sketches,
+  images) follows, since that geometry is stored plane-local and projected through the plane
+  frame. Planes are picked into the move set from the Elements pane / selection like bodies.
+  Extending to tracing images and moving sub-body geometry (faces/edges/vertices) remain
+  follow-ups (#185).
 
 - **Linear repeat tool (#182):** copies of whole bodies spaced along an axis (global or a
   clicked line). One multi-select body picker; the original stays as instance 0; each

@@ -1171,7 +1171,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 keep_b: *keep_b,
             })
         }
-        Action::CreateMoveOperation { targets, tx, ty, tz, axis, angle } => {
+        Action::CreateMoveOperation { targets, tx, ty, tz, axis, angle, .. } => {
             Some(Instruction::CreateMoveOp {
                 targets: targets.clone(),
                 tx: tx.clone(),
@@ -1181,7 +1181,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 angle: angle.clone(),
             })
         }
-        Action::EditMoveOperation { op, targets, tx, ty, tz, axis, angle } => {
+        Action::EditMoveOperation { op, targets, tx, ty, tz, axis, angle, .. } => {
             Some(Instruction::EditMoveOp {
                 op: *op,
                 targets: targets.clone(),
@@ -3218,7 +3218,7 @@ impl ScriptRunner {
             }
             Instruction::CreateMoveOp { targets, tx, ty, tz, axis, angle } => {
                 let result =
-                    state.apply(Action::CreateMoveOperation { targets, tx, ty, tz, axis, angle });
+                    state.apply(Action::CreateMoveOperation { targets, plane_targets: Vec::new(), tx, ty, tz, axis, angle });
                 self.record_action_error(result);
                 StepResult::Continue
             }
@@ -3226,6 +3226,7 @@ impl ScriptRunner {
                 let result = state.apply(Action::EditMoveOperation {
                     op,
                     targets,
+                    plane_targets: Vec::new(),
                     tx,
                     ty,
                     tz,

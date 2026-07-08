@@ -1258,6 +1258,10 @@ pub struct BooleanOperation {
 pub struct MoveOperation {
     /// Input body indices, one output per entry (same order).
     pub targets: Vec<usize>,
+    /// Construction planes moved by this op (#217): transformed in place at recompute, so
+    /// sketches/images anchored to them follow. No output bodies — the plane itself moves.
+    #[serde(default)]
+    pub plane_targets: Vec<usize>,
     /// Translation components (mm expressions; empty = 0).
     #[serde(default)]
     pub tx: String,

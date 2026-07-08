@@ -486,6 +486,8 @@ impl Default for CreatingSlice {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct CreatingMove {
     pub targets: Vec<usize>,
+    /// Construction planes being moved (#217).
+    pub plane_targets: Vec<usize>,
     pub tx: String,
     pub ty: String,
     pub tz: String,
@@ -1077,6 +1079,8 @@ pub enum Action {
     /// Scripted/replayed move operation with an explicit payload.
     CreateMoveOperation {
         targets: Vec<usize>,
+        #[allow(dead_code)]
+        plane_targets: Vec<usize>,
         tx: String,
         ty: String,
         tz: String,
@@ -1087,6 +1091,8 @@ pub enum Action {
     EditMoveOperation {
         op: usize,
         targets: Vec<usize>,
+        #[allow(dead_code)]
+        plane_targets: Vec<usize>,
         tx: String,
         ty: String,
         tz: String,
@@ -5933,6 +5939,7 @@ impl AppState {
                     Some(op) => self.apply(Action::EditMoveOperation {
                         op,
                         targets: cm.targets.clone(),
+                        plane_targets: cm.plane_targets.clone(),
                         tx: cm.tx.clone(),
                         ty: cm.ty.clone(),
                         tz: cm.tz.clone(),
@@ -5941,6 +5948,7 @@ impl AppState {
                     }),
                     None => self.apply(Action::CreateMoveOperation {
                         targets: cm.targets.clone(),
+                        plane_targets: cm.plane_targets.clone(),
                         tx: cm.tx.clone(),
                         ty: cm.ty.clone(),
                         tz: cm.tz.clone(),
@@ -5955,14 +5963,22 @@ impl AppState {
                 }
                 result
             }
-            Action::CreateMoveOperation { targets, tx, ty, tz, axis, angle } => {
-                if let Err(e) = validate_move_inputs(&self.doc, &targets, None) {
+            Action::CreateMoveOperation { targets, plane_targets, tx, ty, tz, axis, angle } => {
+                if targets.is_empty() && plane_targets.is_empty() {
+                    let e = "Pick at least one body or plane to move".to_string();
                     self.status = e.clone();
                     return ActionResult::Err(e);
+                }
+                if !targets.is_empty() {
+                    if let Err(e) = validate_move_inputs(&self.doc, &targets, None) {
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
                 }
                 let op_index = self.doc.move_ops.len();
                 self.doc.move_ops.push(crate::model::MoveOperation {
                     targets: targets.clone(),
+                    plane_targets: plane_targets.clone(),
                     tx,
                     ty,
                     tz,
@@ -6001,19 +6017,26 @@ impl AppState {
                         body.shadow = true;
                     }
                 }
+                recompute_moved_planes(&mut self.doc);
                 self.refresh_document_health();
-                self.status = format!("Moved {} body(ies)", targets.len());
+                self.status = match (targets.len(), plane_targets.len()) {
+                    (b, 0) => format!("Moved {b} body(ies)"),
+                    (0, p) => format!("Moved {p} plane(s)"),
+                    (b, p) => format!("Moved {b} body(ies), {p} plane(s)"),
+                };
                 ActionResult::Ok
             }
-            Action::EditMoveOperation { op, targets, tx, ty, tz, axis, angle } => {
+            Action::EditMoveOperation { op, targets, plane_targets, tx, ty, tz, axis, angle } => {
                 if self.doc.move_ops.get(op).filter(|o| !o.deleted).is_none() {
                     let e = format!("Move operation {op} not found");
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
-                if let Err(e) = validate_move_inputs(&self.doc, &targets, Some(op)) {
-                    self.status = e.clone();
-                    return ActionResult::Err(e);
+                if !targets.is_empty() {
+                    if let Err(e) = validate_move_inputs(&self.doc, &targets, Some(op)) {
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
                 }
                 let old = self.doc.move_ops[op].clone();
                 for &input in &old.targets {
@@ -6024,6 +6047,7 @@ impl AppState {
                 {
                     let entry = &mut self.doc.move_ops[op];
                     entry.targets = targets.clone();
+                    entry.plane_targets = plane_targets.clone();
                     entry.tx = tx;
                     entry.ty = ty;
                     entry.tz = tz;
@@ -6081,6 +6105,7 @@ impl AppState {
                         }
                     }
                 }
+                recompute_moved_planes(&mut self.doc);
                 self.refresh_document_health();
                 self.status = "Edited move".to_string();
                 ActionResult::Ok
@@ -6497,6 +6522,19 @@ impl AppState {
                         self.creating_move
                             .get_or_insert_with(CreatingMove::default)
                             .axis = Some(crate::model::RevolveAxis::Line(*li));
+                        true
+                    }
+                    // A construction plane clicked with the Move tool joins its plane set (#217).
+                    SceneElement::ConstructionPlane(pi) if self.tool == Tool::Move => {
+                        let set = &mut self
+                            .creating_move
+                            .get_or_insert_with(CreatingMove::default)
+                            .plane_targets;
+                        if let Some(pos) = set.iter().position(|p| p == pi) {
+                            set.remove(pos);
+                        } else {
+                            set.push(*pi);
+                        }
                         true
                     }
                     _ => false,
@@ -7293,6 +7331,61 @@ impl AppState {
     }
 }
 
+/// Recompute the frames of construction planes moved by a Move op (#217): each targeted plane's
+/// frame is its base definition composed with every (non-deleted) Move op targeting it, in op
+/// order. Everything anchored to the plane (sketches, tracing images) then follows, since that
+/// geometry is stored plane-local and projected through the plane frame on the fly. Only planes
+/// that are actually a move target are touched, so untargeted planes are never disturbed.
+pub fn recompute_moved_planes(doc: &mut crate::model::Document) {
+    use std::collections::BTreeSet;
+    let targeted: BTreeSet<usize> = doc
+        .move_ops
+        .iter()
+        .filter(|o| !o.deleted)
+        .flat_map(|o| o.plane_targets.iter().copied())
+        .collect();
+    if targeted.is_empty() {
+        return;
+    }
+    // Precompute each op's world transform (immutable borrow, before mutating planes).
+    let transforms: Vec<Option<glam::Mat4>> = doc
+        .move_ops
+        .iter()
+        .map(|op| {
+            (!op.deleted && !op.plane_targets.is_empty())
+                .then(|| crate::extrude::move_op_transform(doc, op))
+                .flatten()
+        })
+        .collect();
+    let mut updates: Vec<(usize, glam::Vec3, glam::Vec3, glam::Vec3, glam::Vec3)> = Vec::new();
+    for &i in &targeted {
+        let Some(plane) = doc.construction_planes.get(i).filter(|p| !p.deleted) else {
+            continue;
+        };
+        let base = plane_from_definition(&plane.definition, plane.parent);
+        let (mut o, mut n, mut u, mut v) = (base.origin, base.normal, base.u_axis, base.v_axis);
+        for (op_idx, op) in doc.move_ops.iter().enumerate() {
+            if op.deleted || !op.plane_targets.contains(&i) {
+                continue;
+            }
+            if let Some(m) = transforms[op_idx] {
+                o = m.transform_point3(o);
+                n = m.transform_vector3(n).normalize_or_zero();
+                u = m.transform_vector3(u).normalize_or_zero();
+                v = m.transform_vector3(v).normalize_or_zero();
+            }
+        }
+        updates.push((i, o, n, u, v));
+    }
+    for (i, o, n, u, v) in updates {
+        let p = &mut doc.construction_planes[i];
+        p.origin = o;
+        p.normal = n;
+        p.u_axis = u;
+        p.v_axis = v;
+    }
+}
+
 /// Toggle a body into the active body-gathering tool's set (#218): the Elements pane (and any
 /// body selection) feeds bodies into whatever tool is collecting them — Move/Repeat/Slice
 /// targets, Combine's active side, or a Revolve Cut's bodies — regardless of the viewport's
@@ -7542,6 +7635,44 @@ mod tests {
         assert!(state.scene_selection.is_selected(SceneElement::Body(0)));
     }
 
+    /// #217: a Move op can target a construction plane, transforming its frame in place; the
+    /// plane's origin shifts, and anything anchored to it follows (it's plane-relative).
+    #[test]
+    fn moving_a_construction_plane_shifts_its_frame() {
+        let mut state = AppState::default();
+        let base = state.doc.construction_planes[0].origin;
+        let result = state.apply(Action::CreateMoveOperation {
+            targets: vec![],
+            plane_targets: vec![0],
+            tx: String::new(),
+            ty: String::new(),
+            tz: "40mm".to_string(),
+            axis: None,
+            angle: String::new(),
+        });
+        assert!(matches!(result, ActionResult::Ok), "{}", state.status);
+        let moved = state.doc.construction_planes[0].origin;
+        assert!(
+            (moved.z - base.z - 40.0).abs() < 1e-3,
+            "plane should move +40 in z (base {} -> {})",
+            base.z,
+            moved.z
+        );
+        // Editing the op back to zero returns the plane home.
+        let op = state.doc.move_ops.len() - 1;
+        state.apply(Action::EditMoveOperation {
+            op,
+            targets: vec![],
+            plane_targets: vec![0],
+            tx: String::new(),
+            ty: String::new(),
+            tz: String::new(),
+            axis: None,
+            angle: String::new(),
+        });
+        assert!((state.doc.construction_planes[0].origin.z - base.z).abs() < 1e-3);
+    }
+
     /// #214: the extrude tool's in-progress push/pull depth is exposed as a gizmo and driven by
     /// `set_gizmo_action`, so scripting can enumerate and move it.
     #[test]
@@ -7624,6 +7755,7 @@ mod tests {
         let mut state = AppState::default();
         state.creating_move = Some(CreatingMove {
             targets: vec![],
+            plane_targets: vec![],
             tx: "5mm".to_string(),
             ty: String::new(),
             tz: String::new(),
@@ -9522,6 +9654,7 @@ mod tests {
         let mut state = two_box_state(false);
         let result = state.apply(Action::CreateMoveOperation {
             targets: vec![0, 1],
+            plane_targets: vec![],
             tx: "25".to_string(),
             ty: String::new(),
             tz: String::new(),
@@ -9558,6 +9691,7 @@ mod tests {
         let mut state = two_box_state(false);
         state.apply(Action::CreateMoveOperation {
             targets: vec![0],
+            plane_targets: vec![],
             tx: "5".to_string(),
             ty: String::new(),
             tz: String::new(),
@@ -9568,6 +9702,7 @@ mod tests {
         let result = state.apply(Action::EditMoveOperation {
             op: 0,
             targets: vec![0, 1],
+            plane_targets: vec![],
             tx: "5".to_string(),
             ty: "2".to_string(),
             tz: String::new(),
@@ -9589,6 +9724,7 @@ mod tests {
         });
         let result = state.apply(Action::CreateMoveOperation {
             targets: vec![0],
+            plane_targets: vec![],
             tx: "gap".to_string(),
             ty: String::new(),
             tz: String::new(),
