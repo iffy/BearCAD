@@ -353,10 +353,29 @@ fn occt_fused_extrusions(
             continue;
         }
         let shape = occt_extrusion_shape(doc, extrusion, distance)?;
-        fused = Some(match fused {
-            None => shape,
-            Some(acc) => acc.boolean(&shape, BoolOp::Fuse)?,
-        });
+        // Placements this add contributes: the base, plus one per repeat-op replay offset (#220
+        // add-replay) — an add extrusion targeted by a repeat op is fused again at each instance,
+        // growing N bumps instead of one.
+        let mut placements: Vec<glam::Mat4> = vec![glam::Mat4::IDENTITY];
+        for op in doc.repeat_ops.iter() {
+            if op.deleted || !op.extrusion_targets.contains(&ei) {
+                continue;
+            }
+            if let (Some((_, dir)), Some(offsets)) =
+                (axis_world(doc, op.axis), repeat_offsets(doc, op))
+            {
+                for off in offsets {
+                    placements.push(glam::Mat4::from_translation(dir * off));
+                }
+            }
+        }
+        for m in placements {
+            let piece = shape.transformed(&mat4_to_rows_3x4(&m))?;
+            fused = Some(match fused.take() {
+                None => piece,
+                Some(acc) => acc.boolean(&piece, BoolOp::Fuse)?,
+            });
+        }
     }
     Some(fused)
 }
@@ -3498,6 +3517,46 @@ mod tests {
             (vol - three_holes).abs() < 6.0,
             "expected ~{three_holes} (3 holes), got {vol} (one hole is ~{one_hole})"
         );
+    }
+
+    /// #220: repeating an *add* extrusion fuses the solid at each offset — one box becomes three
+    /// disjoint boxes (union volume triples).
+    #[test]
+    #[cfg(feature = "occt")]
+    fn repeat_add_extrusion_grows_n_bodies() {
+        use crate::model::{RepeatMode, RepeatOperation, RevolveAxis};
+        let (mut doc, sketch) = sketch_doc();
+        let box_face = rect_profile(&mut doc, sketch, 0.0, 0.0, 4.0, 4.0); // 4×4
+        doc.extrusions.push(extrusion(sketch, vec![box_face], 5.0)); // ×5 = 80
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Solid { add: vec![0], cut: vec![] },
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        assert!((mesh_signed_volume(&body_solid_mesh(&doc, 0).unwrap()).abs() - 80.0).abs() < 1.0);
+
+        // Replay the add ×3 along X at 10mm gap → boxes at x = 0, 10, 20 (disjoint).
+        doc.repeat_ops.push(RepeatOperation {
+            targets: Vec::new(),
+            plane_targets: Vec::new(),
+            extrusion_targets: vec![0],
+            sketch_targets: Vec::new(),
+            axis: RevolveAxis::X,
+            mode: RepeatMode::CountGap,
+            count: "3".to_string(),
+            spacing: "10".to_string(),
+            length: String::new(),
+            length_target: None,
+            outputs: Vec::new(),
+            plane_outputs: Vec::new(),
+            sketch_plane_outputs: Vec::new(),
+            sketch_outputs: Vec::new(),
+            name: None,
+            deleted: false,
+        });
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).unwrap()).abs();
+        assert!((vol - 240.0).abs() < 3.0, "expected ~240 (3 boxes), got {vol}");
     }
 
     /// #177: a chamfer on a *cut* circle extrusion's rim carves a countersink into the

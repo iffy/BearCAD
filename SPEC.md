@@ -511,13 +511,14 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     Instances are grouped under the repeat op in the Elements pane, and go away with it. Count
     and spacing are the same expressions/modes as body repeats; a repeat may target bodies and
     planes at once.
-  - **Repeating an operation (#220):** a repeat can target a **cut extrusion**
-    (`RepeatOperation::extrusion_targets`) and replay its *effect* — the cutting tool is
-    subtracted from its body again at each offset (`occt_body_shape_from_indices`), punching N
-    holes rather than copying a solid. No output bodies; the extra cuts fold into the target
-    body's shape at build time (spacing is center-to-center, extent 0). Scripting:
-    `bearcad.repeat_cut{ cuts = {ei}, axis, mode, count?, spacing?, length? }`. Picking the cut in
-    the viewport and pane grouping are the tracked GUI follow-up.
+  - **Repeating an operation (#220):** a repeat can target an **extrusion**
+    (`RepeatOperation::extrusion_targets`) and replay its *effect* at each offset rather than
+    copying a solid — a **cut** extrusion's tool is subtracted again (`occt_body_shape_from_indices`)
+    to punch N holes, and an **add** extrusion's solid is fused again (`occt_fused_extrusions`) to
+    grow N bumps. No output bodies; the extra ops fold into the target body's shape at build time
+    (spacing is center-to-center, extent 0). Scripting: `bearcad.repeat_cut{ cuts = {ei}, axis,
+    mode, count?, spacing?, length? }` (works for add or cut targets). Picking the operation in the
+    viewport and pane grouping are the tracked GUI follow-up.
   - **Repeating whole sketches (#226):** `RepeatOperation::sketch_targets` copies a
     construction-plane-hosted sketch at each offset. Each copy rides a fresh construction plane
     parallel to the source's, translated along the axis (`rebuild_repeated_sketches`), and carries
