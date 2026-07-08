@@ -408,6 +408,16 @@ struct EdgeTreatmentGizmoDrag {
     start_amount: f32,
 }
 
+/// A drag on one of the Move tool's translation arrows (#215): which axis (0=X, 1=Y, 2=Z), and
+/// the translation + cursor position when the grab started. Follows the cursor along that world
+/// axis and writes the result through the `move_{x,y,z}` gizmo setter.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MoveGizmoDrag {
+    axis: usize,
+    start_translation: f32,
+    start_screen: egui::Pos2,
+}
+
 struct VertexDrag {
     point: ConstraintPoint,
 }
@@ -493,6 +503,8 @@ struct App {
     edge_treatment_gizmo_drag: Option<EdgeTreatmentGizmoDrag>,
     /// In-flight revolve angle-handle drag: (start screen pos, start angle degrees).
     revolve_gizmo_drag: Option<(egui::Pos2, f32)>,
+    /// In-flight Move translation-arrow drag (#215).
+    move_gizmo_drag: Option<MoveGizmoDrag>,
     launch_maximize_frames_remaining: u8,
     gpu_viewport: bool,
     gpu_view_cube: bool,
@@ -589,6 +601,7 @@ impl App {
             vertex_treatment_gizmo_drag: None,
             edge_treatment_gizmo_drag: None,
             revolve_gizmo_drag: None,
+            move_gizmo_drag: None,
             vertex_drag: None,
             bezier_handle_drag: None,
             selected_bezier_handle: None,
@@ -2210,7 +2223,7 @@ impl App {
                 }
                 ref kind => {
                     // In Cut mode, clicking a body toggles it into the cut set.
-                    if let Some(SceneElement::Body(bi)) = scene_element_from_pick(kind) {
+                    if let Some(bi) = self.pick_whole_body(pp, project, cam, kind) {
                         if let Some(cr) = self.state.creating_revolve.as_mut() {
                             if cr.body_choice == actions::RevolveBodyChoice::Cut {
                                 if let Some(pos) = cr.cut_bodies.iter().position(|b| *b == bi) {
@@ -2265,7 +2278,7 @@ impl App {
         else {
             return;
         };
-        let Some(SceneElement::Body(bi)) = scene_element_from_pick(&target.kind) else {
+        let Some(bi) = self.pick_whole_body(pp, project, cam, &target.kind) else {
             return;
         };
         if self
@@ -2305,6 +2318,54 @@ impl App {
     /// Move tool (#176/#183): click bodies to toggle them into the move set; clicking a
     /// line picks it as the rotation axis. Enter commits.
     #[allow(clippy::too_many_arguments)]
+    /// The Move tool's translation-arrow gizmo geometry (#215): the anchor (picked targets'
+    /// bounding-box centre) and, per world axis, `(axis_index, gizmo name, world direction,
+    /// current translation mm)`. `None` when nothing is picked (nothing to anchor to).
+    fn move_gizmo_arrows(&self) -> Option<(Vec3, [(usize, &'static str, Vec3, f32); 3])> {
+        let cm = self.state.creating_move.as_ref()?;
+        if cm.targets.is_empty() {
+            return None;
+        }
+        let doc = &self.state.doc;
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        for &bi in &cm.targets {
+            if let Some((lo, hi)) = extrude::body_solid_mesh(doc, bi).and_then(|m| m.bounds()) {
+                min = min.min(lo);
+                max = max.max(hi);
+            }
+        }
+        if !min.is_finite() || !max.is_finite() {
+            return None;
+        }
+        let mm = |s: &str| crate::value::eval_length_mm_in_doc(s, doc).unwrap_or(0.0);
+        Some((
+            (min + max) * 0.5,
+            [
+                (0, "move_x", Vec3::X, mm(&cm.tx)),
+                (1, "move_y", Vec3::Y, mm(&cm.ty)),
+                (2, "move_z", Vec3::Z, mm(&cm.tz)),
+            ],
+        ))
+    }
+
+    /// The whole body a viewport pick refers to (#218), for the body-set tools: a body edge,
+    /// vertex, or face all identify their owning body. Used with a `pick_body_face` fallback so
+    /// clicking anywhere on a body — edge, corner, or flat face — selects it.
+    fn pick_whole_body(
+        &self,
+        pp: egui::Pos2,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        cam: &camera::Camera,
+        target_kind: &construction::PickTargetKind,
+    ) -> Option<usize> {
+        body_index_from_pick(target_kind).or_else(|| {
+            crate::face::pick_body_face(pp, project, &self.state.doc, cam.eye())
+                .as_ref()
+                .and_then(body_index_from_pick)
+        })
+    }
+
     fn handle_move_tool(
         &mut self,
         ui: &egui::Ui,
@@ -2317,6 +2378,50 @@ impl App {
     ) {
         if self.state.sketch_session.is_some() {
             return;
+        }
+
+        // Translation-arrow gizmo (#215): follow an in-flight drag, or grab a handle on press.
+        // Runs before the body-pick path so grabbing an arrow doesn't also toggle a target.
+        if let Some((anchor, axes)) = self.move_gizmo_arrows() {
+            if let Some(drag) = self.move_gizmo_drag {
+                if ui.input(|i| i.pointer.primary_down()) {
+                    if let (Some(pp), Some(&(_, name, dir, _))) =
+                        (pointer_screen, axes.get(drag.axis))
+                    {
+                        let value = construction::offset_from_normal_drag(
+                            anchor,
+                            dir,
+                            project,
+                            drag.start_translation,
+                            drag.start_screen,
+                            pp,
+                        );
+                        crate::actions::set_gizmo(&mut self.state, name, value);
+                    }
+                } else {
+                    self.move_gizmo_drag = None;
+                }
+                return;
+            }
+            if ui.input(|i| i.pointer.primary_pressed()) {
+                if let Some(pp) = pointer_screen {
+                    for &(axis, _, dir, translation) in &axes {
+                        let handle_offset = extrude_gizmo_display_offset(translation);
+                        if construction::offset_gizmo_hit(pp, project, anchor, dir, handle_offset) {
+                            self.move_gizmo_drag = Some(MoveGizmoDrag {
+                                axis,
+                                start_translation: translation,
+                                start_screen: pp,
+                            });
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        if self.move_gizmo_drag.is_some() {
+            // Targets changed out from under an active drag; drop it.
+            self.move_gizmo_drag = None;
         }
         if ui.input(|i| i.key_pressed(egui::Key::Enter))
             && self
@@ -2347,7 +2452,7 @@ impl App {
             }
             return;
         }
-        let Some(SceneElement::Body(bi)) = scene_element_from_pick(&target.kind) else {
+        let Some(bi) = self.pick_whole_body(pp, project, cam, &target.kind) else {
             return;
         };
         if self.state.doc.bodies.get(bi).is_some_and(|b| b.shadow) {
@@ -2412,7 +2517,7 @@ impl App {
             }
             return;
         }
-        let Some(SceneElement::Body(bi)) = scene_element_from_pick(&target.kind) else {
+        let Some(bi) = self.pick_whole_body(pp, project, cam, &target.kind) else {
             return;
         };
         if self.state.doc.bodies.get(bi).is_some_and(|b| b.shadow) {
@@ -2493,7 +2598,7 @@ impl App {
         else {
             return;
         };
-        let Some(SceneElement::Body(bi)) = scene_element_from_pick(&target.kind) else {
+        let Some(bi) = self.pick_whole_body(pp, project, cam, &target.kind) else {
             return;
         };
         if self.state.doc.bodies.get(bi).is_some_and(|b| b.shadow) {
@@ -4273,6 +4378,17 @@ fn build_gpu_dimension_labels(
 const SIDE_PANEL_IDS: &[&str] = &["tree", "parameters", "context"];
 
 /// True while the pointer is on a side-panel resize grip (don't override its cursor).
+/// The body index a pick target identifies, if it's a body sub-element (#218): an edge, vertex,
+/// or face all belong to one body.
+fn body_index_from_pick(kind: &construction::PickTargetKind) -> Option<usize> {
+    match kind {
+        construction::PickTargetKind::BodyEdge { body, .. }
+        | construction::PickTargetKind::BodyVertex { body, .. }
+        | construction::PickTargetKind::BodyFace { body, .. } => Some(*body),
+        _ => None,
+    }
+}
+
 /// Apply a tool-owned element picker's row action (#213) to its backing body-index vector:
 /// `Remove(i)` drops row `i`, `Clear` empties the set, `Focus` is a no-op here (the caller
 /// handles active-picker switching for multi-picker tools).
@@ -4482,6 +4598,7 @@ fn build_viewport_scene_input<'a>(
     plane_gizmo: Option<gpu_viewport::ViewportPlaneGizmo>,
     extrude_gizmo: Option<gpu_viewport::ViewportExtrudeGizmo>,
     vertex_treatment_gizmo: Option<gpu_viewport::ViewportExtrudeGizmo>,
+    move_gizmos: Vec<gpu_viewport::ViewportExtrudeGizmo>,
     vertex_treatment_preview: Option<Vec<Vec3>>,
     hover_highlight: Option<gpu_viewport::ViewportHoverHighlight>,
     dimension_labels: &'a [gpu_viewport::ViewportDimLabel],
@@ -4700,6 +4817,7 @@ fn build_viewport_scene_input<'a>(
         plane_gizmo,
         extrude_gizmo,
         vertex_treatment_gizmo,
+        move_gizmos,
         vertex_treatment_preview: vertex_treatment_preview
             .map(|points| gpu_viewport::VertexTreatmentPreviewGeom { points }),
         hover_highlight,
@@ -8569,6 +8687,37 @@ impl App {
             }
             std::borrow::Cow::Owned(sel)
         };
+        // Move tool (#215): a translation arrow per world axis at the picked targets' centroid.
+        let move_gizmos = if self.state.tool == Tool::Move {
+            self.move_gizmo_arrows()
+                .map(|(anchor, axes)| {
+                    axes.iter()
+                        .map(|&(axis, _, dir, translation)| {
+                            let hovered = self.move_gizmo_drag.map(|d| d.axis) == Some(axis)
+                                || (self.move_gizmo_drag.is_none()
+                                    && pointer_screen.is_some_and(|pp| {
+                                        construction::offset_gizmo_hit(
+                                            pp,
+                                            &project,
+                                            anchor,
+                                            dir,
+                                            extrude_gizmo_display_offset(translation),
+                                        )
+                                    }));
+                            gpu_viewport::ViewportExtrudeGizmo {
+                                origin: anchor,
+                                normal: dir,
+                                offset: extrude_gizmo_display_offset(translation),
+                                color: [col::X_AXIS, col::Y_AXIS, col::Z_AXIS][axis],
+                                hovered,
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let scene_input = build_viewport_scene_input(
             doc,
             &cam,
@@ -8589,6 +8738,7 @@ impl App {
             plane_gizmo,
             extrude_gizmo,
             vertex_treatment_gizmo,
+            move_gizmos,
             vertex_treatment_preview,
             hover_highlight,
             &gpu_dim_labels,
@@ -10428,6 +10578,33 @@ mod tests {
         assert_eq!(col::RECT_LINE, Color32::from_rgb(120, 170, 240));
     }
 
+    /// #218: the body tools resolve a whole body from any of its sub-elements — an edge, a
+    /// vertex, or a face — so clicking anywhere on a body selects it. (Previously they matched
+    /// `scene_element_from_pick(..) == Body`, which is unreachable, so no body could be picked.)
+    #[test]
+    fn body_index_from_pick_reads_every_body_sub_element() {
+        use crate::construction::PickTargetKind;
+        use super::body_index_from_pick;
+        assert_eq!(
+            body_index_from_pick(&PickTargetKind::BodyVertex { body: 3, position: Vec3::ZERO }),
+            Some(3)
+        );
+        assert_eq!(
+            body_index_from_pick(&PickTargetKind::BodyEdge { body: 5, a: Vec3::ZERO, b: Vec3::X }),
+            Some(5)
+        );
+        assert_eq!(
+            body_index_from_pick(&PickTargetKind::BodyFace {
+                body: 2,
+                triangles: vec![],
+                normal: Vec3::Z,
+            }),
+            Some(2)
+        );
+        assert_eq!(body_index_from_pick(&PickTargetKind::Line(0)), None);
+        assert_eq!(body_index_from_pick(&PickTargetKind::ConstructionPlane(0)), None);
+    }
+
     fn test_viewport_rect() -> egui::Rect {
         egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(960.0, 560.0))
     }
@@ -10530,6 +10707,7 @@ mod tests {
             None,
             None,
             None,
+            Vec::new(),
             None,
             None,
             &[],
@@ -10617,6 +10795,7 @@ mod tests {
                 None,
                 None,
                 None,
+                Vec::new(),
                 None,
                 None,
                 &[],
@@ -10699,6 +10878,7 @@ mod tests {
             None,
             None,
             None,
+            Vec::new(),
             None,
             None,
             &[],

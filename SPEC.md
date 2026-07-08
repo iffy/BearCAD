@@ -453,10 +453,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   the target list; removed ones tombstone). Meshes transform on every target (works in the
   lean build); the BREP shape transforms through the kernel (`Shape::transformed`,
   `bearcad_shape_transform` natively and in the web kernel module) so moved bodies chain
-  into booleans and export as real BREP. Scripting: `bearcad.move_bodies{ bodies = {…},
-  x?, y?, z?, axis?, angle?, name? }` and `bearcad.edit_move{ index, … }`. Extending the
-  move to faces/edges/vertices/planes/images and adding drag gizmos is tracked as a
-  follow-up (#185).
+  into booleans and export as real BREP. **Translation drag gizmos (#215):** with bodies
+  picked, three axis arrows (X red, Y green, Z blue) at the targets' bounding-box centre drag
+  to set the translation — the same offset-arrow handle as the extrude gizmo, driving the
+  `move_x`/`move_y`/`move_z` values (so scriptable/testable via the gizmo API, §8). Scripting:
+  `bearcad.move_bodies{ bodies = {…}, x?, y?, z?, axis?, angle?, name? }` and
+  `bearcad.edit_move{ index, … }`. Extending the move to faces/edges/vertices/planes/images
+  (#217), the rotation-ring gizmo (#216), and moving sub-body geometry remain follow-ups (#185).
 
 - **Linear repeat tool (#182):** copies of whole bodies spaced along an axis (global or a
   clicked line). One multi-select body picker; the original stays as instance 0; each
