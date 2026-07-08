@@ -50,6 +50,29 @@ the repeat element, and a copy follows its source: move the original plane and i
 with it, each keeping its own offset on top. You can repeat bodies and planes in the same
 operation.
 
+## Repeating sketch geometry in 2D
+
+You can also repeat geometry **inside a sketch**: pick lines and circles and duplicate them along
+an in-plane direction, using the same spacing modes. The copies are new entities in the same
+sketch, spaced by the count/gap (or fill) you choose — a bolt-hole row, gear teeth, a comb of
+slots. This is available from scripts today:
+
+```lua
+-- Four circles in a row, 10mm gap, along the sketch's +X:
+bearcad.repeat_sketch{ sketch = 0, circles = {0}, angle = 0,
+                       mode = "count_gap", count = 4, spacing = 10 }
+
+-- Duplicate two lines up the sketch's +Y at a fixed pitch:
+bearcad.repeat_sketch{ sketch = 0, lines = {0, 1}, angle = 90,
+                       mode = "fill_pitch", length = 60, spacing = 12 }
+
+bearcad.edit_sketch_repeat{ index = 0, circles = {0}, angle = 0,
+                            mode = "count_gap", count = 6, spacing = 10 }
+```
+
+The direction is an `angle` in degrees (0 = the sketch's +X/u), or an explicit `dir = {du, dv}`.
+`mode`, `count`, `spacing`, and `length` work exactly like the 3D repeat above.
+
 ## Scripting
 
 ```lua

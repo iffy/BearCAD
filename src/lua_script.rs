@@ -591,6 +591,80 @@ fn parse_repeat_op_args(
     Ok((targets, axis, mode, expr("count")?, expr("spacing")?, expr("length")?))
 }
 
+/// Parses `bearcad.repeat_sketch{}`/`bearcad.edit_sketch_repeat{}` arguments (#222): the host
+/// `sketch`, the `lines`/`circles` operand index lists, the in-plane direction (`angle` in
+/// degrees — 0 is +u — or an explicit `dir = {du, dv}`), and the shared spacing mode/expressions.
+#[allow(clippy::type_complexity)]
+fn parse_sketch_repeat_op_args(
+    opts: &Table,
+) -> mlua::Result<(
+    usize,
+    Vec<usize>,
+    Vec<usize>,
+    f32,
+    f32,
+    crate::model::RepeatMode,
+    String,
+    String,
+    String,
+)> {
+    // `sketch` is required to create (which sketch to duplicate in) but ignored on edit (the op
+    // already knows its sketch), so default it rather than erroring when omitted.
+    let sketch: usize = opts.get::<Option<usize>>("sketch")?.unwrap_or(0);
+    let lines: Vec<usize> = opts.get::<Option<Vec<usize>>>("lines")?.unwrap_or_default();
+    let circles: Vec<usize> = opts.get::<Option<Vec<usize>>>("circles")?.unwrap_or_default();
+    let (dir_u, dir_v) = match opts.get::<Value>("dir")? {
+        Value::Table(t) => {
+            let u: f32 = t.get::<f32>(1).or_else(|_| t.get("u"))?;
+            let v: f32 = t.get::<f32>(2).or_else(|_| t.get("v"))?;
+            (u, v)
+        }
+        _ => {
+            let deg: f64 = match opts.get::<Value>("angle")? {
+                Value::Nil => 0.0,
+                Value::Integer(i) => i as f64,
+                Value::Number(n) => n,
+                Value::String(s) => s.to_str()?.parse().map_err(|_| {
+                    mlua::Error::external("repeat_sketch `angle` must be a number of degrees")
+                })?,
+                _ => return Err(mlua::Error::external("repeat_sketch `angle` must be a number")),
+            };
+            let r = deg.to_radians();
+            (r.cos() as f32, r.sin() as f32)
+        }
+    };
+    let mode_name: String = opts
+        .get::<Option<String>>("mode")?
+        .unwrap_or_else(|| "count_gap".to_string());
+    let mode = crate::model::RepeatMode::from_name(&mode_name).ok_or_else(|| {
+        mlua::Error::external(format!("unknown repeat mode '{mode_name}'"))
+    })?;
+    let expr = |key: &str| -> mlua::Result<String> {
+        Ok(match opts.get::<Value>(key)? {
+            Value::Nil => String::new(),
+            Value::String(s) => s.to_str()?.to_string(),
+            Value::Integer(i) => i.to_string(),
+            Value::Number(n) => n.to_string(),
+            _ => {
+                return Err(mlua::Error::external(format!(
+                    "repeat_sketch `{key}` must be an expression string or a number"
+                )))
+            }
+        })
+    };
+    Ok((
+        sketch,
+        lines,
+        circles,
+        dir_u,
+        dir_v,
+        mode,
+        expr("count")?,
+        expr("spacing")?,
+        expr("length")?,
+    ))
+}
+
 /// Parses `bearcad.slice{}`/`bearcad.edit_slice{}` arguments: the target body list, the
 /// planar cutters (face-spec tables), and the extend-to-infinity flag.
 fn parse_slice_op_args(
@@ -2401,6 +2475,64 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // 2D in-sketch linear repeat (#222): duplicate sketch lines/circles along an in-plane
+    // direction. `sketch` selects the sketch; `lines`/`circles` are the operand index lists;
+    // direction is `angle` (degrees, 0 = +u/x) or an explicit `dir = {du, dv}`; spacing uses the
+    // same modes/expressions as `repeat_bodies`. Runs directly through the action (not the
+    // command-log DSL), like the Move tool's plane/image targets.
+    api.set(
+        "repeat_sketch",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let (sketch, lines, circles, dir_u, dir_v, mode, count, spacing, length) =
+                parse_sketch_repeat_op_args(&opts)?;
+            let result = unsafe {
+                tick.state().apply(crate::actions::Action::CreateSketchRepeatOperation {
+                    sketch,
+                    line_targets: lines,
+                    circle_targets: circles,
+                    dir_u,
+                    dir_v,
+                    mode,
+                    count,
+                    spacing,
+                    length,
+                })
+            };
+            if let crate::actions::ActionResult::Err(e) = result {
+                return Err(mlua::Error::external(e));
+            }
+            Ok(())
+        })?,
+    )?;
+
+    api.set(
+        "edit_sketch_repeat",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let op: usize = opts.get("index")?;
+            let (_sketch, lines, circles, dir_u, dir_v, mode, count, spacing, length) =
+                parse_sketch_repeat_op_args(&opts)?;
+            let result = unsafe {
+                tick.state().apply(crate::actions::Action::EditSketchRepeatOperation {
+                    op,
+                    line_targets: lines,
+                    circle_targets: circles,
+                    dir_u,
+                    dir_v,
+                    mode,
+                    count,
+                    spacing,
+                    length,
+                })
+            };
+            if let crate::actions::ActionResult::Err(e) = result {
+                return Err(mlua::Error::external(e));
+            }
+            Ok(())
+        })?,
+    )?;
+
     api.set(
         "move_bodies",
         lua.create_function(|lua, opts: Table| {
@@ -2955,6 +3087,51 @@ mod tests {
             runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
         }
         assert!(runner.error.is_none(), "script error: {:?}", runner.error);
+    }
+
+    /// #222: a 2D in-sketch repeat duplicates a circle along +u at a fixed pitch — the copies'
+    /// centres step by the pitch in sketch-local coords, grouped under the op.
+    #[test]
+    fn sketch_repeat_duplicates_a_circle_along_the_direction() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.circle{ x = 0, y = 0, r = 2 }
+            bearcad.repeat_sketch{ sketch = 0, circles = {0}, angle = 0,
+                                   mode = "count_gap", count = 4, spacing = 10 }
+            "#,
+        );
+        let op = &state.doc.sketch_repeat_ops[0];
+        // extent along +u is the circle's diameter (4); gap 10 → step 14.
+        assert_eq!(op.circle_outputs.len(), 3, "4 instances = original + 3 copies");
+        let cx = |i: usize| state.doc.circles[op.circle_outputs[i]].cx;
+        assert!((cx(0) - 14.0).abs() < 1e-3, "first copy at x = extent + gap");
+        assert!((cx(1) - 28.0).abs() < 1e-3);
+        assert!((cx(2) - 42.0).abs() < 1e-3);
+        // Copies keep the radius and stay on the same y.
+        assert!((state.doc.circles[op.circle_outputs[0]].r - 2.0).abs() < 1e-6);
+        assert!(state.doc.circles[op.circle_outputs[0]].cy.abs() < 1e-6);
+    }
+
+    /// #222: editing the op re-spaces and resizes the generated copies.
+    #[test]
+    fn sketch_repeat_edit_respaces_copies() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.circle{ x = 0, y = 0, r = 1 }
+            bearcad.repeat_sketch{ sketch = 0, circles = {0}, angle = 90,
+                                   mode = "count_gap", count = 2, spacing = 5 }
+            bearcad.edit_sketch_repeat{ index = 0, circles = {0}, angle = 90,
+                                        mode = "count_gap", count = 3, spacing = 5 }
+            "#,
+        );
+        let op = &state.doc.sketch_repeat_ops[0];
+        assert_eq!(op.circle_outputs.len(), 2, "3 instances = original + 2 copies");
+        // angle 90 → +v; extent 2 (diameter), gap 5 → step 7 along y.
+        let cy = |i: usize| state.doc.circles[op.circle_outputs[i]].cy;
+        assert!((cy(0) - 7.0).abs() < 1e-3);
+        assert!((cy(1) - 14.0).abs() < 1e-3);
     }
 
     /// #212: the scripting-doc examples that used the stale `"rect"` element/selection kind now

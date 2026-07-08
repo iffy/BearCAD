@@ -651,6 +651,59 @@ pub fn spacing_offsets(
     }
 }
 
+/// The plane-local along-direction offsets of a 2D in-sketch repeat's copies (#222), i.e. the
+/// same `spacing_offsets` result but with the operands' extent measured in sketch `(u, v)` space:
+/// each targeted line endpoint and circle rim is projected onto the (normalized) repeat direction.
+/// Returns `None` if the direction is degenerate, nothing is targeted, or the config doesn't
+/// evaluate.
+pub fn sketch_repeat_offsets(
+    doc: &Document,
+    op: &crate::model::SketchRepeatOperation,
+) -> Option<Vec<f32>> {
+    let len = (op.dir_u * op.dir_u + op.dir_v * op.dir_v).sqrt();
+    if len <= 1e-6 {
+        return None;
+    }
+    let (du, dv) = (op.dir_u / len, op.dir_v / len);
+    if op.line_targets.is_empty() && op.circle_targets.is_empty() {
+        return None;
+    }
+    let mut min_p = f32::INFINITY;
+    let mut max_p = f32::NEG_INFINITY;
+    let mut extend = |p: f32| {
+        min_p = min_p.min(p);
+        max_p = max_p.max(p);
+    };
+    for &li in &op.line_targets {
+        let l = doc.lines.get(li).filter(|l| !l.deleted)?;
+        extend(l.x0 * du + l.y0 * dv);
+        extend(l.x1 * du + l.y1 * dv);
+    }
+    for &ci in &op.circle_targets {
+        let c = doc.circles.get(ci).filter(|c| !c.deleted)?;
+        let center = c.cx * du + c.cy * dv;
+        extend(center - c.r);
+        extend(center + c.r);
+    }
+    if !min_p.is_finite() || !max_p.is_finite() {
+        return None;
+    }
+    let extent = (max_p - min_p).max(0.0);
+    let eval = |expr: &str| -> Option<f32> {
+        (!expr.trim().is_empty())
+            .then(|| crate::value::eval_length_mm_in_doc(expr, doc))
+            .flatten()
+    };
+    let count = || -> Option<usize> {
+        let n = crate::value::eval_parameter_in_doc(&op.count, doc).and_then(|v| match v {
+            crate::value::EvaluatedParameter::LengthMm(n) => Some(n),
+            crate::value::EvaluatedParameter::AngleRad(_) => None,
+        })?;
+        (n >= 1.0).then_some((n.round() as usize).min(MAX_REPEAT_INSTANCES))
+    };
+    spacing_offsets(op.mode, extent, count(), eval(&op.spacing), eval(&op.length))
+}
+
 pub fn repeat_offsets(doc: &Document, op: &crate::model::RepeatOperation) -> Option<Vec<f32>> {
     let (_, dir) = axis_world(doc, op.axis)?;
     // The targets' combined extent along the axis (end-to-start measurements need it).

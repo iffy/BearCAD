@@ -192,6 +192,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "move_op", &doc.move_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "repeat_op", &doc.repeat_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "slice_op", &doc.slice_ops)?;
+    save_indexed_nodes(&tx, &mut row_id, "sketch_repeat_op", &doc.sketch_repeat_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "drawing", &doc.drawings)?;
     if doc.construction_planes.len() > 1 {
         save_indexed_nodes(
@@ -459,6 +460,7 @@ pub fn open(path: &str) -> Result<Document> {
     let move_ops = load_indexed_entities(&conn, "move_op")?;
     let repeat_ops = load_indexed_entities(&conn, "repeat_op")?;
     let slice_ops = load_indexed_entities(&conn, "slice_op")?;
+    let sketch_repeat_ops = load_indexed_entities(&conn, "sketch_repeat_op")?;
     let drawings = load_indexed_entities(&conn, "drawing")?;
     let default_length_unit = load_default_length_unit_meta(&conn);
     let default_angle_unit = load_default_angle_unit_meta(&conn);
@@ -481,6 +483,7 @@ pub fn open(path: &str) -> Result<Document> {
         move_ops,
         repeat_ops,
         slice_ops,
+        sketch_repeat_ops,
         drawings,
         shape_order,
         undo_groups,

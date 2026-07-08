@@ -1131,6 +1131,31 @@ pub enum Action {
         spacing: String,
         length: String,
     },
+    /// Create a 2D in-sketch linear repeat (#222): duplicate the given sketch entities along the
+    /// plane-local direction `(dir_u, dir_v)`, grouped under a `SketchRepeatOperation`.
+    CreateSketchRepeatOperation {
+        sketch: usize,
+        line_targets: Vec<usize>,
+        circle_targets: Vec<usize>,
+        dir_u: f32,
+        dir_v: f32,
+        mode: crate::model::RepeatMode,
+        count: String,
+        spacing: String,
+        length: String,
+    },
+    /// Re-point / re-space an existing in-sketch repeat (#222).
+    EditSketchRepeatOperation {
+        op: usize,
+        line_targets: Vec<usize>,
+        circle_targets: Vec<usize>,
+        dir_u: f32,
+        dir_v: f32,
+        mode: crate::model::RepeatMode,
+        count: String,
+        spacing: String,
+        length: String,
+    },
     /// Commit the in-progress Slice-tool operation.
     CommitSlice,
     /// Scripted/replayed slice with an explicit payload (also what `CommitSlice` lowers to).
@@ -2671,6 +2696,47 @@ fn validate_move_inputs(
 }
 
 /// Shared validation for creating/editing a repeat operation.
+/// Validate a 2D in-sketch repeat's operands (#222): a live sketch, at least one target, and
+/// every target a live entity that actually belongs to that sketch (no duplicates).
+fn validate_sketch_repeat_inputs(
+    doc: &Document,
+    sketch: usize,
+    line_targets: &[usize],
+    circle_targets: &[usize],
+) -> Result<(), String> {
+    if doc.sketches.get(sketch).filter(|s| !s.deleted).is_none() {
+        return Err(format!("Sketch {sketch} not found"));
+    }
+    if line_targets.is_empty() && circle_targets.is_empty() {
+        return Err("Pick at least one line or circle to repeat".to_string());
+    }
+    let mut seen_lines = std::collections::HashSet::new();
+    for &li in line_targets {
+        let Some(line) = doc.lines.get(li).filter(|l| !l.deleted) else {
+            return Err(format!("Line {li} not found"));
+        };
+        if line.sketch != sketch {
+            return Err(format!("Line {li} is not in sketch {sketch}"));
+        }
+        if !seen_lines.insert(li) {
+            return Err(format!("Line {li} is picked twice"));
+        }
+    }
+    let mut seen_circles = std::collections::HashSet::new();
+    for &ci in circle_targets {
+        let Some(circle) = doc.circles.get(ci).filter(|c| !c.deleted) else {
+            return Err(format!("Circle {ci} not found"));
+        };
+        if circle.sketch != sketch {
+            return Err(format!("Circle {ci} is not in sketch {sketch}"));
+        }
+        if !seen_circles.insert(ci) {
+            return Err(format!("Circle {ci} is picked twice"));
+        }
+    }
+    Ok(())
+}
+
 fn validate_repeat_inputs(
     doc: &Document,
     targets: &[usize],
@@ -6027,6 +6093,100 @@ impl AppState {
                 self.status = "Edited repeat".to_string();
                 ActionResult::Ok
             }
+            Action::CreateSketchRepeatOperation {
+                sketch,
+                line_targets,
+                circle_targets,
+                dir_u,
+                dir_v,
+                mode,
+                count,
+                spacing,
+                length,
+            } => {
+                if let Err(e) =
+                    validate_sketch_repeat_inputs(&self.doc, sketch, &line_targets, &circle_targets)
+                {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let n = line_targets.len() + circle_targets.len();
+                let op_index = self.doc.sketch_repeat_ops.len();
+                self.doc.sketch_repeat_ops.push(crate::model::SketchRepeatOperation {
+                    sketch,
+                    line_targets,
+                    circle_targets,
+                    dir_u,
+                    dir_v,
+                    mode,
+                    count,
+                    spacing,
+                    length,
+                    line_outputs: Vec::new(),
+                    circle_outputs: Vec::new(),
+                    name: None,
+                    deleted: false,
+                });
+                self.doc.shape_order.push(ShapeKind::SketchRepeatOperation);
+                if !rebuild_sketch_repeat(&mut self.doc, op_index) {
+                    self.doc.sketch_repeat_ops.pop();
+                    self.doc.shape_order.pop();
+                    let e = "Repeat doesn't evaluate, or produces no extra instances \
+                             (check direction, count/spacing/length)"
+                        .to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                self.refresh_document_health();
+                self.status = format!("Repeated {n} sketch entity(ies)");
+                ActionResult::Ok
+            }
+            Action::EditSketchRepeatOperation {
+                op,
+                line_targets,
+                circle_targets,
+                dir_u,
+                dir_v,
+                mode,
+                count,
+                spacing,
+                length,
+            } => {
+                let Some(sketch) =
+                    self.doc.sketch_repeat_ops.get(op).filter(|o| !o.deleted).map(|o| o.sketch)
+                else {
+                    let e = format!("Sketch repeat {op} not found");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                if let Err(e) =
+                    validate_sketch_repeat_inputs(&self.doc, sketch, &line_targets, &circle_targets)
+                {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let old = self.doc.sketch_repeat_ops[op].clone();
+                {
+                    let entry = &mut self.doc.sketch_repeat_ops[op];
+                    entry.line_targets = line_targets;
+                    entry.circle_targets = circle_targets;
+                    entry.dir_u = dir_u;
+                    entry.dir_v = dir_v;
+                    entry.mode = mode;
+                    entry.count = count;
+                    entry.spacing = spacing;
+                    entry.length = length;
+                }
+                if !rebuild_sketch_repeat(&mut self.doc, op) {
+                    self.doc.sketch_repeat_ops[op] = old;
+                    let e = "Repeat doesn't evaluate, or produces no extra instances".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                self.refresh_document_health();
+                self.status = "Edited sketch repeat".to_string();
+                ActionResult::Ok
+            }
             Action::CommitMove => {
                 let Some(mut cm) = self.creating_move.take() else {
                     return ActionResult::Err("No move in progress".to_string());
@@ -7772,6 +7932,114 @@ fn repeat_input_status(bodies: usize, planes: usize) -> String {
         parts.push(format!("{planes} plane(s)"));
     }
     parts.join(", ")
+}
+
+/// A plane-local shifted copy of a sketch line (#222): endpoints and any bezier handles moved by
+/// `(dx, dy)`, with all dimension/name/projection metadata cleared so the copy is plain driven
+/// geometry (it keeps only the shape and the construction flag).
+fn shifted_line_copy(src: &crate::model::Line, dx: f32, dy: f32) -> crate::model::Line {
+    crate::model::Line {
+        sketch: src.sketch,
+        x0: src.x0 + dx,
+        y0: src.y0 + dy,
+        x1: src.x1 + dx,
+        y1: src.y1 + dy,
+        length_locked: false,
+        length_dim_offset: None,
+        length_expr: None,
+        construction: src.construction,
+        name: None,
+        deleted: false,
+        bezier: src.bezier.map(|[a, b]| [(a.0 + dx, a.1 + dy), (b.0 + dx, b.1 + dy)]),
+        chamfer_fillet_parent: None,
+        projection: None,
+    }
+}
+
+/// A plane-local shifted copy of a sketch circle (#222): center moved by `(dx, dy)`, radius kept,
+/// dimension/name metadata cleared.
+fn shifted_circle_copy(src: &crate::model::Circle, dx: f32, dy: f32) -> crate::model::Circle {
+    crate::model::Circle {
+        sketch: src.sketch,
+        cx: src.cx + dx,
+        cy: src.cy + dy,
+        r: src.r,
+        diameter_locked: false,
+        diameter_dim_offset: None,
+        diameter_expr: None,
+        diameter_dim_angle: src.diameter_dim_angle,
+        construction: src.construction,
+        name: None,
+        deleted: false,
+    }
+}
+
+/// (Re)generate the duplicated entities of an in-sketch repeat (#222) at `op_index`, resizing the
+/// two output lists to `instances × targets` and refreshing every surviving copy's geometry from
+/// its source shifted along the (normalized) direction. Returns `false` (leaving the op's outputs
+/// untouched) when the configuration doesn't evaluate to at least one extra instance.
+fn rebuild_sketch_repeat(doc: &mut crate::model::Document, op_index: usize) -> bool {
+    let Some(op) = doc.sketch_repeat_ops.get(op_index).filter(|o| !o.deleted).cloned() else {
+        return false;
+    };
+    let Some(offsets) = crate::extrude::sketch_repeat_offsets(doc, &op) else {
+        return false;
+    };
+    if offsets.is_empty() {
+        return false;
+    }
+    let len = (op.dir_u * op.dir_u + op.dir_v * op.dir_v).sqrt();
+    let (du, dv) = (op.dir_u / len, op.dir_v / len);
+
+    // Lines: resize line_outputs to instances × line_targets, then refresh each copy.
+    let want_lines = offsets.len() * op.line_targets.len();
+    let mut line_outputs = op.line_outputs.clone();
+    while line_outputs.len() < want_lines {
+        line_outputs.push(doc.lines.len());
+        // Seeded from target 0; refreshed below. A placeholder keeps indices valid.
+        let seed = doc.lines[op.line_targets[0]].clone();
+        doc.lines.push(shifted_line_copy(&seed, 0.0, 0.0));
+        doc.shape_order.push(crate::model::ShapeKind::Line);
+    }
+    for extra in line_outputs.split_off(want_lines) {
+        if let Some(l) = doc.lines.get_mut(extra) {
+            l.deleted = true;
+        }
+    }
+    for (slot, &out) in line_outputs.iter().enumerate() {
+        let instance = slot / op.line_targets.len() + 1;
+        let ti = slot % op.line_targets.len();
+        let off = offsets[instance - 1];
+        let src = doc.lines[op.line_targets[ti]].clone();
+        doc.lines[out] = shifted_line_copy(&src, du * off, dv * off);
+    }
+
+    // Circles: same shape.
+    let want_circles = offsets.len() * op.circle_targets.len();
+    let mut circle_outputs = op.circle_outputs.clone();
+    while circle_outputs.len() < want_circles {
+        circle_outputs.push(doc.circles.len());
+        let seed = doc.circles[op.circle_targets[0]].clone();
+        doc.circles.push(shifted_circle_copy(&seed, 0.0, 0.0));
+        doc.shape_order.push(crate::model::ShapeKind::Circle);
+    }
+    for extra in circle_outputs.split_off(want_circles) {
+        if let Some(c) = doc.circles.get_mut(extra) {
+            c.deleted = true;
+        }
+    }
+    for (slot, &out) in circle_outputs.iter().enumerate() {
+        let instance = slot / op.circle_targets.len() + 1;
+        let ti = slot % op.circle_targets.len();
+        let off = offsets[instance - 1];
+        let src = doc.circles[op.circle_targets[ti]].clone();
+        doc.circles[out] = shifted_circle_copy(&src, du * off, dv * off);
+    }
+
+    let entry = &mut doc.sketch_repeat_ops[op_index];
+    entry.line_outputs = line_outputs;
+    entry.circle_outputs = circle_outputs;
+    true
 }
 
 /// Status line after a Move commits, summarizing however many bodies/planes/images it touched.
