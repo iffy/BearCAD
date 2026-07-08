@@ -2957,6 +2957,29 @@ mod tests {
         assert!(runner.error.is_none(), "script error: {:?}", runner.error);
     }
 
+    /// #212: the scripting-doc examples that used the stale `"rect"` element/selection kind now
+    /// address a rect as its four lines. Run the fixed snippets end to end so they can't rot
+    /// back into a runtime error.
+    #[test]
+    fn docs_rect_examples_address_lines_not_a_rect_kind() {
+        // declarative-modeling.md: name an edge of a rect after the fact.
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 80, height = 50, name = "Main box" }
+            bearcad.set_name(bearcad.element("line", 0), "Front edge")
+            "#,
+        );
+        // point-selection.md: select a rectangle corner as a line endpoint.
+        run_lua_expect_ok(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 80, height = 50 }
+            bearcad.select{ kind = "line", index = 2, ["end"] = "start" }
+            "#,
+        );
+    }
+
     /// #33: `bearcad.ui.shading(...)` drives the HUD shading-mode popup's underlying state.
     #[test]
     fn lua_shading_sets_camera_shading_mode() {

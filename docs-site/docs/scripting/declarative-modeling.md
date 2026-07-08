@@ -43,8 +43,9 @@ bearcad.rect{ width = 80, height = 50, name = "Main box" }
 local box = bearcad.find("Main box")
 bearcad.select(box)
 
--- Rename after the fact, or name a shape created without a `name` field:
-bearcad.set_name(bearcad.element("rect", 0), "Main box")
+-- Rename after the fact, or name a piece created without a `name` field. A rect is four
+-- lines, so its edges are addressable individually:
+bearcad.set_name(bearcad.element("line", 0), "Front edge")
 ```
 
 Geometry-creation helpers are single calls that enter a ground-plane sketch automatically if none

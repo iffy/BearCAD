@@ -5,11 +5,12 @@ title: Point-level selection
 
 # Point-level selection
 
-`bearcad.select` normally targets a whole element (a line, a rect, a circle). Point-level
-selection targets an individual **vertex** — a `ConstraintPoint` — instead: a line endpoint, a
-rectangle corner, or (with an explicit flag) a circle's center. This uses the same point
-numbering the interactive [Constraint](/docs/tools/constraint) tool uses, so a script can drive exactly
-the same constraint flows a user would with the mouse.
+`bearcad.select` normally targets a whole element (a line, a circle, a body). Point-level
+selection targets an individual **vertex** — a `ConstraintPoint` — instead: a line endpoint (a
+rectangle corner is one of these, since a rect is four lines), or (with an explicit flag) a
+circle's center. This uses the same point numbering the interactive
+[Constraint](/docs/tools/constraint) tool uses, so a script can drive exactly the same constraint
+flows a user would with the mouse.
 
 ## Selecting a line endpoint
 
@@ -21,12 +22,17 @@ A line's two points are `start`/`end`, i.e. `(x0, y0)`/`(x1, y1)`.
 
 ## Selecting a rectangle corner
 
+`bearcad.rect` builds a rectangle as **four separate lines** (one per edge), so a corner is just
+the shared endpoint of two of them — address it as a line endpoint. With the rect's lines at
+indices 0–3, each corner is the `start` of the line with the same number:
+
 ```lua
-bearcad.select{ kind = "rect", index = 0, corner = 2 }
+bearcad.select{ kind = "line", index = 2, ["end"] = "start" }  -- the third corner (top-right)
 ```
 
-A rectangle's corners are numbered **0–3 counterclockwise starting at its `(x, y)` origin
-corner** — the same numbering shown when the interactive Constraint tool highlights a rect's
+The lines (and their start corners) run **counterclockwise starting at the `(x, y)` origin
+corner**: line 0 is the bottom edge (its start is the origin corner), 1 the right, 2 the top, 3
+the left — the same numbering shown when the interactive Constraint tool highlights a rect's
 points.
 
 ## Selecting a circle's center
