@@ -7326,6 +7326,19 @@ pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
     if let Some(cp) = &state.creating_plane {
         gizmos.push(GizmoInfo { kind: "offset", name: "offset", value: cp.offset_live });
     }
+    // Move tool (#185): the translation components (mm) and — when a rotation axis is set — the
+    // rotation angle (radians). These are the values the Move drag gizmos control; exposing them
+    // makes the Move tool scriptable/testable ahead of the viewport handles.
+    if let Some(cm) = &state.creating_move {
+        let mm = |s: &str| crate::value::eval_length_mm_in_doc(s, &state.doc).unwrap_or(0.0);
+        gizmos.push(GizmoInfo { kind: "offset", name: "move_x", value: mm(&cm.tx) });
+        gizmos.push(GizmoInfo { kind: "offset", name: "move_y", value: mm(&cm.ty) });
+        gizmos.push(GizmoInfo { kind: "offset", name: "move_z", value: mm(&cm.tz) });
+        if cm.axis.is_some() {
+            let rad = crate::value::eval_angle_rad_in_doc(&cm.angle, &state.doc).unwrap_or(0.0);
+            gizmos.push(GizmoInfo { kind: "rotate", name: "move_angle", value: rad });
+        }
+    }
     gizmos
 }
 
@@ -7386,6 +7399,27 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
             if state.creating_plane.is_some() {
                 // Force millimetres so the value matches the mm-valued `offset` gizmo reading.
                 state.apply(Action::SetPlaneOffset { value: format!("{value}mm") });
+                true
+            } else {
+                false
+            }
+        }
+        "move_x" | "move_y" | "move_z" => {
+            if let Some(cm) = state.creating_move.as_mut() {
+                let text = format!("{value}mm");
+                match name {
+                    "move_x" => cm.tx = text,
+                    "move_y" => cm.ty = text,
+                    _ => cm.tz = text,
+                }
+                true
+            } else {
+                false
+            }
+        }
+        "move_angle" => {
+            if let Some(cm) = state.creating_move.as_mut() {
+                cm.angle = format!("{}", value.to_degrees());
                 true
             } else {
                 false
@@ -7471,6 +7505,34 @@ mod tests {
         assert!(set_gizmo(&mut state, "offset", 12.0));
         assert!((state.creating_plane.as_ref().unwrap().offset_live - 12.0).abs() < 1e-3);
         assert!((gizmo_value(&state, "offset").unwrap() - 12.0).abs() < 1e-3);
+    }
+
+    /// #185: the Move tool's translation (mm) and rotation (radians, only with an axis) are
+    /// exposed and driven through the gizmo registry.
+    #[test]
+    fn gizmos_cover_move_translation_and_rotation() {
+        use std::f32::consts::PI;
+        let mut state = AppState::default();
+        state.creating_move = Some(CreatingMove {
+            targets: vec![],
+            tx: "5mm".to_string(),
+            ty: String::new(),
+            tz: String::new(),
+            axis: None,
+            angle: String::new(),
+            editing: None,
+        });
+        let names: Vec<&str> = available_gizmos(&state).iter().map(|g| g.name).collect();
+        assert!(names.contains(&"move_x") && names.contains(&"move_y") && names.contains(&"move_z"));
+        assert!(!names.contains(&"move_angle"), "no rotation gizmo without an axis");
+        assert!((gizmo_value(&state, "move_x").unwrap() - 5.0).abs() < 1e-4);
+        assert!(set_gizmo(&mut state, "move_y", 8.0));
+        assert!((gizmo_value(&state, "move_y").unwrap() - 8.0).abs() < 1e-4);
+
+        // A rotation axis makes the angle gizmo appear; it round-trips in radians.
+        state.creating_move.as_mut().unwrap().axis = Some(crate::model::RevolveAxis::Z);
+        assert!(set_gizmo(&mut state, "move_angle", PI));
+        assert!((gizmo_value(&state, "move_angle").unwrap() - PI).abs() < 1e-3);
     }
     use crate::face::SketchFrame;
 

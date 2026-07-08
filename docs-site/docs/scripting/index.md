@@ -155,8 +155,9 @@ bearcad.drag_gizmo{ name = "extrude", by = 5 }      -- nudge it (mirrors a drag 
 `bearcad.gizmos()` returns only the gizmos available right now (an entry per handle, with its
 `kind`, `name`, and live `value`). Push/pull and offset values are in millimetres; rotate values
 are in radians. Covered today: `"extrude"` (push/pull depth), `"chamfer"`/`"fillet"` (the
-chamfer/fillet amount, named for the active kind), `"revolve"` (sweep angle, radians), and
-`"offset"` (construction-plane offset).
+chamfer/fillet amount, named for the active kind), `"revolve"` (sweep angle, radians),
+`"offset"` (construction-plane offset), and the Move tool's `"move_x"` / `"move_y"` / `"move_z"`
+(translation, mm) and `"move_angle"` (rotation, radians, once an axis is picked).
 
 ## Where to go next
 
