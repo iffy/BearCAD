@@ -19,6 +19,7 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::BooleanOp(_)
         | SceneElement::MoveOp(_)
         | SceneElement::RepeatOp(_)
+        | SceneElement::SketchRepeatOp(_)
         | SceneElement::SliceOp(_)
         | SceneElement::Revolution(_) => Some(element),
         SceneElement::Point(_)
@@ -107,6 +108,7 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         SceneElement::BooleanOp(index) => doc.boolean_ops.get(index)?.name.as_deref(),
         SceneElement::MoveOp(index) => doc.move_ops.get(index)?.name.as_deref(),
         SceneElement::RepeatOp(index) => doc.repeat_ops.get(index)?.name.as_deref(),
+        SceneElement::SketchRepeatOp(index) => doc.sketch_repeat_ops.get(index)?.name.as_deref(),
         SceneElement::SliceOp(index) => doc.slice_ops.get(index)?.name.as_deref(),
         SceneElement::Revolution(index) => doc.revolutions.get(index)?.name.as_deref(),
         SceneElement::Point(_)
@@ -201,6 +203,13 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 .repeat_ops
                 .get_mut(index)
                 .ok_or_else(|| format!("repeat operation {index} not found"))?;
+            op.name = stored;
+        }
+        SceneElement::SketchRepeatOp(index) => {
+            let op = doc
+                .sketch_repeat_ops
+                .get_mut(index)
+                .ok_or_else(|| format!("sketch repeat {index} not found"))?;
             op.name = stored;
         }
         SceneElement::SliceOp(index) => {
@@ -299,6 +308,7 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
         }
         HierarchyNode::MoveOp(i) => format!("Move {i}"),
         HierarchyNode::RepeatOp(i) => format!("Repeat {i}"),
+        HierarchyNode::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
         HierarchyNode::SliceOp(i) => format!("Slice {i}"),
         HierarchyNode::Revolution(i) => format!("Revolve {i}"),
         HierarchyNode::Drawing(i) => doc
@@ -362,6 +372,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::BooleanOp(i) => format!("Boolean {i}"),
         SceneElement::MoveOp(i) => format!("Move {i}"),
         SceneElement::RepeatOp(i) => format!("Repeat {i}"),
+        SceneElement::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
         SceneElement::SliceOp(i) => format!("Slice {i}"),
         SceneElement::Revolution(i) => format!("Revolve {i}"),
     }

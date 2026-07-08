@@ -100,6 +100,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::BooleanOp(_) => "boolean_op",
         SceneElement::MoveOp(_) => "move_op",
         SceneElement::RepeatOp(_) => "repeat_op",
+        SceneElement::SketchRepeatOp(_) => "sketch_repeat_op",
         SceneElement::SliceOp(_) => "slice_op",
         SceneElement::Revolution(_) => "revolution",
     }
@@ -118,6 +119,7 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::BooleanOp(i)
         | SceneElement::MoveOp(i)
         | SceneElement::RepeatOp(i)
+        | SceneElement::SketchRepeatOp(i)
         | SceneElement::SliceOp(i)
         | SceneElement::Revolution(i) => i,
         SceneElement::Point(_)
@@ -3188,6 +3190,48 @@ mod tests {
             runner.tick(&mut state, &mut synthetic, Some(vp), &ctx);
         }
         assert!(runner.error.is_none(), "script error: {:?}", runner.error);
+    }
+
+    /// #228: an in-sketch repeat op is a first-class pane element — it appears in the hierarchy
+    /// with its duplicated entities nested under it (not double-listed under the sketch), and
+    /// deleting the op removes the copies.
+    #[test]
+    fn sketch_repeat_op_groups_and_deletes_in_hierarchy() {
+        use crate::hierarchy::{build_hierarchy, HierarchyNode, SceneElement};
+        let mut state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.circle{ x = 0, y = 0, r = 2 }
+            bearcad.repeat_sketch{ sketch = 0, circles = {0}, angle = 0,
+                                   mode = "count_gap", count = 3, spacing = 10 }
+            "#,
+        );
+        let op = state.doc.sketch_repeat_ops[0].clone();
+        assert_eq!(op.circle_outputs.len(), 2);
+        // The op node exists with its two copies nested; count copy-circle nodes across the tree.
+        let tree = build_hierarchy(&state.doc, None);
+        fn count_nodes(entries: &[crate::hierarchy::HierarchyEntry], f: &dyn Fn(&HierarchyNode) -> bool) -> usize {
+            entries.iter().map(|e| f(&e.node) as usize + count_nodes(&e.children, f)).sum()
+        }
+        assert_eq!(
+            count_nodes(&tree, &|n| matches!(n, HierarchyNode::SketchRepeatOp(_))),
+            1,
+            "the op is a pane node"
+        );
+        // Each copy circle appears exactly once in the whole tree (under the op, not also the sketch).
+        for &ci in &op.circle_outputs {
+            assert_eq!(
+                count_nodes(&tree, &|n| matches!(n, HierarchyNode::Circle(c) if *c == ci)),
+                1,
+                "copy circle {ci} is listed once"
+            );
+        }
+        // Deleting the op tombstones the copies.
+        crate::document_lifecycle::tombstone_element(&mut state.doc, SceneElement::SketchRepeatOp(0));
+        assert!(state.doc.sketch_repeat_ops[0].deleted);
+        for &ci in &op.circle_outputs {
+            assert!(state.doc.circles[ci].deleted, "copy circle {ci} removed with the op");
+        }
     }
 
     /// #226: repeating a whole sketch along an axis copies it onto parallel offset planes — the

@@ -67,6 +67,10 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             .repeat_ops
             .get(index)
             .is_some_and(|op| !op.deleted),
+        SceneElement::SketchRepeatOp(index) => doc
+            .sketch_repeat_ops
+            .get(index)
+            .is_some_and(|op| !op.deleted),
         SceneElement::SliceOp(index) => doc
             .slice_ops
             .get(index)
@@ -223,6 +227,26 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                         }
                         if let Some(s) = doc.sketches.get_mut(si) {
                             s.deleted = true;
+                        }
+                    }
+                    changed = true;
+                }
+            }
+        }
+        SceneElement::SketchRepeatOp(index) => {
+            if let Some(op) = doc.sketch_repeat_ops.get_mut(index) {
+                if !op.deleted {
+                    op.deleted = true;
+                    // The duplicated lines/circles go with the op (#222/#228).
+                    let op = doc.sketch_repeat_ops[index].clone();
+                    for &out in &op.line_outputs {
+                        if let Some(l) = doc.lines.get_mut(out) {
+                            l.deleted = true;
+                        }
+                    }
+                    for &out in &op.circle_outputs {
+                        if let Some(c) = doc.circles.get_mut(out) {
+                            c.deleted = true;
                         }
                     }
                     changed = true;

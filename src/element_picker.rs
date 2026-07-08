@@ -81,6 +81,7 @@ impl ElementKind {
             | SceneElement::BooleanOp(_)
             | SceneElement::MoveOp(_)
             | SceneElement::RepeatOp(_)
+            | SceneElement::SketchRepeatOp(_)
             | SceneElement::SliceOp(_)
             | SceneElement::Revolution(_) => ElementKind::Operation,
         }

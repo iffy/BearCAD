@@ -2552,6 +2552,7 @@ impl<'a> SceneMesh<'a> {
             | SceneElement::BooleanOp(_)
             | SceneElement::MoveOp(_)
             | SceneElement::RepeatOp(_)
+            | SceneElement::SketchRepeatOp(_)
             | SceneElement::SliceOp(_)
             | SceneElement::Revolution(_) => {}
             // Bodies and extrusions get their aura, tinted with the hover color.

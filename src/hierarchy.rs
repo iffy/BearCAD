@@ -46,6 +46,8 @@ pub enum HierarchyNode {
     MoveOp(usize),
     /// A linear repeat on bodies (Repeat tool); its output bodies nest under it.
     RepeatOp(usize),
+    /// A 2D in-sketch linear repeat (#222/#228); its duplicated lines/circles nest under it.
+    SketchRepeatOp(usize),
     /// A slice operation on bodies (Slice tool); its fragment bodies nest under it.
     SliceOp(usize),
     /// A revolved solid (Revolve tool); its output body nests under it (#211).
@@ -101,6 +103,8 @@ pub enum SceneElement {
     MoveOp(usize),
     /// A linear repeat on bodies (Repeat tool).
     RepeatOp(usize),
+    /// A 2D in-sketch linear repeat (#222/#228).
+    SketchRepeatOp(usize),
     /// A slice operation on bodies (Slice tool).
     SliceOp(usize),
     /// A revolved solid (Revolve tool, #211).
@@ -146,6 +150,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::BooleanOp(i) => SceneElement::BooleanOp(i),
         HierarchyNode::MoveOp(i) => SceneElement::MoveOp(i),
         HierarchyNode::RepeatOp(i) => SceneElement::RepeatOp(i),
+        HierarchyNode::SketchRepeatOp(i) => SceneElement::SketchRepeatOp(i),
         HierarchyNode::SliceOp(i) => SceneElement::SliceOp(i),
         HierarchyNode::Revolution(i) => SceneElement::Revolution(i),
     })
@@ -240,6 +245,7 @@ impl ElementVisibility {
             SceneElement::BooleanOp(_) => true,
             SceneElement::MoveOp(_) => true,
             SceneElement::RepeatOp(_) => true,
+            SceneElement::SketchRepeatOp(_) => true,
             SceneElement::SliceOp(_) => true,
             SceneElement::Revolution(_) => true,
             // The origin is always visible while sketching (#189).
@@ -724,6 +730,7 @@ fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
         HierarchyNode::BooleanOp(_) => usize::MAX,
         HierarchyNode::MoveOp(_) => usize::MAX,
         HierarchyNode::RepeatOp(_) => usize::MAX,
+        HierarchyNode::SketchRepeatOp(_) => usize::MAX,
         HierarchyNode::SliceOp(_) => usize::MAX,
         HierarchyNode::Revolution(_) => usize::MAX,
         // Edge treatments order by their index within the extrusion, after the bodies/sketches.
@@ -866,6 +873,29 @@ pub fn build_hierarchy(
         );
         roots.push(HierarchyEntry {
             node: HierarchyNode::RepeatOp(oi),
+            children,
+        });
+    }
+    // 2D in-sketch repeats (#222/#228): the op is its own element with its duplicated
+    // lines/circles nested beneath it (they're excluded from the sketch's own listing).
+    for (oi, op) in doc.sketch_repeat_ops.iter().enumerate() {
+        if op.deleted {
+            continue;
+        }
+        let mut children: Vec<HierarchyEntry> = op
+            .line_outputs
+            .iter()
+            .filter(|&&li| doc.lines.get(li).is_some_and(|l| !l.deleted))
+            .map(|&li| HierarchyEntry { node: HierarchyNode::Line(li), children: Vec::new() })
+            .collect();
+        children.extend(
+            op.circle_outputs
+                .iter()
+                .filter(|&&ci| doc.circles.get(ci).is_some_and(|c| !c.deleted))
+                .map(|&ci| HierarchyEntry { node: HierarchyNode::Circle(ci), children: Vec::new() }),
+        );
+        roots.push(HierarchyEntry {
+            node: HierarchyNode::SketchRepeatOp(oi),
             children,
         });
     }
@@ -1035,6 +1065,7 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
         SceneElement::BooleanOp(_) => None,
         SceneElement::MoveOp(_) => None,
         SceneElement::RepeatOp(_) => None,
+        SceneElement::SketchRepeatOp(_) => None,
         SceneElement::SliceOp(_) => None,
         SceneElement::Revolution(_) => None,
     }
@@ -1157,6 +1188,16 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                 }
                 for &output in &op.plane_outputs {
                     out.insert(SceneElement::ConstructionPlane(output));
+                }
+            }
+        }
+        SceneElement::SketchRepeatOp(index) => {
+            if let Some(op) = doc.sketch_repeat_ops.get(index) {
+                for &output in &op.line_outputs {
+                    out.insert(SceneElement::Line(output));
+                }
+                for &output in &op.circle_outputs {
+                    out.insert(SceneElement::Circle(output));
                 }
             }
         }
@@ -1442,6 +1483,7 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         HierarchyNode::BooleanOp(_) => IconId::Combine,
         HierarchyNode::MoveOp(_) => IconId::Move,
         HierarchyNode::RepeatOp(_) => IconId::Repeat,
+        HierarchyNode::SketchRepeatOp(_) => IconId::Repeat,
         HierarchyNode::SliceOp(_) => IconId::Slice,
         HierarchyNode::Revolution(_) => IconId::Revolve,
         HierarchyNode::EdgeTreatment { extrusion, index } => {
@@ -1528,6 +1570,20 @@ fn build_sketch_child_planes(
     children
 }
 
+/// Whether a line is a fragment/copy generated by an in-sketch repeat (#222/#228) — those are
+/// listed under their operation node, not under the sketch directly.
+fn is_sketch_repeat_line_output(doc: &Document, li: usize) -> bool {
+    doc.sketch_repeat_ops
+        .iter()
+        .any(|op| !op.deleted && op.line_outputs.contains(&li))
+}
+
+fn is_sketch_repeat_circle_output(doc: &Document, ci: usize) -> bool {
+    doc.sketch_repeat_ops
+        .iter()
+        .any(|op| !op.deleted && op.circle_outputs.contains(&ci))
+}
+
 fn build_sketch_entry(
     doc: &Document,
     sketch: SketchId,
@@ -1537,7 +1593,7 @@ fn build_sketch_entry(
 
     if sketch_session.is_some_and(|s| s.sketch == sketch) {
         for (li, line) in doc.lines.iter().enumerate() {
-            if line.deleted || line.sketch != sketch {
+            if line.deleted || line.sketch != sketch || is_sketch_repeat_line_output(doc, li) {
                 continue;
             }
             let entry = HierarchyEntry {
@@ -1569,7 +1625,7 @@ fn build_sketch_entry(
             children.push(entry);
         }
         for (ci, circle) in doc.circles.iter().enumerate() {
-            if circle.deleted || circle.sketch != sketch {
+            if circle.deleted || circle.sketch != sketch || is_sketch_repeat_circle_output(doc, ci) {
                 continue;
             }
             let nested = build_face_sketches(doc, FaceId::Circle(ci), sketch_session);
@@ -1589,7 +1645,7 @@ fn build_sketch_entry(
         }
     } else {
         for (ci, circle) in doc.circles.iter().enumerate() {
-            if circle.deleted || circle.sketch != sketch {
+            if circle.deleted || circle.sketch != sketch || is_sketch_repeat_circle_output(doc, ci) {
                 continue;
             }
             let nested = build_face_sketches(doc, FaceId::Circle(ci), sketch_session);
@@ -2282,6 +2338,7 @@ fn show_row(
             | HierarchyNode::BooleanOp(_)
             | HierarchyNode::MoveOp(_)
             | HierarchyNode::RepeatOp(_)
+            | HierarchyNode::SketchRepeatOp(_)
             | HierarchyNode::SliceOp(_)
             | HierarchyNode::Revolution(_) => {
                 if response.clicked() {

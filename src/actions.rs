@@ -2928,6 +2928,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::BooleanOp(i) => format!("Boolean operation {i}"),
         SceneElement::MoveOp(i) => format!("Move operation {i}"),
         SceneElement::RepeatOp(i) => format!("Repeat operation {i}"),
+        SceneElement::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
         SceneElement::SliceOp(i) => format!("Slice operation {i}"),
         SceneElement::Revolution(i) => format!("Revolve operation {i}"),
         SceneElement::Origin => "Origin".to_string(),
