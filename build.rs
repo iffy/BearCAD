@@ -232,7 +232,11 @@ fn build_slvs() {
         .include(ss.join("extlib/eigen"))
         .include(ss.join("extlib/mimalloc/include"))
         .flag_if_supported("-Wno-deprecated-declarations")
-        .flag_if_supported("-Wno-unused-parameter");
+        .flag_if_supported("-Wno-unused-parameter")
+        // Vendored solvespace/Eigen headers trip these harmlessly; silence to keep the build
+        // output clean (they're third-party, not our code).
+        .flag_if_supported("-Wno-missing-field-initializers")
+        .flag_if_supported("-Wno-unused-but-set-variable");
     // MSVC: the define set solvespace's own CMake uses on Windows. _USE_MATH_DEFINES is
     // load-bearing (M_PI etc.); /bigobj covers the Eigen-heavy system.cpp object.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
