@@ -530,6 +530,8 @@ struct App {
     /// Ephemeral view state; reset (fit) by the Zoom tool / `Z`.
     drawing_zoom: f32,
     drawing_pan: egui::Vec2,
+    /// A drawing popped out into its own OS window (#276), so it can sit beside the 3D view.
+    drawing_window: Option<usize>,
     /// Set just before closing on an uncaught script error with `--exit` (#125), so
     /// `run_app` can translate it into a non-zero process exit code after the eframe
     /// event loop returns — a script failure must fail the process, not just the UI.
@@ -635,6 +637,7 @@ impl App {
             element_filter_drawing_workbench: false,
             drawing_zoom: 1.0,
             drawing_pan: egui::Vec2::ZERO,
+            drawing_window: None,
             script_failed,
         }
     }
@@ -4521,6 +4524,40 @@ impl eframe::App for App {
                     }
                 }
             });
+
+        // A popped-out drawing (#276) renders in its own OS window so it can sit beside the 3D
+        // view. Uses an *immediate* viewport so the render closure can borrow `self`.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(di) = self.drawing_window {
+            if self.state.doc.drawings.get(di).is_none_or(|d| d.deleted) {
+                self.drawing_window = None;
+            } else {
+                let title =
+                    crate::names::node_label(&self.state.doc, hierarchy::HierarchyNode::Drawing(di));
+                let builder = egui::ViewportBuilder::default()
+                    .with_title(format!("Drawing — {title}"))
+                    .with_inner_size([900.0, 700.0]);
+                let mut close = false;
+                ctx.show_viewport_immediate(
+                    egui::ViewportId::from_hash_of("drawing_popout"),
+                    builder,
+                    |vctx, _class| {
+                        theme::apply(vctx);
+                        egui::CentralPanel::default()
+                            .frame(egui::Frame::NONE)
+                            .show(vctx, |ui| {
+                                self.draw_drawing_pane(ui, di);
+                            });
+                        if vctx.input(|i| i.viewport().close_requested()) {
+                            close = true;
+                        }
+                    },
+                );
+                if close {
+                    self.drawing_window = None;
+                }
+            }
+        }
     }
 }
 
@@ -7563,6 +7600,9 @@ impl App {
         }
 
         let mut close = false;
+        // Whether this pane is rendering inside the popped-out drawing window (#276).
+        let in_window = self.drawing_window == Some(drawing);
+        let mut pop_out = false;
         #[allow(unused_mut)] // only mutated by the native-only Export SVG button
         let mut export_svg = false;
         let mut export_pdf = false;
@@ -7589,10 +7629,21 @@ impl App {
             ui.label(egui::RichText::new(title).color(INK).strong());
             ui.separator();
             ui.label(
-                egui::RichText::new("Esc: back to model")
+                egui::RichText::new(if in_window { "Close the window to dismiss" } else { "Esc: back to model" })
                     .color(egui::Color32::from_gray(120))
                     .size(11.0),
             );
+            #[cfg(not(target_arch = "wasm32"))]
+            if !in_window {
+                ui.separator();
+                if ui
+                    .button("⇱ Open in window")
+                    .on_hover_text("Open this drawing in its own window, beside the 3D view")
+                    .clicked()
+                {
+                    pop_out = true;
+                }
+            }
             #[cfg(not(target_arch = "wasm32"))]
             {
                 ui.separator();
@@ -7949,8 +8000,17 @@ impl App {
         if let Some((width_mm, height_mm, margin_mm)) = set_page {
             self.state.apply(Action::SetDrawingPage { drawing, width_mm, height_mm, margin_mm });
         }
-        if close {
+        if pop_out {
+            // Move the drawing into its own window and hand the central area back to the 3D view.
+            self.drawing_window = Some(drawing);
             self.state.apply(Action::EditDrawing { drawing: None });
+        }
+        if close {
+            if in_window {
+                self.drawing_window = None;
+            } else {
+                self.state.apply(Action::EditDrawing { drawing: None });
+            }
         }
     }
 

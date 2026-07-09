@@ -832,6 +832,10 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   **opens it** in the drawing pane, which takes over the central area. The **editor** is
   white-on-black to match the app's dark-mode aesthetic (#254); **export** inverts back to
   black ink on a white sheet.
+- **Pop-out window (#254/#276):** the drawing pane's **⇱ Open in window** button moves the
+  drawing into its **own OS window** (an eframe *immediate* viewport, so its render can borrow
+  app state), handing the central area back to the 3D view — so the model and a drawing are
+  visible at once. Closing the window (or `Esc`) dismisses it. Native only.
 - **Workbenches (#254/#271/#272):** opening a drawing switches to the **Drawing workbench**,
   whose toolbar shows only the tools that apply to drawings — **Select, Move, Dimension**.
   Entering the workbench with a model-only tool active drops back to Select. The Parameters
