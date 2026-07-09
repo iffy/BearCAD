@@ -990,6 +990,28 @@ pub fn show_pane(
     // Keep children from widening the side panel via egui's persisted PanelState.
     ui.set_width(ui.available_width());
 
+    // The element picker is the primary control for the Select tool, so it renders first (#246).
+    if let Some(picker) = &content.selection_picker {
+        any_control = true;
+        ui.label(egui::RichText::new("Selection").strong());
+        ui.add_enabled_ui(controls_enabled, |ui| {
+            if let Some(event) = crate::element_picker::show(ui, picker, doc, "selection_picker") {
+                match event {
+                    // A sticky-focused (Select) picker ignores focus; others take it on click.
+                    crate::element_picker::PickerEvent::Focus => {}
+                    crate::element_picker::PickerEvent::Remove(i) => {
+                        if let Some(element) = picker.picked().get(i).cloned() {
+                            on_selection_edit(SelectionEdit::Remove(element));
+                        }
+                    }
+                    crate::element_picker::PickerEvent::Clear => {
+                        on_selection_edit(SelectionEdit::Clear)
+                    }
+                }
+            }
+        });
+    }
+
     if let Some(control) = &content.name {
         any_control = true;
         ui.label(shortcuts::compact_label("Name", Some(shortcuts::FOCUS_ELEMENT_NAME)));
@@ -1132,11 +1154,6 @@ pub fn show_pane(
         if ui.checkbox(&mut checked, "Snapping").changed() {
             on_snapping_changed(checked);
         }
-        ui.label(
-            egui::RichText::new("Snap to vertices, midpoints, and lines while drawing or moving")
-                .color(egui::Color32::from_gray(140))
-                .size(11.0),
-        );
     }
 
     // Tool-owned element pickers (#213) render at the top of the active tool's section, above
@@ -1602,28 +1619,6 @@ pub fn show_pane(
                 && !pane_state.calibrate_length_draft.trim().is_empty()
             {
                 on_calibrate_image(control, pane_state.calibrate_length_draft.clone());
-            }
-        });
-    }
-
-    if let Some(picker) = &content.selection_picker {
-        any_control = true;
-        ui.separator();
-        ui.label(egui::RichText::new("Selection").strong());
-        ui.add_enabled_ui(controls_enabled, |ui| {
-            if let Some(event) = crate::element_picker::show(ui, picker, doc, "selection_picker") {
-                match event {
-                    // A sticky-focused (Select) picker ignores focus; others take it on click.
-                    crate::element_picker::PickerEvent::Focus => {}
-                    crate::element_picker::PickerEvent::Remove(i) => {
-                        if let Some(element) = picker.picked().get(i).cloned() {
-                            on_selection_edit(SelectionEdit::Remove(element));
-                        }
-                    }
-                    crate::element_picker::PickerEvent::Clear => {
-                        on_selection_edit(SelectionEdit::Clear)
-                    }
-                }
             }
         });
     }
