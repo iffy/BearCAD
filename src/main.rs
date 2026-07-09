@@ -6632,6 +6632,15 @@ fn handle_line_drag(
                 nearest_sketch_line_in_sketch(pp, project, &state.doc, session.sketch)
             {
                 let element = vertex_drag::scene_element_for_line(target.clone());
+                // Fixed reference lines (origin axes, face edges) can't be dragged — just select
+                // them (#241), without the editability gate the drag path needs.
+                if !vertex_drag::can_drag_line(&state.doc, session.sketch, target.clone()) {
+                    state.apply(Action::ClickSceneElement {
+                        element,
+                        additive: ui.input(|i| additive_click_modifiers(&i.modifiers)),
+                    });
+                    return true;
+                }
                 if document_health::require_element_editable(&state.document_health, element.clone())
                     .is_err()
                 {

@@ -11312,6 +11312,26 @@ mod tests {
         }
     }
 
+    /// #241: an origin axis is a selectable element — clicking it lands in the scene selection,
+    /// and it can't be dragged (fixed reference geometry), so the Select tool selects it cleanly.
+    #[test]
+    fn origin_axis_is_selectable_and_not_draggable() {
+        use crate::model::{ConstraintLine, SketchAxis};
+        let mut state = AppState::default();
+        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let axis = SceneElement::FaceEdge(ConstraintLine::OriginAxis(SketchAxis::X));
+        state.apply(Action::ClickSceneElement { element: axis.clone(), additive: false });
+        assert!(state.scene_selection.is_selected(axis), "origin axis selects");
+        assert!(
+            !crate::vertex_drag::can_drag_line(
+                &state.doc,
+                sketch,
+                ConstraintLine::OriginAxis(SketchAxis::X)
+            ),
+            "origin axes are fixed and never draggable"
+        );
+    }
+
     /// #234: clicking a sketch while the Repeat tool is active adds it to the operand set
     /// (mirrors plane/body picking), so it can be repeated along the axis.
     #[test]
