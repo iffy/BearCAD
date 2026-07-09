@@ -1131,6 +1131,25 @@ impl PickTarget {
         if self.priority != other.priority {
             return self.priority < other.priority;
         }
+        // A vertex within its (fixed-radius) pick zone beats an edge that merely passes under the
+        // cursor, so hovering near a corner selects the corner, not the edge through it (#242).
+        // Only vertex-vs-edge is reordered here; every other same-priority pair still goes by
+        // pixel distance.
+        let is_vertex = |k: &PickTargetKind| {
+            matches!(k, PickTargetKind::Point(_) | PickTargetKind::BodyVertex { .. })
+        };
+        let is_edge = |k: &PickTargetKind| {
+            matches!(
+                k,
+                PickTargetKind::Line(_) | PickTargetKind::Circle(_) | PickTargetKind::BodyEdge { .. }
+            )
+        };
+        if is_vertex(&self.kind) && is_edge(&other.kind) {
+            return true;
+        }
+        if is_edge(&self.kind) && is_vertex(&other.kind) {
+            return false;
+        }
         self.distance_px < other.distance_px
     }
 }
@@ -2347,6 +2366,23 @@ mod tests {
             target.map(|t| t.kind),
             Some(PickTargetKind::Line(_))
         ));
+    }
+
+    /// #242: near a vertex the vertex wins even when the edge through it is a hair closer in
+    /// pixels — so hovering a corner selects the corner, not the edge.
+    #[test]
+    fn vertex_beats_a_closer_edge_within_its_pick_radius() {
+        let (mut doc, sketch) = doc_with_plane_sketch();
+        // Away from the world axes so only the line's vertex/edge compete.
+        doc.lines = vec![Line::from_local_endpoints(sketch, 50.0, 50.0, 150.0, 50.0)];
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        // (52, 55): 5px from the line (edge), 5.39px from the (50,50) endpoint — edge is closer,
+        // but the vertex is within its radius, so it must win.
+        let target = resolve_pick_target(Pos2::new(52.0, 55.0), &project, None, &doc, None);
+        assert!(
+            matches!(target.map(|t| t.kind), Some(PickTargetKind::Point(_))),
+            "the vertex should win over the edge through it"
+        );
     }
 
     #[test]
