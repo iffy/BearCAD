@@ -814,10 +814,18 @@ impl ViewportScene {
         // otherwise no point to aim at, so users couldn't tell the origin was selectable.
         if let Some(session) = input.sketch_session {
             if let Some(frame) = sketch_geometry_frame(input.doc, session.sketch) {
-                // Highlight (bigger, in the selection color) when the origin is selected (#189).
+                // Highlight (bigger, in the selection color) when the origin is selected (#189),
+                // or in the hover color when hovered (#240) — the hover-highlight `Element(Origin)`
+                // path can't draw it (it lacks the sketch frame), so it's handled here.
                 let selected = input.selection.is_selected(SceneElement::Origin);
+                let hovered = matches!(
+                    input.hover_highlight,
+                    Some(ViewportHoverHighlight::Element(SceneElement::Origin))
+                );
                 let (color, size) = if selected {
                     (input.palette.dim_edge_highlight, 8.0)
+                } else if hovered {
+                    (input.hover_color, 7.0)
                 } else {
                     (WIREFRAME_LINE_COLOR, 5.0)
                 };

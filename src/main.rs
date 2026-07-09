@@ -4659,7 +4659,26 @@ fn resolve_viewport_hover_highlight(
             {
                 return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(kind));
             }
-            if let Some(t) = resolve_pick_target(pp, project, gp, doc, occlusion) {
+            let t = resolve_pick_target(pp, project, gp, doc, occlusion);
+            // A sketch vertex under the cursor wins over the origin; otherwise the origin, when
+            // hovered within its pick radius, beats edges — matching click selection (#240).
+            if let Some(t) = &t {
+                if matches!(t.kind, construction::PickTargetKind::Point(_)) {
+                    return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(t.kind.clone()));
+                }
+            }
+            if let Some(session) = sketch_session {
+                if let Some(frame) = sketch_geometry_frame(doc, session.sketch) {
+                    if project(frame.origin).is_some_and(|op| {
+                        (op - pp).length() <= construction::POINT_PICK_RADIUS_PX
+                    }) {
+                        return Some(gpu_viewport::ViewportHoverHighlight::Element(
+                            SceneElement::Origin,
+                        ));
+                    }
+                }
+            }
+            if let Some(t) = t {
                 if scene_element_from_pick(&t.kind).is_some()
                     || matches!(t.kind, construction::PickTargetKind::BodyEdge { .. })
                 {
