@@ -349,6 +349,13 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
                 None => "Fillet".to_string(),
             }
         }
+        HierarchyNode::Loft(i) => doc
+            .lofts
+            .get(i)
+            .and_then(|l| l.name.as_deref())
+            .filter(|n| !n.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("Loft {i}")),
         HierarchyNode::DrawingProjection { drawing, view } => {
             match doc.drawings.get(drawing).and_then(|d| d.views.get(view)) {
                 Some(v) => {

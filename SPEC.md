@@ -802,7 +802,11 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   `ThruSections` BREP loft is a documented follow-up. Scriptable as
   `bearcad.loft{ circles = {i, ...}, polygons = {{line, ...}, ...}, name = }` (singular
   `circle`/`polygon` also accepted; each face's sketch is inferred as in `bearcad.extrude`),
-  and interactive lofts replay to the command log as the same call.
+  and interactive lofts replay to the command log as the same call. In the Elements pane a
+  loft shows as its **own operation node** (`HierarchyNode::Loft`) with its output body nested
+  beneath it and its cross-section **sketches** feeding it as Graph-view dependency edges
+  (#252) — previously the loft body surfaced as a bare top-level element with no sign of what
+  produced it.
 - **Pattern** — linear and circular patterns of features/bodies.
 
 Each operation is exposed identically through the GUI, the action DAG, and the scripting

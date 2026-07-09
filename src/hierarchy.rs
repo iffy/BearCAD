@@ -54,6 +54,9 @@ pub enum HierarchyNode {
     SliceOp(usize),
     /// A revolved solid (Revolve tool); its output body nests under it (#211).
     Revolution(usize),
+    /// A loft (Loft tool): its output body nests under it, and its cross-section sketches feed
+    /// it as graph inputs (#252). Display-only for now (no `SceneElement`).
+    Loft(usize),
     /// A technical drawing (#180). A display-only top-level leaf (no [`SceneElement`], like
     /// [`HierarchyNode::Document`]): it has its own icon and is right-clickable to edit
     /// (opening the drawing pane), but isn't a selectable/hideable scene element.
@@ -148,7 +151,8 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::Document
         | HierarchyNode::EdgeTreatment { .. }
         | HierarchyNode::Drawing(_)
-        | HierarchyNode::DrawingProjection { .. } => return None,
+        | HierarchyNode::DrawingProjection { .. }
+        | HierarchyNode::Loft(_) => return None,
         HierarchyNode::ConstructionPlane(i) => SceneElement::ConstructionPlane(i),
         HierarchyNode::Sketch(i) => SceneElement::Sketch(i),
         HierarchyNode::Line(i) => SceneElement::Line(i),
@@ -424,6 +428,20 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
         }
         for &bi in &op.targets {
             edges.push((HierarchyNode::Body(bi), HierarchyNode::SliceOp(oi)));
+        }
+    }
+
+    // A loft is fed by its cross-section sketches (#252) — the user's canonical example: three
+    // sketches feeding one loft that outputs a body.
+    for (li, loft) in doc.lofts.iter().enumerate() {
+        if loft.deleted {
+            continue;
+        }
+        let mut seen = std::collections::HashSet::new();
+        for section in &loft.sections {
+            if seen.insert(section.sketch) {
+                edges.push((HierarchyNode::Sketch(section.sketch), HierarchyNode::Loft(li)));
+            }
         }
     }
 
@@ -858,6 +876,7 @@ fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
         HierarchyNode::SketchSliceOp(_) => usize::MAX,
         HierarchyNode::SliceOp(_) => usize::MAX,
         HierarchyNode::Revolution(_) => usize::MAX,
+        HierarchyNode::Loft(_) => usize::MAX,
         // Edge treatments order by their index within the extrusion, after the bodies/sketches.
         HierarchyNode::EdgeTreatment { index, .. } => index,
         // Drawings list after ranked nodes (#180), like images and operations.
@@ -929,6 +948,7 @@ pub fn build_hierarchy(
                     | crate::model::BodySource::Moved { .. }
                     | crate::model::BodySource::Repeated { .. }
                     | crate::model::BodySource::Sliced { .. }
+                    | crate::model::BodySource::Loft(_)
             )
         {
             roots.push(HierarchyEntry {
@@ -936,6 +956,28 @@ pub fn build_hierarchy(
                 children: Vec::new(),
             });
         }
+    }
+    // Lofts (#252): the loft is an operation node with its output body nested beneath it (its
+    // cross-section sketches feed it as graph inputs, see `graph_dependency_edges`). Previously
+    // the loft body surfaced as a bare top-level element with no sign of what produced it.
+    for (li, loft) in doc.lofts.iter().enumerate() {
+        if loft.deleted {
+            continue;
+        }
+        let children = doc
+            .bodies
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| !b.deleted && matches!(b.source, crate::model::BodySource::Loft(l) if l == li))
+            .map(|(bi, _)| HierarchyEntry {
+                node: HierarchyNode::Body(bi),
+                children: Vec::new(),
+            })
+            .collect();
+        roots.push(HierarchyEntry {
+            node: HierarchyNode::Loft(li),
+            children,
+        });
     }
     // Boolean operations (Combine tool): the operation is an element of its own, with its
     // output bodies nested beneath it — outputs depend on the operation, the operation on
@@ -1216,7 +1258,8 @@ impl ElementFilter {
             | HierarchyNode::SketchRepeatOp(_)
             | HierarchyNode::SketchSliceOp(_)
             | HierarchyNode::SliceOp(_)
-            | HierarchyNode::Revolution(_) => self.operations,
+            | HierarchyNode::Revolution(_)
+            | HierarchyNode::Loft(_) => self.operations,
             HierarchyNode::Image(_) => self.images,
             HierarchyNode::Drawing(_) | HierarchyNode::DrawingProjection { .. } => self.drawings,
         }
@@ -1766,6 +1809,7 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         HierarchyNode::SketchSliceOp(_) => IconId::Slice,
         HierarchyNode::SliceOp(_) => IconId::Slice,
         HierarchyNode::Revolution(_) => IconId::Revolve,
+        HierarchyNode::Loft(_) => IconId::Loft,
         HierarchyNode::EdgeTreatment { extrusion, index } => {
             match edge_treatment_at(doc, extrusion, index).map(|t| t.kind) {
                 Some(crate::model::VertexTreatmentKind::Chamfer) => IconId::Chamfer,
@@ -2666,6 +2710,19 @@ fn show_row(
                     ui.close();
                 }
             });
+        });
+        return;
+    }
+
+    // A loft operation (#252): a display-only row (no SceneElement yet); its output body nests
+    // beneath it and its sketch inputs show as graph edges.
+    if matches!(node, HierarchyNode::Loft(_)) {
+        ui.horizontal(|ui| {
+            ui.add_space(depth as f32 * 18.0);
+            if let Some(icon) = icon_for_hierarchy_node(doc, node) {
+                ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
+            }
+            let _ = ui.selectable_label(false, node_label(doc, node));
         });
         return;
     }
@@ -3754,6 +3811,48 @@ mod tests {
         layout.sync_and_step(&root_only, 300.0, 1, 0.16);
         assert_eq!(layout.nodes.len(), 1);
         assert!(layout.pos_of(HierarchyNode::Document).is_some());
+    }
+
+    /// #252: a loft appears as an operation node with its output body nested beneath it, and its
+    /// cross-section sketches feed it as graph dependency edges — the user's canonical example.
+    #[test]
+    fn loft_is_an_operation_with_body_output_and_sketch_inputs() {
+        use crate::model::{Body, BodySource, ExtrudeFace, Loft, LoftSection};
+        let mut doc = Document::default();
+        doc.lofts.push(Loft {
+            sections: vec![
+                LoftSection { sketch: 0, face: ExtrudeFace::Circle(0) },
+                LoftSection { sketch: 1, face: ExtrudeFace::Circle(1) },
+                LoftSection { sketch: 2, face: ExtrudeFace::Circle(2) },
+            ],
+            name: None,
+            deleted: false,
+        });
+        doc.bodies.push(Body {
+            source: BodySource::Loft(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+
+        let tree = build_hierarchy(&doc, None);
+        let loft = tree[0]
+            .children
+            .iter()
+            .find(|e| e.node == HierarchyNode::Loft(0))
+            .expect("loft is a top-level operation, not a bare body");
+        assert!(
+            loft.children.iter().any(|c| c.node == HierarchyNode::Body(0)),
+            "the loft body nests under the loft as its output"
+        );
+        // The three section sketches feed the loft as dependency inputs.
+        let deps = graph_dependency_edges(&doc);
+        for si in 0..3 {
+            assert!(
+                deps.contains(&(HierarchyNode::Sketch(si), HierarchyNode::Loft(0))),
+                "sketch {si} feeds the loft"
+            );
+        }
     }
 
     #[test]
