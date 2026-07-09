@@ -1505,8 +1505,27 @@ pub fn show_pane(
                 .size(11.0),
             );
         }
+        // Axis element picker (#257): shows the picked edge/axis. Set it by clicking a straight
+        // line or a global axis in the viewport; the ✕ resets to the X axis. Quick X/Y/Z buttons
+        // stay for the global axes (which are awkward to click).
+        ui.label("Axis");
+        let axis_rows = vec![format!("Along {}", control.axis_label)];
+        if let Some(event) = crate::element_picker::show_labeled(
+            ui,
+            "repeat_axis",
+            true,
+            "Click an axis line",
+            crate::icons::IconId::Line,
+            &axis_rows,
+        ) {
+            if matches!(
+                event,
+                crate::element_picker::PickerEvent::Remove(_) | crate::element_picker::PickerEvent::Clear
+            ) {
+                pending = Some(RepeatEdit::Axis(crate::model::RevolveAxis::X));
+            }
+        }
         ui.horizontal(|ui| {
-            ui.label("Axis");
             for (axis, label) in [
                 (crate::model::RevolveAxis::X, "X"),
                 (crate::model::RevolveAxis::Y, "Y"),
@@ -1517,11 +1536,6 @@ pub fn show_pane(
                 }
             }
         });
-        ui.label(
-            egui::RichText::new(format!("Along {} — or click a line", control.axis_label))
-                .color(egui::Color32::from_gray(140))
-                .size(11.0),
-        );
         // Count / gap / distance (#257): the user edits two, the third is computed and shown
         // read-only in its field. Gap and distance each have a picture toggle to switch how
         // they're measured.

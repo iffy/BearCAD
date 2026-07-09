@@ -483,8 +483,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   single-axis representation can't express an arbitrary composition). Moving sub-body geometry
   (faces/edges/vertices) remains a follow-up (#185).
 
-- **Linear repeat tool (#182):** copies of whole bodies spaced along an axis (global or a
-  clicked line). One multi-select body picker; the original stays as instance 0; each
+- **Linear repeat tool (#182/#257):** copies of whole bodies spaced along an axis, chosen with
+  an **element picker** of one edge/axis (a global X/Y/Z axis or a clicked straight sketch
+  line; the ✕ resets to X) (#257). The Default-units section is hidden while the tool is active.
+  One multi-select body picker; the original stays as instance 0; each
   further instance of each target is an output body (`BodySource::Repeated { op, target,
   instance }`) nested under an editable **repeat operation element**
   (`Document::repeat_ops`, `ShapeKind::RepeatOperation`). The context pane exposes three
