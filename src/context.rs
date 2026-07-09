@@ -84,6 +84,8 @@ pub struct ContextInput<'a> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RevolveControl {
     pub face_count: usize,
+    /// One label per picked profile face, shown in the face element picker (#261).
+    pub face_rows: Vec<String>,
     pub axis_label: Option<String>,
     pub symmetric: bool,
     pub body_choice: crate::actions::RevolveBodyChoice,
@@ -204,6 +206,10 @@ pub enum BooleanEdit {
 pub enum RevolveEdit {
     Symmetric(bool),
     BodyChoice(crate::actions::RevolveBodyChoice),
+    /// Remove profile face row `i` from the face picker (`None` clears them all) (#261).
+    RemoveFace(Option<usize>),
+    /// Clear the picked revolve axis (#261).
+    ClearAxis,
 }
 
 /// The "Calibrate scale" control's inputs (#171): the target image and the reference
@@ -1184,28 +1190,87 @@ pub fn show_pane(
         any_control = true;
         ui.separator();
         ui.label(egui::RichText::new("Revolve").strong());
-        ui.label(
-            egui::RichText::new(match &control.axis_label {
-                Some(label) => format!("{} face(s) around {}", control.face_count, label),
-                None => format!("{} face(s) — click an axis line", control.face_count),
-            })
-            .color(egui::Color32::from_gray(140))
-            .size(11.0),
-        );
+
+        // Face element picker (#261): the picked profile faces, click one's ✕ to drop it. Faces
+        // are still added by clicking them in the viewport.
+        ui.label("Profile");
+        if let Some(event) = crate::element_picker::show_labeled(
+            ui,
+            "revolve_faces",
+            true,
+            "Click a profile face",
+            crate::icons::IconId::Sketch,
+            &control.face_rows,
+        ) {
+            match event {
+                crate::element_picker::PickerEvent::Focus => {}
+                crate::element_picker::PickerEvent::Remove(i) => {
+                    on_revolve_edit(RevolveEdit::RemoveFace(Some(i)))
+                }
+                crate::element_picker::PickerEvent::Clear => {
+                    on_revolve_edit(RevolveEdit::RemoveFace(None))
+                }
+            }
+        }
+
+        // Axis element picker (#261): the picked edge/axis, click its ✕ to clear. Set it by
+        // clicking a straight line or a global axis in the viewport.
+        ui.label("Axis");
+        let axis_rows: Vec<String> = control.axis_label.iter().cloned().collect();
+        if let Some(event) = crate::element_picker::show_labeled(
+            ui,
+            "revolve_axis",
+            true,
+            "Click an axis line",
+            crate::icons::IconId::Line,
+            &axis_rows,
+        ) {
+            match event {
+                crate::element_picker::PickerEvent::Focus => {}
+                crate::element_picker::PickerEvent::Remove(_)
+                | crate::element_picker::PickerEvent::Clear => {
+                    on_revolve_edit(RevolveEdit::ClearAxis)
+                }
+            }
+        }
+
         let mut symmetric = control.symmetric;
         if ui.checkbox(&mut symmetric, "Symmetric").changed() {
             on_revolve_edit(RevolveEdit::Symmetric(symmetric));
         }
-        let mut choice = control.body_choice;
-        for (value, label) in [
-            (crate::actions::RevolveBodyChoice::NewBody, "New body"),
-            (crate::actions::RevolveBodyChoice::AddTouching, "Add to touching bodies"),
-            (crate::actions::RevolveBodyChoice::Cut, "Cut bodies"),
-        ] {
-            if ui.radio_value(&mut choice, value, label).changed() {
-                on_revolve_edit(RevolveEdit::BodyChoice(choice));
+        // A segmented icon group (#261): New body / Add to touching / Cut, one highlighted —
+        // the same icons the Extrude "into" picker uses. A cut needs the kernel, so it's only
+        // offered on an `occt` build (mirrors the Extrude cut option).
+        let choice = control.body_choice;
+        ui.horizontal(|ui| {
+            let mut choices = vec![
+                (
+                    crate::actions::RevolveBodyChoice::NewBody,
+                    crate::icons::IconId::NewBody,
+                    "New body",
+                ),
+                (
+                    crate::actions::RevolveBodyChoice::AddTouching,
+                    crate::icons::IconId::AddToBody,
+                    "Add to touching bodies",
+                ),
+            ];
+            if cfg!(feature = "occt") {
+                choices.push((
+                    crate::actions::RevolveBodyChoice::Cut,
+                    crate::icons::IconId::CutBody,
+                    "Cut bodies",
+                ));
             }
-        }
+            for (value, icon, tooltip) in choices {
+                if crate::icons::selectable_icon_button(ui, icon, choice == value, tooltip)
+                    .clicked()
+                    && choice != value
+                {
+                    on_revolve_edit(RevolveEdit::BodyChoice(value));
+                }
+            }
+        });
     }
 
     if let Some(control) = &content.boolean_op {
@@ -1974,6 +2039,7 @@ mod tests {
             tool: Tool::Revolve,
             revolve: Some(RevolveControl {
                 face_count: 1,
+                face_rows: vec!["Circle 1".to_string()],
                 axis_label: Some("the Y axis".to_string()),
                 symmetric: false,
                 body_choice: crate::actions::RevolveBodyChoice::Cut,
@@ -2003,6 +2069,7 @@ mod tests {
             revolve: Some(RevolveControl {
                 body_choice: crate::actions::RevolveBodyChoice::NewBody,
                 face_count: 1,
+                face_rows: vec!["Circle 1".to_string()],
                 axis_label: None,
                 symmetric: false,
                 cut_bodies: vec![],

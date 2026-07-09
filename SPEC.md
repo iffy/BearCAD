@@ -759,10 +759,13 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   projected) or a global X/Y/Z axis. The sweep angle defaults to **360°** and is set by
   dragging the tangent handle or typing (bare numbers are degrees; `rad`/`deg` suffixes
   and parameter expressions work); **Symmetric** sweeps half the angle to each side of the
-  profile plane. The result lands as a **new body**, **fused into touching bodies**
-  (resolved at commit by mesh-bounds intersection), or **cut from picked bodies** — cut
-  targets are clicked in the viewport and listed in the context pane's generic selection
-  picker. Data model: `Revolution { sketch, faces, axis, angle_deg, symmetric, mode }` in
+  profile plane. The context pane shows the picked profile faces and the axis as their own
+  element pickers (each row has a ✕ to remove it; faces/axis are still added by clicking in
+  the viewport) (#261). The result lands as a **new body**, **fused into touching bodies**
+  (resolved at commit by mesh-bounds intersection), or **cut from picked bodies** — chosen
+  with a segmented icon button group (New body / Add to touching / Cut, the same icons the
+  Extrude "into" picker uses) (#261); cut targets are clicked in the viewport and listed in
+  the context pane's generic selection picker. Data model: `Revolution { sketch, faces, axis, angle_deg, symmetric, mode }` in
   `Document::revolutions` with `RevolveMode::{NewBody, AddTo(bodies), Cut(bodies)}`;
   add/cut relationships live on the revolution (bodies consult `revolutions_targeting` at
   mesh/kernel build time), and a NewBody revolve gets `BodySource::Revolve`. One

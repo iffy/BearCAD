@@ -3789,6 +3789,22 @@ impl eframe::App for App {
                     let cr = self.state.creating_revolve.as_ref();
                     context::RevolveControl {
                         face_count: cr.map(|c| c.faces.len()).unwrap_or(0),
+                        face_rows: cr
+                            .map(|c| {
+                                c.faces
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(n, f)| {
+                                        let kind = match f {
+                                            model::ExtrudeFace::Circle(_) => "Circle",
+                                            model::ExtrudeFace::Polygon(_) => "Loop",
+                                            model::ExtrudeFace::Boolean { .. } => "Region",
+                                        };
+                                        format!("{kind} {}", n + 1)
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
                         axis_label: cr.and_then(|c| c.axis).map(|a| match a {
                             model::RevolveAxis::Line(li) => names::element_name(
                                 &self.state.doc,
@@ -3904,6 +3920,19 @@ impl eframe::App for App {
                 match edit {
                     context::RevolveEdit::Symmetric(v) => cr.symmetric = v,
                     context::RevolveEdit::BodyChoice(choice) => cr.body_choice = choice,
+                    context::RevolveEdit::RemoveFace(Some(i)) => {
+                        if i < cr.faces.len() {
+                            cr.faces.remove(i);
+                        }
+                        if cr.faces.is_empty() {
+                            cr.sketch = None;
+                        }
+                    }
+                    context::RevolveEdit::RemoveFace(None) => {
+                        cr.faces.clear();
+                        cr.sketch = None;
+                    }
+                    context::RevolveEdit::ClearAxis => cr.axis = None,
                 }
             }
             if let Some(edit) = boolean_edit {
