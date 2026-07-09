@@ -2093,12 +2093,17 @@ pub fn show_pane(
     ui.horizontal(|ui| {
         ui.heading(PANE_TITLE);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // The Tree view is retired (#252): a strict tree can't show an element with multiple
+            // inputs (e.g. a body that's both an op output and another op's input), so only List
+            // and the dependency-aware Graph remain. The enum variant stays for script
+            // back-compat; a lingering `Tree` mode renders as List (see the match below).
             for (mode, icon, tooltip) in [
                 (HierarchyViewMode::Graph, IconId::ViewGraph, "Graph-node view"),
-                (HierarchyViewMode::Tree, IconId::ViewTree, "Tree view"),
                 (HierarchyViewMode::List, IconId::ViewList, "List view"),
             ] {
-                if selectable_icon_button(ui, icon, *view_mode == mode, tooltip).clicked() {
+                let selected =
+                    *view_mode == mode || (mode == HierarchyViewMode::List && *view_mode == HierarchyViewMode::Tree);
+                if selectable_icon_button(ui, icon, selected, tooltip).clicked() {
                     *view_mode = mode;
                 }
             }
@@ -2110,7 +2115,8 @@ pub fn show_pane(
     let related_constraints = selection_related_constraints(doc, selection);
 
     match view_mode {
-        HierarchyViewMode::List => {
+        // `Tree` is retired (#252); a lingering script-set Tree mode falls back to List.
+        HierarchyViewMode::List | HierarchyViewMode::Tree => {
             let tree = filter_hierarchy(&build_hierarchy(doc, sketch_session), filter);
             let elements = element_list_from_tree(&tree, doc);
             let style_selection = selection_styles_visible_list(&elements, selection);
@@ -2167,41 +2173,6 @@ pub fn show_pane(
                 }
             });
         }
-        HierarchyViewMode::Tree => {
-            let tree = filter_hierarchy(&build_hierarchy(doc, sketch_session), filter);
-            let flat_elements = element_list_from_tree(&tree, doc);
-            let style_selection = selection_styles_visible_list(&flat_elements, selection);
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                show_tree_entries(
-                    ui,
-                    doc,
-                    &tree,
-                    0,
-                    visibility,
-                    selection,
-                    health,
-                    &context,
-                    &related_constraints,
-                    style_selection,
-                    on_edit_sketch,
-                    on_edit_plane,
-                    on_import_image_on_plane,
-                    on_edit_extrusion,
-                    on_edit_edge_treatment,
-                    on_edit_drawing,
-                    on_rename_drawing,
-                    on_export_body,
-                    on_export_body_step,
-                    on_toggle_visibility,
-                    on_click_element,
-                    on_hover_element,
-                    on_delete_element,
-                    active_drawing,
-                    on_add_to_drawing,
-                    highlight_elements,
-                );
-            });
-        }
         HierarchyViewMode::Graph => {
             let tree = filter_hierarchy(&build_hierarchy(doc, sketch_session), filter);
             show_graph_view(
@@ -2254,97 +2225,6 @@ pub fn show_pane(
                 }
             }
         });
-}
-
-/// Recursively render `entries` (and their nested children) at increasing indent, per #34's
-/// Tree view — depth 0 is the synthetic Document root, depth 1 its direct children, etc.
-#[allow(clippy::too_many_arguments)]
-fn show_tree_entries(
-    ui: &mut egui::Ui,
-    doc: &Document,
-    entries: &[HierarchyEntry],
-    depth: usize,
-    visibility: &mut ElementVisibility,
-    selection: &SceneSelection,
-    health: &DocumentHealth,
-    context: &HashSet<SceneElement>,
-    related_constraints: &HashSet<usize>,
-    style_selection: bool,
-    on_edit_sketch: &mut impl FnMut(SketchId),
-    on_edit_plane: &mut impl FnMut(usize),
-    on_import_image_on_plane: &mut impl FnMut(usize),
-    on_edit_extrusion: &mut impl FnMut(usize),
-    on_edit_edge_treatment: &mut impl FnMut(usize, usize),
-    on_edit_drawing: &mut impl FnMut(usize),
-    on_rename_drawing: &mut impl FnMut(usize, String),
-    on_export_body: &mut impl FnMut(usize),
-    on_export_body_step: &mut impl FnMut(usize),
-    on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
-    on_click_element: &mut impl FnMut(SceneElement, bool),
-    on_hover_element: &mut impl FnMut(SceneElement),
-    on_delete_element: &mut impl FnMut(SceneElement),
-    active_drawing: Option<usize>,
-    on_add_to_drawing: &mut impl FnMut(SceneElement),
-    highlight_elements: &HashSet<SceneElement>,
-) {
-    for entry in entries {
-        show_row(
-            ui,
-            doc,
-            entry.node,
-            depth,
-            visibility,
-            selection,
-            health,
-            context,
-            related_constraints,
-            style_selection,
-            on_edit_sketch,
-            on_edit_plane,
-            on_import_image_on_plane,
-            on_edit_extrusion,
-            on_edit_edge_treatment,
-            on_edit_drawing,
-            on_rename_drawing,
-            on_export_body,
-            on_export_body_step,
-            on_toggle_visibility,
-            on_click_element,
-            on_hover_element,
-            on_delete_element,
-            active_drawing,
-            on_add_to_drawing,
-            highlight_elements,
-        );
-        show_tree_entries(
-            ui,
-            doc,
-            &entry.children,
-            depth + 1,
-            visibility,
-            selection,
-            health,
-            context,
-            related_constraints,
-            style_selection,
-            on_edit_sketch,
-            on_edit_plane,
-            on_import_image_on_plane,
-            on_edit_extrusion,
-            on_edit_edge_treatment,
-            on_edit_drawing,
-            on_rename_drawing,
-            on_export_body,
-            on_export_body_step,
-            on_toggle_visibility,
-            on_click_element,
-            on_hover_element,
-            on_delete_element,
-            active_drawing,
-            on_add_to_drawing,
-            highlight_elements,
-        );
-    }
 }
 
 /// Accent stroke for graph-view edges/nodes among the selected node's ancestors and

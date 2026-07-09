@@ -55,7 +55,6 @@ pub enum IconId {
     GroundGrid,
     GroundSolid,
     ViewList,
-    ViewTree,
     ViewGraph,
     /// Extrude body-mode picker icons (#35).
     NewBody,
@@ -77,7 +76,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 54] = [
+    pub const ALL: [Self; 53] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -120,7 +119,6 @@ impl IconId {
         Self::GroundGrid,
         Self::GroundSolid,
         Self::ViewList,
-        Self::ViewTree,
         Self::ViewGraph,
         Self::NewBody,
         Self::AddToBody,
@@ -178,7 +176,6 @@ impl IconId {
             Self::GroundGrid => include_str!("assets/icons/ground_grid.svg"),
             Self::GroundSolid => include_str!("assets/icons/ground_solid.svg"),
             Self::ViewList => include_str!("assets/icons/view_list.svg"),
-            Self::ViewTree => include_str!("assets/icons/view_tree.svg"),
             Self::ViewGraph => include_str!("assets/icons/view_graph.svg"),
             Self::NewBody => include_str!("assets/icons/new_body.svg"),
             Self::AddToBody => include_str!("assets/icons/add_to_body.svg"),
@@ -237,7 +234,6 @@ impl IconId {
             Self::GroundGrid => "Ground grid",
             Self::GroundSolid => "Solid ground",
             Self::ViewList => "List view",
-            Self::ViewTree => "Tree view",
             Self::ViewGraph => "Graph view",
             Self::NewBody => "New body",
             Self::AddToBody => "Add to body",
