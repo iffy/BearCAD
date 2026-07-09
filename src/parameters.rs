@@ -438,7 +438,28 @@ pub fn propagate_parameter_rename(doc: &mut Document, old: &str, new: &str) {
 pub fn recompute_document_geometry(doc: &mut Document) -> Result<(), String> {
     let result = solve_document_constraints(doc);
     crate::projection::refresh_projections(doc);
+    rebake_extrusion_distances(doc);
     result
+}
+
+/// Re-evaluate each extrusion's stored `distance` from its `expression` (#251), so an extrusion
+/// whose distance was typed as a parameter (or any expression) follows edits to that parameter.
+/// Extrusions with no expression (plain gizmo-set distances) keep their baked value. The drag
+/// direction (sign) is preserved; magnitude comes from the expression.
+pub fn rebake_extrusion_distances(doc: &mut Document) {
+    for i in 0..doc.extrusions.len() {
+        let (deleted, expr, dist) = {
+            let e = &doc.extrusions[i];
+            (e.deleted, e.expression.clone(), e.distance)
+        };
+        if deleted || expr.trim().is_empty() {
+            continue;
+        }
+        if let Some(mag) = crate::value::eval_length_mm_in_doc(&expr, doc) {
+            let sign = if dist < 0.0 { -1.0 } else { 1.0 };
+            doc.extrusions[i].distance = mag.abs() * sign;
+        }
+    }
 }
 
 pub fn validate_new_parameter_name(doc: &Document, name: &str, except: Option<usize>) -> Result<(), String> {

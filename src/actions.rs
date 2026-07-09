@@ -5725,10 +5725,23 @@ impl AppState {
                         "Extrude face does not exist or is not a closed loop".to_string(),
                     );
                 }
+                // Keep the committed distance text as the extrusion's expression (#251) so a
+                // parameter-referencing distance (e.g. `foo`) re-bakes when the parameter changes.
+                // Only meaningful when the field was typed; a gizmo-set distance stays a literal.
+                let distance_expr = if ce.user_edited {
+                    ce.text.trim().to_string()
+                } else {
+                    String::new()
+                };
                 if let Some(idx) = ce.edit_index {
                     if let Some(extrusion) = self.doc.extrusions.get_mut(idx) {
                         extrusion.faces = ce.faces.clone();
                         extrusion.distance = distance;
+                        // Only replace the expression when the distance field was actually typed,
+                        // so editing (e.g.) just the faces doesn't wipe a parametric distance.
+                        if ce.user_edited {
+                            extrusion.expression = distance_expr.clone();
+                        }
                         extrusion.target = ce.target;
                     }
                     self.apply_extrude_body_mode(idx, ce.body_mode);
@@ -5746,7 +5759,7 @@ impl AppState {
                         faces: ce.faces.clone(),
                         distance,
                         target: ce.target,
-                        expression: String::new(),
+                        expression: distance_expr,
                         name: None,
                         deleted: false,
                         edge_treatments: Vec::new(),
@@ -9282,6 +9295,39 @@ mod tests {
         assert!(
             (state.doc.extrusions[0].distance.abs() - 20.0).abs() < 1e-3,
             "distance={}",
+            state.doc.extrusions[0].distance
+        );
+    }
+
+    /// #251: an extrusion whose depth was typed as a parameter follows edits to that parameter —
+    /// changing the parameter's value re-bakes the extrusion distance.
+    #[test]
+    fn extrusion_follows_its_parameter_when_edited() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        let rect =
+            crate::construction::add_line_rectangle(&mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
+        state.refresh_document_health();
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace { face: ExtrudeFace::Polygon(rect.to_vec()) });
+        {
+            let ce = state.creating_extrusion.as_mut().unwrap();
+            ce.text = "foo = 20".to_string();
+            ce.user_edited = true;
+        }
+        state.apply(Action::CommitExtrusion);
+        assert!((state.doc.extrusions[0].distance.abs() - 20.0).abs() < 1e-3);
+        // The extrusion tracks the parameter by expression, not a baked literal.
+        assert_eq!(state.doc.extrusions[0].expression, "foo");
+
+        let idx = state.doc.parameters.iter().position(|p| p.name == "foo").unwrap();
+        state.apply(Action::CommitParameterExpression {
+            index: idx,
+            expression: "40mm".to_string(),
+        });
+        assert!(
+            (state.doc.extrusions[0].distance.abs() - 40.0).abs() < 1e-3,
+            "extrusion should follow foo → 40mm, got {}",
             state.doc.extrusions[0].distance
         );
     }
