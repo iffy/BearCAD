@@ -1826,11 +1826,31 @@ pub fn show_pane(
             let style_selection = selection_styles_visible_list(&elements, selection);
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for node in elements {
+                    // When editing a sketch, indent that sketch's own components one level so they
+                    // read as belonging to it (#244).
+                    let row_depth = match (sketch_session, node) {
+                        (Some(s), HierarchyNode::Line(i))
+                            if doc.lines.get(i).is_some_and(|l| l.sketch == s.sketch) =>
+                        {
+                            2
+                        }
+                        (Some(s), HierarchyNode::Circle(i))
+                            if doc.circles.get(i).is_some_and(|c| c.sketch == s.sketch) =>
+                        {
+                            2
+                        }
+                        (Some(s), HierarchyNode::Constraint(i))
+                            if doc.constraints.get(i).is_some_and(|c| c.sketch == s.sketch) =>
+                        {
+                            2
+                        }
+                        _ => 1,
+                    };
                     show_row(
                         ui,
                         doc,
                         node,
-                        1,
+                        row_depth,
                         visibility,
                         selection,
                         health,
