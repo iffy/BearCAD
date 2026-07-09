@@ -1521,6 +1521,12 @@ impl App {
                 self.state.apply(Action::ToggleConstruction);
             }
 
+            // Z: zoom to fit — the selection if anything is selected, else everything (#279).
+            // `consume_key(NONE, …)` requires no modifier, so it never catches Cmd/Ctrl+Z (undo).
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Z)) {
+                self.state.apply(Action::ZoomToFit);
+            }
+
             // `T` is also the mnemonic for the Tangent geometric constraint (Tool::Constraint,
             // handled separately below), so curve-mode/tangent-constraint shortcuts are scoped
             // to everywhere else — while drawing/selected with the line tool, or a sketch
@@ -3161,6 +3167,12 @@ impl eframe::App for App {
                             self.state.apply(Action::SetTool(tool));
                         }
                     }
+                    ui.separator();
+                    if icons::selectable_icon_button(ui, icons::IconId::Zoom, false, "Zoom to fit (Z)")
+                        .clicked()
+                    {
+                        self.state.apply(Action::ZoomToFit);
+                    }
                     return;
                 }
                 if icons::selectable_icon_button(
@@ -3344,6 +3356,12 @@ impl eframe::App for App {
                 .clicked()
                 {
                     self.state.apply(Action::SetTool(Tool::Constraint));
+                }
+                ui.separator();
+                if icons::selectable_icon_button(ui, icons::IconId::Zoom, false, "Zoom to fit (Z)")
+                    .clicked()
+                {
+                    self.state.apply(Action::ZoomToFit);
                 }
                 if let Some(session) = self.state.sketch_session {
                     ui.separator();
