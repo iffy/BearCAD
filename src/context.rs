@@ -521,7 +521,11 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         }),
         _ => None,
     };
-    let units = units_control_from_selection(input.doc, input.selection);
+    // The Repeat tool's own context is busy enough; its distances are plain lengths, so the
+    // Default-units section isn't shown while it's active (#257).
+    let units = (input.tool != Tool::Repeat)
+        .then(|| units_control_from_selection(input.doc, input.selection))
+        .flatten();
     let edge_picker = input
         .edge_treatment_rows
         .clone()
@@ -1892,6 +1896,21 @@ mod tests {
             calibrate_start: None,
             calibrate_pending: None,
         }
+    }
+
+    /// #257: the Default-units section is suppressed while the Repeat tool is active (its
+    /// distances are plain lengths), but present for other tools.
+    #[test]
+    fn repeat_tool_hides_the_units_control() {
+        let doc = Document::default();
+        let selection = SceneSelection::default();
+        let select = context_pane_content(&input(&doc, &selection));
+        assert!(select.units.is_some(), "non-repeat tools still show units");
+        let repeat = context_pane_content(&ContextInput {
+            tool: Tool::Repeat,
+            ..input(&doc, &selection)
+        });
+        assert!(repeat.units.is_none(), "Repeat tool hides the units control");
     }
 
     /// #157/#167: the selection picker surfaces whenever the input carries rows (the
