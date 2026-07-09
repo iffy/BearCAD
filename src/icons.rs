@@ -61,11 +61,13 @@ pub enum IconId {
     NewBody,
     AddToBody,
     CutBody,
+    /// Small "remove" ✕ used by the element picker's row-remove button (#256).
+    Close,
 }
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 47] = [
+    pub const ALL: [Self; 48] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -113,6 +115,7 @@ impl IconId {
         Self::NewBody,
         Self::AddToBody,
         Self::CutBody,
+        Self::Close,
     ];
 
     pub fn svg_source(self) -> &'static str {
@@ -164,6 +167,7 @@ impl IconId {
             Self::NewBody => include_str!("assets/icons/new_body.svg"),
             Self::AddToBody => include_str!("assets/icons/add_to_body.svg"),
             Self::CutBody => include_str!("assets/icons/cut_body.svg"),
+            Self::Close => include_str!("assets/icons/x.svg"),
         }
     }
 
@@ -216,6 +220,7 @@ impl IconId {
             Self::NewBody => "New body",
             Self::AddToBody => "Add to body",
             Self::CutBody => "Cut body",
+            Self::Close => "Close",
         }
     }
 }

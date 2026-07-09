@@ -573,7 +573,16 @@ fn render_combo(
             }
             for (i, (icon, label)) in rows.iter().enumerate() {
                 ui.horizontal(|ui| {
-                    if ui.small_button("✕").on_hover_text("Remove").clicked() {
+                    // A muted-red ✕ icon (#256), soft enough not to jar against the dark theme.
+                    let remove = ui.add(
+                        egui::ImageButton::new(crate::icons::sized_texture(
+                            ui.ctx(),
+                            crate::icons::IconId::Close,
+                        ))
+                        .frame(false)
+                        .tint(egui::Color32::from_rgb(0xC9, 0x6F, 0x66)),
+                    );
+                    if remove.on_hover_text("Remove").clicked() {
                         event = Some(PickerEvent::Remove(i));
                     }
                     row_icon(ui, *icon);
