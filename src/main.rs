@@ -2183,7 +2183,85 @@ impl App {
         if let Some(op) = s.creating_slice.as_ref().and_then(|c| c.editing) {
             return s.doc.slice_ops.get(op).map(|o| o.outputs.clone()).unwrap_or_default();
         }
+        if let Some(op) = s.creating_revolve.as_ref().and_then(|c| c.editing) {
+            return s
+                .doc
+                .bodies
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| !b.deleted && b.source == model::BodySource::Revolve(op))
+                .map(|(bi, _)| bi)
+                .collect();
+        }
         Vec::new()
+    }
+
+    /// Live geometry for the descendants of the operation being edited (#260): a scratch clone of
+    /// the document with the in-progress gizmo edit written into it, meshed per descendant body.
+    /// Rendered in preview styling in place of the stale (faded) geometry so downstream bodies
+    /// visibly follow the drag. Empty when the edit type isn't one we can replay onto a scratch
+    /// doc (then the fade alone stands in).
+    fn edit_preview_descendant_meshes(&self) -> std::collections::HashMap<usize, extrude::SolidMesh> {
+        use std::collections::HashMap;
+        let seeds = self.edited_operation_output_bodies();
+        if seeds.is_empty() {
+            return HashMap::new();
+        }
+        let descendants = extrude::descendant_bodies(&self.state.doc, &seeds);
+        if descendants.is_empty() {
+            return HashMap::new();
+        }
+        let mut scratch = self.state.doc.clone();
+        if !self.apply_active_edit_to_scratch(&mut scratch) {
+            return HashMap::new();
+        }
+        descendants
+            .iter()
+            .filter_map(|&bi| extrude::body_solid_mesh_uncached_pub(&scratch, bi).map(|m| (bi, m)))
+            .collect()
+    }
+
+    /// Write the in-progress gizmo edit's geometry into `doc` (a scratch clone), for the edit
+    /// types whose result is a pure function of a few op fields — extrude distance/faces, a move
+    /// transform, a revolve angle. Returns `false` (leaving `doc` untouched) for edits we don't
+    /// replay, so [`edit_preview_descendant_meshes`] falls back to the plain fade.
+    fn apply_active_edit_to_scratch(&self, doc: &mut model::Document) -> bool {
+        let s = &self.state;
+        if let Some(ce) = s.creating_extrusion.as_ref() {
+            if let Some(idx) = ce.edit_index {
+                if let Some(ext) = doc.extrusions.get_mut(idx) {
+                    ext.faces = ce.faces.clone();
+                    ext.distance = ce.evaluated_distance(&s.doc);
+                    ext.target = ce.target.clone();
+                    return true;
+                }
+            }
+        }
+        if let Some(cm) = s.creating_move.as_ref() {
+            if let Some(op) = cm.editing {
+                if let Some(mv) = doc.move_ops.get_mut(op) {
+                    mv.tx = cm.tx.clone();
+                    mv.ty = cm.ty.clone();
+                    mv.tz = cm.tz.clone();
+                    mv.angle = cm.angle.clone();
+                    mv.axis = cm.axis;
+                    return true;
+                }
+            }
+        }
+        if let Some(cr) = s.creating_revolve.as_ref() {
+            if let Some(op) = cr.editing {
+                if let Some(rev) = doc.revolutions.get_mut(op) {
+                    rev.angle_deg = cr.evaluated_angle_deg(&s.doc);
+                    rev.symmetric = cr.symmetric;
+                    if let Some(axis) = cr.axis {
+                        rev.axis = axis;
+                    }
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Frame for the revolve **arc** gizmo (#262): the axis point nearest the profile centroid
@@ -5330,6 +5408,7 @@ fn build_viewport_scene_input<'a>(
     cut_highlight_bodies: Vec<usize>,
     faded_bodies: Vec<usize>,
     sketch_repeat_ghost: Vec<(Vec3, Vec3)>,
+    edit_preview_meshes: std::collections::HashMap<usize, extrude::SolidMesh>,
 ) -> gpu_viewport::ViewportSceneInput<'a> {
     let preview_rect = creating_rect.and_then(|cr| {
         let session = sketch_session?;
@@ -5575,6 +5654,7 @@ fn build_viewport_scene_input<'a>(
         cut_highlight_bodies,
         faded_bodies,
         sketch_repeat_ghost,
+        edit_preview_meshes,
         element_visibility,
         preview_rect,
         preview_line,
@@ -9799,6 +9879,9 @@ impl App {
         // Live ghost of the in-progress in-sketch repeat's duplicates (#232): dashed copies of
         // the picked lines/circles at every computed offset, so the result previews before commit.
         let sketch_repeat_ghost = self.sketch_repeat_ghost_segments();
+        // Live-updated descendant geometry for the operation being edited (#260): recomputed from
+        // a scratch doc so faded downstream bodies follow the gizmo drag in preview styling.
+        let edit_preview_meshes = self.edit_preview_descendant_meshes();
         let scene_input = build_viewport_scene_input(
             doc,
             &cam,
@@ -9831,6 +9914,7 @@ impl App {
             cut_highlight_bodies,
             faded_bodies,
             sketch_repeat_ghost,
+            edit_preview_meshes,
         );
         let scene = gpu_viewport::ViewportScene::build(&scene_input);
         let gpu_drawn =
@@ -11831,6 +11915,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            std::collections::HashMap::new(),
         );
         assert_eq!(
             scene_input.preview_extrusion.as_ref().map(|e| e.target.clone()),
@@ -11908,6 +11993,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            std::collections::HashMap::new(),
         );
         // 3 instances = original + 2 ghosts; each ghost is a non-empty translated copy.
         assert_eq!(scene_input.repeat_ghosts.len(), 2);
@@ -11999,6 +12085,7 @@ mod tests {
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
+                std::collections::HashMap::new(),
             )
             .preview_solid
             .is_some()
@@ -12087,6 +12174,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            std::collections::HashMap::new(),
         );
         let preview = scene_input.preview_extrusion.as_ref().expect("expected a ghost preview");
         assert_eq!(preview.edge_treatments.len(), 1);

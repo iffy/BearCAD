@@ -1090,10 +1090,15 @@ modeled on SolveSpace (https://solvespace.com).
   tool's picker — so you can gather bodies from the pane even for tools where the viewport is
   picking sub-elements.
 - **Fade descendants while editing (#260):** while an operation is being edited (an extrusion,
-  or a Move/Combine/Repeat/Slice op), the bodies **downstream** of its outputs
+  a Move/Combine/Repeat/Slice op, or a revolve), the bodies **downstream** of its outputs
   (`extrude::descendant_bodies`, walked forward through consuming operations) render dimmed and
-  translucent, so the edit's ripple effects are de-emphasized. (Live-updating those descendants
-  as the gizmo drags — rather than on commit — is a follow-up.)
+  translucent, so the edit's ripple effects are de-emphasized. For the spatial gizmo edits —
+  extrude distance/faces, a Move transform, a revolve angle — those descendants are **live-updated
+  as the gizmo drags**: each frame a scratch clone of the document is meshed with the in-progress
+  edit applied (`body_solid_mesh_uncached_pub`, off the main mesh cache so the rest of the scene
+  stays warm), and every faded descendant renders that recomputed geometry in the preview style
+  instead of its stale committed solid. Edits without a scratch replay (e.g. boolean/slice input
+  re-picks) keep the plain fade.
 - **No picking through bodies (#155/#265):** while selecting (Select/Constraint tools, picks
   made for a tool such as construction-plane references or dimension targets, and the
   body-set tools Combine/Move/Repeat/Slice/Revolve), geometry hidden **behind** a visible

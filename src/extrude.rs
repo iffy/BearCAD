@@ -1813,6 +1813,14 @@ pub fn body_solid_mesh(doc: &Document, body_index: usize) -> Option<SolidMesh> {
     })
 }
 
+/// Build a body's solid mesh **without** consulting or populating [`BODY_MESH_CACHE`]. Used for
+/// the in-progress-edit descendant preview (#260), which meshes a throwaway scratch document each
+/// frame — routing that through the cache would evict the real document's warm meshes every frame
+/// (the two docs fingerprint differently), forcing a full rebuild of the whole scene.
+pub fn body_solid_mesh_uncached_pub(doc: &Document, body_index: usize) -> Option<SolidMesh> {
+    body_solid_mesh_uncached(doc, body_index)
+}
+
 fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMesh> {
     let body = doc.bodies.get(body_index)?;
     if body.deleted {
@@ -3390,6 +3398,54 @@ mod tests {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         (doc, sketch)
+    }
+
+    /// #260: the live-edit descendant preview relies on [`body_solid_mesh_uncached_pub`] being a
+    /// pure function of the document, so writing an in-progress edit into a scratch clone flows
+    /// through to a downstream body's geometry. Here a moved body follows its move op's `tx`.
+    #[test]
+    fn uncached_mesh_follows_scratch_doc_edit() {
+        let (mut doc, _sketch, ext) = box_doc();
+        doc.extrusions.push(ext);
+        // body 0: the extruded box; body 1: a moved copy of it.
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        doc.move_ops.push(crate::model::MoveOperation {
+            targets: vec![0],
+            plane_targets: Vec::new(),
+            image_targets: Vec::new(),
+            tx: "0mm".to_string(),
+            ty: String::new(),
+            tz: String::new(),
+            axis: None,
+            angle: String::new(),
+            outputs: vec![1],
+            name: None,
+            deleted: false,
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Moved { op: 0, target: 0 },
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+
+        let before = body_solid_mesh_uncached_pub(&doc, 1).and_then(|m| m.bounds()).unwrap();
+        // Simulate an in-progress move-gizmo drag on a scratch clone: shift tx by 20mm.
+        let mut scratch = doc.clone();
+        scratch.move_ops[0].tx = "20mm".to_string();
+        let after = body_solid_mesh_uncached_pub(&scratch, 1).and_then(|m| m.bounds()).unwrap();
+
+        assert!(
+            (after.0.x - before.0.x - 20.0).abs() < 1e-3,
+            "moved body's mesh must follow the scratch edit's tx (before {:?}, after {:?})",
+            before.0,
+            after.0,
+        );
     }
 
     /// Drop a rectangle (four lines + a closed-loop polygon face) and return its `Polygon`
