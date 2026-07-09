@@ -17,7 +17,7 @@ use crate::model::{
 use crate::names;
 use crate::selection::{additive_click_modifiers, SceneSelection};
 use eframe::egui::{self, Color32, RichText};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// A node in the scene hierarchy.
 ///
@@ -385,6 +385,68 @@ pub fn graph_node_positions(tree: &[HierarchyEntry]) -> Vec<GraphNodePosition> {
         walk(entry, 0, None, &mut next_row_in_column, &mut positions);
     }
     positions
+}
+
+/// The dot radius, label gap, and minimum breathing room used by [`declutter_label_bands`] and
+/// mirrored by the graph render (`show_graph_view`). Kept here so the physics-free declutter is
+/// unit-testable without pulling in `egui`.
+const GRAPH_NODE_RADIUS_PX: f32 = 9.0;
+const GRAPH_LABEL_GAP_PX: f32 = 4.0;
+const GRAPH_LABEL_CLEAR_PX: f32 = 6.0;
+
+/// Guarantee that no two graph-node labels overlap (#248). The force sim positions the dots
+/// nicely but its labels — drawn rightward from each dot — can still land on a neighbour's dot
+/// or text. Different depth bands sit `LAYER_HEIGHT` apart vertically (far beyond a line of
+/// text), so only same-depth labels can collide; within each band this spreads the nodes just
+/// enough horizontally to clear every label, preserving their left-to-right order and the
+/// band's centre so the layout stays stable frame to frame. Returns an x override per node
+/// (in the same local space as `sim_x`).
+fn declutter_label_bands(
+    positions: &[GraphNodePosition],
+    sim_x: &HashMap<HierarchyNode, f32>,
+    label_widths: &HashMap<HierarchyNode, f32>,
+) -> HashMap<HierarchyNode, f32> {
+    let x_of = |n: &HierarchyNode| sim_x.get(n).copied().unwrap_or(0.0);
+    let w_of = |n: &HierarchyNode| label_widths.get(n).copied().unwrap_or(0.0);
+
+    let mut by_depth: BTreeMap<usize, Vec<HierarchyNode>> = BTreeMap::new();
+    for p in positions {
+        by_depth.entry(p.depth).or_default().push(p.node);
+    }
+
+    let mut out = HashMap::new();
+    for (_, mut band) in by_depth {
+        // Order by simulated x (identity as a deterministic tiebreak) and hold that order.
+        band.sort_by(|a, b| {
+            x_of(a)
+                .partial_cmp(&x_of(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.cmp(b))
+        });
+        let n = band.len();
+        if n == 0 {
+            continue;
+        }
+        // Sweep left→right, pushing each node right only as far as needed to clear the previous
+        // node's whole label box, never left of where the sim placed it.
+        let mut new_x = vec![0.0f32; n];
+        new_x[0] = x_of(&band[0]);
+        for i in 1..n {
+            let prev_right_extent =
+                2.0 * GRAPH_NODE_RADIUS_PX + GRAPH_LABEL_GAP_PX + w_of(&band[i - 1]) + GRAPH_LABEL_CLEAR_PX;
+            let min_next = new_x[i - 1] + prev_right_extent;
+            new_x[i] = x_of(&band[i]).max(min_next);
+        }
+        // Recenter on the band's original centroid so the spread grows symmetrically instead of
+        // marching the whole band rightward each time it's cleared.
+        let sim_mean = band.iter().map(x_of).sum::<f32>() / n as f32;
+        let new_mean = new_x.iter().sum::<f32>() / n as f32;
+        let shift = sim_mean - new_mean;
+        for (node, x) in band.iter().zip(new_x) {
+            out.insert(*node, x + shift);
+        }
+    }
+    out
 }
 
 /// Find `node`'s entry anywhere in `tree` (not just at the root — e.g. a sketch nests under
@@ -2079,15 +2141,39 @@ fn show_graph_view(
         ui.ctx().request_repaint();
     }
 
+    // Measure each node's label, then spread each depth band horizontally so no two labels
+    // overlap (#248). Widths are capped at the pane width so one very long label can't demand
+    // absurd spacing; the render truncates to the pane edge regardless.
+    let label_widths: HashMap<HierarchyNode, f32> = positions
+        .iter()
+        .map(|p| {
+            let label = node_label(doc, p.node);
+            let w = ui.fonts(|f| {
+                f.layout_no_wrap(label, egui::FontId::default(), Color32::WHITE)
+                    .size()
+                    .x
+            });
+            (p.node, w.min(available_width))
+        })
+        .collect();
+    let sim_x: HashMap<HierarchyNode, f32> = positions
+        .iter()
+        .filter_map(|p| graph_layout.pos_of(p.node).map(|v| (p.node, v.x)))
+        .collect();
+    let display_x = declutter_label_bands(&positions, &sim_x, &label_widths);
+
     // Content height from the current simulated y-extent so tall graphs scroll (#34).
     let max_y = positions
         .iter()
         .filter_map(|p| graph_layout.pos_of(p.node).map(|v| v.y))
         .fold(0.0_f32, f32::max);
-    let content_width = available_width;
+    // Width from the decluttered spread so a band wider than the pane can scroll into view
+    // rather than pile its labels off the right edge.
+    let max_x = display_x.values().copied().fold(available_width, f32::max);
+    let content_width = max_x + GRAPH_MARGIN;
     let content_height = max_y + TOP_PADDING + BOTTOM_PADDING + NODE_RADIUS;
 
-    egui::ScrollArea::vertical()
+    egui::ScrollArea::both()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             let (rect, _response) =
@@ -2096,7 +2182,9 @@ fn show_graph_view(
 
             let pos_of = |node: HierarchyNode| -> egui::Pos2 {
                 let local = graph_layout.pos_of(node).unwrap_or(egui::Vec2::ZERO);
-                egui::pos2(rect.left() + local.x, rect.top() + TOP_PADDING + local.y)
+                // x comes from the decluttered spread (#248); y stays as simulated.
+                let x = display_x.get(&node).copied().unwrap_or(local.x);
+                egui::pos2(rect.left() + x, rect.top() + TOP_PADDING + local.y)
             };
 
             // Edges first, so node dots paint over the line endpoints.
@@ -3152,6 +3240,83 @@ mod tests {
         }
     }
 
+    /// #248: with real (wide) labels, no two nodes' label boxes may overlap after settling —
+    /// so drawn words never land on top of one another.
+    #[test]
+    fn declutter_spreads_bands_so_no_two_labels_overlap() {
+        let (doc, sketch) = doc_with_plane_sketch_rect_and_extrusion();
+        let tree = build_hierarchy(&doc, Some(SketchSession { sketch }));
+        let positions = graph_node_positions(&tree);
+
+        // Settle the physics, then feed its x's plus chunky uniform labels through the declutter.
+        let mut layout = GraphLayout::default();
+        for _ in 0..2000 {
+            layout.sync_and_step(&positions, 300.0, 1, 0.16);
+        }
+        let sim_x: HashMap<HierarchyNode, f32> = positions
+            .iter()
+            .map(|p| (p.node, layout.pos_of(p.node).unwrap().x))
+            .collect();
+        let label_widths: HashMap<HierarchyNode, f32> =
+            positions.iter().map(|p| (p.node, 60.0)).collect();
+        let display_x = declutter_label_bands(&positions, &sim_x, &label_widths);
+
+        // Every node keeps a placement, and no two label boxes (dot + rightward text) overlap.
+        // Different depth bands are >= LAYER_HEIGHT apart vertically, so only same-band labels
+        // can collide — and those must be cleared horizontally.
+        const R: f32 = 9.0;
+        const GAP: f32 = 4.0;
+        for (i, a) in positions.iter().enumerate() {
+            assert!(display_x.contains_key(&a.node), "no placement for {:?}", a.node);
+            for b in positions.iter().skip(i + 1) {
+                if a.depth != b.depth {
+                    continue;
+                }
+                let xa = display_x[&a.node];
+                let xb = display_x[&b.node];
+                let overlap = (xa + R + GAP + label_widths[&a.node])
+                    .min(xb + R + GAP + label_widths[&b.node])
+                    - (xa - R).max(xb - R);
+                assert!(
+                    overlap <= 0.0,
+                    "labels of {:?} and {:?} overlap by {overlap:.1}px",
+                    a.node,
+                    b.node
+                );
+            }
+        }
+    }
+
+    /// Declutter preserves each band's left-to-right order and leaves an already-spread band
+    /// untouched (it only pushes nodes apart, never together).
+    #[test]
+    fn declutter_preserves_order_and_leaves_spread_bands_be() {
+        let nodes = [
+            HierarchyNode::Constraint(0),
+            HierarchyNode::Constraint(1),
+            HierarchyNode::Constraint(2),
+        ];
+        let positions: Vec<GraphNodePosition> = nodes
+            .iter()
+            .enumerate()
+            .map(|(i, &node)| GraphNodePosition {
+                node,
+                parent: None,
+                depth: 1,
+                column: 1,
+                row: i,
+            })
+            .collect();
+        // Already 200 px apart — far beyond any label — so declutter must not move them.
+        let sim_x: HashMap<HierarchyNode, f32> =
+            nodes.iter().enumerate().map(|(i, &n)| (n, i as f32 * 200.0)).collect();
+        let label_widths: HashMap<HierarchyNode, f32> = nodes.iter().map(|&n| (n, 40.0)).collect();
+        let out = declutter_label_bands(&positions, &sim_x, &label_widths);
+        for &n in &nodes {
+            assert!((out[&n] - sim_x[&n]).abs() < 1e-3, "spread band moved for {n:?}");
+        }
+    }
+
     #[test]
     #[ignore]
     fn force_layout_probe() {
@@ -3240,3 +3405,4 @@ mod tests {
         );
     }
 }
+
