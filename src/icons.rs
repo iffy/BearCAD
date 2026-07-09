@@ -71,11 +71,13 @@ pub enum IconId {
     BooleanDifference,
     /// Zoom-to-fit toolbar action (#279).
     Zoom,
+    /// A body/sketch projection placed on a technical drawing (#281).
+    Projection,
 }
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 53] = [
+    pub const ALL: [Self; 54] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -129,6 +131,7 @@ impl IconId {
         Self::BooleanIntersect,
         Self::BooleanDifference,
         Self::Zoom,
+        Self::Projection,
     ];
 
     pub fn svg_source(self) -> &'static str {
@@ -186,6 +189,7 @@ impl IconId {
             Self::BooleanIntersect => include_str!("assets/icons/boolean_intersect.svg"),
             Self::BooleanDifference => include_str!("assets/icons/boolean_difference.svg"),
             Self::Zoom => include_str!("assets/icons/zoom.svg"),
+            Self::Projection => include_str!("assets/icons/projection.svg"),
         }
     }
 
@@ -244,6 +248,7 @@ impl IconId {
             Self::BooleanIntersect => "Intersect",
             Self::BooleanDifference => "Difference",
             Self::Zoom => "Zoom to fit",
+            Self::Projection => "Projection",
         }
     }
 }

@@ -63,6 +63,11 @@ pub enum HierarchyNode {
     /// it has no [`SceneElement`]): it nests under its extrusion and is right-clickable to
     /// edit its amount after the fact (#192), but isn't individually selectable/hideable.
     EdgeTreatment { extrusion: usize, index: usize },
+    /// A body/sketch **projection** placed on a technical drawing (#281): a display-only leaf
+    /// nested under its [`HierarchyNode::Drawing`]. `view` indexes the drawing's `views`. It has
+    /// no [`SceneElement`] (not selectable/hideable through the scene graph); its source
+    /// body/sketch is a second input, surfaced once the element graph (#252) lands.
+    DrawingProjection { drawing: usize, view: usize },
 }
 
 /// Identifies an element whose visibility can be toggled.
@@ -142,7 +147,8 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         // Display-only leaves with no independent selectable/hideable identity (#192/#180).
         HierarchyNode::Document
         | HierarchyNode::EdgeTreatment { .. }
-        | HierarchyNode::Drawing(_) => return None,
+        | HierarchyNode::Drawing(_)
+        | HierarchyNode::DrawingProjection { .. } => return None,
         HierarchyNode::ConstructionPlane(i) => SceneElement::ConstructionPlane(i),
         HierarchyNode::Sketch(i) => SceneElement::Sketch(i),
         HierarchyNode::Line(i) => SceneElement::Line(i),
@@ -806,6 +812,8 @@ fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
         HierarchyNode::EdgeTreatment { index, .. } => index,
         // Drawings list after ranked nodes (#180), like images and operations.
         HierarchyNode::Drawing(_) => usize::MAX,
+        // Projections order by their view index within the drawing (#281).
+        HierarchyNode::DrawingProjection { view, .. } => view,
     }
 }
 
@@ -1041,9 +1049,16 @@ pub fn build_hierarchy(
     // the geometry DAG), each right-clickable to open its drawing pane.
     for (di, drawing) in doc.drawings.iter().enumerate() {
         if !drawing.deleted {
+            // Each placed view is a "projection" child of the drawing (#281).
+            let children = (0..drawing.views.len())
+                .map(|vi| HierarchyEntry {
+                    node: HierarchyNode::DrawingProjection { drawing: di, view: vi },
+                    children: Vec::new(),
+                })
+                .collect();
             roots.push(HierarchyEntry {
                 node: HierarchyNode::Drawing(di),
-                children: Vec::new(),
+                children,
             });
         }
     }
@@ -1153,7 +1168,7 @@ impl ElementFilter {
             | HierarchyNode::SliceOp(_)
             | HierarchyNode::Revolution(_) => self.operations,
             HierarchyNode::Image(_) => self.images,
-            HierarchyNode::Drawing(_) => self.drawings,
+            HierarchyNode::Drawing(_) | HierarchyNode::DrawingProjection { .. } => self.drawings,
         }
     }
 }
@@ -1708,6 +1723,7 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
             }
         }
         HierarchyNode::Drawing(_) => IconId::Drawing,
+        HierarchyNode::DrawingProjection { .. } => IconId::Projection,
     })
 }
 
@@ -2242,6 +2258,9 @@ fn show_tree_entries(
 /// dedicated bold accent, distinct from the node fill colors (which do reuse
 /// [`icon_tint_for_row_style`] for consistency with the List/Tree views).
 const GRAPH_RELATED_EDGE: Color32 = Color32::from_rgb(120, 200, 255);
+/// Dashed dependency edge (input, not parent) in the graph view — e.g. a drawing projection to
+/// its source body (#281). A warm accent so it reads apart from the neutral parent edges.
+const GRAPH_DEPENDENCY_EDGE: Color32 = Color32::from_rgb(224, 168, 96);
 
 /// Render the graph-node view: a force-directed node-link diagram (#94). Nodes are pulled into
 /// depth-ordered horizontal layers (so the graph flows top-to-bottom, "somewhat vertical"),
@@ -2358,6 +2377,44 @@ fn show_graph_view(
                     egui::Stroke::new(1.0, Color32::from_gray(110))
                 };
                 painter.line_segment([pos_of(parent), pos_of(position.node)], stroke);
+            }
+
+            // Dependency edges (#281): a drawing projection also depends on its source body — a
+            // second input beyond its drawing parent. Drawn dashed in an accent colour so it
+            // reads as a different relationship than the parent edges above.
+            let present: std::collections::HashSet<HierarchyNode> =
+                positions.iter().map(|p| p.node).collect();
+            for position in &positions {
+                let HierarchyNode::DrawingProjection { drawing, view } = position.node else {
+                    continue;
+                };
+                let Some(source) = doc
+                    .drawings
+                    .get(drawing)
+                    .and_then(|d| d.views.get(view))
+                    .map(|v| HierarchyNode::Body(v.body))
+                else {
+                    continue;
+                };
+                if !present.contains(&source) {
+                    continue;
+                }
+                let (a, b) = (pos_of(source), pos_of(position.node));
+                // Manual dashes so it's visually distinct without a dashed-line primitive.
+                let delta = b - a;
+                let len = delta.length();
+                if len < 1.0 {
+                    continue;
+                }
+                let dir = delta / len;
+                let dash = 5.0;
+                let mut t = 0.0;
+                while t < len {
+                    let s = a + dir * t;
+                    let e = a + dir * (t + dash).min(len);
+                    painter.line_segment([s, e], egui::Stroke::new(1.2, GRAPH_DEPENDENCY_EDGE));
+                    t += dash * 2.0;
+                }
             }
 
             for position in &positions {
@@ -2573,6 +2630,20 @@ fn show_row(
         return;
     }
 
+    // A drawing projection (#281): a display-only leaf; clicking opens the drawing.
+    if let HierarchyNode::DrawingProjection { drawing, .. } = node {
+        ui.horizontal(|ui| {
+            ui.add_space(depth as f32 * 18.0);
+            if let Some(icon) = icon_for_hierarchy_node(doc, node) {
+                ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
+            }
+            if ui.selectable_label(false, node_label(doc, node)).clicked() {
+                on_edit_drawing(drawing);
+            }
+        });
+        return;
+    }
+
     let element = scene_element_for_node(node)
         .expect("non-Document HierarchyNode always maps to a SceneElement");
     if !element_alive(doc, element.clone()) {
@@ -2731,6 +2802,46 @@ mod tests {
         assert!(visibility.effective_visible(&doc, SceneElement::Body(0)));
         visibility.set_visible(SceneElement::Body(0), false);
         assert!(!visibility.effective_visible(&doc, SceneElement::Body(0)));
+    }
+
+    /// #281: each placed drawing view is a "projection" child of its drawing node, labelled by
+    /// its source body and orientation.
+    #[test]
+    fn drawing_views_nest_as_projections_under_the_drawing() {
+        let mut doc = Document::default();
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: Some("Plate".to_string()),
+            deleted: false,
+            shadow: false,
+        });
+        doc.drawings.push(crate::model::Drawing {
+            views: vec![crate::model::DrawingView {
+                body: 0,
+                orientation: crate::model::DrawingOrientation::Front,
+                dimensioned_edges: Vec::new(),
+                angle_dims: Vec::new(),
+                pos_x: 0.5,
+                pos_y: 0.5,
+            }],
+            ..Default::default()
+        });
+
+        let tree = build_hierarchy(&doc, None);
+        // Document -> Drawing(0) -> DrawingProjection { drawing: 0, view: 0 }.
+        let drawing = tree[0]
+            .children
+            .iter()
+            .find(|e| e.node == HierarchyNode::Drawing(0))
+            .expect("drawing node present");
+        assert_eq!(
+            drawing.children.iter().map(|c| c.node).collect::<Vec<_>>(),
+            vec![HierarchyNode::DrawingProjection { drawing: 0, view: 0 }]
+        );
+        assert_eq!(
+            node_label(&doc, HierarchyNode::DrawingProjection { drawing: 0, view: 0 }),
+            "Plate — Front"
+        );
     }
 
     /// #275: hiding a category prunes those nodes but promotes their kept children — so hiding

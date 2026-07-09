@@ -839,7 +839,13 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   fraction). Views render as cards **on the page** and are **dragged** by their caption strip
   (`Action::MoveDrawingView`, non-undoable per-frame). Right-clicking a card picks its
   **projection orientation** (`Action::SetDrawingViewOrientation`) or removes it. New views
-  cascade from the page centre so they don't fully stack.
+  cascade from the page centre so they don't fully stack. A body can be added from the
+  Elements pane's right-click **Add to drawing** while the drawing is open.
+- **Projection elements (#254/#281):** each placed view shows in the Elements pane as a
+  **projection** node (`HierarchyNode::DrawingProjection`, its own icon) nested **under its
+  drawing**. In the Graph view it also draws a dashed **dependency edge** to its source body —
+  a second input beyond its drawing parent (the full multi-parent relationship lands with the
+  element graph, #252). It's a display-only leaf (no `SceneElement`).
 - **Views:** a drawing collects **views**, each a chosen body shown in one orientation — the
   six straight-on directions (Front/Back/Left/Right/Top/Bottom) or an **Isometric**
   three-quarter view. Each view renders as a black wireframe of the body's feature edges,

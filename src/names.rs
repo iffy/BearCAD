@@ -349,6 +349,15 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
                 None => "Fillet".to_string(),
             }
         }
+        HierarchyNode::DrawingProjection { drawing, view } => {
+            match doc.drawings.get(drawing).and_then(|d| d.views.get(view)) {
+                Some(v) => {
+                    let body = node_label(doc, HierarchyNode::Body(v.body));
+                    format!("{body} — {}", v.orientation.label())
+                }
+                None => "Projection".to_string(),
+            }
+        }
     }
 }
 
