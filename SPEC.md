@@ -551,8 +551,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     first-class pane element (`SceneElement::SketchRepeatOp`/`HierarchyNode::SketchRepeatOp`,
     #228): its duplicated lines/circles nest under it in the Elements pane (excluded from the
     sketch's own listing), and it is selectable, nameable, and deletable (delete removes the
-    copies). The interactive viewport tool (pick entities + drag the direction, live preview) is
-    the tracked GUI follow-up.
+    copies). **Interactive tool (#232):** with a sketch open, the **Repeat** tool repeats sketch
+    entities — click lines/circles to toggle them into the set, **Shift+click an edge** to set
+    the repeat direction (its unit vector; default is the sketch U axis), **Enter** commits a
+    `SketchRepeatOperation` (a `CreatingSketchRepeat` draft carries the same count/gap/distance
+    parametrization as the 3D repeat). Its count/gap/distance context panel + live ghost preview
+    are the remaining GUI polish.
   The GUI/scripting to *pick* the length face is a tracked follow-up.
 
 - **Slice tool (#181):** cuts whole bodies with planar cutters. Two pickers — **Bodies**

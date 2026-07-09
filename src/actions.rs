@@ -512,6 +512,99 @@ impl CreatingRepeat {
     }
 }
 
+/// In-progress **in-sketch** linear repeat (#232): mirrors [`CreatingRepeat`] but operates on
+/// sketch lines/circles, with the direction taken from a picked sketch line (or the sketch's U
+/// axis by default). Shares the count/gap/distance parametrization.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreatingSketchRepeat {
+    pub sketch: crate::model::SketchId,
+    pub line_targets: Vec<usize>,
+    pub circle_targets: Vec<usize>,
+    /// A picked sketch line whose direction sets the repeat axis; `None` = the sketch U axis.
+    pub dir_line: Option<usize>,
+    pub mode: crate::model::RepeatMode,
+    pub count: String,
+    pub spacing: String,
+    pub length: String,
+    pub gap_is_offset: bool,
+    pub distance_is_end: bool,
+    pub var_mru: [crate::model::RepeatVar; 3],
+    /// `Some(op)` while re-editing a committed in-sketch repeat.
+    pub editing: Option<usize>,
+}
+
+impl CreatingSketchRepeat {
+    pub fn new(sketch: crate::model::SketchId) -> Self {
+        Self {
+            sketch,
+            line_targets: Vec::new(),
+            circle_targets: Vec::new(),
+            dir_line: None,
+            mode: crate::model::RepeatMode::CountGap,
+            count: "3".to_string(),
+            spacing: "10".to_string(),
+            length: String::new(),
+            gap_is_offset: false,
+            distance_is_end: true,
+            var_mru: [
+                crate::model::RepeatVar::Gap,
+                crate::model::RepeatVar::Count,
+                crate::model::RepeatVar::Distance,
+            ],
+            editing: None,
+        }
+    }
+
+    // These drive the in-sketch repeat context control's count/gap/distance UI (#232), wired in
+    // a follow-up; retained so the interactive pick/commit core can land first.
+    #[allow(dead_code)]
+    pub fn computed_var(&self) -> crate::model::RepeatVar {
+        self.var_mru[2]
+    }
+    #[allow(dead_code)]
+    pub fn recompute_mode(&mut self) {
+        self.mode = crate::model::RepeatMode::from_repeat_ui(
+            self.computed_var(),
+            self.gap_is_offset,
+            self.distance_is_end,
+        );
+    }
+    #[allow(dead_code)]
+    pub fn touch_var(&mut self, v: crate::model::RepeatVar) {
+        if self.var_mru[0] != v {
+            let mut next = [v; 3];
+            let mut i = 1;
+            for &x in &self.var_mru {
+                if x != v {
+                    next[i] = x;
+                    i += 1;
+                }
+            }
+            self.var_mru = next;
+        }
+        self.recompute_mode();
+    }
+
+    pub fn has_targets(&self) -> bool {
+        !self.line_targets.is_empty() || !self.circle_targets.is_empty()
+    }
+
+    /// The repeat direction in plane-local coords: the picked direction line's unit vector, or
+    /// the sketch U axis `(1, 0)` when no line is picked or it's degenerate.
+    pub fn direction(&self, doc: &crate::model::Document) -> (f32, f32) {
+        if let Some(li) = self.dir_line {
+            if let Some(l) = doc.lines.get(li).filter(|l| !l.deleted) {
+                let (du, dv) = (l.x1 - l.x0, l.y1 - l.y0);
+                let len = (du * du + dv * dv).sqrt();
+                if len > 1e-6 {
+                    return (du / len, dv / len);
+                }
+            }
+        }
+        (1.0, 0.0)
+    }
+}
+
 /// In-progress slice operation (Slice tool): the picked target bodies (A), planar cutters
 /// (B), the extend-to-infinity toggle, and which picker the next click lands on.
 #[derive(Clone, Debug, PartialEq)]
@@ -1695,6 +1788,9 @@ pub struct AppState {
     pub creating_move: Option<CreatingMove>,
     /// In-progress linear repeat (Repeat tool).
     pub creating_repeat: Option<CreatingRepeat>,
+    /// In-progress in-sketch linear repeat (#232), active when the Repeat tool runs with a
+    /// sketch open.
+    pub creating_sketch_repeat: Option<CreatingSketchRepeat>,
     /// In-progress slice operation (Slice tool).
     pub creating_slice: Option<CreatingSlice>,
     /// The technical drawing (#180) currently open in the drawing pane, if any. UI state
@@ -1814,6 +1910,7 @@ impl Default for AppState {
             creating_boolean: None,
             creating_move: None,
             creating_repeat: None,
+            creating_sketch_repeat: None,
             creating_slice: None,
             editing_drawing: None,
             creating_calibration: None,
@@ -3736,6 +3833,10 @@ impl AppState {
                 }
                 if self.creating_repeat.is_some() && tool != Tool::Repeat {
                     self.creating_repeat = None;
+                }
+                // The in-sketch repeat draft only lives while the Repeat tool is active (#232).
+                if self.creating_sketch_repeat.is_some() && tool != Tool::Repeat {
+                    self.creating_sketch_repeat = None;
                 }
                 if tool == Tool::Repeat && self.creating_repeat.is_none() {
                     self.creating_repeat = Some(CreatingRepeat::default());
@@ -7894,6 +7995,7 @@ impl AppState {
         self.sketch_session = None;
         self.sketch_reframe_pending = false;
         self.creating_rect = None;
+        self.creating_sketch_repeat = None;
         self.discard_creating_line();
         self.editing_committed_dim = None;
         self.placing_angle_dimension = None;
@@ -11656,6 +11758,25 @@ mod tests {
             orientation: DrawingOrientation::Isometric,
         });
         assert_eq!(state.doc.drawings[0].views[0].orientation, DrawingOrientation::Isometric);
+    }
+
+    /// #232: an in-sketch repeat takes its direction from a picked edge (its unit vector), and
+    /// falls back to the sketch U axis when no line is picked.
+    #[test]
+    fn sketch_repeat_direction_from_edge_or_u_axis() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        // A line going straight up in the sketch plane (dir 0,1).
+        state
+            .doc
+            .lines
+            .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0));
+
+        let mut cr = CreatingSketchRepeat::new(sketch);
+        assert_eq!(cr.direction(&state.doc), (1.0, 0.0), "defaults to the U axis");
+        cr.dir_line = Some(0);
+        let (u, v) = cr.direction(&state.doc);
+        assert!((u - 0.0).abs() < 1e-5 && (v - 1.0).abs() < 1e-5, "unit direction from the edge: {u},{v}");
     }
 
     /// #257: editing a repeat variable keeps the last two edited and computes the third; the

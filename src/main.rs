@@ -2633,7 +2633,9 @@ impl App {
         vp: &glam::Mat4,
         pick_occlusion: Option<&construction::PickOcclusion>,
     ) {
-        if self.state.sketch_session.is_some() {
+        // With a sketch open, the Repeat tool repeats sketch entities instead of bodies (#232).
+        if let Some(session) = self.state.sketch_session {
+            self.handle_sketch_repeat_tool(ui, project, pointer_screen, session);
             return;
         }
         if ui.input(|i| i.key_pressed(egui::Key::Enter))
@@ -2688,6 +2690,98 @@ impl App {
             cr.targets.push(bi);
         }
         self.state.status = format!("Repeat: {} body(ies) picked", cr.targets.len());
+    }
+
+    /// In-sketch Repeat tool (#232): click sketch lines/circles to toggle them into the repeat
+    /// set; Shift+click a line to set the repeat **direction** from that edge; Enter commits a
+    /// `SketchRepeatOperation` (like the 3D repeat, but in the sketch plane).
+    fn handle_sketch_repeat_tool(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        session: SketchSession,
+    ) {
+        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+            && !ui.ctx().wants_keyboard_input()
+            && self
+                .state
+                .creating_sketch_repeat
+                .as_ref()
+                .is_some_and(|c| c.has_targets())
+        {
+            let cr = self.state.creating_sketch_repeat.take().unwrap();
+            let (dir_u, dir_v) = cr.direction(&self.state.doc);
+            let action = match cr.editing {
+                Some(op) => Action::EditSketchRepeatOperation {
+                    op,
+                    line_targets: cr.line_targets,
+                    circle_targets: cr.circle_targets,
+                    dir_u,
+                    dir_v,
+                    mode: cr.mode,
+                    count: cr.count,
+                    spacing: cr.spacing,
+                    length: cr.length,
+                },
+                None => Action::CreateSketchRepeatOperation {
+                    sketch: cr.sketch,
+                    line_targets: cr.line_targets,
+                    circle_targets: cr.circle_targets,
+                    dir_u,
+                    dir_v,
+                    mode: cr.mode,
+                    count: cr.count,
+                    spacing: cr.spacing,
+                    length: cr.length,
+                },
+            };
+            self.state.apply(action);
+            return;
+        }
+        if !ui.input(|i| i.pointer.primary_pressed()) {
+            return;
+        }
+        let Some(pp) = pointer_screen else {
+            return;
+        };
+        let shift = ui.input(|i| i.modifiers.shift);
+        let Some(target) = resolve_pick_target(pp, project, None, &self.state.doc, None) else {
+            return;
+        };
+        let cr = self
+            .state
+            .creating_sketch_repeat
+            .get_or_insert_with(|| actions::CreatingSketchRepeat::new(session.sketch));
+        match target.kind {
+            construction::PickTargetKind::Line(li) if shift => {
+                cr.dir_line = Some(li);
+                self.state.status = "Repeat: direction set from edge".to_string();
+            }
+            construction::PickTargetKind::Line(li) => {
+                if let Some(pos) = cr.line_targets.iter().position(|x| *x == li) {
+                    cr.line_targets.remove(pos);
+                } else {
+                    cr.line_targets.push(li);
+                }
+                self.state.status = format!(
+                    "Repeat: {} entities (Shift+click an edge for direction)",
+                    cr.line_targets.len() + cr.circle_targets.len()
+                );
+            }
+            construction::PickTargetKind::Circle(ci) => {
+                if let Some(pos) = cr.circle_targets.iter().position(|x| *x == ci) {
+                    cr.circle_targets.remove(pos);
+                } else {
+                    cr.circle_targets.push(ci);
+                }
+                self.state.status = format!(
+                    "Repeat: {} entities (Shift+click an edge for direction)",
+                    cr.line_targets.len() + cr.circle_targets.len()
+                );
+            }
+            _ => {}
+        }
     }
 
     /// Slice tool (#181): with the target picker active, click bodies to toggle them into
@@ -3821,7 +3915,9 @@ impl eframe::App for App {
                         })
                     })
                     .flatten(),
-                repeat_op: (self.state.tool == Tool::Repeat).then(|| {
+                repeat_op: (self.state.tool == Tool::Repeat
+                    && self.state.sketch_session.is_none())
+                .then(|| {
                     let cr = self.state.creating_repeat.as_ref();
                     let preview = cr.and_then(|c| {
                         let probe = model::RepeatOperation {
