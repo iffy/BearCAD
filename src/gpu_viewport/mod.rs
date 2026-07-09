@@ -9,7 +9,7 @@ pub use renderer::paint_viewport;
 pub use scene::{
     fill_color, sketch_ground_color, solid_mesh_coplanar_faces, solid_mesh_unique_edges,
     PreviewRect, ViewportHoverHighlight, BODY_SILHOUETTE_COLOR, SOLID_FILL, SOLID_FILL_SELECTED,
-    ViewportPalette, ViewportExtrudeGizmo, MoveRotationGizmo, ViewportPlaneGizmo, ViewportPlanePreview,
+    ViewportPalette, ViewportExtrudeGizmo, MoveRotationGizmo, RevolveArcGizmo, ViewportPlaneGizmo, ViewportPlanePreview,
     ViewportScene, ViewportSceneInput, VertexTreatmentPreviewGeom,
     DEFAULT_CONSTRUCTION_PLANE_OPACITY, GRID_EXTENT, GRID_STEP, SKETCH_DIMMED,
 };

@@ -319,6 +319,46 @@ pub struct MoveRotationGizmo {
     pub hovered: bool,
 }
 
+/// The Revolve tool's arc gizmo (#262): an arc from the 0° direction (`zero_dir`) around
+/// `axis` through `angle_deg`, with a push/pull disc handle at its far end, dragged around the
+/// arc to set the sweep angle.
+#[derive(Clone, Copy, Debug)]
+pub struct RevolveArcGizmo {
+    pub center: Vec3,
+    /// Normalized sweep axis.
+    pub axis: Vec3,
+    /// Unit radial marking 0° (the profile's direction from the axis).
+    pub zero_dir: Vec3,
+    pub radius: f32,
+    pub angle_deg: f32,
+    pub color: Color32,
+    pub hovered: bool,
+}
+
+/// Points along the arc from 0° to `angle_deg` of a [`RevolveArcGizmo`], `zero_dir` rotated
+/// about `axis`. Empty if the axis is degenerate.
+fn revolve_arc_points(
+    center: Vec3,
+    axis: Vec3,
+    zero_dir: Vec3,
+    radius: f32,
+    angle_deg: f32,
+    segments: usize,
+) -> Vec<Vec3> {
+    let n = axis.normalize_or_zero();
+    if n == Vec3::ZERO {
+        return Vec::new();
+    }
+    let total = angle_deg.to_radians();
+    (0..=segments)
+        .map(|i| {
+            let t = total * i as f32 / segments as f32;
+            let rot = glam::Quat::from_axis_angle(n, t);
+            center + (rot * zero_dir) * radius
+        })
+        .collect()
+}
+
 /// A closed circle of `segments` points, centred at `center` in the plane perpendicular to
 /// `axis`, for the rotation-ring gizmo (#216). Empty if the axis is degenerate.
 fn ring_points(center: Vec3, axis: Vec3, radius: f32, segments: usize) -> Vec<Vec3> {
@@ -402,6 +442,8 @@ pub struct ViewportSceneInput<'a> {
     pub move_gizmos: Vec<ViewportExtrudeGizmo>,
     /// The Move tool's rotation-ring gizmo (#216), shown once a rotation axis is picked.
     pub move_rotation_gizmo: Option<MoveRotationGizmo>,
+    /// The Revolve tool's arc gizmo (#262), shown once profile faces and an axis are picked.
+    pub revolve_arc_gizmo: Option<RevolveArcGizmo>,
     /// Live preview of the treated corner while the chamfer/fillet gizmo is being placed or
     /// dragged (#76): world-space polyline from the first line's far endpoint, through the
     /// truncated point, the bridge, the other truncated point, to the second line's far
@@ -1049,6 +1091,44 @@ impl ViewportScene {
             let points = ring_points(ring.center, ring.axis, ring.radius, 64);
             let width = if ring.hovered { 4.0 } else { 2.5 };
             mesh.push_polyline_segment(&points, ring.color, width, input.cam, input.viewport, &vp);
+        }
+        if let Some(arc) = input.revolve_arc_gizmo.as_ref() {
+            // The swept arc from 0° to the current angle, plus a push/pull disc handle at its
+            // far end (#262).
+            let points = revolve_arc_points(
+                arc.center,
+                arc.axis,
+                arc.zero_dir,
+                arc.radius,
+                arc.angle_deg,
+                64,
+            );
+            let width = if arc.hovered { 4.0 } else { 2.5 };
+            mesh.push_polyline_segment(&points, arc.color, width, input.cam, input.viewport, &vp);
+            if let Some(&handle) = points.last() {
+                let project = |w: Vec3| input.cam.project(w, input.viewport, &vp);
+                if arc.hovered {
+                    push_gizmo_handle_hover(
+                        &mut mesh,
+                        handle,
+                        GIZMO_HANDLE_HOVER_RGBA,
+                        input.cam,
+                        input.viewport,
+                        &vp,
+                        &project,
+                    );
+                } else {
+                    push_gizmo_handle(
+                        &mut mesh,
+                        handle,
+                        arc.color,
+                        input.cam,
+                        input.viewport,
+                        &vp,
+                        &project,
+                    );
+                }
+            }
         }
         mesh.set_index_layer(MeshIndexLayer::Overlay);
 
@@ -4292,6 +4372,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
@@ -4747,6 +4828,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
@@ -4785,6 +4867,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
@@ -4829,6 +4912,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: None,
             hover_color: crate::construction::PICK_HOVER_RGBA,
@@ -4862,6 +4946,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: Some(ViewportHoverHighlight::SketchFace(
                 FaceId::ConstructionPlane(0),
@@ -4914,6 +4999,7 @@ mod tests {
                 vertex_treatment_gizmo: None,
                 move_gizmos: Vec::new(),
                 move_rotation_gizmo: None,
+                revolve_arc_gizmo: None,
                 vertex_treatment_preview: None,
                 hover_highlight: hover,
                 hover_color: crate::construction::PICK_HOVER_RGBA,
@@ -4974,6 +5060,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
@@ -5019,6 +5106,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
@@ -5063,6 +5151,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
@@ -5114,6 +5203,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
@@ -5168,6 +5258,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
@@ -5329,6 +5420,7 @@ mod tests {
                 vertex_treatment_gizmo: None,
                 move_gizmos: Vec::new(),
                 move_rotation_gizmo: None,
+                revolve_arc_gizmo: None,
                 vertex_treatment_preview: None,
                 hover_highlight: None,
                 hover_color: Color32::WHITE,
@@ -5499,6 +5591,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
@@ -5624,6 +5717,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: Some(ViewportHoverHighlight::SketchFace(FaceId::Polygon(vec![
                 0, 1, 2, 3,
@@ -5732,6 +5826,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
@@ -5786,6 +5881,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
@@ -5950,6 +6046,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
@@ -5983,6 +6080,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
@@ -6155,6 +6253,7 @@ mod tests {
                 vertex_treatment_gizmo: None,
                 move_gizmos: Vec::new(),
                 move_rotation_gizmo: None,
+                revolve_arc_gizmo: None,
                 vertex_treatment_preview: None,
                 hover_highlight: hover,
                 hover_color: crate::construction::PICK_HOVER_RGBA,
@@ -6232,6 +6331,7 @@ mod tests {
                 vertex_treatment_gizmo: None,
                 move_gizmos: Vec::new(),
                 move_rotation_gizmo: None,
+                revolve_arc_gizmo: None,
                 vertex_treatment_preview: None,
                 hover_highlight: None,
                 hover_color: Color32::WHITE,
@@ -6295,6 +6395,7 @@ mod tests {
                 vertex_treatment_gizmo: None,
                 move_gizmos: Vec::new(),
                 move_rotation_gizmo: None,
+                revolve_arc_gizmo: None,
                 vertex_treatment_preview: None,
                 hover_highlight: None,
                 hover_color: Color32::WHITE,
@@ -6372,6 +6473,7 @@ mod tests {
                 vertex_treatment_gizmo: None,
                 move_gizmos: Vec::new(),
                 move_rotation_gizmo: None,
+                revolve_arc_gizmo: None,
                 vertex_treatment_preview: None,
                 hover_highlight: None,
                 hover_color: Color32::WHITE,
@@ -6460,6 +6562,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
@@ -6493,6 +6596,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
@@ -6673,6 +6777,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
@@ -6710,6 +6815,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
@@ -6812,6 +6918,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
@@ -6847,6 +6954,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
@@ -6880,6 +6988,7 @@ mod tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,
@@ -6967,6 +7076,7 @@ mod perf_probe {
                 vertex_treatment_gizmo: None,
                 move_gizmos: Vec::new(),
                 move_rotation_gizmo: None,
+                revolve_arc_gizmo: None,
                 vertex_treatment_preview: None,
                 hover_highlight: None,
                 hover_color: Color32::WHITE,
@@ -7047,6 +7157,7 @@ mod cut_preview_tests {
             vertex_treatment_gizmo: None,
             move_gizmos: Vec::new(),
             move_rotation_gizmo: None,
+            revolve_arc_gizmo: None,
             vertex_treatment_preview: None,
             hover_highlight: None,
             hover_color: Color32::WHITE,

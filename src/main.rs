@@ -2060,9 +2060,12 @@ impl App {
     /// amount. Mirrors [`Self::handle_vertex_treatment_tool`] closely; active precisely when
     /// that one isn't (no sketch open), since the Chamfer/Fillet tool is shared between the 2D
     /// sketch-vertex case and this 3D solid-edge case.
-    /// World-space anchor + tangent direction for the revolve angle gizmo: the picked
-    /// profiles' centroid, with the sweep tangent (axis x radial) as the drag direction.
-    fn revolve_gizmo_frame(&self) -> Option<(Vec3, Vec3)> {
+    /// Frame for the revolve **arc** gizmo (#262): the axis point nearest the profile centroid
+    /// (`center`), the sweep axis (`axis`), the unit radial from the axis to the profile
+    /// (`zero_dir`, the 0° direction), and the arc `radius`. The gizmo draws an arc from
+    /// `zero_dir` around `axis` through the current sweep angle with a push/pull disc handle at
+    /// its far end, dragged around the arc to set the angle.
+    fn revolve_arc_geom(&self) -> Option<(Vec3, Vec3, Vec3, f32)> {
         let cr = self.state.creating_revolve.as_ref()?;
         let axis = cr.axis?;
         if cr.faces.is_empty() {
@@ -2079,6 +2082,10 @@ impl App {
             deleted: false,
         };
         let (origin, dir) = extrude::revolve_axis_world(&self.state.doc, &probe)?;
+        let dir = dir.normalize_or_zero();
+        if dir.length_squared() < 1e-8 {
+            return None;
+        }
         let mut centroid = Vec3::ZERO;
         let mut n = 0usize;
         for face in &cr.faces {
@@ -2091,13 +2098,13 @@ impl App {
             return None;
         }
         centroid /= n as f32;
-        let radial = centroid - (origin + dir * (centroid - origin).dot(dir));
-        let radial = radial.normalize_or_zero();
-        if radial.length_squared() < 1e-8 {
+        let center = origin + dir * (centroid - origin).dot(dir);
+        let radial = centroid - center;
+        let radius = radial.length();
+        if radius < 1e-4 {
             return None;
         }
-        let tangent = dir.cross(radial).normalize_or_zero();
-        Some((centroid, tangent))
+        Some((center, dir, radial / radius, radius))
     }
 
     /// Revolve tool (SPEC §3.5 Revolve): click coplanar profile faces, click an axis line
@@ -2129,14 +2136,21 @@ impl App {
             return;
         }
         let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
-        // Angle-handle drag: horizontal screen motion maps to degrees.
-        if let Some((start_pos, start_angle)) = self.revolve_gizmo_drag {
-            if let Some(pp) = pointer_screen {
-                let delta = (pp.x - start_pos.x) * 0.5;
-                if let Some(cr) = self.state.creating_revolve.as_mut() {
-                    cr.angle_live = (start_angle + delta).clamp(1.0, 360.0);
-                    if !cr.user_edited {
-                        cr.text = format!("{:.0}", cr.angle_live);
+        // Arc-handle drag (#262): the cursor's angular position around the arc sets the sweep.
+        if self.revolve_gizmo_drag.is_some() {
+            if let (Some(pp), Some((center, axis, zero_dir, radius))) =
+                (pointer_screen, self.revolve_arc_geom())
+            {
+                let zero_world = center + zero_dir * radius;
+                let sign_probe = revolve_arc_handle_world(center, axis, zero_dir, radius, 5.0);
+                if let Some(angle) =
+                    revolve_arc_angle_from_cursor(pp, center, zero_world, sign_probe, project)
+                {
+                    if let Some(cr) = self.state.creating_revolve.as_mut() {
+                        cr.angle_live = angle;
+                        if !cr.user_edited {
+                            cr.text = format!("{angle:.0}");
+                        }
                     }
                 }
             }
@@ -2145,15 +2159,20 @@ impl App {
             }
             return;
         }
-        // Grab the handle?
+        // Grab the arc handle?
         if primary_pressed {
-            if let (Some(pp), Some((anchor, tangent))) =
-                (pointer_screen, self.revolve_gizmo_frame())
+            if let (Some(pp), Some((center, axis, zero_dir, radius))) =
+                (pointer_screen, self.revolve_arc_geom())
             {
-                let cr = self.state.creating_revolve.as_ref();
-                let angle = cr.map(|c| c.evaluated_angle_deg(&self.state.doc)).unwrap_or(360.0);
-                let handle_offset = construction::gizmo_display_offset(angle * 0.05);
-                if construction::offset_gizmo_hit(pp, project, anchor, tangent, handle_offset) {
+                let angle = self
+                    .state
+                    .creating_revolve
+                    .as_ref()
+                    .map(|c| c.evaluated_angle_deg(&self.state.doc))
+                    .unwrap_or(360.0);
+                let handle = revolve_arc_handle_world(center, axis, zero_dir, radius, angle);
+                if project(handle).is_some_and(|hp| (hp - pp).length() <= REVOLVE_ARC_HANDLE_PICK_PX)
+                {
                     self.revolve_gizmo_drag = Some((pp, angle));
                     if let Some(c) = self.state.creating_revolve.as_mut() {
                         c.user_edited = false;
@@ -2696,7 +2715,7 @@ impl App {
     /// Floating angle field for the in-progress revolve (Enter commits). Mirrors the
     /// extrude distance input.
     fn show_revolve_angle_input(&mut self, ui: &egui::Ui, project: &impl Fn(Vec3) -> Option<egui::Pos2>) {
-        let Some((anchor, tangent)) = self.revolve_gizmo_frame() else {
+        let Some((center, axis, zero_dir, radius)) = self.revolve_arc_geom() else {
             return;
         };
         let angle = self
@@ -2705,11 +2724,8 @@ impl App {
             .as_ref()
             .map(|c| c.evaluated_angle_deg(&self.state.doc))
             .unwrap_or(360.0);
-        let handle_offset = construction::gizmo_display_offset(angle * 0.05);
-        let Some(pos) =
-            project(construction::offset_handle(anchor, tangent, handle_offset))
-                .map(|p| p + egui::vec2(14.0, -12.0))
-        else {
+        let handle = revolve_arc_handle_world(center, axis, zero_dir, radius, angle);
+        let Some(pos) = project(handle).map(|p| p + egui::vec2(14.0, -12.0)) else {
             return;
         };
         let mut commit = false;
@@ -4777,6 +4793,7 @@ fn build_viewport_scene_input<'a>(
     vertex_treatment_gizmo: Option<gpu_viewport::ViewportExtrudeGizmo>,
     move_gizmos: Vec<gpu_viewport::ViewportExtrudeGizmo>,
     move_rotation_gizmo: Option<gpu_viewport::MoveRotationGizmo>,
+    revolve_arc_gizmo: Option<gpu_viewport::RevolveArcGizmo>,
     vertex_treatment_preview: Option<Vec<Vec3>>,
     hover_highlight: Option<gpu_viewport::ViewportHoverHighlight>,
     dimension_labels: &'a [gpu_viewport::ViewportDimLabel],
@@ -5044,6 +5061,7 @@ fn build_viewport_scene_input<'a>(
         vertex_treatment_gizmo,
         move_gizmos,
         move_rotation_gizmo,
+        revolve_arc_gizmo,
         vertex_treatment_preview: vertex_treatment_preview
             .map(|points| gpu_viewport::VertexTreatmentPreviewGeom { points }),
         hover_highlight,
@@ -6249,6 +6267,62 @@ fn extrude_face_id(face: model::ExtrudeFace) -> FaceId {
 /// Distance, in sketch units, that the extrude gizmo handle floats above the
 /// solid's top face so it sits a little above the surface rather than on it.
 const EXTRUDE_GIZMO_LIFT: f32 = 4.0;
+
+/// World position of the revolve arc gizmo's push/pull handle (#262): `zero_dir` rotated
+/// `angle_deg` around `axis`, scaled out to `radius` from `center`.
+fn revolve_arc_handle_world(
+    center: Vec3,
+    axis: Vec3,
+    zero_dir: Vec3,
+    radius: f32,
+    angle_deg: f32,
+) -> Vec3 {
+    let rot = glam::Quat::from_axis_angle(axis, angle_deg.to_radians());
+    center + (rot * zero_dir) * radius
+}
+
+/// Map a cursor to a revolve sweep angle by its angular position around the arc, measured in
+/// screen space relative to the 0° direction (#262). Returns degrees in `[1, 360]`, or `None`
+/// if the gizmo center/reference don't project. `sign_probe` is a point a small positive angle
+/// along the sweep, used to fix which screen rotation direction counts as increasing angle.
+fn revolve_arc_angle_from_cursor(
+    cursor: egui::Pos2,
+    center: Vec3,
+    zero_world: Vec3,
+    sign_probe: Vec3,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+) -> Option<f32> {
+    let c = project(center)?;
+    let z = project(zero_world)?;
+    let probe = project(sign_probe)?;
+    let base = (z - c).angle();
+    // Which screen direction is "positive" sweep: the sign of the probe's offset from base.
+    let probe_delta = wrap_signed_radians((probe - c).angle() - base);
+    let positive_ccw = probe_delta >= 0.0;
+    let raw = wrap_signed_radians((cursor - c).angle() - base);
+    // Fold to a 0..2π sweep in the positive direction.
+    let mut sweep = if positive_ccw { raw } else { -raw };
+    if sweep < 0.0 {
+        sweep += std::f32::consts::TAU;
+    }
+    let deg = sweep.to_degrees();
+    Some(deg.clamp(1.0, 360.0))
+}
+
+/// Wrap an angle in radians to `(-π, π]`.
+fn wrap_signed_radians(a: f32) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    let mut a = a % TAU;
+    if a > PI {
+        a -= TAU;
+    } else if a <= -PI {
+        a += TAU;
+    }
+    a
+}
+
+/// Screen-space grab radius (px) for the revolve arc gizmo's push/pull handle (#262).
+const REVOLVE_ARC_HANDLE_PICK_PX: f32 = 12.0;
 
 /// egui id of the floating extrude-distance text field.
 const REVOLVE_ANGLE_FIELD_ID: &str = "revolve_angle_field";
@@ -8797,30 +8871,34 @@ impl App {
         // other needs it closed).
         let mut vertex_treatment_gizmo = None;
         let mut vertex_treatment_preview = None;
-        // Revolve angle handle (#revolve): reuses the shared gizmo slot (mutually
-        // exclusive with chamfer/fillet — different tools).
-        if self.state.tool == Tool::Revolve {
-            if let Some((anchor, tangent)) = self.revolve_gizmo_frame() {
+        // Revolve arc gizmo (#262): an arc swept to the current angle with a push/pull disc
+        // handle at its far end, dragged around the arc to set the sweep angle.
+        let revolve_arc_gizmo = (self.state.tool == Tool::Revolve)
+            .then(|| self.revolve_arc_geom())
+            .flatten()
+            .map(|(center, axis, zero_dir, radius)| {
                 let angle = self
                     .state
                     .creating_revolve
                     .as_ref()
                     .map(|c| c.evaluated_angle_deg(&self.state.doc))
                     .unwrap_or(360.0);
-                let handle_offset = construction::gizmo_display_offset(angle * 0.05);
+                let handle = revolve_arc_handle_world(center, axis, zero_dir, radius, angle);
                 let hovered = self.revolve_gizmo_drag.is_some()
                     || pointer_screen.is_some_and(|pp| {
-                        construction::offset_gizmo_hit(pp, &project, anchor, tangent, handle_offset)
+                        project(handle)
+                            .is_some_and(|hp| (hp - pp).length() <= REVOLVE_ARC_HANDLE_PICK_PX)
                     });
-                vertex_treatment_gizmo = Some(gpu_viewport::ViewportExtrudeGizmo {
-                    origin: anchor,
-                    normal: tangent,
-                    offset: handle_offset,
+                gpu_viewport::RevolveArcGizmo {
+                    center,
+                    axis,
+                    zero_dir,
+                    radius,
+                    angle_deg: angle,
                     color: col::PREVIEW,
                     hovered,
-                });
-            }
-        }
+                }
+            });
         if matches!(self.state.tool, Tool::Chamfer | Tool::Fillet) {
             if let (Some(session), Some(cvt)) =
                 (self.state.sketch_session, self.state.creating_vertex_treatment.as_ref())
@@ -9006,6 +9084,7 @@ impl App {
             vertex_treatment_gizmo,
             move_gizmos,
             move_rotation_gizmo,
+            revolve_arc_gizmo,
             vertex_treatment_preview,
             hover_highlight,
             &gpu_dim_labels,
@@ -10829,11 +10908,11 @@ mod tests {
     use super::actions::CreatingRect;
     use super::{
         build_viewport_scene_input, clip_segment_to_rect, col, initial_launch_maximize_frames,
-        native_options, script_finished_close_action, should_commit_sketch_on_click,
-        should_select_all_rect_value, side_panel_resize_active, tick_launch_maximize,
-        uses_deferred_launch_maximize, vertex_treatment_preview_points, ConstraintPoint, Line,
-        MACOS_LAUNCH_MAXIMIZE_DELAY_FRAMES, GRID_EXTENT, ORBIT_PIVOT_GROUND_RADIUS,
-        ORBIT_PIVOT_RADIUS,
+        native_options, revolve_arc_angle_from_cursor, revolve_arc_handle_world,
+        script_finished_close_action, should_commit_sketch_on_click, should_select_all_rect_value,
+        side_panel_resize_active, tick_launch_maximize, uses_deferred_launch_maximize,
+        vertex_treatment_preview_points, ConstraintPoint, Line, MACOS_LAUNCH_MAXIMIZE_DELAY_FRAMES,
+        GRID_EXTENT, ORBIT_PIVOT_GROUND_RADIUS, ORBIT_PIVOT_RADIUS,
     };
     use crate::face::SketchFrame;
     use eframe::egui::{self, Pos2, Rect, Vec2};
@@ -10843,6 +10922,32 @@ mod tests {
     #[test]
     fn shape_edge_stroke_color_is_shared() {
         assert_eq!(col::RECT_LINE, Color32::from_rgb(120, 170, 240));
+    }
+
+    /// #262: the revolve arc handle sits at `angle` around the axis, and a cursor at that
+    /// handle's screen position reads back the same angle (dragging around the arc sets it).
+    #[test]
+    fn revolve_arc_angle_round_trips_through_the_cursor() {
+        let center = Vec3::ZERO;
+        let axis = Vec3::Z;
+        let zero_dir = Vec3::X;
+        let radius = 10.0;
+        // Identity-ish projection: world (x, y) → screen (x, y).
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let zero_world = center + zero_dir * radius;
+        let sign_probe = revolve_arc_handle_world(center, axis, zero_dir, radius, 5.0);
+
+        for target in [30.0_f32, 90.0, 200.0, 270.0, 359.0] {
+            let handle = revolve_arc_handle_world(center, axis, zero_dir, radius, target);
+            let cursor = project(handle).unwrap();
+            let got =
+                revolve_arc_angle_from_cursor(cursor, center, zero_world, sign_probe, &project)
+                    .unwrap();
+            assert!(
+                (got - target).abs() < 0.5,
+                "angle {target} round-trips, got {got}"
+            );
+        }
     }
 
     /// #218: the body tools resolve a whole body from any of its sub-elements — an edge, a
@@ -10979,6 +11084,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &[],
             None,
             None,
@@ -11050,6 +11156,7 @@ mod tests {
             None,
             None,
             Vec::new(),
+            None,
             None,
             None,
             None,
@@ -11141,6 +11248,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 &[],
                 None,
                 None,
@@ -11223,6 +11331,7 @@ mod tests {
             None,
             None,
             Vec::new(),
+            None,
             None,
             None,
             None,

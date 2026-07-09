@@ -757,8 +757,10 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   into a solid. The **Revolve** toolbar tool collects profile faces by clicking (same face
   picking as Extrude), then an axis: any line in the sketch (plain, construction, or
   projected) or a global X/Y/Z axis. The sweep angle defaults to **360°** and is set by
-  dragging the tangent handle or typing (bare numbers are degrees; `rad`/`deg` suffixes
-  and parameter expressions work); **Symmetric** sweeps half the angle to each side of the
+  dragging a push/pull disc handle **around an arc** — the arc sweeps from the profile to the
+  current angle and the handle rides its far end (#262) — or by typing (bare numbers are
+  degrees; `rad`/`deg` suffixes and parameter expressions work); **Symmetric** sweeps half the
+  angle to each side of the
   profile plane. The context pane shows the picked profile faces and the axis as their own
   element pickers (each row has a ✕ to remove it; faces/axis are still added by clicking in
   the viewport) (#261). The result lands as a **new body**, **fused into touching bodies**
