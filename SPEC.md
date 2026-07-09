@@ -835,6 +835,11 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   with **0.5 in** margins. The editor draws the page outline and margin at the page's aspect
   ratio; right-clicking the sheet background opens a page-dimensions editor (in inches, with
   Landscape/Portrait Letter presets), via `Action::SetDrawingPage`.
+- **Placed views (#254/#274):** each view carries a page position (`pos_x`, `pos_y`, page
+  fraction). Views render as cards **on the page** and are **dragged** by their caption strip
+  (`Action::MoveDrawingView`, non-undoable per-frame). Right-clicking a card picks its
+  **projection orientation** (`Action::SetDrawingViewOrientation`) or removes it. New views
+  cascade from the page centre so they don't fully stack.
 - **Views:** a drawing collects **views**, each a chosen body shown in one orientation — the
   six straight-on directions (Front/Back/Left/Right/Top/Bottom) or an **Isometric**
   three-quarter view. Each view renders as a black wireframe of the body's feature edges,

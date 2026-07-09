@@ -1051,6 +1051,19 @@ pub enum Action {
         body: usize,
         orientation: crate::model::DrawingOrientation,
     },
+    /// Drag a placed view to a new page position (fraction 0..1) (#274).
+    MoveDrawingView {
+        drawing: usize,
+        view: usize,
+        pos_x: f32,
+        pos_y: f32,
+    },
+    /// Change a placed view's projection orientation (#274).
+    SetDrawingViewOrientation {
+        drawing: usize,
+        view: usize,
+        orientation: crate::model::DrawingOrientation,
+    },
     /// Remove a body view from a drawing by its index.
     RemoveDrawingView { drawing: usize, view: usize },
     /// Toggle the length dimension of one edge (by quantized world endpoints) in a drawing view.
@@ -1250,6 +1263,7 @@ impl Action {
                     | Action::ToggleElementVisibility(_)
                     | Action::ToggleFpsMode
                     | Action::EditDrawing { .. }
+                    | Action::MoveDrawingView { .. }
             )
     }
 
@@ -5946,16 +5960,43 @@ impl AppState {
                 let Some(d) = self.doc.drawings.get_mut(drawing).filter(|d| !d.deleted) else {
                     return ActionResult::Err(format!("No drawing {drawing}"));
                 };
+                // Cascade new placements down-right from the page centre so they don't fully
+                // stack (#274); wrap back after a handful.
+                let step = (d.views.len() % 6) as f32 * 0.06;
                 d.views.push(crate::model::DrawingView {
                     body,
                     orientation,
                     dimensioned_edges: Vec::new(),
                     angle_dims: Vec::new(),
+                    pos_x: (0.35 + step).min(0.9),
+                    pos_y: (0.35 + step).min(0.9),
                 });
                 self.status = format!(
                     "Added {} view of body {body} to drawing {drawing}",
                     orientation.label()
                 );
+                ActionResult::Ok
+            }
+            Action::MoveDrawingView { drawing, view, pos_x, pos_y } => {
+                let Some(d) = self.doc.drawings.get_mut(drawing).filter(|d| !d.deleted) else {
+                    return ActionResult::Err(format!("No drawing {drawing}"));
+                };
+                let Some(v) = d.views.get_mut(view) else {
+                    return ActionResult::Err(format!("No view {view}"));
+                };
+                v.pos_x = pos_x.clamp(0.0, 1.0);
+                v.pos_y = pos_y.clamp(0.0, 1.0);
+                ActionResult::Ok
+            }
+            Action::SetDrawingViewOrientation { drawing, view, orientation } => {
+                let Some(d) = self.doc.drawings.get_mut(drawing).filter(|d| !d.deleted) else {
+                    return ActionResult::Err(format!("No drawing {drawing}"));
+                };
+                let Some(v) = d.views.get_mut(view) else {
+                    return ActionResult::Err(format!("No view {view}"));
+                };
+                v.orientation = orientation;
+                self.status = format!("Set view to {}", orientation.label());
                 ActionResult::Ok
             }
             Action::RemoveDrawingView { drawing, view } => {
@@ -11484,6 +11525,37 @@ mod tests {
         state.apply(Action::EditDrawing { drawing: None });
         state.apply(Action::EditDrawing { drawing: Some(0) });
         assert_eq!(state.tool, Tool::Dimension, "Dimension stays selected");
+    }
+
+    /// #274: a placed view can be dragged to a new page position (clamped to the page) and have
+    /// its projection orientation changed.
+    #[test]
+    fn drawing_view_moves_and_changes_orientation() {
+        use crate::model::DrawingOrientation;
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: 0,
+            body: 0,
+            orientation: DrawingOrientation::Front,
+        });
+
+        state.apply(Action::MoveDrawingView { drawing: 0, view: 0, pos_x: 0.8, pos_y: 0.2 });
+        let v = &state.doc.drawings[0].views[0];
+        assert_eq!((v.pos_x, v.pos_y), (0.8, 0.2));
+
+        // Out-of-range positions clamp to the page.
+        state.apply(Action::MoveDrawingView { drawing: 0, view: 0, pos_x: 1.5, pos_y: -0.3 });
+        let v = &state.doc.drawings[0].views[0];
+        assert_eq!((v.pos_x, v.pos_y), (1.0, 0.0));
+
+        state.apply(Action::SetDrawingViewOrientation {
+            drawing: 0,
+            view: 0,
+            orientation: DrawingOrientation::Isometric,
+        });
+        assert_eq!(state.doc.drawings[0].views[0].orientation, DrawingOrientation::Isometric);
     }
 
     /// #273: a new drawing defaults to a landscape US-Letter page with 0.5in margins, and the

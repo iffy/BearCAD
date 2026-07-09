@@ -1698,6 +1698,12 @@ pub struct DrawingView {
     pub body: usize,
     #[serde(default)]
     pub orientation: DrawingOrientation,
+    /// Placement centre on the page, as a fraction of the page (0..1) from the top-left (#274).
+    /// Defaults to the page centre; the pane cascades new placements so they don't fully stack.
+    #[serde(default = "default_view_pos")]
+    pub pos_x: f32,
+    #[serde(default = "default_view_pos")]
+    pub pos_y: f32,
     /// Body edges whose length dimension is shown, keyed by their quantized world endpoints
     /// (order-normalized, smaller endpoint first) — a geometry identity that survives
     /// rebuilds, like [`crate::hierarchy::SceneElement::BodyEdge`]. Empty by default.
@@ -1751,6 +1757,9 @@ fn default_page_height_mm() -> f32 {
 }
 fn default_page_margin_mm() -> f32 {
     0.5 * 25.4
+}
+fn default_view_pos() -> f32 {
+    0.5
 }
 
 impl Default for Drawing {

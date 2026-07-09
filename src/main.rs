@@ -7311,6 +7311,8 @@ impl App {
         // landscape/portrait rectangle centred in the lower part of the pane, at the page's
         // aspect ratio, with the margin rectangle inside it.
         let mut set_page: Option<(f32, f32, f32)> = None;
+        // The page rectangle in screen space (#273), reused to position the placed views (#274).
+        let mut page_rect: Option<egui::Rect> = None;
         if let Some((pw, ph, pm)) = self
             .state
             .doc
@@ -7327,6 +7329,7 @@ impl App {
                 let scale = (avail.width() / pw).min(avail.height() / ph);
                 let page_size = egui::vec2(pw * scale, ph * scale);
                 let page = egui::Rect::from_center_size(avail.center(), page_size);
+                page_rect = Some(page);
                 // A faint white page on the dark sheet, with the margin as a dashed inset.
                 ui.painter().rect_filled(page, 2.0, egui::Color32::from_gray(40));
                 ui.painter().rect_stroke(
@@ -7503,21 +7506,49 @@ impl App {
             .get(drawing)
             .map(|d| d.views.clone())
             .unwrap_or_default();
-        if views.is_empty() {
-            ui.colored_label(INK, "No views yet — add one above.");
-        } else {
-            let sheet = ui.available_rect_before_wrap();
-            let cols = if views.len() == 1 { 1 } else { 2 };
-            let rows = views.len().div_ceil(cols);
-            let cell_w = sheet.width() / cols as f32;
-            let cell_h = (sheet.height() / rows as f32).max(80.0);
+        // Each view is a draggable card positioned on the page at its `pos` fraction (#274).
+        let mut move_view: Option<(usize, f32, f32)> = None;
+        let mut set_orientation: Option<(usize, DrawingOrientation)> = None;
+        if let Some(page) = page_rect {
+            let cell_w = (page.width() * 0.42).clamp(120.0, 320.0);
+            let cell_h = (page.height() * 0.42).clamp(90.0, 260.0);
             let painter = ui.painter().clone();
             for (vi, view) in views.iter().enumerate() {
-                let (col, row) = (vi % cols, vi / cols);
-                let cell = egui::Rect::from_min_size(
-                    sheet.min + egui::vec2(col as f32 * cell_w, row as f32 * cell_h),
-                    egui::vec2(cell_w, cell_h),
+                let center = page.min
+                    + egui::vec2(view.pos_x * page.width(), view.pos_y * page.height());
+                let cell = egui::Rect::from_center_size(center, egui::vec2(cell_w, cell_h));
+
+                // Drag the card by its caption strip; also right-click for the view menu.
+                let handle = egui::Rect::from_min_size(cell.min, egui::vec2(cell_w, 22.0));
+                let drag = ui.interact(
+                    handle,
+                    ui.make_persistent_id(("drawing_view_drag", drawing, vi)),
+                    egui::Sense::click_and_drag(),
                 );
+                if drag.dragged() {
+                    if let Some(pos) = drag.interact_pointer_pos() {
+                        let nx = ((pos.x - page.min.x) / page.width()).clamp(0.0, 1.0);
+                        let ny = ((pos.y - page.min.y) / page.height()).clamp(0.0, 1.0);
+                        move_view = Some((vi, nx, ny));
+                    }
+                }
+                if drag.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                }
+                drag.context_menu(|ui| {
+                    ui.label("View");
+                    for o in DrawingOrientation::ALL {
+                        if ui.selectable_label(view.orientation == *o, o.label()).clicked() {
+                            set_orientation = Some((vi, *o));
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("Remove").clicked() {
+                        remove_view = Some(vi);
+                        ui.close();
+                    }
+                });
                 painter.rect_stroke(
                     cell.shrink(2.0),
                     2.0,
@@ -7704,6 +7735,13 @@ impl App {
         }
         if let Some(view) = remove_view {
             self.state.apply(Action::RemoveDrawingView { drawing, view });
+        }
+        if let Some((view, pos_x, pos_y)) = move_view {
+            self.state.apply(Action::MoveDrawingView { drawing, view, pos_x, pos_y });
+        }
+        if let Some((view, orientation)) = set_orientation {
+            self.state
+                .apply(Action::SetDrawingViewOrientation { drawing, view, orientation });
         }
         if let Some((view, a, b)) = toggle_dim {
             self.state

@@ -425,6 +425,8 @@ mod tests {
                 orientation: DrawingOrientation::Front,
                 dimensioned_edges: Vec::new(),
                 angle_dims: Vec::new(),
+                pos_x: 0.5,
+                pos_y: 0.5,
             }],
             deleted: false,
             ..Default::default()
