@@ -3411,6 +3411,7 @@ impl eframe::App for App {
             let mut export_body_step: Option<usize> = None;
             let mut click_element: Option<(SceneElement, bool)> = None;
             let mut delete_element: Option<SceneElement> = None;
+            let mut add_body_to_drawing: Option<usize> = None;
             let mut rename_drawing: Option<(usize, String)> = None;
             let mut pane_hovered_element: Option<SceneElement> = None;
             egui::SidePanel::left("tree")
@@ -3452,6 +3453,9 @@ impl eframe::App for App {
                     let mut queue_hover = |element: SceneElement| {
                         pane_hovered_element = Some(element);
                     };
+                    let mut queue_add_to_drawing = |body: usize| {
+                        add_body_to_drawing = Some(body);
+                    };
                     let mut queue_delete = |element: SceneElement| {
                         delete_element = Some(element);
                     };
@@ -3483,12 +3487,21 @@ impl eframe::App for App {
                         &mut queue_click,
                         &mut queue_hover,
                         &mut queue_delete,
+                        self.state.editing_drawing,
+                        &mut queue_add_to_drawing,
                         &highlight_elements,
                     );
                 });
             self.pane_hovered_element = pane_hovered_element;
             if let Some(element) = delete_element {
                 self.state.apply(Action::DeleteElement { element });
+            }
+            if let (Some(body), Some(drawing)) = (add_body_to_drawing, self.state.editing_drawing) {
+                self.state.apply(Action::AddDrawingView {
+                    drawing,
+                    body,
+                    orientation: model::DrawingOrientation::default(),
+                });
             }
             if let Some((drawing, name)) = rename_drawing {
                 self.state.apply(Action::RenameDrawing { drawing, name });

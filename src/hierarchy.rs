@@ -1974,6 +1974,10 @@ pub fn show_pane(
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_hover_element: &mut impl FnMut(SceneElement),
     on_delete_element: &mut impl FnMut(SceneElement),
+    // `active_drawing`: the open drawing (Drawing workbench) enabling the row "Add to
+    // drawing" action (#274); `on_add_to_drawing` receives the body index.
+    active_drawing: Option<usize>,
+    on_add_to_drawing: &mut impl FnMut(usize),
     highlight_elements: &HashSet<SceneElement>,
 ) {
     ui.horizontal(|ui| {
@@ -2046,6 +2050,8 @@ pub fn show_pane(
                         on_click_element,
                         on_hover_element,
                         on_delete_element,
+                        active_drawing,
+                        on_add_to_drawing,
                         highlight_elements,
                     );
                 }
@@ -2080,6 +2086,8 @@ pub fn show_pane(
                     on_click_element,
                     on_hover_element,
                     on_delete_element,
+                    active_drawing,
+                    on_add_to_drawing,
                     highlight_elements,
                 );
             });
@@ -2165,6 +2173,8 @@ fn show_tree_entries(
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_hover_element: &mut impl FnMut(SceneElement),
     on_delete_element: &mut impl FnMut(SceneElement),
+    active_drawing: Option<usize>,
+    on_add_to_drawing: &mut impl FnMut(usize),
     highlight_elements: &HashSet<SceneElement>,
 ) {
     for entry in entries {
@@ -2192,6 +2202,8 @@ fn show_tree_entries(
             on_click_element,
             on_hover_element,
             on_delete_element,
+            active_drawing,
+            on_add_to_drawing,
             highlight_elements,
         );
         show_tree_entries(
@@ -2218,6 +2230,8 @@ fn show_tree_entries(
             on_click_element,
             on_hover_element,
             on_delete_element,
+            active_drawing,
+            on_add_to_drawing,
             highlight_elements,
         );
     }
@@ -2469,6 +2483,8 @@ fn show_row(
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_hover_element: &mut impl FnMut(SceneElement),
     on_delete_element: &mut impl FnMut(SceneElement),
+    active_drawing: Option<usize>,
+    on_add_to_drawing: &mut impl FnMut(usize),
     highlight_elements: &HashSet<SceneElement>,
 ) {
     // The synthetic Document root has no SceneElement — it isn't selectable, hideable, or
@@ -2663,6 +2679,11 @@ fn show_row(
                     }
                 }
                 HierarchyNode::Body(index) => {
+                    // In the Drawing workbench, add this body as a view of the open drawing (#274).
+                    if active_drawing.is_some() && ui.button("Add to drawing").clicked() {
+                        on_add_to_drawing(index);
+                        ui.close();
+                    }
                     if ui.button("Export STL…").clicked() {
                         on_export_body(index);
                         ui.close();
