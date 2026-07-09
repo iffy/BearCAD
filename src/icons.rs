@@ -63,11 +63,17 @@ pub enum IconId {
     CutBody,
     /// Small "remove" ✕ used by the element picker's row-remove button (#256).
     Close,
+    /// Boolean-operation icons for the Combine tool (#267): two circles with kept regions
+    /// solid and removed regions in faint red.
+    BooleanUnion,
+    BooleanCut,
+    BooleanIntersect,
+    BooleanDifference,
 }
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 48] = [
+    pub const ALL: [Self; 52] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -116,6 +122,10 @@ impl IconId {
         Self::AddToBody,
         Self::CutBody,
         Self::Close,
+        Self::BooleanUnion,
+        Self::BooleanCut,
+        Self::BooleanIntersect,
+        Self::BooleanDifference,
     ];
 
     pub fn svg_source(self) -> &'static str {
@@ -168,6 +178,10 @@ impl IconId {
             Self::AddToBody => include_str!("assets/icons/add_to_body.svg"),
             Self::CutBody => include_str!("assets/icons/cut_body.svg"),
             Self::Close => include_str!("assets/icons/x.svg"),
+            Self::BooleanUnion => include_str!("assets/icons/boolean_union.svg"),
+            Self::BooleanCut => include_str!("assets/icons/boolean_cut.svg"),
+            Self::BooleanIntersect => include_str!("assets/icons/boolean_intersect.svg"),
+            Self::BooleanDifference => include_str!("assets/icons/boolean_difference.svg"),
         }
     }
 
@@ -221,6 +235,10 @@ impl IconId {
             Self::AddToBody => "Add to body",
             Self::CutBody => "Cut body",
             Self::Close => "Close",
+            Self::BooleanUnion => "Combine",
+            Self::BooleanCut => "Cut",
+            Self::BooleanIntersect => "Intersect",
+            Self::BooleanDifference => "Difference",
         }
     }
 }
@@ -388,6 +406,24 @@ mod tests {
                 id.label()
             );
         }
+    }
+
+    /// #267: the boolean-op icons that carve something away actually render red pixels for the
+    /// removed region (union keeps everything, so it has none).
+    #[test]
+    fn boolean_op_icons_render_their_removed_region_in_red() {
+        // Red-dominant pixels; the removed regions are faint (low opacity), so a modest
+        // dominance margin distinguishes them from the neutral kept fills.
+        let has_red = |id: IconId| {
+            rasterize_svg(id.svg_source(), ICON_RASTER_SIZE)
+                .pixels
+                .iter()
+                .any(|p| p.a() > 0 && p.r() as i32 > p.g() as i32 + 15 && p.r() as i32 > p.b() as i32 + 15)
+        };
+        assert!(has_red(IconId::BooleanCut), "cut shows removed region in red");
+        assert!(has_red(IconId::BooleanIntersect), "intersect shows removed region in red");
+        assert!(has_red(IconId::BooleanDifference), "difference shows removed lens in red");
+        assert!(!has_red(IconId::BooleanUnion), "union keeps everything, no red");
     }
 
     #[test]

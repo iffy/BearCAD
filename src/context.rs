@@ -1288,17 +1288,30 @@ pub fn show_pane(
             })
             .strong(),
         );
-        let mut kind = control.kind;
-        for value in [
-            crate::model::BooleanOpKind::Combine,
-            crate::model::BooleanOpKind::Cut,
-            crate::model::BooleanOpKind::Intersect,
-            crate::model::BooleanOpKind::Difference,
-        ] {
-            if ui.radio_value(&mut kind, value, value.label()).changed() {
-                on_boolean_edit(BooleanEdit::Kind(kind));
+        // A segmented icon group (#267): two-circle boolean icons with kept regions solid and
+        // removed regions faint red.
+        let kind = control.kind;
+        ui.horizontal(|ui| {
+            for (value, icon) in [
+                (crate::model::BooleanOpKind::Combine, crate::icons::IconId::BooleanUnion),
+                (crate::model::BooleanOpKind::Cut, crate::icons::IconId::BooleanCut),
+                (
+                    crate::model::BooleanOpKind::Intersect,
+                    crate::icons::IconId::BooleanIntersect,
+                ),
+                (
+                    crate::model::BooleanOpKind::Difference,
+                    crate::icons::IconId::BooleanDifference,
+                ),
+            ] {
+                if crate::icons::selectable_icon_button(ui, icon, kind == value, value.label())
+                    .clicked()
+                    && kind != value
+                {
+                    on_boolean_edit(BooleanEdit::Kind(value));
+                }
             }
-        }
+        });
         let two_sided = control.kind != crate::model::BooleanOpKind::Combine;
         // The side-A / side-B body sets render as element pickers above (see `tool_pickers`);
         // clicking a picker makes it the active side. Only the "keep B" toggle stays here.
