@@ -121,6 +121,10 @@ const SOLID_CAP_DEPTH_BIAS: f32 = 0.02;
 /// one solid-color mitered stroke (stacking a bright core over a dim halo read as splotchy
 /// wherever the two strokes' antialiased edges beat against each other).
 pub const BODY_SILHOUETTE_COLOR: Color32 = Color32::from_rgb(95, 165, 245);
+/// Red aura for the destructive (side-B / cut) bodies of a boolean/revolve cut (#264): same
+/// silhouette treatment as [`BODY_SILHOUETTE_COLOR`] but in the cut red, so the carved-away
+/// bodies read as selected-and-destructive rather than merely tinted.
+pub const BODY_SILHOUETTE_CUT_COLOR: Color32 = Color32::from_rgb(235, 120, 120);
 const BODY_SILHOUETTE_WIDTH: f32 = 4.0;
 /// How far the silhouette glow sits *outside* the body's edges, screen pixels — an aura around
 /// the shape rather than a line on it. Each segment is also extended by the same amount at both
@@ -614,12 +618,15 @@ impl ViewportScene {
                 );
                 continue;
             }
-            // A body picked into a destructive picker fills red (#213); otherwise a selected
-            // body fills the saturated selection blue (#174). The aura outline still draws on
-            // top via `push_selection`.
-            let fill = if input.cut_highlight_bodies.contains(&bi) {
-                SOLID_FILL_CUT
-            } else if input.selection.is_selected(SceneElement::Body(bi)) {
+            // A body picked into a destructive (cut) picker previews semi-transparent in the cut
+            // red (#264) so the cut against the side-A bodies shows through, whatever the shading
+            // mode; its red aura is drawn after `push_selection`. Otherwise a selected body fills
+            // the saturated selection blue (#174).
+            if input.cut_highlight_bodies.contains(&bi) {
+                mesh.push_solid_translucent(solid, SOLID_FILL_CUT, TRANSPARENT_SOLID_OPACITY);
+                continue;
+            }
+            let fill = if input.selection.is_selected(SceneElement::Body(bi)) {
                 SOLID_FILL_SELECTED
             } else {
                 SOLID_FILL
@@ -872,6 +879,23 @@ impl ViewportScene {
             &vp,
             input.palette.dim_edge_highlight,
         );
+
+        // The destructive (side-B / cut) bodies get their own red selection aura (#264), matching
+        // the blue aura the side-A bodies already receive through `push_selection`.
+        if !input.cut_highlight_bodies.is_empty() {
+            let cut_bodies: std::collections::HashSet<usize> =
+                input.cut_highlight_bodies.iter().copied().collect();
+            mesh.push_body_aura(
+                input.doc,
+                &cut_bodies,
+                &std::collections::HashSet::new(),
+                &body_meshes,
+                BODY_SILHOUETTE_CUT_COLOR,
+                input.cam,
+                input.viewport,
+                &vp,
+            );
+        }
 
         if let Some(graphics) = input.constraint_graphics {
             if !graphics.is_empty() {
@@ -6962,5 +6986,89 @@ mod perf_probe {
         for _ in 0..n { build(&selection); }
         let with_aura = t1.elapsed() / n;
         println!("scene build: base {base:?}  with aura {with_aura:?}  aura delta {:?}", with_aura.saturating_sub(base));
+    }
+}
+
+#[cfg(test)]
+mod cut_preview_tests {
+    use super::*;
+    use crate::actions::{Action, AppState, Tool};
+    use crate::hierarchy::ElementVisibility;
+    use crate::selection::SceneSelection;
+
+    fn one_body_state() -> AppState {
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: crate::model::FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        let sketch = state.sketch_session.unwrap().sketch;
+        state
+            .doc
+            .circles
+            .push(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 40.0, 0.0));
+        state.doc.shape_order.push(crate::model::ShapeKind::Circle);
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::ToggleExtrudeFace {
+            face: crate::model::ExtrudeFace::Circle(0),
+        });
+        state.apply(Action::SetExtrudeDistance { distance: 60.0 });
+        state.apply(Action::CommitExtrusion);
+        state.apply(Action::ExitSketch);
+        state
+    }
+
+    fn scene_with_cut(state: &AppState, cut_highlight_bodies: Vec<usize>) -> ViewportScene {
+        let viewport = UiRect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 800.0));
+        let selection = SceneSelection::default();
+        let input = ViewportSceneInput {
+            doc: &state.doc,
+            cam: &state.cam,
+            viewport,
+            sketch_session: None,
+            element_visibility: &ElementVisibility::default(),
+            selection: &selection,
+            cut_highlight_bodies,
+            preview_rect: None,
+            preview_line: None,
+            preview_circle: None,
+            preview_extrusion: None,
+            preview_solid: None,
+            repeat_ghosts: Vec::new(),
+            editing_extrusion: None,
+            preview_cut_body: None,
+            plane_preview: None,
+            active_sketch_face: None,
+            palette: ViewportPalette::default(),
+            dimension_labels: &[],
+            dim_label_view: None,
+            plane_gizmo: None,
+            extrude_gizmo: None,
+            vertex_treatment_gizmo: None,
+            move_gizmos: Vec::new(),
+            move_rotation_gizmo: None,
+            vertex_treatment_preview: None,
+            hover_highlight: None,
+            hover_color: Color32::WHITE,
+            document_health: &crate::document_health::DocumentHealth::default(),
+            constraint_graphics: None,
+            constraint_connector_color: None,
+        };
+        ViewportScene::build(&input)
+    }
+
+    /// #264: a body picked into the destructive (side-B / cut) picker gets a red selection aura,
+    /// so the built scene carries more geometry than the same body rendered plain.
+    #[test]
+    fn cut_body_gets_an_aura() {
+        let state = one_body_state();
+        let plain = scene_with_cut(&state, Vec::new());
+        let cut = scene_with_cut(&state, vec![0]);
+        assert!(
+            cut.vertices.len() > plain.vertices.len(),
+            "cut body should add a red aura: {} vs {} vertices",
+            cut.vertices.len(),
+            plain.vertices.len()
+        );
     }
 }
