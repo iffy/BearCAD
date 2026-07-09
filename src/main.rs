@@ -3505,7 +3505,8 @@ impl eframe::App for App {
             }
         }
 
-        if self.state.panes.is_visible(Pane::Parameters) {
+        // The Parameters pane is hidden in the Drawing workbench (#254/#272).
+        if self.state.panes.is_visible(Pane::Parameters) && self.state.editing_drawing.is_none() {
             egui::SidePanel::right("parameters")
                 .resizable(true)
                 .default_width(240.0)
@@ -7302,14 +7303,20 @@ impl App {
             crate::names::node_label(doc, hierarchy::HierarchyNode::Body(bi))
         };
 
+        // The 'Back to model' button is gone (#254/#272); leave the Drawing workbench with Esc.
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            close = true;
+        }
         ui.horizontal(|ui| {
-            if ui.button("← Back to model").clicked() {
-                close = true;
-            }
-            ui.separator();
             let title =
                 crate::names::node_label(&self.state.doc, hierarchy::HierarchyNode::Drawing(drawing));
             ui.label(egui::RichText::new(title).color(INK).strong());
+            ui.separator();
+            ui.label(
+                egui::RichText::new("Esc: back to model")
+                    .color(egui::Color32::from_gray(120))
+                    .size(11.0),
+            );
             #[cfg(not(target_arch = "wasm32"))]
             {
                 ui.separator();

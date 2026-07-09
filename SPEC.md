@@ -820,9 +820,11 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   **opens it** in the drawing pane, which takes over the central area. The **editor** is
   white-on-black to match the app's dark-mode aesthetic (#254); **export** inverts back to
   black ink on a white sheet.
-- **Workbenches (#254/#271):** opening a drawing switches to the **Drawing workbench**, whose
-  toolbar shows only the tools that apply to drawings — **Select, Move, Dimension**. Entering
-  the workbench with a model-only tool active drops back to Select.
+- **Workbenches (#254/#271/#272):** opening a drawing switches to the **Drawing workbench**,
+  whose toolbar shows only the tools that apply to drawings — **Select, Move, Dimension**.
+  Entering the workbench with a model-only tool active drops back to Select. The Parameters
+  pane is hidden in the Drawing workbench, and there's no "Back to model" button — press
+  **Esc** to return to the model.
 - **Views:** a drawing collects **views**, each a chosen body shown in one orientation — the
   six straight-on directions (Front/Back/Left/Right/Top/Bottom) or an **Isometric**
   three-quarter view. Each view renders as a black wireframe of the body's feature edges,
