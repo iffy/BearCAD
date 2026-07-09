@@ -3,7 +3,7 @@ sidebar_position: 6
 title: Circle
 ---
 
-# Circle
+# <img src="/img/icons/circle.svg" width="30" /> Circle
 
 **Shortcut:** `O`
 

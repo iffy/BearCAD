@@ -3,7 +3,7 @@ sidebar_position: 15
 title: Repeat
 ---
 
-# Repeat
+# <img src="/img/icons/repeat.svg" width="30" /> Repeat
 
 Repeat lays out copies of bodies along a straight line — bolt patterns, studs along a
 wall, teeth on a rack.

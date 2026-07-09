@@ -3,7 +3,7 @@ sidebar_position: 5
 title: Line
 ---
 
-# Line
+# <img src="/img/icons/line.svg" width="30" /> Line
 
 **Shortcut:** `L`
 

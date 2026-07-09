@@ -3,7 +3,7 @@ sidebar_position: 3
 title: Sketch
 ---
 
-# Sketch
+# <img src="/img/icons/sketch.svg" width="30" /> Sketch
 
 **Shortcut:** `S`
 

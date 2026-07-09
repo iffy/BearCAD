@@ -3,7 +3,7 @@ sidebar_position: 16
 title: Slice
 ---
 
-# Slice
+# <img src="/img/icons/slice.svg" width="30" /> Slice
 
 Slice cuts whole bodies apart with flat cutters — halving a part, carving a slot line, or
 splitting a model into printable pieces.

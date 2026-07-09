@@ -3,7 +3,7 @@ sidebar_position: 14
 title: Move
 ---
 
-# Move
+# <img src="/img/icons/move.svg" width="30" /> Move
 
 Move translates and/or rotates whole bodies, producing moved copies — position an imported
 part, space out duplicates, or angle a bracket into place.

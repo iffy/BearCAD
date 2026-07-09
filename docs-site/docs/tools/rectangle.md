@@ -3,7 +3,7 @@ sidebar_position: 4
 title: Rectangle
 ---
 
-# Rectangle
+# <img src="/img/icons/rectangle.svg" width="30" /> Rectangle
 
 **Shortcut:** `R`
 

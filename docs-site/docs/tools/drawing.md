@@ -3,7 +3,7 @@ sidebar_position: 17
 title: Drawings
 ---
 
-# Technical drawings
+# <img src="/img/icons/drawing.svg" width="30" /> Technical drawings
 
 A drawing is a black-on-white sheet of a part for printing. A document can hold as many as
 you like, and each one collects **views** — a body shown from a chosen direction.

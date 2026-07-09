@@ -3,7 +3,7 @@ sidebar_position: 13
 title: Loft
 ---
 
-# Loft
+# <img src="/img/icons/loft.svg" width="30" /> Loft
 
 Loft blends a solid through two or more closed cross-section profiles on different planes —
 horns, hulls, funnels, transitions between shapes.

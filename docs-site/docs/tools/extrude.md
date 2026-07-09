@@ -3,7 +3,7 @@ sidebar_position: 10
 title: Extrude
 ---
 
-# Extrude
+# <img src="/img/icons/extrude.svg" width="30" /> Extrude
 
 **Shortcut:** `E`
 

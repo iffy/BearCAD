@@ -3,7 +3,7 @@ sidebar_position: 7
 title: Fillet
 ---
 
-# Fillet
+# <img src="/img/icons/fillet.svg" width="30" /> Fillet
 
 **Shortcut:** `F`
 

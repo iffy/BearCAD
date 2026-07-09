@@ -3,7 +3,7 @@ sidebar_position: 13
 title: Constraint
 ---
 
-# Constraint
+# <img src="/img/icons/constraint.svg" width="30" /> Constraint
 
 **Shortcut:** `C`
 

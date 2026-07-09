@@ -3,7 +3,7 @@ sidebar_position: 11
 title: Revolve
 ---
 
-# Revolve
+# <img src="/img/icons/revolve.svg" width="30" /> Revolve
 
 Revolve spins a flat profile around an axis into a solid — rings, shafts, vases, grooves.
 

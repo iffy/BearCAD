@@ -28,3 +28,19 @@
   --ifm-color-primary-lightest: #4fddbf;
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
 }
+
+/* Tool icons in the docs (#280): dark monochrome by default; inverted to light in dark mode. */
+img[src*="/img/icons/"] {
+  vertical-align: middle;
+  margin-right: 0.15rem;
+}
+[data-theme='dark'] img[src*="/img/icons/"] {
+  filter: invert(1);
+}
+/* The icon shown next to a tool page's H1 title. */
+.tool-title-icon {
+  width: 32px;
+  height: 32px;
+  vertical-align: middle;
+  margin-right: 0.4rem;
+}

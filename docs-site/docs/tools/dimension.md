@@ -3,7 +3,7 @@ sidebar_position: 12
 title: Dimension
 ---
 
-# Dimension
+# <img src="/img/icons/dimension.svg" width="30" /> Dimension
 
 **Shortcut:** `D`
 

@@ -3,7 +3,7 @@ sidebar_position: 8
 title: Chamfer
 ---
 
-# Chamfer
+# <img src="/img/icons/chamfer.svg" width="30" /> Chamfer
 
 **Shortcut:** `K`
 

@@ -3,7 +3,7 @@ sidebar_position: 9
 title: Construction Plane
 ---
 
-# Construction Plane
+# <img src="/img/icons/plane.svg" width="30" /> Construction Plane
 
 **Shortcut:** `P`
 

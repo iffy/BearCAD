@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="#333333" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- rectangular base slab -->
+  <path d="M6 22 L22 22 L28 18 L12 18 Z" />
+  <line x1="6" y1="22" x2="6" y2="25" />
+  <line x1="22" y1="22" x2="22" y2="25" />
+  <line x1="28" y1="18" x2="28" y2="21" />
+  <line x1="6" y1="25" x2="22" y2="25" />
+  <line x1="22" y1="25" x2="28" y2="21" />
+  <!-- arrow pointing normal to the top face -->
+  <line x1="17" y1="20" x2="17" y2="5" />
+  <polyline points="13,9 17,5 21,9" />
+</svg>
