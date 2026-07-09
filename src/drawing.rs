@@ -427,6 +427,7 @@ mod tests {
                 angle_dims: Vec::new(),
             }],
             deleted: false,
+            ..Default::default()
         });
         doc
     }

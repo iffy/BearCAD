@@ -830,6 +830,11 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   operations, images, drawings). Hiding a type prunes those nodes but promotes their kept
   children (hiding "Operations" still shows the result bodies, un-nested). The Drawing
   workbench defaults the filter to sketches + bodies only.
+- **Page dimensions (#254/#273):** each drawing has a page size and margin (`page_width_mm`,
+  `page_height_mm`, `margin_mm`), defaulting to a **landscape US-Letter** sheet (11 × 8.5 in)
+  with **0.5 in** margins. The editor draws the page outline and margin at the page's aspect
+  ratio; right-clicking the sheet background opens a page-dimensions editor (in inches, with
+  Landscape/Portrait Letter presets), via `Action::SetDrawingPage`.
 - **Views:** a drawing collects **views**, each a chosen body shown in one orientation — the
   six straight-on directions (Front/Back/Left/Right/Top/Bottom) or an **Isometric**
   three-quarter view. Each view renders as a black wireframe of the body's feature edges,

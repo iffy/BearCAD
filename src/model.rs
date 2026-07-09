@@ -1725,7 +1725,7 @@ pub fn normalized_edge_key(a: [i32; 3], b: [i32; 3]) -> DrawingEdgeKey {
 /// A technical drawing (#180): a black-on-white sheet showing one or more body views for
 /// print/PDF output. It references bodies but produces no solid geometry of its own, so it
 /// lives outside the shape/undo-group DAG (undo is snapshot-based, #194).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Drawing {
     #[serde(default)]
     pub name: Option<String>,
@@ -1733,6 +1733,37 @@ pub struct Drawing {
     pub views: Vec<DrawingView>,
     #[serde(default)]
     pub deleted: bool,
+    /// Page width and height in millimetres (#273). Default: landscape US Letter (11 x 8.5 in).
+    #[serde(default = "default_page_width_mm")]
+    pub page_width_mm: f32,
+    #[serde(default = "default_page_height_mm")]
+    pub page_height_mm: f32,
+    /// Uniform page margin in millimetres (#273). Default: 0.5 in.
+    #[serde(default = "default_page_margin_mm")]
+    pub margin_mm: f32,
+}
+
+fn default_page_width_mm() -> f32 {
+    11.0 * 25.4
+}
+fn default_page_height_mm() -> f32 {
+    8.5 * 25.4
+}
+fn default_page_margin_mm() -> f32 {
+    0.5 * 25.4
+}
+
+impl Default for Drawing {
+    fn default() -> Self {
+        Self {
+            name: None,
+            views: Vec::new(),
+            deleted: false,
+            page_width_mm: default_page_width_mm(),
+            page_height_mm: default_page_height_mm(),
+            margin_mm: default_page_margin_mm(),
+        }
+    }
 }
 
 /// The whole document: sketches, sketch primitives, constraints, and construction planes.

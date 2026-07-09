@@ -7307,6 +7307,89 @@ impl App {
         let area = ui.available_rect_before_wrap();
         ui.painter().rect_filled(area, 0.0, SHEET);
 
+        // The page outline + margin, drawn to the drawing's real page dimensions (#273): a
+        // landscape/portrait rectangle centred in the lower part of the pane, at the page's
+        // aspect ratio, with the margin rectangle inside it.
+        let mut set_page: Option<(f32, f32, f32)> = None;
+        if let Some((pw, ph, pm)) = self
+            .state
+            .doc
+            .drawings
+            .get(drawing)
+            .filter(|d| !d.deleted)
+            .map(|d| (d.page_width_mm, d.page_height_mm, d.margin_mm))
+        {
+            let avail = egui::Rect::from_min_max(
+                area.min + egui::vec2(16.0, 96.0),
+                area.max - egui::vec2(16.0, 16.0),
+            );
+            if avail.width() > 20.0 && avail.height() > 20.0 && pw > 0.0 && ph > 0.0 {
+                let scale = (avail.width() / pw).min(avail.height() / ph);
+                let page_size = egui::vec2(pw * scale, ph * scale);
+                let page = egui::Rect::from_center_size(avail.center(), page_size);
+                // A faint white page on the dark sheet, with the margin as a dashed inset.
+                ui.painter().rect_filled(page, 2.0, egui::Color32::from_gray(40));
+                ui.painter().rect_stroke(
+                    page,
+                    2.0,
+                    egui::Stroke::new(1.0, egui::Color32::from_gray(120)),
+                    egui::StrokeKind::Inside,
+                );
+                let inset = (pm * scale).min(page_size.x / 2.0 - 1.0).min(page_size.y / 2.0 - 1.0);
+                if inset > 0.0 {
+                    ui.painter().rect_stroke(
+                        page.shrink(inset),
+                        0.0,
+                        egui::Stroke::new(1.0, egui::Color32::from_gray(70)),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+            }
+            // Right-click the sheet background (#273): view/edit the page dimensions (in inches).
+            let bg = ui.interact(
+                area,
+                ui.make_persistent_id(("drawing_page_bg", drawing)),
+                egui::Sense::click(),
+            );
+            bg.context_menu(|ui| {
+                ui.label(egui::RichText::new("Page (inches)").strong());
+                let id = ui.make_persistent_id(("drawing_page_edit", drawing));
+                let mm_per_in = 25.4;
+                let mut draft = ui
+                    .data(|d| d.get_temp::<[f32; 3]>(id))
+                    .unwrap_or([pw / mm_per_in, ph / mm_per_in, pm / mm_per_in]);
+                let row = |ui: &mut egui::Ui, label: &str, v: &mut f32| {
+                    ui.horizontal(|ui| {
+                        ui.label(label);
+                        ui.add(egui::DragValue::new(v).speed(0.05).range(0.5..=60.0).suffix(" in"));
+                    });
+                };
+                row(ui, "Width", &mut draft[0]);
+                row(ui, "Height", &mut draft[1]);
+                row(ui, "Margin", &mut draft[2]);
+                ui.data_mut(|d| d.insert_temp(id, draft));
+                ui.horizontal(|ui| {
+                    if ui.button("Landscape Letter").clicked() {
+                        draft = [11.0, 8.5, 0.5];
+                        ui.data_mut(|d| d.insert_temp(id, draft));
+                    }
+                    if ui.button("Portrait Letter").clicked() {
+                        draft = [8.5, 11.0, 0.5];
+                        ui.data_mut(|d| d.insert_temp(id, draft));
+                    }
+                });
+                if ui.button("Apply").clicked() {
+                    set_page = Some((
+                        draft[0] * mm_per_in,
+                        draft[1] * mm_per_in,
+                        draft[2] * mm_per_in,
+                    ));
+                    ui.data_mut(|d| d.remove::<[f32; 3]>(id));
+                    ui.close();
+                }
+            });
+        }
+
         let mut close = false;
         #[allow(unused_mut)] // only mutated by the native-only Export SVG button
         let mut export_svg = false;
@@ -7656,6 +7739,9 @@ impl App {
             self.export_drawing_pdf(drawing);
         }
 
+        if let Some((width_mm, height_mm, margin_mm)) = set_page {
+            self.state.apply(Action::SetDrawingPage { drawing, width_mm, height_mm, margin_mm });
+        }
         if close {
             self.state.apply(Action::EditDrawing { drawing: None });
         }
