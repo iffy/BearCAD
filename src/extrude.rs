@@ -1672,10 +1672,20 @@ fn document_mesh_fingerprint(doc: &Document) -> u64 {
             &doc.construction_planes,
             &doc.extrusions,
             &doc.bodies,
-            // Repeat ops feed body meshes: repeated-body offsets and, for #220, the extra cut
-            // tools a cut-extrusion replay subtracts. Without this, changing a repeat's
-            // spacing/count/targets leaves stale cached meshes.
+            // Every downstream feature whose output body geometry is a function of its inputs must
+            // be in the fingerprint, so editing an ancestor (or a parameter one of them evaluates
+            // live) invalidates the descendant's cached mesh and forces a rebuild. Ops that
+            // evaluate expressions on the fly — moves (`move_op_transform` reads `tx`/angle),
+            // repeats (`repeat_offsets`), etc. — otherwise leave stale caches, since their input
+            // parameters live in `doc.parameters` (not the op struct) and the op's expression
+            // *string* doesn't change when a parameter it references does.
+            &doc.parameters,
             &doc.repeat_ops,
+            &doc.move_ops,
+            &doc.slice_ops,
+            &doc.boolean_ops,
+            &doc.revolutions,
+            &doc.lofts,
         ),
     )
     .ok();
@@ -3557,6 +3567,65 @@ mod tests {
         });
         let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).unwrap()).abs();
         assert!((vol - 240.0).abs() < 3.0, "expected ~240 (3 boxes), got {vol}");
+    }
+
+    /// Ancestor→descendant propagation: a body moved by a parameter expression follows edits to
+    /// that parameter. Regression guard for the mesh-cache fingerprint — `doc.parameters` /
+    /// `doc.move_ops` must be part of it, or the moved body keeps a stale cached mesh.
+    #[test]
+    #[cfg(feature = "occt")]
+    fn parameter_edit_propagates_to_a_moved_descendant() {
+        use crate::model::{Body, BodySource, MoveOperation, Parameter};
+        let (mut doc, _sketch, ext) = box_doc(); // box x ∈ [0, 10]
+        doc.extrusions.push(ext);
+        doc.bodies.push(Body {
+            source: BodySource::Solid { add: vec![0], cut: vec![] },
+            name: None,
+            deleted: false,
+            shadow: true, // consumed by the move
+        });
+        doc.parameters.push(Parameter {
+            name: "gap".to_string(),
+            expression: "10".to_string(),
+            deleted: false,
+            source: None,
+        });
+        doc.move_ops.push(MoveOperation {
+            targets: vec![0],
+            plane_targets: Vec::new(),
+            image_targets: Vec::new(),
+            tx: "gap".to_string(),
+            ty: String::new(),
+            tz: String::new(),
+            axis: None,
+            angle: String::new(),
+            outputs: vec![1],
+            name: None,
+            deleted: false,
+        });
+        doc.bodies.push(Body {
+            source: BodySource::Moved { op: 0, target: 0 },
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        let min_x = |doc: &Document, bi: usize| {
+            body_solid_mesh(doc, bi)
+                .unwrap()
+                .triangles
+                .iter()
+                .flat_map(|t| t.iter())
+                .map(|p| p.x)
+                .fold(f32::INFINITY, f32::min)
+        };
+        // The moved copy starts at x = 0 + gap(10).
+        assert!((min_x(&doc, 1) - 10.0).abs() < 1e-3, "moved by gap = 10");
+        // Editing the parameter the move references must propagate to the descendant body.
+        doc.parameters[0].expression = "25".to_string();
+        assert!(
+            (min_x(&doc, 1) - 25.0).abs() < 1e-3,
+            "descendant follows the parameter edit (fingerprint includes parameters/move_ops)"
+        );
     }
 
     /// #177: a chamfer on a *cut* circle extrusion's rim carves a countersink into the
