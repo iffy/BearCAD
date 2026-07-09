@@ -1799,6 +1799,7 @@ pub fn show_pane(
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_hover_element: &mut impl FnMut(SceneElement),
+    on_delete_element: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
 ) {
     ui.horizontal(|ui| {
@@ -1868,6 +1869,7 @@ pub fn show_pane(
                         on_toggle_visibility,
                         on_click_element,
                         on_hover_element,
+                        on_delete_element,
                         highlight_elements,
                     );
                 }
@@ -1900,6 +1902,7 @@ pub fn show_pane(
                     on_toggle_visibility,
                     on_click_element,
                     on_hover_element,
+                    on_delete_element,
                     highlight_elements,
                 );
             });
@@ -1917,6 +1920,7 @@ pub fn show_pane(
                 &related_constraints,
                 on_click_element,
                 on_hover_element,
+                on_delete_element,
                 highlight_elements,
             );
         }
@@ -1948,6 +1952,7 @@ fn show_tree_entries(
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_hover_element: &mut impl FnMut(SceneElement),
+    on_delete_element: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
 ) {
     for entry in entries {
@@ -1973,6 +1978,7 @@ fn show_tree_entries(
             on_toggle_visibility,
             on_click_element,
             on_hover_element,
+            on_delete_element,
             highlight_elements,
         );
         show_tree_entries(
@@ -1997,6 +2003,7 @@ fn show_tree_entries(
             on_toggle_visibility,
             on_click_element,
             on_hover_element,
+            on_delete_element,
             highlight_elements,
         );
     }
@@ -2025,6 +2032,7 @@ fn show_graph_view(
     related_constraints: &HashSet<usize>,
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_hover_element: &mut impl FnMut(SceneElement),
+    on_delete_element: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
 ) {
     let positions = graph_node_positions(tree);
@@ -2137,8 +2145,14 @@ fn show_graph_view(
                     let response = response.on_hover_text(node_label(doc, position.node));
                     if response.clicked() {
                         let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
-                        on_click_element(element, additive);
+                        on_click_element(element.clone(), additive);
                     }
+                    response.context_menu(|ui| {
+                        if ui.button("Delete").clicked() {
+                            on_delete_element(element.clone());
+                            ui.close();
+                        }
+                    });
                 }
 
                 // Each node draws as its element's icon (#152) — the same icon the List/Tree
@@ -2213,6 +2227,7 @@ fn show_row(
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_hover_element: &mut impl FnMut(SceneElement),
+    on_delete_element: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
 ) {
     // The synthetic Document root has no SceneElement — it isn't selectable, hideable, or
@@ -2339,6 +2354,7 @@ fn show_row(
         if response.hovered() {
             on_hover_element(element.clone());
         }
+        // Clicks: double-click edits (where applicable), single-click selects.
         match node {
             HierarchyNode::Document => unreachable!("handled by the early return above"),
             HierarchyNode::Sketch(sketch) => {
@@ -2350,23 +2366,39 @@ fn show_row(
                 ) {
                     SketchRowAction::Edit => on_edit_sketch(sketch),
                     SketchRowAction::Select { additive } => {
-                        on_click_element(element, additive)
+                        on_click_element(element.clone(), additive)
                     }
                     SketchRowAction::None => {}
                 }
-                response.context_menu(|ui| {
+            }
+            HierarchyNode::Extrusion(index) => {
+                if row_primary_double_clicked(&response, ui) {
+                    on_edit_extrusion(index);
+                } else if response.clicked() {
+                    let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+                    on_click_element(element.clone(), additive);
+                }
+            }
+            // Handled by the early return above (no SceneElement).
+            HierarchyNode::EdgeTreatment { .. } | HierarchyNode::Drawing(_) => unreachable!(),
+            _ => {
+                if response.clicked() {
+                    let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+                    on_click_element(element.clone(), additive);
+                }
+            }
+        }
+        // One context menu per element row: any node-specific actions, then a universal Delete
+        // so any element can be deleted from the pane (#253).
+        response.context_menu(|ui| {
+            match node {
+                HierarchyNode::Sketch(sketch) => {
                     if ui.button("Edit sketch").clicked() {
                         on_edit_sketch(sketch);
                         ui.close();
                     }
-                });
-            }
-            HierarchyNode::ConstructionPlane(index) => {
-                if response.clicked() {
-                    let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
-                    on_click_element(element, additive);
                 }
-                response.context_menu(|ui| {
+                HierarchyNode::ConstructionPlane(index) => {
                     if ui.button("Edit plane").clicked() {
                         on_edit_plane(index);
                         ui.close();
@@ -2375,28 +2407,14 @@ fn show_row(
                         on_import_image_on_plane(index);
                         ui.close();
                     }
-                });
-            }
-            HierarchyNode::Extrusion(index) => {
-                if row_primary_double_clicked(&response, ui) {
-                    on_edit_extrusion(index);
-                } else if response.clicked() {
-                    let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
-                    on_click_element(element, additive);
                 }
-                response.context_menu(|ui| {
+                HierarchyNode::Extrusion(index) => {
                     if ui.button("Edit extrusion").clicked() {
                         on_edit_extrusion(index);
                         ui.close();
                     }
-                });
-            }
-            HierarchyNode::Body(index) => {
-                if response.clicked() {
-                    let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
-                    on_click_element(element, additive);
                 }
-                response.context_menu(|ui| {
+                HierarchyNode::Body(index) => {
                     if ui.button("Export STL…").clicked() {
                         on_export_body(index);
                         ui.close();
@@ -2405,27 +2423,14 @@ fn show_row(
                         on_export_body_step(index);
                         ui.close();
                     }
-                });
-            }
-            HierarchyNode::Line(_)
-            | HierarchyNode::Circle(_)
-            | HierarchyNode::Constraint(_)
-            | HierarchyNode::Image(_)
-            | HierarchyNode::BooleanOp(_)
-            | HierarchyNode::MoveOp(_)
-            | HierarchyNode::RepeatOp(_)
-            | HierarchyNode::SketchRepeatOp(_)
-            | HierarchyNode::SketchSliceOp(_)
-            | HierarchyNode::SliceOp(_)
-            | HierarchyNode::Revolution(_) => {
-                if response.clicked() {
-                    let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
-                    on_click_element(element, additive);
                 }
+                _ => {}
             }
-            // Handled by the early return above (no SceneElement).
-            HierarchyNode::EdgeTreatment { .. } | HierarchyNode::Drawing(_) => unreachable!(),
-        }
+            if ui.button("Delete").clicked() {
+                on_delete_element(element.clone());
+                ui.close();
+            }
+        });
     });
 }
 

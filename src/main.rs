@@ -3354,6 +3354,7 @@ impl eframe::App for App {
             let mut export_body: Option<usize> = None;
             let mut export_body_step: Option<usize> = None;
             let mut click_element: Option<(SceneElement, bool)> = None;
+            let mut delete_element: Option<SceneElement> = None;
             let mut pane_hovered_element: Option<SceneElement> = None;
             egui::SidePanel::left("tree")
                 .resizable(true)
@@ -3392,6 +3393,9 @@ impl eframe::App for App {
                     let mut queue_hover = |element: SceneElement| {
                         pane_hovered_element = Some(element);
                     };
+                    let mut queue_delete = |element: SceneElement| {
+                        delete_element = Some(element);
+                    };
                     // Highlight the elements that use the variable focused in the Parameters pane.
                     let highlight_elements = parameters::focused_parameter_name(ctx, &self.state.doc)
                         .map(|name| parameters::elements_using_parameter(&self.state.doc, &name))
@@ -3416,10 +3420,14 @@ impl eframe::App for App {
                         &mut noop_visibility,
                         &mut queue_click,
                         &mut queue_hover,
+                        &mut queue_delete,
                         &highlight_elements,
                     );
                 });
             self.pane_hovered_element = pane_hovered_element;
+            if let Some(element) = delete_element {
+                self.state.apply(Action::DeleteElement { element });
+            }
             if let Some((element, additive)) = click_element {
                 self.state.apply(Action::ClickSceneElement { element, additive });
             }

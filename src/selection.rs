@@ -32,6 +32,11 @@ impl SceneSelection {
         self.elements.clear();
     }
 
+    /// Drop selected elements that no longer satisfy `keep` (e.g. tombstoned after a delete).
+    pub fn retain(&mut self, mut keep: impl FnMut(&SceneElement) -> bool) {
+        self.elements.retain(|e| keep(e));
+    }
+
     /// Add an element to the selection (idempotent). Used to fold a tool's in-progress picked
     /// set (e.g. Loft cross sections, #202) into the selection the viewport renders, so picked
     /// elements show their selection highlight without touching the persistent selection.

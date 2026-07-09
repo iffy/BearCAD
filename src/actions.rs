@@ -824,6 +824,9 @@ pub enum Action {
     DeleteParameter { index: usize },
     /// Tombstone every element in the current scene selection.
     DeleteSelection,
+    /// Delete one specific element (right-click → Delete in the Elements pane, #253), independent
+    /// of the current selection.
+    DeleteElement { element: SceneElement },
     SetCommandPaletteOpen { open: bool },
     ToggleCommandPalette,
     ClickSceneElement {
@@ -4787,6 +4790,24 @@ impl AppState {
                         ActionResult::Err(e)
                     }
                 }
+            }
+            Action::DeleteElement { element } => {
+                let target = crate::document_lifecycle::delete_target_for_element(element);
+                let changed = crate::document_lifecycle::tombstone_element(&mut self.doc, target);
+                if !changed {
+                    return ActionResult::Ok;
+                }
+                if let Some(session) = self.sketch_session {
+                    if !crate::document_lifecycle::sketch_alive(&self.doc, session.sketch) {
+                        self.exit_sketch_session();
+                    }
+                }
+                self.scene_selection
+                    .retain(|e| crate::document_lifecycle::element_alive(&self.doc, e.clone()));
+                let _ = recompute_document_geometry(&mut self.doc);
+                self.refresh_document_health();
+                self.status = "Deleted element".to_string();
+                ActionResult::Ok
             }
             Action::DeleteSelection => {
                 if self.scene_selection.is_empty() {
@@ -11356,6 +11377,23 @@ mod tests {
                 assert!(((x * x + y * y).sqrt() - 5.0).abs() < 0.05, "endpoint on circle");
             }
         }
+    }
+
+    /// #253: DeleteElement tombstones one specific element (the right-click → Delete path) and
+    /// drops it from the selection, independent of what else is selected.
+    #[test]
+    fn delete_element_tombstones_one_element() {
+        let mut state = two_box_state(false);
+        state.apply(Action::ClickSceneElement { element: SceneElement::Body(0), additive: false });
+        state.apply(Action::ClickSceneElement { element: SceneElement::Body(1), additive: true });
+        assert!(!state.doc.bodies[0].deleted);
+        state.apply(Action::DeleteElement { element: SceneElement::Body(0) });
+        assert!(state.doc.bodies[0].deleted, "the targeted body is tombstoned");
+        assert!(!state.doc.bodies[1].deleted, "other bodies are untouched");
+        assert!(!state.scene_selection.is_selected(SceneElement::Body(0)), "deleted element leaves the selection");
+        // Undoable.
+        state.apply(Action::UndoLast);
+        assert!(!state.doc.bodies[0].deleted, "delete undoes");
     }
 
     /// #241: an origin axis is a selectable element — clicking it lands in the scene selection,
