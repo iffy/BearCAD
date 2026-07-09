@@ -64,10 +64,6 @@ pub struct ContextInput<'a> {
     pub repeat_op: Option<RepeatControl>,
     /// "Edit repeat" entry point.
     pub repeat_edit_start: Option<usize>,
-    /// In-sketch repeat entry (#232): `Some((sketch, lines, circles))` when a sketch is open with
-    /// repeatable entities selected — renders a "Repeat selection" button that creates a
-    /// [`crate::model::SketchRepeatOperation`] from the selection.
-    pub sketch_repeat_start: Option<(usize, Vec<usize>, Vec<usize>)>,
     /// Slice tool state: `Some` while the Slice tool is active.
     pub slice_op: Option<SliceControl>,
     /// "Edit slice" entry point.
@@ -312,8 +308,6 @@ pub struct ContextPaneContent {
     pub repeat_op: Option<RepeatControl>,
     /// "Edit repeat" entry point.
     pub repeat_edit_start: Option<usize>,
-    /// In-sketch "Repeat selection" button target (#232): `(sketch, lines, circles)`.
-    pub sketch_repeat_start: Option<(usize, Vec<usize>, Vec<usize>)>,
     /// Slice tool controls.
     pub slice_op: Option<SliceControl>,
     /// "Edit slice" button target.
@@ -614,7 +608,6 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let move_edit_start = input.move_edit_start;
     let repeat_op = input.repeat_op.clone();
     let repeat_edit_start = input.repeat_edit_start;
-    let sketch_repeat_start = input.sketch_repeat_start.clone();
     let slice_op = input.slice_op.clone();
     let slice_edit_start = input.slice_edit_start;
     let revolve_edit_start = input.revolve_edit_start;
@@ -645,7 +638,6 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             move_edit_start,
             repeat_op: repeat_op.clone(),
             repeat_edit_start,
-            sketch_repeat_start: sketch_repeat_start.clone(),
             slice_op: slice_op.clone(),
             slice_edit_start,
             revolve_edit_start,
@@ -677,7 +669,6 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             move_edit_start,
             repeat_op: repeat_op.clone(),
             repeat_edit_start,
-            sketch_repeat_start: sketch_repeat_start.clone(),
             slice_op: slice_op.clone(),
             slice_edit_start,
             revolve_edit_start,
@@ -709,7 +700,6 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             move_edit_start,
             repeat_op: repeat_op.clone(),
             repeat_edit_start,
-            sketch_repeat_start: sketch_repeat_start.clone(),
             slice_op: slice_op.clone(),
             slice_edit_start,
             revolve_edit_start,
@@ -744,7 +734,6 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         move_edit_start,
         repeat_op,
         repeat_edit_start,
-        sketch_repeat_start: sketch_repeat_start.clone(),
         slice_op,
         slice_edit_start,
         revolve_edit_start,
@@ -964,7 +953,6 @@ pub fn show_pane(
     on_move_edit_start: &mut impl FnMut(usize),
     on_repeat_edit: &mut impl FnMut(RepeatEdit),
     on_repeat_edit_start: &mut impl FnMut(usize),
-    on_sketch_repeat_start: &mut impl FnMut(usize, Vec<usize>, Vec<usize>),
     on_slice_edit: &mut impl FnMut(SliceEdit),
     on_slice_edit_start: &mut impl FnMut(usize),
     on_revolve_edit_start: &mut impl FnMut(usize),
@@ -1481,26 +1469,6 @@ pub fn show_pane(
         );
     }
 
-    // In-sketch repeat (#232): repeat the selected sketch entities along an axis.
-    if let Some((sketch, lines, circles)) = content.sketch_repeat_start.clone() {
-        any_control = true;
-        ui.separator();
-        let n = lines.len() + circles.len();
-        if ui
-            .add_enabled(controls_enabled, egui::Button::new("Repeat selection"))
-            .clicked()
-        {
-            on_sketch_repeat_start(sketch, lines, circles);
-        }
-        ui.label(
-            egui::RichText::new(format!(
-                "{n} sketch entity(ies) — duplicated along +X (edit the op to change direction/count)"
-            ))
-            .color(egui::Color32::from_gray(140))
-            .size(11.0),
-        );
-    }
-
     if let Some(control) = &content.slice_op {
         any_control = true;
         ui.separator();
@@ -1834,19 +1802,6 @@ mod tests {
     use crate::model::{Document, FaceId, Line};
     use crate::selection::click_scene_selection;
 
-    /// #232: the in-sketch "Repeat selection" entry passes through to the pane content so the
-    /// button renders (its `(sketch, lines, circles)` payload commits a SketchRepeatOperation).
-    #[test]
-    fn sketch_repeat_start_reaches_the_pane_content() {
-        let doc = Document::default();
-        let selection = SceneSelection::default();
-        let content = context_pane_content(&ContextInput {
-            sketch_repeat_start: Some((0, vec![1, 2], vec![3])),
-            ..input(&doc, &selection)
-        });
-        assert_eq!(content.sketch_repeat_start, Some((0, vec![1, 2], vec![3])));
-    }
-
     fn input<'a>(doc: &'a Document, selection: &'a SceneSelection) -> ContextInput<'a> {
         ContextInput {
             doc,
@@ -1871,7 +1826,6 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
-            sketch_repeat_start: None,
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
@@ -1909,7 +1863,6 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
-            sketch_repeat_start: None,
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
@@ -1969,7 +1922,6 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
-            sketch_repeat_start: None,
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
@@ -2219,7 +2171,6 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
-            sketch_repeat_start: None,
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
@@ -2264,7 +2215,6 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
-            sketch_repeat_start: None,
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
@@ -2295,7 +2245,6 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
-            sketch_repeat_start: None,
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
@@ -2340,7 +2289,6 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
-            sketch_repeat_start: None,
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
@@ -2389,7 +2337,6 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
-            sketch_repeat_start: None,
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
@@ -2481,7 +2428,6 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
-            sketch_repeat_start: None,
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
@@ -2524,7 +2470,6 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
-            sketch_repeat_start: None,
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
@@ -2557,7 +2502,6 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
-            sketch_repeat_start: None,
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
@@ -2594,7 +2538,6 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             repeat_edit_start: None,
-            sketch_repeat_start: None,
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
