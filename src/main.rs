@@ -4321,7 +4321,7 @@ impl eframe::App for App {
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
                 // A technical drawing open (#180) takes over the central area with its
-                // black-on-white sheet; otherwise the 3D viewport renders as usual.
+                // white-on-black editor sheet (#254); otherwise the 3D viewport renders as usual.
                 match self.state.editing_drawing {
                     Some(di) if self.state.doc.drawings.get(di).is_some_and(|d| !d.deleted) => {
                         self.draw_drawing_pane(ui, di);
@@ -7255,11 +7255,14 @@ impl App {
     /// in a grid; views are added and removed from the controls at the top.
     fn draw_drawing_pane(&mut self, ui: &mut egui::Ui, drawing: usize) {
         use crate::model::DrawingOrientation;
-        const INK: egui::Color32 = egui::Color32::from_gray(20);
+        // The editor is white-on-black to match the app's dark-mode aesthetic (#254); export
+        // (see `drawing.rs`) stays the opposite — black ink on a white sheet.
+        const INK: egui::Color32 = egui::Color32::from_gray(228);
+        const SHEET: egui::Color32 = egui::Color32::from_gray(24);
 
-        // White sheet across the whole central area.
+        // Dark sheet across the whole central area.
         let area = ui.available_rect_before_wrap();
-        ui.painter().rect_filled(area, 0.0, egui::Color32::WHITE);
+        ui.painter().rect_filled(area, 0.0, SHEET);
 
         let mut close = false;
         #[allow(unused_mut)] // only mutated by the native-only Export SVG button
@@ -7382,7 +7385,7 @@ impl App {
                 painter.rect_stroke(
                     cell.shrink(2.0),
                     2.0,
-                    egui::Stroke::new(1.0, egui::Color32::from_gray(200)),
+                    egui::Stroke::new(1.0, egui::Color32::from_gray(80)),
                     egui::StrokeKind::Inside,
                 );
                 let caption = format!(

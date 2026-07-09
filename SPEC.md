@@ -817,7 +817,9 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
 
 - **Create & manage:** the Elements pane has a **＋ New Drawing** button (and a `Drawing`
   node, with its own icon, per drawing). Right-clicking a drawing — or clicking its row —
-  **opens it** in the drawing pane, which takes over the central area with a white sheet.
+  **opens it** in the drawing pane, which takes over the central area. The **editor** is
+  white-on-black to match the app's dark-mode aesthetic (#254); **export** inverts back to
+  black ink on a white sheet.
 - **Views:** a drawing collects **views**, each a chosen body shown in one orientation — the
   six straight-on directions (Front/Back/Left/Right/Top/Bottom) or an **Isometric**
   three-quarter view. Each view renders as a black wireframe of the body's feature edges,
