@@ -526,6 +526,10 @@ struct App {
     element_filter: hierarchy::ElementFilter,
     element_filter_expanded: bool,
     element_filter_drawing_workbench: bool,
+    /// Drawing-editor pan/zoom (#273): a scale about the pane centre and a pixel pan offset.
+    /// Ephemeral view state; reset (fit) by the Zoom tool / `Z`.
+    drawing_zoom: f32,
+    drawing_pan: egui::Vec2,
     /// Set just before closing on an uncaught script error with `--exit` (#125), so
     /// `run_app` can translate it into a non-zero process exit code after the eframe
     /// event loop returns — a script failure must fail the process, not just the UI.
@@ -629,6 +633,8 @@ impl App {
             element_filter: hierarchy::ElementFilter::default(),
             element_filter_expanded: false,
             element_filter_drawing_workbench: false,
+            drawing_zoom: 1.0,
+            drawing_pan: egui::Vec2::ZERO,
             script_failed,
         }
     }
@@ -1523,8 +1529,14 @@ impl App {
 
             // Z: zoom to fit — the selection if anything is selected, else everything (#279).
             // `consume_key(NONE, …)` requires no modifier, so it never catches Cmd/Ctrl+Z (undo).
+            // In the Drawing workbench it fits the page instead (reset the drawing pan/zoom).
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Z)) {
-                self.state.apply(Action::ZoomToFit);
+                if self.state.editing_drawing.is_some() {
+                    self.drawing_zoom = 1.0;
+                    self.drawing_pan = egui::Vec2::ZERO;
+                } else {
+                    self.state.apply(Action::ZoomToFit);
+                }
             }
 
             // `T` is also the mnemonic for the Tangent geometric constraint (Tool::Constraint,
@@ -3171,7 +3183,9 @@ impl eframe::App for App {
                     if icons::selectable_icon_button(ui, icons::IconId::Zoom, false, "Zoom to fit (Z)")
                         .clicked()
                     {
-                        self.state.apply(Action::ZoomToFit);
+                        // In the Drawing workbench, fit = reset the page pan/zoom (#273/#279).
+                        self.drawing_zoom = 1.0;
+                        self.drawing_pan = egui::Vec2::ZERO;
                     }
                     return;
                 }
@@ -3417,6 +3431,9 @@ impl eframe::App for App {
                 } else {
                     hierarchy::ElementFilter::default()
                 };
+                // Open each drawing fit-to-pane (#273).
+                self.drawing_zoom = 1.0;
+                self.drawing_pan = egui::Vec2::ZERO;
                 self.element_filter_drawing_workbench = drawing_workbench;
             }
             let mut edit_sketch: Option<SketchId> = None;
@@ -7338,9 +7355,33 @@ impl App {
         let area = ui.available_rect_before_wrap();
         ui.painter().rect_filled(area, 0.0, SHEET);
 
+        // Pan/zoom the sheet like the 3D viewport, but never rotate (#273). Drag the empty
+        // background to pan; scroll to zoom about the cursor. Card drags (#274) sit on top and
+        // take priority, so this only fires on empty sheet.
+        let bg = ui.interact(
+            area,
+            ui.make_persistent_id(("drawing_page_bg", drawing)),
+            egui::Sense::click_and_drag(),
+        );
+        if bg.dragged() {
+            self.drawing_pan += bg.drag_delta();
+        }
+        let scroll = if bg.hovered() { ui.input(|i| i.raw_scroll_delta.y) } else { 0.0 };
+        if scroll != 0.0 {
+            let f = (1.0 + scroll * 0.0015).clamp(0.5, 2.0);
+            let cursor = bg.hover_pos().unwrap_or(area.center());
+            let center0 = area.center() + self.drawing_pan;
+            self.drawing_zoom = (self.drawing_zoom * f).clamp(0.2, 8.0);
+            let new_center = cursor + (center0 - cursor) * f;
+            self.drawing_pan = new_center - area.center();
+        }
+        if bg.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
+
         // The page outline + margin, drawn to the drawing's real page dimensions (#273): a
-        // landscape/portrait rectangle centred in the lower part of the pane, at the page's
-        // aspect ratio, with the margin rectangle inside it.
+        // landscape/portrait rectangle at the page's aspect ratio, transformed by the pan/zoom,
+        // with the margin rectangle inside it.
         let mut set_page: Option<(f32, f32, f32)> = None;
         // The page rectangle in screen space (#273), reused to position the placed views (#274).
         let mut page_rect: Option<egui::Rect> = None;
@@ -7357,9 +7398,11 @@ impl App {
                 area.max - egui::vec2(16.0, 16.0),
             );
             if avail.width() > 20.0 && avail.height() > 20.0 && pw > 0.0 && ph > 0.0 {
-                let scale = (avail.width() / pw).min(avail.height() / ph);
+                let fit = (avail.width() / pw).min(avail.height() / ph);
+                let scale = fit * self.drawing_zoom;
                 let page_size = egui::vec2(pw * scale, ph * scale);
-                let page = egui::Rect::from_center_size(avail.center(), page_size);
+                let page =
+                    egui::Rect::from_center_size(area.center() + self.drawing_pan, page_size);
                 page_rect = Some(page);
                 // A faint white page on the dark sheet, with the margin as a dashed inset.
                 ui.painter().rect_filled(page, 2.0, egui::Color32::from_gray(40));
@@ -7380,11 +7423,6 @@ impl App {
                 }
             }
             // Right-click the sheet background (#273): view/edit the page dimensions (in inches).
-            let bg = ui.interact(
-                area,
-                ui.make_persistent_id(("drawing_page_bg", drawing)),
-                egui::Sense::click(),
-            );
             bg.context_menu(|ui| {
                 ui.label(egui::RichText::new("Page (inches)").strong());
                 let id = ui.make_persistent_id(("drawing_page_edit", drawing));
