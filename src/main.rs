@@ -3516,6 +3516,27 @@ impl eframe::App for App {
                     .creating_extrusion
                     .as_ref()
                     .map(|ce| ce.body_mode),
+                // Extrude face element picker rows (#268): one per picked profile face.
+                extrude_faces: (self.state.tool == Tool::Extrude).then(|| {
+                    self.state
+                        .creating_extrusion
+                        .as_ref()
+                        .map(|ce| {
+                            ce.faces
+                                .iter()
+                                .enumerate()
+                                .map(|(n, f)| {
+                                    let kind = match f {
+                                        model::ExtrudeFace::Circle(_) => "Circle",
+                                        model::ExtrudeFace::Polygon(_) => "Loop",
+                                        model::ExtrudeFace::Boolean { .. } => "Region",
+                                    };
+                                    format!("{kind} {}", n + 1)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                }),
                 // #157/#167: the Chamfer/Fillet selection picker — rows for the in-progress
                 // edge set (empty rows still show the picker with its pick hint).
                 edge_treatment_rows: (matches!(self.state.tool, Tool::Chamfer | Tool::Fillet)
@@ -3866,6 +3887,7 @@ impl eframe::App for App {
                 None;
             let mut snapping_change: Option<bool> = None;
             let mut extrude_body_mode_change: Option<actions::ExtrudeBodyMode> = None;
+            let mut extrude_face_remove: Option<Option<usize>> = None;
             let mut units_change: Option<context::UnitsChoice> = None;
             let mut edge_picker_edit: Option<Option<usize>> = None;
             let mut selection_edit: Option<context::SelectionEdit> = None;
@@ -3910,6 +3932,7 @@ impl eframe::App for App {
                         &mut |kind| constraint_apply = Some(kind),
                         &mut |enabled| snapping_change = Some(enabled),
                         &mut |mode| extrude_body_mode_change = Some(mode),
+                        &mut |remove| extrude_face_remove = Some(remove),
                         &mut |choice| units_change = Some(choice),
                         &mut |edit| edge_picker_edit = Some(edit),
                         &mut |edit| selection_edit = Some(edit),
@@ -3949,6 +3972,18 @@ impl eframe::App for App {
                         cr.sketch = None;
                     }
                     context::RevolveEdit::ClearAxis => cr.axis = None,
+                }
+            }
+            if let Some(remove) = extrude_face_remove {
+                // Removing a face from the picker toggles it back off (#268).
+                if let Some(ce) = self.state.creating_extrusion.as_ref() {
+                    let faces: Vec<model::ExtrudeFace> = match remove {
+                        Some(i) => ce.faces.get(i).cloned().into_iter().collect(),
+                        None => ce.faces.clone(),
+                    };
+                    for face in faces {
+                        self.state.apply(Action::ToggleExtrudeFace { face });
+                    }
                 }
             }
             if let Some(edit) = boolean_edit {

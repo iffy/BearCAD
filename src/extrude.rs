@@ -3414,6 +3414,38 @@ mod tests {
     }
 
 
+    /// #263/#268: two concentric circles resolve a click in the ring (inside the outer,
+    /// outside the inner) to `Difference(outer, inner)` — the ring face — and a click in the
+    /// inner disc to `Intersection` (the inner face).
+    #[test]
+    fn concentric_circles_resolve_a_ring_and_an_inner_face() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0)); // outer
+        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 4.0, 0.0)); // inner
+        let outer = ExtrudeFace::Circle(0);
+        let inner = ExtrudeFace::Circle(1);
+
+        // The outer circle's unique overlapping partner is the inner one.
+        assert_eq!(overlapping_partner(&doc, sketch, &outer), Some(inner.clone()));
+
+        // A point in the ring (radius 7) → Difference(outer − inner) = the ring.
+        let ring = resolve_boolean_click(&doc, sketch, &outer, &inner, (7.0, 0.0));
+        assert!(
+            matches!(
+                ring,
+                Some(ExtrudeFace::Boolean { op: crate::model::BooleanOp::Difference, .. })
+            ),
+            "ring click should resolve to a Difference face, got {ring:?}"
+        );
+
+        // A point in the inner disc (radius 1) → Intersection = the inner disc.
+        let center = resolve_boolean_click(&doc, sketch, &outer, &inner, (1.0, 0.0));
+        assert!(matches!(
+            center,
+            Some(ExtrudeFace::Boolean { op: crate::model::BooleanOp::Intersection, .. })
+        ));
+    }
+
     /// #177: chamfering a cylinder's top rim through the kernel removes an annular ring
     /// (~perimeter * d^2/2 for a 45-degree chamfer).
     #[test]

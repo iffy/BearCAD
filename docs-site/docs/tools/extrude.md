@@ -14,6 +14,11 @@ translucent preview shows the result the whole time.
 
 ![An 80 x 50 mm rectangle extruded 20 mm into a solid block](/img/screenshots/extrude.png)
 
+- The picked faces show in a **Faces** element picker in the Context pane — expand it to
+  drop one with its ✕ (faces are still added by clicking them in the viewport).
+- With two **concentric circles** you can extrude just the **ring** between them: click in
+  the area between the circles and the tool selects the outer face minus the inner. Clicking
+  the inner disc selects that; the whole outer disc still works too.
 - Double-click a finished extrusion (or right-click → **Edit**) to change its faces or
   depth later.
 - Typing a digit while the tool is active jumps straight into the distance field.

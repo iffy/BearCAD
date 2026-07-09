@@ -37,6 +37,9 @@ pub struct ContextInput<'a> {
     pub extrude_merge_candidate: Option<usize>,
     /// Current new-body/merge-into choice for the in-progress/edited extrusion.
     pub extrude_body_mode: Option<ExtrudeBodyMode>,
+    /// One label per picked extrude profile face, shown in the Extrude tool's face element
+    /// picker (#268); `None` when the Extrude tool isn't active.
+    pub extrude_faces: Option<Vec<String>>,
     /// Selection-picker rows for the active tool (#157/#167): `Some` whenever the tool
     /// collects a selection set (Chamfer/Fillet outside a sketch — one row per edge in the
     /// in-progress treatment, empty while nothing is picked yet), `None` for other tools.
@@ -283,6 +286,8 @@ pub struct ContextPaneContent {
     pub snapping: Option<bool>,
     /// New-body/merge-into choice for an in-progress or edited extrusion (#32).
     pub extrude_body: Option<ExtrudeBodyControl>,
+    /// Picked extrude profile faces, shown as an element picker (#268).
+    pub extrude_faces: Option<Vec<String>>,
     /// Default length/angle unit picker: document-level when nothing is selected, or
     /// per-sketch (with a "follow document" inherit option) when a single sketch is
     /// selected (#52).
@@ -521,6 +526,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         }),
         _ => None,
     };
+    let extrude_faces = input.extrude_faces.clone();
     // The Repeat tool's own context is busy enough; its distances are plain lengths, so the
     // Default-units section isn't shown while it's active (#257).
     let units = (input.tool != Tool::Repeat)
@@ -636,6 +642,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             constraints: None,
             snapping,
             extrude_body,
+            extrude_faces: extrude_faces.clone(),
             units,
             edge_picker: edge_picker.clone(),
             selection_picker: None,
@@ -667,6 +674,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             constraints: None,
             snapping,
             extrude_body,
+            extrude_faces: extrude_faces.clone(),
             units,
             edge_picker: edge_picker.clone(),
             selection_picker: None,
@@ -698,6 +706,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             constraints: None,
             snapping,
             extrude_body,
+            extrude_faces: extrude_faces.clone(),
             units,
             edge_picker: edge_picker.clone(),
             selection_picker: None,
@@ -732,6 +741,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         constraints,
         snapping,
         extrude_body,
+        extrude_faces: extrude_faces.clone(),
         units,
         edge_picker,
         selection_picker,
@@ -952,6 +962,7 @@ pub fn show_pane(
     on_constraint_clicked: &mut impl FnMut(crate::geometric_constraints::GeometricConstraintType),
     on_snapping_changed: &mut impl FnMut(bool),
     on_extrude_body_mode_changed: &mut impl FnMut(ExtrudeBodyMode),
+    on_extrude_face_remove: &mut impl FnMut(Option<usize>),
     on_units_changed: &mut impl FnMut(UnitsChoice),
     on_edge_picker_edit: &mut impl FnMut(Option<usize>),
     on_selection_edit: &mut impl FnMut(SelectionEdit),
@@ -1728,6 +1739,27 @@ pub fn show_pane(
         });
     }
 
+    if let Some(faces) = &content.extrude_faces {
+        any_control = true;
+        // Extrude face element picker (#268): the picked profile faces, each with a ✕ to drop
+        // it. Faces are added by clicking them in the viewport.
+        ui.label("Faces");
+        if let Some(event) = crate::element_picker::show_labeled(
+            ui,
+            "extrude_faces",
+            true,
+            "Click a face to extrude",
+            crate::icons::IconId::Sketch,
+            faces,
+        ) {
+            match event {
+                crate::element_picker::PickerEvent::Focus => {}
+                crate::element_picker::PickerEvent::Remove(i) => on_extrude_face_remove(Some(i)),
+                crate::element_picker::PickerEvent::Clear => on_extrude_face_remove(None),
+            }
+        }
+    }
+
     if let Some(control) = &content.extrude_body {
         any_control = true;
         ui.label("Extrude into");
@@ -1893,6 +1925,7 @@ mod tests {
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
+            extrude_faces: None,
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
@@ -1926,6 +1959,22 @@ mod tests {
         assert!(repeat.units.is_none(), "Repeat tool hides the units control");
     }
 
+    /// #268: the Extrude tool surfaces its picked profile faces as an element picker.
+    #[test]
+    fn extrude_tool_surfaces_a_face_picker() {
+        let doc = Document::default();
+        let selection = SceneSelection::default();
+        let content = context_pane_content(&ContextInput {
+            tool: Tool::Extrude,
+            extrude_faces: Some(vec!["Circle 1".to_string(), "Region 2".to_string()]),
+            ..input(&doc, &selection)
+        });
+        assert_eq!(
+            content.extrude_faces.as_deref(),
+            Some(["Circle 1".to_string(), "Region 2".to_string()].as_slice())
+        );
+    }
+
     /// #157/#167: the selection picker surfaces whenever the input carries rows (the
     /// Chamfer/Fillet edge set), including an empty set (which renders the pick hint).
     #[test]
@@ -1945,6 +1994,7 @@ mod tests {
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
+            extrude_faces: None,
             edge_treatment_rows: Some(vec!["Block — vertical 0".to_string()]),
             loft_rows: None,
             calibrate_image: None,
@@ -2004,6 +2054,7 @@ mod tests {
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
+            extrude_faces: None,
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
@@ -2254,6 +2305,7 @@ mod tests {
                 constraints: None,
                 snapping: None,
                 extrude_body: None,
+                extrude_faces: None,
                 edge_picker: None,
                 selection_picker: Some(ElementPicker::select_everything()),
                 tool_pickers: Vec::new(),
@@ -2299,6 +2351,7 @@ mod tests {
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
+            extrude_faces: None,
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
@@ -2328,6 +2381,7 @@ mod tests {
                 constraints: None,
                 snapping: None,
                 extrude_body: None,
+                extrude_faces: None,
                 edge_picker: None,
                 selection_picker: None,
             tool_pickers: Vec::new(),
@@ -2373,6 +2427,7 @@ mod tests {
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
+            extrude_faces: None,
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
@@ -2415,6 +2470,7 @@ mod tests {
                 constraints: None,
                 snapping: None,
                 extrude_body: None,
+                extrude_faces: None,
                 // #213: the Select tool surfaces the selection through the unified element picker.
                 edge_picker: None,
                 selection_picker: Some({
@@ -2512,6 +2568,7 @@ mod tests {
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
+            extrude_faces: None,
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
@@ -2554,6 +2611,7 @@ mod tests {
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
+            extrude_faces: None,
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
@@ -2585,6 +2643,7 @@ mod tests {
                 constraints: None,
                 snapping: None,
                 extrude_body: None,
+                extrude_faces: None,
                 edge_picker: None,
                 selection_picker: None,
             tool_pickers: Vec::new(),
@@ -2622,6 +2681,7 @@ mod tests {
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
+            extrude_faces: None,
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
