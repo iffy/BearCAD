@@ -1023,7 +1023,9 @@ modeled on SolveSpace (https://solvespace.com).
   (a tool with several, e.g. Combine's A/B sides or Slice's bodies/cutters, switches which is
   focused when you click it). Whatever a picker holds is **styled as selected in the viewport**
   while the tool is active (folded into the scene's highlight set, not the persistent
-  selection).
+  selection). While a body-set tool (Combine/Move/Repeat/Slice) is active, the **body under
+  the cursor hover-highlights** as selectable — the same whole-body resolution the click uses
+  (#227).
 - **Whole-body vs. sub-element picking (#218):** a viewport click picks a **whole body** only
   when the focused picker's accepted types exclude edges, faces, and vertices — so the
   body-set tools (Move/Repeat/Slice/Combine, Revolve cut), whose pickers accept only bodies,

@@ -4737,6 +4737,24 @@ fn resolve_viewport_hover_highlight(
                 .filter(|kind| occlusion.is_none_or(|occ| occ.pickable(doc, kind)))
                 .map(gpu_viewport::ViewportHoverHighlight::PickTarget)
         }
+        // Body-set tools (#227): while one is active its picker accepts whole bodies, so the
+        // body under the cursor styles as selectable — hover-highlight it via the same
+        // whole-body resolution the click path uses (edge/vertex/face → owning body).
+        Tool::Combine | Tool::Move | Tool::Repeat | Tool::Slice => {
+            let gp = cam.ground_point(pp, viewport, vp);
+            let body = resolve_pick_target(pp, project, gp, doc, occlusion)
+                .as_ref()
+                .and_then(|t| body_index_from_pick(&t.kind))
+                .or_else(|| {
+                    crate::face::pick_body_face(pp, project, doc, cam.eye())
+                        .filter(|kind| occlusion.is_none_or(|occ| occ.pickable(doc, kind)))
+                        .as_ref()
+                        .and_then(body_index_from_pick)
+                });
+            body.map(|bi| {
+                gpu_viewport::ViewportHoverHighlight::Element(SceneElement::Body(bi))
+            })
+        }
         _ => None,
     }
 }
@@ -11804,6 +11822,64 @@ mod tests {
                 None,
             )
             .is_none()
+        );
+    }
+
+    /// #227: while a body-set tool is active, the whole body under the cursor hover-highlights
+    /// (it's what the picker accepts), rendered as an `Element(Body)` aura.
+    #[test]
+    fn combine_tool_hovers_the_body_under_the_cursor() {
+        use super::gpu_viewport;
+        use super::resolve_viewport_hover_highlight;
+        use crate::hierarchy::SceneElement;
+
+        // A single imported-mesh body: one big triangle in the ground plane.
+        let mut doc = crate::model::Document::default();
+        doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles: vec![[
+                glam::Vec3::new(-20.0, -20.0, 0.0),
+                glam::Vec3::new(20.0, -20.0, 0.0),
+                glam::Vec3::new(0.0, 20.0, 0.0),
+            ]],
+            source_name: "tri".to_string(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+
+        let cam = crate::camera::Camera::default();
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
+        let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
+        // Aim at the triangle's centroid.
+        let centroid = glam::Vec3::new(0.0, -20.0 / 3.0, 0.0);
+        let cursor = project(centroid).expect("centroid projects into the viewport");
+
+        let hover = resolve_viewport_hover_highlight(
+            false,
+            crate::actions::Tool::Combine,
+            None,
+            false,
+            false,
+            false,
+            false,
+            Some(cursor),
+            &cam,
+            viewport,
+            &vp,
+            &doc,
+            &project,
+            None,
+        );
+        assert!(
+            matches!(
+                hover,
+                Some(gpu_viewport::ViewportHoverHighlight::Element(SceneElement::Body(0)))
+            ),
+            "combine tool should hover-highlight the whole body, got {hover:?}"
         );
     }
 
