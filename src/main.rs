@@ -7661,10 +7661,19 @@ impl App {
 
         // Occlusion context for picking (#155): tools that pick scene geometry must not
         // select things hidden behind a body. Built once per frame, only for those tools
-        // (it meshes every visible body).
+        // (it meshes every visible body). The body-set tools (Combine, Move, Repeat, Slice,
+        // Revolve) need it too, or a click can pass through a front body to one behind it (#265).
         let pick_occlusion = if matches!(
             self.state.tool,
-            Tool::Select | Tool::Constraint | Tool::ConstructionPlane | Tool::Dimension
+            Tool::Select
+                | Tool::Constraint
+                | Tool::ConstructionPlane
+                | Tool::Dimension
+                | Tool::Combine
+                | Tool::Move
+                | Tool::Repeat
+                | Tool::Slice
+                | Tool::Revolve
         ) {
             Some(construction::PickOcclusion::new(
                 &self.state.doc,

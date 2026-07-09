@@ -1031,13 +1031,14 @@ modeled on SolveSpace (https://solvespace.com).
   **clicked in the Elements pane** (or otherwise selected) always feeds the active body-set
   tool's picker — so you can gather bodies from the pane even for tools where the viewport is
   picking sub-elements.
-- **No picking through bodies (#155):** while selecting (Select/Constraint tools, and picks
-  made for a tool such as construction-plane references or dimension targets), geometry
-  hidden **behind** a visible body under the cursor is not a pick candidate — clicking a
-  body never selects a line buried inside or behind it. The probe point is the spot on the
-  candidate nearest the cursor, so a partially hidden edge stays pickable along its visible
-  stretch; hiding a body (Elements pane) removes it as an occluder, restoring the old
-  X-ray behavior deliberately.
+- **No picking through bodies (#155/#265):** while selecting (Select/Constraint tools, picks
+  made for a tool such as construction-plane references or dimension targets, and the
+  body-set tools Combine/Move/Repeat/Slice/Revolve), geometry hidden **behind** a visible
+  body under the cursor is not a pick candidate — clicking a body never selects a line buried
+  inside or behind it, and a body-set tool can't pick a body through one in front of it. The
+  probe point is the spot on the candidate nearest the cursor, so a partially hidden edge
+  stays pickable along its visible stretch; hiding a body (Elements pane) removes it as an
+  occluder, restoring the old X-ray behavior deliberately.
 - **3D body sub-element hover (#144):** with the Select tool, hovering a 3D body highlights the
   **vertex, edge, or face** under the cursor — in that priority order (a corner beats an edge on
   it, which beats the face they lie on), so it is always clear what a pick would grab. Edges are
