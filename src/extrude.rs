@@ -740,6 +740,45 @@ pub fn sketch_repeat_offsets(
     spacing_offsets(op.mode, extent, count(), eval(&op.spacing), eval(&op.length))
 }
 
+/// Every body strictly **downstream** of `seeds` (#260): bodies produced by an operation that
+/// consumes a seed body, transitively. Used to fade the descendants of an operation being edited.
+pub fn descendant_bodies(doc: &Document, seeds: &[usize]) -> std::collections::HashSet<usize> {
+    use std::collections::{HashSet, VecDeque};
+    let mut result = HashSet::new();
+    let mut queue: VecDeque<usize> = seeds.iter().copied().collect();
+    let mut visited: HashSet<usize> = seeds.iter().copied().collect();
+    while let Some(bi) = queue.pop_front() {
+        let mut outs: Vec<usize> = Vec::new();
+        for op in doc.boolean_ops.iter().filter(|o| !o.deleted) {
+            if op.a.contains(&bi) || op.b.contains(&bi) {
+                outs.extend(op.outputs.iter().copied());
+            }
+        }
+        for op in doc.move_ops.iter().filter(|o| !o.deleted) {
+            if op.targets.contains(&bi) {
+                outs.extend(op.outputs.iter().copied());
+            }
+        }
+        for op in doc.repeat_ops.iter().filter(|o| !o.deleted) {
+            if op.targets.contains(&bi) {
+                outs.extend(op.outputs.iter().copied());
+            }
+        }
+        for op in doc.slice_ops.iter().filter(|o| !o.deleted) {
+            if op.targets.contains(&bi) {
+                outs.extend(op.outputs.iter().copied());
+            }
+        }
+        for out in outs {
+            if visited.insert(out) {
+                result.insert(out);
+                queue.push_back(out);
+            }
+        }
+    }
+    result
+}
+
 pub fn repeat_offsets(doc: &Document, op: &crate::model::RepeatOperation) -> Option<Vec<f32>> {
     let (_, dir) = axis_world(doc, op.axis)?;
     // The targets' combined extent along the axis (end-to-start measurements need it).
@@ -3254,6 +3293,50 @@ fn extrude_profile_with_treatments(
 mod tests {
     use super::*;
     use crate::model::{Circle, Document, FaceId};
+
+    /// #260: descendants walk forward through operations — a body feeding a boolean whose output
+    /// feeds a move op yields both downstream bodies, but not unrelated bodies.
+    #[test]
+    fn descendant_bodies_walks_downstream_operations() {
+        let mut doc = Document::default();
+        for _ in 0..5 {
+            doc.bodies.push(crate::model::Body {
+                source: crate::model::BodySource::Imported(0),
+                name: None,
+                deleted: false,
+                shadow: false,
+            });
+        }
+        // body0 + body1 -> boolean -> body2; body2 -> move -> body3. body4 is unrelated.
+        doc.boolean_ops.push(crate::model::BooleanOperation {
+            kind: crate::model::BooleanOpKind::Combine,
+            a: vec![0],
+            b: vec![1],
+            keep_b: false,
+            outputs: vec![2],
+            name: None,
+            deleted: false,
+        });
+        doc.move_ops.push(crate::model::MoveOperation {
+            targets: vec![2],
+            plane_targets: Vec::new(),
+            image_targets: Vec::new(),
+            tx: String::new(),
+            ty: String::new(),
+            tz: String::new(),
+            axis: None,
+            angle: String::new(),
+            outputs: vec![3],
+            name: None,
+            deleted: false,
+        });
+
+        let d = descendant_bodies(&doc, &[0]);
+        assert!(d.contains(&2), "boolean output is downstream of body 0");
+        assert!(d.contains(&3), "moved output is downstream transitively");
+        assert!(!d.contains(&0) && !d.contains(&1), "seeds/siblings aren't descendants");
+        assert!(!d.contains(&4), "unrelated body isn't a descendant");
+    }
 
     fn sketch_doc() -> (Document, crate::model::SketchId) {
         let mut doc = Document::default();

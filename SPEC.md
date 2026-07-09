@@ -1071,6 +1071,11 @@ modeled on SolveSpace (https://solvespace.com).
   **clicked in the Elements pane** (or otherwise selected) always feeds the active body-set
   tool's picker — so you can gather bodies from the pane even for tools where the viewport is
   picking sub-elements.
+- **Fade descendants while editing (#260):** while an operation is being edited (an extrusion,
+  or a Move/Combine/Repeat/Slice op), the bodies **downstream** of its outputs
+  (`extrude::descendant_bodies`, walked forward through consuming operations) render dimmed and
+  translucent, so the edit's ripple effects are de-emphasized. (Live-updating those descendants
+  as the gizmo drags — rather than on commit — is a follow-up.)
 - **No picking through bodies (#155/#265):** while selecting (Select/Constraint tools, picks
   made for a tool such as construction-plane references or dimension targets, and the
   body-set tools Combine/Move/Repeat/Slice/Revolve), geometry hidden **behind** a visible

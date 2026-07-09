@@ -77,6 +77,8 @@ pub const SOLID_PREVIEW_FILL: Color32 = Color32::from_rgb(120, 215, 230);
 pub const SOLID_PREVIEW_OPACITY: f32 = 0.4;
 /// Fill opacity for committed bodies in `ShadingMode::TransparentSolid` (#33).
 pub const TRANSPARENT_SOLID_OPACITY: f32 = 0.45;
+/// Opacity for a faded descendant body while its ancestor operation is being edited (#260).
+const FADED_BODY_OPACITY: f32 = 0.22;
 /// Edge-overlay color for `ShadingMode::Wireframe` and `ShadingMode::SolidWireframe` (#33).
 /// Bright against both the dark viewport background (pure wireframe) and the mid-tone
 /// `SOLID_FILL` body color (solid+wireframe).
@@ -406,6 +408,9 @@ pub struct ViewportSceneInput<'a> {
     /// contents (Revolve cut bodies, a Combine Cut's B side). Takes precedence over the blue
     /// selection fill.
     pub cut_highlight_bodies: Vec<usize>,
+    /// Bodies to render dimmed/translucent because they are descendants of the operation being
+    /// edited (#260), so the edit's downstream effects are visually de-emphasized.
+    pub faded_bodies: Vec<usize>,
     pub element_visibility: &'a ElementVisibility,
     pub preview_rect: Option<PreviewRect>,
     pub preview_line: Option<Line>,
@@ -658,6 +663,12 @@ impl ViewportScene {
                     input.viewport,
                     &vp,
                 );
+                continue;
+            }
+            // A descendant of the operation being edited (#260): render it faded/translucent so
+            // the edit's downstream effects are de-emphasized while the gizmo is live.
+            if input.faded_bodies.contains(&bi) {
+                mesh.push_solid_translucent(solid, SOLID_FILL, FADED_BODY_OPACITY);
                 continue;
             }
             // A body picked into a destructive (cut) picker previews semi-transparent in the cut
@@ -4354,6 +4365,7 @@ mod tests {
             sketch_session: None,
             selection: &state.scene_selection,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -4810,6 +4822,7 @@ mod tests {
             sketch_session: None,
             selection: &state.scene_selection,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -4845,6 +4858,7 @@ mod tests {
             sketch_session: None,
             selection: &state.scene_selection,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -4894,6 +4908,7 @@ mod tests {
             sketch_session: None,
             selection: &state.scene_selection,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -4928,6 +4943,7 @@ mod tests {
             sketch_session: None,
             selection: &state.scene_selection,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -4981,6 +4997,7 @@ mod tests {
                 sketch_session: None,
                 selection: &state.scene_selection,
                 cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
                 element_visibility: &state.element_visibility,
                 preview_rect: None,
                 preview_line: None,
@@ -5042,6 +5059,7 @@ mod tests {
             sketch_session: None,
             selection: &state.scene_selection,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -5087,6 +5105,7 @@ mod tests {
             sketch_session: None,
             selection: &state.scene_selection,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -5133,6 +5152,7 @@ mod tests {
             sketch_session: None,
             selection: &state.scene_selection,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -5185,6 +5205,7 @@ mod tests {
             sketch_session: None,
             selection: &state.scene_selection,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -5240,6 +5261,7 @@ mod tests {
             sketch_session: None,
             selection: &state.scene_selection,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -5402,6 +5424,7 @@ mod tests {
                 sketch_session: None,
                 selection: &state.scene_selection,
                 cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
                 element_visibility: &state.element_visibility,
                 preview_rect: None,
                 preview_line: None,
@@ -5573,6 +5596,7 @@ mod tests {
             sketch_session: None,
             selection: &state.scene_selection,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -5699,6 +5723,7 @@ mod tests {
             sketch_session: None,
             selection: &state.scene_selection,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -5808,6 +5833,7 @@ mod tests {
             sketch_session: None,
             selection: &state.scene_selection,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -5863,6 +5889,7 @@ mod tests {
             sketch_session: None,
             selection: &state.scene_selection,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -6028,6 +6055,7 @@ mod tests {
             sketch_session: None,
             selection: &empty_selection,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -6062,6 +6090,7 @@ mod tests {
             sketch_session: None,
             selection: &selected,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -6235,6 +6264,7 @@ mod tests {
                 sketch_session: None,
                 selection: &state.scene_selection,
                 cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
                 element_visibility: &state.element_visibility,
                 preview_rect: None,
                 preview_line: None,
@@ -6313,6 +6343,7 @@ mod tests {
                 sketch_session: None,
                 selection: sel,
                 cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
                 element_visibility: &state.element_visibility,
                 preview_rect: None,
                 preview_line: None,
@@ -6377,6 +6408,7 @@ mod tests {
                 sketch_session: None,
                 selection: sel,
                 cut_highlight_bodies: cut,
+                faded_bodies: Vec::new(),
                 element_visibility: &state.element_visibility,
                 preview_rect: None,
                 preview_line: None,
@@ -6455,6 +6487,7 @@ mod tests {
                 sketch_session: None,
                 selection: sel,
                 cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
                 element_visibility: &state.element_visibility,
                 preview_rect: None,
                 preview_line: None,
@@ -6544,6 +6577,7 @@ mod tests {
             sketch_session: None,
             selection: &selection,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -6578,6 +6612,7 @@ mod tests {
             sketch_session: None,
             selection: &selection,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -6757,6 +6792,7 @@ mod tests {
             sketch_session: Some(session),
             selection: &state.scene_selection,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -6795,6 +6831,7 @@ mod tests {
             sketch_session: Some(session),
             selection: &state.scene_selection,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
             preview_line: None,
@@ -6900,6 +6937,7 @@ mod tests {
             sketch_session: scene_fields.3,
             selection: scene_fields.4,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: scene_fields.5,
             preview_rect: None,
             preview_line: None,
@@ -6936,6 +6974,7 @@ mod tests {
             sketch_session: scene_fields.3,
             selection: scene_fields.4,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: scene_fields.5,
             preview_rect: None,
             preview_line: None,
@@ -6970,6 +7009,7 @@ mod tests {
             sketch_session: scene_fields.3,
             selection: scene_fields.4,
             cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
             element_visibility: scene_fields.5,
             preview_rect: None,
             preview_line: None,
@@ -7058,6 +7098,7 @@ mod perf_probe {
                 element_visibility: &ElementVisibility::default(),
                 selection: sel,
                 cut_highlight_bodies: Vec::new(),
+            faded_bodies: Vec::new(),
                 preview_rect: None,
                 preview_line: None,
                 preview_circle: None,
@@ -7139,6 +7180,7 @@ mod cut_preview_tests {
             element_visibility: &ElementVisibility::default(),
             selection: &selection,
             cut_highlight_bodies,
+            faded_bodies: Vec::new(),
             preview_rect: None,
             preview_line: None,
             preview_circle: None,

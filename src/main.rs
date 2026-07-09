@@ -2086,6 +2086,36 @@ impl App {
     /// amount. Mirrors [`Self::handle_vertex_treatment_tool`] closely; active precisely when
     /// that one isn't (no sketch open), since the Chamfer/Fillet tool is shared between the 2D
     /// sketch-vertex case and this 3D solid-edge case.
+    /// The output bodies of the operation currently being **edited** (#260), used as the seed for
+    /// fading their descendants. Empty when nothing is being edited.
+    fn edited_operation_output_bodies(&self) -> Vec<usize> {
+        let s = &self.state;
+        // Editing an extrusion: its body (bodies whose source owns that extrusion).
+        if let Some(ei) = s.creating_extrusion.as_ref().and_then(|ce| ce.edit_index) {
+            return s
+                .doc
+                .bodies
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| !b.deleted && b.source.owns_extrusion(ei))
+                .map(|(bi, _)| bi)
+                .collect();
+        }
+        if let Some(op) = s.creating_move.as_ref().and_then(|c| c.editing) {
+            return s.doc.move_ops.get(op).map(|o| o.outputs.clone()).unwrap_or_default();
+        }
+        if let Some(op) = s.creating_boolean.as_ref().and_then(|c| c.editing) {
+            return s.doc.boolean_ops.get(op).map(|o| o.outputs.clone()).unwrap_or_default();
+        }
+        if let Some(op) = s.creating_repeat.as_ref().and_then(|c| c.editing) {
+            return s.doc.repeat_ops.get(op).map(|o| o.outputs.clone()).unwrap_or_default();
+        }
+        if let Some(op) = s.creating_slice.as_ref().and_then(|c| c.editing) {
+            return s.doc.slice_ops.get(op).map(|o| o.outputs.clone()).unwrap_or_default();
+        }
+        Vec::new()
+    }
+
     /// Frame for the revolve **arc** gizmo (#262): the axis point nearest the profile centroid
     /// (`center`), the sweep axis (`axis`), the unit radial from the axis to the profile
     /// (`zero_dir`, the 0° direction), and the arc `radius`. The gizmo draws an arc from
@@ -4950,6 +4980,7 @@ fn build_viewport_scene_input<'a>(
     dim_label_view: Option<PlanarLabelView>,
     constraint_graphics: Option<&'a [constraint_viewport::ConstraintViewportGraphic]>,
     cut_highlight_bodies: Vec<usize>,
+    faded_bodies: Vec<usize>,
 ) -> gpu_viewport::ViewportSceneInput<'a> {
     let preview_rect = creating_rect.and_then(|cr| {
         let session = sketch_session?;
@@ -5193,6 +5224,7 @@ fn build_viewport_scene_input<'a>(
         sketch_session,
         selection,
         cut_highlight_bodies,
+        faded_bodies,
         element_visibility,
         preview_rect,
         preview_line,
@@ -9331,6 +9363,18 @@ impl App {
             }
             std::borrow::Cow::Owned(sel)
         };
+        // Fade the descendants of the operation being edited (#260): the bodies downstream of the
+        // edited op's outputs, so its live changes are visually de-emphasized.
+        let faded_bodies = {
+            let seeds = self.edited_operation_output_bodies();
+            if seeds.is_empty() {
+                Vec::new()
+            } else {
+                extrude::descendant_bodies(&self.state.doc, &seeds)
+                    .into_iter()
+                    .collect()
+            }
+        };
         // Move tool (#215): a translation arrow per world axis at the picked targets' centroid.
         let move_gizmos = if self.state.tool == Tool::Move {
             self.move_gizmo_arrows()
@@ -9409,6 +9453,7 @@ impl App {
             planar_label_view,
             Some(&constraint_graphics),
             cut_highlight_bodies,
+            faded_bodies,
         );
         let scene = gpu_viewport::ViewportScene::build(&scene_input);
         let gpu_drawn =
@@ -11407,6 +11452,7 @@ mod tests {
             None,
             None,
             Vec::new(),
+            Vec::new(),
         );
         assert_eq!(
             scene_input.preview_extrusion.as_ref().map(|e| e.target.clone()),
@@ -11481,6 +11527,7 @@ mod tests {
             &[],
             None,
             None,
+            Vec::new(),
             Vec::new(),
         );
         // 3 instances = original + 2 ghosts; each ghost is a non-empty translated copy.
@@ -11571,6 +11618,7 @@ mod tests {
                 None,
                 None,
                 Vec::new(),
+                Vec::new(),
             )
             .preview_solid
             .is_some()
@@ -11656,6 +11704,7 @@ mod tests {
             &[],
             None,
             None,
+            Vec::new(),
             Vec::new(),
         );
         let preview = scene_input.preview_extrusion.as_ref().expect("expected a ghost preview");
