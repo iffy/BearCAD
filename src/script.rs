@@ -1683,6 +1683,9 @@ fn repeat_op_lua(
         crate::model::RepeatMode::FillGap => "fill_gap",
         crate::model::RepeatMode::FillPitch => "fill_pitch",
         crate::model::RepeatMode::FillMaxPitch => "fill_max_pitch",
+        crate::model::RepeatMode::CountPitch => "count_pitch",
+        crate::model::RepeatMode::FillGapSpan => "fill_gap_span",
+        crate::model::RepeatMode::FillPitchSpan => "fill_pitch_span",
     }));
     for (name, value) in [("count", count), ("spacing", spacing), ("length", length)] {
         if !value.trim().is_empty() {

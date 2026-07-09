@@ -1323,6 +1323,15 @@ pub enum RepeatMode {
     /// Fill length L ending with an instance at the end, pitch at most D (stud spacing:
     /// never farther apart than D on center, squeezed evenly to land the last one).
     FillMaxPitch,
+    /// N instances at start-to-start **pitch** D (#257): like [`Self::CountGap`] but D is the
+    /// pitch (item length + gap) rather than the clear gap, so the offset-vs-gap toggle works
+    /// with a count.
+    CountPitch,
+    /// Fill a start-to-start **span** L with clear gap D between instances (#257) — the span
+    /// variant of [`Self::FillGap`], which fills an end-to-end length.
+    FillGapSpan,
+    /// Fill a start-to-start **span** L at pitch D (#257) — the span variant of [`Self::FillPitch`].
+    FillPitchSpan,
 }
 
 impl RepeatMode {
@@ -1334,6 +1343,9 @@ impl RepeatMode {
             Self::FillGap => "Fill length, gap",
             Self::FillPitch => "Fill length, pitch",
             Self::FillMaxPitch => "Fill length, max pitch",
+            Self::CountPitch => "Count × pitch",
+            Self::FillGapSpan => "Fill span, gap",
+            Self::FillPitchSpan => "Fill span, pitch",
         }
     }
 
@@ -1345,18 +1357,24 @@ impl RepeatMode {
             "fill_gap" => Some(Self::FillGap),
             "fill_pitch" => Some(Self::FillPitch),
             "fill_max_pitch" | "max_pitch" => Some(Self::FillMaxPitch),
+            "count_pitch" => Some(Self::CountPitch),
+            "fill_gap_span" => Some(Self::FillGapSpan),
+            "fill_pitch_span" => Some(Self::FillPitchSpan),
             _ => None,
         }
     }
 
     /// Whether the mode uses the count `n` (vs deriving it from the length).
     pub fn uses_count(self) -> bool {
-        matches!(self, Self::CountGap | Self::CountFitEnds | Self::CountFitCenters)
+        matches!(
+            self,
+            Self::CountGap | Self::CountFitEnds | Self::CountFitCenters | Self::CountPitch
+        )
     }
 
     /// Whether the mode uses the fill length `length`.
     pub fn uses_length(self) -> bool {
-        !matches!(self, Self::CountGap)
+        !matches!(self, Self::CountGap | Self::CountPitch)
     }
 }
 

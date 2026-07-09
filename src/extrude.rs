@@ -684,6 +684,31 @@ pub fn spacing_offsets(
             let n = ((span / max_pitch).ceil() as usize + 1).min(MAX_REPEAT_INSTANCES);
             offsets(n, span / (n as f32 - 1.0))
         }
+        RepeatMode::CountPitch => {
+            // N instances at start-to-start pitch `gap` (#257).
+            let n = count?;
+            offsets(n, gap?)
+        }
+        RepeatMode::FillGapSpan => {
+            // Fill a start-to-start span `length` with clear gap `gap` (step = extent + gap).
+            let span = length?;
+            let step = extent + gap?;
+            if step <= 1e-6 {
+                return None;
+            }
+            let n = ((span / step).floor() as isize + 1).max(1) as usize;
+            offsets(n.min(MAX_REPEAT_INSTANCES), step)
+        }
+        RepeatMode::FillPitchSpan => {
+            // Fill a start-to-start span `length` at pitch `gap`.
+            let span = length?;
+            let pitch = gap?;
+            if pitch <= 1e-6 {
+                return None;
+            }
+            let n = ((span / pitch).floor() as isize + 1).max(1) as usize;
+            offsets(n.min(MAX_REPEAT_INSTANCES), pitch)
+        }
     }
 }
 
@@ -3407,6 +3432,14 @@ mod tests {
         // Missing inputs / degenerate steps don't evaluate.
         assert_eq!(f(RepeatMode::CountGap, 10.0, None, Some(5.0), None), None);
         assert_eq!(f(RepeatMode::CountGap, 10.0, Some(3), None, None), None);
+
+        // #257 new modes:
+        // Count × pitch: 3 instances at pitch 15 → offsets 15, 30 (extent doesn't matter).
+        assert_eq!(f(RepeatMode::CountPitch, 10.0, Some(3), Some(15.0), None), Some(vec![15.0, 30.0]));
+        // Fill span by gap: span 40, extent 10, gap 5 → step 15 → n = floor(40/15)+1 = 3.
+        assert_eq!(f(RepeatMode::FillGapSpan, 10.0, None, Some(5.0), Some(40.0)), Some(vec![15.0, 30.0]));
+        // Fill span by pitch: span 40, pitch 20 → n = floor(40/20)+1 = 3 → offsets 20, 40.
+        assert_eq!(f(RepeatMode::FillPitchSpan, 0.0, None, Some(20.0), Some(40.0)), Some(vec![20.0, 40.0]));
     }
 
     /// extrusion's "up to face"), so `L` is the along-axis distance to that plane and follows
