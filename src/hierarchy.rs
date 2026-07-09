@@ -393,6 +393,56 @@ pub fn graph_node_positions(tree: &[HierarchyEntry]) -> Vec<GraphNodePosition> {
     positions
 }
 
+/// `(input, consumer)` dependency pairs for the Graph view (#266/#281): relationships beyond the
+/// single tree parent — an operation's **input** elements feeding it, and a drawing projection's
+/// **source**. These become the input edges of the eventual full element graph (#252). Both
+/// endpoints are [`HierarchyNode`]s; the renderer skips any pair whose nodes aren't on screen.
+pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNode)> {
+    let mut edges = Vec::new();
+
+    // Boolean operations consume their side-A/side-B input bodies (now shadows) (#266).
+    for (oi, op) in doc.boolean_ops.iter().enumerate() {
+        if op.deleted {
+            continue;
+        }
+        for &bi in op.a.iter().chain(op.b.iter()) {
+            edges.push((HierarchyNode::Body(bi), HierarchyNode::BooleanOp(oi)));
+        }
+    }
+    // Move and Slice operations consume their input bodies too.
+    for (oi, op) in doc.move_ops.iter().enumerate() {
+        if op.deleted {
+            continue;
+        }
+        for &bi in &op.targets {
+            edges.push((HierarchyNode::Body(bi), HierarchyNode::MoveOp(oi)));
+        }
+    }
+    for (oi, op) in doc.slice_ops.iter().enumerate() {
+        if op.deleted {
+            continue;
+        }
+        for &bi in &op.targets {
+            edges.push((HierarchyNode::Body(bi), HierarchyNode::SliceOp(oi)));
+        }
+    }
+
+    // A drawing projection depends on its source body/sketch (#281).
+    for (di, drawing) in doc.drawings.iter().enumerate() {
+        if drawing.deleted {
+            continue;
+        }
+        for (vi, view) in drawing.views.iter().enumerate() {
+            let source = match view.sketch {
+                Some(si) => HierarchyNode::Sketch(si),
+                None => HierarchyNode::Body(view.body),
+            };
+            edges.push((source, HierarchyNode::DrawingProjection { drawing: di, view: vi }));
+        }
+    }
+    edges
+}
+
 /// The dot radius, label gap, and minimum breathing room used by [`declutter_label_bands`] and
 /// mirrored by the graph render (`show_graph_view`). Kept here so the physics-free declutter is
 /// unit-testable without pulling in `egui`.
@@ -2379,30 +2429,17 @@ fn show_graph_view(
                 painter.line_segment([pos_of(parent), pos_of(position.node)], stroke);
             }
 
-            // Dependency edges (#281): a drawing projection also depends on its source body — a
-            // second input beyond its drawing parent. Drawn dashed in an accent colour so it
-            // reads as a different relationship than the parent edges above.
+            // Dependency edges (input → consumer): relationships beyond the single tree parent —
+            // a drawing projection to its source (#281), and a boolean operation to its shadow
+            // input bodies (#266). Drawn dashed in an accent colour so they read apart from the
+            // neutral parent edges. (A step toward the full element graph, #252.)
             let present: std::collections::HashSet<HierarchyNode> =
                 positions.iter().map(|p| p.node).collect();
-            for position in &positions {
-                let HierarchyNode::DrawingProjection { drawing, view } = position.node else {
-                    continue;
-                };
-                let Some(source) = doc
-                    .drawings
-                    .get(drawing)
-                    .and_then(|d| d.views.get(view))
-                    .map(|v| match v.sketch {
-                        Some(si) => HierarchyNode::Sketch(si),
-                        None => HierarchyNode::Body(v.body),
-                    })
-                else {
-                    continue;
-                };
-                if !present.contains(&source) {
+            for (source, consumer) in graph_dependency_edges(doc) {
+                if !present.contains(&source) || !present.contains(&consumer) {
                     continue;
                 }
-                let (a, b) = (pos_of(source), pos_of(position.node));
+                let (a, b) = (pos_of(source), pos_of(consumer));
                 // Manual dashes so it's visually distinct without a dashed-line primitive.
                 let delta = b - a;
                 let len = delta.length();
@@ -2810,6 +2847,34 @@ mod tests {
         assert!(visibility.effective_visible(&doc, SceneElement::Body(0)));
         visibility.set_visible(SceneElement::Body(0), false);
         assert!(!visibility.effective_visible(&doc, SceneElement::Body(0)));
+    }
+
+    /// #266: a boolean operation's shadow input bodies feed it as dependency edges in the graph.
+    #[test]
+    fn boolean_op_inputs_are_graph_dependencies() {
+        let mut doc = Document::default();
+        for _ in 0..3 {
+            doc.bodies.push(crate::model::Body {
+                source: crate::model::BodySource::Imported(0),
+                name: None,
+                deleted: false,
+                shadow: false,
+            });
+        }
+        doc.boolean_ops.push(crate::model::BooleanOperation {
+            kind: crate::model::BooleanOpKind::Cut,
+            a: vec![0],
+            b: vec![1],
+            keep_b: false,
+            outputs: vec![2],
+            name: None,
+            deleted: false,
+        });
+        let edges = graph_dependency_edges(&doc);
+        assert!(edges.contains(&(HierarchyNode::Body(0), HierarchyNode::BooleanOp(0))));
+        assert!(edges.contains(&(HierarchyNode::Body(1), HierarchyNode::BooleanOp(0))));
+        // The output body is a tree child, not a dependency input.
+        assert!(!edges.contains(&(HierarchyNode::Body(2), HierarchyNode::BooleanOp(0))));
     }
 
     /// #281: each placed drawing view is a "projection" child of its drawing node, labelled by
