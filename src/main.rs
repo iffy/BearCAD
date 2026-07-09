@@ -3355,6 +3355,7 @@ impl eframe::App for App {
             let mut export_body_step: Option<usize> = None;
             let mut click_element: Option<(SceneElement, bool)> = None;
             let mut delete_element: Option<SceneElement> = None;
+            let mut rename_drawing: Option<(usize, String)> = None;
             let mut pane_hovered_element: Option<SceneElement> = None;
             egui::SidePanel::left("tree")
                 .resizable(true)
@@ -3379,6 +3380,9 @@ impl eframe::App for App {
                         };
                     let mut queue_edit_drawing = |index: usize| {
                         edit_drawing = Some(index);
+                    };
+                    let mut queue_rename_drawing = |index: usize, name: String| {
+                        rename_drawing = Some((index, name));
                     };
                     let mut queue_export_body = |index: usize| {
                         export_body = Some(index);
@@ -3415,6 +3419,7 @@ impl eframe::App for App {
                         &mut queue_edit_extrusion,
                         &mut queue_edit_edge_treatment,
                         &mut queue_edit_drawing,
+                        &mut queue_rename_drawing,
                         &mut queue_export_body,
                         &mut queue_export_body_step,
                         &mut noop_visibility,
@@ -3427,6 +3432,9 @@ impl eframe::App for App {
             self.pane_hovered_element = pane_hovered_element;
             if let Some(element) = delete_element {
                 self.state.apply(Action::DeleteElement { element });
+            }
+            if let Some((drawing, name)) = rename_drawing {
+                self.state.apply(Action::RenameDrawing { drawing, name });
             }
             if let Some((element, additive)) = click_element {
                 self.state.apply(Action::ClickSceneElement { element, additive });

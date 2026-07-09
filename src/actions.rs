@@ -1031,6 +1031,8 @@ pub enum Action {
     CommitLoft,
     /// Create a new technical drawing (#180) and open it in the drawing pane.
     CreateDrawing { name: Option<String> },
+    /// Rename a technical drawing (#255): empty clears back to the default label.
+    RenameDrawing { drawing: usize, name: String },
     /// Add a body view (in a given orientation) to a drawing.
     AddDrawingView {
         drawing: usize,
@@ -5859,6 +5861,17 @@ impl AppState {
                 let index = self.doc.drawings.len() - 1;
                 self.editing_drawing = Some(index);
                 self.status = format!("Added drawing {index}");
+                ActionResult::Ok
+            }
+            Action::RenameDrawing { drawing, name } => {
+                let Some(d) = self.doc.drawings.get_mut(drawing).filter(|d| !d.deleted) else {
+                    let e = format!("Drawing {drawing} not found");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                let trimmed = name.trim().to_string();
+                d.name = (!trimmed.is_empty()).then_some(trimmed);
+                self.status = "Renamed drawing".to_string();
                 ActionResult::Ok
             }
             Action::AddDrawingView {
@@ -11377,6 +11390,17 @@ mod tests {
                 assert!(((x * x + y * y).sqrt() - 5.0).abs() < 0.05, "endpoint on circle");
             }
         }
+    }
+
+    /// #255: a drawing can be renamed (and cleared back to default with an empty name).
+    #[test]
+    fn rename_drawing_sets_and_clears_the_name() {
+        let mut state = AppState::default();
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::RenameDrawing { drawing: 0, name: "  Front sheet  ".to_string() });
+        assert_eq!(state.doc.drawings[0].name.as_deref(), Some("Front sheet"));
+        state.apply(Action::RenameDrawing { drawing: 0, name: String::new() });
+        assert_eq!(state.doc.drawings[0].name, None, "empty name clears back to default");
     }
 
     /// #253: DeleteElement tombstones one specific element (the right-click → Delete path) and

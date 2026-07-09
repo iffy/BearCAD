@@ -1794,6 +1794,7 @@ pub fn show_pane(
     on_edit_extrusion: &mut impl FnMut(usize),
     on_edit_edge_treatment: &mut impl FnMut(usize, usize, f32),
     on_edit_drawing: &mut impl FnMut(usize),
+    on_rename_drawing: &mut impl FnMut(usize, String),
     on_export_body: &mut impl FnMut(usize),
     on_export_body_step: &mut impl FnMut(usize),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
@@ -1864,6 +1865,7 @@ pub fn show_pane(
                         on_edit_extrusion,
                         on_edit_edge_treatment,
                         on_edit_drawing,
+                        on_rename_drawing,
                         on_export_body,
                         on_export_body_step,
                         on_toggle_visibility,
@@ -1897,6 +1899,7 @@ pub fn show_pane(
                     on_edit_extrusion,
                     on_edit_edge_treatment,
                     on_edit_drawing,
+                    on_rename_drawing,
                     on_export_body,
                     on_export_body_step,
                     on_toggle_visibility,
@@ -1947,6 +1950,7 @@ fn show_tree_entries(
     on_edit_extrusion: &mut impl FnMut(usize),
     on_edit_edge_treatment: &mut impl FnMut(usize, usize, f32),
     on_edit_drawing: &mut impl FnMut(usize),
+    on_rename_drawing: &mut impl FnMut(usize, String),
     on_export_body: &mut impl FnMut(usize),
     on_export_body_step: &mut impl FnMut(usize),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
@@ -1973,6 +1977,7 @@ fn show_tree_entries(
             on_edit_extrusion,
             on_edit_edge_treatment,
             on_edit_drawing,
+            on_rename_drawing,
             on_export_body,
             on_export_body_step,
             on_toggle_visibility,
@@ -1998,6 +2003,7 @@ fn show_tree_entries(
             on_edit_extrusion,
             on_edit_edge_treatment,
             on_edit_drawing,
+            on_rename_drawing,
             on_export_body,
             on_export_body_step,
             on_toggle_visibility,
@@ -2222,6 +2228,7 @@ fn show_row(
     on_edit_extrusion: &mut impl FnMut(usize),
     on_edit_edge_treatment: &mut impl FnMut(usize, usize, f32),
     on_edit_drawing: &mut impl FnMut(usize),
+    on_rename_drawing: &mut impl FnMut(usize, String),
     on_export_body: &mut impl FnMut(usize),
     on_export_body_step: &mut impl FnMut(usize),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
@@ -2302,6 +2309,25 @@ fn show_row(
             response.context_menu(|ui| {
                 if ui.button("Edit drawing").clicked() {
                     on_edit_drawing(index);
+                    ui.close();
+                }
+                // Rename (#255): an inline field seeded from the current name, held in egui temp
+                // memory while the menu is open.
+                ui.separator();
+                ui.label("Rename");
+                let id = ui.make_persistent_id(("rename_drawing", index));
+                let current = doc
+                    .drawings
+                    .get(index)
+                    .and_then(|d| d.name.clone())
+                    .unwrap_or_default();
+                let mut text = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or(current);
+                let resp = ui.text_edit_singleline(&mut text);
+                let commit = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                ui.data_mut(|d| d.insert_temp(id, text.clone()));
+                if commit || ui.button("Apply name").clicked() {
+                    on_rename_drawing(index, text);
+                    ui.data_mut(|d| d.remove::<String>(id));
                     ui.close();
                 }
             });
