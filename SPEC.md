@@ -922,6 +922,7 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
 - When a parameter's name or value field is focused in the Parameters pane, the Elements
   pane highlights every element that uses that parameter (the dimensions referencing it and
   the geometry they drive), dimming the rest.
+- Each parameter row has a muted-red **✕** delete button (`Action::DeleteParameter`, #270).
 
 #### 5.1.1 Inline parameter creation
 - In **any value input** (GUI field or scripting), prefixing the entry with

@@ -789,6 +789,10 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
     ui.heading(PANE_TITLE);
     ui.add_space(4.0);
 
+    // A row's ✕ delete button queues here and is applied after the grid, so the loop keeps its
+    // borrow of `app` (#270).
+    let mut delete_index: Option<usize> = None;
+
     ScrollArea::vertical().show(ui, |ui| {
         Grid::new("parameters_table")
             .num_columns(3)
@@ -952,29 +956,41 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                             );
                         }
                     });
-                    if let Some(reason) = source_description {
-                        ui.label(
-                            RichText::new(reason)
-                                .color(egui::Color32::from_gray(140))
-                                .size(11.0),
+                    ui.horizontal(|ui| {
+                        // Delete button (#270): a muted-red ✕ that removes the parameter.
+                        let remove = ui.add(
+                            egui::ImageButton::new(crate::icons::sized_texture(
+                                ui.ctx(),
+                                crate::icons::IconId::Close,
+                            ))
+                            .frame(false)
+                            .tint(egui::Color32::from_rgb(0xC9, 0x6F, 0x66)),
                         );
-                    } else if param_frozen {
-                        let reason = app
-                            .document_health
-                            .parameter_reason(index)
-                            .unwrap_or("");
-                        ui.label(
-                            RichText::new(reason)
-                                .color(if param_status == HealthStatus::Invalid {
-                                    INVALID_TEXT
-                                } else {
-                                    UNSTABLE_TEXT
-                                })
-                                .size(11.0),
-                        );
-                    } else {
-                        ui.label("");
-                    }
+                        if remove.on_hover_text("Delete parameter").clicked() {
+                            delete_index = Some(index);
+                        }
+                        if let Some(reason) = source_description {
+                            ui.label(
+                                RichText::new(reason)
+                                    .color(egui::Color32::from_gray(140))
+                                    .size(11.0),
+                            );
+                        } else if param_frozen {
+                            let reason = app
+                                .document_health
+                                .parameter_reason(index)
+                                .unwrap_or("");
+                            ui.label(
+                                RichText::new(reason)
+                                    .color(if param_status == HealthStatus::Invalid {
+                                        INVALID_TEXT
+                                    } else {
+                                        UNSTABLE_TEXT
+                                    })
+                                    .size(11.0),
+                            );
+                        }
+                    });
                     ui.end_row();
                 }
 
@@ -1067,6 +1083,10 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                 ui.end_row();
             });
     });
+
+    if let Some(index) = delete_index {
+        apply_parameter_action(app, Action::DeleteParameter { index });
+    }
 
     if let Some(message) = &app.parameters_pane.message {
         ui.add_space(4.0);
