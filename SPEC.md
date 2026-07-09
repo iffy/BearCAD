@@ -555,8 +555,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     entities — click lines/circles to toggle them into the set, **Shift+click an edge** to set
     the repeat direction (its unit vector; default is the sketch U axis), **Enter** commits a
     `SketchRepeatOperation` (a `CreatingSketchRepeat` draft carries the same count/gap/distance
-    parametrization as the 3D repeat). Its count/gap/distance context panel + live ghost preview
-    are the remaining GUI polish.
+    parametrization as the 3D repeat). The context pane shows the entity count, the direction,
+    and the **count/gap/distance** fields with the same picture toggles as the 3D repeat, plus a
+    **Repeat** button. A live ghost preview of the duplicates is the remaining GUI polish.
   The GUI/scripting to *pick* the length face is a tracked follow-up.
 
 - **Slice tool (#181):** cuts whole bodies with planar cutters. Two pickers — **Bodies**

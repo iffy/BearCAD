@@ -4014,6 +4014,28 @@ impl eframe::App for App {
                             && preview.is_some_and(|n| n > 1),
                     }
                 }),
+                sketch_repeat: self.state.creating_sketch_repeat.as_ref().map(|c| {
+                    let direction_is_edge = c.dir_line.is_some();
+                    let direction_label = match c.dir_line {
+                        Some(li) => names::element_name(&self.state.doc, SceneElement::Line(li))
+                            .map(|n| n.to_string())
+                            .unwrap_or_else(|| format!("edge {li}")),
+                        None => "the U axis".to_string(),
+                    };
+                    context::SketchRepeatControl {
+                        entity_count: c.line_targets.len() + c.circle_targets.len(),
+                        direction_label,
+                        direction_is_edge,
+                        count: c.count.clone(),
+                        spacing: c.spacing.clone(),
+                        length: c.length.clone(),
+                        computed_var: c.computed_var(),
+                        gap_is_offset: c.gap_is_offset,
+                        distance_is_end: c.distance_is_end,
+                        can_commit: c.has_targets(),
+                        editing: c.editing.is_some(),
+                    }
+                }),
                 repeat_edit_start: (self.state.tool != Tool::Repeat)
                     .then(|| {
                         let mut only = None;
@@ -4168,6 +4190,7 @@ impl eframe::App for App {
             let mut move_edit: Option<context::MoveEdit> = None;
             let mut move_edit_begin: Option<usize> = None;
             let mut repeat_edit: Option<context::RepeatEdit> = None;
+            let mut sketch_repeat_edit: Option<context::SketchRepeatEdit> = None;
             let mut repeat_edit_begin: Option<usize> = None;
             let mut slice_edit: Option<context::SliceEdit> = None;
             let mut slice_edit_begin: Option<usize> = None;
@@ -4210,6 +4233,7 @@ impl eframe::App for App {
                         &mut |edit| move_edit = Some(edit),
                         &mut |op| move_edit_begin = Some(op),
                         &mut |edit| repeat_edit = Some(edit),
+                        &mut |edit| sketch_repeat_edit = Some(edit),
                         &mut |op| repeat_edit_begin = Some(op),
                         &mut |edit| slice_edit = Some(edit),
                         &mut |op| slice_edit_begin = Some(op),
@@ -4355,6 +4379,68 @@ impl eframe::App for App {
                             }
                             context::RepeatEdit::Commit => unreachable!(),
                         }
+                    }
+                }
+            }
+            if let Some(edit) = sketch_repeat_edit {
+                use model::RepeatVar;
+                if let context::SketchRepeatEdit::Commit = edit {
+                    if let (Some(cr), true) = (
+                        self.state.creating_sketch_repeat.as_ref(),
+                        self.state.creating_sketch_repeat.as_ref().is_some_and(|c| c.has_targets()),
+                    ) {
+                        let (dir_u, dir_v) = cr.direction(&self.state.doc);
+                        let action = match cr.editing {
+                            Some(op) => Action::EditSketchRepeatOperation {
+                                op,
+                                line_targets: cr.line_targets.clone(),
+                                circle_targets: cr.circle_targets.clone(),
+                                dir_u,
+                                dir_v,
+                                mode: cr.mode,
+                                count: cr.count.clone(),
+                                spacing: cr.spacing.clone(),
+                                length: cr.length.clone(),
+                            },
+                            None => Action::CreateSketchRepeatOperation {
+                                sketch: cr.sketch,
+                                line_targets: cr.line_targets.clone(),
+                                circle_targets: cr.circle_targets.clone(),
+                                dir_u,
+                                dir_v,
+                                mode: cr.mode,
+                                count: cr.count.clone(),
+                                spacing: cr.spacing.clone(),
+                                length: cr.length.clone(),
+                            },
+                        };
+                        self.state.creating_sketch_repeat = None;
+                        self.state.apply(action);
+                    }
+                } else if let Some(cr) = self.state.creating_sketch_repeat.as_mut() {
+                    match edit {
+                        context::SketchRepeatEdit::Count(v) => {
+                            cr.count = v;
+                            cr.touch_var(RepeatVar::Count);
+                        }
+                        context::SketchRepeatEdit::Gap(v) => {
+                            cr.spacing = v;
+                            cr.touch_var(RepeatVar::Gap);
+                        }
+                        context::SketchRepeatEdit::Distance(v) => {
+                            cr.length = v;
+                            cr.touch_var(RepeatVar::Distance);
+                        }
+                        context::SketchRepeatEdit::ToggleGapOffset => {
+                            cr.gap_is_offset = !cr.gap_is_offset;
+                            cr.recompute_mode();
+                        }
+                        context::SketchRepeatEdit::ToggleDistanceEnd => {
+                            cr.distance_is_end = !cr.distance_is_end;
+                            cr.recompute_mode();
+                        }
+                        context::SketchRepeatEdit::ClearDirection => cr.dir_line = None,
+                        context::SketchRepeatEdit::Commit => {}
                     }
                 }
             }

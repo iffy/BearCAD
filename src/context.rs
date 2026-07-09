@@ -65,6 +65,8 @@ pub struct ContextInput<'a> {
     pub move_edit_start: Option<usize>,
     /// Repeat tool state: `Some` while the Repeat tool is active.
     pub repeat_op: Option<RepeatControl>,
+    /// In-sketch Repeat tool control (#232).
+    pub sketch_repeat: Option<SketchRepeatControl>,
     /// "Edit repeat" entry point.
     pub repeat_edit_start: Option<usize>,
     /// Slice tool state: `Some` while the Slice tool is active.
@@ -166,6 +168,38 @@ pub struct RepeatControl {
     pub preview_instances: Option<usize>,
     pub editing: bool,
     pub can_commit: bool,
+}
+
+/// What the in-sketch Repeat tool's context section shows (#232): the picked entities, the
+/// repeat direction, and the count/gap/distance fields (which map onto the same variables as the
+/// 3D repeat).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SketchRepeatControl {
+    pub entity_count: usize,
+    /// The direction source: a picked edge's name, or "the U axis".
+    pub direction_label: String,
+    pub direction_is_edge: bool,
+    pub count: String,
+    pub spacing: String,
+    pub length: String,
+    pub computed_var: crate::model::RepeatVar,
+    pub gap_is_offset: bool,
+    pub distance_is_end: bool,
+    pub can_commit: bool,
+    pub editing: bool,
+}
+
+/// One edit from the in-sketch Repeat context section (#232).
+#[derive(Clone, Debug, PartialEq)]
+pub enum SketchRepeatEdit {
+    Count(String),
+    Gap(String),
+    Distance(String),
+    ToggleGapOffset,
+    ToggleDistanceEnd,
+    /// Clear the picked direction edge (fall back to the U axis).
+    ClearDirection,
+    Commit,
 }
 
 /// One edit from the Repeat context section (#257): the three interlinked variables and the two
@@ -331,6 +365,8 @@ pub struct ContextPaneContent {
     pub move_edit_start: Option<usize>,
     /// Repeat tool state: `Some` while the Repeat tool is active.
     pub repeat_op: Option<RepeatControl>,
+    /// In-sketch Repeat tool control (#232).
+    pub sketch_repeat: Option<SketchRepeatControl>,
     /// "Edit repeat" entry point.
     pub repeat_edit_start: Option<usize>,
     /// Slice tool controls.
@@ -637,6 +673,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let move_op = input.move_op.clone();
     let move_edit_start = input.move_edit_start;
     let repeat_op = input.repeat_op.clone();
+    let sketch_repeat = input.sketch_repeat.clone();
     let repeat_edit_start = input.repeat_edit_start;
     let slice_op = input.slice_op.clone();
     let slice_edit_start = input.slice_edit_start;
@@ -668,6 +705,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             move_op: move_op.clone(),
             move_edit_start,
             repeat_op: repeat_op.clone(),
+            sketch_repeat: sketch_repeat.clone(),
             repeat_edit_start,
             slice_op: slice_op.clone(),
             slice_edit_start,
@@ -700,6 +738,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             move_op: move_op.clone(),
             move_edit_start,
             repeat_op: repeat_op.clone(),
+            sketch_repeat: sketch_repeat.clone(),
             repeat_edit_start,
             slice_op: slice_op.clone(),
             slice_edit_start,
@@ -732,6 +771,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             move_op: move_op.clone(),
             move_edit_start,
             repeat_op: repeat_op.clone(),
+            sketch_repeat: sketch_repeat.clone(),
             repeat_edit_start,
             slice_op: slice_op.clone(),
             slice_edit_start,
@@ -767,6 +807,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         move_op,
         move_edit_start,
         repeat_op,
+        sketch_repeat,
         repeat_edit_start,
         slice_op,
         slice_edit_start,
@@ -987,6 +1028,7 @@ pub fn show_pane(
     on_move_edit: &mut impl FnMut(MoveEdit),
     on_move_edit_start: &mut impl FnMut(usize),
     on_repeat_edit: &mut impl FnMut(RepeatEdit),
+    on_sketch_repeat_edit: &mut impl FnMut(SketchRepeatEdit),
     on_repeat_edit_start: &mut impl FnMut(usize),
     on_slice_edit: &mut impl FnMut(SliceEdit),
     on_slice_edit_start: &mut impl FnMut(usize),
@@ -1630,6 +1672,90 @@ pub fn show_pane(
         }
     }
 
+    // In-sketch Repeat tool (#232): entities + direction + count/gap/distance.
+    if let Some(control) = &content.sketch_repeat {
+        use crate::model::RepeatVar;
+        any_control = true;
+        ui.separator();
+        ui.label(egui::RichText::new("Repeat (in sketch)").strong());
+        ui.label(
+            egui::RichText::new(format!(
+                "{} entities · direction: {} (Shift+click an edge)",
+                control.entity_count, control.direction_label
+            ))
+            .color(egui::Color32::from_gray(140))
+            .size(11.0),
+        );
+        let mut pending: Option<SketchRepeatEdit> = None;
+        if control.direction_is_edge && ui.small_button("Use U axis").clicked() {
+            pending = Some(SketchRepeatEdit::ClearDirection);
+        }
+        let mut var_row = |ui: &mut egui::Ui,
+                           var: RepeatVar,
+                           label: &str,
+                           value: &str,
+                           toggle: Option<(crate::icons::IconId, SketchRepeatEdit)>,
+                           make: &dyn Fn(String) -> SketchRepeatEdit| {
+            let computed = control.computed_var == var;
+            ui.horizontal(|ui| {
+                if let Some((icon, edit)) = toggle {
+                    if crate::icons::icon_button(ui, icon, "Toggle how this is measured").clicked() {
+                        pending = Some(edit);
+                    }
+                }
+                ui.label(label);
+                if computed {
+                    ui.label(egui::RichText::new("(auto)").color(egui::Color32::from_gray(130)).size(10.0));
+                } else {
+                    let mut text = value.to_string();
+                    if ui.add(egui::TextEdit::singleline(&mut text).desired_width(80.0)).changed() {
+                        pending = Some(make(text));
+                    }
+                }
+            });
+        };
+        var_row(ui, RepeatVar::Count, "Count", &control.count, None, &SketchRepeatEdit::Count);
+        let gap_icon = if control.gap_is_offset {
+            crate::icons::IconId::RepeatGapOffset
+        } else {
+            crate::icons::IconId::RepeatGapBetween
+        };
+        var_row(
+            ui,
+            RepeatVar::Gap,
+            if control.gap_is_offset { "Offset" } else { "Gap" },
+            &control.spacing,
+            Some((gap_icon, SketchRepeatEdit::ToggleGapOffset)),
+            &SketchRepeatEdit::Gap,
+        );
+        let dist_icon = if control.distance_is_end {
+            crate::icons::IconId::RepeatDistEnd
+        } else {
+            crate::icons::IconId::RepeatDistStart
+        };
+        var_row(
+            ui,
+            RepeatVar::Distance,
+            "Distance",
+            &control.length,
+            Some((dist_icon, SketchRepeatEdit::ToggleDistanceEnd)),
+            &SketchRepeatEdit::Distance,
+        );
+        if let Some(edit) = pending {
+            on_sketch_repeat_edit(edit);
+        }
+        ui.add_space(2.0);
+        if ui
+            .add_enabled(
+                control.can_commit && controls_enabled,
+                egui::Button::new(if control.editing { "Apply changes" } else { "Repeat" }),
+            )
+            .clicked()
+        {
+            on_sketch_repeat_edit(SketchRepeatEdit::Commit);
+        }
+    }
+
     if let Some(op) = content.repeat_edit_start {
         any_control = true;
         ui.separator();
@@ -1999,6 +2125,7 @@ mod tests {
             move_op: None,
             move_edit_start: None,
             repeat_op: None,
+            sketch_repeat: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2068,6 +2195,7 @@ mod tests {
             move_op: None,
             move_edit_start: None,
             repeat_op: None,
+            sketch_repeat: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2128,6 +2256,7 @@ mod tests {
             move_op: None,
             move_edit_start: None,
             repeat_op: None,
+            sketch_repeat: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2384,6 +2513,7 @@ mod tests {
             move_op: None,
             move_edit_start: None,
             repeat_op: None,
+            sketch_repeat: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2429,6 +2559,7 @@ mod tests {
             move_op: None,
             move_edit_start: None,
             repeat_op: None,
+            sketch_repeat: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2460,6 +2591,7 @@ mod tests {
             move_op: None,
             move_edit_start: None,
             repeat_op: None,
+            sketch_repeat: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2505,6 +2637,7 @@ mod tests {
             move_op: None,
             move_edit_start: None,
             repeat_op: None,
+            sketch_repeat: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2554,6 +2687,7 @@ mod tests {
             move_op: None,
             move_edit_start: None,
             repeat_op: None,
+            sketch_repeat: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2646,6 +2780,7 @@ mod tests {
             move_op: None,
             move_edit_start: None,
             repeat_op: None,
+            sketch_repeat: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2689,6 +2824,7 @@ mod tests {
             move_op: None,
             move_edit_start: None,
             repeat_op: None,
+            sketch_repeat: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2722,6 +2858,7 @@ mod tests {
             move_op: None,
             move_edit_start: None,
             repeat_op: None,
+            sketch_repeat: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2759,6 +2896,7 @@ mod tests {
             move_op: None,
             move_edit_start: None,
             repeat_op: None,
+            sketch_repeat: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
