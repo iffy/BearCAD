@@ -233,6 +233,17 @@ pub fn computed_length_in_doc(text: &str, doc: &Document) -> Option<f32> {
     if t.is_empty() {
         return None;
     }
+    // A `name = expr` inline parameter definition previews the value of its right-hand side
+    // (#269): `bar = 80mm + 2in` shows the computed length above the field, same as if the
+    // expression were typed on its own.
+    if let Some((name, rhs)) = t.split_once('=') {
+        let (name, rhs) = (name.trim(), rhs.trim());
+        if is_valid_parameter_name(name) && !rhs.is_empty() {
+            if let Some(v) = eval_length_mm_in_doc(rhs, doc).or_else(|| eval_length_mm(rhs)) {
+                return Some(v);
+            }
+        }
+    }
     eval_length_mm_in_doc(t, doc).or_else(|| eval_length_mm(t))
 }
 
@@ -428,6 +439,15 @@ pub fn computed_angle_in_doc(text: &str, doc: &Document) -> Option<f32> {
     let t = text.trim();
     if t.is_empty() {
         return None;
+    }
+    // A `name = expr` inline parameter definition previews its right-hand side (#269).
+    if let Some((name, rhs)) = t.split_once('=') {
+        let (name, rhs) = (name.trim(), rhs.trim());
+        if is_valid_parameter_name(name) && !rhs.is_empty() {
+            if let Some(v) = eval_angle_rad_in_doc(rhs, doc).or_else(|| eval_angle_rad(rhs)) {
+                return Some(v);
+            }
+        }
     }
     eval_angle_rad_in_doc(t, doc).or_else(|| eval_angle_rad(t))
 }
@@ -1149,6 +1169,19 @@ mod tests {
         });
         assert!(shows_computed_length_in_doc("A", &doc));
         assert_eq!(computed_length_in_doc("A", &doc), Some(10.0));
+    }
+
+    /// #269: an inline `name = expr` definition previews the RHS value above the dimension
+    /// field, just like typing the expression alone would.
+    #[test]
+    fn computed_length_previews_inline_parameter_definition() {
+        let doc = Document::default();
+        assert!(shows_computed_length_in_doc("bar=80mm+2in", &doc));
+        let v = computed_length_in_doc("bar=80mm+2in", &doc).unwrap();
+        assert!((v - (80.0 + 2.0 * 25.4)).abs() < 1e-3, "got {v}");
+        // Bare number RHS with no operators/units still previews.
+        assert_eq!(computed_length_in_doc("bar=80", &doc), Some(80.0));
+        assert!(shows_computed_length_in_doc("bar=80", &doc));
     }
 
     #[test]
