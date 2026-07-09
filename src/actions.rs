@@ -953,6 +953,11 @@ pub enum Action {
         kind: VertexTreatmentKind,
         amount: f32,
     },
+    /// Re-open a committed chamfer/fillet for editing with its push/pull gizmo + amount input
+    /// (#259), instead of a context-menu drag value. Reloads the treatment's edge, kind, and
+    /// current amount into `creating_edge_treatment` and switches to the matching tool; the
+    /// gizmo commit then updates the same edge in place.
+    EditEdgeTreatment { extrusion: usize, index: usize },
     /// Create a rectangle directly in the active sketch (face-local mm) with locked dimensions.
     CreateRectangle {
         x: f32,
@@ -5191,6 +5196,42 @@ impl AppState {
                         ActionResult::Ok
                     }
                 }
+            }
+            Action::EditEdgeTreatment { extrusion, index } => {
+                let Some(treatment) = self
+                    .doc
+                    .extrusions
+                    .get(extrusion)
+                    .and_then(|ext| ext.edge_treatments.get(index))
+                    .cloned()
+                else {
+                    return ActionResult::Err("Edge treatment not found".to_string());
+                };
+                if let Err(e) = require_element_editable(
+                    &self.document_health,
+                    SceneElement::Extrusion(extrusion),
+                ) {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                self.creating_edge_treatment = Some(CreatingEdgeTreatment {
+                    edges: vec![(extrusion, treatment.edge)],
+                    kind: treatment.kind,
+                    amount_live: treatment.amount,
+                    text: crate::value::format_length_display(treatment.amount),
+                    user_edited: false,
+                    pending_focus: true,
+                });
+                self.tool = match treatment.kind {
+                    VertexTreatmentKind::Chamfer => Tool::Chamfer,
+                    VertexTreatmentKind::Fillet => Tool::Fillet,
+                };
+                let noun = match treatment.kind {
+                    VertexTreatmentKind::Chamfer => "chamfer",
+                    VertexTreatmentKind::Fillet => "fillet",
+                };
+                self.status = format!("Editing {noun}");
+                ActionResult::Ok
             }
             Action::CommitEdgeTreatment { extrusion, edge, kind, amount } => {
                 if !(amount > 0.0) {
@@ -12425,6 +12466,43 @@ mod tests {
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         assert_eq!(state.doc.extrusions[0].edge_treatments[0].kind, VertexTreatmentKind::Fillet);
+    }
+
+    /// #259: re-opening a committed chamfer/fillet reloads it into the gizmo-driven
+    /// `creating_edge_treatment` (edge, kind, amount) and switches to the matching tool, so the
+    /// user adjusts it with the push/pull gizmo instead of a context-menu drag value.
+    #[test]
+    fn edit_edge_treatment_reopens_the_gizmo() {
+        let mut state = box_extrusion_state();
+        let edge = crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
+        state.apply(Action::CommitEdgeTreatment {
+            extrusion: 0,
+            edge,
+            kind: VertexTreatmentKind::Chamfer,
+            amount: 3.0,
+        });
+
+        let result = state.apply(Action::EditEdgeTreatment { extrusion: 0, index: 0 });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert_eq!(state.tool, Tool::Chamfer);
+        let cet = state
+            .creating_edge_treatment
+            .as_ref()
+            .expect("gizmo edit is in progress");
+        assert_eq!(cet.edges, vec![(0, edge)]);
+        assert_eq!(cet.kind, VertexTreatmentKind::Chamfer);
+        assert_eq!(cet.amount_live, 3.0);
+        assert!(cet.pending_focus);
+
+        // Committing a new amount replaces the same edge in place rather than stacking.
+        state.apply(Action::CommitEdgeTreatment {
+            extrusion: 0,
+            edge,
+            kind: VertexTreatmentKind::Chamfer,
+            amount: 1.5,
+        });
+        assert_eq!(state.doc.extrusions[0].edge_treatments.len(), 1);
+        assert_eq!(state.doc.extrusions[0].edge_treatments[0].amount, 1.5);
     }
 
     #[test]

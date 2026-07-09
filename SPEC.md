@@ -670,13 +670,14 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   - Scriptable via `bearcad.chamfer_edge{ extrusion =, edge = {...}, distance = }` and
     `bearcad.fillet_edge{ extrusion =, edge = {...}, radius = }`, where `edge` is `{ kind =
     "vertical", face =, edge = }` or `{ kind = "cap", face =, edge =, top = }`.
-  - **Elements-pane node + edit-after-the-fact (#192):** each committed edge treatment shows as
-    a display-only row (`HierarchyNode::EdgeTreatment`, chamfer/fillet icon, "Chamfer/Fillet
+  - **Elements-pane node + edit-after-the-fact (#192/#259):** each committed edge treatment shows
+    as a display-only row (`HierarchyNode::EdgeTreatment`, chamfer/fillet icon, "Chamfer/Fillet
     (amount)" label) nested under its extrusion. It has no `SceneElement` — it isn't
-    individually selectable or hideable — but right-clicking it opens an amount editor whose
-    Apply re-commits that same edge via `CommitEdgeTreatment` (which updates the existing
-    treatment in place, undoably), so a fillet/chamfer radius can be changed after it's made
-    without re-picking the edge.
+    individually selectable or hideable — but double-clicking the row (or right-click → "Edit
+    chamfer/fillet") reopens it with its push/pull gizmo and amount input via
+    `EditEdgeTreatment`; adjusting and committing re-commits that same edge through
+    `CommitEdgeTreatment` (which updates the existing treatment in place, undoably), so a
+    fillet/chamfer radius can be changed after it's made without re-picking the edge.
 - **Shell** — hollow a solid to a wall thickness, removing selected faces.
 
 ### 3.4.1 Tracing images (#163)

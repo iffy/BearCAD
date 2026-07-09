@@ -1854,7 +1854,7 @@ pub fn show_pane(
     on_edit_plane: &mut impl FnMut(usize),
     on_import_image_on_plane: &mut impl FnMut(usize),
     on_edit_extrusion: &mut impl FnMut(usize),
-    on_edit_edge_treatment: &mut impl FnMut(usize, usize, f32),
+    on_edit_edge_treatment: &mut impl FnMut(usize, usize),
     on_edit_drawing: &mut impl FnMut(usize),
     on_rename_drawing: &mut impl FnMut(usize, String),
     on_export_body: &mut impl FnMut(usize),
@@ -2010,7 +2010,7 @@ fn show_tree_entries(
     on_edit_plane: &mut impl FnMut(usize),
     on_import_image_on_plane: &mut impl FnMut(usize),
     on_edit_extrusion: &mut impl FnMut(usize),
-    on_edit_edge_treatment: &mut impl FnMut(usize, usize, f32),
+    on_edit_edge_treatment: &mut impl FnMut(usize, usize),
     on_edit_drawing: &mut impl FnMut(usize),
     on_rename_drawing: &mut impl FnMut(usize, String),
     on_export_body: &mut impl FnMut(usize),
@@ -2314,7 +2314,7 @@ fn show_row(
     on_edit_plane: &mut impl FnMut(usize),
     on_import_image_on_plane: &mut impl FnMut(usize),
     on_edit_extrusion: &mut impl FnMut(usize),
-    on_edit_edge_treatment: &mut impl FnMut(usize, usize, f32),
+    on_edit_edge_treatment: &mut impl FnMut(usize, usize),
     on_edit_drawing: &mut impl FnMut(usize),
     on_rename_drawing: &mut impl FnMut(usize, String),
     on_export_body: &mut impl FnMut(usize),
@@ -2340,41 +2340,29 @@ fn show_row(
         return;
     }
 
-    // An edge chamfer/fillet (#192): a display-only leaf with no `SceneElement`. It shows a
-    // labelled row and a right-click "Edit amount" editor that re-commits the treatment with a
-    // new value, but doesn't participate in selection/visibility.
+    // An edge chamfer/fillet (#192): a display-only leaf with no `SceneElement`. Editing is done
+    // by bringing back its push/pull gizmo + amount input (#259) — either double-click the row or
+    // right-click → "Edit"; it doesn't participate in selection/visibility.
     if let HierarchyNode::EdgeTreatment { extrusion, index } = node {
         let Some(treatment) = edge_treatment_at(doc, extrusion, index) else {
             return;
         };
-        let (kind, amount) = (treatment.kind, treatment.amount);
+        let noun = match treatment.kind {
+            crate::model::VertexTreatmentKind::Chamfer => "chamfer",
+            crate::model::VertexTreatmentKind::Fillet => "fillet",
+        };
         ui.horizontal(|ui| {
             ui.add_space(depth as f32 * 18.0);
             if let Some(icon) = icon_for_hierarchy_node(doc, node) {
                 ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
             }
             let response = ui.selectable_label(false, node_label(doc, node));
-            let noun = match kind {
-                crate::model::VertexTreatmentKind::Chamfer => "chamfer",
-                crate::model::VertexTreatmentKind::Fillet => "fillet",
-            };
+            if response.double_clicked() {
+                on_edit_edge_treatment(extrusion, index);
+            }
             response.context_menu(|ui| {
-                ui.label(format!("Edit {noun} amount"));
-                // The in-progress value lives in egui's temp memory keyed by this treatment, so it
-                // survives across frames while the menu is open and re-seeds from the committed
-                // amount on the next open (it's cleared on Apply).
-                let id = ui.make_persistent_id(("edit_edge_treatment", extrusion, index));
-                let mut value = ui.data_mut(|d| d.get_temp::<f32>(id)).unwrap_or(amount);
-                ui.add(
-                    egui::DragValue::new(&mut value)
-                        .speed(0.1)
-                        .range(0.01..=f32::INFINITY)
-                        .suffix(" mm"),
-                );
-                ui.data_mut(|d| d.insert_temp(id, value));
-                if ui.button("Apply").clicked() {
-                    on_edit_edge_treatment(extrusion, index, value);
-                    ui.data_mut(|d| d.remove::<f32>(id));
+                if ui.button(format!("Edit {noun}")).clicked() {
+                    on_edit_edge_treatment(extrusion, index);
                     ui.close();
                 }
             });

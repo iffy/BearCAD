@@ -32,5 +32,6 @@ can be removed before committing.
 - A fillet undoes as a single step, and shows up in the Elements pane nested under the line
   it rounds.
 - **Edit the amount later:** a solid-edge fillet (or chamfer) appears in the Elements pane as
-  a row under its extrusion. Right-click it and use **Edit fillet amount** to type a new
-  radius — the fillet updates in place, no need to re-pick the edge.
+  a row under its extrusion. Double-click the row (or right-click → **Edit fillet**) to bring
+  back its push/pull gizmo and amount input, then drag or type a new radius — the fillet
+  updates in place, no need to re-pick the edge.

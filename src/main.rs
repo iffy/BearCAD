@@ -3349,7 +3349,7 @@ impl eframe::App for App {
             let mut edit_plane: Option<usize> = None;
             let mut import_image_on_plane: Option<usize> = None;
             let mut edit_extrusion: Option<usize> = None;
-            let mut edit_edge_treatment: Option<(usize, usize, f32)> = None;
+            let mut edit_edge_treatment: Option<(usize, usize)> = None;
             let mut edit_drawing: Option<usize> = None;
             let mut export_body: Option<usize> = None;
             let mut export_body_step: Option<usize> = None;
@@ -3374,10 +3374,9 @@ impl eframe::App for App {
                     let mut queue_edit_extrusion = |index: usize| {
                         edit_extrusion = Some(index);
                     };
-                    let mut queue_edit_edge_treatment =
-                        |extrusion: usize, index: usize, amount: f32| {
-                            edit_edge_treatment = Some((extrusion, index, amount));
-                        };
+                    let mut queue_edit_edge_treatment = |extrusion: usize, index: usize| {
+                        edit_edge_treatment = Some((extrusion, index));
+                    };
                     let mut queue_edit_drawing = |index: usize| {
                         edit_drawing = Some(index);
                     };
@@ -3457,24 +3456,9 @@ impl eframe::App for App {
             if let Some(drawing) = edit_drawing {
                 self.state.apply(Action::EditDrawing { drawing: Some(drawing) });
             }
-            if let Some((extrusion, index, amount)) = edit_edge_treatment {
-                // Re-commit the existing edge treatment with the new amount (#192); the edge and
-                // kind come from the stored treatment, which `CommitEdgeTreatment` updates in place.
-                if let Some((edge, kind)) = self
-                    .state
-                    .doc
-                    .extrusions
-                    .get(extrusion)
-                    .and_then(|ext| ext.edge_treatments.get(index))
-                    .map(|t| (t.edge, t.kind))
-                {
-                    self.state.apply(Action::CommitEdgeTreatment {
-                        extrusion,
-                        edge,
-                        kind,
-                        amount,
-                    });
-                }
+            if let Some((extrusion, index)) = edit_edge_treatment {
+                // Re-open the chamfer/fillet with its push/pull gizmo + amount input (#259).
+                self.state.apply(Action::EditEdgeTreatment { extrusion, index });
             }
             if let Some(index) = export_body {
                 self.export_stl_body(index);
