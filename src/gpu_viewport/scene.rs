@@ -3662,7 +3662,22 @@ impl<'a> SceneMesh<'a> {
             color
         };
         if project(origin).is_some() && project(tip).is_some() {
-            self.push_line_segment(origin, tip, stroke_color, stroke, cam, viewport, view_proj);
+            // Stop the connecting line short of the back-pointing arrow so it doesn't run
+            // through it — both arrows should read as unobstructed affordances (#250). The
+            // back arrow's far end sits `GAP + HEAD` px toward the origin from the tip.
+            let back_gap = pixels_to_world_distance(
+                project,
+                tip,
+                -n,
+                GIZMO_ARROW_GAP_PX + GIZMO_ARROW_HEAD_PX,
+            );
+            let disp = (tip - origin).dot(n);
+            if disp - back_gap > 0.0 {
+                let line_end = tip - n * back_gap;
+                self.push_line_segment(
+                    origin, line_end, stroke_color, stroke, cam, viewport, view_proj,
+                );
+            }
             // The handle drags along both normal directions: one arrow each way, stood
             // off from the handle disc.
             for sign in [1.0f32, -1.0] {
