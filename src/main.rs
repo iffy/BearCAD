@@ -6551,11 +6551,16 @@ fn handle_vertex_drag(
                 {
                     return false;
                 }
-                *drag = Some(VertexDrag { point: point.clone() });
-                state.apply(Action::ClickSceneElement {
-                    element: SceneElement::Point(point),
-                    additive: ui.input(|i| additive_click_modifiers(&i.modifiers)),
-                });
+                let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+                let selectable = SceneElement::Point(point.clone());
+                // Select on the first press; only start dragging a vertex that is already
+                // selected, so a click selects it without moving it (#239). A second press-drag
+                // then moves it.
+                if state.scene_selection.is_selected(selectable.clone()) && !additive {
+                    *drag = Some(VertexDrag { point });
+                } else {
+                    state.apply(Action::ClickSceneElement { element: selectable, additive });
+                }
                 return true;
             }
             // The origin is a fixed, selectable point (#189) — no drag. Only when no real
@@ -6646,6 +6651,13 @@ fn handle_line_drag(
                 {
                     return false;
                 }
+                let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+                // Select on the first press; only drag a line that is already selected, so a
+                // click selects without moving it (#239).
+                if !(state.scene_selection.is_selected(element.clone()) && !additive) {
+                    state.apply(Action::ClickSceneElement { element, additive });
+                    return true;
+                }
                 if let Some(world) =
                     sketch_plane_point(cam, viewport, vp, &state.doc, session, pp)
                 {
@@ -6657,10 +6669,6 @@ fn handle_line_drag(
                         anchor_v: v,
                     });
                     let _ = state.apply(Action::DragLine { u, v });
-                    state.apply(Action::ClickSceneElement {
-                        element,
-                        additive: ui.input(|i| additive_click_modifiers(&i.modifiers)),
-                    });
                     return true;
                 }
             }
