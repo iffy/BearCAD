@@ -130,6 +130,17 @@ pub fn drag_line(
     let du = current_uv.0 - session.anchor_uv.0;
     let dv = current_uv.1 - session.anchor_uv.1;
     let seeds = line_drag_seed_points(session.target.clone());
+    // Snapshot the sketch geometry + every line's length so a stretch the solve introduces (e.g.
+    // a corner pinned to the origin can't translate, so the solver would resize instead) can be
+    // rolled back: a line drag must translate, never change any edge's length (#243).
+    let lines_before = doc.lines.clone();
+    let circles_before = doc.circles.clone();
+    // The dragged edge's own length must not change (connected lines may still reshape as one of
+    // their endpoints follows).
+    let dragged_len_before = match session.target {
+        ConstraintLine::Line(i) => doc.lines.get(i).map(|l| (i, l.chord_length())),
+        _ => None,
+    };
     translate_line(doc, sketch, session.target.clone(), du, dv)?;
     for (point, (iu, iv)) in &session.initial_positions {
         if seeds.contains(point) || !point_in_sketch(doc, point.clone(), sketch) {
@@ -147,7 +158,19 @@ pub fn drag_line(
             (point.clone(), projected)
         })
         .collect();
-    solve_document_constraints_with_pins(doc, &pins)
+    solve_document_constraints_with_pins(doc, &pins)?;
+    // If the dragged edge's own length changed, the constraints didn't allow the requested
+    // translation — roll the step back rather than resize the edge (#243).
+    let stretched = dragged_len_before.is_some_and(|(i, len0)| {
+        doc.lines
+            .get(i)
+            .is_some_and(|l| (l.chord_length() - len0).abs() > 1e-3)
+    });
+    if stretched {
+        doc.lines = lines_before;
+        doc.circles = circles_before;
+    }
+    Ok(())
 }
 
 fn validate_line_drag_target(
@@ -806,6 +829,44 @@ mod tests {
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         (doc, sketch)
+    }
+
+    /// #243: dragging an edge whose end is pinned to the origin must not resize it. A rigid
+    /// translate is blocked by the pin, so the solve would otherwise stretch the edge from the
+    /// free end — the drag rolls back instead, leaving the edge's length unchanged.
+    #[test]
+    fn dragging_a_pinned_edge_keeps_its_length() {
+        use crate::model::{Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, LineEnd};
+        let (mut doc, sketch) = sketch_doc();
+        let lines =
+            crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
+        // Pin the bottom edge's left corner to the origin.
+        doc.constraints.push(Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                    line: lines[0],
+                    end: LineEnd::Start,
+                }),
+                b: ConstraintEntity::Origin,
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+        solve_document_constraints(&mut doc).unwrap();
+        let len0 = doc.lines[lines[0]].chord_length();
+        // Drag the bottom edge along its own axis: the pinned left end can't move, so a naive
+        // solve would stretch it from the right end.
+        let session =
+            begin_line_drag_session(&doc, sketch, ConstraintLine::Line(lines[0]), (0.0, 0.0)).unwrap();
+        drag_line(&mut doc, sketch, &session, (5.0, 0.0)).unwrap();
+        assert!(
+            (doc.lines[lines[0]].chord_length() - len0).abs() < 1e-3,
+            "dragged edge length changed from {len0} to {}",
+            doc.lines[lines[0]].chord_length()
+        );
     }
 
     #[test]
