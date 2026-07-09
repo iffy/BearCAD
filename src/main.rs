@@ -3134,6 +3134,27 @@ impl eframe::App for App {
             .frame(theme::panel_frame())
             .show(ctx, |ui| {
             ui.horizontal(|ui| {
+                // Workbench toolbars (#254/#271): the Drawing workbench (a drawing open) shows
+                // only the tools that apply to drawings — Select, Move, Dimension.
+                if self.state.editing_drawing.is_some() {
+                    for (icon, tool, label) in [
+                        (icons::IconId::Select, Tool::Select, "Select"),
+                        (icons::IconId::Move, Tool::Move, "Move"),
+                        (icons::IconId::Dimension, Tool::Dimension, "Dimension"),
+                    ] {
+                        if icons::selectable_icon_button(
+                            ui,
+                            icon,
+                            self.state.tool == tool,
+                            shortcuts::compact_label(label, shortcuts::tool_shortcut(tool)),
+                        )
+                        .clicked()
+                        {
+                            self.state.apply(Action::SetTool(tool));
+                        }
+                    }
+                    return;
+                }
                 if icons::selectable_icon_button(
                     ui,
                     icons::IconId::Select,

@@ -6013,6 +6013,11 @@ impl AppState {
                     if self.doc.drawings.get(di).is_none_or(|d| d.deleted) {
                         return ActionResult::Err(format!("No drawing {di}"));
                     }
+                    // The Drawing workbench only offers Select/Move/Dimension (#271); if the
+                    // current tool isn't one of them, drop back to Select on entry.
+                    if !matches!(self.tool, Tool::Select | Tool::Move | Tool::Dimension) {
+                        self.tool = Tool::Select;
+                    }
                 }
                 self.editing_drawing = drawing;
                 ActionResult::Ok
@@ -11442,6 +11447,23 @@ mod tests {
         assert_eq!(state.doc.drawings[0].name.as_deref(), Some("Front sheet"));
         state.apply(Action::RenameDrawing { drawing: 0, name: String::new() });
         assert_eq!(state.doc.drawings[0].name, None, "empty name clears back to default");
+    }
+
+    /// #271: opening a drawing (entering the Drawing workbench) drops a model-only tool back to
+    /// Select, since the Drawing workbench only offers Select/Move/Dimension.
+    #[test]
+    fn opening_a_drawing_resets_a_model_tool_to_select() {
+        let mut state = AppState::default();
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::SetTool(Tool::Extrude));
+        state.apply(Action::EditDrawing { drawing: Some(0) });
+        assert_eq!(state.tool, Tool::Select, "Extrude isn't a Drawing-workbench tool");
+
+        // A Drawing-workbench tool is preserved.
+        state.apply(Action::SetTool(Tool::Dimension));
+        state.apply(Action::EditDrawing { drawing: None });
+        state.apply(Action::EditDrawing { drawing: Some(0) });
+        assert_eq!(state.tool, Tool::Dimension, "Dimension stays selected");
     }
 
     /// #253: DeleteElement tombstones one specific element (the right-click → Delete path) and
