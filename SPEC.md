@@ -557,7 +557,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     `SketchRepeatOperation` (a `CreatingSketchRepeat` draft carries the same count/gap/distance
     parametrization as the 3D repeat). The context pane shows the entity count, the direction,
     and the **count/gap/distance** fields with the same picture toggles as the 3D repeat, plus a
-    **Repeat** button. A live ghost preview of the duplicates is the remaining GUI polish.
+    **Repeat** button. A live dashed **ghost preview** of the duplicated lines/circles is drawn at
+    every computed offset while the draft is in progress.
   The GUI/scripting to *pick* the length face is a tracked follow-up.
 
 - **Slice tool (#181):** cuts whole bodies with planar cutters. Two pickers — **Bodies**

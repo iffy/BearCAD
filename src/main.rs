@@ -2091,6 +2091,73 @@ impl App {
     /// sketch-vertex case and this 3D solid-edge case.
     /// The output bodies of the operation currently being **edited** (#260), used as the seed for
     /// fading their descendants. Empty when nothing is being edited.
+    /// World-space dashed ghost segments previewing the in-progress in-sketch repeat (#232):
+    /// each picked line/circle copied to every computed offset along the repeat direction.
+    fn sketch_repeat_ghost_segments(&self) -> Vec<(Vec3, Vec3)> {
+        let Some(cr) = self.state.creating_sketch_repeat.as_ref() else {
+            return Vec::new();
+        };
+        if !cr.has_targets() {
+            return Vec::new();
+        }
+        let doc = &self.state.doc;
+        let (du, dv) = cr.direction(doc);
+        let probe = model::SketchRepeatOperation {
+            sketch: cr.sketch,
+            line_targets: cr.line_targets.clone(),
+            circle_targets: cr.circle_targets.clone(),
+            dir_u: du,
+            dir_v: dv,
+            mode: cr.mode,
+            count: cr.count.clone(),
+            spacing: cr.spacing.clone(),
+            length: cr.length.clone(),
+            line_outputs: Vec::new(),
+            circle_outputs: Vec::new(),
+            name: None,
+            deleted: false,
+        };
+        let Some(offsets) = extrude::sketch_repeat_offsets(doc, &probe) else {
+            return Vec::new();
+        };
+        let Some(frame) = crate::face::sketch_geometry_frame(doc, cr.sketch) else {
+            return Vec::new();
+        };
+        let mut segs = Vec::new();
+        for &off in &offsets {
+            if off.abs() <= 1e-6 {
+                continue; // the source position already renders; only ghost the copies
+            }
+            let (ou, ov) = (off * du, off * dv);
+            for &li in &cr.line_targets {
+                if let Some(l) = doc.lines.get(li).filter(|l| !l.deleted) {
+                    let a = crate::face::local_to_world(&frame, l.x0 + ou, l.y0 + ov);
+                    let b = crate::face::local_to_world(&frame, l.x1 + ou, l.y1 + ov);
+                    segs.push((a, b));
+                }
+            }
+            for &ci in &cr.circle_targets {
+                if let Some(c) = doc.circles.get(ci).filter(|c| !c.deleted) {
+                    const N: usize = 48;
+                    let mut prev = None;
+                    for k in 0..=N {
+                        let t = k as f32 / N as f32 * std::f32::consts::TAU;
+                        let p = crate::face::local_to_world(
+                            &frame,
+                            c.cx + ou + c.r * t.cos(),
+                            c.cy + ov + c.r * t.sin(),
+                        );
+                        if let Some(q) = prev {
+                            segs.push((q, p));
+                        }
+                        prev = Some(p);
+                    }
+                }
+            }
+        }
+        segs
+    }
+
     fn edited_operation_output_bodies(&self) -> Vec<usize> {
         let s = &self.state;
         // Editing an extrusion: its body (bodies whose source owns that extrusion).
@@ -5262,6 +5329,7 @@ fn build_viewport_scene_input<'a>(
     constraint_graphics: Option<&'a [constraint_viewport::ConstraintViewportGraphic]>,
     cut_highlight_bodies: Vec<usize>,
     faded_bodies: Vec<usize>,
+    sketch_repeat_ghost: Vec<(Vec3, Vec3)>,
 ) -> gpu_viewport::ViewportSceneInput<'a> {
     let preview_rect = creating_rect.and_then(|cr| {
         let session = sketch_session?;
@@ -5506,6 +5574,7 @@ fn build_viewport_scene_input<'a>(
         selection,
         cut_highlight_bodies,
         faded_bodies,
+        sketch_repeat_ghost,
         element_visibility,
         preview_rect,
         preview_line,
@@ -9727,6 +9796,9 @@ impl App {
                     hovered,
                 }
             });
+        // Live ghost of the in-progress in-sketch repeat's duplicates (#232): dashed copies of
+        // the picked lines/circles at every computed offset, so the result previews before commit.
+        let sketch_repeat_ghost = self.sketch_repeat_ghost_segments();
         let scene_input = build_viewport_scene_input(
             doc,
             &cam,
@@ -9758,6 +9830,7 @@ impl App {
             Some(&constraint_graphics),
             cut_highlight_bodies,
             faded_bodies,
+            sketch_repeat_ghost,
         );
         let scene = gpu_viewport::ViewportScene::build(&scene_input);
         let gpu_drawn =
@@ -11757,6 +11830,7 @@ mod tests {
             None,
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         );
         assert_eq!(
             scene_input.preview_extrusion.as_ref().map(|e| e.target.clone()),
@@ -11831,6 +11905,7 @@ mod tests {
             &[],
             None,
             None,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         );
@@ -11923,6 +11998,7 @@ mod tests {
                 None,
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
             )
             .preview_solid
             .is_some()
@@ -12008,6 +12084,7 @@ mod tests {
             &[],
             None,
             None,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         );
