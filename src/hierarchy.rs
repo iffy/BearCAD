@@ -1993,7 +1993,7 @@ pub fn show_pane(
     // `active_drawing`: the open drawing (Drawing workbench) enabling the row "Add to
     // drawing" action (#274); `on_add_to_drawing` receives the body index.
     active_drawing: Option<usize>,
-    on_add_to_drawing: &mut impl FnMut(usize),
+    on_add_to_drawing: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
 ) {
     ui.horizontal(|ui| {
@@ -2190,7 +2190,7 @@ fn show_tree_entries(
     on_hover_element: &mut impl FnMut(SceneElement),
     on_delete_element: &mut impl FnMut(SceneElement),
     active_drawing: Option<usize>,
-    on_add_to_drawing: &mut impl FnMut(usize),
+    on_add_to_drawing: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
 ) {
     for entry in entries {
@@ -2392,7 +2392,10 @@ fn show_graph_view(
                     .drawings
                     .get(drawing)
                     .and_then(|d| d.views.get(view))
-                    .map(|v| HierarchyNode::Body(v.body))
+                    .map(|v| match v.sketch {
+                        Some(si) => HierarchyNode::Sketch(si),
+                        None => HierarchyNode::Body(v.body),
+                    })
                 else {
                     continue;
                 };
@@ -2541,7 +2544,7 @@ fn show_row(
     on_hover_element: &mut impl FnMut(SceneElement),
     on_delete_element: &mut impl FnMut(SceneElement),
     active_drawing: Option<usize>,
-    on_add_to_drawing: &mut impl FnMut(usize),
+    on_add_to_drawing: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
 ) {
     // The synthetic Document root has no SceneElement — it isn't selectable, hideable, or
@@ -2732,6 +2735,11 @@ fn show_row(
                         on_edit_sketch(sketch);
                         ui.close();
                     }
+                    // In the Drawing workbench, add this sketch as a projection (#278).
+                    if active_drawing.is_some() && ui.button("Add to drawing").clicked() {
+                        on_add_to_drawing(SceneElement::Sketch(sketch));
+                        ui.close();
+                    }
                 }
                 HierarchyNode::ConstructionPlane(index) => {
                     if ui.button("Edit plane").clicked() {
@@ -2752,7 +2760,7 @@ fn show_row(
                 HierarchyNode::Body(index) => {
                     // In the Drawing workbench, add this body as a view of the open drawing (#274).
                     if active_drawing.is_some() && ui.button("Add to drawing").clicked() {
-                        on_add_to_drawing(index);
+                        on_add_to_drawing(SceneElement::Body(index));
                         ui.close();
                     }
                     if ui.button("Export STL…").clicked() {
@@ -2818,6 +2826,7 @@ mod tests {
         doc.drawings.push(crate::model::Drawing {
             views: vec![crate::model::DrawingView {
                 body: 0,
+                sketch: None,
                 orientation: crate::model::DrawingOrientation::Front,
                 dimensioned_edges: Vec::new(),
                 angle_dims: Vec::new(),

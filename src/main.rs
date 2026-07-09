@@ -3446,7 +3446,7 @@ impl eframe::App for App {
             let mut export_body_step: Option<usize> = None;
             let mut click_element: Option<(SceneElement, bool)> = None;
             let mut delete_element: Option<SceneElement> = None;
-            let mut add_body_to_drawing: Option<usize> = None;
+            let mut add_to_drawing: Option<SceneElement> = None;
             let mut rename_drawing: Option<(usize, String)> = None;
             let mut pane_hovered_element: Option<SceneElement> = None;
             egui::SidePanel::left("tree")
@@ -3488,8 +3488,8 @@ impl eframe::App for App {
                     let mut queue_hover = |element: SceneElement| {
                         pane_hovered_element = Some(element);
                     };
-                    let mut queue_add_to_drawing = |body: usize| {
-                        add_body_to_drawing = Some(body);
+                    let mut queue_add_to_drawing = |element: SceneElement| {
+                        add_to_drawing = Some(element);
                     };
                     let mut queue_delete = |element: SceneElement| {
                         delete_element = Some(element);
@@ -3531,12 +3531,18 @@ impl eframe::App for App {
             if let Some(element) = delete_element {
                 self.state.apply(Action::DeleteElement { element });
             }
-            if let (Some(body), Some(drawing)) = (add_body_to_drawing, self.state.editing_drawing) {
-                self.state.apply(Action::AddDrawingView {
-                    drawing,
-                    body,
-                    orientation: model::DrawingOrientation::default(),
-                });
+            if let (Some(element), Some(drawing)) = (add_to_drawing, self.state.editing_drawing) {
+                let orientation = model::DrawingOrientation::default();
+                match element {
+                    SceneElement::Body(body) => {
+                        self.state.apply(Action::AddDrawingView { drawing, body, orientation });
+                    }
+                    SceneElement::Sketch(sketch) => {
+                        self.state
+                            .apply(Action::AddDrawingSketchView { drawing, sketch, orientation });
+                    }
+                    _ => {}
+                }
             }
             if let Some((drawing, name)) = rename_drawing {
                 self.state.apply(Action::RenameDrawing { drawing, name });
@@ -7624,11 +7630,14 @@ impl App {
                     egui::Stroke::new(1.0, egui::Color32::from_gray(80)),
                     egui::StrokeKind::Inside,
                 );
-                let caption = format!(
-                    "{} — {}",
-                    body_label(&self.state.doc, view.body),
-                    view.orientation.label()
-                );
+                let source_label = match view.sketch {
+                    Some(si) => crate::names::node_label(
+                        &self.state.doc,
+                        hierarchy::HierarchyNode::Sketch(si),
+                    ),
+                    None => body_label(&self.state.doc, view.body),
+                };
+                let caption = format!("{source_label} — {}", view.orientation.label());
                 painter.text(
                     cell.min + egui::vec2(8.0, 6.0),
                     egui::Align2::LEFT_TOP,
@@ -7655,10 +7664,7 @@ impl App {
                 );
                 let (right, up) = crate::drawing::view_axes(view.orientation);
                 let project = |p: Vec3| egui::vec2(p.dot(right), p.dot(up));
-                let world_edges: Vec<(Vec3, Vec3)> =
-                    crate::extrude::body_solid_mesh(&self.state.doc, view.body)
-                        .map(|mesh| gpu_viewport::solid_mesh_unique_edges(&mesh))
-                        .unwrap_or_default();
+                let world_edges = crate::drawing::drawing_view_world_edges(&self.state.doc, view);
                 if world_edges.is_empty() {
                     continue;
                 }

@@ -1694,8 +1694,13 @@ impl DrawingOrientation {
 /// One view on a technical [`Drawing`] (#180): a body projected in a fixed orientation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DrawingView {
-    /// Index into [`Document::bodies`].
+    /// Index into [`Document::bodies`] (the source when `sketch` is `None`).
     pub body: usize,
+    /// When `Some`, this view projects a **sketch** rather than a body (#278). Kept as an
+    /// optional field (rather than replacing `body` with an enum) so older saved drawings —
+    /// which only ever had `body` — deserialize unchanged.
+    #[serde(default)]
+    pub sketch: Option<SketchId>,
     #[serde(default)]
     pub orientation: DrawingOrientation,
     /// Placement centre on the page, as a fraction of the page (0..1) from the top-left (#274).

@@ -1051,6 +1051,12 @@ pub enum Action {
         body: usize,
         orientation: crate::model::DrawingOrientation,
     },
+    /// Add a sketch projection to a drawing (#278).
+    AddDrawingSketchView {
+        drawing: usize,
+        sketch: usize,
+        orientation: crate::model::DrawingOrientation,
+    },
     /// Drag a placed view to a new page position (fraction 0..1) (#274).
     MoveDrawingView {
         drawing: usize,
@@ -5965,6 +5971,7 @@ impl AppState {
                 let step = (d.views.len() % 6) as f32 * 0.06;
                 d.views.push(crate::model::DrawingView {
                     body,
+                    sketch: None,
                     orientation,
                     dimensioned_edges: Vec::new(),
                     angle_dims: Vec::new(),
@@ -5975,6 +5982,26 @@ impl AppState {
                     "Added {} view of body {body} to drawing {drawing}",
                     orientation.label()
                 );
+                ActionResult::Ok
+            }
+            Action::AddDrawingSketchView { drawing, sketch, orientation } => {
+                if self.doc.sketches.get(sketch).is_none_or(|s| s.deleted) {
+                    return ActionResult::Err(format!("No sketch {sketch}"));
+                }
+                let Some(d) = self.doc.drawings.get_mut(drawing).filter(|d| !d.deleted) else {
+                    return ActionResult::Err(format!("No drawing {drawing}"));
+                };
+                let step = (d.views.len() % 6) as f32 * 0.06;
+                d.views.push(crate::model::DrawingView {
+                    body: 0,
+                    sketch: Some(sketch),
+                    orientation,
+                    dimensioned_edges: Vec::new(),
+                    angle_dims: Vec::new(),
+                    pos_x: (0.35 + step).min(0.9),
+                    pos_y: (0.35 + step).min(0.9),
+                });
+                self.status = format!("Added sketch {sketch} to drawing {drawing}");
                 ActionResult::Ok
             }
             Action::MoveDrawingView { drawing, view, pos_x, pos_y } => {
@@ -11525,6 +11552,31 @@ mod tests {
         state.apply(Action::EditDrawing { drawing: None });
         state.apply(Action::EditDrawing { drawing: Some(0) });
         assert_eq!(state.tool, Tool::Dimension, "Dimension stays selected");
+    }
+
+    /// #278: a sketch can be added to a drawing as a projection; the view records the sketch
+    /// source and projects that sketch's geometry.
+    #[test]
+    fn drawing_accepts_a_sketch_projection() {
+        use crate::model::DrawingOrientation;
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        crate::construction::add_line_rectangle(&mut state.doc, sketch, 0.0, 0.0, 20.0, 10.0, [false; 4]);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+
+        let result = state.apply(Action::AddDrawingSketchView {
+            drawing: 0,
+            sketch,
+            orientation: DrawingOrientation::Top,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        let view = &state.doc.drawings[0].views[0];
+        assert_eq!(view.sketch, Some(sketch));
+        assert!(
+            !crate::drawing::drawing_view_world_edges(&state.doc, view).is_empty(),
+            "the sketch projection has edges"
+        );
     }
 
     /// #274: a placed view can be dragged to a new page position (clamped to the page) and have

@@ -841,8 +841,10 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   fraction). Views render as cards **on the page** and are **dragged** by their caption strip
   (`Action::MoveDrawingView`, non-undoable per-frame). Right-clicking a card picks its
   **projection orientation** (`Action::SetDrawingViewOrientation`) or removes it. New views
-  cascade from the page centre so they don't fully stack. A body can be added from the
-  Elements pane's right-click **Add to drawing** while the drawing is open.
+  cascade from the page centre so they don't fully stack. A **body or sketch** can be added
+  from the Elements pane's right-click **Add to drawing** while the drawing is open; a
+  **sketch** view (`DrawingView::sketch`, #278) projects that sketch's line/circle geometry
+  instead of a body's mesh edges (both editor and export share `drawing_view_world_edges`).
 - **Projection elements (#254/#281):** each placed view shows in the Elements pane as a
   **projection** node (`HierarchyNode::DrawingProjection`, its own icon) nested **under its
   drawing**. In the Graph view it also draws a dashed **dependency edge** to its source body —

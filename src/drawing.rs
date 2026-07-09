@@ -43,6 +43,34 @@ const CELL_H: f32 = 380.0;
 const HEADER: f32 = 48.0;
 const MARGIN: f32 = 30.0;
 
+/// The world-space feature edges a drawing view projects (#278): a body's solid-mesh unique
+/// edges, or — when the view's `sketch` is set — that sketch's line/circle geometry. Shared by
+/// the editor pane and the SVG/PDF export so both draw the same thing.
+pub fn drawing_view_world_edges(doc: &Document, view: &DrawingView) -> Vec<(Vec3, Vec3)> {
+    if let Some(si) = view.sketch {
+        let mut edges = Vec::new();
+        for line in doc.lines.iter().filter(|l| !l.deleted && l.sketch == si) {
+            if let Some(pts) = crate::face::line_world_polyline(doc, line) {
+                for w in pts.windows(2) {
+                    edges.push((w[0], w[1]));
+                }
+            }
+        }
+        for circle in doc.circles.iter().filter(|c| !c.deleted && c.sketch == si) {
+            if let Some(pts) = crate::face::circle_world_perimeter(doc, circle, 48) {
+                for w in pts.windows(2) {
+                    edges.push((w[0], w[1]));
+                }
+            }
+        }
+        edges
+    } else {
+        crate::extrude::body_solid_mesh(doc, view.body)
+            .map(|mesh| crate::gpu_viewport::solid_mesh_unique_edges(&mesh))
+            .unwrap_or_default()
+    }
+}
+
 /// An 8-bit RGB paint.
 #[derive(Clone, Copy, PartialEq)]
 struct Rgb(u8, u8, u8);
@@ -98,11 +126,11 @@ fn render_drawing<C: Canvas>(doc: &Document, index: usize, canvas: &mut C) -> Op
         let cell_x = col as f32 * CELL_W;
         let cell_y = HEADER + row as f32 * CELL_H;
         canvas.rect(cell_x + 3.0, cell_y + 3.0, CELL_W - 6.0, CELL_H - 6.0, None, Some(GRAY), 1.0);
-        let label = format!(
-            "{} — {}",
-            crate::names::node_label(doc, crate::hierarchy::HierarchyNode::Body(view.body)),
-            view.orientation.label()
-        );
+        let source = match view.sketch {
+            Some(si) => crate::names::node_label(doc, crate::hierarchy::HierarchyNode::Sketch(si)),
+            None => crate::names::node_label(doc, crate::hierarchy::HierarchyNode::Body(view.body)),
+        };
+        let label = format!("{source} — {}", view.orientation.label());
         canvas.text(cell_x + 12.0, cell_y + 22.0, 13.0, Anchor::Start, &label);
         render_view_geometry(canvas, doc, view, cell_x, cell_y, unit);
     }
@@ -117,10 +145,7 @@ fn render_view_geometry<C: Canvas>(
     cell_y: f32,
     unit: crate::value::LengthUnit,
 ) {
-    let world_edges = match crate::extrude::body_solid_mesh(doc, view.body) {
-        Some(mesh) => crate::gpu_viewport::solid_mesh_unique_edges(&mesh),
-        None => return,
-    };
+    let world_edges = drawing_view_world_edges(doc, view);
     if world_edges.is_empty() {
         return;
     }
@@ -422,6 +447,7 @@ mod tests {
             name: Some("Plate".to_string()),
             views: vec![DrawingView {
                 body: 0,
+                sketch: None,
                 orientation: DrawingOrientation::Front,
                 dimensioned_edges: Vec::new(),
                 angle_dims: Vec::new(),
