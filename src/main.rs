@@ -521,6 +521,11 @@ struct App {
     /// Persistent physics state for the Elements pane's force-directed Graph view (#94).
     /// Ephemeral view state (never persisted), like `AppState::hierarchy_view_mode`.
     graph_layout: hierarchy::GraphLayout,
+    /// Elements-pane type filter (#275) and whether its toggle panel is expanded. Ephemeral UI
+    /// state; reset to the workbench default when the Model/Drawing workbench changes.
+    element_filter: hierarchy::ElementFilter,
+    element_filter_expanded: bool,
+    element_filter_drawing_workbench: bool,
     /// Set just before closing on an uncaught script error with `--exit` (#125), so
     /// `run_app` can translate it into a non-zero process exit code after the eframe
     /// event loop returns — a script failure must fail the process, not just the UI.
@@ -621,6 +626,9 @@ impl App {
             gpu_viewport: gpu_viewport::install(cc),
             gpu_view_cube: gpu_view_cube::install(cc),
             graph_layout: hierarchy::GraphLayout::default(),
+            element_filter: hierarchy::ElementFilter::default(),
+            element_filter_expanded: false,
+            element_filter_drawing_workbench: false,
             script_failed,
         }
     }
@@ -3382,6 +3390,17 @@ impl eframe::App for App {
         });
 
         if self.state.panes.is_visible(Pane::Hierarchy) {
+            // On a Model/Drawing workbench switch, reset the element filter to that workbench's
+            // default (Drawing shows only sketches + bodies) (#275).
+            let drawing_workbench = self.state.editing_drawing.is_some();
+            if drawing_workbench != self.element_filter_drawing_workbench {
+                self.element_filter = if drawing_workbench {
+                    hierarchy::ElementFilter::for_drawing_workbench()
+                } else {
+                    hierarchy::ElementFilter::default()
+                };
+                self.element_filter_drawing_workbench = drawing_workbench;
+            }
             let mut edit_sketch: Option<SketchId> = None;
             let mut edit_plane: Option<usize> = None;
             let mut import_image_on_plane: Option<usize> = None;
@@ -3449,6 +3468,8 @@ impl eframe::App for App {
                         &self.state.document_health,
                         &mut self.state.hierarchy_view_mode,
                         &mut self.graph_layout,
+                        &mut self.element_filter,
+                        &mut self.element_filter_expanded,
                         &mut queue_edit_sketch,
                         &mut queue_edit_plane,
                         &mut queue_import_image_on_plane,

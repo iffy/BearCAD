@@ -825,6 +825,11 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   Entering the workbench with a model-only tool active drops back to Select. The Parameters
   pane is hidden in the Drawing workbench, and there's no "Back to model" button — press
   **Esc** to return to the model.
+- **Elements-pane filter (#254/#275):** a **⧩ Filter** button at the bottom of the Elements
+  pane expands into per-type show/hide toggles (planes, sketches, sketch geometry, bodies,
+  operations, images, drawings). Hiding a type prunes those nodes but promotes their kept
+  children (hiding "Operations" still shows the result bodies, un-nested). The Drawing
+  workbench defaults the filter to sketches + bodies only.
 - **Views:** a drawing collects **views**, each a chosen body shown in one orientation — the
   six straight-on directions (Front/Back/Left/Right/Top/Bottom) or an **Isometric**
   three-quarter view. Each view renders as a black wireframe of the body's feature edges,

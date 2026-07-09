@@ -1054,18 +1054,127 @@ pub fn build_hierarchy(
 }
 
 /// Flat element list: parents always above descendants; newer elements after older ones when possible.
+/// The unfiltered element list (used by tests and the scripting element API). The pane's List
+/// view builds a [`filter_hierarchy`]-pruned tree and flattens it with [`element_list_from_tree`].
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn build_element_list(
     doc: &Document,
     sketch_session: Option<SketchSession>,
 ) -> Vec<HierarchyNode> {
     let tree = build_hierarchy(doc, sketch_session);
+    element_list_from_tree(&tree, doc)
+}
+
+/// Flatten an already-built (and possibly [`filter_hierarchy`]-pruned) tree into the List
+/// view's creation-ordered node list.
+fn element_list_from_tree(tree: &[HierarchyEntry], doc: &Document) -> Vec<HierarchyNode> {
     let ranks = build_creation_ranks(doc);
     let mut nodes = Vec::new();
     let mut parent_of = HashMap::new();
-    for entry in &tree {
+    for entry in tree {
         collect_with_parents(entry, None, &mut nodes, &mut parent_of);
     }
     topological_flat_sort(nodes, parent_of, |node| creation_rank(&ranks, node))
+}
+
+/// User-facing element-type toggles for the Elements-pane filter (#275). Absent categories are
+/// hidden; the default shows everything. The Drawing workbench narrows it to sketches + bodies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ElementFilter {
+    pub planes: bool,
+    pub sketches: bool,
+    /// In-sketch geometry: lines, circles, constraints, and edge treatments.
+    pub sketch_geometry: bool,
+    pub bodies: bool,
+    /// History operations: extrude, boolean, move, repeat, slice, revolve, and in-sketch ops.
+    pub operations: bool,
+    pub images: bool,
+    pub drawings: bool,
+}
+
+impl Default for ElementFilter {
+    fn default() -> Self {
+        Self {
+            planes: true,
+            sketches: true,
+            sketch_geometry: true,
+            bodies: true,
+            operations: true,
+            images: true,
+            drawings: true,
+        }
+    }
+}
+
+impl ElementFilter {
+    /// The Drawing workbench default: only sketches and bodies (#254/#275).
+    pub fn for_drawing_workbench() -> Self {
+        Self {
+            planes: false,
+            sketches: true,
+            sketch_geometry: false,
+            bodies: true,
+            operations: false,
+            images: false,
+            drawings: false,
+        }
+    }
+
+    /// The toggles in display order: `(label, &mut enabled)` pairs the filter UI iterates.
+    pub fn rows(&mut self) -> [(&'static str, &mut bool); 7] {
+        [
+            ("Planes", &mut self.planes),
+            ("Sketches", &mut self.sketches),
+            ("Sketch geometry", &mut self.sketch_geometry),
+            ("Bodies", &mut self.bodies),
+            ("Operations", &mut self.operations),
+            ("Images", &mut self.images),
+            ("Drawings", &mut self.drawings),
+        ]
+    }
+
+    /// Whether a node's type is currently shown. The synthetic Document root is always shown.
+    fn shows(&self, node: HierarchyNode) -> bool {
+        match node {
+            HierarchyNode::Document => true,
+            HierarchyNode::ConstructionPlane(_) => self.planes,
+            HierarchyNode::Sketch(_) => self.sketches,
+            HierarchyNode::Line(_)
+            | HierarchyNode::Circle(_)
+            | HierarchyNode::Constraint(_)
+            | HierarchyNode::EdgeTreatment { .. } => self.sketch_geometry,
+            HierarchyNode::Body(_) => self.bodies,
+            HierarchyNode::Extrusion(_)
+            | HierarchyNode::BooleanOp(_)
+            | HierarchyNode::MoveOp(_)
+            | HierarchyNode::RepeatOp(_)
+            | HierarchyNode::SketchRepeatOp(_)
+            | HierarchyNode::SketchSliceOp(_)
+            | HierarchyNode::SliceOp(_)
+            | HierarchyNode::Revolution(_) => self.operations,
+            HierarchyNode::Image(_) => self.images,
+            HierarchyNode::Drawing(_) => self.drawings,
+        }
+    }
+}
+
+/// Prune a hierarchy tree to the enabled [`ElementFilter`] categories (#275). A hidden node is
+/// dropped but its (recursively filtered) children are **promoted** to its parent — so hiding
+/// "Operations" while keeping "Bodies" still shows the result bodies, just un-nested.
+pub fn filter_hierarchy(tree: &[HierarchyEntry], filter: &ElementFilter) -> Vec<HierarchyEntry> {
+    let mut out = Vec::new();
+    for entry in tree {
+        let children = filter_hierarchy(&entry.children, filter);
+        if filter.shows(entry.node) {
+            out.push(HierarchyEntry {
+                node: entry.node,
+                children,
+            });
+        } else {
+            out.extend(children);
+        }
+    }
+    out
 }
 
 fn collect_with_parents(
@@ -1850,6 +1959,8 @@ pub fn show_pane(
     health: &DocumentHealth,
     view_mode: &mut HierarchyViewMode,
     graph_layout: &mut GraphLayout,
+    filter: &mut ElementFilter,
+    filter_expanded: &mut bool,
     on_edit_sketch: &mut impl FnMut(SketchId),
     on_edit_plane: &mut impl FnMut(usize),
     on_import_image_on_plane: &mut impl FnMut(usize),
@@ -1886,7 +1997,8 @@ pub fn show_pane(
 
     match view_mode {
         HierarchyViewMode::List => {
-            let elements = build_element_list(doc, sketch_session);
+            let tree = filter_hierarchy(&build_hierarchy(doc, sketch_session), filter);
+            let elements = element_list_from_tree(&tree, doc);
             let style_selection = selection_styles_visible_list(&elements, selection);
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for node in elements {
@@ -1940,8 +2052,8 @@ pub fn show_pane(
             });
         }
         HierarchyViewMode::Tree => {
-            let tree = build_hierarchy(doc, sketch_session);
-            let flat_elements = build_element_list(doc, sketch_session);
+            let tree = filter_hierarchy(&build_hierarchy(doc, sketch_session), filter);
+            let flat_elements = element_list_from_tree(&tree, doc);
             let style_selection = selection_styles_visible_list(&flat_elements, selection);
             egui::ScrollArea::vertical().show(ui, |ui| {
                 show_tree_entries(
@@ -1973,7 +2085,7 @@ pub fn show_pane(
             });
         }
         HierarchyViewMode::Graph => {
-            let tree = build_hierarchy(doc, sketch_session);
+            let tree = filter_hierarchy(&build_hierarchy(doc, sketch_session), filter);
             show_graph_view(
                 ui,
                 doc,
@@ -1990,6 +2102,40 @@ pub fn show_pane(
             );
         }
     }
+
+    // Filter control (#275): a button at the pane's bottom that expands up into a set of
+    // per-type show/hide toggles.
+    egui::TopBottomPanel::bottom("elements_filter")
+        .frame(egui::Frame::default().inner_margin(egui::Margin::symmetric(4, 3)))
+        .show_inside(ui, |ui| {
+            if *filter_expanded {
+                let all_on = *filter == ElementFilter::default();
+                for (label, enabled) in filter.rows() {
+                    ui.checkbox(enabled, label);
+                }
+                ui.horizontal(|ui| {
+                    if ui.small_button(if all_on { "Hide all" } else { "Show all" }).clicked() {
+                        let target = !all_on;
+                        for (_, enabled) in filter.rows() {
+                            *enabled = target;
+                        }
+                    }
+                    if ui.small_button("Done").clicked() {
+                        *filter_expanded = false;
+                    }
+                });
+            } else {
+                let hidden = filter.rows().iter().filter(|(_, e)| !**e).count();
+                let label = if hidden == 0 {
+                    "⧩ Filter".to_string()
+                } else {
+                    format!("⧩ Filter ({hidden} hidden)")
+                };
+                if ui.button(label).on_hover_text("Show/hide element types").clicked() {
+                    *filter_expanded = true;
+                }
+            }
+        });
 }
 
 /// Recursively render `entries` (and their nested children) at increasing indent, per #34's
@@ -2564,6 +2710,56 @@ mod tests {
         assert!(visibility.effective_visible(&doc, SceneElement::Body(0)));
         visibility.set_visible(SceneElement::Body(0), false);
         assert!(!visibility.effective_visible(&doc, SceneElement::Body(0)));
+    }
+
+    /// #275: hiding a category prunes those nodes but promotes their kept children — so hiding
+    /// "Operations" while keeping "Bodies" still shows the result body, just un-nested.
+    #[test]
+    fn filter_hierarchy_promotes_kept_children_of_hidden_nodes() {
+        let tree = vec![HierarchyEntry {
+            node: HierarchyNode::Document,
+            children: vec![HierarchyEntry {
+                node: HierarchyNode::BooleanOp(0),
+                children: vec![HierarchyEntry {
+                    node: HierarchyNode::Body(3),
+                    children: Vec::new(),
+                }],
+            }],
+        }];
+        let filter = ElementFilter {
+            operations: false,
+            ..ElementFilter::default()
+        };
+        let out = filter_hierarchy(&tree, &filter);
+        // Document kept; the hidden BooleanOp collapses, promoting Body(3) directly under it.
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].node, HierarchyNode::Document);
+        assert_eq!(
+            out[0].children.iter().map(|c| c.node).collect::<Vec<_>>(),
+            vec![HierarchyNode::Body(3)]
+        );
+
+        // Hiding Bodies too removes it entirely.
+        let filter = ElementFilter {
+            operations: false,
+            bodies: false,
+            ..ElementFilter::default()
+        };
+        let out = filter_hierarchy(&tree, &filter);
+        assert!(out[0].children.is_empty(), "no kept descendants remain");
+    }
+
+    /// #275: the Drawing workbench filter shows only sketches and bodies.
+    #[test]
+    fn drawing_workbench_filter_shows_only_sketches_and_bodies() {
+        let f = ElementFilter::for_drawing_workbench();
+        assert!(f.sketches && f.bodies);
+        assert!(!f.planes && !f.operations && !f.sketch_geometry && !f.images && !f.drawings);
+        assert!(f.shows(HierarchyNode::Body(0)));
+        assert!(f.shows(HierarchyNode::Sketch(0)));
+        assert!(f.shows(HierarchyNode::Document), "the root is always shown");
+        assert!(!f.shows(HierarchyNode::ConstructionPlane(0)));
+        assert!(!f.shows(HierarchyNode::Extrusion(0)));
     }
 
     #[test]
