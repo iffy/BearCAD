@@ -4665,12 +4665,15 @@ fn resolve_viewport_hover_highlight(
             // A vertex hidden behind another body is not a candidate (#155).
             if let Some((kind, _)) =
                 construction::nearest_body_vertex(pp, project, doc).filter(|(kind, _)| {
-                    match kind {
-                        construction::PickTargetKind::BodyVertex { position, .. } => {
-                            occlusion.is_none_or(|occ| !occ.occluded(*position))
+                    // Hidden/shadow bodies aren't pickable (#258); a vertex behind another body
+                    // isn't either (#155).
+                    occlusion.is_none_or(|occ| occ.pickable(doc, kind))
+                        && match kind {
+                            construction::PickTargetKind::BodyVertex { position, .. } => {
+                                occlusion.is_none_or(|occ| !occ.occluded(*position))
+                            }
+                            _ => true,
                         }
-                        _ => true,
-                    }
                 })
             {
                 return Some(gpu_viewport::ViewportHoverHighlight::PickTarget(kind));
@@ -4702,6 +4705,7 @@ fn resolve_viewport_hover_highlight(
                 }
             }
             crate::face::pick_body_face(pp, project, doc, cam.eye())
+                .filter(|kind| occlusion.is_none_or(|occ| occ.pickable(doc, kind)))
                 .map(gpu_viewport::ViewportHoverHighlight::PickTarget)
         }
         _ => None,
@@ -7926,11 +7930,16 @@ impl App {
                     // priority in `resolve_viewport_hover_highlight` (#144/#156) — what the
                     // hover shows is what the click selects.
                     let body_vertex = construction::nearest_body_vertex(pp, &project, &self.state.doc)
-                        .filter(|(kind, _)| match kind {
-                            construction::PickTargetKind::BodyVertex { position, .. } => {
-                                pick_occlusion.is_none_or(|occ| !occ.occluded(*position))
-                            }
-                            _ => true,
+                        .filter(|(kind, _)| {
+                            // Hidden/shadow bodies aren't selectable (#258); occluded ones aren't
+                            // either (#155).
+                            pick_occlusion.is_none_or(|occ| occ.pickable(&self.state.doc, kind))
+                                && match kind {
+                                    construction::PickTargetKind::BodyVertex { position, .. } => {
+                                        pick_occlusion.is_none_or(|occ| !occ.occluded(*position))
+                                    }
+                                    _ => true,
+                                }
                         })
                         .and_then(|(kind, _)| scene_element_from_pick(&kind));
                     if let Some(index) =

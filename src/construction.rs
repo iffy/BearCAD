@@ -927,6 +927,9 @@ impl PickTarget {
 pub struct PickOcclusion {
     eye: Vec3,
     meshes: Vec<crate::extrude::SolidMesh>,
+    /// Snapshot of user-hidden state so [`resolve_pick_target`] can reject candidates that are
+    /// hidden (or shadow), not just occluded behind a body (#258).
+    visibility: crate::hierarchy::ElementVisibility,
 }
 
 impl PickOcclusion {
@@ -944,7 +947,52 @@ impl PickOcclusion {
             })
             .filter_map(|(bi, _)| crate::extrude::body_solid_mesh(doc, bi))
             .collect();
-        Self { eye, meshes }
+        Self {
+            eye,
+            meshes,
+            visibility: visibility.clone(),
+        }
+    }
+
+    /// Whether a pick candidate is eligible for hover/selection given user-hidden and shadow
+    /// state (#258): hidden elements (and anything hidden by a hidden ancestor) and shadow
+    /// geometry are neither selectable nor hoverable. World axes and the ground plane are
+    /// always pickable.
+    pub fn pickable(&self, doc: &Document, kind: &PickTargetKind) -> bool {
+        use crate::hierarchy::SceneElement;
+        let vis = &self.visibility;
+        match kind {
+            PickTargetKind::Point(point) => {
+                let shadow = match point {
+                    ConstraintPoint::LineEndpoint { line, .. } => {
+                        doc.lines.get(*line).is_some_and(|l| l.shadow)
+                    }
+                    ConstraintPoint::CircleCenter(c) => {
+                        doc.circles.get(*c).is_some_and(|c| c.shadow)
+                    }
+                    ConstraintPoint::FaceVertex { .. } => false,
+                };
+                !shadow && vis.effective_visible(doc, SceneElement::Point(point.clone()))
+            }
+            PickTargetKind::Line(i) => {
+                doc.lines.get(*i).is_some_and(|l| !l.shadow)
+                    && vis.effective_visible(doc, SceneElement::Line(*i))
+            }
+            PickTargetKind::Circle(i) => {
+                doc.circles.get(*i).is_some_and(|c| !c.shadow)
+                    && vis.effective_visible(doc, SceneElement::Circle(*i))
+            }
+            PickTargetKind::BodyEdge { body, .. }
+            | PickTargetKind::BodyFace { body, .. }
+            | PickTargetKind::BodyVertex { body, .. } => {
+                doc.bodies.get(*body).is_some_and(|b| !b.shadow)
+                    && vis.effective_visible(doc, SceneElement::Body(*body))
+            }
+            PickTargetKind::ConstructionPlane(i) => {
+                vis.effective_visible(doc, SceneElement::ConstructionPlane(*i))
+            }
+            PickTargetKind::GlobalAxis(_) | PickTargetKind::Ground(_) => true,
+        }
     }
 
     /// Whether a solid stands strictly between the eye and `p` (with slack at both ends so
@@ -1028,6 +1076,9 @@ pub fn resolve_pick_target(
         }
     };
     let visible = |p: Vec3| occlusion.is_none_or(|occ| !occ.occluded(p));
+    // Hidden and shadow elements are not selectable/hoverable (#258); only enforced when we
+    // have an occlusion context (the picking tools build one — tests/X-ray callers pass None).
+    let pickable = |kind: &PickTargetKind| occlusion.is_none_or(|occ| occ.pickable(doc, kind));
 
     if let Some((kind, dist)) = nearest_sketch_point(screen, project, doc) {
         let origin = match &kind {
@@ -1036,7 +1087,7 @@ pub fn resolve_pick_target(
             }
             _ => Vec3::ZERO,
         };
-        if visible(origin) {
+        if pickable(&kind) && visible(origin) {
             consider(PickTarget {
                 kind,
                 reference: PlaneReference::Face {
@@ -1051,7 +1102,7 @@ pub fn resolve_pick_target(
     }
 
     if let Some((kind, a, b, label, dist)) = nearest_sketch_edge(screen, project, doc) {
-        if visible(segment_point_nearest_screen(screen, project, a, b)) {
+        if pickable(&kind) && visible(segment_point_nearest_screen(screen, project, a, b)) {
             consider(PickTarget {
                 kind,
                 reference: PlaneReference::Axis {
@@ -1066,7 +1117,7 @@ pub fn resolve_pick_target(
     }
 
     if let Some((kind, a, b, label, dist)) = nearest_body_edge(screen, project, doc) {
-        if visible(segment_point_nearest_screen(screen, project, a, b)) {
+        if pickable(&kind) && visible(segment_point_nearest_screen(screen, project, a, b)) {
             consider(PickTarget {
                 kind,
                 reference: PlaneReference::Axis {
@@ -1098,6 +1149,7 @@ pub fn resolve_pick_target(
         let plane = &doc.construction_planes[index];
         let origin = ground_point.unwrap_or(plane.origin);
         let projected = project_point_on_plane(origin, plane);
+        if pickable(&PickTargetKind::ConstructionPlane(index)) {
         consider(PickTarget {
             kind: PickTargetKind::ConstructionPlane(index),
             reference: PlaneReference::Face {
@@ -1108,6 +1160,7 @@ pub fn resolve_pick_target(
             distance_px: dist,
             priority: 2,
         });
+        }
     }
 
     if let Some(p) = ground_point {
@@ -2328,6 +2381,49 @@ mod tests {
         let occ = PickOcclusion::new(&doc, &visibility, eye);
         let picked = resolve_pick_target(cursor, &project, None, &doc, Some(&occ));
         assert!(matches!(picked.map(|t| t.kind), Some(PickTargetKind::Line(0))));
+    }
+
+    /// #258: a hidden or shadow sketch line is neither selectable nor hoverable — it drops out
+    /// of the pick candidates whenever a visibility/occlusion context is present.
+    #[test]
+    fn hidden_or_shadow_line_is_not_picked() {
+        let (mut doc, sketch) = doc_with_plane_sketch();
+        doc.lines = vec![Line::from_local_endpoints(sketch, 20.0, 40.0, 60.0, 40.0)];
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let eye = Vec3::new(40.0, 40.0, 100.0);
+        let cursor = Pos2::new(40.0, 40.0);
+
+        // Visible: the line is picked.
+        let vis = crate::hierarchy::ElementVisibility::default();
+        let occ = PickOcclusion::new(&doc, &vis, eye);
+        assert!(matches!(
+            resolve_pick_target(cursor, &project, None, &doc, Some(&occ)).map(|t| t.kind),
+            Some(PickTargetKind::Line(0))
+        ));
+
+        // Hiding its sketch makes the line (and its endpoints) effectively hidden → not picked.
+        let mut vis = crate::hierarchy::ElementVisibility::default();
+        vis.set_visible(crate::hierarchy::SceneElement::Sketch(sketch), false);
+        let occ = PickOcclusion::new(&doc, &vis, eye);
+        assert!(
+            !matches!(
+                resolve_pick_target(cursor, &project, None, &doc, Some(&occ)).map(|t| t.kind),
+                Some(PickTargetKind::Line(0)) | Some(PickTargetKind::Point(_))
+            ),
+            "a hidden line and its endpoints must not be picked"
+        );
+
+        // A shadow line is not picked even while visible.
+        doc.lines[0].shadow = true;
+        let vis = crate::hierarchy::ElementVisibility::default();
+        let occ = PickOcclusion::new(&doc, &vis, eye);
+        assert!(
+            !matches!(
+                resolve_pick_target(cursor, &project, None, &doc, Some(&occ)).map(|t| t.kind),
+                Some(PickTargetKind::Line(0)) | Some(PickTargetKind::Point(_))
+            ),
+            "a shadow line must not be picked"
+        );
     }
 
     /// #156: body edges and vertices map to selectable scene elements (outside sketch
