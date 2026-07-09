@@ -487,10 +487,16 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   clicked line). One multi-select body picker; the original stays as instance 0; each
   further instance of each target is an output body (`BodySource::Repeated { op, target,
   instance }`) nested under an editable **repeat operation element**
-  (`Document::repeat_ops`, `ShapeKind::RepeatOperation`). Six spacing modes: count × gap
-  (end-to-start), count fit-to-end, count fit start-to-start, fill-length by gap,
-  fill-length by pitch, and fill-length with a *maximum* pitch that lands an instance
-  exactly at the end (stud spacing). Count/spacing/length are **expressions** (parameters
+  (`Document::repeat_ops`, `ShapeKind::RepeatOperation`). The context pane exposes three
+  interlinked variables — **count**, **gap**, and **distance** (#257): the user edits any two
+  and the third is **computed** and shown read-only in its field (the least-recently-edited one
+  is the computed one; `RepeatMode::from_repeat_ui`). Two **picture toggles** (clickable SVGs of
+  two rectangles with a measurement line) switch how gap and distance are measured — gap as a
+  clear space *between* items vs a start-to-start **offset** (pitch), and distance measured to
+  the last item's **end** vs its **start**. These map onto the spacing modes count × gap /
+  count × pitch, count fit-to-end / fit-start-to-start, and fill-by-length / fill-by-span (gap
+  or pitch), plus a legacy fill-with-*maximum*-pitch stud-spacing mode. Gaps may be negative.
+  Count/spacing/length are **expressions** (parameters
   work); the context pane shows the live instance count as they change, and the viewport shows
   translucent **ghost previews** of the would-be instances while count/spacing change (#223, the
   picked bodies' meshes translated to each `repeat_offsets` offset); instance counts

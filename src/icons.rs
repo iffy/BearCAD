@@ -72,11 +72,16 @@ pub enum IconId {
     Zoom,
     /// A body/sketch projection placed on a technical drawing (#281).
     Projection,
+    /// Repeat tool distance/gap measurement toggles (#257).
+    RepeatDistEnd,
+    RepeatDistStart,
+    RepeatGapBetween,
+    RepeatGapOffset,
 }
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 53] = [
+    pub const ALL: [Self; 57] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -130,6 +135,10 @@ impl IconId {
         Self::BooleanDifference,
         Self::Zoom,
         Self::Projection,
+        Self::RepeatDistEnd,
+        Self::RepeatDistStart,
+        Self::RepeatGapBetween,
+        Self::RepeatGapOffset,
     ];
 
     pub fn svg_source(self) -> &'static str {
@@ -187,6 +196,10 @@ impl IconId {
             Self::BooleanDifference => include_str!("assets/icons/boolean_difference.svg"),
             Self::Zoom => include_str!("assets/icons/zoom.svg"),
             Self::Projection => include_str!("assets/icons/projection.svg"),
+            Self::RepeatDistEnd => include_str!("assets/icons/repeat_dist_end.svg"),
+            Self::RepeatDistStart => include_str!("assets/icons/repeat_dist_start.svg"),
+            Self::RepeatGapBetween => include_str!("assets/icons/repeat_gap_between.svg"),
+            Self::RepeatGapOffset => include_str!("assets/icons/repeat_gap_offset.svg"),
         }
     }
 
@@ -245,6 +258,10 @@ impl IconId {
             Self::BooleanDifference => "Difference",
             Self::Zoom => "Zoom to fit",
             Self::Projection => "Projection",
+            Self::RepeatDistEnd => "Distance to end",
+            Self::RepeatDistStart => "Distance to start",
+            Self::RepeatGapBetween => "Gap between",
+            Self::RepeatGapOffset => "Start-to-start offset",
         }
     }
 }

@@ -443,6 +443,13 @@ pub struct CreatingRepeat {
     pub count: String,
     pub spacing: String,
     pub length: String,
+    /// The count/gap/distance UI's toggles + which variable is computed (#257). `mode` is
+    /// derived from these on every edit via [`crate::model::RepeatMode::from_repeat_ui`].
+    pub gap_is_offset: bool,
+    pub distance_is_end: bool,
+    /// Most-recently-edited-first order of the three variables; the last entry is the computed
+    /// one (the two the user changed most recently are kept).
+    pub var_mru: [crate::model::RepeatVar; 3],
     /// `Some(op)` while re-editing a committed operation.
     pub editing: Option<usize>,
 }
@@ -459,8 +466,49 @@ impl Default for CreatingRepeat {
             count: "3".to_string(),
             spacing: "10".to_string(),
             length: String::new(),
+            gap_is_offset: false,
+            distance_is_end: true,
+            // Count + gap are the two set fields; distance is computed (matches CountGap).
+            var_mru: [
+                crate::model::RepeatVar::Gap,
+                crate::model::RepeatVar::Count,
+                crate::model::RepeatVar::Distance,
+            ],
             editing: None,
         }
+    }
+}
+
+impl CreatingRepeat {
+    /// The variable currently **computed** (the least-recently edited of the three) (#257).
+    pub fn computed_var(&self) -> crate::model::RepeatVar {
+        self.var_mru[2]
+    }
+
+    /// Re-derive `mode` from the toggles and which variable is computed.
+    pub fn recompute_mode(&mut self) {
+        self.mode = crate::model::RepeatMode::from_repeat_ui(
+            self.computed_var(),
+            self.gap_is_offset,
+            self.distance_is_end,
+        );
+    }
+
+    /// Record that the user edited variable `v` (moving it to the front of the MRU, so the
+    /// third variable becomes the computed one), then re-derive `mode`.
+    pub fn touch_var(&mut self, v: crate::model::RepeatVar) {
+        if self.var_mru[0] != v {
+            let mut next = [v; 3];
+            let mut i = 1;
+            for &x in &self.var_mru {
+                if x != v {
+                    next[i] = x;
+                    i += 1;
+                }
+            }
+            self.var_mru = next;
+        }
+        self.recompute_mode();
     }
 }
 
@@ -11608,6 +11656,32 @@ mod tests {
             orientation: DrawingOrientation::Isometric,
         });
         assert_eq!(state.doc.drawings[0].views[0].orientation, DrawingOrientation::Isometric);
+    }
+
+    /// #257: editing a repeat variable keeps the last two edited and computes the third; the
+    /// mode is derived from the toggles + which variable is computed.
+    #[test]
+    fn repeat_touch_var_keeps_last_two_edited() {
+        use crate::model::{RepeatMode, RepeatVar};
+        let mut cr = CreatingRepeat::default();
+        // Default: count+gap set, distance computed → CountGap.
+        assert_eq!(cr.computed_var(), RepeatVar::Distance);
+        assert_eq!(cr.mode, RepeatMode::CountGap);
+
+        // Edit distance → now gap+distance are the last two, count computed → FillGap.
+        cr.touch_var(RepeatVar::Distance);
+        assert_eq!(cr.computed_var(), RepeatVar::Count);
+        assert_eq!(cr.mode, RepeatMode::FillGap);
+
+        // Edit count → count+distance last two, gap computed → CountFitEnds (distance_is_end).
+        cr.touch_var(RepeatVar::Count);
+        assert_eq!(cr.computed_var(), RepeatVar::Gap);
+        assert_eq!(cr.mode, RepeatMode::CountFitEnds);
+
+        // Flipping the distance toggle re-derives the mode without changing which is computed.
+        cr.distance_is_end = false;
+        cr.recompute_mode();
+        assert_eq!(cr.mode, RepeatMode::CountFitCenters);
     }
 
     /// #273: a new drawing defaults to a landscape US-Letter page with 0.5in margins, and the

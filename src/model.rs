@@ -1335,6 +1335,9 @@ pub enum RepeatMode {
 }
 
 impl RepeatMode {
+    /// Human-readable mode name. Retained for diagnostics/scripting though the count/gap/distance
+    /// UI (#257) no longer surfaces raw modes.
+    #[allow(dead_code)]
     pub fn label(self) -> &'static str {
         match self {
             Self::CountGap => "Count × gap",
@@ -1365,6 +1368,7 @@ impl RepeatMode {
     }
 
     /// Whether the mode uses the count `n` (vs deriving it from the length).
+    #[allow(dead_code)]
     pub fn uses_count(self) -> bool {
         matches!(
             self,
@@ -1373,9 +1377,82 @@ impl RepeatMode {
     }
 
     /// Whether the mode uses the fill length `length`.
+    #[allow(dead_code)]
     pub fn uses_length(self) -> bool {
         !matches!(self, Self::CountGap | Self::CountPitch)
     }
+
+    /// The `RepeatMode` for the count/gap/distance UI (#257) given which variable is **computed**
+    /// (the other two are user-set) and the two toggles: `gap_is_offset` (the gap field is a
+    /// start-to-start pitch rather than a clear gap) and `distance_is_end` (distance is measured
+    /// to the end of the last item rather than to its start). The UI's count/gap/distance fields
+    /// map straight onto the mode's count/spacing/length inputs.
+    pub fn from_repeat_ui(computed: RepeatVar, gap_is_offset: bool, distance_is_end: bool) -> Self {
+        match computed {
+            // count + gap given → distance computed.
+            RepeatVar::Distance => {
+                if gap_is_offset {
+                    Self::CountPitch
+                } else {
+                    Self::CountGap
+                }
+            }
+            // count + distance given → gap computed.
+            RepeatVar::Gap => {
+                if distance_is_end {
+                    Self::CountFitEnds
+                } else {
+                    Self::CountFitCenters
+                }
+            }
+            // gap + distance given → count computed.
+            RepeatVar::Count => match (gap_is_offset, distance_is_end) {
+                (false, true) => Self::FillGap,
+                (false, false) => Self::FillGapSpan,
+                (true, true) => Self::FillPitch,
+                (true, false) => Self::FillPitchSpan,
+            },
+        }
+    }
+
+    /// The count/gap/distance UI state `(computed, gap_is_offset, distance_is_end)` for a stored
+    /// mode (#257) — the inverse of [`Self::from_repeat_ui`], used when re-opening a committed
+    /// repeat for editing. The legacy `FillMaxPitch` maps to the nearest UI (count-computed,
+    /// offset) since the new UI can't otherwise express it.
+    pub fn to_repeat_ui(self) -> (RepeatVar, bool, bool) {
+        match self {
+            Self::CountGap => (RepeatVar::Distance, false, true),
+            Self::CountPitch => (RepeatVar::Distance, true, true),
+            Self::CountFitEnds => (RepeatVar::Gap, false, true),
+            Self::CountFitCenters => (RepeatVar::Gap, false, false),
+            Self::FillGap => (RepeatVar::Count, false, true),
+            Self::FillGapSpan => (RepeatVar::Count, false, false),
+            Self::FillPitch => (RepeatVar::Count, true, true),
+            Self::FillPitchSpan => (RepeatVar::Count, true, false),
+            Self::FillMaxPitch => (RepeatVar::Count, true, true),
+        }
+    }
+}
+
+impl RepeatVar {
+    /// The MRU array (`[set, set, computed]`) placing `self` as the computed variable (#257).
+    pub fn as_mru(self) -> [RepeatVar; 3] {
+        let others: Vec<RepeatVar> = [RepeatVar::Count, RepeatVar::Gap, RepeatVar::Distance]
+            .into_iter()
+            .filter(|&v| v != self)
+            .collect();
+        [others[0], others[1], self]
+    }
+}
+
+/// One of the Repeat tool's three interlinked variables (#257): the user sets two and the third
+/// is computed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepeatVar {
+    Count,
+    Gap,
+    Distance,
 }
 
 /// A linear repeat (Repeat tool, #182): copies of whole bodies spaced along an axis. The
@@ -1953,6 +2030,33 @@ pub fn effective_angle_unit(doc: &Document, sketch: SketchId) -> AngleUnit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #257: the count/gap/distance UI mapping round-trips through `RepeatMode`, and each toggle
+    /// combination picks the right mode.
+    #[test]
+    fn repeat_ui_mode_mapping_round_trips() {
+        for computed in [RepeatVar::Count, RepeatVar::Gap, RepeatVar::Distance] {
+            for gap_off in [false, true] {
+                for dist_end in [false, true] {
+                    let mode = RepeatMode::from_repeat_ui(computed, gap_off, dist_end);
+                    let (c2, g2, d2) = mode.to_repeat_ui();
+                    assert_eq!(c2, computed, "computed var round-trips");
+                    // The toggles round-trip on the axes the computed variable actually uses.
+                    match computed {
+                        RepeatVar::Distance => assert_eq!(g2, gap_off),
+                        RepeatVar::Gap => assert_eq!(d2, dist_end),
+                        RepeatVar::Count => {
+                            assert_eq!((g2, d2), (gap_off, dist_end));
+                        }
+                    }
+                }
+            }
+        }
+        // Spot-check specific modes.
+        assert_eq!(RepeatMode::from_repeat_ui(RepeatVar::Distance, false, true), RepeatMode::CountGap);
+        assert_eq!(RepeatMode::from_repeat_ui(RepeatVar::Distance, true, true), RepeatMode::CountPitch);
+        assert_eq!(RepeatMode::from_repeat_ui(RepeatVar::Count, false, false), RepeatMode::FillGapSpan);
+    }
 
     #[test]
     fn line_length_from_endpoints() {

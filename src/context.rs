@@ -151,22 +151,36 @@ pub struct RepeatControl {
     pub axis_label: String,
     pub mode: crate::model::RepeatMode,
     pub count: String,
+    /// The gap field (start-to-start pitch when `gap_is_offset`, else clear gap).
     pub spacing: String,
+    /// The distance field (to the end of the last item when `distance_is_end`, else to its start).
     pub length: String,
+    /// Which of count/gap/distance is currently **computed** (#257).
+    pub computed_var: crate::model::RepeatVar,
+    pub gap_is_offset: bool,
+    pub distance_is_end: bool,
+    /// Formatted value of the computed variable, shown read-only in its field (`None` if it
+    /// doesn't evaluate).
+    pub computed_value: Option<String>,
     /// Live instance count the current configuration produces (`None` = doesn't evaluate).
     pub preview_instances: Option<usize>,
     pub editing: bool,
     pub can_commit: bool,
 }
 
-/// One edit from the Repeat context section.
+/// One edit from the Repeat context section (#257): the three interlinked variables and the two
+/// measurement toggles. Editing a variable marks it as one of the two "set" ones (the third is
+/// then computed).
 #[derive(Clone, Debug, PartialEq)]
 pub enum RepeatEdit {
-    Mode(crate::model::RepeatMode),
     Axis(crate::model::RevolveAxis),
     Count(String),
-    Spacing(String),
-    Length(String),
+    Gap(String),
+    Distance(String),
+    /// Toggle the gap field between a clear gap and a start-to-start offset (pitch).
+    ToggleGapOffset,
+    /// Toggle the distance field between start-to-end and start-to-start.
+    ToggleDistanceEnd,
     Commit,
 }
 
@@ -1508,40 +1522,76 @@ pub fn show_pane(
                 .color(egui::Color32::from_gray(140))
                 .size(11.0),
         );
-        let mut mode = control.mode;
-        for value in [
-            crate::model::RepeatMode::CountGap,
-            crate::model::RepeatMode::CountFitEnds,
-            crate::model::RepeatMode::CountFitCenters,
-            crate::model::RepeatMode::FillGap,
-            crate::model::RepeatMode::FillPitch,
-            crate::model::RepeatMode::FillMaxPitch,
-        ] {
-            if ui.radio_value(&mut mode, value, value.label()).changed() {
-                pending = Some(RepeatEdit::Mode(mode));
-            }
-        }
+        // Count / gap / distance (#257): the user edits two, the third is computed and shown
+        // read-only in its field. Gap and distance each have a picture toggle to switch how
+        // they're measured.
+        use crate::model::RepeatVar;
         {
-            let mut field = |ui: &mut egui::Ui,
-                             label: &str,
-                             value: &str,
-                             enabled: bool,
-                             make: &dyn Fn(String) -> RepeatEdit| {
-                ui.add_enabled_ui(enabled, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(label);
+            // One variable row: `label` + a text field (read-only + showing the computed value
+            // when this is the computed variable), optionally preceded by a toggle button.
+            let mut var_row = |ui: &mut egui::Ui,
+                               var: RepeatVar,
+                               label: &str,
+                               value: &str,
+                               toggle: Option<(crate::icons::IconId, RepeatEdit)>,
+                               make: &dyn Fn(String) -> RepeatEdit| {
+                let computed = control.computed_var == var;
+                ui.horizontal(|ui| {
+                    if let Some((icon, edit)) = toggle {
+                        // A clickable picture that toggles how this variable is measured (#257).
+                        if crate::icons::icon_button(ui, icon, "Click to toggle how this is measured")
+                            .clicked()
+                        {
+                            pending = Some(edit);
+                        }
+                    }
+                    ui.label(label);
+                    if computed {
+                        let shown = control.computed_value.clone().unwrap_or_else(|| "—".to_string());
+                        ui.add_enabled(
+                            false,
+                            egui::TextEdit::singleline(&mut shown.clone()).desired_width(90.0),
+                        )
+                        .on_hover_text("Computed from the other two");
+                        ui.label(egui::RichText::new("auto").color(egui::Color32::from_gray(130)).size(10.0));
+                    } else {
                         let mut text = value.to_string();
-                        let resp =
-                            ui.add(egui::TextEdit::singleline(&mut text).desired_width(90.0));
-                        if resp.changed() {
+                        if ui
+                            .add(egui::TextEdit::singleline(&mut text).desired_width(90.0))
+                            .changed()
+                        {
                             pending = Some(make(text));
                         }
-                    });
+                    }
                 });
             };
-            field(ui, "Count", &control.count, control.mode.uses_count(), &RepeatEdit::Count);
-            field(ui, "Spacing", &control.spacing, !matches!(control.mode, crate::model::RepeatMode::CountFitEnds | crate::model::RepeatMode::CountFitCenters), &RepeatEdit::Spacing);
-            field(ui, "Length", &control.length, control.mode.uses_length(), &RepeatEdit::Length);
+            var_row(ui, RepeatVar::Count, "Count", &control.count, None, &RepeatEdit::Count);
+            let gap_icon = if control.gap_is_offset {
+                crate::icons::IconId::RepeatGapOffset
+            } else {
+                crate::icons::IconId::RepeatGapBetween
+            };
+            var_row(
+                ui,
+                RepeatVar::Gap,
+                if control.gap_is_offset { "Offset" } else { "Gap" },
+                &control.spacing,
+                Some((gap_icon, RepeatEdit::ToggleGapOffset)),
+                &RepeatEdit::Gap,
+            );
+            let dist_icon = if control.distance_is_end {
+                crate::icons::IconId::RepeatDistEnd
+            } else {
+                crate::icons::IconId::RepeatDistStart
+            };
+            var_row(
+                ui,
+                RepeatVar::Distance,
+                "Distance",
+                &control.length,
+                Some((dist_icon, RepeatEdit::ToggleDistanceEnd)),
+                &RepeatEdit::Distance,
+            );
         }
         ui.label(
             egui::RichText::new(match control.preview_instances {
@@ -2208,6 +2258,10 @@ mod tests {
                 count: "3".to_string(),
                 spacing: String::new(),
                 length: String::new(),
+                computed_var: crate::model::RepeatVar::Distance,
+                gap_is_offset: false,
+                distance_is_end: true,
+                computed_value: None,
                 preview_instances: Some(3),
                 editing: false,
                 can_commit: true,

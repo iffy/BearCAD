@@ -3844,6 +3844,43 @@ impl eframe::App for App {
                             .flatten()
                             .map(|offsets| offsets.len() + 1)
                     });
+                    // The value of the computed variable (#257): derived from the offsets + the
+                    // targets' along-axis extent L.
+                    let computed_value = cr.and_then(|c| {
+                        let probe = model::RepeatOperation {
+                            targets: c.targets.clone(),
+                            plane_targets: c.plane_targets.clone(),
+                            extrusion_targets: c.extrusion_targets.clone(),
+                            sketch_targets: c.sketch_targets.clone(),
+                            sketch_plane_outputs: Vec::new(),
+                            sketch_outputs: Vec::new(),
+                            axis: c.axis,
+                            mode: c.mode,
+                            count: c.count.clone(),
+                            spacing: c.spacing.clone(),
+                            length: c.length.clone(),
+                            length_target: None,
+                            outputs: Vec::new(),
+                            plane_outputs: Vec::new(),
+                            name: None,
+                            deleted: false,
+                        };
+                        let offsets = crate::extrude::repeat_offsets(&self.state.doc, &probe)?;
+                        let l = crate::extrude::repeat_extent(&self.state.doc, &probe)?;
+                        let unit = self.state.doc.default_length_unit;
+                        let fmt = |v: f32| crate::value::format_length_display_in(v, unit);
+                        Some(match c.computed_var() {
+                            model::RepeatVar::Count => (offsets.len() + 1).to_string(),
+                            model::RepeatVar::Gap => {
+                                let step = offsets.first().copied().unwrap_or(0.0);
+                                fmt(if c.gap_is_offset { step } else { step - l })
+                            }
+                            model::RepeatVar::Distance => {
+                                let last = offsets.last().copied().unwrap_or(0.0);
+                                fmt(if c.distance_is_end { last + l } else { last })
+                            }
+                        })
+                    });
                     context::RepeatControl {
                         targets: cr.map(|c| c.targets.clone()).unwrap_or_default(),
                         plane_targets: cr.map(|c| c.plane_targets.clone()).unwrap_or_default(),
@@ -3866,6 +3903,10 @@ impl eframe::App for App {
                         count: cr.map(|c| c.count.clone()).unwrap_or_default(),
                         spacing: cr.map(|c| c.spacing.clone()).unwrap_or_default(),
                         length: cr.map(|c| c.length.clone()).unwrap_or_default(),
+                        computed_var: cr.map(|c| c.computed_var()).unwrap_or(model::RepeatVar::Distance),
+                        gap_is_offset: cr.map(|c| c.gap_is_offset).unwrap_or(false),
+                        distance_is_end: cr.map(|c| c.distance_is_end).unwrap_or(true),
+                        computed_value,
                         preview_instances: preview,
                         editing: cr.map(|c| c.editing.is_some()).unwrap_or(false),
                         can_commit: cr
@@ -4190,12 +4231,29 @@ impl eframe::App for App {
                             .state
                             .creating_repeat
                             .get_or_insert_with(actions::CreatingRepeat::default);
+                        use model::RepeatVar;
                         match edit {
-                            context::RepeatEdit::Mode(m) => cr.mode = m,
                             context::RepeatEdit::Axis(a) => cr.axis = a,
-                            context::RepeatEdit::Count(v) => cr.count = v,
-                            context::RepeatEdit::Spacing(v) => cr.spacing = v,
-                            context::RepeatEdit::Length(v) => cr.length = v,
+                            context::RepeatEdit::Count(v) => {
+                                cr.count = v;
+                                cr.touch_var(RepeatVar::Count);
+                            }
+                            context::RepeatEdit::Gap(v) => {
+                                cr.spacing = v;
+                                cr.touch_var(RepeatVar::Gap);
+                            }
+                            context::RepeatEdit::Distance(v) => {
+                                cr.length = v;
+                                cr.touch_var(RepeatVar::Distance);
+                            }
+                            context::RepeatEdit::ToggleGapOffset => {
+                                cr.gap_is_offset = !cr.gap_is_offset;
+                                cr.recompute_mode();
+                            }
+                            context::RepeatEdit::ToggleDistanceEnd => {
+                                cr.distance_is_end = !cr.distance_is_end;
+                                cr.recompute_mode();
+                            }
                             context::RepeatEdit::Commit => unreachable!(),
                         }
                     }
@@ -4203,6 +4261,7 @@ impl eframe::App for App {
             }
             if let Some(op) = repeat_edit_begin {
                 if let Some(existing) = self.state.doc.repeat_ops.get(op).cloned() {
+                    let (computed, gap_is_offset, distance_is_end) = existing.mode.to_repeat_ui();
                     self.state.creating_repeat = Some(actions::CreatingRepeat {
                         targets: existing.targets,
                         plane_targets: existing.plane_targets,
@@ -4213,6 +4272,9 @@ impl eframe::App for App {
                         count: existing.count,
                         spacing: existing.spacing,
                         length: existing.length,
+                        gap_is_offset,
+                        distance_is_end,
+                        var_mru: computed.as_mru(),
                         editing: Some(op),
                     });
                     self.state.apply(Action::SetTool(Tool::Repeat));

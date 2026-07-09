@@ -804,6 +804,29 @@ pub fn descendant_bodies(doc: &Document, seeds: &[usize]) -> std::collections::H
     result
 }
 
+/// The repeat targets' combined **extent** along the axis (the item length `L`) — used by the
+/// count/gap/distance UI (#257) to convert between a clear gap and a start-to-start pitch, and
+/// to derive the computed variable's value. Point-like targets (planes/sketches) have extent 0.
+pub fn repeat_extent(doc: &Document, op: &crate::model::RepeatOperation) -> Option<f32> {
+    let (_, dir) = axis_world(doc, op.axis)?;
+    let mut min_p = f32::INFINITY;
+    let mut max_p = f32::NEG_INFINITY;
+    for &bi in &op.targets {
+        let mesh = body_solid_mesh_uncached(doc, bi)?;
+        for tri in &mesh.triangles {
+            for p in tri {
+                let d = p.dot(dir);
+                min_p = min_p.min(d);
+                max_p = max_p.max(d);
+            }
+        }
+    }
+    if !min_p.is_finite() || !max_p.is_finite() {
+        return Some(0.0);
+    }
+    Some((max_p - min_p).max(0.0))
+}
+
 pub fn repeat_offsets(doc: &Document, op: &crate::model::RepeatOperation) -> Option<Vec<f32>> {
     let (_, dir) = axis_world(doc, op.axis)?;
     // The targets' combined extent along the axis (end-to-start measurements need it).
