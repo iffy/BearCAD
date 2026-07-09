@@ -7406,7 +7406,11 @@ impl App {
 
         ui.colored_label(
             egui::Color32::from_gray(120),
-            "Click an edge for its length · Shift+click two edges for their angle",
+            if self.state.tool == Tool::Dimension {
+                "Dimension tool: click an edge for its length · Shift+click two edges for their angle"
+            } else {
+                "Pick the Dimension tool to add dimensions by clicking edges"
+            },
         );
         // The sheet: each view is a cell with its caption and a projected wireframe of its body.
         let views = self
@@ -7505,13 +7509,14 @@ impl App {
                 };
 
                 // Click near an edge to toggle its length dimension; Shift+click two edges to
-                // toggle the angle between them (#180).
+                // toggle the angle between them (#180). In the Drawing workbench this is the
+                // Dimension tool's job (#277) — only the Dimension tool picks edges.
                 let resp = ui.interact(
                     draw_area,
                     ui.make_persistent_id(("drawing_view_pick", drawing, vi)),
                     egui::Sense::click(),
                 );
-                if resp.clicked() {
+                if resp.clicked() && self.state.tool == Tool::Dimension {
                     if let Some(pos) = resp.interact_pointer_pos() {
                         let mut best: Option<(f32, usize)> = None;
                         for (i, (a, b)) in proj.iter().enumerate() {

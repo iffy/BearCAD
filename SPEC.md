@@ -835,10 +835,11 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   three-quarter view. Each view renders as a black wireframe of the body's feature edges,
   orthographically/isometrically projected and auto-fit into its cell; views are laid out in
   a grid and added/removed from the drawing pane.
-- **Dimensions:** clicking an edge in a view toggles its **length dimension** — the measured
-  length is drawn beside the edge. **Shift+click** two edges toggles the **angle** between
-  them (the degree value is drawn at their corner). Both are keyed to the edges' quantized
-  world endpoints (a geometry identity that survives rebuilds), stored per view.
+- **Dimensions:** with the **Dimension tool** active (#277), clicking an edge in a view
+  toggles its **length dimension** — the measured length is drawn beside the edge.
+  **Shift+click** two edges toggles the **angle** between them (the degree value is drawn at
+  their corner). Both are keyed to the edges' quantized world endpoints (a geometry identity
+  that survives rebuilds), stored per view.
 - **Export:** a drawing exports to a self-contained black-on-white vector document (title,
   view captions, projected edges, dimensions) as either a single-page **PDF** or an **SVG**
   (which also prints to PDF through any browser/OS print dialog). Both backends share the same
