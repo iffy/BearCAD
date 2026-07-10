@@ -145,6 +145,13 @@ pub enum Instruction {
         body: usize,
         orientation: crate::model::DrawingOrientation,
     },
+    /// Add an aligned child projection (#296): parent view index, direction, free-axis pos.
+    AddAlignedDrawingView {
+        drawing: usize,
+        parent: usize,
+        dir: crate::model::AlignDir,
+        pos: f32,
+    },
     /// Move a placed view to a page position (fractions 0..1) (#297/#309).
     MoveDrawingView {
         drawing: usize,
@@ -612,6 +619,10 @@ impl Instruction {
             } => format!(
                 "bearcad.drawing_view{{ drawing = {drawing}, body = {body}, orientation = {:?} }}",
                 orientation.label().to_ascii_lowercase()
+            ),
+            Instruction::AddAlignedDrawingView { drawing, parent, dir, pos } => format!(
+                "bearcad.drawing_align_view{{ drawing = {drawing}, parent = {parent}, dir = {:?}, pos = {pos} }}",
+                format!("{dir:?}").to_ascii_lowercase()
             ),
             Instruction::MoveDrawingView { drawing, view, x, y } => format!(
                 "bearcad.drawing_move_view{{ drawing = {drawing}, view = {view}, x = {x}, y = {y} }}"
@@ -1999,6 +2010,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
         Tool::Slice => "slice",
         Tool::Text => "text",
         Tool::DrawingAdd => "drawing_add",
+        Tool::DrawingAlign => "drawing_align",
     }
 }
 
@@ -3252,6 +3264,11 @@ impl ScriptRunner {
                     body,
                     orientation,
                 });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::AddAlignedDrawingView { drawing, parent, dir, pos } => {
+                let result = state.apply(Action::AddAlignedDrawingView { drawing, parent, dir, pos });
                 self.record_action_error(result);
                 StepResult::Continue
             }

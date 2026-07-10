@@ -33,6 +33,15 @@ you like, and each one collects **views** — a body shown from a chosen directi
    - **Style:** choose how the projection draws — **Visible edges** (hidden lines removed),
      **Wireframe** (every edge, the default), or **Shaded** (grey-shaded faces under the
      visible edges). The editor and both exports render the same style.
+
+## Aligned views
+
+To place a second view of a body that stays lined up with the first, use the **Aligned view**
+tool. Click an existing projection, then move the mouse: below it previews the bottom view,
+above it the top, to the sides the left/right views — all constrained to line up with the
+parent's edges. Click to drop it. You can drag an aligned view any distance away, but it
+always stays aligned along the shared edge; move the parent and its aligned views follow.
+Aligned views inherit the parent's scale and orientation, so a whole group reads as one set.
 3. **Dimensions:** a new view arrives with every edge's length dimension already shown, drawn
    as proper dimension lines — extension lines, an offset line with arrowheads, and the
    measurement centred on it. With the **Dimension tool** active, the edge under the cursor

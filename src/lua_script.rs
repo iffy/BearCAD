@@ -2973,6 +2973,30 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Add an aligned child projection (#296): `dir` is "below"/"above"/"right"/"left".
+    api.set(
+        "drawing_align_view",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let drawing: usize = opts.get("drawing")?;
+            let parent: usize = opts.get("parent")?;
+            let name: String = opts.get("dir")?;
+            let dir = match name.to_ascii_lowercase().as_str() {
+                "below" | "down" | "bottom" => crate::model::AlignDir::Below,
+                "above" | "up" | "top" => crate::model::AlignDir::Above,
+                "right" => crate::model::AlignDir::Right,
+                "left" => crate::model::AlignDir::Left,
+                other => {
+                    return Err(mlua::Error::external(format!(
+                        "unknown align dir '{other}' (below/above/right/left)"
+                    )))
+                }
+            };
+            let pos: f32 = opts.get::<Option<f32>>("pos")?.unwrap_or(0.5);
+            unsafe { tick.exec(Instruction::AddAlignedDrawingView { drawing, parent, dir, pos }) }
+        })?,
+    )?;
+
     // Toggle a view edge's length dimension by its two world endpoints (#180).
     api.set(
         "drawing_dimension",

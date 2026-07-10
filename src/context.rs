@@ -290,6 +290,9 @@ pub struct DrawingViewControl {
     pub orientation: crate::model::DrawingOrientation,
     /// The stored print scale text (`"1:20"`), empty for auto-fit (#300).
     pub scale: String,
+    /// True when this view is an aligned child (#296): its orientation is derived and its
+    /// scale is inherited from the parent, so both are read-only here.
+    pub aligned: bool,
     /// How the projection renders (#301).
     pub style: crate::model::DrawingViewStyle,
 }
@@ -2072,18 +2075,26 @@ pub fn show_pane(
         ui.separator();
         ui.label(egui::RichText::new("View").strong());
         ui.label(&control.source);
-        egui::ComboBox::from_id_salt("drawing_view_orientation")
-            .selected_text(control.orientation.label())
-            .show_ui(ui, |ui| {
-                for o in crate::model::DrawingOrientation::ALL {
-                    if ui
-                        .selectable_label(control.orientation == *o, o.label())
-                        .clicked()
-                    {
-                        on_drawing_view_edit(DrawingViewEdit::Orientation(*o));
+        // An aligned child's orientation is derived from its parent (#296) — shown, not editable.
+        if control.aligned {
+            ui.label(
+                egui::RichText::new(format!("{} · aligned", control.orientation.label()))
+                    .color(egui::Color32::from_gray(150)),
+            );
+        } else {
+            egui::ComboBox::from_id_salt("drawing_view_orientation")
+                .selected_text(control.orientation.label())
+                .show_ui(ui, |ui| {
+                    for o in crate::model::DrawingOrientation::ALL {
+                        if ui
+                            .selectable_label(control.orientation == *o, o.label())
+                            .clicked()
+                        {
+                            on_drawing_view_edit(DrawingViewEdit::Orientation(*o));
+                        }
                     }
-                }
-            });
+                });
+        }
         egui::ComboBox::from_id_salt("drawing_view_style")
             .selected_text(control.style.label())
             .show_ui(ui, |ui| {
@@ -2095,29 +2106,35 @@ pub fn show_pane(
             });
         ui.horizontal(|ui| {
             ui.label("Scale");
-            // The field drafts locally while focused (#300): only text that parses as
-            // `page:model` commits, so the view keeps its last valid scale; empty = auto-fit.
-            let draft_id = egui::Id::new(("drawing_view_scale_draft", control.view));
-            let mut draft = ui
-                .data(|d| d.get_temp::<String>(draft_id))
-                .unwrap_or_else(|| control.scale.clone());
-            let resp = ui.add(
-                egui::TextEdit::singleline(&mut draft)
-                    .hint_text("1:20")
-                    .desired_width(70.0),
-            );
-            if resp.changed() {
-                let trimmed = draft.trim();
-                if trimmed.is_empty() {
-                    on_drawing_view_edit(DrawingViewEdit::Scale(None));
-                } else if crate::model::parse_drawing_scale(trimmed).is_some() {
-                    on_drawing_view_edit(DrawingViewEdit::Scale(Some(trimmed.to_string())));
-                }
-            }
-            if resp.has_focus() {
-                ui.data_mut(|d| d.insert_temp(draft_id, draft));
+            if control.aligned {
+                // An aligned child inherits the parent's scale and can't change it (#296/#300).
+                let shown = if control.scale.is_empty() { "auto (inherited)".to_string() } else { control.scale.clone() };
+                ui.label(egui::RichText::new(shown).color(egui::Color32::from_gray(150)));
             } else {
-                ui.data_mut(|d| d.remove::<String>(draft_id));
+                // The field drafts locally while focused (#300): only text that parses as
+                // `page:model` commits, so the view keeps its last valid scale; empty = auto-fit.
+                let draft_id = egui::Id::new(("drawing_view_scale_draft", control.view));
+                let mut draft = ui
+                    .data(|d| d.get_temp::<String>(draft_id))
+                    .unwrap_or_else(|| control.scale.clone());
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut draft)
+                        .hint_text("1:20")
+                        .desired_width(70.0),
+                );
+                if resp.changed() {
+                    let trimmed = draft.trim();
+                    if trimmed.is_empty() {
+                        on_drawing_view_edit(DrawingViewEdit::Scale(None));
+                    } else if crate::model::parse_drawing_scale(trimmed).is_some() {
+                        on_drawing_view_edit(DrawingViewEdit::Scale(Some(trimmed.to_string())));
+                    }
+                }
+                if resp.has_focus() {
+                    ui.data_mut(|d| d.insert_temp(draft_id, draft));
+                } else {
+                    ui.data_mut(|d| d.remove::<String>(draft_id));
+                }
             }
         });
         if ui.button("Remove view").clicked() {

@@ -2887,6 +2887,8 @@ mod tests {
                 dimensioned_edges: Vec::new(),
                 angle_dims: Vec::new(),
                 dimension_offsets: Vec::new(),
+                aligned_parent: None,
+                aligned_dir: None,
                 scale: None,
                 style: Default::default(),
                 pos_x: 0.5,

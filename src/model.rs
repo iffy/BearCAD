@@ -1915,6 +1915,33 @@ pub struct DrawingView {
     /// How the projection is drawn (#301): hidden lines removed, full wireframe, or shaded.
     #[serde(default)]
     pub style: DrawingViewStyle,
+    /// Aligned child projection (#296): the index of the parent view this one derives from,
+    /// and the direction it was placed relative to it. While set, the child stays lined up
+    /// with the parent along their shared axis (the child only slides along the other axis),
+    /// and it inherits the parent's scale.
+    #[serde(default)]
+    pub aligned_parent: Option<usize>,
+    #[serde(default)]
+    pub aligned_dir: Option<AlignDir>,
+}
+
+/// Where an aligned child projection sits relative to its parent (#296). The name is the
+/// screen direction the mouse moved to create it (which also names the resulting view for a
+/// Front parent: down → Bottom, up → Top, right → Right, left → Left).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AlignDir {
+    Below,
+    Above,
+    Right,
+    Left,
+}
+
+impl AlignDir {
+    /// The child is aligned **vertically** with its parent (shares the horizontal `pos_x`)
+    /// when placed above/below; **horizontally** (shares `pos_y`) when placed left/right.
+    pub fn shares_pos_x(self) -> bool {
+        matches!(self, AlignDir::Below | AlignDir::Above)
+    }
 }
 
 /// How a drawing view renders its body (#301).

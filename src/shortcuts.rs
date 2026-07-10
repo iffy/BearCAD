@@ -93,7 +93,8 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
         | Tool::Repeat
         | Tool::Slice
         | Tool::Text
-        | Tool::DrawingAdd => None,
+        | Tool::DrawingAdd
+        | Tool::DrawingAlign => None,
         Tool::Select => None,
     }
 }

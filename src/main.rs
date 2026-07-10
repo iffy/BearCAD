@@ -534,6 +534,9 @@ struct App {
     /// In-flight drag of a drawing dimension label (#294): `(drawing, view, edge key, start
     /// offset mm, drag-start pointer)`.
     drawing_dim_label_drag: Option<DrawingDimLabelDrag>,
+    /// The Aligned-view tool's chosen parent view (#296): the view index within the open
+    /// drawing, once the user has clicked a projection to align to.
+    drawing_align_parent: Option<usize>,
     angle_gizmo_drag: Option<AngleGizmoDrag>,
     vertex_drag: Option<VertexDrag>,
     bezier_handle_drag: Option<BezierHandleDrag>,
@@ -663,6 +666,7 @@ impl App {
             json_dialog: None,
             dim_label_drag: None,
             drawing_dim_label_drag: None,
+            drawing_align_parent: None,
             angle_gizmo_drag: None,
             extrude_gizmo_drag: None,
             pending_extrude_target: None,
@@ -3934,6 +3938,7 @@ impl eframe::App for App {
                     for (icon, tool, label) in [
                         (icons::IconId::Select, Tool::Select, "Select"),
                         (icons::IconId::Plus, Tool::DrawingAdd, "Add view"),
+                        (icons::IconId::Projection, Tool::DrawingAlign, "Aligned view"),
                         (icons::IconId::Dimension, Tool::Dimension, "Dimension"),
                     ] {
                         if icons::selectable_icon_button(
@@ -4767,11 +4772,20 @@ impl eframe::App for App {
                                     hierarchy::HierarchyNode::Body(view.body),
                                 ),
                             };
+                            let aligned = view.aligned_parent.is_some();
+                            // Aligned children show their inherited scale (#296/#300).
+                            let scale = if aligned {
+                                crate::drawing::resolved_view_scale(&self.state.doc, d, v)
+                                    .unwrap_or_default()
+                            } else {
+                                view.scale.clone().unwrap_or_default()
+                            };
                             Some(context::DrawingViewControl {
                                 view: v,
                                 source,
                                 orientation: view.orientation,
-                                scale: view.scale.clone().unwrap_or_default(),
+                                scale,
+                                aligned,
                                 style: view.style,
                             })
                         })
@@ -8807,13 +8821,18 @@ impl App {
         // Each view is a draggable card positioned on the page at its `pos` fraction (#274).
         let mut move_view: Option<(usize, f32, f32)> = None;
         let mut set_orientation: Option<(usize, DrawingOrientation)> = None;
+        // True when the Aligned-view tool picked its parent this frame (#296), so the same
+        // click doesn't also commit the child.
+        let mut align_parent_set_this_frame = false;
         if let Some(page) = page_rect {
             let cell_w = (page.width() * 0.42).clamp(120.0, 320.0);
             let cell_h = (page.height() * 0.42).clamp(90.0, 260.0);
             let painter = ui.painter().clone();
             for (vi, view) in views.iter().enumerate() {
-                let center = page.min
-                    + egui::vec2(view.pos_x * page.width(), view.pos_y * page.height());
+                // Aligned children (#296) resolve their shared axis to the parent's.
+                let (rpx, rpy) = crate::drawing::resolved_view_pos(&self.state.doc, drawing, vi);
+                let center =
+                    page.min + egui::vec2(rpx * page.width(), rpy * page.height());
                 let cell = egui::Rect::from_center_size(center, egui::vec2(cell_w, cell_h));
 
                 // Drag anywhere on the card to move it (#293) — not just the caption strip, so
@@ -8827,8 +8846,16 @@ impl App {
                 );
                 if drag.dragged() {
                     // Relative drag: keep the grab point under the cursor instead of snapping
-                    // the card's centre to it.
-                    let delta = drag.drag_delta();
+                    // the card's centre to it. An aligned child (#296) only slides along its
+                    // free axis — the shared axis stays locked to its parent.
+                    let mut delta = drag.drag_delta();
+                    if let Some(dir) = view.aligned_dir.filter(|_| view.aligned_parent.is_some()) {
+                        if dir.shares_pos_x() {
+                            delta.x = 0.0;
+                        } else {
+                            delta.y = 0.0;
+                        }
+                    }
                     if delta != egui::Vec2::ZERO {
                         let nx = (view.pos_x + delta.x / page.width()).clamp(0.0, 1.0);
                         let ny = (view.pos_y + delta.y / page.height()).clamp(0.0, 1.0);
@@ -8839,8 +8866,15 @@ impl App {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                 }
                 // Clicking a card selects it (#289): the context pane opens its view editor.
+                // With the Aligned-view tool (#296), a click instead chooses this as the
+                // parent to align a child to (handled after the loop).
                 if drag.clicked() {
-                    self.state.selected_drawing_view = Some((drawing, vi));
+                    if self.state.tool == Tool::DrawingAlign {
+                        self.drawing_align_parent = Some(vi);
+                        align_parent_set_this_frame = true;
+                    } else {
+                        self.state.selected_drawing_view = Some((drawing, vi));
+                    }
                 }
                 drag.context_menu(|ui| {
                     ui.label("View");
@@ -8875,11 +8909,10 @@ impl App {
                     ),
                     None => body_label(&self.state.doc, view.body),
                 };
-                let scale_suffix = view
-                    .scale
-                    .as_deref()
-                    .map(|s| format!(" ({s})"))
-                    .unwrap_or_default();
+                let scale_suffix =
+                    crate::drawing::resolved_view_scale(&self.state.doc, drawing, vi)
+                        .map(|s| format!(" ({s})"))
+                        .unwrap_or_default();
                 let caption =
                     format!("{source_label} — {}{scale_suffix}", view.orientation.label());
                 painter.text(
@@ -8934,7 +8967,10 @@ impl App {
                     .get(drawing)
                     .map(|d| page.width() / d.page_width_mm.max(1e-3))
                     .unwrap_or(1.0);
-                let scale = match view.scale.as_deref().and_then(model::parse_drawing_scale) {
+                // An aligned child inherits its parent's scale (#296/#300).
+                let resolved_scale =
+                    crate::drawing::resolved_view_scale(&self.state.doc, drawing, vi);
+                let scale = match resolved_scale.as_deref().and_then(model::parse_drawing_scale) {
                     Some(factor) => factor * px_per_page_mm,
                     None => {
                         (draw_area.width() / extent.x).min(draw_area.height() / extent.y) * 0.9
@@ -9173,6 +9209,97 @@ impl App {
                     );
                 }
             }
+        }
+
+        // Aligned-view tool (#296): once a parent projection is chosen, the mouse's direction
+        // from it picks the child orientation (down/up/left/right); a ghost previews it lined
+        // up with the parent, and a click commits it.
+        if self.state.tool == Tool::DrawingAlign {
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.drawing_align_parent = None;
+            }
+            if let (Some(p), Some(page), Some(pp)) =
+                (self.drawing_align_parent, page_rect, pointer_screen)
+            {
+                let parent_ok = self
+                    .state
+                    .doc
+                    .drawings
+                    .get(drawing)
+                    .and_then(|d| d.views.get(p))
+                    .is_some();
+                if !parent_ok {
+                    self.drawing_align_parent = None;
+                } else {
+                    let cell_w = (page.width() * 0.42).clamp(120.0, 320.0);
+                    let cell_h = (page.height() * 0.42).clamp(90.0, 260.0);
+                    let (rpx, rpy) =
+                        crate::drawing::resolved_view_pos(&self.state.doc, drawing, p);
+                    let pcenter =
+                        page.min + egui::vec2(rpx * page.width(), rpy * page.height());
+                    let d = pp - pcenter;
+                    let dir = if d.x.abs() > d.y.abs() {
+                        if d.x > 0.0 { model::AlignDir::Right } else { model::AlignDir::Left }
+                    } else if d.y > 0.0 {
+                        model::AlignDir::Below
+                    } else {
+                        model::AlignDir::Above
+                    };
+                    let parent_orient = self.state.doc.drawings[drawing].views[p].orientation;
+                    if let Some(child) = crate::drawing::aligned_child_orientation(parent_orient, dir)
+                    {
+                        // Free-axis position from the cursor; shared axis follows the parent.
+                        let (cx, cy) = if dir.shares_pos_x() {
+                            (pcenter.x, pp.y)
+                        } else {
+                            (pp.x, pcenter.y)
+                        };
+                        let ghost = egui::Rect::from_center_size(
+                            egui::pos2(cx, cy),
+                            egui::vec2(cell_w, cell_h),
+                        );
+                        ui.painter().rect_stroke(
+                            ghost,
+                            2.0,
+                            egui::Stroke::new(1.5, egui::Color32::from_rgb(90, 150, 230)),
+                            egui::StrokeKind::Inside,
+                        );
+                        ui.painter().text(
+                            ghost.center(),
+                            egui::Align2::CENTER_CENTER,
+                            child.label(),
+                            egui::FontId::proportional(13.0),
+                            egui::Color32::from_rgb(130, 180, 240),
+                        );
+                        // Commit on a fresh click that didn't just choose the parent.
+                        if !align_parent_set_this_frame
+                            && ui.input(|i| i.pointer.primary_pressed())
+                        {
+                            let pos = if dir.shares_pos_x() {
+                                ((cy - page.min.y) / page.height()).clamp(0.0, 1.0)
+                            } else {
+                                ((cx - page.min.x) / page.width()).clamp(0.0, 1.0)
+                            };
+                            let added = matches!(
+                                self.state.apply(Action::AddAlignedDrawingView {
+                                    drawing,
+                                    parent: p,
+                                    dir,
+                                    pos,
+                                }),
+                                actions::ActionResult::Ok
+                            );
+                            if added {
+                                let vi = self.state.doc.drawings[drawing].views.len() - 1;
+                                self.state.selected_drawing_view = Some((drawing, vi));
+                                self.drawing_align_parent = None;
+                            }
+                        }
+                    }
+                }
+            }
+        } else if self.drawing_align_parent.is_some() {
+            self.drawing_align_parent = None;
         }
 
         // Follow / end an in-flight dimension-label drag (#294): the label rides the pointer's
@@ -12088,6 +12215,9 @@ impl App {
             }
             Tool::DrawingAdd => {
                 "Add view — click a body or sketch in the Elements pane, then drag it into place"
+            }
+            Tool::DrawingAlign => {
+                "Aligned view — click a projection, then move the mouse and click to place a lined-up child view"
             }
             Tool::Rectangle => {
                 if self.state.creating_rect.is_some() {

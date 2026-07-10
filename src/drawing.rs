@@ -31,6 +31,78 @@ fn dequant(q: [i32; 3]) -> Vec3 {
     Vec3::new(q[0] as f32, q[1] as f32, q[2] as f32) / 100.0
 }
 
+/// The orientation of an aligned child projection (#296) placed in `dir` relative to a parent
+/// showing `parent`. Derived by the glass-box unfolding: the child shares one of the parent's
+/// screen axes and rotates 90° about it. `None` if the result isn't one of the six orthographic
+/// views (e.g. the parent is Isometric), so alignment is offered only for orthographic parents.
+pub fn aligned_child_orientation(
+    parent: DrawingOrientation,
+    dir: crate::model::AlignDir,
+) -> Option<DrawingOrientation> {
+    use crate::model::AlignDir;
+    let (r, u) = view_axes(parent);
+    let o = r.cross(u); // "into the page" for this view basis
+    let (cr, cu) = match dir {
+        AlignDir::Below => (r, -o),
+        AlignDir::Above => (r, o),
+        AlignDir::Right => (-o, u),
+        AlignDir::Left => (o, u),
+    };
+    orientation_from_axes(cr, cu)
+}
+
+/// The on-page position of a view (#296), resolving an aligned child's shared axis to its
+/// parent's so the two always line up regardless of which was dragged. Non-aligned views (and
+/// children whose parent is gone) return their own stored `(pos_x, pos_y)`.
+pub fn resolved_view_pos(doc: &Document, drawing: usize, view: usize) -> (f32, f32) {
+    let Some(d) = doc.drawings.get(drawing).filter(|d| !d.deleted) else {
+        return (0.5, 0.5);
+    };
+    let Some(v) = d.views.get(view) else {
+        return (0.5, 0.5);
+    };
+    match (v.aligned_parent, v.aligned_dir) {
+        (Some(p), Some(dir)) if p != view => {
+            if let Some(parent) = d.views.get(p) {
+                // Resolve the parent recursively so chains of aligned views stay consistent.
+                let (px, py) = resolved_view_pos(doc, drawing, p);
+                let _ = parent;
+                if dir.shares_pos_x() {
+                    return (px, v.pos_y);
+                } else {
+                    return (v.pos_x, py);
+                }
+            }
+            (v.pos_x, v.pos_y)
+        }
+        _ => (v.pos_x, v.pos_y),
+    }
+}
+
+/// A view's effective print scale (#296/#300): an aligned child inherits its parent's scale
+/// (walking the chain), so a whole aligned group prints at one scale. Non-aligned views use
+/// their own `scale`.
+pub fn resolved_view_scale(doc: &Document, drawing: usize, view: usize) -> Option<String> {
+    let d = doc.drawings.get(drawing).filter(|d| !d.deleted)?;
+    let v = d.views.get(view)?;
+    match v.aligned_parent {
+        Some(p) if p != view && d.views.get(p).is_some() => {
+            resolved_view_scale(doc, drawing, p)
+        }
+        _ => v.scale.clone(),
+    }
+}
+
+/// Match a `(right, up)` axis pair back to one of the six orthographic [`DrawingOrientation`]s.
+fn orientation_from_axes(right: Vec3, up: Vec3) -> Option<DrawingOrientation> {
+    use DrawingOrientation as O;
+    const ALL: [O; 6] = [O::Front, O::Back, O::Left, O::Right, O::Top, O::Bottom];
+    ALL.into_iter().find(|&o| {
+        let (r, u) = view_axes(o);
+        (r - right).length() < 1e-3 && (u - up).length() < 1e-3
+    })
+}
+
 fn edge_key(a: Vec3, b: Vec3) -> crate::model::DrawingEdgeKey {
     crate::model::normalized_edge_key(
         crate::hierarchy::quantize_body_point(a),
@@ -310,22 +382,35 @@ fn render_drawing<C: Canvas>(doc: &Document, index: usize, canvas: &mut C) -> Op
 
     let cell_w = width * CELL_FRAC;
     let cell_h = height * CELL_FRAC;
-    for view in &drawing.views {
-        let cell_x = view.pos_x * width - cell_w * 0.5;
-        let cell_y = view.pos_y * height - cell_h * 0.5;
+    for (vi, view) in drawing.views.iter().enumerate() {
+        // Aligned children (#296) resolve their shared axis to the parent's.
+        let (px, py) = resolved_view_pos(doc, index, vi);
+        let cell_x = px * width - cell_w * 0.5;
+        let cell_y = py * height - cell_h * 0.5;
         canvas.rect(cell_x + 3.0, cell_y + 3.0, cell_w - 6.0, cell_h - 6.0, None, Some(GRAY), 1.0);
         let source = match view.sketch {
             Some(si) => crate::names::node_label(doc, crate::hierarchy::HierarchyNode::Sketch(si)),
             None => crate::names::node_label(doc, crate::hierarchy::HierarchyNode::Body(view.body)),
         };
-        let scale_suffix = view
-            .scale
+        // An aligned child inherits its parent's scale (#296/#300).
+        let scale_text = resolved_view_scale(doc, index, vi);
+        let scale_suffix = scale_text
             .as_deref()
             .map(|s| format!(" ({s})"))
             .unwrap_or_default();
         let label = format!("{source} — {}{scale_suffix}", view.orientation.label());
         canvas.text(cell_x + CELL_PAD, cell_y + 20.0, 11.0, Anchor::Start, &label);
-        render_view_geometry(canvas, doc, view, cell_x, cell_y, cell_w, cell_h, unit);
+        render_view_geometry(
+            canvas,
+            doc,
+            view,
+            scale_text.as_deref(),
+            cell_x,
+            cell_y,
+            cell_w,
+            cell_h,
+            unit,
+        );
     }
     Some(())
 }
@@ -335,6 +420,7 @@ fn render_view_geometry<C: Canvas>(
     canvas: &mut C,
     doc: &Document,
     view: &DrawingView,
+    scale_text: Option<&str>,
     cell_x: f32,
     cell_y: f32,
     cell_w: f32,
@@ -364,7 +450,7 @@ fn render_view_geometry<C: Canvas>(
     let area_h = cell_h - caption_h - 2.0 * CELL_PAD;
     // A set print scale (#300) draws at exactly `factor` page-mm per model-mm (points on the
     // export canvas); otherwise auto-fit to the card.
-    let scale = match view.scale.as_deref().and_then(crate::model::parse_drawing_scale) {
+    let scale = match scale_text.and_then(crate::model::parse_drawing_scale) {
         Some(factor) => factor * PT_PER_MM,
         None => (area_w / extent.x).min(area_h / extent.y) * 0.9,
     };
@@ -712,6 +798,27 @@ mod tests {
     use super::*;
     use crate::model::{Drawing, DrawingView};
 
+    /// #296: a Front parent's aligned children follow the issue's mapping — down→Bottom,
+    /// up→Top, right→Right, left→Left — and an isometric parent has no orthographic child.
+    #[test]
+    fn aligned_children_of_front_follow_the_screen_direction() {
+        use crate::model::AlignDir;
+        use DrawingOrientation as O;
+        assert_eq!(aligned_child_orientation(O::Front, AlignDir::Below), Some(O::Bottom));
+        assert_eq!(aligned_child_orientation(O::Front, AlignDir::Above), Some(O::Top));
+        assert_eq!(aligned_child_orientation(O::Front, AlignDir::Right), Some(O::Right));
+        assert_eq!(aligned_child_orientation(O::Front, AlignDir::Left), Some(O::Left));
+        // The four upright views (up = +Z) neighbour each other around the vertical axis, so
+        // their left/right children are always canonical orthographic views.
+        for parent in [O::Front, O::Back, O::Left, O::Right] {
+            assert!(aligned_child_orientation(parent, AlignDir::Right).is_some(), "{parent:?}");
+            assert!(aligned_child_orientation(parent, AlignDir::Left).is_some(), "{parent:?}");
+        }
+        // Directions whose unfolded view would need a rolled (non-canonical) up simply have no
+        // aligned child, and an isometric parent never resolves — the tool just won't offer it.
+        assert_eq!(aligned_child_orientation(O::Isometric, AlignDir::Below), None);
+    }
+
     fn doc_with_drawing() -> Document {
         let mut doc = Document::default();
         doc.drawings.push(Drawing {
@@ -723,6 +830,8 @@ mod tests {
                 dimensioned_edges: Vec::new(),
                 angle_dims: Vec::new(),
                 dimension_offsets: Vec::new(),
+                aligned_parent: None,
+                aligned_dir: None,
                 scale: None,
                 style: Default::default(),
                 pos_x: 0.5,

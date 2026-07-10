@@ -116,6 +116,10 @@ pub enum Tool {
     /// drop a projection on the open drawing page, then drag it into place and set its
     /// orientation in the context pane.
     DrawingAdd,
+    /// Drawing workbench's aligned-projection tool (#296): pick an existing projection, then
+    /// move the mouse to preview an orthographic child view (down/up/left/right) that stays
+    /// lined up with the parent; click to commit it.
+    DrawingAlign,
 }
 
 impl Tool {
@@ -1289,6 +1293,15 @@ pub enum Action {
         a: [i32; 3],
         b: [i32; 3],
         offset: Option<f32>,
+    },
+    /// Add an aligned child projection of an existing view (#296): a new view of the same
+    /// body, oriented per the glass-box unfolding for `dir`, placed adjacent to `parent` and
+    /// kept lined up with it. `pos` is the free-axis fraction (the shared axis follows parent).
+    AddAlignedDrawingView {
+        drawing: usize,
+        parent: usize,
+        dir: crate::model::AlignDir,
+        pos: f32,
     },
     /// Remove a body view from a drawing by its index.
     RemoveDrawingView { drawing: usize, view: usize },
@@ -4133,6 +4146,9 @@ impl AppState {
                     Tool::DrawingAdd => {
                         "Add view — click a body or sketch in the Elements pane".to_string()
                     }
+                    Tool::DrawingAlign => {
+                        "Aligned view — click a projection, then move the mouse and click to place a lined-up view".to_string()
+                    }
                 };
                 if tool == Tool::Dimension {
                     self.try_begin_dimension_from_selection();
@@ -6344,6 +6360,8 @@ impl AppState {
                     dimensioned_edges: Vec::new(),
                     angle_dims: Vec::new(),
                 dimension_offsets: Vec::new(),
+                aligned_parent: None,
+                aligned_dir: None,
                     pos_x: (0.35 + step).min(0.9),
                     pos_y: (0.35 + step).min(0.9),
                     scale: None,
@@ -6372,6 +6390,8 @@ impl AppState {
                     dimensioned_edges: Vec::new(),
                     angle_dims: Vec::new(),
                 dimension_offsets: Vec::new(),
+                aligned_parent: None,
+                aligned_dir: None,
                     pos_x: (0.35 + step).min(0.9),
                     pos_y: (0.35 + step).min(0.9),
                     scale: None,
@@ -6382,6 +6402,49 @@ impl AppState {
                 self.status = format!("Added sketch {sketch} to drawing {drawing}");
                 ActionResult::Ok
             }
+            Action::AddAlignedDrawingView { drawing, parent, dir, pos } => {
+                let Some(pv) = self
+                    .doc
+                    .drawings
+                    .get(drawing)
+                    .filter(|d| !d.deleted)
+                    .and_then(|d| d.views.get(parent))
+                    .cloned()
+                else {
+                    return ActionResult::Err(format!("No view {parent} in drawing {drawing}"));
+                };
+                let Some(orientation) =
+                    crate::drawing::aligned_child_orientation(pv.orientation, dir)
+                else {
+                    let e = "That view can't have an aligned projection".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                // The child shares the parent's non-free axis; the free axis takes `pos`.
+                let (pos_x, pos_y) = if dir.shares_pos_x() {
+                    (pv.pos_x, pos.clamp(0.0, 1.0))
+                } else {
+                    (pos.clamp(0.0, 1.0), pv.pos_y)
+                };
+                let mut view = crate::model::DrawingView {
+                    body: pv.body,
+                    sketch: pv.sketch,
+                    orientation,
+                    dimensioned_edges: Vec::new(),
+                    angle_dims: Vec::new(),
+                    dimension_offsets: Vec::new(),
+                    pos_x,
+                    pos_y,
+                    scale: pv.scale.clone(),
+                    style: pv.style,
+                    aligned_parent: Some(parent),
+                    aligned_dir: Some(dir),
+                };
+                view.dimensioned_edges = default_dimensioned_edges(&self.doc, &view);
+                self.doc.drawings[drawing].views.push(view);
+                self.status = format!("Added {} view aligned to view {parent}", orientation.label());
+                ActionResult::Ok
+            }
             Action::MoveDrawingView { drawing, view, pos_x, pos_y } => {
                 let Some(d) = self.doc.drawings.get_mut(drawing).filter(|d| !d.deleted) else {
                     return ActionResult::Err(format!("No drawing {drawing}"));
@@ -6389,6 +6452,8 @@ impl AppState {
                 let Some(v) = d.views.get_mut(view) else {
                     return ActionResult::Err(format!("No view {view}"));
                 };
+                // An aligned child (#296) can only slide along its free axis; the shared axis
+                // stays locked to its parent (enforced in `resolved_view_pos`).
                 v.pos_x = pos_x.clamp(0.0, 1.0);
                 v.pos_y = pos_y.clamp(0.0, 1.0);
                 ActionResult::Ok
@@ -6548,17 +6613,21 @@ impl AppState {
                     if self.doc.drawings.get(di).is_none_or(|d| d.deleted) {
                         return ActionResult::Err(format!("No drawing {di}"));
                     }
-                    // The Drawing workbench only offers Select/Add view/Dimension (#271,
-                    // #295 dropped Move, #289 added Add view); anything else drops to Select.
-                    if !matches!(self.tool, Tool::Select | Tool::Dimension | Tool::DrawingAdd) {
+                    // The Drawing workbench only offers Select/Add view/Aligned view/Dimension
+                    // (#271, #295 dropped Move, #289 Add view, #296 Aligned view); anything
+                    // else drops to Select.
+                    if !matches!(
+                        self.tool,
+                        Tool::Select | Tool::Dimension | Tool::DrawingAdd | Tool::DrawingAlign
+                    ) {
                         self.tool = Tool::Select;
                     }
                 }
                 if self.editing_drawing != drawing {
                     self.selected_drawing_view = None;
                 }
-                // The Add-view tool is drawing-workbench-only (#289).
-                if drawing.is_none() && self.tool == Tool::DrawingAdd {
+                // The Add-view / Aligned-view tools are drawing-workbench-only (#289/#296).
+                if drawing.is_none() && matches!(self.tool, Tool::DrawingAdd | Tool::DrawingAlign) {
                     self.tool = Tool::Select;
                 }
                 self.editing_drawing = drawing;
@@ -12539,6 +12608,39 @@ mod tests {
             (total_len(&shaded) - visible_len).abs() < 1e-3,
             "shaded strokes the same visible edges"
         );
+    }
+
+    /// #296: an aligned child projection shares its parent's axis (stays lined up) and follows
+    /// the parent when the parent moves; the child only slides on its free axis.
+    #[test]
+    fn aligned_child_stays_lined_up_with_its_parent() {
+        use crate::model::{AlignDir, DrawingOrientation};
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: 0,
+            body: 0,
+            orientation: DrawingOrientation::Front,
+        });
+        state.apply(Action::MoveDrawingView { drawing: 0, view: 0, pos_x: 0.4, pos_y: 0.4 });
+        // A child placed below shares pos_x with its parent, free pos_y.
+        let result = state.apply(Action::AddAlignedDrawingView {
+            drawing: 0,
+            parent: 0,
+            dir: AlignDir::Below,
+            pos: 0.8,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{}", state.status);
+        assert_eq!(state.doc.drawings[0].views[1].orientation, DrawingOrientation::Bottom);
+        let (cx, cy) = crate::drawing::resolved_view_pos(&state.doc, 0, 1);
+        assert!((cx - 0.4).abs() < 1e-4, "child shares parent's horizontal position");
+        assert!((cy - 0.8).abs() < 1e-4, "child's vertical position is free");
+
+        // Move the parent horizontally: the child follows on the shared axis.
+        state.apply(Action::MoveDrawingView { drawing: 0, view: 0, pos_x: 0.25, pos_y: 0.4 });
+        let (cx2, _) = crate::drawing::resolved_view_pos(&state.doc, 0, 1);
+        assert!((cx2 - 0.25).abs() < 1e-4, "child follows the parent's shared axis");
     }
 
     /// #289: with the Add-view tool active in the Drawing workbench, a clicked body or sketch

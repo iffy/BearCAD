@@ -928,6 +928,22 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   whose toolbar shows only the tools that apply to drawings — **Select, Add view, Dimension**
   (#295: no Move tool; the Select tool drags projections directly, #293). Entering the
   workbench with any other tool active drops back to Select.
+- **Aligned-projection tool (#296):** the workbench's **Aligned view** tool (projection icon;
+  tool name `drawing_align`) derives an orthographic child from an existing projection. Click a
+  parent view, then move the mouse — the direction from the parent picks the child
+  (down → Bottom, up → Top, right → Right, left → Left for a Front parent, by glass-box
+  unfolding: `drawing::aligned_child_orientation`), previewed as a ghost card with the derived
+  orientation labelled; click commits `AddAlignedDrawingView`. The child stays **lined up**
+  with the parent along their shared axis — placed above/below it shares the horizontal
+  position (`pos_x`), left/right shares the vertical (`pos_y`) — enforced by
+  `drawing::resolved_view_pos`, which resolves an aligned child's shared coordinate from its
+  parent (recursively, so chains stay consistent) in both the editor and export. Dragging a
+  child only slides it along its free axis; moving the parent carries its children. A child
+  **inherits the parent's scale** and can't change it (`drawing::resolved_view_scale`), and its
+  orientation is derived (both read-only in the context editor). Directions whose unfolded view
+  would need a non-canonical "up" (e.g. a Bottom parent's sideways child) simply aren't
+  offered, and an isometric parent has no aligned children. Scriptable:
+  `bearcad.drawing_align_view{ drawing, parent, dir = "below"/"above"/"right"/"left", pos? }`.
 - **Add-view tool (#289):** the workbench's **Add view** tool (＋ icon; tool name
   `drawing_add`) replaces the old inline "Add view:" combo row. With it active, clicking a
   **body or sketch** in the Elements pane drops a projection of it onto the page and selects
