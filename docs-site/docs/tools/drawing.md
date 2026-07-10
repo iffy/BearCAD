@@ -33,10 +33,13 @@ you like, and each one collects **views** — a body shown from a chosen directi
    - **Style:** choose how the projection draws — **Visible edges** (hidden lines removed),
      **Wireframe** (every edge, the default), or **Shaded** (grey-shaded faces under the
      visible edges). The editor and both exports render the same style.
-3. **Dimensions:** a new view arrives with every edge's length dimension already shown. With
-   the **Dimension tool** active, click an edge to hide its dimension (click again to bring it
-   back). **Shift+click** two edges to show the angle between them (Shift+click either again
-   to hide it).
+3. **Dimensions:** a new view arrives with every edge's length dimension already shown, drawn
+   as proper dimension lines — extension lines, an offset line with arrowheads, and the
+   measurement centred on it. With the **Dimension tool** active, the edge under the cursor
+   highlights; click it to hide its dimension (click again to bring it back). **Shift+click**
+   two edges to show the angle between them (Shift+click either again to hide it). **Drag a
+   dimension's label** (with the Select or Dimension tool) to push its line further from or
+   closer to the edge.
 4. Remove a view with the **×** beside it. Press **Esc** to return to the 3D view. Reopen a
    drawing any time by clicking its row (or right-click → **Edit drawing**).
 5. **Export** with **Export PDF…** for a single-page vector PDF, or **Export SVG…** for a

@@ -1901,6 +1901,13 @@ pub struct DrawingView {
     /// `dimensioned_edges`; the pair itself is order-normalized.
     #[serde(default)]
     pub angle_dims: Vec<(([i32; 3], [i32; 3]), ([i32; 3], [i32; 3]))>,
+    /// Per-edge dimension-label offset overrides (#294), keyed by the same edge key as
+    /// `dimensioned_edges`. The value is the label's signed offset (mm, in projected view
+    /// space) along the edge's outward perpendicular from the geometry centroid — a positive
+    /// value pushes the label further out. Absent → the auto-placed default distance. A drag
+    /// writes an override here; it survives rebuilds because the key is geometry-based.
+    #[serde(default)]
+    pub dimension_offsets: Vec<(([i32; 3], [i32; 3]), f32)>,
     /// Print scale as `"page:model"` text, e.g. `"1:20"` (#300). Always stored validated
     /// (see [`parse_drawing_scale`]); `None` auto-fits the projection to its card.
     #[serde(default)]

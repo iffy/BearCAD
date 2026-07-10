@@ -2886,6 +2886,7 @@ mod tests {
                 orientation: crate::model::DrawingOrientation::Front,
                 dimensioned_edges: Vec::new(),
                 angle_dims: Vec::new(),
+                dimension_offsets: Vec::new(),
                 scale: None,
                 style: Default::default(),
                 pos_x: 0.5,

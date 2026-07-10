@@ -1280,6 +1280,16 @@ pub enum Action {
         view: usize,
         style: crate::model::DrawingViewStyle,
     },
+    /// Set (or clear) a dimension label's extra offset from its edge (#294), keyed by the
+    /// edge's quantized endpoints. `offset` is signed projected-mm past the default gap;
+    /// `None` restores the auto-placed default.
+    SetDrawingDimensionOffset {
+        drawing: usize,
+        view: usize,
+        a: [i32; 3],
+        b: [i32; 3],
+        offset: Option<f32>,
+    },
     /// Remove a body view from a drawing by its index.
     RemoveDrawingView { drawing: usize, view: usize },
     /// Toggle the length dimension of one edge (by quantized world endpoints) in a drawing view.
@@ -2698,9 +2708,18 @@ fn default_dimensioned_edges(
     doc: &Document,
     view: &crate::model::DrawingView,
 ) -> Vec<crate::model::DrawingEdgeKey> {
+    // Skip edges that project to (near) a point in this view — an edge pointing straight into
+    // the page has no meaningful length to dimension here, and its 3D length would mislead
+    // (#294). Uses the same projected-length test the renderers use.
+    let (right, up) = crate::drawing::view_axes(view.orientation);
     let mut keys: Vec<crate::model::DrawingEdgeKey> =
         crate::drawing::drawing_view_world_edges(doc, view)
             .iter()
+            .filter(|(a, b)| {
+                let pa = glam::Vec2::new(a.dot(right), a.dot(up));
+                let pb = glam::Vec2::new(b.dot(right), b.dot(up));
+                (pb - pa).length() > 1e-3
+            })
             .map(|&(a, b)| {
                 crate::model::normalized_edge_key(
                     crate::hierarchy::quantize_body_point(a),
@@ -6324,6 +6343,7 @@ impl AppState {
                     orientation,
                     dimensioned_edges: Vec::new(),
                     angle_dims: Vec::new(),
+                dimension_offsets: Vec::new(),
                     pos_x: (0.35 + step).min(0.9),
                     pos_y: (0.35 + step).min(0.9),
                     scale: None,
@@ -6351,6 +6371,7 @@ impl AppState {
                     orientation,
                     dimensioned_edges: Vec::new(),
                     angle_dims: Vec::new(),
+                dimension_offsets: Vec::new(),
                     pos_x: (0.35 + step).min(0.9),
                     pos_y: (0.35 + step).min(0.9),
                     scale: None,
@@ -6463,10 +6484,29 @@ impl AppState {
                 };
                 if let Some(pos) = v.dimensioned_edges.iter().position(|e| *e == key) {
                     v.dimensioned_edges.remove(pos);
+                    // Drop any label-offset override for a hidden dimension (#294).
+                    v.dimension_offsets.retain(|(k, _)| *k != key);
                     self.status = "Hid edge dimension".to_string();
                 } else {
                     v.dimensioned_edges.push(key);
                     self.status = "Showed edge dimension".to_string();
+                }
+                ActionResult::Ok
+            }
+            Action::SetDrawingDimensionOffset { drawing, view, a, b, offset } => {
+                let key = if a <= b { (a, b) } else { (b, a) };
+                let Some(v) = self
+                    .doc
+                    .drawings
+                    .get_mut(drawing)
+                    .filter(|d| !d.deleted)
+                    .and_then(|d| d.views.get_mut(view))
+                else {
+                    return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
+                };
+                v.dimension_offsets.retain(|(k, _)| *k != key);
+                if let Some(o) = offset {
+                    v.dimension_offsets.push((key, o));
                 }
                 ActionResult::Ok
             }

@@ -987,11 +987,19 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   orthographically/isometrically projected and auto-fit into its cell; views sit wherever
   they were placed on the page and are added/removed from the drawing pane.
 - **Dimensions:** a newly added projection starts with **every edge's length dimension
-  shown** (#299). With the **Dimension tool** active (#277), clicking an edge in a view
-  toggles its **length dimension** — the measured length is drawn beside the edge.
-  **Shift+click** two edges toggles the **angle** between them (the degree value is drawn at
-  their corner). Both are keyed to the edges' quantized world endpoints (a geometry identity
-  that survives rebuilds), stored per view.
+  shown** (#299) — except edges pointing straight into the page, which project to a point and
+  carry no meaningful in-view length (#294). Length dimensions render as proper **architectural
+  dimension lines** (#294): two extension lines off the edge, a dimension line offset outward
+  (on the side away from the geometry centroid) with **arrowheads** at each end, and the
+  measurement centred on it — in the editor and both exports, from one shared
+  `drawing::dimension_line_geometry`. With the **Dimension tool** active (#277), the edge
+  nearest the cursor **hovers** (highlighted) to show a click will toggle it; clicking toggles
+  its dimension, **Shift+click** two edges toggles the **angle** between them (drawn at their
+  corner). A dimension **label is draggable** (Select or Dimension tool) to slide the whole
+  dimension line further from or closer to the edge; the offset is stored per view as a
+  `dimension_offsets` override (`Action::SetDrawingDimensionOffset`), cleared when the
+  dimension is hidden. All dimensions are keyed to the edges' quantized world endpoints (a
+  geometry identity that survives rebuilds), stored per view.
 - **Export:** a drawing exports to a self-contained black-on-white vector document (title,
   view captions, projected edges, dimensions) as either a single-page **PDF** or an **SVG**
   (which also prints to PDF through any browser/OS print dialog). Exports are **WYSIWYG**

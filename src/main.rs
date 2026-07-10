@@ -411,6 +411,21 @@ struct EdgeTreatmentGizmoDrag {
     start_amount: f32,
 }
 
+/// An in-flight drag of a drawing dimension label (#294): the label rides the pointer's
+/// perpendicular offset from its edge, written back as a `dimension_offsets` override.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DrawingDimLabelDrag {
+    drawing: usize,
+    view: usize,
+    key: ([i32; 3], [i32; 3]),
+    start_offset: f32,
+    start_pointer: egui::Pos2,
+    /// Outward unit direction in screen space (pixels), for projecting the drag delta.
+    outward_screen: egui::Vec2,
+    /// Projected-mm per screen pixel (1 / scale), to convert the pixel delta to a mm offset.
+    mm_per_px: f32,
+}
+
 /// A drag on one of the Move tool's translation arrows (#215): which axis (0=X, 1=Y, 2=Z), and
 /// the translation + cursor position when the grab started. Follows the cursor along that world
 /// axis and writes the result through the `move_{x,y,z}` gizmo setter.
@@ -516,6 +531,9 @@ struct App {
     /// JSON text for bug reports, and a paste-target to load one back. `None` = closed.
     json_dialog: Option<String>,
     dim_label_drag: Option<DimLabelDrag>,
+    /// In-flight drag of a drawing dimension label (#294): `(drawing, view, edge key, start
+    /// offset mm, drag-start pointer)`.
+    drawing_dim_label_drag: Option<DrawingDimLabelDrag>,
     angle_gizmo_drag: Option<AngleGizmoDrag>,
     vertex_drag: Option<VertexDrag>,
     bezier_handle_drag: Option<BezierHandleDrag>,
@@ -644,6 +662,7 @@ impl App {
             web_io: WebIoQueue::default(),
             json_dialog: None,
             dim_label_drag: None,
+            drawing_dim_label_drag: None,
             angle_gizmo_drag: None,
             extrude_gizmo_drag: None,
             pending_extrude_target: None,
@@ -8596,6 +8615,8 @@ impl App {
         // Dark sheet across the whole central area.
         let area = ui.available_rect_before_wrap();
         ui.painter().rect_filled(area, 0.0, SHEET);
+        // Pointer position for edge hover / label drag (#294).
+        let pointer_screen = ui.input(|i| i.pointer.hover_pos());
 
         // Pan/zoom the sheet like the 3D viewport, but never rotate (#273). Drag the empty
         // background to pan; scroll to zoom about the cursor. Card drags (#274) sit on top and
@@ -8933,43 +8954,55 @@ impl App {
                     if qa <= qb { (qa, qb) } else { (qb, qa) }
                 };
 
+                // On the Dimension tool, the edge nearest the cursor previews so it's clear a
+                // click toggles it (#294). Computed here; drawn in the per-edge loop below.
+                let hovered_edge = (self.state.tool == Tool::Dimension)
+                    .then(|| {
+                        let pp = pointer_screen?;
+                        if !draw_area.contains(pp) {
+                            return None;
+                        }
+                        let mut best: Option<(f32, usize)> = None;
+                        for (i, (a, b)) in proj.iter().enumerate() {
+                            let d = dist_point_to_segment(pp, to_screen(*a), to_screen(*b));
+                            if best.is_none_or(|(bd, _)| d < bd) {
+                                best = Some((d, i));
+                            }
+                        }
+                        best.filter(|(d, _)| *d <= 8.0).map(|(_, i)| i)
+                    })
+                    .flatten();
+
                 // Click near an edge to toggle its length dimension; Shift+click two edges to
                 // toggle the angle between them (#180). In the Drawing workbench this is the
-                // Dimension tool's job (#277) — only the Dimension tool picks edges.
+                // Dimension tool's job (#277) — only the Dimension tool picks edges. A label
+                // drag (below) suppresses the toggle so repositioning doesn't hide the dim.
                 let resp = ui.interact(
                     draw_area,
                     ui.make_persistent_id(("drawing_view_pick", drawing, vi)),
                     egui::Sense::click(),
                 );
-                if resp.clicked() && self.state.tool == Tool::Dimension {
-                    if let Some(pos) = resp.interact_pointer_pos() {
-                        let mut best: Option<(f32, usize)> = None;
-                        for (i, (a, b)) in proj.iter().enumerate() {
-                            let d = dist_point_to_segment(pos, to_screen(*a), to_screen(*b));
-                            if best.is_none_or(|(bd, _)| d < bd) {
-                                best = Some((d, i));
-                            }
-                        }
-                        if let Some((d, i)) = best {
-                            if d <= 8.0 {
-                                let (wa, wb) = world_edges[i];
-                                let key = edge_key(wa, wb);
-                                if ui.input(|inp| inp.modifiers.shift) {
-                                    match pending_angle {
-                                        Some((pv, pk)) if pv == vi && pk != key => {
-                                            toggle_angle = Some((vi, pk, key));
-                                            pending_angle = None;
-                                        }
-                                        _ => pending_angle = Some((vi, key)),
-                                    }
-                                } else {
-                                    toggle_dim = Some((
-                                        vi,
-                                        hierarchy::quantize_body_point(wa),
-                                        hierarchy::quantize_body_point(wb),
-                                    ));
+                if resp.clicked()
+                    && self.state.tool == Tool::Dimension
+                    && self.drawing_dim_label_drag.is_none()
+                {
+                    if let Some(i) = hovered_edge {
+                        let (wa, wb) = world_edges[i];
+                        let key = edge_key(wa, wb);
+                        if ui.input(|inp| inp.modifiers.shift) {
+                            match pending_angle {
+                                Some((pv, pk)) if pv == vi && pk != key => {
+                                    toggle_angle = Some((vi, pk, key));
+                                    pending_angle = None;
                                 }
+                                _ => pending_angle = Some((vi, key)),
                             }
+                        } else {
+                            toggle_dim = Some((
+                                vi,
+                                hierarchy::quantize_body_point(wa),
+                                hierarchy::quantize_body_point(wb),
+                            ));
                         }
                     }
                 }
@@ -9005,36 +9038,110 @@ impl App {
                 let dims = view.dimensioned_edges.clone();
                 let unit = self.state.doc.default_length_unit;
                 let pending_here = pending_angle.filter(|(pv, _)| *pv == vi).map(|(_, k)| k);
+                let bbox_center_v = egui::vec2(bbox_center.x, bbox_center.y);
+                let diag = extent.length().max(1.0);
+                let default_gap = diag * 0.05;
+                let arrow = diag * 0.025;
                 for (i, (a, b)) in proj.iter().enumerate() {
                     let (sa, sb) = (to_screen(*a), to_screen(*b));
                     let (wa, wb) = world_edges[i];
                     let key = edge_key(wa, wb);
-                    // The first edge of an in-progress angle pick glows so it's clear it's armed.
+                    // The first edge of an in-progress angle pick glows; the hovered edge on the
+                    // Dimension tool previews so it's clear a click toggles it (#294).
                     let glow = pending_here == Some(key);
                     if glow {
                         painter.line_segment(
                             [sa, sb],
                             egui::Stroke::new(2.4, egui::Color32::from_rgb(30, 90, 200)),
                         );
+                    } else if hovered_edge == Some(i) {
+                        painter.line_segment(
+                            [sa, sb],
+                            egui::Stroke::new(2.4, egui::Color32::from_rgb(90, 150, 230)),
+                        );
                     } else if styled.is_none() {
                         painter.line_segment([sa, sb], egui::Stroke::new(1.2, INK));
                     }
-                    if dims.contains(&key) {
-                        let length = (wa - wb).length();
-                        let mid = sa + (sb - sa) * 0.5;
-                        let seg = sb - sa;
-                        let perp = if seg.length() > 1e-3 {
-                            egui::vec2(-seg.y, seg.x).normalized()
-                        } else {
-                            egui::vec2(0.0, -1.0)
+                    if dims.contains(&key) && (*b - *a).length() >= 1e-3 {
+                        // Architectural dimension line (#294): extension lines, an offset
+                        // dimension line with arrowheads, and the length centred on it.
+                        let (av, bv) = (egui::vec2(a.x, a.y), egui::vec2(b.x, b.y));
+                        let outward = {
+                            let seg = bv - av;
+                            let mut p = egui::vec2(-seg.y, seg.x).normalized();
+                            if p == egui::Vec2::ZERO {
+                                p = egui::vec2(0.0, -1.0);
+                            }
+                            let mid = (av + bv) * 0.5;
+                            if p.dot(mid - bbox_center_v) < 0.0 { -p } else { p }
                         };
+                        let extra = view
+                            .dimension_offsets
+                            .iter()
+                            .find(|(k, _)| *k == key)
+                            .map(|(_, o)| *o)
+                            .unwrap_or(0.0);
+                        let off = default_gap + extra;
+                        let g = crate::drawing::dimension_line_geometry(
+                            glam::Vec2::new(av.x, av.y),
+                            glam::Vec2::new(bv.x, bv.y),
+                            glam::Vec2::new(outward.x, outward.y),
+                            off,
+                            arrow,
+                        );
+                        let sp = |p: glam::Vec2| to_screen(egui::vec2(p.x, p.y));
+                        for (p, q) in g.extensions {
+                            painter.line_segment([sp(p), sp(q)], egui::Stroke::new(0.8, INK));
+                        }
+                        painter.line_segment(
+                            [sp(g.line.0), sp(g.line.1)],
+                            egui::Stroke::new(0.8, INK),
+                        );
+                        for tri in g.arrows {
+                            painter.add(egui::Shape::convex_polygon(
+                                tri.iter().map(|p| sp(*p)).collect(),
+                                INK,
+                                egui::Stroke::NONE,
+                            ));
+                        }
+                        let label_screen = sp(g.label_pos);
                         painter.text(
-                            mid + perp * 11.0,
+                            label_screen,
                             egui::Align2::CENTER_CENTER,
-                            crate::value::format_length_display_in(length, unit),
+                            crate::value::format_length_display_in((wa - wb).length(), unit),
                             egui::FontId::proportional(11.0),
                             INK,
                         );
+                        // The label is draggable with Select or Dimension (#294): a small
+                        // interact rect at the label repositions the whole dimension line.
+                        if matches!(self.state.tool, Tool::Select | Tool::Dimension) {
+                            let label_rect =
+                                egui::Rect::from_center_size(label_screen, egui::vec2(46.0, 18.0));
+                            let lr = ui.interact(
+                                label_rect,
+                                ui.make_persistent_id(("drawing_dim_label", drawing, vi, key)),
+                                egui::Sense::drag(),
+                            );
+                            if lr.hovered() || self.drawing_dim_label_drag.map(|d| d.key) == Some(key)
+                            {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                            }
+                            if lr.drag_started() {
+                                if let Some(pp) = lr.interact_pointer_pos() {
+                                    let om = sp(g.line.0 + glam::Vec2::new(outward.x, outward.y))
+                                        - sp(g.line.0);
+                                    self.drawing_dim_label_drag = Some(DrawingDimLabelDrag {
+                                        drawing,
+                                        view: vi,
+                                        key,
+                                        start_offset: extra,
+                                        start_pointer: pp,
+                                        outward_screen: om.normalized(),
+                                        mm_per_px: if scale.abs() > 1e-6 { 1.0 / scale } else { 0.0 },
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
                 // Angle dimensions between edge pairs: the degree value at (or near) the corner.
@@ -9065,6 +9172,26 @@ impl App {
                         INK,
                     );
                 }
+            }
+        }
+
+        // Follow / end an in-flight dimension-label drag (#294): the label rides the pointer's
+        // perpendicular offset from its edge, written as a dimension_offsets override.
+        if let Some(d) = self.drawing_dim_label_drag {
+            if ui.input(|i| i.pointer.primary_down()) {
+                if let Some(pp) = pointer_screen {
+                    let delta_px = (pp - d.start_pointer).dot(d.outward_screen);
+                    let offset = d.start_offset + delta_px * d.mm_per_px;
+                    self.state.apply(Action::SetDrawingDimensionOffset {
+                        drawing: d.drawing,
+                        view: d.view,
+                        a: d.key.0,
+                        b: d.key.1,
+                        offset: Some(offset),
+                    });
+                }
+            } else {
+                self.drawing_dim_label_drag = None;
             }
         }
 

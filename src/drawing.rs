@@ -75,6 +75,67 @@ pub fn drawing_view_world_edges(doc: &Document, view: &DrawingView) -> Vec<(Vec3
     }
 }
 
+/// The architectural dimension-line geometry for one edge (#294), all in the view's projected
+/// 2D mm space. `a`/`b` are the edge endpoints; `outward` is the unit perpendicular pointing
+/// away from the geometry centroid; `offset` is how far out along `outward` the dimension line
+/// sits. Both the editor and the exports build their strokes from this so they never drift.
+pub struct DimLineGeometry {
+    /// The two extension lines (edge endpoint → just past the dimension line).
+    pub extensions: [(glam::Vec2, glam::Vec2); 2],
+    /// The dimension line itself (endpoint to endpoint, parallel to the edge).
+    pub line: (glam::Vec2, glam::Vec2),
+    /// Two arrowhead triangles (three points each) at the dimension line's ends.
+    pub arrows: [[glam::Vec2; 3]; 2],
+    /// Where the measurement label sits (centre of the dimension line, nudged outward).
+    pub label_pos: glam::Vec2,
+}
+
+/// Build [`DimLineGeometry`] for an edge from `a` to `b`, offset `outward * offset` from it.
+/// `arrow` is the arrowhead length in the same units, so callers can size features to the
+/// drawing (a proportional fraction of the projected extent keeps them readable at any scale).
+pub fn dimension_line_geometry(
+    a: glam::Vec2,
+    b: glam::Vec2,
+    outward: glam::Vec2,
+    offset: f32,
+    arrow: f32,
+) -> DimLineGeometry {
+    let da = a + outward * offset;
+    let db = b + outward * offset;
+    let along = (db - da).normalize_or_zero();
+    // Arrowheads point outward from the line centre toward each end.
+    let head = |tip: glam::Vec2, dir: glam::Vec2| {
+        let base = tip - dir * arrow;
+        let side = glam::Vec2::new(-dir.y, dir.x) * (arrow * 0.4);
+        [tip, base + side, base - side]
+    };
+    DimLineGeometry {
+        // Extension lines start a hair off the edge and overshoot the dimension line a touch.
+        extensions: [
+            (a + outward * (arrow * 0.4), da + outward * (arrow * 0.7)),
+            (b + outward * (arrow * 0.4), db + outward * (arrow * 0.7)),
+        ],
+        line: (da, db),
+        arrows: [head(da, -along), head(db, along)],
+        label_pos: (da + db) * 0.5 + outward * (arrow * 1.6),
+    }
+}
+
+/// The outward unit perpendicular for an edge's dimension line: the side of the edge facing
+/// away from the geometry centroid `center` (#294), so labels sit outside the part.
+pub fn dimension_outward(a: glam::Vec2, b: glam::Vec2, center: glam::Vec2) -> glam::Vec2 {
+    let seg = b - a;
+    let mut perp = glam::Vec2::new(-seg.y, seg.x).normalize_or_zero();
+    if perp == glam::Vec2::ZERO {
+        perp = glam::Vec2::new(0.0, -1.0);
+    }
+    let mid = (a + b) * 0.5;
+    if perp.dot(mid - center) < 0.0 {
+        perp = -perp;
+    }
+    perp
+}
+
 /// Projected 2D geometry for a drawing view under its display style (#301), shared by the
 /// editor pane and the SVG/PDF export.
 pub struct StyledViewGeometry {
@@ -336,25 +397,51 @@ fn render_view_geometry<C: Canvas>(
         canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, 1.2);
     }
 
-    // Length dimensions: the measured length beside the edge midpoint.
+    // Length dimensions (#294): architectural dimension lines — extension lines, an offset
+    // dimension line with arrowheads, and the measured length centred on it. Sizes are a
+    // fraction of the projected extent so they read at any scale; a per-edge override
+    // (dimension_offsets) pushes the line further out.
+    let diag = extent.length().max(1.0);
+    let default_gap = diag * 0.05;
+    let arrow = diag * 0.025;
     for (i, (a, b)) in proj.iter().enumerate() {
         let (wa, wb) = world_edges[i];
-        if !view.dimensioned_edges.contains(&edge_key(wa, wb)) {
+        let key = edge_key(wa, wb);
+        // An edge-on edge projects to a point — nothing meaningful to dimension here (#294).
+        if !view.dimensioned_edges.contains(&key) || (*b - *a).length() < 1e-3 {
             continue;
         }
-        let (sa, sb) = (to_screen(*a), to_screen(*b));
-        let mid = (sa + sb) * 0.5;
-        let seg = sb - sa;
-        let perp = if seg.length() > 1e-3 {
-            glam::Vec2::new(-seg.y, seg.x).normalize()
-        } else {
-            glam::Vec2::new(0.0, -1.0)
+        let outward = dimension_outward(*a, *b, bbox_center);
+        let extra = view
+            .dimension_offsets
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, o)| *o)
+            .unwrap_or(0.0);
+        let geom = dimension_line_geometry(*a, *b, outward, default_gap + extra, arrow);
+        let stroke_line = |canvas: &mut C, p: glam::Vec2, q: glam::Vec2| {
+            let (sp, sq) = (to_screen(p), to_screen(q));
+            canvas.line(sp.x, sp.y, sq.x, sq.y, BLACK, 0.8);
         };
-        let pos = mid + perp * 12.0;
+        for (p, q) in geom.extensions {
+            stroke_line(canvas, p, q);
+        }
+        stroke_line(canvas, geom.line.0, geom.line.1);
+        for tri in geom.arrows {
+            let pts: Vec<(f32, f32)> = tri
+                .iter()
+                .map(|p| {
+                    let s = to_screen(*p);
+                    (s.x, s.y)
+                })
+                .collect();
+            canvas.poly(&pts, BLACK);
+        }
+        let lp = to_screen(geom.label_pos);
         canvas.text(
-            pos.x,
-            pos.y,
-            12.0,
+            lp.x,
+            lp.y,
+            11.0,
             Anchor::Middle,
             &crate::value::format_length_display_in((wa - wb).length(), unit),
         );
@@ -635,6 +722,7 @@ mod tests {
                 orientation: DrawingOrientation::Front,
                 dimensioned_edges: Vec::new(),
                 angle_dims: Vec::new(),
+                dimension_offsets: Vec::new(),
                 scale: None,
                 style: Default::default(),
                 pos_x: 0.5,
