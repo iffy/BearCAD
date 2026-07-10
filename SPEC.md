@@ -385,14 +385,23 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     hover-highlighting the same way a `Polygon` face's loop already does. Scriptable via `bearcad.extrude{ boolean = { op = "intersection" |
     "difference", a = <face spec>, b = <face spec> }, distance }`, where a face spec is
     `{circle=i}`/`{polygon={...}}` (a rectangle is a four-line polygon)/a nested `{boolean={...}}`.
+    - **Rings / faces-with-holes (#268/#263)**: a `Difference` whose subtrahend lies strictly
+      inside the minuend (concentric circles, a shape fully inside another) is an **annulus** —
+      no longer rejected. `extrude::extrude_face_uv_region` resolves such a face into a
+      **`UvRegion`** (an outer loop + interior **hole** loops), and both solid builders honor it:
+      the **kernel** extrudes/revolves a `Boolean` face by building each operand's solid and
+      applying the same boolean to the *solids* (`Difference`→cut, `Intersection`→common), so a
+      concentric ring becomes a true **tube** (outer cylinder minus inner cylinder — exact walls,
+      single circular rims); the **`--no-default-features` mesh fallback** builds hole-aware caps
+      (`polygon::triangulate_planar_with_holes`, hole loops bridged into the outer loop and
+      ear-clipped) plus inner side walls. This works for extrude (`ExtrudeFace`) and revolve alike.
     - **Scope (deliberate, not yet general N-way arrangements)**: only ever two shapes at a
       time — a sketch with three or more mutually-overlapping shapes falls back to today's
-      whole-shape picking instead. `polygon_boolean` itself only produces a result when the
-      boolean combination reduces to a **single simple polygon loop**; it returns `None`
-      (falling back the same way) for a multi-part (disjoint-piece) result, a result with a
-      hole (e.g. subtracting a shape strictly interior to another, which would leave an
-      annulus), or a near-zero-area/degenerate result — these are deliberately rejected rather
-      than approximated. No flat side-wall sketching is offered on a boolean-derived extrusion
+      whole-shape picking instead. The single-seam `polygon_boolean::face_boolean` (used for the
+      click-resolution *boundary* and the fill/hover display) still only produces a result when
+      the combination reduces to a **single simple polygon loop** — it returns `None` for a
+      multi-part (disjoint-piece) or near-zero-area result — but an annulus is now recovered as a
+      face-with-hole region for building (above) rather than rejected. No flat side-wall sketching is offered on a boolean-derived extrusion
       (`side_face_count` is 0 for it, mirroring `Circle`'s curved walls) since its edge count
       depends on the resolved (Document-dependent) geometry; the extrusion mesh itself is
       unaffected, since it walks the resolved profile loop directly.

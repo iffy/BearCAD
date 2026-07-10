@@ -285,6 +285,183 @@ pub fn triangulate_uv(vertices: &[(f32, f32)]) -> Vec<[usize; 3]> {
     triangles
 }
 
+/// Triangulate a planar polygon **with holes** (#268) in world space, returning world-space
+/// triangles (not indices). Each hole is spliced into the outer loop by a zero-width *bridge*
+/// (the classic hole-elimination technique — connect the hole's rightmost vertex to a visible
+/// outer vertex, walk the hole, and bridge back), reducing the region to one weakly-simple loop
+/// that ear-clipping handles. The outer loop is normalised to CCW and holes to CW so the merged
+/// loop stays consistently wound. With no holes this is just [`triangulate_planar`] mapped to
+/// world points.
+pub fn triangulate_planar_with_holes(
+    outer: &[glam::Vec3],
+    holes: &[Vec<glam::Vec3>],
+    normal: glam::Vec3,
+) -> Vec<[glam::Vec3; 3]> {
+    if outer.len() < 3 {
+        return Vec::new();
+    }
+    if holes.is_empty() {
+        return triangulate_planar(outer, normal)
+            .into_iter()
+            .map(|[a, b, c]| [outer[a], outer[b], outer[c]])
+            .collect();
+    }
+    let n = normal.normalize_or_zero();
+    let u_axis = (if n.z.abs() < 0.9 { glam::Vec3::Z.cross(n) } else { glam::Vec3::X.cross(n) })
+        .normalize_or_zero();
+    let v_axis = n.cross(u_axis).normalize_or_zero();
+    let origin = outer[0];
+    let to_uv = |p: glam::Vec3| {
+        let r = p - origin;
+        (r.dot(u_axis), r.dot(v_axis))
+    };
+
+    // Outer loop CCW.
+    let mut loop_uv: Vec<(f32, f32)> = outer.iter().map(|&p| to_uv(p)).collect();
+    let mut loop_w: Vec<glam::Vec3> = outer.to_vec();
+    if signed_area_2d(&loop_uv) < 0.0 {
+        loop_uv.reverse();
+        loop_w.reverse();
+    }
+
+    // Holes CW, bridged rightmost-first so each bridge lands on already-merged geometry.
+    let mut prepared: Vec<(Vec<(f32, f32)>, Vec<glam::Vec3>)> = holes
+        .iter()
+        .filter(|h| h.len() >= 3)
+        .map(|h| {
+            let mut huv: Vec<(f32, f32)> = h.iter().map(|&p| to_uv(p)).collect();
+            let mut hw = h.clone();
+            if signed_area_2d(&huv) > 0.0 {
+                huv.reverse();
+                hw.reverse();
+            }
+            (huv, hw)
+        })
+        .collect();
+    prepared.sort_by(|a, b| {
+        let am = a.0.iter().map(|p| p.0).fold(f32::MIN, f32::max);
+        let bm = b.0.iter().map(|p| p.0).fold(f32::MIN, f32::max);
+        bm.partial_cmp(&am).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    for (huv, hw) in prepared {
+        // Rightmost hole vertex.
+        let m = (0..huv.len())
+            .max_by(|&i, &j| huv[i].0.partial_cmp(&huv[j].0).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap();
+        let mp = huv[m];
+        // Closest loop vertex to its right — visible for the convex-ish outer loops we build from
+        // (rects, circles). Falls back to the nearest overall vertex if none is to the right.
+        let mut best: Option<(usize, f32)> = None;
+        for (i, &lp) in loop_uv.iter().enumerate() {
+            let d = (lp.0 - mp.0).powi(2) + (lp.1 - mp.1).powi(2);
+            let to_right = lp.0 >= mp.0 - 1e-6;
+            let rank = if to_right { d } else { d + 1e9 };
+            if best.map_or(true, |(_, bd)| rank < bd) {
+                best = Some((i, rank));
+            }
+        }
+        let p = best.map(|(i, _)| i).unwrap_or(0);
+
+        let mut new_uv = Vec::with_capacity(loop_uv.len() + huv.len() + 2);
+        let mut new_w = Vec::with_capacity(loop_w.len() + hw.len() + 2);
+        new_uv.extend_from_slice(&loop_uv[..=p]);
+        new_w.extend_from_slice(&loop_w[..=p]);
+        for k in 0..huv.len() {
+            let idx = (m + k) % huv.len();
+            new_uv.push(huv[idx]);
+            new_w.push(hw[idx]);
+        }
+        new_uv.push(huv[m]);
+        new_w.push(hw[m]);
+        new_uv.push(loop_uv[p]);
+        new_w.push(loop_w[p]);
+        new_uv.extend_from_slice(&loop_uv[p + 1..]);
+        new_w.extend_from_slice(&loop_w[p + 1..]);
+        loop_uv = new_uv;
+        loop_w = new_w;
+    }
+
+    // Ear-clip the merged loop. Unlike the shared [`triangulate_uv`], the bridges introduce
+    // pairs of coincident vertices (the zero-width slit), so the "does any other vertex fall in
+    // this ear?" test must be *strict* — a vertex sitting exactly on the ear's corner (its bridge
+    // twin) mustn't block the ear, or clipping stalls.
+    ear_clip_with_bridges(&loop_uv)
+        .into_iter()
+        .map(|[a, b, c]| [loop_w[a], loop_w[b], loop_w[c]])
+        .collect()
+}
+
+/// Ear-clipping for a (weakly-simple) loop that may contain bridge slits — i.e. pairs of
+/// coincident vertices. The containment test is strict-interior so a bridge twin coinciding with
+/// an ear corner doesn't veto the ear.
+fn ear_clip_with_bridges(vertices: &[(f32, f32)]) -> Vec<[usize; 3]> {
+    let n = vertices.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    let ccw = signed_area_2d(vertices) > 0.0;
+    let mut indices: Vec<usize> = (0..n).collect();
+    let mut triangles = Vec::with_capacity(n - 2);
+    let strict_inside = |p: (f32, f32), a: (f32, f32), b: (f32, f32), c: (f32, f32)| -> bool {
+        // Barycentric with a strict margin; points on/near a vertex or edge don't count.
+        let v0 = (c.0 - a.0, c.1 - a.1);
+        let v1 = (b.0 - a.0, b.1 - a.1);
+        let v2 = (p.0 - a.0, p.1 - a.1);
+        let d00 = v0.0 * v0.0 + v0.1 * v0.1;
+        let d01 = v0.0 * v1.0 + v0.1 * v1.1;
+        let d02 = v0.0 * v2.0 + v0.1 * v2.1;
+        let d11 = v1.0 * v1.0 + v1.1 * v1.1;
+        let d12 = v1.0 * v2.0 + v1.1 * v2.1;
+        let denom = d00 * d11 - d01 * d01;
+        if denom.abs() < 1e-12 {
+            return false;
+        }
+        let inv = 1.0 / denom;
+        let u = (d11 * d02 - d01 * d12) * inv;
+        let v = (d00 * d12 - d01 * d02) * inv;
+        u > 1e-5 && v > 1e-5 && (u + v) < 1.0 - 1e-5
+    };
+    let mut guard = 0;
+    while indices.len() > 3 {
+        if guard > n * n {
+            break;
+        }
+        guard += 1;
+        let mut ear_found = false;
+        let len = indices.len();
+        for i in 0..len {
+            let prev = indices[(i + len - 1) % len];
+            let curr = indices[i];
+            let next = indices[(i + 1) % len];
+            if !is_convex_vertex_2d(vertices[prev], vertices[curr], vertices[next], ccw) {
+                continue;
+            }
+            let tri = [vertices[prev], vertices[curr], vertices[next]];
+            let contains_other = indices.iter().any(|&idx| {
+                idx != prev
+                    && idx != curr
+                    && idx != next
+                    && strict_inside(vertices[idx], tri[0], tri[1], tri[2])
+            });
+            if contains_other {
+                continue;
+            }
+            triangles.push([prev, curr, next]);
+            indices.remove(i);
+            ear_found = true;
+            break;
+        }
+        if !ear_found {
+            break;
+        }
+    }
+    if indices.len() == 3 {
+        triangles.push([indices[0], indices[1], indices[2]]);
+    }
+    triangles
+}
+
 /// Triangulate a simple planar polygon in world space (same winding as the boundary loop).
 pub fn triangulate_planar(vertices: &[glam::Vec3], normal: glam::Vec3) -> Vec<[usize; 3]> {
     if vertices.len() < 3 {
@@ -377,6 +554,37 @@ pub(crate) fn point_in_polygon_2d(p: (f32, f32), vertices: &[(f32, f32)]) -> boo
 mod tests {
     use super::*;
     use crate::model::{Constraint, ConstraintEntity, ConstraintKind, Line};
+
+    /// #268: a square with a square hole triangulates to the annulus area (outer − hole), and no
+    /// triangle covers the hole's interior.
+    #[test]
+    fn triangulate_with_holes_leaves_the_hole_empty() {
+        use glam::Vec3;
+        let outer = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::new(10.0, 10.0, 0.0),
+            Vec3::new(0.0, 10.0, 0.0),
+        ];
+        let hole = vec![
+            Vec3::new(4.0, 4.0, 0.0),
+            Vec3::new(6.0, 4.0, 0.0),
+            Vec3::new(6.0, 6.0, 0.0),
+            Vec3::new(4.0, 6.0, 0.0),
+        ];
+        let tris = triangulate_planar_with_holes(&outer, &[hole], Vec3::Z);
+        let area: f32 = tris
+            .iter()
+            .map(|[a, b, c]| (b - a).cross(c - a).length() * 0.5)
+            .sum();
+        assert!((area - 96.0).abs() < 1e-2, "annulus area should be 100 − 4 = 96, got {area}");
+        // The hole centre (5,5) must not be inside any emitted triangle.
+        let center = (5.0_f32, 5.0_f32);
+        let covered = tris.iter().any(|[a, b, c]| {
+            point_in_triangle_2d(center, (a.x, a.y), (b.x, b.y), (c.x, c.y))
+        });
+        assert!(!covered, "no triangle should cover the hole interior");
+    }
 
     fn coincident(sketch: SketchId, a: ConstraintPoint, b: ConstraintPoint) -> Constraint {
         Constraint {

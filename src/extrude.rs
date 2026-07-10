@@ -119,6 +119,23 @@ pub fn extrusion_mesh(doc: &Document, extrusion: &Extrusion) -> Option<SolidMesh
                 .iter()
                 .map(|p| extruded_top_point(doc, extrusion, normal, *p, distance))
                 .collect();
+            // A face with holes (annulus, #268) has no edge treatments in the fallback path;
+            // build it as a hollow region (hole-aware caps + inner walls).
+            let holes: Vec<Vec<Vec3>> = face_region_world(doc, face)
+                .map(|(_, holes, _)| holes)
+                .unwrap_or_default();
+            if !holes.is_empty() {
+                let holes_top: Vec<Vec<Vec3>> = holes
+                    .iter()
+                    .map(|h| {
+                        h.iter()
+                            .map(|p| extruded_top_point(doc, extrusion, normal, *p, distance))
+                            .collect()
+                    })
+                    .collect();
+                extrude_region(&profile, &top, &holes, &holes_top, &mut mesh.triangles);
+                continue;
+            }
             let treatments: Vec<&EdgeTreatment> = extrusion
                 .edge_treatments
                 .iter()
@@ -163,6 +180,71 @@ fn occt_extrusion_shape(
 /// capped even though the material is gone (#200). Overshooting the tool moves both caps
 /// clear of the body faces so the walls open cleanly; the extra length is outside the body,
 /// so it changes nothing else.
+/// BREP solid for a single extrude face, extruded by this extrusion's distance/target (#268).
+/// A `Boolean` face is built the *right way*: extrude each operand into its own solid and apply
+/// the same boolean to the solids — so a `Difference` of two concentric circles becomes a true
+/// **tube** (outer cylinder minus inner cylinder, exact walls and single circular rims), and any
+/// annulus/face-with-hole falls out for free. Leaf faces (circle/polygon) build a true cylinder
+/// (circle, pure translation) or a prism/ruled loft as before. `overshoot` extends both ends
+/// (cut tools) and is threaded to every operand so a cut passes fully through.
+#[cfg(feature = "occt")]
+fn occt_face_solid(
+    doc: &Document,
+    extrusion: &Extrusion,
+    face: &ExtrudeFace,
+    distance: f32,
+    overshoot: f32,
+) -> Option<crate::kernel::Shape> {
+    if let ExtrudeFace::Boolean { op, a, b } = face {
+        let sa = occt_face_solid(doc, extrusion, a, distance, overshoot)?;
+        let sb = occt_face_solid(doc, extrusion, b, distance, overshoot)?;
+        let boolop = match op {
+            crate::model::BooleanOp::Difference => crate::kernel::BoolOp::Cut,
+            crate::model::BooleanOp::Intersection => crate::kernel::BoolOp::Common,
+        };
+        return sa.boolean(&sb, boolop);
+    }
+    let (profile, normal) = face_profile_world(doc, face)?;
+    if profile.len() < 3 {
+        return None;
+    }
+    let top: Vec<Vec3> = profile
+        .iter()
+        .map(|p| extruded_top_point(doc, extrusion, normal, *p, distance))
+        .collect();
+    // Extend both ends by `overshoot` along the extrusion direction (cut tools only).
+    let (profile, top) = if overshoot > 1e-6 {
+        let u = (top[0] - profile[0]).normalize_or_zero();
+        (
+            profile.iter().map(|p| *p - u * overshoot).collect::<Vec<_>>(),
+            top.iter().map(|t| *t + u * overshoot).collect::<Vec<_>>(),
+        )
+    } else {
+        (profile, top)
+    };
+    // A pure translation is a single prism (simplest/most robust); a slanted target (per-vertex
+    // top offset, e.g. extrude-to-an-angled-face) is a ruled loft between the bottom and top loops.
+    let dir = top[0] - profile[0];
+    let is_translation = profile
+        .iter()
+        .zip(&top)
+        .all(|(p, t)| (*t - *p - dir).length() <= 1e-4);
+    // A circle profile extruded by pure translation builds as a *true* cylinder (#177): real
+    // cylindrical wall, single circular rim edges — treatable and with exact volume, unlike a
+    // prism over the sampled 48-gon. Slanted targets still loft the sampled profile.
+    if is_translation && matches!(face, ExtrudeFace::Circle(_)) {
+        let center = profile.iter().copied().sum::<Vec3>() / profile.len() as f32;
+        let radius = (profile[0] - center).length() as f64;
+        let height = dir.length() as f64;
+        let axis = dir.normalize_or_zero();
+        crate::kernel::Shape::cylinder(center, axis, radius, height)
+    } else if is_translation {
+        crate::kernel::Shape::prism(&profile, dir)
+    } else {
+        crate::kernel::Shape::loft(&profile, &top)
+    }
+}
+
 #[cfg(feature = "occt")]
 fn occt_extrusion_shape_overshoot(
     doc: &Document,
@@ -176,47 +258,7 @@ fn occt_extrusion_shape_overshoot(
     // here, silently dropping every hole of the cut via the mesh fallback.
     let mut fused: Option<crate::kernel::Shape> = None;
     for face in &extrusion.faces {
-        let (profile, normal) = face_profile_world(doc, face)?;
-        if profile.len() < 3 {
-            return None;
-        }
-        let top: Vec<Vec3> = profile
-            .iter()
-            .map(|p| extruded_top_point(doc, extrusion, normal, *p, distance))
-            .collect();
-        // Extend both ends by `overshoot` along the extrusion direction (cut tools only).
-        let (profile, top) = if overshoot > 1e-6 {
-            let u = (top[0] - profile[0]).normalize_or_zero();
-            (
-                profile.iter().map(|p| *p - u * overshoot).collect::<Vec<_>>(),
-                top.iter().map(|t| *t + u * overshoot).collect::<Vec<_>>(),
-            )
-        } else {
-            (profile, top)
-        };
-        // A pure translation is a single prism (simplest/most robust); a slanted
-        // target (per-vertex top offset, e.g. extrude-to-an-angled-face) is a ruled
-        // loft between the bottom and top loops.
-        let dir = top[0] - profile[0];
-        let is_translation = profile
-            .iter()
-            .zip(&top)
-            .all(|(p, t)| (*t - *p - dir).length() <= 1e-4);
-        // A circle profile extruded by pure translation builds as a *true* cylinder
-        // (#177): real cylindrical wall, single circular rim edges — treatable and with
-        // exact volume, unlike a prism over the sampled 48-gon. Slanted targets still
-        // loft the sampled profile.
-        let shape = if is_translation && matches!(face, ExtrudeFace::Circle(_)) {
-            let center = profile.iter().copied().sum::<Vec3>() / profile.len() as f32;
-            let radius = (profile[0] - center).length() as f64;
-            let height = dir.length() as f64;
-            let axis = dir.normalize_or_zero();
-            crate::kernel::Shape::cylinder(center, axis, radius, height)
-        } else if is_translation {
-            crate::kernel::Shape::prism(&profile, dir)
-        } else {
-            crate::kernel::Shape::loft(&profile, &top)
-        }?;
+        let shape = occt_face_solid(doc, extrusion, face, distance, overshoot)?;
         fused = Some(match fused {
             None => shape,
             Some(acc) => acc.boolean(&shape, crate::kernel::BoolOp::Fuse)?,
@@ -1333,18 +1375,42 @@ pub fn occt_revolution_shape(
     let angle_rad = revolve_effective_angle(rev).to_radians() as f64;
     let mut fused: Option<crate::kernel::Shape> = None;
     for face in &rev.faces {
-        let (profile, _normal) = face_profile_world(doc, face)?;
-        if profile.len() < 3 {
-            return None;
-        }
-        let shape =
-            crate::kernel::Shape::revolve(&profile, origin, dir, angle_rad, rev.symmetric)?;
+        let shape = occt_face_revolve_solid(doc, face, origin, dir, angle_rad, rev.symmetric)?;
         fused = Some(match fused {
             None => shape,
             Some(acc) => acc.boolean(&shape, crate::kernel::BoolOp::Fuse)?,
         });
     }
     fused
+}
+
+/// BREP solid for revolving a single face about an axis (#263), mirroring [`occt_face_solid`]:
+/// a `Boolean` face revolves each operand and applies the same boolean to the swept solids, so a
+/// concentric-ring (annulus) profile revolves into a hollow solid of revolution. Leaf faces
+/// revolve their single boundary loop directly.
+#[cfg(feature = "occt")]
+fn occt_face_revolve_solid(
+    doc: &Document,
+    face: &ExtrudeFace,
+    origin: Vec3,
+    dir: Vec3,
+    angle_rad: f64,
+    symmetric: bool,
+) -> Option<crate::kernel::Shape> {
+    if let ExtrudeFace::Boolean { op, a, b } = face {
+        let sa = occt_face_revolve_solid(doc, a, origin, dir, angle_rad, symmetric)?;
+        let sb = occt_face_revolve_solid(doc, b, origin, dir, angle_rad, symmetric)?;
+        let boolop = match op {
+            crate::model::BooleanOp::Difference => crate::kernel::BoolOp::Cut,
+            crate::model::BooleanOp::Intersection => crate::kernel::BoolOp::Common,
+        };
+        return sa.boolean(&sb, boolop);
+    }
+    let (profile, _normal) = face_profile_world(doc, face)?;
+    if profile.len() < 3 {
+        return None;
+    }
+    crate::kernel::Shape::revolve(&profile, origin, dir, angle_rad, symmetric)
 }
 
 /// The revolutions fusing into (`false`) or cutting (`true`) `body_index`.
@@ -2222,8 +2288,11 @@ pub fn face_profile_world(doc: &Document, face: &ExtrudeFace) -> Option<(Vec<Vec
 fn boolean_profile_world(doc: &Document, face: &ExtrudeFace) -> Option<(Vec<Vec3>, Vec3)> {
     let sketch = crate::actions::extrude_face_sketch(doc, face)?;
     let frame = sketch_geometry_frame(doc, sketch)?;
-    let region = extrude_face_uv_loop(doc, sketch, face)?;
-    let profile = region.into_iter().map(|(u, v)| local_to_world(&frame, u, v)).collect();
+    // Use the region resolver so an annulus (concentric-ring) face resolves to its outer
+    // boundary rather than being rejected (#268). Callers wanting the hole loops use
+    // [`face_region_world`]; this outer loop is what picking, targets, and validation need.
+    let region = extrude_face_uv_region(doc, sketch, face)?;
+    let profile = region.outer.into_iter().map(|(u, v)| local_to_world(&frame, u, v)).collect();
     Some((profile, frame.normal))
 }
 
@@ -2265,6 +2334,84 @@ pub fn extrude_face_uv_loop(
             crate::polygon_boolean::face_boolean(&loop_a, &loop_b, *op)
         }
     }
+}
+
+/// A sketch face resolved to a *fillable region* (#268/#263): one outer boundary loop plus zero
+/// or more interior **hole** loops. A plain rect/circle/polygon is a hole-free region; a
+/// `Boolean { Difference }` whose subtrahend lies strictly inside the minuend is an **annulus** —
+/// the minuend's loop as `outer` with the subtrahend's loop as a `hole`. Coordinates are in the
+/// same space (UV here) as the inputs. This is what the mesh and kernel builders consume so a
+/// concentric-ring profile becomes a true face-with-hole instead of being rejected (as the
+/// single-loop [`extrude_face_uv_loop`] does for annuli).
+#[derive(Clone, Debug, PartialEq)]
+pub struct UvRegion {
+    pub outer: Vec<(f32, f32)>,
+    pub holes: Vec<Vec<(f32, f32)>>,
+}
+
+/// Resolve `face` into a [`UvRegion`] (outer loop + hole loops) in `sketch`'s UV frame.
+/// Everything reduces to a single outer loop except a difference with a strictly-contained
+/// subtrahend, which yields a hole. Nested holes compose (a difference of an already-holed
+/// region keeps its holes and adds the new one).
+pub fn extrude_face_uv_region(
+    doc: &Document,
+    sketch: crate::model::SketchId,
+    face: &ExtrudeFace,
+) -> Option<UvRegion> {
+    if let ExtrudeFace::Boolean { op: crate::model::BooleanOp::Difference, a, b } = face {
+        let region_a = extrude_face_uv_region(doc, sketch, a)?;
+        if let Some(loop_b) = extrude_face_uv_loop(doc, sketch, b) {
+            // The subtrahend is a clean hole only when it sits strictly inside the minuend's
+            // outer boundary and clear of any existing hole; otherwise it's a boundary-crossing
+            // difference, handled by the single-loop boolean below.
+            if loop_strictly_inside(&loop_b, &region_a.outer)
+                && region_a
+                    .holes
+                    .iter()
+                    .all(|h| !loops_overlap(&loop_b, h))
+            {
+                let mut holes = region_a.holes;
+                holes.push(loop_b);
+                return Some(UvRegion { outer: region_a.outer, holes });
+            }
+        }
+    }
+    // Non-annulus faces (raw shapes, unions/intersections, crossing differences) reduce to a
+    // single hole-free loop.
+    let outer = extrude_face_uv_loop(doc, sketch, face)?;
+    Some(UvRegion { outer, holes: Vec::new() })
+}
+
+/// True when every vertex of `inner` lies inside the `outer` polygon — a sufficient test for
+/// "strictly contained" given both loops are simple and non-touching (the annulus case).
+fn loop_strictly_inside(inner: &[(f32, f32)], outer: &[(f32, f32)]) -> bool {
+    !inner.is_empty()
+        && inner
+            .iter()
+            .all(|&p| crate::polygon::point_in_polygon_2d(p, outer))
+}
+
+/// Loose overlap test between two loops: any vertex of one inside the other. Used to keep a new
+/// hole from landing on top of an existing hole.
+fn loops_overlap(x: &[(f32, f32)], y: &[(f32, f32)]) -> bool {
+    x.iter().any(|&p| crate::polygon::point_in_polygon_2d(p, y))
+        || y.iter().any(|&p| crate::polygon::point_in_polygon_2d(p, x))
+}
+
+/// World-space [`UvRegion`] for `face`: outer boundary + hole loops projected through the
+/// sketch frame, plus the face normal. The hole-aware analogue of [`face_profile_world`]
+/// (which returns only the outer loop). `None` if the sketch/frame or geometry can't resolve.
+pub fn face_region_world(doc: &Document, face: &ExtrudeFace) -> Option<(Vec<Vec3>, Vec<Vec<Vec3>>, Vec3)> {
+    let sketch = crate::actions::extrude_face_sketch(doc, face)?;
+    let frame = sketch_geometry_frame(doc, sketch)?;
+    let region = extrude_face_uv_region(doc, sketch, face)?;
+    let outer = region.outer.iter().map(|&(u, v)| local_to_world(&frame, u, v)).collect();
+    let holes = region
+        .holes
+        .iter()
+        .map(|h| h.iter().map(|&(u, v)| local_to_world(&frame, u, v)).collect())
+        .collect();
+    Some((outer, holes, frame.normal))
 }
 
 /// Every raw (non-`Boolean`) extrude face belonging to `sketch`: each rect, circle, and
@@ -2494,6 +2641,54 @@ fn circle_profile_world(frame: &SketchFrame, cx: f32, cy: f32, r: f32) -> Vec<Ve
 
 /// Emit caps + side walls for a simple (possibly concave) profile, given its base loop and
 /// the matching `top` loop (one top vertex per base vertex, so the top cap may be slanted).
+/// Hand-rolled (non-kernel) mesh for extruding a face **with holes** (#268): hole-aware caps
+/// (via [`crate::polygon::triangulate_planar_with_holes`]) plus outer *and* inner side walls, so
+/// a ring/annulus renders as a hollow tube in the fallback mesher too. `holes_base`/`holes_top`
+/// are the hole loops projected to the base and (possibly slanted) top, matching `profile`/`top`.
+fn extrude_region(
+    profile: &[Vec3],
+    top: &[Vec3],
+    holes_base: &[Vec<Vec3>],
+    holes_top: &[Vec<Vec3>],
+    triangles: &mut Vec<[Vec3; 3]>,
+) {
+    let n = profile.len();
+    if n < 3 || top.len() != n {
+        return;
+    }
+    let normal = (profile[1] - profile[0])
+        .cross(profile[2] - profile[0])
+        .normalize_or_zero();
+    // Caps: base wound inward (reversed), top wound outward — matching `extrude_profile`.
+    let base_cap =
+        crate::polygon::triangulate_planar_with_holes(profile, holes_base, normal);
+    for [a, b, c] in base_cap {
+        triangles.push([a, c, b]);
+    }
+    let top_cap = crate::polygon::triangulate_planar_with_holes(top, holes_top, normal);
+    for [a, b, c] in top_cap {
+        triangles.push([a, b, c]);
+    }
+    // Outer side walls (one quad per edge).
+    for i in 0..n {
+        let j = (i + 1) % n;
+        triangles.push([profile[i], profile[j], top[j]]);
+        triangles.push([profile[i], top[j], top[i]]);
+    }
+    // Inner (hole) side walls, wound opposite so they face into the cavity.
+    for (hb, ht) in holes_base.iter().zip(holes_top) {
+        let m = hb.len();
+        if m < 3 || ht.len() != m {
+            continue;
+        }
+        for i in 0..m {
+            let j = (i + 1) % m;
+            triangles.push([hb[j], hb[i], ht[i]]);
+            triangles.push([hb[j], ht[i], ht[j]]);
+        }
+    }
+}
+
 fn extrude_profile(profile: &[Vec3], top: &[Vec3], triangles: &mut Vec<[Vec3; 3]>) {
     let n = profile.len();
     if n < 3 || top.len() != n {
@@ -3639,6 +3834,53 @@ mod tests {
             center,
             Some(ExtrudeFace::Boolean { op: crate::model::BooleanOp::Intersection, .. })
         ));
+    }
+
+    /// #268/#263: the concentric-ring (annulus) face resolves to a fillable region — its outer
+    /// loop with the inner circle as a hole — so `face_region_world` reports one hole.
+    #[test]
+    fn ring_face_resolves_to_a_holed_region() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 4.0, 0.0));
+        let ring = ExtrudeFace::Boolean {
+            op: crate::model::BooleanOp::Difference,
+            a: Box::new(ExtrudeFace::Circle(0)),
+            b: Box::new(ExtrudeFace::Circle(1)),
+        };
+        // Previously rejected (annulus) — now the outer loop resolves via the region.
+        let (outer, holes, _n) = face_region_world(&doc, &ring).expect("ring region");
+        assert!(outer.len() >= 3, "outer boundary present");
+        assert_eq!(holes.len(), 1, "inner circle becomes one hole");
+    }
+
+    /// #268: extruding the concentric ring builds a **tube** — outer cylinder minus inner
+    /// cylinder — with volume π(R² − r²)·h, not the full disc π·R²·h.
+    #[test]
+    #[cfg(feature = "occt")]
+    fn ring_extrusion_is_a_hollow_tube() {
+        let (mut doc, sketch) = sketch_doc();
+        let (big_r, small_r, h) = (10.0_f32, 4.0_f32, 20.0_f32);
+        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, big_r, 0.0));
+        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, small_r, 0.0));
+        let ring = ExtrudeFace::Boolean {
+            op: crate::model::BooleanOp::Difference,
+            a: Box::new(ExtrudeFace::Circle(0)),
+            b: Box::new(ExtrudeFace::Circle(1)),
+        };
+        doc.extrusions.push(extrusion(sketch, vec![ring], h));
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("tube mesh")).abs();
+        let expected = std::f32::consts::PI * (big_r * big_r - small_r * small_r) * h;
+        assert!(
+            (vol - expected).abs() / expected < 0.02,
+            "tube volume {vol} should be ~{expected} (π(R²−r²)h), not the full disc",
+        );
     }
 
     /// #177: chamfering a cylinder's top rim through the kernel removes an annular ring
