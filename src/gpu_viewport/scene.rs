@@ -2737,6 +2737,34 @@ impl<'a> SceneMesh<'a> {
                     &project,
                 );
             }
+            // A hovered sketch text (#307): trace its glyph outlines in the hover color, so
+            // the Extrude tool's "click picks the whole string" affordance is visible.
+            SceneElement::SketchText(ti) => {
+                let Some(text) = doc.sketch_texts.get(ti).filter(|t| !t.deleted) else {
+                    return;
+                };
+                let Some(frame) = crate::face::sketch_geometry_frame(doc, text.sketch) else {
+                    return;
+                };
+                let (sin, cos) = text.rotation.sin_cos();
+                for contour in &text.contours {
+                    if contour.len() < 2 {
+                        continue;
+                    }
+                    let mut pts: Vec<Vec3> = contour
+                        .iter()
+                        .map(|&(x, y)| {
+                            let rx = x * cos - y * sin + text.origin.0;
+                            let ry = x * sin + y * cos + text.origin.1;
+                            crate::face::local_to_world(&frame, rx, ry)
+                        })
+                        .collect();
+                    if let Some(first) = pts.first().copied() {
+                        pts.push(first);
+                    }
+                    self.push_polyline_segment(&pts, color, 3.0, cam, viewport, view_proj);
+                }
+            }
             SceneElement::FaceEdge(_)
             | SceneElement::Origin
             | SceneElement::Image(_)
@@ -2745,7 +2773,6 @@ impl<'a> SceneMesh<'a> {
             | SceneElement::RepeatOp(_)
             | SceneElement::SketchRepeatOp(_)
             | SceneElement::SketchSliceOp(_)
-            | SceneElement::SketchText(_)
             | SceneElement::SliceOp(_)
             | SceneElement::Revolution(_) => {}
             // Bodies and extrusions get their aura, tinted with the hover color.

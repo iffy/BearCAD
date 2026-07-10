@@ -10279,20 +10279,39 @@ impl App {
         if self.state.tool == Tool::Extrude {
             if self.extrude_gizmo_drag.is_none() {
                 hover_highlight = pointer_screen
-                    .and_then(|pp| pick_extrude_face(pp, &project, doc, cam.eye(), &cam, viewport, &vp))
-                    .and_then(|f| {
-                        // A `Boolean` region has no `FaceId` of its own (see
-                        // `ExtrudeFace::face_id()`'s doc comment) — highlight its exact
-                        // resolved loop instead of falling back to a whole-shape outline, so
-                        // the user can see the intersection/difference area distinctly.
-                        if let model::ExtrudeFace::Boolean { .. } = &f {
-                            let (profile, _) = extrude::face_profile_world(doc, &f)?;
-                            Some(gpu_viewport::ViewportHoverHighlight::ClosedLoop {
-                                world_loop: profile,
+                    .and_then(|pp| {
+                        // A sketch text under the cursor (#285/#307): hover the whole text so
+                        // it's clear a click picks all its glyph faces at once.
+                        let faces = self.text_glyph_faces_at(pp, &cam, viewport, &vp)?;
+                        let model::ExtrudeFace::TextGlyph { text, .. } = faces.first()? else {
+                            return None;
+                        };
+                        Some(gpu_viewport::ViewportHoverHighlight::Element(
+                            SceneElement::SketchText(*text),
+                        ))
+                    })
+                    .or_else(|| {
+                        pointer_screen
+                            .and_then(|pp| {
+                                pick_extrude_face(pp, &project, doc, cam.eye(), &cam, viewport, &vp)
                             })
-                        } else {
-                            Some(gpu_viewport::ViewportHoverHighlight::SketchFace(extrude_face_id(f)))
-                        }
+                            .and_then(|f| {
+                                // A `Boolean` region has no `FaceId` of its own (see
+                                // `ExtrudeFace::face_id()`'s doc comment) — highlight its exact
+                                // resolved loop instead of falling back to a whole-shape
+                                // outline, so the user can see the intersection/difference
+                                // area distinctly.
+                                if let model::ExtrudeFace::Boolean { .. } = &f {
+                                    let (profile, _) = extrude::face_profile_world(doc, &f)?;
+                                    Some(gpu_viewport::ViewportHoverHighlight::ClosedLoop {
+                                        world_loop: profile,
+                                    })
+                                } else {
+                                    Some(gpu_viewport::ViewportHoverHighlight::SketchFace(
+                                        extrude_face_id(f),
+                                    ))
+                                }
+                            })
                     })
                     .or_else(|| {
                         // A bare body face (#122): no sketch profile, but still highlighted so
