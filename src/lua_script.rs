@@ -2962,6 +2962,19 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // Toggle a view's edge length dimension (#180): the edge is named by its two world
     // endpoints `a`/`b` (`{x, y, z}`), matched to the body's projected feature edge.
     api.set(
+        "drawing_move_view",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let drawing: usize = opts.get("drawing")?;
+            let view: usize = opts.get("view")?;
+            let x: f32 = opts.get("x")?;
+            let y: f32 = opts.get("y")?;
+            unsafe { tick.exec(Instruction::MoveDrawingView { drawing, view, x, y }) }
+        })?,
+    )?;
+
+    // Toggle a view edge's length dimension by its two world endpoints (#180).
+    api.set(
         "drawing_dimension",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();

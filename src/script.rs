@@ -145,6 +145,13 @@ pub enum Instruction {
         body: usize,
         orientation: crate::model::DrawingOrientation,
     },
+    /// Move a placed view to a page position (fractions 0..1) (#297/#309).
+    MoveDrawingView {
+        drawing: usize,
+        view: usize,
+        x: f32,
+        y: f32,
+    },
     /// Toggle the length dimension of a view's edge, named by its two world endpoints.
     ToggleDrawingDimension {
         drawing: usize,
@@ -605,6 +612,9 @@ impl Instruction {
             } => format!(
                 "bearcad.drawing_view{{ drawing = {drawing}, body = {body}, orientation = {:?} }}",
                 orientation.label().to_ascii_lowercase()
+            ),
+            Instruction::MoveDrawingView { drawing, view, x, y } => format!(
+                "bearcad.drawing_move_view{{ drawing = {drawing}, view = {view}, x = {x}, y = {y} }}"
             ),
             Instruction::ToggleDrawingDimension {
                 drawing,
@@ -3241,6 +3251,16 @@ impl ScriptRunner {
                     drawing,
                     body,
                     orientation,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::MoveDrawingView { drawing, view, x, y } => {
+                let result = state.apply(Action::MoveDrawingView {
+                    drawing,
+                    view,
+                    pos_x: x,
+                    pos_y: y,
                 });
                 self.record_action_error(result);
                 StepResult::Continue
