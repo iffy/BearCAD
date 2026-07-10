@@ -1127,6 +1127,11 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        SceneElement::SketchText(i) => ElementScriptTokens {
+            kind: "sketch_text",
+            index: i,
+            point: None,
+        },
         SceneElement::SliceOp(i) => ElementScriptTokens {
             kind: "slice_op",
             index: i,
@@ -1932,6 +1937,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
         Tool::Move => "move",
         Tool::Repeat => "repeat",
         Tool::Slice => "slice",
+        Tool::Text => "text",
     }
 }
 

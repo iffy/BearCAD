@@ -3112,6 +3112,61 @@ impl App {
         }
     }
 
+    /// Text tool (#282): click in a sketch to drop a text element. Its glyph outlines are baked
+    /// from a default system font; the string, font, size, and style are then editable in the
+    /// context pane (#286). The new element is selected so its context control opens immediately.
+    fn handle_text_tool(
+        &mut self,
+        ui: &egui::Ui,
+        pointer_screen: Option<egui::Pos2>,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+    ) {
+        let Some(session) = self.state.sketch_session else {
+            return;
+        };
+        if !ui.input(|i| i.pointer.primary_pressed()) {
+            return;
+        }
+        let Some(pp) = pointer_screen else {
+            return;
+        };
+        let Some(world) = sketch_plane_point(cam, viewport, vp, &self.state.doc, session, pp) else {
+            return;
+        };
+        let Some(frame) = crate::face::sketch_geometry_frame(&self.state.doc, session.sketch) else {
+            return;
+        };
+        let (u, v) = world_to_local(&frame, world);
+        let Some(family) = default_text_font() else {
+            self.state.status = "No usable system font found for text".to_string();
+            return;
+        };
+        let before = self.state.doc.sketch_texts.len();
+        self.state.apply(Action::CreateSketchText {
+            sketch: session.sketch,
+            text: "Text".to_string(),
+            font_family: family,
+            bold: false,
+            italic: false,
+            underline: false,
+            size: 10.0,
+            size_expr: "10".to_string(),
+            origin: (u, v),
+            rotation: 0.0,
+            wrap_width: None,
+        });
+        // Select the new text so its context editor opens right away.
+        if self.state.doc.sketch_texts.len() > before {
+            let idx = self.state.doc.sketch_texts.len() - 1;
+            self.state.apply(Action::ClickSceneElement {
+                element: SceneElement::SketchText(idx),
+                additive: false,
+            });
+        }
+    }
+
     /// Floating angle field for the in-progress revolve (Enter commits). Mirrors the
     /// extrude distance input.
     fn show_revolve_angle_input(&mut self, ui: &egui::Ui, project: &impl Fn(Vec3) -> Option<egui::Pos2>) {
@@ -3635,6 +3690,16 @@ impl eframe::App for App {
                 .clicked()
                 {
                     self.state.apply(Action::SetTool(Tool::Chamfer));
+                }
+                if icons::selectable_icon_button(
+                    ui,
+                    icons::IconId::Text,
+                    self.state.tool == Tool::Text,
+                    shortcuts::compact_label("Text", shortcuts::tool_shortcut(Tool::Text)),
+                )
+                .clicked()
+                {
+                    self.state.apply(Action::SetTool(Tool::Text));
                 }
                 if icons::selectable_icon_button(
                     ui,
@@ -6361,6 +6426,17 @@ fn sketch_plane_point(
     let face = doc.sketch_face(session.sketch)?;
     let frame = sketch_frame(doc, face)?;
     cam.ray_plane_hit(screen, viewport, vp, frame.origin, frame.normal)
+}
+
+/// A sensible default font family for a newly placed text (#282): a common sans/serif if
+/// installed, else the first available system font. `None` only if no fonts are installed.
+fn default_text_font() -> Option<String> {
+    for fam in ["Helvetica", "Arial", "Segoe UI", "DejaVu Sans", "Liberation Sans"] {
+        if crate::text::font_bytes(fam, false, false).is_some() {
+            return Some(fam.to_string());
+        }
+    }
+    crate::text::system_font_families().into_iter().next()
 }
 
 /// Toggle `value` in/out of `set` (add if absent, remove if present). Small helper for the
@@ -9449,6 +9525,10 @@ impl App {
             self.handle_slice_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
         }
 
+        if self.state.tool == Tool::Text {
+            self.handle_text_tool(ui, pointer_screen, &cam, viewport, &vp);
+        }
+
         if matches!(self.state.tool, Tool::Chamfer | Tool::Fillet) {
             self.handle_vertex_treatment_tool(ui, &project, pointer_screen);
             self.show_vertex_treatment_amount_input(ui, &project);
@@ -11245,6 +11325,13 @@ impl App {
                     "Slice — pick cutting planes/faces in the Cutters picker • Enter: commit • Esc: cancel"
                 } else {
                     "Slice — click one or more bodies to slice"
+                }
+            }
+            Tool::Text => {
+                if self.state.sketch_session.is_some() {
+                    "Text — click in the sketch to place text • edit it in the context pane"
+                } else {
+                    "Text — open a sketch first"
                 }
             }
             Tool::Rectangle => {

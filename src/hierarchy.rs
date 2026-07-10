@@ -117,6 +117,8 @@ pub enum SceneElement {
     SketchRepeatOp(usize),
     /// A 2D in-sketch slice (#224/#229).
     SketchSliceOp(usize),
+    /// A sketch text element (#282): selecting it selects the whole text.
+    SketchText(usize),
     /// A slice operation on bodies (Slice tool).
     SliceOp(usize),
     /// A revolved solid (Revolve tool, #211).
@@ -262,6 +264,10 @@ impl ElementVisibility {
             SceneElement::RepeatOp(_) => true,
             SceneElement::SketchRepeatOp(_) => true,
             SceneElement::SketchSliceOp(_) => true,
+            SceneElement::SketchText(index) => doc
+                .sketch_texts
+                .get(index)
+                .is_some_and(|t| self.effective_visible(doc, SceneElement::Sketch(t.sketch))),
             SceneElement::SliceOp(_) => true,
             SceneElement::Revolution(_) => true,
             // The origin is always visible while sketching (#189).
@@ -1382,6 +1388,11 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
         SceneElement::RepeatOp(_) => None,
         SceneElement::SketchRepeatOp(_) => None,
         SceneElement::SketchSliceOp(_) => None,
+        // A sketch text nests under the sketch it lives in (#282).
+        SceneElement::SketchText(index) => doc
+            .sketch_texts
+            .get(index)
+            .map(|t| SceneElement::Sketch(t.sketch)),
         SceneElement::SliceOp(_) => None,
         SceneElement::Revolution(_) => None,
     }
@@ -1434,6 +1445,11 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                     out.insert(SceneElement::Constraint(ci));
                 }
             }
+            for (ti, text) in doc.sketch_texts.iter().enumerate() {
+                if !text.deleted && text.sketch == sketch {
+                    out.insert(SceneElement::SketchText(ti));
+                }
+            }
             for (pi, plane) in doc.construction_planes.iter().enumerate() {
                 if matches!(plane.parent, ConstructionPlaneParent::Sketch(s) if s == sketch) {
                     out.insert(SceneElement::ConstructionPlane(pi));
@@ -1479,6 +1495,7 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         | SceneElement::Origin
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
+        | SceneElement::SketchText(_)
         | SceneElement::Image(_) => {}
         SceneElement::BooleanOp(index) => {
             if let Some(op) = doc.boolean_ops.get(index) {

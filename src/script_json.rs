@@ -76,6 +76,7 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
         SceneElement::RepeatOp(_) => "repeat_op",
         SceneElement::SketchRepeatOp(_) => "sketch_repeat_op",
         SceneElement::SketchSliceOp(_) => "sketch_slice_op",
+        SceneElement::SketchText(_) => "sketch_text",
         SceneElement::SliceOp(_) => "slice_op",
         SceneElement::Revolution(_) => "revolution",
     }
@@ -100,6 +101,7 @@ pub fn scene_element_selection_index(element: &SceneElement) -> Option<usize> {
         | SceneElement::RepeatOp(i)
         | SceneElement::SketchRepeatOp(i)
         | SceneElement::SketchSliceOp(i)
+        | SceneElement::SketchText(i)
         | SceneElement::SliceOp(i)
         | SceneElement::Revolution(i) => Some(*i),
         SceneElement::Origin

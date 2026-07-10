@@ -109,6 +109,9 @@ pub enum Tool {
     /// fragments on either side of the cutter planes. Inputs become shadow bodies; the
     /// fragments are new bodies; the operation is editable.
     Slice,
+    /// Place text in a sketch (Text tool, #282): click to drop a text element whose glyph
+    /// outlines are baked from a system font; edit its string/font/size/style in the context pane.
+    Text,
 }
 
 impl Tool {
@@ -3209,6 +3212,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::RepeatOp(i) => format!("Repeat operation {i}"),
         SceneElement::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
         SceneElement::SketchSliceOp(i) => format!("Sketch slice {i}"),
+        SceneElement::SketchText(i) => format!("Text {i}"),
         SceneElement::SliceOp(i) => format!("Slice operation {i}"),
         SceneElement::Revolution(i) => format!("Revolve operation {i}"),
         SceneElement::Origin => "Origin".to_string(),
@@ -4049,6 +4053,10 @@ impl AppState {
                         "Slice tool — pick bodies, then cutting planes/faces, Enter commits"
                             .to_string()
                     }
+                    Tool::Text if self.sketch_session.is_some() => {
+                        "Text tool — click to place text".to_string()
+                    }
+                    Tool::Text => "Text tool — open a sketch first".to_string(),
                 };
                 if tool == Tool::Dimension {
                     self.try_begin_dimension_from_selection();

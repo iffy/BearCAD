@@ -1792,6 +1792,7 @@ pub fn selection_world_bounds(
             // selected/framed as their own elements; the op node itself contributes nothing here.
             | SceneElement::SketchRepeatOp(_)
             | SceneElement::SketchSliceOp(_)
+            | SceneElement::SketchText(_)
             | SceneElement::Image(_) => {}
         }
     }

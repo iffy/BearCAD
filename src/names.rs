@@ -21,6 +21,7 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::RepeatOp(_)
         | SceneElement::SketchRepeatOp(_)
         | SceneElement::SketchSliceOp(_)
+        | SceneElement::SketchText(_)
         | SceneElement::SliceOp(_)
         | SceneElement::Revolution(_) => Some(element),
         SceneElement::Point(_)
@@ -111,6 +112,7 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         SceneElement::RepeatOp(index) => doc.repeat_ops.get(index)?.name.as_deref(),
         SceneElement::SketchRepeatOp(index) => doc.sketch_repeat_ops.get(index)?.name.as_deref(),
         SceneElement::SketchSliceOp(index) => doc.sketch_slice_ops.get(index)?.name.as_deref(),
+        SceneElement::SketchText(index) => doc.sketch_texts.get(index)?.name.as_deref(),
         SceneElement::SliceOp(index) => doc.slice_ops.get(index)?.name.as_deref(),
         SceneElement::Revolution(index) => doc.revolutions.get(index)?.name.as_deref(),
         SceneElement::Point(_)
@@ -220,6 +222,13 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 .get_mut(index)
                 .ok_or_else(|| format!("sketch slice {index} not found"))?;
             op.name = stored;
+        }
+        SceneElement::SketchText(index) => {
+            let t = doc
+                .sketch_texts
+                .get_mut(index)
+                .ok_or_else(|| format!("sketch text {index} not found"))?;
+            t.name = stored;
         }
         SceneElement::SliceOp(index) => {
             let op = doc
@@ -403,6 +412,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::RepeatOp(i) => format!("Repeat {i}"),
         SceneElement::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
         SceneElement::SketchSliceOp(i) => format!("Sketch slice {i}"),
+        SceneElement::SketchText(i) => format!("Text {i}"),
         SceneElement::SliceOp(i) => format!("Slice {i}"),
         SceneElement::Revolution(i) => format!("Revolve {i}"),
     }

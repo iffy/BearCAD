@@ -748,6 +748,25 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   is not yet individually undoable (3D edge treatments had the same gap and now undo via a
   transient snapshot marker, #168 — calibration can adopt the same mechanism).
 
+### 3.4.3 Sketch text (#282)
+- **Text tool:** with a sketch open, the **Text** tool (sketch toolbar) places a `SketchText`
+  element where you click. Its glyph outlines are **baked** at create/edit time from a system
+  font into sketch-local mm contours (`src/text.rs`: `fontdb` selects the font by
+  family+weight/italic and yields its bytes; `ttf-parser` walks each glyph's outline, flattened to
+  polylines and laid out along the baseline by each glyph's advance, multi-line stacking by
+  ascent/line-gap). The **source font bytes are embedded** in the document (base64 in JSON) so the
+  text renders identically on a machine that lacks the font — like a PDF; if the font is missing on
+  load, the stored outlines still render.
+- **Model/rendering:** `SketchText` stores the string, font family, bold/italic/underline, size
+  (+ expression), baseline origin, rotation, optional wrap width, the baked `contours`, and the
+  embedded `font_bytes`. The baked contours (outer loops + counters/holes, separated by winding)
+  render as closed polylines on the sketch plane, transformed by the element's origin/rotation. A
+  `SketchText` is a first-class element — one node nested under its sketch in the Elements pane and
+  graph, selectable/renamable/deletable/undoable; selecting it selects the whole text. Persisted in
+  the `.bearcad` file (`sketch_text` nodes). Editing (`EditSketchText`) re-bakes from the font,
+  falling back to the stored outlines when only the transform/style changed and the font is gone.
+- **Scriptable:** tool name `text`; element kind `sketch_text`.
+
 ### 3.4.2 Web build (wasm32)
 
 BearCAD also compiles to **wasm32-unknown-unknown** and runs in the browser (built by

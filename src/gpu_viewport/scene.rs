@@ -827,6 +827,47 @@ impl ViewportScene {
             }
         }
 
+        // Sketch text (#282): draw each baked glyph contour as a closed polyline, transformed by
+        // the text's origin/rotation onto its sketch plane. Selected text uses the selection color.
+        for (ti, text) in input.doc.sketch_texts.iter().enumerate() {
+            if text.deleted
+                || !input
+                    .element_visibility
+                    .effective_visible(input.doc, SceneElement::SketchText(ti))
+            {
+                continue;
+            }
+            let Some(frame) = crate::face::sketch_geometry_frame(input.doc, text.sketch) else {
+                continue;
+            };
+            let dim = input.sketch_session.is_some_and(|s| text.sketch != s.sketch);
+            let selected = input.selection.is_selected(SceneElement::SketchText(ti));
+            let color = if selected {
+                input.palette.rect_line_constrained
+            } else {
+                sketch_color(input.palette.rect_line, dim)
+            };
+            let (sin, cos) = text.rotation.sin_cos();
+            for contour in &text.contours {
+                if contour.len() < 2 {
+                    continue;
+                }
+                let mut pts: Vec<Vec3> = contour
+                    .iter()
+                    .map(|&(x, y)| {
+                        // Rotate about the text origin, then place on the sketch plane.
+                        let rx = x * cos - y * sin + text.origin.0;
+                        let ry = x * sin + y * cos + text.origin.1;
+                        crate::face::local_to_world(&frame, rx, ry)
+                    })
+                    .collect();
+                if let Some(first) = pts.first().copied() {
+                    pts.push(first); // close the loop
+                }
+                mesh.push_polyline_segment(&pts, color, 2.0, input.cam, input.viewport, &vp);
+            }
+        }
+
         // Draggable tangent-handle markers for curved lines in the active sketch (#54): a
         // dashed guide from each endpoint to its handle, plus a disc at the handle itself.
         if let Some(session) = input.sketch_session {
@@ -2704,6 +2745,7 @@ impl<'a> SceneMesh<'a> {
             | SceneElement::RepeatOp(_)
             | SceneElement::SketchRepeatOp(_)
             | SceneElement::SketchSliceOp(_)
+            | SceneElement::SketchText(_)
             | SceneElement::SliceOp(_)
             | SceneElement::Revolution(_) => {}
             // Bodies and extrusions get their aura, tinted with the hover color.

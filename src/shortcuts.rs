@@ -86,9 +86,13 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
         Tool::Chamfer => Some(ShortcutHint::plain("K")),
         Tool::Fillet => Some(ShortcutHint::plain("F")),
         // No plain-letter shortcut yet; toolbar/palette only.
-        Tool::Loft | Tool::Revolve | Tool::Combine | Tool::Move | Tool::Repeat | Tool::Slice => {
-            None
-        }
+        Tool::Loft
+        | Tool::Revolve
+        | Tool::Combine
+        | Tool::Move
+        | Tool::Repeat
+        | Tool::Slice
+        | Tool::Text => None,
         Tool::Select => None,
     }
 }

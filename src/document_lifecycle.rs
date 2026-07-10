@@ -87,6 +87,10 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             .tracing_images
             .get(index)
             .is_some_and(|img| !img.deleted),
+        SceneElement::SketchText(index) => doc
+            .sketch_texts
+            .get(index)
+            .is_some_and(|t| !t.deleted),
     }
 }
 
@@ -372,6 +376,14 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
             if let Some(image) = doc.tracing_images.get_mut(index) {
                 if !image.deleted {
                     image.deleted = true;
+                    changed = true;
+                }
+            }
+        }
+        SceneElement::SketchText(index) => {
+            if let Some(t) = doc.sketch_texts.get_mut(index) {
+                if !t.deleted {
+                    t.deleted = true;
                     changed = true;
                 }
             }
