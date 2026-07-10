@@ -10,6 +10,8 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 A drawing is a black-on-white sheet of a part for printing. A document can hold as many as
 you like, and each one collects **views** — a body shown from a chosen direction.
 
+![A drawing page with front and top views of a plate, dimensions shown](/img/screenshots/drawing.png)
+
 ## How to use it
 
 1. From the **CAD** menu, choose **New Drawing**. The drawing appears in the Elements tree with
