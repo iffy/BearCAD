@@ -8596,14 +8596,14 @@ impl App {
         }
         ui.separator();
 
-        ui.colored_label(
-            egui::Color32::from_gray(120),
-            if self.state.tool == Tool::Dimension {
-                "Dimension tool: click an edge for its length · Shift+click two edges for their angle"
-            } else {
-                "Pick the Dimension tool to add dimensions by clicking edges"
-            },
-        );
+        // Only the active Dimension tool gets a usage hint (#292): the idle prompt that used to
+        // sit here was noise on every drawing.
+        if self.state.tool == Tool::Dimension {
+            ui.colored_label(
+                egui::Color32::from_gray(120),
+                "Dimension tool: click an edge for its length · Shift+click two edges for their angle",
+            );
+        }
         // The sheet: each view is a cell with its caption and a projected wireframe of its body.
         let views = self
             .state
