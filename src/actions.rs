@@ -7008,9 +7008,14 @@ impl AppState {
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
-                let Some((shaped, font_bytes)) =
-                    crate::text::shape_with_system_font(&font_family, bold, italic, size, &text)
-                else {
+                let Some((shaped, font_bytes)) = crate::text::shape_with_system_font_wrapped(
+                    &font_family,
+                    bold,
+                    italic,
+                    size,
+                    &text,
+                    wrap_width,
+                ) else {
                     let e = format!("Font \"{font_family}\" not found or unreadable");
                     self.status = e.clone();
                     return ActionResult::Err(e);
@@ -7062,7 +7067,14 @@ impl AppState {
                 // Re-bake from the font; fall back to the existing outlines/bytes if the font is
                 // gone but only the transform/style changed and the string is unchanged.
                 let (contours, font_bytes) =
-                    match crate::text::shape_with_system_font(&font_family, bold, italic, size, &text) {
+                    match crate::text::shape_with_system_font_wrapped(
+                        &font_family,
+                        bold,
+                        italic,
+                        size,
+                        &text,
+                        wrap_width,
+                    ) {
                         Some((shaped, bytes)) => (shaped.contours, bytes),
                         None if text == existing.text => {
                             (existing.contours.clone(), existing.font_bytes.clone())

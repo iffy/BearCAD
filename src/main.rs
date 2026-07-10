@@ -537,6 +537,9 @@ struct App {
     /// The Aligned-view tool's chosen parent view (#296): the view index within the open
     /// drawing, once the user has clicked a projection to align to.
     drawing_align_parent: Option<usize>,
+    /// Text tool press anchor in sketch-local coords (#282): set on press; on release a drag
+    /// beyond a threshold creates a wrapped textbox of that width, a click a growing one.
+    text_tool_anchor: Option<(f32, f32)>,
     angle_gizmo_drag: Option<AngleGizmoDrag>,
     vertex_drag: Option<VertexDrag>,
     bezier_handle_drag: Option<BezierHandleDrag>,
@@ -667,6 +670,7 @@ impl App {
             dim_label_drag: None,
             drawing_dim_label_drag: None,
             drawing_align_parent: None,
+            text_tool_anchor: None,
             angle_gizmo_drag: None,
             extrude_gizmo_drag: None,
             pending_extrude_target: None,
@@ -3466,21 +3470,37 @@ impl App {
         vp: &glam::Mat4,
     ) {
         let Some(session) = self.state.sketch_session else {
-            return;
-        };
-        if !ui.input(|i| i.pointer.primary_pressed()) {
-            return;
-        }
-        let Some(pp) = pointer_screen else {
-            return;
-        };
-        let Some(world) = sketch_plane_point(cam, viewport, vp, &self.state.doc, session, pp) else {
+            self.text_tool_anchor = None;
             return;
         };
         let Some(frame) = crate::face::sketch_geometry_frame(&self.state.doc, session.sketch) else {
             return;
         };
-        let (u, v) = world_to_local(&frame, world);
+        let uv_at = |pp: egui::Pos2, this: &Self| {
+            sketch_plane_point(cam, viewport, vp, &this.state.doc, session, pp)
+                .map(|w| world_to_local(&frame, w))
+        };
+
+        // Press anchors the placement (#282): a drag from here defines a wrap width, a click
+        // (release near the anchor) makes a growing textbox.
+        if ui.input(|i| i.pointer.primary_pressed()) {
+            self.text_tool_anchor = pointer_screen.and_then(|pp| uv_at(pp, self));
+            return;
+        }
+        if !ui.input(|i| i.pointer.primary_released()) {
+            return;
+        }
+        let Some((au, av)) = self.text_tool_anchor.take() else {
+            return;
+        };
+        let (u, v, wrap_width) = match pointer_screen.and_then(|pp| uv_at(pp, self)) {
+            // A drag wide enough (in mm) wraps to that width; the origin is the left edge and
+            // the top of the dragged box (text grows downward from the baseline of line 1).
+            Some((ru, rv)) if (ru - au).abs() >= 3.0 => {
+                (au.min(ru), av.max(rv), Some((ru - au).abs()))
+            }
+            _ => (au, av, None),
+        };
         let Some(family) = default_text_font() else {
             self.state.status = "No usable system font found for text".to_string();
             return;
@@ -3497,7 +3517,7 @@ impl App {
             size_expr: "10".to_string(),
             origin: (u, v),
             rotation: 0.0,
-            wrap_width: None,
+            wrap_width,
         });
         // Select the new text so its context editor opens right away.
         if self.state.doc.sketch_texts.len() > before {
@@ -4747,6 +4767,7 @@ impl eframe::App for App {
                                 t.size_expr.clone()
                             },
                             rotation_deg: format!("{:.0}", t.rotation.to_degrees()),
+                            wrap: t.wrap_width.map(|w| format!("{w:.0}")).unwrap_or_default(),
                         })
                 },
                 drawing_view: {
@@ -5279,6 +5300,7 @@ impl eframe::App for App {
                     let mut size = existing.size;
                     let mut size_expr = existing.size_expr.clone();
                     let mut rotation = existing.rotation;
+                    let mut wrap_width = existing.wrap_width;
                     let mut valid = true;
                     match edit {
                         context::SketchTextEdit::Text(v) => text = v,
@@ -5300,6 +5322,20 @@ impl eframe::App for App {
                             Ok(deg) => rotation = deg.to_radians(),
                             Err(_) => valid = false,
                         },
+                        // Empty clears wrapping; a positive number wraps to that width (#282).
+                        context::SketchTextEdit::Wrap(v) => {
+                            let t = v.trim();
+                            if t.is_empty() {
+                                wrap_width = None;
+                            } else {
+                                match crate::value::eval_length_mm_in_doc(t, &self.state.doc)
+                                    .filter(|w| *w > 0.0)
+                                {
+                                    Some(w) => wrap_width = Some(w),
+                                    None => valid = false,
+                                }
+                            }
+                        }
                     }
                     if valid && !text.trim().is_empty() {
                         self.state.apply(Action::EditSketchText {
@@ -5312,7 +5348,7 @@ impl eframe::App for App {
                             size,
                             size_expr,
                             rotation,
-                            wrap_width: existing.wrap_width,
+                            wrap_width,
                         });
                     }
                 }

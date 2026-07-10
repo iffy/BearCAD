@@ -64,6 +64,19 @@ pub fn font_bytes(family: &str, bold: bool, italic: bool) -> Option<Vec<u8>> {
 /// follows the font's units-per-em). Returns every glyph contour in millimetres, positioned along
 /// the baseline (newlines start a new line below). `None` if the bytes aren't a parseable face.
 pub fn outline_text(font_bytes: &[u8], size_mm: f32, text: &str) -> Option<ShapedText> {
+    outline_text_wrapped(font_bytes, size_mm, text, None)
+}
+
+/// Like [`outline_text`], but when `wrap_width` is `Some(w)` (mm) the text **word-wraps** to
+/// that width (#282): words that would overflow the line start a new line below, growing the
+/// block downward. Explicit newlines still force line breaks. `None` = no wrapping (a single
+/// growing line per input line, as before).
+pub fn outline_text_wrapped(
+    font_bytes: &[u8],
+    size_mm: f32,
+    text: &str,
+    wrap_width: Option<f32>,
+) -> Option<ShapedText> {
     let face = ttf_parser::Face::parse(font_bytes, 0).ok()?;
     let upem = face.units_per_em() as f32;
     if upem <= 0.0 {
@@ -71,27 +84,84 @@ pub fn outline_text(font_bytes: &[u8], size_mm: f32, text: &str) -> Option<Shape
     }
     let scale = size_mm / upem;
     let line_height = (face.ascender() as f32 - face.descender() as f32 + face.line_gap() as f32) * scale;
+    let advance = |ch: char| {
+        let gid = face.glyph_index(ch).unwrap_or(ttf_parser::GlyphId(0));
+        face.glyph_hor_advance(gid).unwrap_or(0) as f32 * scale
+    };
+    let word_width = |w: &str| w.chars().map(advance).sum::<f32>();
 
     let mut out = ShapedText::default();
     let mut pen_x = 0.0f32;
     let mut pen_y = 0.0f32;
-    for ch in text.chars() {
-        if ch == '\n' {
-            pen_x = 0.0;
-            pen_y -= line_height;
-            continue;
-        }
+    let mut emit = |pen_x: &mut f32, pen_y: f32, ch: char| {
         let gid = face.glyph_index(ch).unwrap_or(ttf_parser::GlyphId(0));
-        let mut builder = OutlineCollector::new(scale, pen_x, pen_y);
-        // `outline_glyph` returns the glyph's bbox (or None for whitespace); either way we still
-        // advance the pen so spacing is correct.
+        let mut builder = OutlineCollector::new(scale, *pen_x, pen_y);
         face.outline_glyph(gid, &mut builder);
         builder.finish();
         out.contours.extend(builder.contours);
-        let advance = face.glyph_hor_advance(gid).unwrap_or(0) as f32 * scale;
-        pen_x += advance;
+        *pen_x += advance(ch);
+    };
+
+    for (li, line) in text.split('\n').enumerate() {
+        if li > 0 {
+            pen_x = 0.0;
+            pen_y -= line_height;
+        }
+        match wrap_width.filter(|w| *w > 0.0) {
+            None => {
+                for ch in line.chars() {
+                    emit(&mut pen_x, pen_y, ch);
+                }
+            }
+            Some(w) => {
+                // Word-wrap: break before a word that would overflow (unless the line is empty).
+                let mut first_on_line = true;
+                for word in split_keep_spaces(line) {
+                    let ww = word_width(&word);
+                    let is_space = word.chars().all(|c| c.is_whitespace());
+                    if !first_on_line && !is_space && pen_x + ww > w {
+                        pen_x = 0.0;
+                        pen_y -= line_height;
+                        first_on_line = true;
+                    }
+                    // Drop leading spaces at the very start of a wrapped line.
+                    if first_on_line && is_space {
+                        continue;
+                    }
+                    for ch in word.chars() {
+                        emit(&mut pen_x, pen_y, ch);
+                    }
+                    first_on_line = false;
+                }
+            }
+        }
     }
     Some(out)
+}
+
+/// Split a line into alternating word / whitespace runs, preserving the spaces so advances line
+/// up (#282). Used by the word-wrapping layout.
+fn split_keep_spaces(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut cur_space = None;
+    for ch in line.chars() {
+        let is_space = ch.is_whitespace();
+        match cur_space {
+            Some(s) if s == is_space => cur.push(ch),
+            _ => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+                cur.push(ch);
+                cur_space = Some(is_space);
+            }
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
 }
 
 /// Convenience: select a system font by family/style and outline `text`, returning the contours
@@ -103,8 +173,20 @@ pub fn shape_with_system_font(
     size_mm: f32,
     text: &str,
 ) -> Option<(ShapedText, Vec<u8>)> {
+    shape_with_system_font_wrapped(family, bold, italic, size_mm, text, None)
+}
+
+/// Like [`shape_with_system_font`], but honoring an optional `wrap_width` (mm) for word-wrap.
+pub fn shape_with_system_font_wrapped(
+    family: &str,
+    bold: bool,
+    italic: bool,
+    size_mm: f32,
+    text: &str,
+    wrap_width: Option<f32>,
+) -> Option<(ShapedText, Vec<u8>)> {
     let bytes = font_bytes(family, bold, italic)?;
-    let shaped = outline_text(&bytes, size_mm, text)?;
+    let shaped = outline_text_wrapped(&bytes, size_mm, text, wrap_width)?;
     Some((shaped, bytes))
 }
 
@@ -292,6 +374,39 @@ mod tests {
             }
         }
         None
+    }
+
+    /// #282: word-wrapping to a narrow width pushes later words onto new lines, so the block
+    /// gets taller (more negative min-y) and no wider than the wrap width.
+    #[test]
+    fn wrapping_breaks_words_onto_new_lines() {
+        let Some(bytes) = any_font() else {
+            eprintln!("no system fonts; skipping");
+            return;
+        };
+        let text = "one two three four five";
+        let unwrapped = outline_text(&bytes, 8.0, text).expect("unwrapped");
+        // Width of the whole phrase on one line.
+        let max_x = |s: &ShapedText| {
+            s.contours.iter().flatten().map(|p| p.0).fold(f32::MIN, f32::max)
+        };
+        let min_y = |s: &ShapedText| {
+            s.contours.iter().flatten().map(|p| p.1).fold(f32::MAX, f32::min)
+        };
+        let full_width = max_x(&unwrapped);
+        assert!(full_width > 20.0, "phrase should be reasonably wide");
+        // Wrap to a third of that: it must break onto multiple lines (taller, narrower).
+        let wrapped =
+            outline_text_wrapped(&bytes, 8.0, text, Some(full_width / 3.0)).expect("wrapped");
+        assert!(
+            max_x(&wrapped) <= full_width * 0.7 + 1.0,
+            "wrapped block is narrower ({} vs {full_width})",
+            max_x(&wrapped)
+        );
+        assert!(
+            min_y(&wrapped) < min_y(&unwrapped) - 1.0,
+            "wrapped block is taller (grows downward)"
+        );
     }
 
     #[test]

@@ -761,13 +761,16 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 
 ### 3.4.3 Sketch text (#282)
 - **Text tool:** with a sketch open, the **Text** tool (sketch toolbar) places a `SketchText`
-  element where you click. Its glyph outlines are **baked** at create/edit time from a system
-  font into sketch-local mm contours (`src/text.rs`: `fontdb` selects the font by
+  element. **Clicking** drops a textbox that grows in width to fit the text; **dragging a
+  rectangle** (#282) drops one that **word-wraps** to the dragged width and grows downward (the
+  drag width becomes the `wrap_width`). Its glyph outlines are **baked** at create/edit time
+  from a system font into sketch-local mm contours (`src/text.rs`: `fontdb` selects the font by
   family+weight/italic and yields its bytes; `ttf-parser` walks each glyph's outline, flattened to
   polylines and laid out along the baseline by each glyph's advance, multi-line stacking by
-  ascent/line-gap). The **source font bytes are embedded** in the document (base64 in JSON) so the
-  text renders identically on a machine that lacks the font — like a PDF; if the font is missing on
-  load, the stored outlines still render.
+  ascent/line-gap; word-wrap breaks words that overflow `wrap_width` onto new lines,
+  `text::outline_text_wrapped`). The **source font bytes are embedded** in the document (base64
+  in JSON) so the text renders identically on a machine that lacks the font — like a PDF; if the
+  font is missing on load, the stored outlines still render.
 - **Model/rendering:** `SketchText` stores the string, font family, bold/italic/underline, size
   (+ expression), baseline origin, rotation, optional wrap width, the baked `contours`, and the
   embedded `font_bytes`. The baked contours (outer loops + counters/holes, separated by winding)
@@ -779,9 +782,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 - **Context editor (#286):** selecting exactly one text opens its editor in the context pane: a
   multi-line textarea, a font-family chooser listing the installed families (`fontdb`),
   **B**/**I**/**U** style toggles, a **Size** field accepting length expressions (parameters
-  work: `w / 2`), and a **Rotation°** field in degrees. Every change re-bakes the glyphs
-  immediately. A size expression is stored as typed; the evaluated size only moves once the
-  expression is valid, so mid-edit states don't clobber the text.
+  work: `w / 2`), a **Rotation°** field in degrees, and a **Wrap width** field (mm; empty
+  grows the box to fit, a value word-wraps to that width, #282). Every change re-bakes the
+  glyphs immediately. A size expression is stored as typed; the evaluated size only moves once
+  the expression is valid, so mid-edit states don't clobber the text.
 - **Move-tool rotation (#286):** with the **Move** tool active and one text selected, the
   rotation-ring gizmo (#216's ring) appears in the sketch plane around the text's baseline
   origin, sized to the glyph outlines; dragging the ring turns the text about its origin, live.

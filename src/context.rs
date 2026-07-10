@@ -322,6 +322,8 @@ pub struct SketchTextControl {
     pub size_expr: String,
     /// Rotation in degrees (the model stores radians).
     pub rotation_deg: String,
+    /// Wrap width in mm, empty when unwrapped (#282).
+    pub wrap: String,
 }
 
 /// One edit from the sketch-text context section (#286). Each re-bakes the text.
@@ -334,6 +336,8 @@ pub enum SketchTextEdit {
     Underline(bool),
     Size(String),
     Rotation(String),
+    /// Wrap width in mm (#282): empty clears wrapping (a growing single-line box).
+    Wrap(String),
 }
 
 /// One edit from the Combine context section.
@@ -2064,6 +2068,21 @@ pub fn show_pane(
             let mut rot = control.rotation_deg.clone();
             if ui.add(egui::TextEdit::singleline(&mut rot).desired_width(70.0)).changed() {
                 on_sketch_text_edit(SketchTextEdit::Rotation(rot));
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Wrap width");
+            let mut wrap = control.wrap.clone();
+            if ui
+                .add(
+                    egui::TextEdit::singleline(&mut wrap)
+                        .hint_text("grow")
+                        .desired_width(70.0),
+                )
+                .on_hover_text("mm to wrap to; empty grows the box to fit")
+                .changed()
+            {
+                on_sketch_text_edit(SketchTextEdit::Wrap(wrap));
             }
         });
     }

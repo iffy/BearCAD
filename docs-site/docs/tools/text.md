@@ -13,8 +13,9 @@ glyph outlines you can edit, rotate, and extrude or cut like any other sketch pr
 ## How to use it
 
 1. Open a sketch and pick the **Text** tool.
-2. Click where the text should start. A text element appears at that point and is selected,
-   so its editor opens in the context pane immediately.
+2. **Click** where the text should start for a box that grows to fit, or **drag a rectangle**
+   to make a box that wraps the text to that width and grows downward. Either way a text
+   element appears, selected, so its editor opens in the context pane immediately.
 3. In the context pane, type your text (multi-line works — press Enter for a new line),
    choose a **font**, toggle **B**/**I**/**U**, and set the **size** and **rotation**.
 
@@ -34,6 +35,9 @@ its editor in the context pane:
 - **Size** — the font size in mm. This is an expression field: numbers, units (`1cm`),
   parameters, and arithmetic (`w / 2`) all work, so lettering scales with your model.
 - **Rotation°** — turns the text about its start point, in degrees.
+- **Wrap width** — leave empty to grow the box to fit the text, or enter a width in mm to
+  word-wrap the text to that width (it grows downward). Dragging a rectangle with the Text
+  tool sets this for you.
 
 ## Rotating with the Move tool
 
