@@ -931,9 +931,13 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   app state), handing the central area back to the 3D view — so the model and a drawing are
   visible at once. Closing the window (or `Esc`) dismisses it. Native only.
 - **Workbenches (#254/#271/#272):** opening a drawing switches to the **Drawing workbench**,
-  whose toolbar shows only the tools that apply to drawings — **Select, Add view, Dimension**
-  (#295: no Move tool; the Select tool drags projections directly, #293). Entering the
-  workbench with any other tool active drops back to Select.
+  whose toolbar shows **Back, Select, Add view, Aligned view, Dimension, Text** (#295: no Move
+  tool; the Select tool drags projections directly, #293). Entering the workbench with any
+  other tool active drops back to Select. A **Back button** (left of Select, #318) returns to
+  the model; **Escape no longer exits** the workbench (it cancels in-progress tool actions).
+  Clicking anywhere on a projection card selects it (not just the caption, #316), and a
+  hovered card gets a highlight border. The model-only **Selection** element picker is hidden
+  here (#317), since projections and annotations have their own selection state.
 - **Aligned-projection tool (#296):** the workbench's **Aligned view** tool (projection icon;
   tool name `drawing_align`) derives an orthographic child from an existing projection. Click a
   parent view, then move the mouse — the direction from the parent picks the child
@@ -1024,13 +1028,16 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   three-quarter view. Each view renders as a black wireframe of the body's feature edges,
   orthographically/isometrically projected and auto-fit into its cell; views sit wherever
   they were placed on the page and are added/removed from the drawing pane.
-- **Curves (#313):** tessellated circles (a cylinder rim, an extruded-circle boundary — any
-  curve the mesh/perimeter samples into short segments) are **detected** among the projected
-  feature edges (`drawing::classify_projected_circles`: clean degree-2 cycles that fit a
-  circle, with overlapping rims deduplicated) and drawn as **one smooth circle** (a real SVG
-  `<circle>` / PDF Bézier-arc, not a polygon) carrying a **single diameter dimension** (`Ø…`)
-  instead of a dimension per segment. Circle segments are excluded from the straight-edge
-  strokes and from the length-dimension set.
+- **Curves (#313/#319):** tessellated circles (a cylinder rim, an extruded-circle boundary)
+  are **detected in world space** (`drawing::classify_world_circles`: clean degree-2 cycles
+  that fit a planar circle) and **projected per view** (`project_world_circle`): **round** when
+  the circle faces the viewer (a real SVG `<circle>` / PDF Bézier-arc, not a polygon), or a
+  **foreshortened diameter line** when edge-on. Either way it carries a **single diameter
+  dimension** (`Ø…`), and its segments are excluded from the straight-edge strokes and the
+  length-dimension set. **Silhouette edges (#319):** a body view also strokes the
+  view-dependent silhouette (`solid_mesh_silhouette_edges`: edges where the two adjacent faces
+  face opposite ways), so a cylinder's straight sides show — they're added to the stroke
+  geometry only, not to circle detection or dimensioning, so the rims stay clean circles.
 - **Dimensions:** a newly added projection starts with **every edge's length dimension
   shown** (#299) — except edges pointing straight into the page, which project to a point and
   carry no meaningful in-view length (#294), and except tessellated-circle segments, which get

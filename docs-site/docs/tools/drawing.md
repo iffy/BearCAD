@@ -60,7 +60,8 @@ Aligned views inherit the parent's scale and orientation, so a whole group reads
    two edges to show the angle between them (Shift+click either again to hide it). **Drag a
    dimension's label** (with the Select or Dimension tool) to push its line further from or
    closer to the edge.
-4. Remove a view with the **×** beside it. Press **Esc** to return to the 3D view. Reopen a
+4. Remove a view with the **×** beside it. Click **← Back** in the toolbar to return to the 3D
+   model. Reopen a
    drawing any time by clicking its row (or right-click → **Edit drawing**).
 5. **Export** with **Export PDF…** for a single-page vector PDF, or **Export SVG…** for a
    vector SVG you can open in any browser and print. Both are black-on-white, scale

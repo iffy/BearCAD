@@ -3970,6 +3970,15 @@ impl eframe::App for App {
                 // only the tools that apply to drawings — Select and Dimension (#295: no Move;
                 // the Select tool drags projections directly).
                 if self.state.editing_drawing.is_some() {
+                    // Back to the model (#318): left of Select, replacing Esc-to-exit.
+                    if ui
+                        .button("← Back")
+                        .on_hover_text("Return to the 3D model")
+                        .clicked()
+                    {
+                        self.state.apply(Action::EditDrawing { drawing: None });
+                    }
+                    ui.separator();
                     for (icon, tool, label) in [
                         (icons::IconId::Select, Tool::Select, "Select"),
                         (icons::IconId::Plus, Tool::DrawingAdd, "Add view"),
@@ -4415,6 +4424,7 @@ impl eframe::App for App {
                 doc: &self.state.doc,
                 selection: &self.state.scene_selection,
                 tool: self.state.tool,
+                in_drawing_workbench: self.state.editing_drawing.is_some(),
                 draw_rect_construction: self.state.rect_draw_construction_mode(),
                 draw_line_construction: self.state.line_draw_construction_mode(),
                 draw_circle_construction: self.state.circle_draw_construction_mode(),
@@ -8823,7 +8833,6 @@ impl App {
             });
         }
 
-        let mut close = false;
         // Whether this pane is rendering inside the popped-out drawing window (#276).
         let in_window = self.drawing_window == Some(drawing);
         #[allow(unused_mut)] // only mutated by the native-only "Open in window" button
@@ -8843,17 +8852,16 @@ impl App {
             crate::names::node_label(doc, hierarchy::HierarchyNode::Body(bi))
         };
 
-        // The 'Back to model' button is gone (#254/#272); leave the Drawing workbench with Esc.
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            close = true;
-        }
+        // Escape no longer leaves the Drawing workbench (#318) — it's used for cancelling
+        // in-progress tool actions. A Back button (in the toolbar, left of Select) returns to
+        // the model instead.
         ui.horizontal(|ui| {
             let title =
                 crate::names::node_label(&self.state.doc, hierarchy::HierarchyNode::Drawing(drawing));
             ui.label(egui::RichText::new(title).color(INK).strong());
             ui.separator();
             ui.label(
-                egui::RichText::new(if in_window { "Close the window to dismiss" } else { "Esc: back to model" })
+                egui::RichText::new(if in_window { "Close the window to dismiss" } else { "Use the Back button to return to the model" })
                     .color(egui::Color32::from_gray(120))
                     .size(11.0),
             );
@@ -8974,18 +8982,19 @@ impl App {
                         ui.close();
                     }
                 });
-                // The selected card (#289) gets an accent border; others a faint outline.
+                // The selected card (#289) gets an accent border; a hovered card gets a lighter
+                // one so it's clear the whole card is clickable (#316); others a faint outline.
                 let selected_here = self.state.selected_drawing_view == Some((drawing, vi));
-                painter.rect_stroke(
-                    cell.shrink(2.0),
-                    2.0,
-                    if selected_here {
-                        egui::Stroke::new(1.5, egui::Color32::from_rgb(90, 150, 230))
-                    } else {
-                        egui::Stroke::new(1.0, egui::Color32::from_gray(80))
-                    },
-                    egui::StrokeKind::Inside,
-                );
+                let align_parent_here = self.drawing_align_parent == Some(vi)
+                    && self.state.tool == Tool::DrawingAlign;
+                let stroke = if selected_here || align_parent_here {
+                    egui::Stroke::new(1.5, egui::Color32::from_rgb(90, 150, 230))
+                } else if drag.hovered() {
+                    egui::Stroke::new(1.5, egui::Color32::from_rgb(120, 140, 170))
+                } else {
+                    egui::Stroke::new(1.0, egui::Color32::from_gray(80))
+                };
+                painter.rect_stroke(cell.shrink(2.0), 2.0, stroke, egui::StrokeKind::Inside);
                 let source_label = match view.sketch {
                     Some(si) => crate::names::node_label(
                         &self.state.doc,
@@ -9073,17 +9082,19 @@ impl App {
                     );
                     if qa <= qb { (qa, qb) } else { (qb, qa) }
                 };
-                // Detect tessellated circles (#313): render smooth, dimension only the diameter.
-                let proj_glam: Vec<(glam::Vec2, glam::Vec2)> = proj
+                // Detect tessellated circles in world space (#313) and project them for this
+                // view — round face-on, a foreshortened line edge-on (#319).
+                let (vright, vup) = crate::drawing::view_axes(view.orientation);
+                let world_circles = crate::drawing::classify_world_circles(&world_edges);
+                let pcircles: Vec<crate::drawing::ProjectedCircle> = world_circles
                     .iter()
-                    .map(|(a, b)| (glam::Vec2::new(a.x, a.y), glam::Vec2::new(b.x, b.y)))
+                    .map(|c| crate::drawing::project_world_circle(c, vright, vup))
                     .collect();
-                let circles = crate::drawing::classify_projected_circles(&proj_glam);
                 let on_circle = |a: egui::Vec2, b: egui::Vec2| {
-                    crate::drawing::segment_on_circle(
+                    crate::drawing::projected_segment_on_circle(
                         glam::Vec2::new(a.x, a.y),
                         glam::Vec2::new(b.x, b.y),
-                        &circles,
+                        &pcircles,
                     )
                 };
 
@@ -9107,16 +9118,19 @@ impl App {
                     .flatten();
 
                 // Click near an edge to toggle its length dimension; Shift+click two edges to
-                // toggle the angle between them (#180). In the Drawing workbench this is the
-                // Dimension tool's job (#277) — only the Dimension tool picks edges. A label
-                // drag (below) suppresses the toggle so repositioning doesn't hide the dim.
-                let resp = ui.interact(
-                    draw_area,
-                    ui.make_persistent_id(("drawing_view_pick", drawing, vi)),
-                    egui::Sense::click(),
-                );
-                if resp.clicked()
-                    && self.state.tool == Tool::Dimension
+                // toggle the angle between them (#180). Only the Dimension tool picks edges
+                // (#277), and the pick interact is created ONLY on that tool (#316) — otherwise
+                // it would sit over most of the card and steal clicks meant to select the card
+                // (which broke the Select/Aligned-view tools). A label drag (below) suppresses
+                // the toggle so repositioning doesn't hide the dim.
+                let resp = (self.state.tool == Tool::Dimension).then(|| {
+                    ui.interact(
+                        draw_area,
+                        ui.make_persistent_id(("drawing_view_pick", drawing, vi)),
+                        egui::Sense::click(),
+                    )
+                });
+                if resp.as_ref().is_some_and(|r| r.clicked())
                     && self.drawing_dim_label_drag.is_none()
                 {
                     if let Some(i) = hovered_edge {
@@ -9140,10 +9154,10 @@ impl App {
                     }
                 }
 
-                // Non-wireframe styles (#301) draw their own fills/visible-run strokes; the
-                // per-edge loop below then only adds dimensions and pick highlights.
-                let styled = (view.sketch.is_none()
-                    && view.style != model::DrawingViewStyle::Wireframe)
+                // Strokes come from the styled geometry (#301/#319: includes the silhouette so
+                // cylinder sides show); the per-edge loop below only adds dimensions and pick
+                // highlights. Sketch views keep the per-edge stroke (no mesh silhouette).
+                let styled = (view.sketch.is_none())
                     .then(|| crate::drawing::styled_view_geometry(&self.state.doc, view));
                 if let Some(sty) = &styled {
                     for (pts, shade) in &sty.tris {
@@ -9171,17 +9185,28 @@ impl App {
                         );
                     }
                 }
-                // Smooth detected circles (#313), plus a single diameter dimension each.
+                // Detected circles (#313): a smooth circle face-on or a diameter line edge-on
+                // (#319), each with one diameter dimension.
                 let unit = self.state.doc.default_length_unit;
-                for c in &circles {
-                    let sc = to_screen(egui::vec2(c.center.x, c.center.y));
-                    painter.circle_stroke(sc, c.radius * scale, egui::Stroke::new(1.2, INK));
-                    let dir = egui::vec2(0.70710677, -0.70710677);
-                    let a = egui::vec2(c.center.x, c.center.y) - dir * c.radius;
-                    let b = egui::vec2(c.center.x, c.center.y) + dir * c.radius;
+                for (wc, pc) in world_circles.iter().zip(&pcircles) {
+                    let (a, b) = match pc {
+                        crate::drawing::ProjectedCircle::Round { center, radius } => {
+                            let sc = to_screen(egui::vec2(center.x, center.y));
+                            painter.circle_stroke(sc, radius * scale, egui::Stroke::new(1.2, INK));
+                            let dir = egui::vec2(0.70710677, -0.70710677);
+                            let cv = egui::vec2(center.x, center.y);
+                            (cv - dir * *radius, cv + dir * *radius)
+                        }
+                        crate::drawing::ProjectedCircle::EdgeOn { a, b } => {
+                            let (av, bv) = (egui::vec2(a.x, a.y), egui::vec2(b.x, b.y));
+                            painter
+                                .line_segment([to_screen(av), to_screen(bv)], egui::Stroke::new(1.2, INK));
+                            (av, bv)
+                        }
+                    };
                     let (sa, sb) = (to_screen(a), to_screen(b));
                     painter.line_segment([sa, sb], egui::Stroke::new(0.8, INK));
-                    let d = crate::value::format_length_display_in(c.radius * 2.0, unit);
+                    let d = crate::value::format_length_display_in(wc.radius * 2.0, unit);
                     painter.text(
                         (sa + sb.to_vec2()) * 0.5 + egui::vec2(0.0, -8.0),
                         egui::Align2::CENTER_CENTER,
@@ -9669,13 +9694,6 @@ impl App {
             // Move the drawing into its own window and hand the central area back to the 3D view.
             self.drawing_window = Some(drawing);
             self.state.apply(Action::EditDrawing { drawing: None });
-        }
-        if close {
-            if in_window {
-                self.drawing_window = None;
-            } else {
-                self.state.apply(Action::EditDrawing { drawing: None });
-            }
         }
     }
 

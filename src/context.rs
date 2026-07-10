@@ -20,6 +20,9 @@ pub struct ContextInput<'a> {
     pub doc: &'a Document,
     pub selection: &'a SceneSelection,
     pub tool: Tool,
+    /// True while a technical drawing is open (#317): the model-only "Selection" element picker
+    /// is suppressed, since drawing projections/annotations have their own selection state.
+    pub in_drawing_workbench: bool,
     pub draw_rect_construction: Option<bool>,
     pub draw_line_construction: Option<bool>,
     pub draw_circle_construction: Option<bool>,
@@ -726,7 +729,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let drawing = input.draw_rect_construction.is_some()
         || input.draw_line_construction.is_some()
         || input.draw_circle_construction.is_some();
-    let selection_picker = (!drawing)
+    let selection_picker = (!drawing && !input.in_drawing_workbench)
         .then(|| selection_picker_for(input.tool, input.selection))
         .flatten();
     // Tool-owned element pickers (#213). Each is a Body-filtered picker built from the tool's
@@ -2710,6 +2713,7 @@ mod tests {
             doc,
             selection,
             tool: Tool::Select,
+            in_drawing_workbench: false,
             draw_rect_construction: None,
             draw_line_construction: None,
             draw_circle_construction: None,
@@ -2754,6 +2758,7 @@ mod tests {
         assert!(select.units.is_some(), "non-repeat tools still show units");
         let repeat = context_pane_content(&ContextInput {
             tool: Tool::Repeat,
+            in_drawing_workbench: false,
             ..input(&doc, &selection)
         });
         assert!(repeat.units.is_none(), "Repeat tool hides the units control");
@@ -2766,6 +2771,7 @@ mod tests {
         let selection = SceneSelection::default();
         let content = context_pane_content(&ContextInput {
             tool: Tool::Extrude,
+            in_drawing_workbench: false,
             extrude_faces: Some(vec!["Circle 1".to_string(), "Region 2".to_string()]),
             ..input(&doc, &selection)
         });
@@ -2785,6 +2791,7 @@ mod tests {
             doc: &doc,
             selection: &selection,
             tool: Tool::Fillet,
+            in_drawing_workbench: false,
             draw_rect_construction: None,
             draw_line_construction: None,
             draw_circle_construction: None,
@@ -2851,6 +2858,7 @@ mod tests {
             doc: &doc,
             selection: &selection,
             tool: Tool::Select,
+            in_drawing_workbench: false,
             draw_rect_construction: None,
             draw_line_construction: None,
             draw_circle_construction: None,
@@ -2914,6 +2922,7 @@ mod tests {
         crate::selection::click_scene_selection(&mut selection, SceneElement::Body(3), true);
         let input = ContextInput {
             tool: Tool::Constraint,
+            in_drawing_workbench: false,
             ..input(&doc, &selection)
         };
         let picker = context_pane_content(&input)
@@ -2932,6 +2941,7 @@ mod tests {
         let selection = SceneSelection::default();
         let cut_input = ContextInput {
             tool: Tool::Revolve,
+            in_drawing_workbench: false,
             revolve: Some(RevolveControl {
                 face_count: 1,
                 face_rows: vec!["Circle 1".to_string()],
@@ -2962,6 +2972,7 @@ mod tests {
         // Non-Cut mode shows no tool picker.
         let new_body_input = ContextInput {
             tool: Tool::Revolve,
+            in_drawing_workbench: false,
             revolve: Some(RevolveControl {
                 body_choice: crate::actions::RevolveBodyChoice::NewBody,
                 face_count: 1,
@@ -2984,6 +2995,7 @@ mod tests {
 
         let move_input = ContextInput {
             tool: Tool::Move,
+            in_drawing_workbench: false,
             move_op: Some(MoveControl {
                 targets: vec![1, 4],
                 tx: String::new(),
@@ -3012,6 +3024,7 @@ mod tests {
 
         let repeat_input = ContextInput {
             tool: Tool::Repeat,
+            in_drawing_workbench: false,
             repeat_op: Some(RepeatControl {
                 targets: vec![7],
                 plane_targets: Vec::new(),
@@ -3045,6 +3058,7 @@ mod tests {
         let selection = SceneSelection::default();
         let make = |kind, a: Vec<usize>, b: Vec<usize>, picking_b| ContextInput {
             tool: Tool::Combine,
+            in_drawing_workbench: false,
             boolean_op: Some(BooleanControl {
                 kind,
                 a,
@@ -3166,6 +3180,7 @@ mod tests {
             doc: &doc,
             selection: &SceneSelection::default(),
             tool: Tool::Select,
+            in_drawing_workbench: false,
             draw_rect_construction: Some(true),
             draw_line_construction: None,
             draw_circle_construction: None,
@@ -3254,6 +3269,7 @@ mod tests {
             doc: &doc,
             selection: &SceneSelection::default(),
             tool: Tool::Line,
+            in_drawing_workbench: false,
             draw_rect_construction: None,
             draw_line_construction: Some(false),
             draw_circle_construction: None,
@@ -3407,6 +3423,7 @@ mod tests {
             doc: &doc,
             selection: &SceneSelection::default(),
             tool: Tool::Select,
+            in_drawing_workbench: false,
             draw_rect_construction: Some(false),
             draw_line_construction: None,
             draw_circle_construction: None,
@@ -3456,6 +3473,7 @@ mod tests {
             doc: &doc,
             selection: &sel,
             tool: Tool::Select,
+            in_drawing_workbench: false,
             draw_rect_construction: Some(true),
             draw_line_construction: None,
             draw_circle_construction: None,
@@ -3538,6 +3556,7 @@ mod tests {
             doc: &doc,
             selection: &SceneSelection::default(),
             tool: Tool::Constraint,
+            in_drawing_workbench: false,
             draw_rect_construction: None,
             draw_line_construction: None,
             draw_circle_construction: None,

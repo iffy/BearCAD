@@ -2746,24 +2746,20 @@ fn default_dimensioned_edges(
     // dimension instead (#313).
     let (right, up) = crate::drawing::view_axes(view.orientation);
     let world = crate::drawing::drawing_view_world_edges(doc, view);
-    let proj: Vec<(glam::Vec2, glam::Vec2)> = world
+    let world_circles = crate::drawing::classify_world_circles(&world);
+    let pcircles: Vec<crate::drawing::ProjectedCircle> = world_circles
         .iter()
-        .map(|(a, b)| {
-            (
-                glam::Vec2::new(a.dot(right), a.dot(up)),
-                glam::Vec2::new(b.dot(right), b.dot(up)),
-            )
-        })
+        .map(|c| crate::drawing::project_world_circle(c, right, up))
         .collect();
-    let circles = crate::drawing::classify_projected_circles(&proj);
     let mut keys: Vec<crate::model::DrawingEdgeKey> = world
         .iter()
-        .zip(&proj)
-        .filter(|(_, (pa, pb))| {
-            (*pb - *pa).length() > 1e-3
-                && !crate::drawing::segment_on_circle(*pa, *pb, &circles)
+        .filter(|(a, b)| {
+            let pa = glam::Vec2::new(a.dot(right), a.dot(up));
+            let pb = glam::Vec2::new(b.dot(right), b.dot(up));
+            (pb - pa).length() > 1e-3
+                && !crate::drawing::projected_segment_on_circle(pa, pb, &pcircles)
         })
-        .map(|(&(a, b), _)| {
+        .map(|&(a, b)| {
             crate::model::normalized_edge_key(
                 crate::hierarchy::quantize_body_point(a),
                 crate::hierarchy::quantize_body_point(b),

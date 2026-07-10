@@ -110,46 +110,60 @@ fn edge_key(a: Vec3, b: Vec3) -> crate::model::DrawingEdgeKey {
     )
 }
 
-/// A circle detected among a view's projected feature edges (#313): a tessellated curve
-/// (cylinder rim, extruded-circle boundary) that should render as one smooth circle and carry
-/// a single diameter dimension rather than a dimension per short segment.
-pub struct DetectedCircle {
-    pub center: glam::Vec2,
+/// A circle detected among a view's feature edges (#313), in **world** space so it can be
+/// classified once and projected per view: a tessellated curve (cylinder rim, extruded-circle
+/// boundary) drawn as one smooth circle (or a foreshortened line when edge-on) with a single
+/// diameter dimension rather than a dimension per short segment.
+#[derive(Clone, Copy, Debug)]
+pub struct WorldCircle {
+    pub center: Vec3,
     pub radius: f32,
+    /// Unit normal of the circle's plane.
+    pub normal: Vec3,
 }
 
-/// Classify a view's projected 2D feature edges (#313): find tessellated circles (closed loops
-/// of short segments that fit a circle) and report which edges belong to them, so the renderer
-/// can draw them smooth and dimension only the diameter. Straight edges are everything else.
-pub fn classify_projected_circles(edges: &[(glam::Vec2, glam::Vec2)]) -> Vec<DetectedCircle> {
+/// How a [`WorldCircle`] appears in a particular orthographic view (#313/#319).
+pub enum ProjectedCircle {
+    /// The circle faces the viewer (roughly): a round outline.
+    Round { center: glam::Vec2, radius: f32 },
+    /// The circle is (near) edge-on: it projects to a line — the foreshortened diameter.
+    EdgeOn { a: glam::Vec2, b: glam::Vec2 },
+}
+
+/// Classify a view's world feature edges (#313): find tessellated circles (clean degree-2
+/// cycles that fit a planar circle) so the renderers can draw them smooth and dimension only
+/// the diameter, in any orientation. Straight edges are everything else.
+pub fn classify_world_circles(edges: &[(Vec3, Vec3)]) -> Vec<WorldCircle> {
     use std::collections::HashMap;
-    // Quantize endpoints (0.001 mm) so shared vertices merge into one index.
-    let q = |p: glam::Vec2| (((p.x * 1000.0).round()) as i64, ((p.y * 1000.0).round()) as i64);
-    let mut index_of: HashMap<(i64, i64), usize> = HashMap::new();
-    let mut verts: Vec<glam::Vec2> = Vec::new();
-    let vid = |p: glam::Vec2, index_of: &mut HashMap<(i64, i64), usize>, verts: &mut Vec<glam::Vec2>| {
+    // Quantize endpoints (0.01 mm) so shared vertices merge into one index.
+    let q = |p: Vec3| {
+        (
+            (p.x * 100.0).round() as i64,
+            (p.y * 100.0).round() as i64,
+            (p.z * 100.0).round() as i64,
+        )
+    };
+    let mut index_of: HashMap<(i64, i64, i64), usize> = HashMap::new();
+    let mut verts: Vec<Vec3> = Vec::new();
+    let mut vid = |p: Vec3| {
         *index_of.entry(q(p)).or_insert_with(|| {
             verts.push(p);
             verts.len() - 1
         })
     };
-    // Edge endpoints as vertex indices; per-vertex degree and adjacency. Overlapping edges
-    // (e.g. a cylinder's top and bottom rim projecting onto the same circle in a face-on view)
-    // are deduplicated so shared vertices keep degree 2 rather than 4.
     let mut e_verts: Vec<(usize, usize)> = Vec::with_capacity(edges.len());
     let mut seen_pairs: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
     for &(a, b) in edges {
-        let ia = vid(a, &mut index_of, &mut verts);
-        let ib = vid(b, &mut index_of, &mut verts);
+        let (ia, ib) = (vid(a), vid(b));
         let pair = if ia <= ib { (ia, ib) } else { (ib, ia) };
         if ia != ib && !seen_pairs.insert(pair) {
-            continue; // a duplicate/overlapping edge
+            continue;
         }
         e_verts.push((ia, ib));
     }
     let n = verts.len();
     let mut degree = vec![0usize; n];
-    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n]; // adjacent edge indices
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
     for (ei, &(a, b)) in e_verts.iter().enumerate() {
         if a == b {
             continue;
@@ -159,15 +173,12 @@ pub fn classify_projected_circles(edges: &[(glam::Vec2, glam::Vec2)]) -> Vec<Det
         adj[a].push(ei);
         adj[b].push(ei);
     }
-    // Connected components over edges where every touched vertex has degree exactly 2 — a clean
-    // cycle (a tessellated circle). Any degree != 2 disqualifies the component.
     let mut seen = vec![false; e_verts.len()];
     let mut circles = Vec::new();
     for start in 0..e_verts.len() {
         if seen[start] || e_verts[start].0 == e_verts[start].1 {
             continue;
         }
-        // BFS over connected edges.
         let mut stack = vec![start];
         let mut comp_edges = Vec::new();
         let mut comp_verts: Vec<usize> = Vec::new();
@@ -190,23 +201,79 @@ pub fn classify_projected_circles(edges: &[(glam::Vec2, glam::Vec2)]) -> Vec<Det
         }
         comp_verts.sort_unstable();
         comp_verts.dedup();
-        // A circle: a clean cycle with enough segments and a tight radius fit around the centroid.
         if !clean || comp_edges.len() < 8 || comp_verts.len() != comp_edges.len() {
             continue;
         }
-        let center = comp_verts.iter().map(|&v| verts[v]).sum::<glam::Vec2>()
-            / comp_verts.len() as f32;
+        let center =
+            comp_verts.iter().map(|&v| verts[v]).sum::<Vec3>() / comp_verts.len() as f32;
         let radii: Vec<f32> = comp_verts.iter().map(|&v| (verts[v] - center).length()).collect();
         let mean_r = radii.iter().sum::<f32>() / radii.len() as f32;
-        if mean_r < 1e-3 {
+        if mean_r < 1e-2 {
             continue;
         }
         let max_dev = radii.iter().map(|r| (r - mean_r).abs()).fold(0.0f32, f32::max);
-        if max_dev <= mean_r * 0.06 {
-            circles.push(DetectedCircle { center, radius: mean_r });
+        if max_dev > mean_r * 0.06 {
+            continue;
+        }
+        // Plane normal from the summed fan cross products (consistent for a planar loop).
+        let mut normal = Vec3::ZERO;
+        for w in comp_verts.windows(2) {
+            normal += (verts[w[0]] - center).cross(verts[w[1]] - center);
+        }
+        let normal = normal.normalize_or_zero();
+        if normal == Vec3::ZERO {
+            continue;
+        }
+        // Require coplanarity (all vertices near the plane).
+        let coplanar = comp_verts
+            .iter()
+            .all(|&v| (verts[v] - center).dot(normal).abs() <= mean_r * 0.06);
+        if coplanar {
+            circles.push(WorldCircle { center, radius: mean_r, normal });
         }
     }
     circles
+}
+
+/// Project a world circle into a view's 2D space (#313/#319): round when it faces the viewer,
+/// a foreshortened line when edge-on.
+pub fn project_world_circle(c: &WorldCircle, right: Vec3, up: Vec3) -> ProjectedCircle {
+    let project = |p: Vec3| glam::Vec2::new(p.dot(right), p.dot(up));
+    let c2 = project(c.center);
+    // Two orthonormal in-plane axes.
+    let seed = if c.normal.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+    let u = (seed - c.normal * seed.dot(c.normal)).normalize();
+    let v = c.normal.cross(u);
+    let pu = project(c.center + u * c.radius) - c2;
+    let pv = project(c.center + v * c.radius) - c2;
+    let (major, minor) = if pu.length() >= pv.length() { (pu, pv) } else { (pv, pu) };
+    if minor.length() < 0.15 * c.radius {
+        ProjectedCircle::EdgeOn { a: c2 - major, b: c2 + major }
+    } else {
+        ProjectedCircle::Round { center: c2, radius: major.length() }
+    }
+}
+
+/// Whether a projected 2D segment lies on one of the projected circles (#313), so it's drawn as
+/// part of the smooth circle/edge-on line instead of a straight stroke or dimension.
+pub fn projected_segment_on_circle(a: glam::Vec2, b: glam::Vec2, pcs: &[ProjectedCircle]) -> bool {
+    pcs.iter().any(|pc| match pc {
+        ProjectedCircle::Round { center, radius } => {
+            let tol = radius * 0.08 + 1e-2;
+            ((a - *center).length() - radius).abs() < tol
+                && ((b - *center).length() - radius).abs() < tol
+        }
+        ProjectedCircle::EdgeOn { a: la, b: lb } => {
+            let d = *lb - *la;
+            let len2 = d.length_squared().max(1e-6);
+            let tol = d.length() * 0.08 + 1e-2;
+            let on = |p: glam::Vec2| {
+                let t = ((p - *la).dot(d) / len2).clamp(0.0, 1.0);
+                (p - (*la + d * t)).length() < tol
+            };
+            on(a) && on(b)
+        }
+    })
 }
 
 /// PDF points per millimetre (1 pt = 1/72 in): exports are sized in points so the PDF page
@@ -240,10 +307,25 @@ pub fn drawing_view_world_edges(doc: &Document, view: &DrawingView) -> Vec<(Vec3
         }
         edges
     } else {
+        // Crease/feature edges only — the view-dependent silhouette (#319) is added later, in
+        // the stroke geometry, so it doesn't interfere with circle detection (#313).
         crate::extrude::body_solid_mesh(doc, view.body)
             .map(|mesh| crate::gpu_viewport::solid_mesh_unique_edges(&mesh))
             .unwrap_or_default()
     }
+}
+
+/// The view-dependent silhouette edges of a body view (#319): a cylinder's straight sides and
+/// other smooth-surface outlines that aren't crease edges. Empty for sketch views.
+pub fn drawing_view_silhouette_edges(doc: &Document, view: &DrawingView) -> Vec<(Vec3, Vec3)> {
+    if view.sketch.is_some() {
+        return Vec::new();
+    }
+    let Some(mesh) = crate::extrude::body_solid_mesh(doc, view.body) else {
+        return Vec::new();
+    };
+    let (right, up) = view_axes(view.orientation);
+    crate::gpu_viewport::solid_mesh_silhouette_edges(&mesh, right.cross(up))
 }
 
 /// The architectural dimension-line geometry for one edge (#294), all in the view's projected
@@ -289,16 +371,6 @@ pub fn dimension_line_geometry(
     }
 }
 
-/// Whether a projected segment lies on one of the detected circles (#313): both endpoints
-/// within tolerance of that circle's radius from its centre.
-pub fn segment_on_circle(a: glam::Vec2, b: glam::Vec2, circles: &[DetectedCircle]) -> bool {
-    circles.iter().any(|c| {
-        let tol = c.radius * 0.08 + 1e-3;
-        ((a - c.center).length() - c.radius).abs() < tol
-            && ((b - c.center).length() - c.radius).abs() < tol
-    })
-}
-
 /// The outward unit perpendicular for an edge's dimension line: the side of the edge facing
 /// away from the geometry centroid `center` (#294), so labels sit outside the part.
 pub fn dimension_outward(a: glam::Vec2, b: glam::Vec2, center: glam::Vec2) -> glam::Vec2 {
@@ -330,7 +402,11 @@ pub fn styled_view_geometry(doc: &Document, view: &DrawingView) -> StyledViewGeo
     use crate::model::DrawingViewStyle;
     let (right, up) = view_axes(view.orientation);
     let project = |p: Vec3| glam::Vec2::new(p.dot(right), p.dot(up));
-    let edges = drawing_view_world_edges(doc, view);
+    // Crease edges plus the view-dependent silhouette (#319) so smooth-surface outlines (a
+    // cylinder's straight sides) are stroked; circle detection/dimensioning use crease edges
+    // only, so the silhouette here doesn't affect them.
+    let mut edges = drawing_view_world_edges(doc, view);
+    edges.extend(drawing_view_silhouette_edges(doc, view));
     let wireframe = || StyledViewGeometry {
         tris: Vec::new(),
         segments: edges.iter().map(|(a, b)| (project(*a), project(*b))).collect(),
@@ -657,9 +733,14 @@ fn render_view_geometry<C: Canvas>(
         glam::Vec2::new(area_center.x + d.x, area_center.y - d.y)
     };
 
-    // Detect tessellated circles (#313): render them smooth and skip their many short segments
-    // in both the stroke and the per-edge dimensions; each circle gets one diameter dimension.
-    let circles = classify_projected_circles(&proj);
+    // Detect tessellated circles (#313) in world space and project them for this view: round
+    // when face-on, a foreshortened line when edge-on (#319). Their segments are drawn as the
+    // smooth circle/line and dimensioned once (the diameter), not per short segment.
+    let world_circles = classify_world_circles(&world_edges);
+    let pcircles: Vec<ProjectedCircle> = world_circles
+        .iter()
+        .map(|c| project_world_circle(c, right, up))
+        .collect();
 
     // Strokes (and shaded fills) come from the view's display style (#301); the fit above
     // always uses the full wireframe bbox so switching styles never re-scales the view.
@@ -678,16 +759,24 @@ fn render_view_geometry<C: Canvas>(
     }
     for (a, b) in &styled.segments {
         // A segment lying on a detected circle is drawn as part of the smooth circle instead.
-        if segment_on_circle(*a, *b, &circles) {
+        if projected_segment_on_circle(*a, *b, &pcircles) {
             continue;
         }
         let (sa, sb) = (to_screen(*a), to_screen(*b));
         canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, 1.2);
     }
-    // Smooth detected circles.
-    for c in &circles {
-        let sc = to_screen(c.center);
-        canvas.circle(sc.x, sc.y, c.radius * scale, BLACK, 1.2);
+    // Smooth detected circles (round) or their foreshortened diameter line (edge-on).
+    for pc in &pcircles {
+        match pc {
+            ProjectedCircle::Round { center, radius } => {
+                let sc = to_screen(*center);
+                canvas.circle(sc.x, sc.y, radius * scale, BLACK, 1.2);
+            }
+            ProjectedCircle::EdgeOn { a, b } => {
+                let (sa, sb) = (to_screen(*a), to_screen(*b));
+                canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, 1.2);
+            }
+        }
     }
 
     // Length dimensions (#294): architectural dimension lines — extension lines, an offset
@@ -698,16 +787,21 @@ fn render_view_geometry<C: Canvas>(
     let default_gap = diag * 0.05;
     let arrow = diag * 0.025;
     // A single diameter dimension per detected circle (#313), replacing its segments' dims.
-    for c in &circles {
-        let dir = glam::Vec2::new(0.70710677, -0.70710677); // 45° so it clears the extents
-        let a = c.center - dir * c.radius;
-        let b = c.center + dir * c.radius;
+    for (wc, pc) in world_circles.iter().zip(&pcircles) {
+        let (a, b) = match pc {
+            ProjectedCircle::Round { center, radius } => {
+                let dir = glam::Vec2::new(0.70710677, -0.70710677);
+                (*center - dir * *radius, *center + dir * *radius)
+            }
+            // Edge-on: the diameter is the projected line itself.
+            ProjectedCircle::EdgeOn { a, b } => (*a, *b),
+        };
         let sa = to_screen(a);
         let sb = to_screen(b);
         let mid = (sa + sb) * 0.5;
         canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, 0.8);
-        // Diameter value in the view's world scale (radius is already world mm).
-        let d = crate::value::format_length_display_in(c.radius * 2.0, unit);
+        // Diameter value (the circle's true world diameter).
+        let d = crate::value::format_length_display_in(wc.radius * 2.0, unit);
         canvas.text(mid.x, mid.y - 3.0, 11.0, Anchor::Middle, &format!("⌀{d}"));
     }
     for (i, (a, b)) in proj.iter().enumerate() {
@@ -717,7 +811,7 @@ fn render_view_geometry<C: Canvas>(
         // and circle segments are covered by the single diameter dimension above (#313).
         if !view.dimensioned_edges.contains(&key)
             || (*b - *a).length() < 1e-3
-            || segment_on_circle(*a, *b, &circles)
+            || projected_segment_on_circle(*a, *b, &pcircles)
         {
             continue;
         }
@@ -1123,40 +1217,43 @@ mod tests {
         assert!(pos_s.x > 4.0, "label sits past the far end");
     }
 
-    /// #313: a tessellated circle loop is detected (centre/radius); a run of straight edges is
-    /// not, so it stays a set of dimensionable segments.
+    /// #313/#319: a tessellated circle in a plane is detected in 3D (centre/radius/normal); a
+    /// run of straight edges is not. Projected face-on it's Round, edge-on it's a line.
     #[test]
-    fn detects_a_tessellated_circle_but_not_straight_edges() {
-        // A 32-gon of radius 10 centred at (5, 3).
+    fn detects_a_world_circle_and_projects_it() {
+        // A 32-gon of radius 10 in the XY plane (normal +Z), centred at (5, 3, 0).
         let n = 32;
-        let c = glam::Vec2::new(5.0, 3.0);
+        let c = Vec3::new(5.0, 3.0, 0.0);
         let r = 10.0;
-        let pts: Vec<glam::Vec2> = (0..n)
+        let pts: Vec<Vec3> = (0..n)
             .map(|i| {
                 let a = std::f32::consts::TAU * i as f32 / n as f32;
-                c + glam::Vec2::new(a.cos(), a.sin()) * r
+                c + Vec3::new(a.cos(), a.sin(), 0.0) * r
             })
             .collect();
-        let mut edges: Vec<(glam::Vec2, glam::Vec2)> = (0..n)
-            .map(|i| (pts[i], pts[(i + 1) % n]))
-            .collect();
-        // Plus a separate square (straight edges), which must NOT be a circle.
+        let mut edges: Vec<(Vec3, Vec3)> = (0..n).map(|i| (pts[i], pts[(i + 1) % n])).collect();
+        // Plus a separate straight square in a different place — not a circle.
         let sq = [
-            glam::Vec2::new(40.0, 0.0),
-            glam::Vec2::new(50.0, 0.0),
-            glam::Vec2::new(50.0, 10.0),
-            glam::Vec2::new(40.0, 10.0),
+            Vec3::new(40.0, 0.0, 0.0),
+            Vec3::new(50.0, 0.0, 0.0),
+            Vec3::new(50.0, 10.0, 0.0),
+            Vec3::new(40.0, 10.0, 0.0),
         ];
         for i in 0..4 {
             edges.push((sq[i], sq[(i + 1) % 4]));
         }
-        let circles = classify_projected_circles(&edges);
-        assert_eq!(circles.len(), 1, "one circle detected (the 32-gon, not the square)");
-        assert!((circles[0].center - c).length() < 0.2);
-        assert!((circles[0].radius - r).abs() < 0.2);
-        // The square's edges are not on the circle.
-        for i in 0..4 {
-            assert!(!segment_on_circle(sq[i], sq[(i + 1) % 4], &circles));
+        let circles = classify_world_circles(&edges);
+        assert_eq!(circles.len(), 1, "one circle (the 32-gon, not the square)");
+        assert!((circles[0].radius - r).abs() < 0.3);
+        // Looking down +Z (Top view: right=X, up=-Y) the circle faces us → Round.
+        match project_world_circle(&circles[0], Vec3::X, -Vec3::Y) {
+            ProjectedCircle::Round { radius, .. } => assert!((radius - r).abs() < 0.3),
+            _ => panic!("face-on circle should project Round"),
+        }
+        // Looking along the plane (Front view: right=X, up=Z) it's edge-on → a line.
+        match project_world_circle(&circles[0], Vec3::X, Vec3::Z) {
+            ProjectedCircle::EdgeOn { a, b } => assert!(((a - b).length() - 2.0 * r).abs() < 0.5),
+            _ => panic!("edge-on circle should project EdgeOn"),
         }
     }
 

@@ -3092,6 +3092,40 @@ pub fn solid_mesh_unique_edges(solid: &crate::extrude::SolidMesh) -> Vec<(Vec3, 
         .collect()
 }
 
+/// View-dependent **silhouette** edges of a solid mesh for an orthographic projection along
+/// `view_dir` (#319): a manifold edge whose two adjacent faces face opposite ways (one toward
+/// the viewer, one away) is on the outline — e.g. the straight sides of a cylinder seen from
+/// the side, which are not crease edges and so are missed by [`solid_mesh_unique_edges`].
+/// Naked edges (only one adjacent face) are always included.
+pub fn solid_mesh_silhouette_edges(
+    solid: &crate::extrude::SolidMesh,
+    view_dir: Vec3,
+) -> Vec<(Vec3, Vec3)> {
+    type EdgeKey = ((i64, i64, i64), (i64, i64, i64));
+    let mut by_edge: std::collections::HashMap<EdgeKey, (Vec3, Vec3, Vec<f32>)> =
+        std::collections::HashMap::new();
+    let v = view_dir.normalize_or_zero();
+    for tri in &solid.triangles {
+        let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
+        let facing = normal.dot(v);
+        for &(i, j) in &[(0usize, 1usize), (1, 2), (2, 0)] {
+            let (a, b) = (tri[i], tri[j]);
+            let (ka, kb) = (quantize_vertex(a), quantize_vertex(b));
+            let key = if ka <= kb { (ka, kb) } else { (kb, ka) };
+            by_edge.entry(key).or_insert_with(|| (a, b, Vec::new())).2.push(facing);
+        }
+    }
+    by_edge
+        .into_values()
+        .filter(|(_, _, facings)| match facings.as_slice() {
+            [_] => true,                       // naked boundary edge
+            [f0, f1] => f0.signum() != f1.signum(), // facing flips → silhouette
+            _ => false,
+        })
+        .map(|(a, b, _)| (a, b))
+        .collect()
+}
+
 /// Grid resolution of the aura's screen-space footprint field, pixels per cell. Small enough
 /// that the marching-squares contour (which interpolates on the distance field) stays smooth
 /// under the glow width; doubled automatically for huge extents via [`AURA_MAX_CELLS`].
@@ -4749,6 +4783,38 @@ mod tests {
             "wall seams (non-horizontal edges) should be dropped, got {edges:?}"
         );
         assert_eq!(edges.len(), 2 * n, "expected only the two {n}-segment rims");
+    }
+
+    #[test]
+    fn solid_mesh_silhouette_edges_finds_the_cylinder_sides() {
+        // The same cylinder prism; viewed along -Y (front), the leftmost/rightmost vertical
+        // wall seams are on the silhouette (their two wall facets face opposite ways), so at
+        // least two near-vertical edges are reported (#319).
+        let n = crate::extrude::CIRCLE_SEGMENTS;
+        let (r, h) = (12.0f32, 10.0f32);
+        let pt = |i: usize, z: f32| {
+            let a = i as f32 / n as f32 * std::f32::consts::TAU;
+            Vec3::new(r * a.cos(), r * a.sin(), z)
+        };
+        let mut triangles = Vec::new();
+        for i in 0..n {
+            let j = (i + 1) % n;
+            triangles.push([pt(i, 0.0), pt(j, 0.0), pt(j, h)]);
+            triangles.push([pt(i, 0.0), pt(j, h), pt(i, h)]);
+            triangles.push([Vec3::new(0.0, 0.0, 0.0), pt(j, 0.0), pt(i, 0.0)]);
+            triangles.push([Vec3::new(0.0, 0.0, h), pt(i, h), pt(j, h)]);
+        }
+        let solid = crate::extrude::SolidMesh { triangles };
+        let sil = solid_mesh_silhouette_edges(&solid, -Vec3::Y);
+        let vertical: Vec<_> = sil
+            .iter()
+            .filter(|(a, b)| (a.z - b.z).abs() > h * 0.5 && (a.x - b.x).abs() < r * 0.2)
+            .collect();
+        assert!(
+            vertical.len() >= 2,
+            "cylinder should have ≥2 vertical silhouette sides, got {}",
+            vertical.len()
+        );
     }
 
     #[test]
