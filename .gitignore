@@ -44,3 +44,4 @@ block.step
 /web/kernel/
 /web/lua/
 /docs-site/static/app/
+.mcp.json

@@ -188,6 +188,77 @@ impl ttf_parser::OutlineBuilder for OutlineCollector {
     }
 }
 
+/// One fillable glyph region: an outer boundary loop plus its interior holes (counters).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlyphRegion {
+    pub outer: Contour,
+    pub holes: Vec<Contour>,
+}
+
+/// Group a text's flat contour list into glyph regions (#285): the larger-area loops are outer
+/// boundaries; each smaller loop nests as a hole of the *smallest* outer that contains it (its
+/// representative point falls inside). This turns `o`/`a`/`e` counters into holes so the glyph
+/// extrudes hollow.
+pub fn group_glyphs(contours: &[Contour]) -> Vec<GlyphRegion> {
+    // Outer loops = those not contained in any other loop; sort by decreasing area so a hole is
+    // matched to the tightest enclosing outer.
+    let mut idx: Vec<usize> = (0..contours.len()).filter(|&i| contours[i].len() >= 3).collect();
+    idx.sort_by(|&a, &b| {
+        contour_signed_area(&contours[b])
+            .abs()
+            .partial_cmp(&contour_signed_area(&contours[a]).abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut regions: Vec<GlyphRegion> = Vec::new();
+    for &i in &idx {
+        let rep = contour_point(&contours[i]);
+        // Find the smallest existing region whose outer contains this loop's representative point.
+        let mut best: Option<usize> = None;
+        for (ri, region) in regions.iter().enumerate() {
+            if point_in_contour(rep, &region.outer) {
+                let smaller = best
+                    .map(|b| contour_signed_area(&region.outer).abs()
+                        < contour_signed_area(&regions[b].outer).abs())
+                    .unwrap_or(true);
+                if smaller {
+                    best = Some(ri);
+                }
+            }
+        }
+        match best {
+            Some(ri) => regions[ri].holes.push(contours[i].clone()),
+            None => regions.push(GlyphRegion { outer: contours[i].clone(), holes: Vec::new() }),
+        }
+    }
+    regions
+}
+
+/// A representative interior-ish point of a contour (its centroid); good enough for the nesting
+/// test on convex-ish glyph loops.
+fn contour_point(contour: &[(f32, f32)]) -> (f32, f32) {
+    let n = contour.len().max(1) as f32;
+    let (sx, sy) = contour.iter().fold((0.0, 0.0), |(ax, ay), &(x, y)| (ax + x, ay + y));
+    (sx / n, sy / n)
+}
+
+/// Even-odd point-in-polygon test (winding-independent).
+fn point_in_contour(p: (f32, f32), poly: &[(f32, f32)]) -> bool {
+    let mut inside = false;
+    let n = poly.len();
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, yi) = poly[i];
+        let (xj, yj) = poly[j];
+        if (yi > p.1) != (yj > p.1)
+            && p.0 < (xj - xi) * (p.1 - yi) / (yj - yi) + xi
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
 /// Signed area (shoelace) of a contour; sign encodes winding (used to tell outer loops from holes).
 pub fn contour_signed_area(contour: &[(f32, f32)]) -> f32 {
     let n = contour.len();
@@ -250,6 +321,17 @@ mod tests {
         let a0 = contour_signed_area(&shaped.contours[0]);
         let a1 = contour_signed_area(&shaped.contours[1]);
         assert!(a0 * a1 < 0.0, "outer and hole wind oppositely ({a0}, {a1})");
+    }
+
+    #[test]
+    fn group_glyphs_makes_o_a_ring() {
+        let Some(bytes) = any_font() else {
+            return;
+        };
+        let shaped = outline_text(&bytes, 10.0, "o").expect("o");
+        let regions = group_glyphs(&shaped.contours);
+        assert_eq!(regions.len(), 1, "o is one glyph region");
+        assert_eq!(regions[0].holes.len(), 1, "with one counter (hole)");
     }
 
     #[test]

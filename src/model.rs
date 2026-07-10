@@ -833,6 +833,10 @@ pub enum ExtrudeFace {
         a: Box<ExtrudeFace>,
         b: Box<ExtrudeFace>,
     },
+    /// One glyph region of a sketch text (#285): `text` indexes `Document::sketch_texts`, `glyph`
+    /// indexes the grouped glyph regions (`text::group_glyphs`) — an outer loop plus its counters
+    /// (holes). Extruding a whole text toggles one of these per glyph into `Extrusion::faces`.
+    TextGlyph { text: usize, glyph: usize },
 }
 
 impl ExtrudeFace {
@@ -845,6 +849,10 @@ impl ExtrudeFace {
             ExtrudeFace::Circle(i) => FaceId::Circle(*i),
             ExtrudeFace::Polygon(lines) => FaceId::Polygon(lines.clone()),
             ExtrudeFace::Boolean { a, .. } => a.face_id(),
+            // A text glyph has no stored sketch shape; callers that need its plane go through
+            // `extrude_face_sketch(doc, ..)` (which resolves the text's sketch) rather than a
+            // FaceId, so this placeholder is never used to look up geometry.
+            ExtrudeFace::TextGlyph { .. } => FaceId::Polygon(Vec::new()),
         }
     }
 }

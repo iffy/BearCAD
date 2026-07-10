@@ -765,7 +765,14 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   graph, selectable/renamable/deletable/undoable; selecting it selects the whole text. Persisted in
   the `.bearcad` file (`sketch_text` nodes). Editing (`EditSketchText`) re-bakes from the font,
   falling back to the stored outlines when only the transform/style changed and the font is gone.
-- **Scriptable:** tool name `text`; element kind `sketch_text`.
+- **Extrude/cut (#285):** the Extrude tool treats a sketch text as an extrudable face set —
+  clicking a text toggles one `ExtrudeFace::TextGlyph { text, glyph }` per glyph (grouped by
+  `text::group_glyphs`: the larger loops are outer boundaries, smaller loops nest as holes of the
+  tightest enclosing outer). Each glyph builds as a **face-with-holes** (reusing #268: the kernel
+  cuts each counter's prism from the glyph's outer prism; the mesh fallback uses hole-aware caps),
+  so counters (`o`, `a`, `e`, …) come out. The whole string extrudes or cuts as one operation.
+- **Scriptable:** tool name `text`; element kind `sketch_text`; extrude face spec
+  `{text_glyph = {text = i, glyph = g}}`.
 
 ### 3.4.2 Web build (wasm32)
 

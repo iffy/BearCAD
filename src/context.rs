@@ -326,6 +326,7 @@ pub fn loft_section_row_label(doc: &Document, section: &crate::model::LoftSectio
         crate::model::ExtrudeFace::Circle(ci) => format!("circle {ci}"),
         crate::model::ExtrudeFace::Polygon(lines) => format!("loop ({} lines)", lines.len()),
         crate::model::ExtrudeFace::Boolean { .. } => "combined region".to_string(),
+        crate::model::ExtrudeFace::TextGlyph { .. } => "text glyph".to_string(),
     };
     format!("{owner} — {which}")
 }

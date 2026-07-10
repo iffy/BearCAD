@@ -525,7 +525,7 @@ impl Instruction {
                         ExtrudeFace::Polygon(lines) => polygons.push(lines),
                         // Boolean regions aren't loftable sections (no interactive path
                         // constructs one), so nothing to render.
-                        ExtrudeFace::Boolean { .. } => {}
+                        ExtrudeFace::Boolean { .. } | ExtrudeFace::TextGlyph { .. } => {}
                     }
                 }
                 let mut parts = Vec::new();
@@ -1748,6 +1748,9 @@ fn extrude_face_args(faces: &[crate::model::ExtrudeFace]) -> String {
             ExtrudeFace::Boolean { op, a, b } => {
                 boolean.get_or_insert((*op, a.as_ref(), b.as_ref()));
             }
+            // Text glyphs aren't reconstructable from a flat script arg (they reference baked
+            // outlines); the script round-trip skips them.
+            ExtrudeFace::TextGlyph { .. } => {}
         };
     }
     let index_list = |indices: &[usize]| -> String {
@@ -1800,6 +1803,9 @@ fn extrude_face_spec_table(face: &crate::model::ExtrudeFace) -> String {
         }
         ExtrudeFace::Boolean { op, a, b } => {
             format!("{{boolean = {}}}", boolean_face_lua_table(*op, a, b))
+        }
+        ExtrudeFace::TextGlyph { text, glyph } => {
+            format!("{{text_glyph = {{text = {text}, glyph = {glyph}}}}}")
         }
     }
 }
@@ -2090,6 +2096,9 @@ fn extrude_face_profile_lua_fields(profile: &ExtrudeFace) -> String {
         // — falls back to `a`'s fields as a best-effort reference, same tradeoff as
         // `ExtrudeFace::face_id()`'s recursion into `a`.
         ExtrudeFace::Boolean { a, .. } => extrude_face_profile_lua_fields(a),
+        ExtrudeFace::TextGlyph { text, glyph } => {
+            format!("profile = \"text_glyph\", profile_index = {text}, glyph = {glyph}")
+        }
     }
 }
 

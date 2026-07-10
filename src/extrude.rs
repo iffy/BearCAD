@@ -232,7 +232,7 @@ fn occt_face_solid(
     // A circle profile extruded by pure translation builds as a *true* cylinder (#177): real
     // cylindrical wall, single circular rim edges — treatable and with exact volume, unlike a
     // prism over the sampled 48-gon. Slanted targets still loft the sampled profile.
-    if is_translation && matches!(face, ExtrudeFace::Circle(_)) {
+    let mut shape = if is_translation && matches!(face, ExtrudeFace::Circle(_)) {
         let center = profile.iter().copied().sum::<Vec3>() / profile.len() as f32;
         let radius = (profile[0] - center).length() as f64;
         let height = dir.length() as f64;
@@ -242,7 +242,33 @@ fn occt_face_solid(
         crate::kernel::Shape::prism(&profile, dir)
     } else {
         crate::kernel::Shape::loft(&profile, &top)
+    }?;
+    // A leaf face with holes (a text glyph's counters, #285): subtract each hole's prism so the
+    // glyph extrudes hollow. Boolean faces get their holes via the recursion above instead.
+    if let Some((_, holes, hnormal)) = face_region_world(doc, face) {
+        for hole in holes {
+            if hole.len() < 3 {
+                continue;
+            }
+            let htop: Vec<Vec3> = hole
+                .iter()
+                .map(|p| extruded_top_point(doc, extrusion, hnormal, *p, distance))
+                .collect();
+            let (hole, htop) = if overshoot > 1e-6 {
+                let u = (htop[0] - hole[0]).normalize_or_zero();
+                (
+                    hole.iter().map(|p| *p - u * overshoot).collect::<Vec<_>>(),
+                    htop.iter().map(|t| *t + u * overshoot).collect::<Vec<_>>(),
+                )
+            } else {
+                (hole, htop)
+            };
+            let hdir = htop[0] - hole[0];
+            let hole_solid = crate::kernel::Shape::prism(&hole, hdir)?;
+            shape = shape.boolean(&hole_solid, crate::kernel::BoolOp::Cut)?;
+        }
     }
+    Some(shape)
 }
 
 #[cfg(feature = "occt")]
@@ -1598,7 +1624,7 @@ pub fn loft_section_scene_elements(
     match &section.face {
         ExtrudeFace::Circle(ci) => vec![SceneElement::Circle(*ci)],
         ExtrudeFace::Polygon(lines) => lines.iter().map(|li| SceneElement::Line(*li)).collect(),
-        ExtrudeFace::Boolean { .. } => Vec::new(),
+        ExtrudeFace::Boolean { .. } | ExtrudeFace::TextGlyph { .. } => Vec::new(),
     }
 }
 
@@ -2255,12 +2281,33 @@ fn face_center_world(doc: &Document, face: &ExtrudeFace) -> Option<(Vec3, Vec3)>
             let centroid = profile.iter().copied().sum::<Vec3>() / profile.len() as f32;
             Some((centroid, normal))
         }
-        ExtrudeFace::Boolean { .. } => {
+        ExtrudeFace::Boolean { .. } | ExtrudeFace::TextGlyph { .. } => {
             let (profile, normal) = face_profile_world(doc, face)?;
             let centroid = profile.iter().copied().sum::<Vec3>() / profile.len() as f32;
             Some((centroid, normal))
         }
     }
+}
+
+/// One sketch-text glyph region (#285) in the sketch's UV frame: the glyph's outer loop and its
+/// hole loops, already placed by the text's `origin`/`rotation`. `None` if the text or glyph is
+/// missing.
+fn text_glyph_region_uv(
+    doc: &Document,
+    text_index: usize,
+    glyph_index: usize,
+) -> Option<(Vec<(f32, f32)>, Vec<Vec<(f32, f32)>>)> {
+    let t = doc.sketch_texts.get(text_index).filter(|t| !t.deleted)?;
+    let regions = crate::text::group_glyphs(&t.contours);
+    let region = regions.get(glyph_index)?;
+    let (sin, cos) = t.rotation.sin_cos();
+    let xf = |&(x, y): &(f32, f32)| {
+        (x * cos - y * sin + t.origin.0, x * sin + y * cos + t.origin.1)
+    };
+    let outer: Vec<(f32, f32)> = region.outer.iter().map(xf).collect();
+    let holes: Vec<Vec<(f32, f32)>> =
+        region.holes.iter().map(|h| h.iter().map(xf).collect()).collect();
+    Some((outer, holes))
 }
 
 /// World-space boundary loop (CCW in the face frame) and outward normal of a face.
@@ -2277,6 +2324,13 @@ pub fn face_profile_world(doc: &Document, face: &ExtrudeFace) -> Option<(Vec<Vec
         }
         ExtrudeFace::Polygon(lines) => polygon_profile_world(doc, lines),
         ExtrudeFace::Boolean { .. } => boolean_profile_world(doc, face),
+        ExtrudeFace::TextGlyph { text, glyph } => {
+            let sketch = doc.sketch_texts.get(*text)?.sketch;
+            let frame = sketch_geometry_frame(doc, sketch)?;
+            let (outer, _holes) = text_glyph_region_uv(doc, *text, *glyph)?;
+            let profile = outer.into_iter().map(|(u, v)| local_to_world(&frame, u, v)).collect();
+            Some((profile, frame.normal))
+        }
     }
 }
 
@@ -2334,6 +2388,12 @@ pub fn extrude_face_uv_loop(
             let loop_b = extrude_face_uv_loop(doc, sketch, b)?;
             crate::polygon_boolean::face_boolean(&loop_a, &loop_b, *op)
         }
+        ExtrudeFace::TextGlyph { text, glyph } => {
+            if doc.sketch_texts.get(*text)?.sketch != sketch {
+                return None;
+            }
+            text_glyph_region_uv(doc, *text, *glyph).map(|(outer, _)| outer)
+        }
     }
 }
 
@@ -2359,6 +2419,14 @@ pub fn extrude_face_uv_region(
     sketch: crate::model::SketchId,
     face: &ExtrudeFace,
 ) -> Option<UvRegion> {
+    // A text glyph carries its own outer + counters (holes) directly (#285).
+    if let ExtrudeFace::TextGlyph { text, glyph } = face {
+        if doc.sketch_texts.get(*text)?.sketch != sketch {
+            return None;
+        }
+        let (outer, holes) = text_glyph_region_uv(doc, *text, *glyph)?;
+        return Some(UvRegion { outer, holes });
+    }
     if let ExtrudeFace::Boolean { op: crate::model::BooleanOp::Difference, a, b } = face {
         let region_a = extrude_face_uv_region(doc, sketch, a)?;
         if let Some(loop_b) = extrude_face_uv_loop(doc, sketch, b) {
@@ -2558,7 +2626,7 @@ pub fn side_face_count(profile: &ExtrudeFace) -> usize {
         // flat side walls isn't offered (documented limitation, mirrors `Circle`'s curved
         // walls above) — the extrusion mesh itself is unaffected (`extrusion_mesh` walks the
         // resolved profile loop directly, not through this count).
-        ExtrudeFace::Boolean { .. } => 0,
+        ExtrudeFace::Boolean { .. } | ExtrudeFace::TextGlyph { .. } => 0,
     }
 }
 
@@ -3853,6 +3921,63 @@ mod tests {
         let (outer, holes, _n) = face_region_world(&doc, &ring).expect("ring region");
         assert!(outer.len() >= 3, "outer boundary present");
         assert_eq!(holes.len(), 1, "inner circle becomes one hole");
+    }
+
+    /// #285: extruding the glyph 'o' builds a hollow ring — its counter (hole) comes out, so the
+    /// volume is well below a solid fill of the glyph's outer boundary. Skips without a font.
+    #[test]
+    #[cfg(feature = "occt")]
+    fn extruding_letter_o_is_hollow() {
+        let family = ["Helvetica", "Arial", "DejaVu Sans", "Liberation Sans"]
+            .into_iter()
+            .find(|f| crate::text::font_bytes(f, false, false).is_some());
+        let Some(family) = family else { return };
+        let (mut doc, sketch) = sketch_doc();
+        let (shaped, bytes) =
+            crate::text::shape_with_system_font(family, false, false, 20.0, "o").expect("shape o");
+        doc.sketch_texts.push(crate::model::SketchText {
+            sketch,
+            text: "o".to_string(),
+            font_family: family.to_string(),
+            bold: false,
+            italic: false,
+            underline: false,
+            size: 20.0,
+            size_expr: "20".to_string(),
+            origin: (0.0, 0.0),
+            rotation: 0.0,
+            wrap_width: None,
+            contours: shaped.contours,
+            font_bytes: bytes,
+            name: None,
+            deleted: false,
+        });
+        let glyph_face = ExtrudeFace::TextGlyph { text: 0, glyph: 0 };
+        // Solid fill of just the outer boundary, for comparison.
+        let (outer, holes, _n) = face_region_world(&doc, &glyph_face).expect("region");
+        assert_eq!(holes.len(), 1, "o has a counter hole");
+        let outer_area = {
+            let mut a = 0.0f32;
+            let n = outer.len();
+            for i in 0..n {
+                let j = (i + 1) % n;
+                a += outer[i].x * outer[j].y - outer[j].x * outer[i].y;
+            }
+            a.abs() * 0.5
+        };
+        doc.extrusions.push(extrusion(sketch, vec![glyph_face], 5.0));
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("o mesh")).abs();
+        let solid_fill = outer_area * 5.0;
+        assert!(
+            vol > 1.0 && vol < solid_fill * 0.85,
+            "hollow 'o' volume {vol} should be well under the solid-fill {solid_fill}",
+        );
     }
 
     /// #268: extruding the concentric ring builds a **tube** — outer cylinder minus inner

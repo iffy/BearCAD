@@ -2648,6 +2648,7 @@ pub(crate) fn extrude_face_sketch(doc: &Document, face: &ExtrudeFace) -> Option<
         // `a`/`b` always share the same sketch (that's the whole premise of combining them),
         // so either side resolves it.
         ExtrudeFace::Boolean { a, .. } => extrude_face_sketch(doc, a),
+        ExtrudeFace::TextGlyph { text, .. } => doc.sketch_texts.get(*text).map(|t| t.sketch),
     }
 }
 

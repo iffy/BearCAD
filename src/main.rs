@@ -1743,6 +1743,25 @@ impl App {
         // Click toggles the face under the cursor (highlighted via the GPU hover).
         if primary_pressed {
             if let Some(pp) = pointer_screen {
+                // A sketch text under the cursor (#285): toggle all its glyph faces at once, so
+                // the whole string extrudes/cuts as one selection.
+                if let Some(faces) = self.text_glyph_faces_at(pp, cam, viewport, vp) {
+                    let all_present = faces
+                        .iter()
+                        .all(|f| self.state.creating_extrusion.as_ref().is_some_and(|c| c.faces.contains(f)));
+                    for face in faces {
+                        // Toggle each; if all were present we remove, else the missing ones add.
+                        let present = self
+                            .state
+                            .creating_extrusion
+                            .as_ref()
+                            .is_some_and(|c| c.faces.contains(&face));
+                        if present == all_present {
+                            self.state.apply(Action::ToggleExtrudeFace { face });
+                        }
+                    }
+                    return;
+                }
                 if let Some(face) = pick_extrude_face(
                     pp,
                     project,
@@ -3112,6 +3131,47 @@ impl App {
         }
     }
 
+    /// If the cursor is over a sketch text's glyph (#285), return that text's glyph faces (one
+    /// `ExtrudeFace::TextGlyph` per glyph) — what the Extrude tool toggles to extrude/cut the
+    /// whole string. Hit-tests each text on its own sketch plane.
+    fn text_glyph_faces_at(
+        &self,
+        pp: egui::Pos2,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+    ) -> Option<Vec<model::ExtrudeFace>> {
+        for (ti, text) in self.state.doc.sketch_texts.iter().enumerate() {
+            if text.deleted {
+                continue;
+            }
+            let Some(frame) = crate::face::sketch_geometry_frame(&self.state.doc, text.sketch) else {
+                continue;
+            };
+            let Some(world) = cam.ray_plane_hit(pp, viewport, vp, frame.origin, frame.normal) else {
+                continue;
+            };
+            let (wu, wv) = world_to_local(&frame, world);
+            // Undo the text's origin/rotation to test against baseline-space glyph regions.
+            let (sin, cos) = text.rotation.sin_cos();
+            let (du, dv) = (wu - text.origin.0, wv - text.origin.1);
+            let local = (du * cos + dv * sin, -du * sin + dv * cos);
+            let regions = crate::text::group_glyphs(&text.contours);
+            let hit = regions.iter().any(|r| {
+                crate::polygon::point_in_polygon_2d(local, &r.outer)
+                    && !r.holes.iter().any(|h| crate::polygon::point_in_polygon_2d(local, h))
+            });
+            if hit {
+                return Some(
+                    (0..regions.len())
+                        .map(|glyph| model::ExtrudeFace::TextGlyph { text: ti, glyph })
+                        .collect(),
+                );
+            }
+        }
+        None
+    }
+
     /// Text tool (#282): click in a sketch to drop a text element. Its glyph outlines are baked
     /// from a default system font; the string, font, size, and style are then editable in the
     /// context pane (#286). The new element is selected so its context control opens immediately.
@@ -4066,6 +4126,7 @@ impl eframe::App for App {
                                         model::ExtrudeFace::Circle(_) => "Circle",
                                         model::ExtrudeFace::Polygon(_) => "Loop",
                                         model::ExtrudeFace::Boolean { .. } => "Region",
+                                        model::ExtrudeFace::TextGlyph { .. } => "Glyph",
                                     };
                                     format!("{kind} {}", n + 1)
                                 })
@@ -4469,6 +4530,7 @@ impl eframe::App for App {
                                             model::ExtrudeFace::Circle(_) => "Circle",
                                             model::ExtrudeFace::Polygon(_) => "Loop",
                                             model::ExtrudeFace::Boolean { .. } => "Region",
+                                            model::ExtrudeFace::TextGlyph { .. } => "Glyph",
                                         };
                                         format!("{kind} {}", n + 1)
                                     })
