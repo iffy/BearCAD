@@ -137,7 +137,12 @@ fn render_drawing<C: Canvas>(doc: &Document, index: usize, canvas: &mut C) -> Op
             Some(si) => crate::names::node_label(doc, crate::hierarchy::HierarchyNode::Sketch(si)),
             None => crate::names::node_label(doc, crate::hierarchy::HierarchyNode::Body(view.body)),
         };
-        let label = format!("{source} — {}", view.orientation.label());
+        let scale_suffix = view
+            .scale
+            .as_deref()
+            .map(|s| format!(" ({s})"))
+            .unwrap_or_default();
+        let label = format!("{source} — {}{scale_suffix}", view.orientation.label());
         canvas.text(cell_x + CELL_PAD, cell_y + 20.0, 11.0, Anchor::Start, &label);
         render_view_geometry(canvas, doc, view, cell_x, cell_y, cell_w, cell_h, unit);
     }
@@ -176,7 +181,12 @@ fn render_view_geometry<C: Canvas>(
     let caption_h = 26.0;
     let area_w = cell_w - 2.0 * CELL_PAD;
     let area_h = cell_h - caption_h - 2.0 * CELL_PAD;
-    let scale = (area_w / extent.x).min(area_h / extent.y) * 0.9;
+    // A set print scale (#300) draws at exactly `factor` page-mm per model-mm (points on the
+    // export canvas); otherwise auto-fit to the card.
+    let scale = match view.scale.as_deref().and_then(crate::model::parse_drawing_scale) {
+        Some(factor) => factor * PT_PER_MM,
+        None => (area_w / extent.x).min(area_h / extent.y) * 0.9,
+    };
     let bbox_center = (min + max) * 0.5;
     let area_center =
         glam::Vec2::new(cell_x + cell_w * 0.5, cell_y + caption_h + CELL_PAD + area_h * 0.5);
@@ -464,6 +474,7 @@ mod tests {
                 orientation: DrawingOrientation::Front,
                 dimensioned_edges: Vec::new(),
                 angle_dims: Vec::new(),
+                scale: None,
                 pos_x: 0.5,
                 pos_y: 0.5,
             }],

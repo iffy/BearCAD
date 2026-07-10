@@ -19,7 +19,11 @@ you like, and each one collects **views** — a body shown from a chosen directi
    Left, Right, Top, Bottom) or **Isometric**. Each view draws the source as a black
    wireframe, scaled to fit its card. Drag the card wherever it should sit on the page, and
    repeat for more views. Clicking any placed view selects it and reopens the same editor —
-   change its orientation or **Remove view** there.
+   change its orientation, set its scale, or **Remove view** there.
+   - **Scale:** type a print scale like `1:20` (one page millimetre represents twenty model
+     millimetres) and the view draws at exactly that size on the page and in exports — the
+     caption shows it, e.g. `Body 0 — Front (1:20)`. Any positive ratio works (`2:3`,
+     `10:1`); clear the field to return to auto-fit.
 3. **Dimensions:** a new view arrives with every edge's length dimension already shown. With
    the **Dimension tool** active, click an edge to hide its dimension (click again to bring it
    back). **Shift+click** two edges to show the angle between them (Shift+click either again

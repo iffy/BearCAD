@@ -921,9 +921,16 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   `drawing_add`) replaces the old inline "Add view:" combo row. With it active, clicking a
   **body or sketch** in the Elements pane drops a projection of it onto the page and selects
   it; the **context pane** then shows the view editor — source label, **orientation**
-  dropdown, and **Remove view** — and the card can be dragged into place. Clicking any
-  existing card (any tool) selects it and opens the same editor (selected card gets an
-  accent border; `AppState::selected_drawing_view`). The Parameters
+  dropdown, **Scale** field, and **Remove view** — and the card can be dragged into place.
+  Clicking any existing card (any tool) selects it and opens the same editor (selected card
+  gets an accent border; `AppState::selected_drawing_view`).
+- **View scale (#300):** each view has a print **Scale** as `page:model` text, e.g. `1:20`
+  (1 page mm represents 20 model mm) — any positive numbers work (`2:3`, `10:1`). The field
+  only commits text that parses, so an erroneous entry leaves the last valid scale in
+  effect; empty returns to **auto-fit** (the default). A set scale draws the projection at
+  exactly that size in the editor and both exports, and shows in the card caption
+  (`Body 0 — Front (1:20)`). `Action::SetDrawingViewScale`;
+  `crate::model::parse_drawing_scale`. The Parameters
   pane is hidden in the Drawing workbench, and there's no "Back to model" button — press
   **Esc** to return to the model.
 - **Elements-pane filter (#254/#275):** a **Filter** button (funnel icon, #291) at the bottom

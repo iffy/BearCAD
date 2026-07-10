@@ -1260,6 +1260,14 @@ pub enum Action {
         view: usize,
         orientation: crate::model::DrawingOrientation,
     },
+    /// Set (or clear) a placed view's print scale, `"page:model"` text like `"1:20"` (#300).
+    /// Rejected unless the text parses ([`crate::model::parse_drawing_scale`]), so the model
+    /// only ever holds the last valid scale.
+    SetDrawingViewScale {
+        drawing: usize,
+        view: usize,
+        scale: Option<String>,
+    },
     /// Remove a body view from a drawing by its index.
     RemoveDrawingView { drawing: usize, view: usize },
     /// Toggle the length dimension of one edge (by quantized world endpoints) in a drawing view.
@@ -6261,6 +6269,7 @@ impl AppState {
                     angle_dims: Vec::new(),
                     pos_x: (0.35 + step).min(0.9),
                     pos_y: (0.35 + step).min(0.9),
+                    scale: None,
                 };
                 view.dimensioned_edges = default_dimensioned_edges(&self.doc, &view);
                 self.doc.drawings[drawing].views.push(view);
@@ -6286,6 +6295,7 @@ impl AppState {
                     angle_dims: Vec::new(),
                     pos_x: (0.35 + step).min(0.9),
                     pos_y: (0.35 + step).min(0.9),
+                    scale: None,
                 };
                 view.dimensioned_edges = default_dimensioned_edges(&self.doc, &view);
                 self.doc.drawings[drawing].views.push(view);
@@ -6312,6 +6322,35 @@ impl AppState {
                 };
                 v.orientation = orientation;
                 self.status = format!("Set view to {}", orientation.label());
+                ActionResult::Ok
+            }
+            Action::SetDrawingViewScale { drawing, view, scale } => {
+                let scale = match scale {
+                    None => None,
+                    Some(text) => {
+                        let text = text.trim().to_string();
+                        if crate::model::parse_drawing_scale(&text).is_none() {
+                            let e = format!("Scale {text:?} isn't of the form 1:20");
+                            self.status = e.clone();
+                            return ActionResult::Err(e);
+                        }
+                        Some(text)
+                    }
+                };
+                let Some(v) = self
+                    .doc
+                    .drawings
+                    .get_mut(drawing)
+                    .filter(|d| !d.deleted)
+                    .and_then(|d| d.views.get_mut(view))
+                else {
+                    return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
+                };
+                v.scale = scale;
+                self.status = match &v.scale {
+                    Some(s) => format!("Set view scale {s}"),
+                    None => "Cleared view scale (auto-fit)".to_string(),
+                };
                 ActionResult::Ok
             }
             Action::RemoveDrawingView { drawing, view } => {
@@ -12285,6 +12324,50 @@ mod tests {
             orientation: DrawingOrientation::Isometric,
         });
         assert_eq!(state.doc.drawings[0].views[0].orientation, DrawingOrientation::Isometric);
+    }
+
+    /// #300: a view's print scale accepts `page:model` text, rejects anything else (keeping
+    /// the previous value), and clears back to auto-fit with `None`.
+    #[test]
+    fn drawing_view_scale_sets_validates_and_clears() {
+        use crate::model::{parse_drawing_scale, DrawingOrientation};
+        assert_eq!(parse_drawing_scale("1:20"), Some(0.05));
+        assert_eq!(parse_drawing_scale(" 2 : 5 "), Some(0.4));
+        assert_eq!(parse_drawing_scale("10:1"), Some(10.0));
+        for bad in ["", "1:", ":5", "1:0", "-1:2", "1/20", "abc", "1:abc"] {
+            assert_eq!(parse_drawing_scale(bad), None, "{bad:?} should not parse");
+        }
+
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: 0,
+            body: 0,
+            orientation: DrawingOrientation::Front,
+        });
+        let result = state.apply(Action::SetDrawingViewScale {
+            drawing: 0,
+            view: 0,
+            scale: Some("1:20".to_string()),
+        });
+        assert!(matches!(result, ActionResult::Ok), "{}", state.status);
+        assert_eq!(state.doc.drawings[0].views[0].scale.as_deref(), Some("1:20"));
+
+        let result = state.apply(Action::SetDrawingViewScale {
+            drawing: 0,
+            view: 0,
+            scale: Some("nonsense".to_string()),
+        });
+        assert!(matches!(result, ActionResult::Err(_)), "invalid scale is rejected");
+        assert_eq!(
+            state.doc.drawings[0].views[0].scale.as_deref(),
+            Some("1:20"),
+            "the last valid scale survives"
+        );
+
+        state.apply(Action::SetDrawingViewScale { drawing: 0, view: 0, scale: None });
+        assert_eq!(state.doc.drawings[0].views[0].scale, None, "cleared back to auto-fit");
     }
 
     /// #289: with the Add-view tool active in the Drawing workbench, a clicked body or sketch

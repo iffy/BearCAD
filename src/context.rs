@@ -285,12 +285,17 @@ pub struct DrawingViewControl {
     /// The projected source ("Body 0", "Sketch 1", …).
     pub source: String,
     pub orientation: crate::model::DrawingOrientation,
+    /// The stored print scale text (`"1:20"`), empty for auto-fit (#300).
+    pub scale: String,
 }
 
 /// One edit from the drawing-view context section (#289).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DrawingViewEdit {
     Orientation(crate::model::DrawingOrientation),
+    /// A valid print-scale text (`"1:20"`), or `None` for auto-fit (#300). Only ever emitted
+    /// with text that parses — invalid drafts stay local to the field.
+    Scale(Option<String>),
     Remove,
 }
 
@@ -2072,6 +2077,33 @@ pub fn show_pane(
                     }
                 }
             });
+        ui.horizontal(|ui| {
+            ui.label("Scale");
+            // The field drafts locally while focused (#300): only text that parses as
+            // `page:model` commits, so the view keeps its last valid scale; empty = auto-fit.
+            let draft_id = egui::Id::new(("drawing_view_scale_draft", control.view));
+            let mut draft = ui
+                .data(|d| d.get_temp::<String>(draft_id))
+                .unwrap_or_else(|| control.scale.clone());
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut draft)
+                    .hint_text("1:20")
+                    .desired_width(70.0),
+            );
+            if resp.changed() {
+                let trimmed = draft.trim();
+                if trimmed.is_empty() {
+                    on_drawing_view_edit(DrawingViewEdit::Scale(None));
+                } else if crate::model::parse_drawing_scale(trimmed).is_some() {
+                    on_drawing_view_edit(DrawingViewEdit::Scale(Some(trimmed.to_string())));
+                }
+            }
+            if resp.has_focus() {
+                ui.data_mut(|d| d.insert_temp(draft_id, draft));
+            } else {
+                ui.data_mut(|d| d.remove::<String>(draft_id));
+            }
+        });
         if ui.button("Remove view").clicked() {
             on_drawing_view_edit(DrawingViewEdit::Remove);
         }

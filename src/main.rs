@@ -4599,6 +4599,7 @@ impl eframe::App for App {
                                 view: v,
                                 source,
                                 orientation: view.orientation,
+                                scale: view.scale.clone().unwrap_or_default(),
                             })
                         })
                 },
@@ -5134,6 +5135,10 @@ impl eframe::App for App {
                                 view,
                                 orientation,
                             });
+                        }
+                        context::DrawingViewEdit::Scale(scale) => {
+                            self.state
+                                .apply(Action::SetDrawingViewScale { drawing, view, scale });
                         }
                         context::DrawingViewEdit::Remove => {
                             self.state.apply(Action::RemoveDrawingView { drawing, view });
@@ -8685,7 +8690,13 @@ impl App {
                     ),
                     None => body_label(&self.state.doc, view.body),
                 };
-                let caption = format!("{source_label} — {}", view.orientation.label());
+                let scale_suffix = view
+                    .scale
+                    .as_deref()
+                    .map(|s| format!(" ({s})"))
+                    .unwrap_or_default();
+                let caption =
+                    format!("{source_label} — {}{scale_suffix}", view.orientation.label());
                 painter.text(
                     cell.min + egui::vec2(8.0, 6.0),
                     egui::Align2::LEFT_TOP,
@@ -8728,9 +8739,22 @@ impl App {
                     }
                 }
                 let extent = (max - min).max(egui::vec2(1e-3, 1e-3));
-                let scale = (draw_area.width() / extent.x)
-                    .min(draw_area.height() / extent.y)
-                    * 0.9;
+                // A set print scale (#300) renders at exactly `factor` page-mm per model-mm
+                // (converted to screen pixels through the page's on-screen size); otherwise
+                // auto-fit to the card.
+                let px_per_page_mm = self
+                    .state
+                    .doc
+                    .drawings
+                    .get(drawing)
+                    .map(|d| page.width() / d.page_width_mm.max(1e-3))
+                    .unwrap_or(1.0);
+                let scale = match view.scale.as_deref().and_then(model::parse_drawing_scale) {
+                    Some(factor) => factor * px_per_page_mm,
+                    None => {
+                        (draw_area.width() / extent.x).min(draw_area.height() / extent.y) * 0.9
+                    }
+                };
                 let bbox_center = (min + max) * 0.5;
                 // Model +up maps to screen -y; center the fitted bbox in the draw area.
                 let to_screen = |p: egui::Vec2| {

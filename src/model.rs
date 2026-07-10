@@ -1901,6 +1901,20 @@ pub struct DrawingView {
     /// `dimensioned_edges`; the pair itself is order-normalized.
     #[serde(default)]
     pub angle_dims: Vec<(([i32; 3], [i32; 3]), ([i32; 3], [i32; 3]))>,
+    /// Print scale as `"page:model"` text, e.g. `"1:20"` (#300). Always stored validated
+    /// (see [`parse_drawing_scale`]); `None` auto-fits the projection to its card.
+    #[serde(default)]
+    pub scale: Option<String>,
+}
+
+/// Parse a drawing-view scale like `"1:20"` or `"2:3"` into page-mm per model-mm (#300):
+/// `a:b` means `a` page units represent `b` model units, so the factor is `a / b`. `None`
+/// for anything that isn't two positive numbers around a colon.
+pub fn parse_drawing_scale(text: &str) -> Option<f32> {
+    let (a, b) = text.trim().split_once(':')?;
+    let a: f32 = a.trim().parse().ok()?;
+    let b: f32 = b.trim().parse().ok()?;
+    (a > 0.0 && b > 0.0 && a.is_finite() && b.is_finite()).then(|| a / b)
 }
 
 /// A quantized body-edge key: a pair of quantized world endpoints, order-normalized so the
