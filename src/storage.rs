@@ -194,6 +194,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "slice_op", &doc.slice_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "sketch_repeat_op", &doc.sketch_repeat_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "sketch_slice_op", &doc.sketch_slice_ops)?;
+    save_indexed_nodes(&tx, &mut row_id, "sketch_text", &doc.sketch_texts)?;
     save_indexed_nodes(&tx, &mut row_id, "drawing", &doc.drawings)?;
     if doc.construction_planes.len() > 1 {
         save_indexed_nodes(
@@ -463,6 +464,7 @@ pub fn open(path: &str) -> Result<Document> {
     let slice_ops = load_indexed_entities(&conn, "slice_op")?;
     let sketch_repeat_ops = load_indexed_entities(&conn, "sketch_repeat_op")?;
     let sketch_slice_ops = load_indexed_entities(&conn, "sketch_slice_op")?;
+    let sketch_texts = load_indexed_entities(&conn, "sketch_text")?;
     let drawings = load_indexed_entities(&conn, "drawing")?;
     let default_length_unit = load_default_length_unit_meta(&conn);
     let default_angle_unit = load_default_angle_unit_meta(&conn);
@@ -487,6 +489,7 @@ pub fn open(path: &str) -> Result<Document> {
         slice_ops,
         sketch_repeat_ops,
         sketch_slice_ops,
+        sketch_texts,
         drawings,
         shape_order,
         undo_groups,

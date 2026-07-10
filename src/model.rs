@@ -1639,6 +1639,65 @@ pub struct SketchSliceOperation {
     pub deleted: bool,
 }
 
+/// A text element placed in a sketch (#282). The glyph outlines are **baked** at create/edit time
+/// into `contours` (sketch-local mm, laid out from a baseline at the local origin, *before* the
+/// element's `origin`/`rotation` transform) and the source font is embedded (`font_bytes`, base64
+/// in JSON) so the text renders identically on a machine that lacks the font — like a PDF. The
+/// outlines are what render and extrude; the string/font/size are kept so it can be re-baked when
+/// edited. Contours include both outer loops and counters (holes); callers separate them by
+/// winding/containment (`text::contour_signed_area`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SketchText {
+    pub sketch: SketchId,
+    pub text: String,
+    pub font_family: String,
+    #[serde(default)]
+    pub bold: bool,
+    #[serde(default)]
+    pub italic: bool,
+    #[serde(default)]
+    pub underline: bool,
+    /// Evaluated font size in mm; `size_expr` is the source (may reference parameters).
+    pub size: f32,
+    #[serde(default)]
+    pub size_expr: String,
+    /// Baseline start in sketch-local coords, before rotation.
+    pub origin: (f32, f32),
+    /// Rotation about `origin`, radians (also settable with the Move tool, #282d).
+    #[serde(default)]
+    pub rotation: f32,
+    /// Optional wrap width (mm); when set, text wraps to this width and grows downward.
+    #[serde(default)]
+    pub wrap_width: Option<f32>,
+    /// Baked glyph contours (sketch-local mm, baseline-relative, pre-transform).
+    #[serde(default)]
+    pub contours: Vec<Vec<(f32, f32)>>,
+    /// Embedded source font bytes (base64 in JSON) for reproducible rendering.
+    #[serde(default, with = "font_bytes_base64")]
+    pub font_bytes: Vec<u8>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+/// Serde codec storing [`SketchText::font_bytes`] as base64 (same rationale as the tracing-image
+/// codec — raw byte arrays would bloat the JSON 4x).
+mod font_bytes_base64 {
+    use base64::Engine as _;
+
+    pub fn serialize<S: serde::Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        let text: String = serde::Deserialize::deserialize(d)?;
+        base64::engine::general_purpose::STANDARD
+            .decode(text.as_bytes())
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 /// A reference image imported for tracing (#163/#169), hosted on a construction plane.
 /// The encoded file bytes are embedded (base64 in the saved JSON) so documents stay
 /// self-contained, like imported meshes.
@@ -1737,6 +1796,8 @@ pub enum ShapeKind {
     SketchRepeatOperation,
     /// A 2D in-sketch slice (#224): its fragment lines are separate `Line` entries.
     SketchSliceOperation,
+    /// A sketch text element (#282): baked glyph outlines + embedded font.
+    SketchText,
     /// An in-place edit of an existing construction plane (undo restores the prior planes).
     /// Transient: never persisted (storage rebuilds `shape_order` from created shapes only).
     ConstructionPlaneEdit,
@@ -1928,6 +1989,9 @@ pub struct Document {
     /// 2D in-sketch slices (#224): split sketch entities grouped under an op.
     #[serde(default)]
     pub sketch_slice_ops: Vec<SketchSliceOperation>,
+    /// Sketch text elements (#282): baked glyph outlines + embedded font, per sketch.
+    #[serde(default)]
+    pub sketch_texts: Vec<SketchText>,
     /// Technical drawings (#180): black-on-white projected sheets of bodies for print/PDF.
     #[serde(default)]
     pub drawings: Vec<Drawing>,
@@ -1974,6 +2038,7 @@ impl Default for Document {
             slice_ops: Vec::new(),
             sketch_repeat_ops: Vec::new(),
             sketch_slice_ops: Vec::new(),
+            sketch_texts: Vec::new(),
             drawings: Vec::new(),
             shape_order: Vec::new(),
             undo_groups: Vec::new(),

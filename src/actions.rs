@@ -1393,6 +1393,37 @@ pub enum Action {
         face_targets: Vec<Vec<usize>>,
         cutter_lines: Vec<usize>,
     },
+    /// Place a text element in a sketch (#282): bakes the glyph outlines from the selected system
+    /// font and embeds the font bytes for portability. (Constructed by the Text tool, landing in a
+    /// follow-up slice of #282.)
+    #[allow(dead_code)]
+    CreateSketchText {
+        sketch: usize,
+        text: String,
+        font_family: String,
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        size: f32,
+        size_expr: String,
+        origin: (f32, f32),
+        rotation: f32,
+        wrap_width: Option<f32>,
+    },
+    /// Re-bake / re-point an existing sketch text (#282): string, font, size, style, position.
+    #[allow(dead_code)]
+    EditSketchText {
+        index: usize,
+        text: String,
+        font_family: String,
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        size: f32,
+        size_expr: String,
+        rotation: f32,
+        wrap_width: Option<f32>,
+    },
     /// Re-point an existing in-sketch slice (#224).
     EditSketchSliceOperation {
         op: usize,
@@ -6673,6 +6704,108 @@ impl AppState {
                 self.status = "Edited sketch repeat".to_string();
                 ActionResult::Ok
             }
+            Action::CreateSketchText {
+                sketch,
+                text,
+                font_family,
+                bold,
+                italic,
+                underline,
+                size,
+                size_expr,
+                origin,
+                rotation,
+                wrap_width,
+            } => {
+                if self.doc.sketches.get(sketch).filter(|s| !s.deleted).is_none() {
+                    let e = format!("Sketch {sketch} not found");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                if text.trim().is_empty() {
+                    let e = "Text is empty".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let Some((shaped, font_bytes)) =
+                    crate::text::shape_with_system_font(&font_family, bold, italic, size, &text)
+                else {
+                    let e = format!("Font \"{font_family}\" not found or unreadable");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                self.doc.sketch_texts.push(crate::model::SketchText {
+                    sketch,
+                    text,
+                    font_family,
+                    bold,
+                    italic,
+                    underline,
+                    size,
+                    size_expr,
+                    origin,
+                    rotation,
+                    wrap_width,
+                    contours: shaped.contours,
+                    font_bytes,
+                    name: None,
+                    deleted: false,
+                });
+                self.doc.shape_order.push(ShapeKind::SketchText);
+                self.status = "Added text".to_string();
+                ActionResult::Ok
+            }
+            Action::EditSketchText {
+                index,
+                text,
+                font_family,
+                bold,
+                italic,
+                underline,
+                size,
+                size_expr,
+                rotation,
+                wrap_width,
+            } => {
+                let Some(existing) = self.doc.sketch_texts.get(index).filter(|t| !t.deleted) else {
+                    let e = format!("Sketch text {index} not found");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                if text.trim().is_empty() {
+                    let e = "Text is empty".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                // Re-bake from the font; fall back to the existing outlines/bytes if the font is
+                // gone but only the transform/style changed and the string is unchanged.
+                let (contours, font_bytes) =
+                    match crate::text::shape_with_system_font(&font_family, bold, italic, size, &text) {
+                        Some((shaped, bytes)) => (shaped.contours, bytes),
+                        None if text == existing.text => {
+                            (existing.contours.clone(), existing.font_bytes.clone())
+                        }
+                        None => {
+                            let e = format!("Font \"{font_family}\" not found or unreadable");
+                            self.status = e.clone();
+                            return ActionResult::Err(e);
+                        }
+                    };
+                let t = &mut self.doc.sketch_texts[index];
+                t.text = text;
+                t.font_family = font_family;
+                t.bold = bold;
+                t.italic = italic;
+                t.underline = underline;
+                t.size = size;
+                t.size_expr = size_expr;
+                t.rotation = rotation;
+                t.wrap_width = wrap_width;
+                t.contours = contours;
+                t.font_bytes = font_bytes;
+                self.status = "Edited text".to_string();
+                ActionResult::Ok
+            }
             Action::CreateSketchSliceOperation { sketch, line_targets, circle_targets, face_targets, cutter_lines } => {
                 if let Err(e) = validate_sketch_slice_inputs(
                     &self.doc, sketch, &line_targets, &circle_targets, &face_targets, &cutter_lines,
@@ -11915,6 +12048,58 @@ mod tests {
             crate::polygon::closed_line_loops(&state.doc, si).len(),
             1,
             "undo restores the single face"
+        );
+    }
+
+    /// #282: creating a sketch text bakes its glyph outlines and embeds the font bytes; editing it
+    /// to a different string re-bakes. Skips if no usable system font is installed.
+    #[test]
+    fn create_and_edit_sketch_text_bakes_outlines() {
+        let family = ["Helvetica", "Arial", "DejaVu Sans", "Liberation Sans"]
+            .into_iter()
+            .find(|f| crate::text::font_bytes(f, false, false).is_some());
+        let Some(family) = family else {
+            eprintln!("no usable system font; skipping");
+            return;
+        };
+        let mut state = AppState::default();
+        let si = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let result = state.apply(Action::CreateSketchText {
+            sketch: si,
+            text: "Ab".to_string(),
+            font_family: family.to_string(),
+            bold: false,
+            italic: false,
+            underline: false,
+            size: 10.0,
+            size_expr: "10".to_string(),
+            origin: (0.0, 0.0),
+            rotation: 0.0,
+            wrap_width: None,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{}", state.status);
+        let t = &state.doc.sketch_texts[0];
+        assert!(!t.contours.is_empty(), "outlines baked");
+        assert!(!t.font_bytes.is_empty(), "font embedded for portability");
+        let a_contours = t.contours.len();
+
+        // Editing to a longer string re-bakes (more contours).
+        let result = state.apply(Action::EditSketchText {
+            index: 0,
+            text: "AbAb".to_string(),
+            font_family: family.to_string(),
+            bold: false,
+            italic: false,
+            underline: false,
+            size: 10.0,
+            size_expr: "10".to_string(),
+            rotation: 0.0,
+            wrap_width: None,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{}", state.status);
+        assert!(
+            state.doc.sketch_texts[0].contours.len() > a_contours,
+            "re-bake reflects the longer string"
         );
     }
 
