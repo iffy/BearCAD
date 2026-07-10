@@ -23,6 +23,20 @@ into solid bodies you can export for 3D printing or other CAD tools (STL and STE
 **Parametric** means your design stays editable: dimensions can be named values like `leg` or
 `thickness`, and changing a value later reshapes the whole part to match.
 
+## Small and fast
+
+CAD software is famously heavy — a mainstream package like Autodesk Fusion asks for
+**8–16 GB of disk space** and greets you with a splash screen. BearCAD is a different
+animal:
+
+- **The whole app downloads in single-digit megabytes** — about 7 MB on macOS, 8 MB on
+  Linux, 16 MB on Windows. That's the *entire* installation, industry-grade geometry kernel
+  included: roughly a thousand times smaller than the big names.
+- **It launches in about half a second**, cold, straight to a fully interactive window. No
+  splash screen, no sign-in, no background updater — click, and you're sketching.
+- It's a single self-contained executable, so installing is just downloading it — easy to
+  keep on a USB stick or drop onto any machine.
+
 Under the hood BearCAD runs on proven engineering libraries: solid geometry is
 [OpenCASCADE (OCCT)](https://dev.opencascade.org/), the industry-grade BREP kernel behind many
 professional CAD packages, and sketch constraints are solved by
