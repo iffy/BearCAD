@@ -14,7 +14,9 @@ you like, and each one collects **views** — a body shown from a chosen directi
    its own icon and opens in the drawing pane, which takes over the central area with a white
    sheet.
 2. **Add view:** pick the **Add view** tool (the ＋ in the toolbar), then click a body or
-   sketch in the Elements pane — a projection of it lands on the page, already selected. Set
+   sketch in the Elements pane — a projection of it lands on the page, already selected. You
+   can also **drag a body or sketch row** from the Elements pane straight onto the page to
+   place it exactly where you drop it. Set
    its direction in the context pane: one of the six straight-on directions (Front, Back,
    Left, Right, Top, Bottom) or **Isometric**. Each view draws the source as a black
    wireframe, scaled to fit its card. Drag the card wherever it should sit on the page, and

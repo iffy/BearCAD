@@ -176,6 +176,11 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
     })
 }
 
+/// Drag-and-drop payload for dragging an Elements-pane row onto the open drawing page (#290):
+/// the dragged body/sketch becomes a projection at the drop point.
+#[derive(Clone, Debug)]
+pub struct DrawingDragPayload(pub SceneElement);
+
 /// User-toggled visibility for scene elements. Absent entries are visible.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ElementVisibility {
@@ -2702,6 +2707,16 @@ fn show_row(
         // Pane-hover → viewport highlight (#161): the 3D view shows what this row is.
         if response.hovered() {
             on_hover_element(element.clone());
+        }
+        // With a drawing open, body and sketch rows drag onto the page (#290): the drop
+        // places a projection at the pointer. Re-sensed for drag so the payload arms; plain
+        // clicks still select as usual.
+        if active_drawing.is_some()
+            && matches!(node, HierarchyNode::Body(_) | HierarchyNode::Sketch(_))
+        {
+            response
+                .interact(egui::Sense::drag())
+                .dnd_set_drag_payload(DrawingDragPayload(element.clone()));
         }
         // Clicks: double-click edits (where applicable), single-click selects.
         match node {

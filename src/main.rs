@@ -8873,6 +8873,53 @@ impl App {
             }
         }
 
+        // Dropping a body/sketch dragged from the Elements pane (#290) places a projection
+        // at the drop point, exactly like the Add-view tool.
+        if let Some(page) = page_rect {
+            if bg.dnd_hover_payload::<hierarchy::DrawingDragPayload>().is_some() {
+                ui.painter().rect_stroke(
+                    page,
+                    2.0,
+                    egui::Stroke::new(1.5, egui::Color32::from_rgb(90, 150, 230)),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            if let Some(payload) = bg.dnd_release_payload::<hierarchy::DrawingDragPayload>() {
+                if let Some(pos) = ui.input(|i| i.pointer.interact_pos()).or(bg.hover_pos()) {
+                    let nx = ((pos.x - page.min.x) / page.width()).clamp(0.0, 1.0);
+                    let ny = ((pos.y - page.min.y) / page.height()).clamp(0.0, 1.0);
+                    let orientation = model::DrawingOrientation::default();
+                    let added = match payload.0.clone() {
+                        SceneElement::Body(body) => matches!(
+                            self.state.apply(Action::AddDrawingView { drawing, body, orientation }),
+                            actions::ActionResult::Ok
+                        ),
+                        SceneElement::Sketch(sketch) => matches!(
+                            self.state
+                                .apply(Action::AddDrawingSketchView { drawing, sketch, orientation }),
+                            actions::ActionResult::Ok
+                        ),
+                        _ => false,
+                    };
+                    if added {
+                        let view = self
+                            .state
+                            .doc
+                            .drawings
+                            .get(drawing)
+                            .map(|d| d.views.len() - 1)
+                            .unwrap_or(0);
+                        self.state.apply(Action::MoveDrawingView {
+                            drawing,
+                            view,
+                            pos_x: nx,
+                            pos_y: ny,
+                        });
+                        self.state.selected_drawing_view = Some((drawing, view));
+                    }
+                }
+            }
+        }
         if let Some(view) = remove_view {
             self.state.apply(Action::RemoveDrawingView { drawing, view });
         }

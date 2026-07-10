@@ -924,6 +924,10 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   dropdown, **Scale** field, and **Remove view** — and the card can be dragged into place.
   Clicking any existing card (any tool) selects it and opens the same editor (selected card
   gets an accent border; `AppState::selected_drawing_view`).
+- **Drag from the pane (#290):** with a drawing open, **dragging a body or sketch row** from
+  the Elements pane onto the page places a projection at the drop point (the page shows an
+  accent border while a compatible drag hovers), selected and ready to configure — the same
+  result as the Add-view tool. Plain clicks on those rows still select as usual.
 - **View scale (#300):** each view has a print **Scale** as `page:model` text, e.g. `1:20`
   (1 page mm represents 20 model mm) — any positive numbers work (`2:3`, `10:1`). The field
   only commits text that parses, so an erroneous entry leaves the last valid scale in
