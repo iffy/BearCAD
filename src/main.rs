@@ -71,6 +71,9 @@ mod snapping;
 mod step;
 mod stl;
 mod storage;
+// #282a: consumed by the SketchText element (#282b) and the extrude/context work that follows.
+#[allow(dead_code)]
+mod text;
 mod theme;
 mod value;
 mod vertex_drag;

@@ -1,0 +1,267 @@
+//! Font-outline extraction for the Text tool (#282).
+//!
+//! Turns a string + font selection into sketch-plane geometry: each glyph's outline becomes one
+//! or more closed contours (flattened to polylines, in millimetres), laid out along the baseline
+//! by each glyph's advance. Outer contours and holes (the counter of `o`, `a`, …) are both
+//! returned; callers tell them apart by signed area / containment.
+//!
+//! [`fontdb`] enumerates and selects system fonts by family + style and yields the raw font bytes
+//! (which the document embeds so text stays reproducible on a machine that lacks the font, like a
+//! PDF). [`ttf_parser`] walks the selected face's glyph outlines.
+
+use std::sync::{Mutex, OnceLock};
+
+/// A closed glyph contour in millimetres (baseline at y=0, y up), first point not repeated.
+pub type Contour = Vec<(f32, f32)>;
+
+/// The shaped result of a string: every glyph contour of every line, already positioned.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ShapedText {
+    pub contours: Vec<Contour>,
+}
+
+/// Curve-flattening resolution: segments per quadratic/cubic bezier. Glyphs are small, so a
+/// modest fixed count keeps outlines smooth without exploding the vertex count.
+const BEZIER_STEPS: usize = 8;
+
+/// Process-wide system font database, loaded once (enumeration is slow).
+fn font_db() -> &'static Mutex<fontdb::Database> {
+    static DB: OnceLock<Mutex<fontdb::Database>> = OnceLock::new();
+    DB.get_or_init(|| {
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        Mutex::new(db)
+    })
+}
+
+/// Sorted, de-duplicated list of installed font family names — for the family chooser (#282d).
+pub fn system_font_families() -> Vec<String> {
+    let db = font_db().lock().unwrap();
+    let mut names: Vec<String> = db
+        .faces()
+        .filter_map(|f| f.families.first().map(|(name, _)| name.clone()))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// The raw bytes of the installed font best matching `family` + weight/italic, or `None` if no
+/// font matches. These bytes are what the document embeds for portability.
+pub fn font_bytes(family: &str, bold: bool, italic: bool) -> Option<Vec<u8>> {
+    let db = font_db().lock().unwrap();
+    let query = fontdb::Query {
+        families: &[fontdb::Family::Name(family)],
+        weight: if bold { fontdb::Weight::BOLD } else { fontdb::Weight::NORMAL },
+        stretch: fontdb::Stretch::Normal,
+        style: if italic { fontdb::Style::Italic } else { fontdb::Style::Normal },
+    };
+    let id = db.query(&query)?;
+    db.with_face_data(id, |data, _index| data.to_vec())
+}
+
+/// Extract the outline of `text` set in the given font bytes at `size_mm` (cap-to-baseline scale
+/// follows the font's units-per-em). Returns every glyph contour in millimetres, positioned along
+/// the baseline (newlines start a new line below). `None` if the bytes aren't a parseable face.
+pub fn outline_text(font_bytes: &[u8], size_mm: f32, text: &str) -> Option<ShapedText> {
+    let face = ttf_parser::Face::parse(font_bytes, 0).ok()?;
+    let upem = face.units_per_em() as f32;
+    if upem <= 0.0 {
+        return None;
+    }
+    let scale = size_mm / upem;
+    let line_height = (face.ascender() as f32 - face.descender() as f32 + face.line_gap() as f32) * scale;
+
+    let mut out = ShapedText::default();
+    let mut pen_x = 0.0f32;
+    let mut pen_y = 0.0f32;
+    for ch in text.chars() {
+        if ch == '\n' {
+            pen_x = 0.0;
+            pen_y -= line_height;
+            continue;
+        }
+        let gid = face.glyph_index(ch).unwrap_or(ttf_parser::GlyphId(0));
+        let mut builder = OutlineCollector::new(scale, pen_x, pen_y);
+        // `outline_glyph` returns the glyph's bbox (or None for whitespace); either way we still
+        // advance the pen so spacing is correct.
+        face.outline_glyph(gid, &mut builder);
+        builder.finish();
+        out.contours.extend(builder.contours);
+        let advance = face.glyph_hor_advance(gid).unwrap_or(0) as f32 * scale;
+        pen_x += advance;
+    }
+    Some(out)
+}
+
+/// Convenience: select a system font by family/style and outline `text`, returning the contours
+/// *and* the embeddable font bytes. `None` if no matching font is installed or it can't be parsed.
+pub fn shape_with_system_font(
+    family: &str,
+    bold: bool,
+    italic: bool,
+    size_mm: f32,
+    text: &str,
+) -> Option<(ShapedText, Vec<u8>)> {
+    let bytes = font_bytes(family, bold, italic)?;
+    let shaped = outline_text(&bytes, size_mm, text)?;
+    Some((shaped, bytes))
+}
+
+/// [`ttf_parser::OutlineBuilder`] that flattens each glyph contour to a polyline in mm, offset to
+/// the current pen position. Font outlines are y-up, matching the sketch's local frame.
+struct OutlineCollector {
+    scale: f32,
+    ox: f32,
+    oy: f32,
+    contours: Vec<Contour>,
+    current: Contour,
+    last: (f32, f32),
+}
+
+impl OutlineCollector {
+    fn new(scale: f32, ox: f32, oy: f32) -> Self {
+        Self { scale, ox, oy, contours: Vec::new(), current: Vec::new(), last: (0.0, 0.0) }
+    }
+    fn map(&self, x: f32, y: f32) -> (f32, f32) {
+        (self.ox + x * self.scale, self.oy + y * self.scale)
+    }
+    fn flush(&mut self) {
+        if self.current.len() >= 3 {
+            self.contours.push(std::mem::take(&mut self.current));
+        } else {
+            self.current.clear();
+        }
+    }
+    fn finish(&mut self) {
+        self.flush();
+    }
+}
+
+impl ttf_parser::OutlineBuilder for OutlineCollector {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.flush();
+        let p = self.map(x, y);
+        self.last = p;
+        self.current.push(p);
+    }
+    fn line_to(&mut self, x: f32, y: f32) {
+        let p = self.map(x, y);
+        self.last = p;
+        self.current.push(p);
+    }
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        let p0 = self.last;
+        let c = self.map(x1, y1);
+        let p1 = self.map(x, y);
+        for k in 1..=BEZIER_STEPS {
+            let t = k as f32 / BEZIER_STEPS as f32;
+            let mt = 1.0 - t;
+            let px = mt * mt * p0.0 + 2.0 * mt * t * c.0 + t * t * p1.0;
+            let py = mt * mt * p0.1 + 2.0 * mt * t * c.1 + t * t * p1.1;
+            self.current.push((px, py));
+        }
+        self.last = p1;
+    }
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        let p0 = self.last;
+        let c1 = self.map(x1, y1);
+        let c2 = self.map(x2, y2);
+        let p1 = self.map(x, y);
+        for k in 1..=BEZIER_STEPS {
+            let t = k as f32 / BEZIER_STEPS as f32;
+            let mt = 1.0 - t;
+            let px = mt * mt * mt * p0.0
+                + 3.0 * mt * mt * t * c1.0
+                + 3.0 * mt * t * t * c2.0
+                + t * t * t * p1.0;
+            let py = mt * mt * mt * p0.1
+                + 3.0 * mt * mt * t * c1.1
+                + 3.0 * mt * t * t * c2.1
+                + t * t * t * p1.1;
+            self.current.push((px, py));
+        }
+        self.last = p1;
+    }
+    fn close(&mut self) {
+        self.flush();
+    }
+}
+
+/// Signed area (shoelace) of a contour; sign encodes winding (used to tell outer loops from holes).
+pub fn contour_signed_area(contour: &[(f32, f32)]) -> f32 {
+    let n = contour.len();
+    let mut a = 0.0;
+    for i in 0..n {
+        let j = (i + 1) % n;
+        a += contour[i].0 * contour[j].1 - contour[j].0 * contour[i].1;
+    }
+    a * 0.5
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A plain text font's bytes, or skip (CI without fonts). Prefers common sans/serif families so
+    /// the glyph shapes are predictable; falls back to the first parseable installed font.
+    fn any_font() -> Option<Vec<u8>> {
+        for fam in ["Helvetica", "Arial", "Times New Roman", "DejaVu Sans", "Liberation Sans"] {
+            if let Some(b) = font_bytes(fam, false, false) {
+                if ttf_parser::Face::parse(&b, 0).is_ok() {
+                    return Some(b);
+                }
+            }
+        }
+        for fam in system_font_families() {
+            if let Some(b) = font_bytes(&fam, false, false) {
+                if ttf_parser::Face::parse(&b, 0).is_ok() {
+                    return Some(b);
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn capital_h_has_one_contour_with_size() {
+        let Some(bytes) = any_font() else {
+            eprintln!("no system fonts; skipping");
+            return;
+        };
+        let shaped = outline_text(&bytes, 10.0, "H").expect("outline H");
+        assert_eq!(shaped.contours.len(), 1, "H is a single contour");
+        let ys: Vec<f32> = shaped.contours[0].iter().map(|p| p.1).collect();
+        let height = ys.iter().cloned().fold(f32::MIN, f32::max)
+            - ys.iter().cloned().fold(f32::MAX, f32::min);
+        // A 10mm cap-height-ish letter should be a few mm tall, well under the em size.
+        assert!(height > 2.0 && height < 12.0, "H height {height} out of range");
+    }
+
+    #[test]
+    fn letter_o_has_a_hole() {
+        let Some(bytes) = any_font() else {
+            eprintln!("no system fonts; skipping");
+            return;
+        };
+        let shaped = outline_text(&bytes, 10.0, "o").expect("outline o");
+        assert_eq!(shaped.contours.len(), 2, "o is an outer ring plus a counter (hole)");
+        // The two contours wind oppositely (outer vs hole).
+        let a0 = contour_signed_area(&shaped.contours[0]);
+        let a1 = contour_signed_area(&shaped.contours[1]);
+        assert!(a0 * a1 < 0.0, "outer and hole wind oppositely ({a0}, {a1})");
+    }
+
+    #[test]
+    fn advance_lays_glyphs_left_to_right() {
+        let Some(bytes) = any_font() else {
+            return;
+        };
+        let one = outline_text(&bytes, 10.0, "H").expect("H");
+        let two = outline_text(&bytes, 10.0, "HH").expect("HH");
+        let max_x = |s: &ShapedText| {
+            s.contours.iter().flatten().map(|p| p.0).fold(f32::MIN, f32::max)
+        };
+        assert!(max_x(&two) > max_x(&one) + 1.0, "second H sits to the right of the first");
+    }
+}
