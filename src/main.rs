@@ -8624,17 +8624,22 @@ impl App {
                     + egui::vec2(view.pos_x * page.width(), view.pos_y * page.height());
                 let cell = egui::Rect::from_center_size(center, egui::vec2(cell_w, cell_h));
 
-                // Drag the card by its caption strip; also right-click for the view menu.
-                let handle = egui::Rect::from_min_size(cell.min, egui::vec2(cell_w, 22.0));
+                // Drag anywhere on the card to move it (#293) — not just the caption strip, so
+                // grabbing the projection itself doesn't fall through and pan the page. The
+                // Dimension tool's edge picking still works: its click-sense interact is created
+                // after this one, so it stays on top for clicks in the drawing area.
                 let drag = ui.interact(
-                    handle,
+                    cell,
                     ui.make_persistent_id(("drawing_view_drag", drawing, vi)),
                     egui::Sense::click_and_drag(),
                 );
                 if drag.dragged() {
-                    if let Some(pos) = drag.interact_pointer_pos() {
-                        let nx = ((pos.x - page.min.x) / page.width()).clamp(0.0, 1.0);
-                        let ny = ((pos.y - page.min.y) / page.height()).clamp(0.0, 1.0);
+                    // Relative drag: keep the grab point under the cursor instead of snapping
+                    // the card's centre to it.
+                    let delta = drag.drag_delta();
+                    if delta != egui::Vec2::ZERO {
+                        let nx = (view.pos_x + delta.x / page.width()).clamp(0.0, 1.0);
+                        let ny = (view.pos_y + delta.y / page.height()).clamp(0.0, 1.0);
                         move_view = Some((vi, nx, ny));
                     }
                 }
