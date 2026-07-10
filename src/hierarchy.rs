@@ -2249,11 +2249,15 @@ pub fn show_pane(
             } else {
                 let hidden = filter.rows().iter().filter(|(_, e)| !**e).count();
                 let label = if hidden == 0 {
-                    "⧩ Filter".to_string()
+                    "Filter".to_string()
                 } else {
-                    format!("⧩ Filter ({hidden} hidden)")
+                    format!("Filter ({hidden} hidden)")
                 };
-                if ui.button(label).on_hover_text("Show/hide element types").clicked() {
+                let button = egui::Button::image_and_text(
+                    crate::icons::sized_texture(ui.ctx(), crate::icons::IconId::Filter),
+                    label,
+                );
+                if ui.add(button).on_hover_text("Show/hide element types").clicked() {
                     *filter_expanded = true;
                 }
             }

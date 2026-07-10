@@ -78,11 +78,13 @@ pub enum IconId {
     RepeatDistStart,
     RepeatGapBetween,
     RepeatGapOffset,
+    /// Elements-pane filter funnel (#275/#291).
+    Filter,
 }
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 58] = [
+    pub const ALL: [Self; 59] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -141,6 +143,7 @@ impl IconId {
         Self::RepeatDistStart,
         Self::RepeatGapBetween,
         Self::RepeatGapOffset,
+        Self::Filter,
     ];
 
     pub fn svg_source(self) -> &'static str {
@@ -203,6 +206,7 @@ impl IconId {
             Self::RepeatDistStart => include_str!("assets/icons/repeat_dist_start.svg"),
             Self::RepeatGapBetween => include_str!("assets/icons/repeat_gap_between.svg"),
             Self::RepeatGapOffset => include_str!("assets/icons/repeat_gap_offset.svg"),
+            Self::Filter => include_str!("assets/icons/filter.svg"),
         }
     }
 
@@ -266,6 +270,7 @@ impl IconId {
             Self::RepeatDistStart => "Distance to start",
             Self::RepeatGapBetween => "Gap between",
             Self::RepeatGapOffset => "Start-to-start offset",
+            Self::Filter => "Filter",
         }
     }
 }
