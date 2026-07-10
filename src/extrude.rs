@@ -1620,11 +1620,21 @@ pub fn loft_section_from_element(
 pub fn loft_section_scene_elements(
     section: &crate::model::LoftSection,
 ) -> Vec<crate::hierarchy::SceneElement> {
+    extrude_face_scene_elements(&section.face)
+}
+
+/// The scene elements a picked profile face maps to, for folding a tool's picked faces into
+/// the render selection so they highlight like selected geometry (#303): a circle face is its
+/// circle, a polygon face is its boundary lines, a text glyph is its whole text.
+pub fn extrude_face_scene_elements(
+    face: &ExtrudeFace,
+) -> Vec<crate::hierarchy::SceneElement> {
     use crate::hierarchy::SceneElement;
-    match &section.face {
+    match face {
         ExtrudeFace::Circle(ci) => vec![SceneElement::Circle(*ci)],
         ExtrudeFace::Polygon(lines) => lines.iter().map(|li| SceneElement::Line(*li)).collect(),
-        ExtrudeFace::Boolean { .. } | ExtrudeFace::TextGlyph { .. } => Vec::new(),
+        ExtrudeFace::TextGlyph { text, .. } => vec![SceneElement::SketchText(*text)],
+        ExtrudeFace::Boolean { .. } => Vec::new(),
     }
 }
 

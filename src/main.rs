@@ -10343,6 +10343,31 @@ impl App {
                 }
             }
         }
+        // Revolve tool (#303): hover the profile face under the cursor, same affordance as
+        // the Extrude tool — clicking it picks the profile. Anything else keeps the generic
+        // hover (lines still light up for the axis pick).
+        if self.state.tool == Tool::Revolve
+            && self.revolve_gizmo_drag.is_none()
+            && self.state.sketch_session.is_none()
+        {
+            hover_highlight = pointer_screen
+                .and_then(|pp| {
+                    pick_extrude_face(pp, &project, doc, cam.eye(), &cam, viewport, &vp)
+                })
+                .and_then(|f| {
+                    if let model::ExtrudeFace::Boolean { .. } = &f {
+                        let (profile, _) = extrude::face_profile_world(doc, &f)?;
+                        Some(gpu_viewport::ViewportHoverHighlight::ClosedLoop {
+                            world_loop: profile,
+                        })
+                    } else {
+                        Some(gpu_viewport::ViewportHoverHighlight::SketchFace(
+                            extrude_face_id(f),
+                        ))
+                    }
+                })
+                .or(hover_highlight);
+        }
         // Chamfer/fillet tool (#144): before an edge is picked, highlight the treatable edge
         // under the cursor so it's clear which one clicking will chamfer/fillet. Only in the 3D
         // case (no sketch open) and while no treatment is in progress (else the gizmo shows).
@@ -10500,6 +10525,10 @@ impl App {
             }
             Tool::Revolve => {
                 if let Some(cr) = self.state.creating_revolve.as_ref() {
+                    // Picked profile faces highlight like selected geometry (#303).
+                    for face in &cr.faces {
+                        folded.extend(extrude::extrude_face_scene_elements(face));
+                    }
                     // Revolve's cut bodies are consumed destructively → red.
                     cut_highlight_bodies.extend(cr.cut_bodies.iter().copied());
                 }
