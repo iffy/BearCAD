@@ -26,6 +26,9 @@ you like, and each one collects **views** — a body shown from a chosen directi
      millimetres) and the view draws at exactly that size on the page and in exports — the
      caption shows it, e.g. `Body 0 — Front (1:20)`. Any positive ratio works (`2:3`,
      `10:1`); clear the field to return to auto-fit.
+   - **Style:** choose how the projection draws — **Visible edges** (hidden lines removed),
+     **Wireframe** (every edge, the default), or **Shaded** (grey-shaded faces under the
+     visible edges). The editor and both exports render the same style.
 3. **Dimensions:** a new view arrives with every edge's length dimension already shown. With
    the **Dimension tool** active, click an edge to hide its dimension (click again to bring it
    back). **Shift+click** two edges to show the angle between them (Shift+click either again

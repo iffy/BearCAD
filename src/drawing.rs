@@ -75,6 +75,124 @@ pub fn drawing_view_world_edges(doc: &Document, view: &DrawingView) -> Vec<(Vec3
     }
 }
 
+/// Projected 2D geometry for a drawing view under its display style (#301), shared by the
+/// editor pane and the SVG/PDF export.
+pub struct StyledViewGeometry {
+    /// Back-to-front shaded triangles (projected 2D + a 0..1 grey, 1 = white) — `Shaded` only.
+    pub tris: Vec<([glam::Vec2; 3], f32)>,
+    /// The edge segments to stroke: every feature edge for `Wireframe`; only the visible
+    /// runs (hidden lines removed) for `Visible`/`Shaded`.
+    pub segments: Vec<(glam::Vec2, glam::Vec2)>,
+}
+
+/// Project a view's geometry under its display style (#301). Sketch views have no solid to
+/// occlude or shade, so they always render as plain wireframe.
+pub fn styled_view_geometry(doc: &Document, view: &DrawingView) -> StyledViewGeometry {
+    use crate::model::DrawingViewStyle;
+    let (right, up) = view_axes(view.orientation);
+    let project = |p: Vec3| glam::Vec2::new(p.dot(right), p.dot(up));
+    let edges = drawing_view_world_edges(doc, view);
+    let wireframe = || StyledViewGeometry {
+        tris: Vec::new(),
+        segments: edges.iter().map(|(a, b)| (project(*a), project(*b))).collect(),
+    };
+    if view.sketch.is_some() || view.style == DrawingViewStyle::Wireframe {
+        return wireframe();
+    }
+    let Some(mesh) = crate::extrude::body_solid_mesh(doc, view.body) else {
+        return wireframe();
+    };
+    // Depth grows toward the viewer along the view's out-of-page axis.
+    let toward = right.cross(up);
+    let Some((lo, hi)) = mesh.bounds() else {
+        return wireframe();
+    };
+    let eps = (hi - lo).length().max(1e-3) * 2e-3;
+
+    // Projected triangles with per-vertex depth, for point-occlusion tests.
+    struct ProjTri {
+        p: [glam::Vec2; 3],
+        d: [f32; 3],
+        /// Twice the signed area of the projected triangle; ~0 = edge-on, skipped.
+        area2: f32,
+    }
+    let tris: Vec<ProjTri> = mesh
+        .triangles
+        .iter()
+        .map(|t| {
+            let p = [project(t[0]), project(t[1]), project(t[2])];
+            let area2 = (p[1] - p[0]).perp_dot(p[2] - p[0]);
+            ProjTri { p, d: [t[0].dot(toward), t[1].dot(toward), t[2].dot(toward)], area2 }
+        })
+        .filter(|t| t.area2.abs() > 1e-6)
+        .collect();
+    // Whether some face is strictly in front of `(point, depth)`.
+    let occluded = |point: glam::Vec2, depth: f32| -> bool {
+        tris.iter().any(|t| {
+            // Barycentric coordinates of `point` in the projected triangle.
+            let w0 = (t.p[1] - point).perp_dot(t.p[2] - point) / t.area2;
+            let w1 = (t.p[2] - point).perp_dot(t.p[0] - point) / t.area2;
+            let w2 = 1.0 - w0 - w1;
+            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                return false;
+            }
+            w0 * t.d[0] + w1 * t.d[1] + w2 * t.d[2] > depth + eps
+        })
+    };
+
+    // Sample each edge and keep the visible runs (hidden-line removal).
+    const SAMPLES: usize = 32;
+    let mut segments = Vec::new();
+    for (a, b) in &edges {
+        let mut run_start: Option<f32> = None;
+        let mut push_run = |from: f32, to: f32| {
+            let wa = a.lerp(*b, from);
+            let wb = a.lerp(*b, to);
+            segments.push((project(wa), project(wb)));
+        };
+        for i in 0..SAMPLES {
+            let t = (i as f32 + 0.5) / SAMPLES as f32;
+            let w = a.lerp(*b, t);
+            let visible = !occluded(project(w), w.dot(toward));
+            match (visible, run_start) {
+                (true, None) => run_start = Some(i as f32 / SAMPLES as f32),
+                (false, Some(s)) => {
+                    push_run(s, i as f32 / SAMPLES as f32);
+                    run_start = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(s) = run_start {
+            push_run(s, 1.0);
+        }
+    }
+
+    // Shaded fills: front faces painted back-to-front, greyed by how squarely they face a
+    // fixed key light up-and-left of the viewer.
+    let mut fills = Vec::new();
+    if view.style == DrawingViewStyle::Shaded {
+        let light = (toward * 1.2 - right * 0.35 + up * 0.55).normalize();
+        let mut shaded: Vec<(f32, [glam::Vec2; 3], f32)> = mesh
+            .triangles
+            .iter()
+            .filter_map(|t| {
+                let n = (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero();
+                if n == Vec3::ZERO || n.dot(toward) <= 0.0 {
+                    return None; // back or degenerate face
+                }
+                let shade = 0.62 + 0.33 * n.dot(light).max(0.0);
+                let depth = (t[0] + t[1] + t[2]).dot(toward) / 3.0;
+                Some((depth, [project(t[0]), project(t[1]), project(t[2])], shade))
+            })
+            .collect();
+        shaded.sort_by(|a, b| a.0.total_cmp(&b.0));
+        fills = shaded.into_iter().map(|(_, p, s)| (p, s)).collect();
+    }
+
+    StyledViewGeometry { tris: fills, segments }
+}
+
 /// An 8-bit RGB paint.
 #[derive(Clone, Copy, PartialEq)]
 struct Rgb(u8, u8, u8);
@@ -95,6 +213,8 @@ enum Anchor {
 trait Canvas {
     fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, fill: Option<Rgb>, stroke: Option<Rgb>, stroke_w: f32);
     fn line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, color: Rgb, width: f32);
+    /// A filled polygon (shaded view faces, #301).
+    fn poly(&mut self, pts: &[(f32, f32)], fill: Rgb);
     /// Text is always black in a drawing; `size` is the font size in px.
     fn text(&mut self, x: f32, y: f32, size: f32, anchor: Anchor, content: &str);
 }
@@ -196,7 +316,22 @@ fn render_view_geometry<C: Canvas>(
         glam::Vec2::new(area_center.x + d.x, area_center.y - d.y)
     };
 
-    for (a, b) in &proj {
+    // Strokes (and shaded fills) come from the view's display style (#301); the fit above
+    // always uses the full wireframe bbox so switching styles never re-scales the view.
+    let styled = styled_view_geometry(doc, view);
+    for (pts, shade) in &styled.tris {
+        let level = (shade.clamp(0.0, 1.0) * 255.0) as u8;
+        let fill = Rgb(level, level, level);
+        let s: Vec<(f32, f32)> = pts
+            .iter()
+            .map(|p| {
+                let sp = to_screen(*p);
+                (sp.x, sp.y)
+            })
+            .collect();
+        canvas.poly(&s, fill);
+    }
+    for (a, b) in &styled.segments {
         let (sa, sb) = (to_screen(*a), to_screen(*b));
         canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, 1.2);
     }
@@ -276,6 +411,16 @@ impl Canvas for SvgCanvas {
             "<line x1=\"{x1:.1}\" y1=\"{y1:.1}\" x2=\"{x2:.1}\" y2=\"{y2:.1}\" stroke=\"{}\" \
              stroke-width=\"{width}\"/>\n",
             svg_color(color)
+        ));
+    }
+
+    fn poly(&mut self, pts: &[(f32, f32)], fill: Rgb) {
+        // Stroked with its own fill so adjacent shaded triangles don't show hairline seams.
+        let points: Vec<String> = pts.iter().map(|(x, y)| format!("{x:.1},{y:.1}")).collect();
+        self.body.push_str(&format!(
+            "<polygon points=\"{}\" fill=\"{fill}\" stroke=\"{fill}\" stroke-width=\"0.6\"/>\n",
+            points.join(" "),
+            fill = svg_color(fill)
         ));
     }
 
@@ -379,6 +524,22 @@ impl Canvas for PdfCanvas {
         self.push(&format!("{width:.2} w\n{x1:.2} {py1:.2} m {x2:.2} {py2:.2} l S\n"));
     }
 
+    fn poly(&mut self, pts: &[(f32, f32)], fill: Rgb) {
+        let Some(((x0, y0), rest)) = pts.split_first() else {
+            return;
+        };
+        // Fill *and* stroke with the same grey so adjacent shaded triangles don't show
+        // hairline seams between them.
+        self.set_fill(fill);
+        self.set_stroke(fill);
+        let mut path = format!("0.6 w\n{x0:.2} {:.2} m ", self.height - y0);
+        for (x, y) in rest {
+            path.push_str(&format!("{x:.2} {:.2} l ", self.height - y));
+        }
+        path.push_str("h b\n");
+        self.push(&path);
+    }
+
     fn text(&mut self, x: f32, y: f32, size: f32, anchor: Anchor, content: &str) {
         // Helvetica averages ~0.5em per glyph; good enough to center dimension labels.
         let width = 0.5 * size * content.chars().count() as f32;
@@ -475,6 +636,7 @@ mod tests {
                 dimensioned_edges: Vec::new(),
                 angle_dims: Vec::new(),
                 scale: None,
+                style: Default::default(),
                 pos_x: 0.5,
                 pos_y: 0.5,
             }],

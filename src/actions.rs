@@ -1268,6 +1268,12 @@ pub enum Action {
         view: usize,
         scale: Option<String>,
     },
+    /// Set how a placed view renders (#301): visible edges only, wireframe, or shaded.
+    SetDrawingViewStyle {
+        drawing: usize,
+        view: usize,
+        style: crate::model::DrawingViewStyle,
+    },
     /// Remove a body view from a drawing by its index.
     RemoveDrawingView { drawing: usize, view: usize },
     /// Toggle the length dimension of one edge (by quantized world endpoints) in a drawing view.
@@ -6270,6 +6276,7 @@ impl AppState {
                     pos_x: (0.35 + step).min(0.9),
                     pos_y: (0.35 + step).min(0.9),
                     scale: None,
+                    style: Default::default(),
                 };
                 view.dimensioned_edges = default_dimensioned_edges(&self.doc, &view);
                 self.doc.drawings[drawing].views.push(view);
@@ -6296,6 +6303,7 @@ impl AppState {
                     pos_x: (0.35 + step).min(0.9),
                     pos_y: (0.35 + step).min(0.9),
                     scale: None,
+                    style: Default::default(),
                 };
                 view.dimensioned_edges = default_dimensioned_edges(&self.doc, &view);
                 self.doc.drawings[drawing].views.push(view);
@@ -6351,6 +6359,20 @@ impl AppState {
                     Some(s) => format!("Set view scale {s}"),
                     None => "Cleared view scale (auto-fit)".to_string(),
                 };
+                ActionResult::Ok
+            }
+            Action::SetDrawingViewStyle { drawing, view, style } => {
+                let Some(v) = self
+                    .doc
+                    .drawings
+                    .get_mut(drawing)
+                    .filter(|d| !d.deleted)
+                    .and_then(|d| d.views.get_mut(view))
+                else {
+                    return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
+                };
+                v.style = style;
+                self.status = format!("Set view style: {}", style.label());
                 ActionResult::Ok
             }
             Action::RemoveDrawingView { drawing, view } => {
@@ -12368,6 +12390,64 @@ mod tests {
 
         state.apply(Action::SetDrawingViewScale { drawing: 0, view: 0, scale: None });
         assert_eq!(state.doc.drawings[0].views[0].scale, None, "cleared back to auto-fit");
+    }
+
+    /// #301: display styles — `Visible` removes hidden lines (less total stroked length than
+    /// the full wireframe on an isometric box), `Shaded` adds front-face fills, and the
+    /// action stores the style.
+    #[test]
+    fn drawing_view_styles_cull_and_shade() {
+        use crate::model::{DrawingOrientation, DrawingViewStyle};
+        let mut state = two_box_state(false);
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: 0,
+            body: 0,
+            orientation: DrawingOrientation::Isometric,
+        });
+
+        let total_len = |g: &crate::drawing::StyledViewGeometry| -> f32 {
+            g.segments.iter().map(|(a, b)| (*a - *b).length()).sum()
+        };
+        let wire = crate::drawing::styled_view_geometry(
+            &state.doc,
+            &state.doc.drawings[0].views[0],
+        );
+        assert!(wire.tris.is_empty() && !wire.segments.is_empty());
+
+        let result = state.apply(Action::SetDrawingViewStyle {
+            drawing: 0,
+            view: 0,
+            style: DrawingViewStyle::Visible,
+        });
+        assert!(matches!(result, ActionResult::Ok));
+        assert_eq!(state.doc.drawings[0].views[0].style, DrawingViewStyle::Visible);
+        let visible = crate::drawing::styled_view_geometry(
+            &state.doc,
+            &state.doc.drawings[0].views[0],
+        );
+        assert!(visible.tris.is_empty());
+        let (wire_len, visible_len) = (total_len(&wire), total_len(&visible));
+        assert!(
+            visible_len > 0.0 && visible_len < wire_len * 0.95,
+            "hidden-line removal drops the far edges: {visible_len} vs {wire_len}"
+        );
+
+        state.apply(Action::SetDrawingViewStyle {
+            drawing: 0,
+            view: 0,
+            style: DrawingViewStyle::Shaded,
+        });
+        let shaded = crate::drawing::styled_view_geometry(
+            &state.doc,
+            &state.doc.drawings[0].views[0],
+        );
+        assert!(!shaded.tris.is_empty(), "shaded style fills front faces");
+        assert!(
+            (total_len(&shaded) - visible_len).abs() < 1e-3,
+            "shaded strokes the same visible edges"
+        );
     }
 
     /// #289: with the Add-view tool active in the Drawing workbench, a clicked body or sketch

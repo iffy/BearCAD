@@ -928,6 +928,14 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   the Elements pane onto the page places a projection at the drop point (the page shows an
   accent border while a compatible drag hovers), selected and ready to configure — the same
   result as the Add-view tool. Plain clicks on those rows still select as usual.
+- **View styles (#301):** each view renders in one of three styles, picked in the view
+  editor: **Visible edges** (hidden lines removed — every feature edge is depth-sampled
+  against the body's mesh and only the unoccluded runs stroke), **Wireframe** (every feature
+  edge, the default), or **Shaded** (front faces painted back-to-front, greyed by a fixed
+  key light, under the visible edges). Sketch views have no solid, so they always draw
+  wireframe. The projection logic is `drawing::styled_view_geometry`, shared by the editor
+  pane (greys darkened for the dark sheet) and both exports (the `Canvas` trait gained a
+  filled-polygon primitive). `Action::SetDrawingViewStyle`.
 - **View scale (#300):** each view has a print **Scale** as `page:model` text, e.g. `1:20`
   (1 page mm represents 20 model mm) — any positive numbers work (`2:3`, `10:1`). The field
   only commits text that parses, so an erroneous entry leaves the last valid scale in

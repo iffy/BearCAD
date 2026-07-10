@@ -287,12 +287,16 @@ pub struct DrawingViewControl {
     pub orientation: crate::model::DrawingOrientation,
     /// The stored print scale text (`"1:20"`), empty for auto-fit (#300).
     pub scale: String,
+    /// How the projection renders (#301).
+    pub style: crate::model::DrawingViewStyle,
 }
 
 /// One edit from the drawing-view context section (#289).
 #[derive(Clone, Debug, PartialEq)]
 pub enum DrawingViewEdit {
     Orientation(crate::model::DrawingOrientation),
+    /// Display style (#301): visible edges / wireframe / shaded.
+    Style(crate::model::DrawingViewStyle),
     /// A valid print-scale text (`"1:20"`), or `None` for auto-fit (#300). Only ever emitted
     /// with text that parses — invalid drafts stay local to the field.
     Scale(Option<String>),
@@ -2074,6 +2078,15 @@ pub fn show_pane(
                         .clicked()
                     {
                         on_drawing_view_edit(DrawingViewEdit::Orientation(*o));
+                    }
+                }
+            });
+        egui::ComboBox::from_id_salt("drawing_view_style")
+            .selected_text(control.style.label())
+            .show_ui(ui, |ui| {
+                for style in crate::model::DrawingViewStyle::ALL {
+                    if ui.selectable_label(control.style == style, style.label()).clicked() {
+                        on_drawing_view_edit(DrawingViewEdit::Style(style));
                     }
                 }
             });

@@ -4600,6 +4600,7 @@ impl eframe::App for App {
                                 source,
                                 orientation: view.orientation,
                                 scale: view.scale.clone().unwrap_or_default(),
+                                style: view.style,
                             })
                         })
                 },
@@ -5139,6 +5140,10 @@ impl eframe::App for App {
                         context::DrawingViewEdit::Scale(scale) => {
                             self.state
                                 .apply(Action::SetDrawingViewScale { drawing, view, scale });
+                        }
+                        context::DrawingViewEdit::Style(style) => {
+                            self.state
+                                .apply(Action::SetDrawingViewStyle { drawing, view, style });
                         }
                         context::DrawingViewEdit::Remove => {
                             self.state.apply(Action::RemoveDrawingView { drawing, view });
@@ -8810,6 +8815,34 @@ impl App {
                     }
                 }
 
+                // Non-wireframe styles (#301) draw their own fills/visible-run strokes; the
+                // per-edge loop below then only adds dimensions and pick highlights.
+                let styled = (view.sketch.is_none()
+                    && view.style != model::DrawingViewStyle::Wireframe)
+                    .then(|| crate::drawing::styled_view_geometry(&self.state.doc, view));
+                if let Some(sty) = &styled {
+                    for (pts, shade) in &sty.tris {
+                        // The editor sheet is dark; map the print greys down so shading reads
+                        // without blowing out (exports keep the light print greys).
+                        let level = (shade.clamp(0.0, 1.0) * 110.0) as u8 + 30;
+                        painter.add(egui::Shape::convex_polygon(
+                            pts.iter()
+                                .map(|p| to_screen(egui::vec2(p.x, p.y)))
+                                .collect(),
+                            egui::Color32::from_gray(level),
+                            egui::Stroke::NONE,
+                        ));
+                    }
+                    for (a, b) in &sty.segments {
+                        painter.line_segment(
+                            [
+                                to_screen(egui::vec2(a.x, a.y)),
+                                to_screen(egui::vec2(b.x, b.y)),
+                            ],
+                            egui::Stroke::new(1.2, INK),
+                        );
+                    }
+                }
                 let dims = view.dimensioned_edges.clone();
                 let unit = self.state.doc.default_length_unit;
                 let pending_here = pending_angle.filter(|(pv, _)| *pv == vi).map(|(_, k)| k);
@@ -8818,12 +8851,15 @@ impl App {
                     let (wa, wb) = world_edges[i];
                     let key = edge_key(wa, wb);
                     // The first edge of an in-progress angle pick glows so it's clear it's armed.
-                    let stroke = if pending_here == Some(key) {
-                        egui::Stroke::new(2.4, egui::Color32::from_rgb(30, 90, 200))
-                    } else {
-                        egui::Stroke::new(1.2, INK)
-                    };
-                    painter.line_segment([sa, sb], stroke);
+                    let glow = pending_here == Some(key);
+                    if glow {
+                        painter.line_segment(
+                            [sa, sb],
+                            egui::Stroke::new(2.4, egui::Color32::from_rgb(30, 90, 200)),
+                        );
+                    } else if styled.is_none() {
+                        painter.line_segment([sa, sb], egui::Stroke::new(1.2, INK));
+                    }
                     if dims.contains(&key) {
                         let length = (wa - wb).length();
                         let mid = sa + (sb - sa) * 0.5;

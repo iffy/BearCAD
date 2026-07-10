@@ -1905,6 +1905,37 @@ pub struct DrawingView {
     /// (see [`parse_drawing_scale`]); `None` auto-fits the projection to its card.
     #[serde(default)]
     pub scale: Option<String>,
+    /// How the projection is drawn (#301): hidden lines removed, full wireframe, or shaded.
+    #[serde(default)]
+    pub style: DrawingViewStyle,
+}
+
+/// How a drawing view renders its body (#301).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DrawingViewStyle {
+    /// Only the edges visible from the view direction (hidden lines removed).
+    Visible,
+    /// Every feature edge, including back edges.
+    #[default]
+    Wireframe,
+    /// Grey-shaded faces with the visible edges on top.
+    Shaded,
+}
+
+impl DrawingViewStyle {
+    pub const ALL: [DrawingViewStyle; 3] = [
+        DrawingViewStyle::Visible,
+        DrawingViewStyle::Wireframe,
+        DrawingViewStyle::Shaded,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Visible => "Visible edges",
+            Self::Wireframe => "Wireframe",
+            Self::Shaded => "Shaded",
+        }
+    }
 }
 
 /// Parse a drawing-view scale like `"1:20"` or `"2:3"` into page-mm per model-mm (#300):
