@@ -2658,6 +2658,28 @@ pub(crate) fn extrude_face_sketch(doc: &Document, face: &ExtrudeFace) -> Option<
 /// [`crate::construction::add_line_polygon`] loop matching
 /// [`crate::extrude::face_boundary_loop_world`] point-for-point. Returns the new profile as
 /// an `ExtrudeFace`.
+/// Every feature edge of a drawing view as a normalized quantized-endpoint dimension key
+/// (#299): a newly added projection starts with all its length dimensions shown, and the
+/// Dimension tool's edge clicks toggle them off from there.
+fn default_dimensioned_edges(
+    doc: &Document,
+    view: &crate::model::DrawingView,
+) -> Vec<crate::model::DrawingEdgeKey> {
+    let mut keys: Vec<crate::model::DrawingEdgeKey> =
+        crate::drawing::drawing_view_world_edges(doc, view)
+            .iter()
+            .map(|&(a, b)| {
+                crate::model::normalized_edge_key(
+                    crate::hierarchy::quantize_body_point(a),
+                    crate::hierarchy::quantize_body_point(b),
+                )
+            })
+            .collect();
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
 fn create_implicit_extrude_sketch(
     doc: &mut Document,
     face_id: FaceId,
@@ -6212,13 +6234,13 @@ impl AppState {
                 if self.doc.bodies.get(body).is_none_or(|b| b.deleted) {
                     return ActionResult::Err(format!("No body {body}"));
                 }
-                let Some(d) = self.doc.drawings.get_mut(drawing).filter(|d| !d.deleted) else {
+                if self.doc.drawings.get(drawing).is_none_or(|d| d.deleted) {
                     return ActionResult::Err(format!("No drawing {drawing}"));
-                };
+                }
                 // Cascade new placements down-right from the page centre so they don't fully
                 // stack (#274); wrap back after a handful.
-                let step = (d.views.len() % 6) as f32 * 0.06;
-                d.views.push(crate::model::DrawingView {
+                let step = (self.doc.drawings[drawing].views.len() % 6) as f32 * 0.06;
+                let mut view = crate::model::DrawingView {
                     body,
                     sketch: None,
                     orientation,
@@ -6226,7 +6248,9 @@ impl AppState {
                     angle_dims: Vec::new(),
                     pos_x: (0.35 + step).min(0.9),
                     pos_y: (0.35 + step).min(0.9),
-                });
+                };
+                view.dimensioned_edges = default_dimensioned_edges(&self.doc, &view);
+                self.doc.drawings[drawing].views.push(view);
                 self.status = format!(
                     "Added {} view of body {body} to drawing {drawing}",
                     orientation.label()
@@ -6237,11 +6261,11 @@ impl AppState {
                 if self.doc.sketches.get(sketch).is_none_or(|s| s.deleted) {
                     return ActionResult::Err(format!("No sketch {sketch}"));
                 }
-                let Some(d) = self.doc.drawings.get_mut(drawing).filter(|d| !d.deleted) else {
+                if self.doc.drawings.get(drawing).is_none_or(|d| d.deleted) {
                     return ActionResult::Err(format!("No drawing {drawing}"));
-                };
-                let step = (d.views.len() % 6) as f32 * 0.06;
-                d.views.push(crate::model::DrawingView {
+                }
+                let step = (self.doc.drawings[drawing].views.len() % 6) as f32 * 0.06;
+                let mut view = crate::model::DrawingView {
                     body: 0,
                     sketch: Some(sketch),
                     orientation,
@@ -6249,7 +6273,9 @@ impl AppState {
                     angle_dims: Vec::new(),
                     pos_x: (0.35 + step).min(0.9),
                     pos_y: (0.35 + step).min(0.9),
-                });
+                };
+                view.dimensioned_edges = default_dimensioned_edges(&self.doc, &view);
+                self.doc.drawings[drawing].views.push(view);
                 self.status = format!("Added sketch {sketch} to drawing {drawing}");
                 ActionResult::Ok
             }

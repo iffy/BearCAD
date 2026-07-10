@@ -5304,24 +5304,32 @@ mod tests {
             "#
             )
         };
-        let shown = run_lua(&script(1));
-        assert_eq!(
-            shown.doc.drawings[0].views[0].dimensioned_edges.len(),
-            1,
-            "one toggle shows the dimension"
-        );
+        // New views start with every edge dimensioned (#299), so the first toggle *hides*
+        // this edge and a second toggle shows it again.
+        let baseline = run_lua(&script(0));
+        let all = baseline.doc.drawings[0].views[0].dimensioned_edges.len();
+        assert!(all > 0, "a new projection starts with all dimensions on (#299)");
         // The stored key is the quantized endpoints (order-normalized).
         let qa = crate::hierarchy::quantize_body_point(glam::Vec3::ZERO);
         let qb = crate::hierarchy::quantize_body_point(glam::Vec3::new(40.0, 0.0, 0.0));
         let expected = if qa <= qb { (qa, qb) } else { (qb, qa) };
-        assert_eq!(shown.doc.drawings[0].views[0].dimensioned_edges[0], expected);
+        assert!(baseline.doc.drawings[0].views[0].dimensioned_edges.contains(&expected));
 
-        let hidden = run_lua(&script(2));
+        let hidden = run_lua(&script(1));
         assert_eq!(
             hidden.doc.drawings[0].views[0].dimensioned_edges.len(),
-            0,
-            "toggling the same edge twice hides it again"
+            all - 1,
+            "one toggle hides the dimension"
         );
+        assert!(!hidden.doc.drawings[0].views[0].dimensioned_edges.contains(&expected));
+
+        let shown = run_lua(&script(2));
+        assert_eq!(
+            shown.doc.drawings[0].views[0].dimensioned_edges.len(),
+            all,
+            "toggling the same edge twice shows it again"
+        );
+        assert!(shown.doc.drawings[0].views[0].dimensioned_edges.contains(&expected));
     }
 
     /// #180: `bearcad.drawing_angle{}` toggles the angle dimension between two edges of a view,

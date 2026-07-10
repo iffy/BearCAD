@@ -1893,7 +1893,8 @@ pub struct DrawingView {
     pub pos_y: f32,
     /// Body edges whose length dimension is shown, keyed by their quantized world endpoints
     /// (order-normalized, smaller endpoint first) — a geometry identity that survives
-    /// rebuilds, like [`crate::hierarchy::SceneElement::BodyEdge`]. Empty by default.
+    /// rebuilds, like [`crate::hierarchy::SceneElement::BodyEdge`]. A new view starts with
+    /// every edge dimensioned (#299); edge clicks toggle them off from there.
     #[serde(default)]
     pub dimensioned_edges: Vec<([i32; 3], [i32; 3])>,
     /// Pairs of edges whose **angle** is shown (#180), each edge a quantized-endpoint key like

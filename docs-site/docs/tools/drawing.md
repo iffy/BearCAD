@@ -1,5 +1,5 @@
 ---
-sidebar_position: 17
+sidebar_position: 18
 title: Drawings
 ---
 
@@ -17,11 +17,12 @@ you like, and each one collects **views** — a body shown from a chosen directi
    (Front, Back, Left, Right, Top, Bottom) or **Isometric** — and click **Add**. Each view
    draws the body as a black wireframe, projected and scaled to fit its cell. Repeat to place
    several views of the same or different bodies; they lay out in a grid.
-3. **Dimensions:** click an edge in any view to show its length; click it again to hide it.
-   The measured length is drawn beside the edge. **Shift+click** two edges to show the angle
-   between them (Shift+click either again to hide it).
-4. Remove a view with the **×** beside it. Click **← Back to model** to return to the 3D
-   view. Reopen a drawing any time by clicking its row (or right-click → **Edit drawing**).
+3. **Dimensions:** a new view arrives with every edge's length dimension already shown. With
+   the **Dimension tool** active, click an edge to hide its dimension (click again to bring it
+   back). **Shift+click** two edges to show the angle between them (Shift+click either again
+   to hide it).
+4. Remove a view with the **×** beside it. Press **Esc** to return to the 3D view. Reopen a
+   drawing any time by clicking its row (or right-click → **Edit drawing**).
 5. **Export** with **Export PDF…** for a single-page vector PDF, or **Export SVG…** for a
    vector SVG you can open in any browser and print. Both are black-on-white and scale losslessly.
 
