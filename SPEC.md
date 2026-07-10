@@ -1006,9 +1006,17 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   three-quarter view. Each view renders as a black wireframe of the body's feature edges,
   orthographically/isometrically projected and auto-fit into its cell; views sit wherever
   they were placed on the page and are added/removed from the drawing pane.
+- **Curves (#313):** tessellated circles (a cylinder rim, an extruded-circle boundary — any
+  curve the mesh/perimeter samples into short segments) are **detected** among the projected
+  feature edges (`drawing::classify_projected_circles`: clean degree-2 cycles that fit a
+  circle, with overlapping rims deduplicated) and drawn as **one smooth circle** (a real SVG
+  `<circle>` / PDF Bézier-arc, not a polygon) carrying a **single diameter dimension** (`Ø…`)
+  instead of a dimension per segment. Circle segments are excluded from the straight-edge
+  strokes and from the length-dimension set.
 - **Dimensions:** a newly added projection starts with **every edge's length dimension
   shown** (#299) — except edges pointing straight into the page, which project to a point and
-  carry no meaningful in-view length (#294). Length dimensions render as proper **architectural
+  carry no meaningful in-view length (#294), and except tessellated-circle segments, which get
+  a single diameter dimension instead (#313). Length dimensions render as proper **architectural
   dimension lines** (#294): two extension lines off the edge, a dimension line offset outward
   (on the side away from the geometry centroid) with **arrowheads** at each end, and the
   measurement centred on it — in the editor and both exports, from one shared

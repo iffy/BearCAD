@@ -2723,23 +2723,34 @@ fn default_dimensioned_edges(
 ) -> Vec<crate::model::DrawingEdgeKey> {
     // Skip edges that project to (near) a point in this view — an edge pointing straight into
     // the page has no meaningful length to dimension here, and its 3D length would mislead
-    // (#294). Uses the same projected-length test the renderers use.
+    // (#294) — and skip tessellated-circle segments, which are covered by a single diameter
+    // dimension instead (#313).
     let (right, up) = crate::drawing::view_axes(view.orientation);
-    let mut keys: Vec<crate::model::DrawingEdgeKey> =
-        crate::drawing::drawing_view_world_edges(doc, view)
-            .iter()
-            .filter(|(a, b)| {
-                let pa = glam::Vec2::new(a.dot(right), a.dot(up));
-                let pb = glam::Vec2::new(b.dot(right), b.dot(up));
-                (pb - pa).length() > 1e-3
-            })
-            .map(|&(a, b)| {
-                crate::model::normalized_edge_key(
-                    crate::hierarchy::quantize_body_point(a),
-                    crate::hierarchy::quantize_body_point(b),
-                )
-            })
-            .collect();
+    let world = crate::drawing::drawing_view_world_edges(doc, view);
+    let proj: Vec<(glam::Vec2, glam::Vec2)> = world
+        .iter()
+        .map(|(a, b)| {
+            (
+                glam::Vec2::new(a.dot(right), a.dot(up)),
+                glam::Vec2::new(b.dot(right), b.dot(up)),
+            )
+        })
+        .collect();
+    let circles = crate::drawing::classify_projected_circles(&proj);
+    let mut keys: Vec<crate::model::DrawingEdgeKey> = world
+        .iter()
+        .zip(&proj)
+        .filter(|(_, (pa, pb))| {
+            (*pb - *pa).length() > 1e-3
+                && !crate::drawing::segment_on_circle(*pa, *pb, &circles)
+        })
+        .map(|(&(a, b), _)| {
+            crate::model::normalized_edge_key(
+                crate::hierarchy::quantize_body_point(a),
+                crate::hierarchy::quantize_body_point(b),
+            )
+        })
+        .collect();
     keys.sort();
     keys.dedup();
     keys

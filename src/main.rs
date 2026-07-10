@@ -9025,6 +9025,19 @@ impl App {
                     );
                     if qa <= qb { (qa, qb) } else { (qb, qa) }
                 };
+                // Detect tessellated circles (#313): render smooth, dimension only the diameter.
+                let proj_glam: Vec<(glam::Vec2, glam::Vec2)> = proj
+                    .iter()
+                    .map(|(a, b)| (glam::Vec2::new(a.x, a.y), glam::Vec2::new(b.x, b.y)))
+                    .collect();
+                let circles = crate::drawing::classify_projected_circles(&proj_glam);
+                let on_circle = |a: egui::Vec2, b: egui::Vec2| {
+                    crate::drawing::segment_on_circle(
+                        glam::Vec2::new(a.x, a.y),
+                        glam::Vec2::new(b.x, b.y),
+                        &circles,
+                    )
+                };
 
                 // On the Dimension tool, the edge nearest the cursor previews so it's clear a
                 // click toggles it (#294). Computed here; drawn in the per-edge loop below.
@@ -9098,6 +9111,9 @@ impl App {
                         ));
                     }
                     for (a, b) in &sty.segments {
+                        if on_circle(egui::vec2(a.x, a.y), egui::vec2(b.x, b.y)) {
+                            continue;
+                        }
                         painter.line_segment(
                             [
                                 to_screen(egui::vec2(a.x, a.y)),
@@ -9107,14 +9123,34 @@ impl App {
                         );
                     }
                 }
-                let dims = view.dimensioned_edges.clone();
+                // Smooth detected circles (#313), plus a single diameter dimension each.
                 let unit = self.state.doc.default_length_unit;
+                for c in &circles {
+                    let sc = to_screen(egui::vec2(c.center.x, c.center.y));
+                    painter.circle_stroke(sc, c.radius * scale, egui::Stroke::new(1.2, INK));
+                    let dir = egui::vec2(0.70710677, -0.70710677);
+                    let a = egui::vec2(c.center.x, c.center.y) - dir * c.radius;
+                    let b = egui::vec2(c.center.x, c.center.y) + dir * c.radius;
+                    let (sa, sb) = (to_screen(a), to_screen(b));
+                    painter.line_segment([sa, sb], egui::Stroke::new(0.8, INK));
+                    let d = crate::value::format_length_display_in(c.radius * 2.0, unit);
+                    painter.text(
+                        (sa + sb.to_vec2()) * 0.5 + egui::vec2(0.0, -8.0),
+                        egui::Align2::CENTER_CENTER,
+                        format!("⌀{d}"),
+                        egui::FontId::proportional(11.0),
+                        INK,
+                    );
+                }
+                let dims = view.dimensioned_edges.clone();
                 let pending_here = pending_angle.filter(|(pv, _)| *pv == vi).map(|(_, k)| k);
                 let bbox_center_v = egui::vec2(bbox_center.x, bbox_center.y);
                 let diag = extent.length().max(1.0);
                 let default_gap = diag * 0.05;
                 let arrow = diag * 0.025;
                 for (i, (a, b)) in proj.iter().enumerate() {
+                    // Circle-tessellation segments are drawn as the smooth circle above (#313).
+                    let is_circle_seg = on_circle(*a, *b);
                     let (sa, sb) = (to_screen(*a), to_screen(*b));
                     let (wa, wb) = world_edges[i];
                     let key = edge_key(wa, wb);
@@ -9131,10 +9167,10 @@ impl App {
                             [sa, sb],
                             egui::Stroke::new(2.4, egui::Color32::from_rgb(90, 150, 230)),
                         );
-                    } else if styled.is_none() {
+                    } else if styled.is_none() && !is_circle_seg {
                         painter.line_segment([sa, sb], egui::Stroke::new(1.2, INK));
                     }
-                    if dims.contains(&key) && (*b - *a).length() >= 1e-3 {
+                    if dims.contains(&key) && (*b - *a).length() >= 1e-3 && !is_circle_seg {
                         // Architectural dimension line (#294): extension lines, an offset
                         // dimension line with arrowheads, and the length centred on it.
                         let (av, bv) = (egui::vec2(a.x, a.y), egui::vec2(b.x, b.y));

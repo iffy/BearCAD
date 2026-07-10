@@ -110,6 +110,105 @@ fn edge_key(a: Vec3, b: Vec3) -> crate::model::DrawingEdgeKey {
     )
 }
 
+/// A circle detected among a view's projected feature edges (#313): a tessellated curve
+/// (cylinder rim, extruded-circle boundary) that should render as one smooth circle and carry
+/// a single diameter dimension rather than a dimension per short segment.
+pub struct DetectedCircle {
+    pub center: glam::Vec2,
+    pub radius: f32,
+}
+
+/// Classify a view's projected 2D feature edges (#313): find tessellated circles (closed loops
+/// of short segments that fit a circle) and report which edges belong to them, so the renderer
+/// can draw them smooth and dimension only the diameter. Straight edges are everything else.
+pub fn classify_projected_circles(edges: &[(glam::Vec2, glam::Vec2)]) -> Vec<DetectedCircle> {
+    use std::collections::HashMap;
+    // Quantize endpoints (0.001 mm) so shared vertices merge into one index.
+    let q = |p: glam::Vec2| (((p.x * 1000.0).round()) as i64, ((p.y * 1000.0).round()) as i64);
+    let mut index_of: HashMap<(i64, i64), usize> = HashMap::new();
+    let mut verts: Vec<glam::Vec2> = Vec::new();
+    let vid = |p: glam::Vec2, index_of: &mut HashMap<(i64, i64), usize>, verts: &mut Vec<glam::Vec2>| {
+        *index_of.entry(q(p)).or_insert_with(|| {
+            verts.push(p);
+            verts.len() - 1
+        })
+    };
+    // Edge endpoints as vertex indices; per-vertex degree and adjacency. Overlapping edges
+    // (e.g. a cylinder's top and bottom rim projecting onto the same circle in a face-on view)
+    // are deduplicated so shared vertices keep degree 2 rather than 4.
+    let mut e_verts: Vec<(usize, usize)> = Vec::with_capacity(edges.len());
+    let mut seen_pairs: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
+    for &(a, b) in edges {
+        let ia = vid(a, &mut index_of, &mut verts);
+        let ib = vid(b, &mut index_of, &mut verts);
+        let pair = if ia <= ib { (ia, ib) } else { (ib, ia) };
+        if ia != ib && !seen_pairs.insert(pair) {
+            continue; // a duplicate/overlapping edge
+        }
+        e_verts.push((ia, ib));
+    }
+    let n = verts.len();
+    let mut degree = vec![0usize; n];
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n]; // adjacent edge indices
+    for (ei, &(a, b)) in e_verts.iter().enumerate() {
+        if a == b {
+            continue;
+        }
+        degree[a] += 1;
+        degree[b] += 1;
+        adj[a].push(ei);
+        adj[b].push(ei);
+    }
+    // Connected components over edges where every touched vertex has degree exactly 2 — a clean
+    // cycle (a tessellated circle). Any degree != 2 disqualifies the component.
+    let mut seen = vec![false; e_verts.len()];
+    let mut circles = Vec::new();
+    for start in 0..e_verts.len() {
+        if seen[start] || e_verts[start].0 == e_verts[start].1 {
+            continue;
+        }
+        // BFS over connected edges.
+        let mut stack = vec![start];
+        let mut comp_edges = Vec::new();
+        let mut comp_verts: Vec<usize> = Vec::new();
+        let mut clean = true;
+        seen[start] = true;
+        while let Some(ei) = stack.pop() {
+            comp_edges.push(ei);
+            for &v in [e_verts[ei].0, e_verts[ei].1].iter() {
+                if degree[v] != 2 {
+                    clean = false;
+                }
+                comp_verts.push(v);
+                for &ne in &adj[v] {
+                    if !seen[ne] {
+                        seen[ne] = true;
+                        stack.push(ne);
+                    }
+                }
+            }
+        }
+        comp_verts.sort_unstable();
+        comp_verts.dedup();
+        // A circle: a clean cycle with enough segments and a tight radius fit around the centroid.
+        if !clean || comp_edges.len() < 8 || comp_verts.len() != comp_edges.len() {
+            continue;
+        }
+        let center = comp_verts.iter().map(|&v| verts[v]).sum::<glam::Vec2>()
+            / comp_verts.len() as f32;
+        let radii: Vec<f32> = comp_verts.iter().map(|&v| (verts[v] - center).length()).collect();
+        let mean_r = radii.iter().sum::<f32>() / radii.len() as f32;
+        if mean_r < 1e-3 {
+            continue;
+        }
+        let max_dev = radii.iter().map(|r| (r - mean_r).abs()).fold(0.0f32, f32::max);
+        if max_dev <= mean_r * 0.06 {
+            circles.push(DetectedCircle { center, radius: mean_r });
+        }
+    }
+    circles
+}
+
 /// PDF points per millimetre (1 pt = 1/72 in): exports are sized in points so the PDF page
 /// physically matches the drawing's configured mm page (#298).
 const PT_PER_MM: f32 = 72.0 / 25.4;
@@ -191,6 +290,16 @@ pub fn dimension_line_geometry(
         arrows: [head(da, -along), head(db, along)],
         label_pos: (da + db) * 0.5 + outward * (arrow * 1.6),
     }
+}
+
+/// Whether a projected segment lies on one of the detected circles (#313): both endpoints
+/// within tolerance of that circle's radius from its centre.
+pub fn segment_on_circle(a: glam::Vec2, b: glam::Vec2, circles: &[DetectedCircle]) -> bool {
+    circles.iter().any(|c| {
+        let tol = c.radius * 0.08 + 1e-3;
+        ((a - c.center).length() - c.radius).abs() < tol
+            && ((b - c.center).length() - c.radius).abs() < tol
+    })
 }
 
 /// The outward unit perpendicular for an edge's dimension line: the side of the edge facing
@@ -348,6 +457,8 @@ trait Canvas {
     fn line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, color: Rgb, width: f32);
     /// A filled polygon (shaded view faces, #301).
     fn poly(&mut self, pts: &[(f32, f32)], fill: Rgb);
+    /// A stroked (unfilled) circle outline — a smooth detected curve (#313).
+    fn circle(&mut self, cx: f32, cy: f32, r: f32, color: Rgb, width: f32);
     /// Text is always black in a drawing; `size` is the font size in px.
     fn text(&mut self, x: f32, y: f32, size: f32, anchor: Anchor, content: &str);
 }
@@ -463,6 +574,10 @@ fn render_view_geometry<C: Canvas>(
         glam::Vec2::new(area_center.x + d.x, area_center.y - d.y)
     };
 
+    // Detect tessellated circles (#313): render them smooth and skip their many short segments
+    // in both the stroke and the per-edge dimensions; each circle gets one diameter dimension.
+    let circles = classify_projected_circles(&proj);
+
     // Strokes (and shaded fills) come from the view's display style (#301); the fit above
     // always uses the full wireframe bbox so switching styles never re-scales the view.
     let styled = styled_view_geometry(doc, view);
@@ -479,8 +594,17 @@ fn render_view_geometry<C: Canvas>(
         canvas.poly(&s, fill);
     }
     for (a, b) in &styled.segments {
+        // A segment lying on a detected circle is drawn as part of the smooth circle instead.
+        if segment_on_circle(*a, *b, &circles) {
+            continue;
+        }
         let (sa, sb) = (to_screen(*a), to_screen(*b));
         canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, 1.2);
+    }
+    // Smooth detected circles.
+    for c in &circles {
+        let sc = to_screen(c.center);
+        canvas.circle(sc.x, sc.y, c.radius * scale, BLACK, 1.2);
     }
 
     // Length dimensions (#294): architectural dimension lines — extension lines, an offset
@@ -490,11 +614,28 @@ fn render_view_geometry<C: Canvas>(
     let diag = extent.length().max(1.0);
     let default_gap = diag * 0.05;
     let arrow = diag * 0.025;
+    // A single diameter dimension per detected circle (#313), replacing its segments' dims.
+    for c in &circles {
+        let dir = glam::Vec2::new(0.70710677, -0.70710677); // 45° so it clears the extents
+        let a = c.center - dir * c.radius;
+        let b = c.center + dir * c.radius;
+        let sa = to_screen(a);
+        let sb = to_screen(b);
+        let mid = (sa + sb) * 0.5;
+        canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, 0.8);
+        // Diameter value in the view's world scale (radius is already world mm).
+        let d = crate::value::format_length_display_in(c.radius * 2.0, unit);
+        canvas.text(mid.x, mid.y - 3.0, 11.0, Anchor::Middle, &format!("⌀{d}"));
+    }
     for (i, (a, b)) in proj.iter().enumerate() {
         let (wa, wb) = world_edges[i];
         let key = edge_key(wa, wb);
-        // An edge-on edge projects to a point — nothing meaningful to dimension here (#294).
-        if !view.dimensioned_edges.contains(&key) || (*b - *a).length() < 1e-3 {
+        // An edge-on edge projects to a point — nothing meaningful to dimension here (#294) —
+        // and circle segments are covered by the single diameter dimension above (#313).
+        if !view.dimensioned_edges.contains(&key)
+            || (*b - *a).length() < 1e-3
+            || segment_on_circle(*a, *b, &circles)
+        {
             continue;
         }
         let outward = dimension_outward(*a, *b, bbox_center);
@@ -597,6 +738,14 @@ impl Canvas for SvgCanvas {
         ));
     }
 
+    fn circle(&mut self, cx: f32, cy: f32, r: f32, color: Rgb, width: f32) {
+        self.body.push_str(&format!(
+            "<circle cx=\"{cx:.1}\" cy=\"{cy:.1}\" r=\"{r:.1}\" fill=\"none\" stroke=\"{}\" \
+             stroke-width=\"{width}\"/>\n",
+            svg_color(color)
+        ));
+    }
+
     fn text(&mut self, x: f32, y: f32, size: f32, anchor: Anchor, content: &str) {
         let anchor = match anchor {
             Anchor::Start => "start",
@@ -661,6 +810,7 @@ fn pdf_text_bytes(s: &str) -> Vec<u8> {
             }
             '°' => out.push(0xB0),  // WinAnsi degree sign
             '—' | '–' => out.push(0x97), // em/en dash → WinAnsi em dash
+            'Ø' | '⌀' => out.push(0xD8), // diameter → WinAnsi Ø (Latin O with stroke)
             c if (c as u32) < 128 => out.push(c as u8),
             _ => out.push(b'?'),
         }
@@ -710,6 +860,21 @@ impl Canvas for PdfCanvas {
             path.push_str(&format!("{x:.2} {:.2} l ", self.height - y));
         }
         path.push_str("h b\n");
+        self.push(&path);
+    }
+
+    fn circle(&mut self, cx: f32, cy: f32, r: f32, color: Rgb, width: f32) {
+        // Four cubic Bézier arcs (kappa ≈ 0.5523) approximate a circle; y flips to PDF space.
+        let k = 0.552_284_75 * r;
+        let cy = self.height - cy;
+        self.set_stroke(color);
+        let mut path = format!("{width:.2} w\n{:.2} {cy:.2} m ", cx + r);
+        // Right → top → left → bottom, counter-clockwise in PDF's y-up space.
+        path.push_str(&format!("{:.2} {:.2} {:.2} {:.2} {:.2} {:.2} c ", cx + r, cy + k, cx + k, cy + r, cx, cy + r));
+        path.push_str(&format!("{:.2} {:.2} {:.2} {:.2} {:.2} {:.2} c ", cx - k, cy + r, cx - r, cy + k, cx - r, cy));
+        path.push_str(&format!("{:.2} {:.2} {:.2} {:.2} {:.2} {:.2} c ", cx - r, cy - k, cx - k, cy - r, cx, cy - r));
+        path.push_str(&format!("{:.2} {:.2} {:.2} {:.2} {:.2} {:.2} c ", cx + k, cy - r, cx + r, cy - k, cx + r, cy));
+        path.push_str("S\n");
         self.push(&path);
     }
 
@@ -797,6 +962,43 @@ fn assemble_pdf(width: f32, height: f32, content: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::model::{Drawing, DrawingView};
+
+    /// #313: a tessellated circle loop is detected (centre/radius); a run of straight edges is
+    /// not, so it stays a set of dimensionable segments.
+    #[test]
+    fn detects_a_tessellated_circle_but_not_straight_edges() {
+        // A 32-gon of radius 10 centred at (5, 3).
+        let n = 32;
+        let c = glam::Vec2::new(5.0, 3.0);
+        let r = 10.0;
+        let pts: Vec<glam::Vec2> = (0..n)
+            .map(|i| {
+                let a = std::f32::consts::TAU * i as f32 / n as f32;
+                c + glam::Vec2::new(a.cos(), a.sin()) * r
+            })
+            .collect();
+        let mut edges: Vec<(glam::Vec2, glam::Vec2)> = (0..n)
+            .map(|i| (pts[i], pts[(i + 1) % n]))
+            .collect();
+        // Plus a separate square (straight edges), which must NOT be a circle.
+        let sq = [
+            glam::Vec2::new(40.0, 0.0),
+            glam::Vec2::new(50.0, 0.0),
+            glam::Vec2::new(50.0, 10.0),
+            glam::Vec2::new(40.0, 10.0),
+        ];
+        for i in 0..4 {
+            edges.push((sq[i], sq[(i + 1) % 4]));
+        }
+        let circles = classify_projected_circles(&edges);
+        assert_eq!(circles.len(), 1, "one circle detected (the 32-gon, not the square)");
+        assert!((circles[0].center - c).length() < 0.2);
+        assert!((circles[0].radius - r).abs() < 0.2);
+        // The square's edges are not on the circle.
+        for i in 0..4 {
+            assert!(!segment_on_circle(sq[i], sq[(i + 1) % 4], &circles));
+        }
+    }
 
     /// #296: a Front parent's aligned children follow the issue's mapping — down→Bottom,
     /// up→Top, right→Right, left→Left — and an isometric parent has no orthographic child.
