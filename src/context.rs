@@ -67,6 +67,8 @@ pub struct ContextInput<'a> {
     pub repeat_op: Option<RepeatControl>,
     /// In-sketch Repeat tool control (#232).
     pub sketch_repeat: Option<SketchRepeatControl>,
+    /// In-sketch Slice tool control (#238).
+    pub sketch_slice: Option<SketchSliceControl>,
     /// "Edit repeat" entry point.
     pub repeat_edit_start: Option<usize>,
     /// Slice tool state: `Some` while the Slice tool is active.
@@ -244,6 +246,30 @@ pub enum SliceEdit {
     Commit,
 }
 
+/// In-sketch Slice control (#238): the two-role picker for slicing sketch lines/circles/faces by
+/// cutter lines. Mirrors [`SliceControl`] but without the 3D extend-to-infinity toggle.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SketchSliceControl {
+    pub target_rows: Vec<String>,
+    pub cutter_rows: Vec<String>,
+    /// `true` while the cutter picker is active (the next viewport click adds a cutter line).
+    pub picking_cutter: bool,
+    pub editing: bool,
+    pub can_commit: bool,
+}
+
+/// One edit from the in-sketch Slice context section (#238).
+#[derive(Clone, Debug, PartialEq)]
+pub enum SketchSliceEdit {
+    /// Choose which picker the next viewport click lands on (`true` = cutter).
+    PickingCutter(bool),
+    /// Clear the target set.
+    ClearTargets,
+    /// Clear the cutter set.
+    ClearCutters,
+    Commit,
+}
+
 /// One edit from the Combine context section.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BooleanEdit {
@@ -367,6 +393,8 @@ pub struct ContextPaneContent {
     pub repeat_op: Option<RepeatControl>,
     /// In-sketch Repeat tool control (#232).
     pub sketch_repeat: Option<SketchRepeatControl>,
+    /// In-sketch Slice tool control (#238).
+    pub sketch_slice: Option<SketchSliceControl>,
     /// "Edit repeat" entry point.
     pub repeat_edit_start: Option<usize>,
     /// Slice tool controls.
@@ -674,6 +702,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let move_edit_start = input.move_edit_start;
     let repeat_op = input.repeat_op.clone();
     let sketch_repeat = input.sketch_repeat.clone();
+    let sketch_slice = input.sketch_slice.clone();
     let repeat_edit_start = input.repeat_edit_start;
     let slice_op = input.slice_op.clone();
     let slice_edit_start = input.slice_edit_start;
@@ -706,6 +735,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             move_edit_start,
             repeat_op: repeat_op.clone(),
             sketch_repeat: sketch_repeat.clone(),
+            sketch_slice: sketch_slice.clone(),
             repeat_edit_start,
             slice_op: slice_op.clone(),
             slice_edit_start,
@@ -739,6 +769,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             move_edit_start,
             repeat_op: repeat_op.clone(),
             sketch_repeat: sketch_repeat.clone(),
+            sketch_slice: sketch_slice.clone(),
             repeat_edit_start,
             slice_op: slice_op.clone(),
             slice_edit_start,
@@ -772,6 +803,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             move_edit_start,
             repeat_op: repeat_op.clone(),
             sketch_repeat: sketch_repeat.clone(),
+            sketch_slice: sketch_slice.clone(),
             repeat_edit_start,
             slice_op: slice_op.clone(),
             slice_edit_start,
@@ -808,6 +840,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         move_edit_start,
         repeat_op,
         sketch_repeat,
+        sketch_slice,
         repeat_edit_start,
         slice_op,
         slice_edit_start,
@@ -1029,6 +1062,7 @@ pub fn show_pane(
     on_move_edit_start: &mut impl FnMut(usize),
     on_repeat_edit: &mut impl FnMut(RepeatEdit),
     on_sketch_repeat_edit: &mut impl FnMut(SketchRepeatEdit),
+    on_sketch_slice_edit: &mut impl FnMut(SketchSliceEdit),
     on_repeat_edit_start: &mut impl FnMut(usize),
     on_slice_edit: &mut impl FnMut(SliceEdit),
     on_slice_edit_start: &mut impl FnMut(usize),
@@ -1831,6 +1865,61 @@ pub fn show_pane(
         }
     }
 
+    // In-sketch Slice (#238): two-role pickers for sketch targets (lines/circles/faces) and cutter
+    // lines, like the Combine tool's A/B pickers. Clicking a picker makes it the active side.
+    if let Some(control) = &content.sketch_slice {
+        any_control = true;
+        ui.separator();
+        ui.label(
+            egui::RichText::new(if control.editing { "Edit slice" } else { "Slice (in sketch)" })
+                .strong(),
+        );
+        let mut pending: Option<SketchSliceEdit> = None;
+        ui.label(egui::RichText::new("Targets").strong());
+        if let Some(event) = crate::element_picker::show_labeled(
+            ui,
+            "sketch_slice_targets",
+            !control.picking_cutter,
+            "Click sketch lines, circles, or faces",
+            crate::icons::IconId::Line,
+            &control.target_rows,
+        ) {
+            pending = Some(match event {
+                crate::element_picker::PickerEvent::Focus => SketchSliceEdit::PickingCutter(false),
+                crate::element_picker::PickerEvent::Remove(_)
+                | crate::element_picker::PickerEvent::Clear => SketchSliceEdit::ClearTargets,
+            });
+        }
+        ui.label(egui::RichText::new("Cutters").strong());
+        if let Some(event) = crate::element_picker::show_labeled(
+            ui,
+            "sketch_slice_cutters",
+            control.picking_cutter,
+            "Click sketch lines to cut with",
+            crate::icons::IconId::Line,
+            &control.cutter_rows,
+        ) {
+            pending = Some(match event {
+                crate::element_picker::PickerEvent::Focus => SketchSliceEdit::PickingCutter(true),
+                crate::element_picker::PickerEvent::Remove(_)
+                | crate::element_picker::PickerEvent::Clear => SketchSliceEdit::ClearCutters,
+            });
+        }
+        if let Some(edit) = pending {
+            on_sketch_slice_edit(edit);
+        }
+        ui.add_space(2.0);
+        if ui
+            .add_enabled(
+                control.can_commit && controls_enabled,
+                egui::Button::new(if control.editing { "Apply changes" } else { "Slice" }),
+            )
+            .clicked()
+        {
+            on_sketch_slice_edit(SketchSliceEdit::Commit);
+        }
+    }
+
     if let Some(op) = content.slice_edit_start {
         any_control = true;
         ui.separator();
@@ -2126,6 +2215,7 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_slice: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2196,6 +2286,7 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_slice: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2257,6 +2348,7 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_slice: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2514,6 +2606,7 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_slice: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2560,6 +2653,7 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_slice: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2592,6 +2686,7 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_slice: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2638,6 +2733,7 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_slice: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2688,6 +2784,7 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_slice: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2781,6 +2878,7 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_slice: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2825,6 +2923,7 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_slice: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2859,6 +2958,7 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_slice: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2897,6 +2997,7 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_slice: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,

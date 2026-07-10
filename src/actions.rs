@@ -631,6 +631,46 @@ impl Default for CreatingSlice {
     }
 }
 
+/// In-progress **in-sketch** slice (#238): the Slice tool run with a sketch open. Picks target
+/// entities (lines, circles, and faces) and cutter lines with two roles, like the Combine tool's
+/// side-A / side-B pickers (`picking_cutter` chooses which the next viewport click feeds). Commit
+/// lowers to [`Action::CreateSketchSliceOperation`]/`EditSketchSliceOperation`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreatingSketchSlice {
+    pub sketch: SketchId,
+    pub line_targets: Vec<usize>,
+    pub circle_targets: Vec<usize>,
+    /// Face targets as their boundary-loop line indices (#238).
+    pub face_targets: Vec<Vec<usize>>,
+    pub cutter_lines: Vec<usize>,
+    /// `false` = the next viewport click picks a target; `true` = it picks a cutter line.
+    pub picking_cutter: bool,
+    /// `Some(op)` while re-editing a committed in-sketch slice.
+    pub editing: Option<usize>,
+}
+
+impl CreatingSketchSlice {
+    pub fn new(sketch: SketchId) -> Self {
+        Self {
+            sketch,
+            line_targets: Vec::new(),
+            circle_targets: Vec::new(),
+            face_targets: Vec::new(),
+            cutter_lines: Vec::new(),
+            picking_cutter: false,
+            editing: None,
+        }
+    }
+    pub fn has_targets(&self) -> bool {
+        !self.line_targets.is_empty()
+            || !self.circle_targets.is_empty()
+            || !self.face_targets.is_empty()
+    }
+    pub fn has_cutters(&self) -> bool {
+        !self.cutter_lines.is_empty()
+    }
+}
+
 /// In-progress move operation (Move tool): the picked bodies, translation component
 /// expressions, optional rotation axis + angle expression, and the op being re-edited.
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -1797,6 +1837,8 @@ pub struct AppState {
     pub creating_sketch_repeat: Option<CreatingSketchRepeat>,
     /// In-progress slice operation (Slice tool).
     pub creating_slice: Option<CreatingSlice>,
+    /// In-progress in-sketch slice (#238), active when the Slice tool runs with a sketch open.
+    pub creating_sketch_slice: Option<CreatingSketchSlice>,
     /// The technical drawing (#180) currently open in the drawing pane, if any. UI state
     /// (never persisted): while `Some`, the central area shows that drawing instead of the
     /// 3D viewport.
@@ -1916,6 +1958,7 @@ impl Default for AppState {
             creating_repeat: None,
             creating_sketch_repeat: None,
             creating_slice: None,
+            creating_sketch_slice: None,
             editing_drawing: None,
             creating_calibration: None,
             viewport_aspect: 16.0 / 9.0,
@@ -3858,6 +3901,10 @@ impl AppState {
                 }
                 if self.creating_slice.is_some() && tool != Tool::Slice {
                     self.creating_slice = None;
+                }
+                // The in-sketch slice draft only lives while the Slice tool is active (#238).
+                if self.creating_sketch_slice.is_some() && tool != Tool::Slice {
+                    self.creating_sketch_slice = None;
                 }
                 if tool == Tool::Slice && self.creating_slice.is_none() {
                     self.creating_slice = Some(CreatingSlice::default());
@@ -8014,6 +8061,7 @@ impl AppState {
         self.sketch_reframe_pending = false;
         self.creating_rect = None;
         self.creating_sketch_repeat = None;
+        self.creating_sketch_slice = None;
         self.discard_creating_line();
         self.editing_committed_dim = None;
         self.placing_angle_dimension = None;

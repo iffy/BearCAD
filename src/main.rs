@@ -2943,7 +2943,9 @@ impl App {
         vp: &glam::Mat4,
         pick_occlusion: Option<&construction::PickOcclusion>,
     ) {
-        if self.state.sketch_session.is_some() {
+        // With a sketch open, the Slice tool slices sketch entities/faces instead of bodies (#238).
+        if let Some(session) = self.state.sketch_session {
+            self.handle_sketch_slice_tool(ui, project, pointer_screen, cam, viewport, vp, session);
             return;
         }
         if ui.input(|i| i.key_pressed(egui::Key::Enter))
@@ -3008,6 +3010,103 @@ impl App {
             cs.targets.push(bi);
         }
         self.state.status = format!("Slice: {} body(ies) picked", cs.targets.len());
+    }
+
+    /// In-sketch Slice tool (#238): pick target lines/circles/faces and cutter lines with two
+    /// roles (like the Combine tool's side-A/side-B pickers — `picking_cutter` chooses which the
+    /// next click feeds). Clicking a line/circle toggles it as a target; clicking empty space
+    /// inside a face toggles that face; while picking cutters, a click toggles a cutter line.
+    /// Enter commits a `SketchSliceOperation`.
+    fn handle_sketch_slice_tool(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+        session: SketchSession,
+    ) {
+        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+            && !ui.ctx().wants_keyboard_input()
+            && self
+                .state
+                .creating_sketch_slice
+                .as_ref()
+                .is_some_and(|c| c.has_targets() && c.has_cutters())
+        {
+            let cs = self.state.creating_sketch_slice.take().unwrap();
+            let action = match cs.editing {
+                Some(op) => Action::EditSketchSliceOperation {
+                    op,
+                    line_targets: cs.line_targets,
+                    circle_targets: cs.circle_targets,
+                    face_targets: cs.face_targets,
+                    cutter_lines: cs.cutter_lines,
+                },
+                None => Action::CreateSketchSliceOperation {
+                    sketch: cs.sketch,
+                    line_targets: cs.line_targets,
+                    circle_targets: cs.circle_targets,
+                    face_targets: cs.face_targets,
+                    cutter_lines: cs.cutter_lines,
+                },
+            };
+            self.state.apply(action);
+            return;
+        }
+        if !ui.input(|i| i.pointer.primary_pressed()) {
+            return;
+        }
+        let Some(pp) = pointer_screen else {
+            return;
+        };
+        let picking_cutter = self
+            .state
+            .creating_sketch_slice
+            .as_ref()
+            .is_some_and(|c| c.picking_cutter);
+        let target = resolve_pick_target(pp, project, None, &self.state.doc, None);
+        let cs = self
+            .state
+            .creating_sketch_slice
+            .get_or_insert_with(|| actions::CreatingSketchSlice::new(session.sketch));
+        if picking_cutter {
+            // Cutters are lines only.
+            if let Some(construction::PickTargetKind::Line(li)) = target.map(|t| t.kind) {
+                toggle(&mut cs.cutter_lines, li);
+                self.state.status = format!("Slice: {} cutter line(s)", cs.cutter_lines.len());
+            }
+            return;
+        }
+        match target.map(|t| t.kind) {
+            Some(construction::PickTargetKind::Line(li)) => {
+                toggle(&mut cs.line_targets, li);
+                self.state.status = format!("Slice: {} line target(s)", cs.line_targets.len());
+            }
+            Some(construction::PickTargetKind::Circle(ci)) => {
+                toggle(&mut cs.circle_targets, ci);
+                self.state.status = format!("Slice: {} circle target(s)", cs.circle_targets.len());
+            }
+            _ => {
+                // Empty space: pick the face whose interior is under the cursor.
+                if let Some(world) =
+                    sketch_plane_point(cam, viewport, vp, &self.state.doc, session, pp)
+                {
+                    if let Some(loop_lines) =
+                        face_loop_at_world(&self.state.doc, session.sketch, world)
+                    {
+                        if let Some(pos) = cs.face_targets.iter().position(|f| *f == loop_lines) {
+                            cs.face_targets.remove(pos);
+                        } else {
+                            cs.face_targets.push(loop_lines);
+                        }
+                        self.state.status =
+                            format!("Slice: {} face target(s)", cs.face_targets.len());
+                    }
+                }
+            }
+        }
     }
 
     /// Floating angle field for the in-progress revolve (Enter commits). Mirrors the
@@ -4181,6 +4280,38 @@ impl eframe::App for App {
                         editing: c.editing.is_some(),
                     }
                 }),
+                sketch_slice: (self.state.tool == Tool::Slice
+                    && self.state.sketch_session.is_some())
+                .then(|| {
+                    let c = self.state.creating_sketch_slice.as_ref();
+                    let mut target_rows: Vec<String> = Vec::new();
+                    let mut cutter_rows: Vec<String> = Vec::new();
+                    let (mut picking_cutter, mut editing, mut has_t, mut has_c) =
+                        (false, false, false, false);
+                    if let Some(c) = c {
+                        for &li in &c.line_targets {
+                            target_rows.push(format!("Line {li}"));
+                        }
+                        for &ci in &c.circle_targets {
+                            target_rows.push(format!("Circle {ci}"));
+                        }
+                        for n in 0..c.face_targets.len() {
+                            target_rows.push(format!("Face {}", n + 1));
+                        }
+                        cutter_rows = c.cutter_lines.iter().map(|li| format!("Line {li}")).collect();
+                        picking_cutter = c.picking_cutter;
+                        editing = c.editing.is_some();
+                        has_t = c.has_targets();
+                        has_c = c.has_cutters();
+                    }
+                    context::SketchSliceControl {
+                        target_rows,
+                        cutter_rows,
+                        picking_cutter,
+                        editing,
+                        can_commit: has_t && has_c,
+                    }
+                }),
                 repeat_edit_start: (self.state.tool != Tool::Repeat)
                     .then(|| {
                         let mut only = None;
@@ -4336,6 +4467,7 @@ impl eframe::App for App {
             let mut move_edit_begin: Option<usize> = None;
             let mut repeat_edit: Option<context::RepeatEdit> = None;
             let mut sketch_repeat_edit: Option<context::SketchRepeatEdit> = None;
+            let mut sketch_slice_edit: Option<context::SketchSliceEdit> = None;
             let mut repeat_edit_begin: Option<usize> = None;
             let mut slice_edit: Option<context::SliceEdit> = None;
             let mut slice_edit_begin: Option<usize> = None;
@@ -4379,6 +4511,7 @@ impl eframe::App for App {
                         &mut |op| move_edit_begin = Some(op),
                         &mut |edit| repeat_edit = Some(edit),
                         &mut |edit| sketch_repeat_edit = Some(edit),
+                        &mut |edit| sketch_slice_edit = Some(edit),
                         &mut |op| repeat_edit_begin = Some(op),
                         &mut |edit| slice_edit = Some(edit),
                         &mut |op| slice_edit_begin = Some(op),
@@ -4586,6 +4719,60 @@ impl eframe::App for App {
                         }
                         context::SketchRepeatEdit::ClearDirection => cr.dir_line = None,
                         context::SketchRepeatEdit::Commit => {}
+                    }
+                }
+            }
+            if let Some(edit) = sketch_slice_edit {
+                match edit {
+                    context::SketchSliceEdit::Commit => {
+                        if let Some(cs) = self
+                            .state
+                            .creating_sketch_slice
+                            .as_ref()
+                            .filter(|c| c.has_targets() && c.has_cutters())
+                            .cloned()
+                        {
+                            let action = match cs.editing {
+                                Some(op) => Action::EditSketchSliceOperation {
+                                    op,
+                                    line_targets: cs.line_targets,
+                                    circle_targets: cs.circle_targets,
+                                    face_targets: cs.face_targets,
+                                    cutter_lines: cs.cutter_lines,
+                                },
+                                None => Action::CreateSketchSliceOperation {
+                                    sketch: cs.sketch,
+                                    line_targets: cs.line_targets,
+                                    circle_targets: cs.circle_targets,
+                                    face_targets: cs.face_targets,
+                                    cutter_lines: cs.cutter_lines,
+                                },
+                            };
+                            self.state.creating_sketch_slice = None;
+                            self.state.apply(action);
+                        }
+                    }
+                    other => {
+                        // Role toggles may fire before the first pick, so seed the draft from the
+                        // active sketch session.
+                        if let Some(session) = self.state.sketch_session {
+                            let cs = self
+                                .state
+                                .creating_sketch_slice
+                                .get_or_insert_with(|| {
+                                    actions::CreatingSketchSlice::new(session.sketch)
+                                });
+                            match other {
+                                context::SketchSliceEdit::PickingCutter(v) => cs.picking_cutter = v,
+                                context::SketchSliceEdit::ClearTargets => {
+                                    cs.line_targets.clear();
+                                    cs.circle_targets.clear();
+                                    cs.face_targets.clear();
+                                }
+                                context::SketchSliceEdit::ClearCutters => cs.cutter_lines.clear(),
+                                context::SketchSliceEdit::Commit => {}
+                            }
+                        }
                     }
                 }
             }
@@ -6171,6 +6358,48 @@ fn sketch_plane_point(
     let face = doc.sketch_face(session.sketch)?;
     let frame = sketch_frame(doc, face)?;
     cam.ray_plane_hit(screen, viewport, vp, frame.origin, frame.normal)
+}
+
+/// Toggle `value` in/out of `set` (add if absent, remove if present). Small helper for the
+/// two-role in-sketch pickers (#238).
+fn toggle(set: &mut Vec<usize>, value: usize) {
+    if let Some(pos) = set.iter().position(|v| *v == value) {
+        set.remove(pos);
+    } else {
+        set.push(value);
+    }
+}
+
+/// The closed sketch face (its boundary-loop line indices) whose interior contains `world`, or
+/// `None` if the point isn't inside any face (#238). Prefers the **smallest-area** containing loop
+/// so clicking a region inside a hole picks the inner face, not the enclosing one.
+fn face_loop_at_world(
+    doc: &model::Document,
+    sketch: model::SketchId,
+    world: Vec3,
+) -> Option<Vec<usize>> {
+    let frame = crate::face::sketch_geometry_frame(doc, sketch)?;
+    let (u, v) = world_to_local(&frame, world);
+    let mut best: Option<(f32, Vec<usize>)> = None;
+    for lines in crate::polygon::closed_line_loops(doc, sketch) {
+        let Some(verts) = crate::polygon::loop_vertices_uv(doc, sketch, &lines) else {
+            continue;
+        };
+        if !crate::polygon::point_in_polygon_2d((u, v), &verts) {
+            continue;
+        }
+        // Shoelace area; smaller wins so an inner face is preferred over the region enclosing it.
+        let mut area = 0.0f32;
+        for i in 0..verts.len() {
+            let j = (i + 1) % verts.len();
+            area += verts[i].0 * verts[j].1 - verts[j].0 * verts[i].1;
+        }
+        let area = area.abs() * 0.5;
+        if best.as_ref().map_or(true, |(a, _)| area < *a) {
+            best = Some((area, lines));
+        }
+    }
+    best.map(|(_, lines)| lines)
 }
 
 fn rectangle_dim_layout_from_corners(

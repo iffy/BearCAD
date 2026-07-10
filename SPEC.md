@@ -608,8 +608,15 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     `closed_line_loops` now extracts **minimal, vertex-simple** faces: it drops self-touching cycles
     (running twice through a cut point) and any loop an internal chord subdivides (the reconstructed
     outer perimeter), so exactly the two half-faces survive — a no-op for ordinary sketches, whose
-    loops are already minimal and simple. Scriptable via `faces = { {l0,l1,…}, … }`. The
-    interactive in-sketch Slice tool is a tracked follow-up.
+    loops are already minimal and simple. Scriptable via `faces = { {l0,l1,…}, … }`.
+    **Interactive in-sketch Slice tool** (#238): with a sketch open, the Slice tool picks target
+    lines/circles/faces and cutter lines with **two roles**, like the Combine tool's side-A/side-B
+    element pickers (`CreatingSketchSlice`, `picking_cutter` chooses which the next viewport click
+    feeds). Clicking a line/circle toggles it as a target; clicking empty space inside a face
+    toggles that face (`face_loop_at_world` picks the smallest containing loop); while the Cutters
+    picker is active, a click toggles a cutter line. The context pane shows both pickers and a
+    Slice button; Enter commits. The draft is cleared when the tool changes or the sketch is
+    exited.
   Picking side-wall faces as cutters remains a tracked follow-up (#191).
 
 ### 3.4 Modifying solids
