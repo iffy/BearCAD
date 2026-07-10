@@ -145,6 +145,7 @@ pub fn scene_element_from_kind(kind: &str, index: usize) -> Option<SceneElement>
         "constraint" => Some(SceneElement::Constraint(index)),
         "extrusion" => Some(SceneElement::Extrusion(index)),
         "body" => Some(SceneElement::Body(index)),
+        "sketch_text" | "text" => Some(SceneElement::SketchText(index)),
         _ => None,
     }
 }
@@ -1249,10 +1250,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "body" => doc.bodies.iter().filter(|e| !e.deleted).count(),
                 "drawing" => doc.drawings.iter().filter(|e| !e.deleted).count(),
                 "parameter" => doc.parameters.iter().filter(|e| !e.deleted).count(),
+                "sketch_text" | "text" => {
+                    doc.sketch_texts.iter().filter(|e| !e.deleted).count()
+                }
                 other => {
                     return Err(mlua::Error::external(format!(
                         "unknown count kind '{other}' (valid kinds: line, circle, sketch, \
-                         constraint, construction_plane, extrusion, body, drawing, parameter)"
+                         constraint, construction_plane, extrusion, body, drawing, parameter, \
+                         sketch_text)"
                     )))
                 }
             };
@@ -2297,6 +2302,59 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             }
             let element =
                 SceneElement::Circle(unsafe { tick.state().doc.circles.len().saturating_sub(1) });
+            apply_optional_name(lua, element, Some(opts))
+        })?,
+    )?;
+
+    // Sketch text (#282/#286): the scripted equivalent of the Text tool — glyph outlines are
+    // baked from a system font and the font bytes embed in the document. `size` accepts an
+    // expression (parameters work); `rotation` is degrees about the baseline origin.
+    api.set(
+        "text",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let text: String = opts.get("text")?;
+            let x: f32 = opts.get("x").unwrap_or(0.0);
+            let y: f32 = opts.get("y").unwrap_or(0.0);
+            let size: String = match opts.get::<Value>("size")? {
+                Value::Nil => "10".to_string(),
+                Value::Integer(n) => n.to_string(),
+                Value::Number(n) => n.to_string(),
+                Value::String(s) => s.to_str()?.to_string(),
+                other => {
+                    return Err(mlua::Error::external(format!(
+                        "text size must be a number or expression string, got {other:?}"
+                    )))
+                }
+            };
+            let font: Option<String> = opts.get("font")?;
+            let bold: bool = opts.get::<Option<bool>>("bold")?.unwrap_or(false);
+            let italic: bool = opts.get::<Option<bool>>("italic")?.unwrap_or(false);
+            let underline: bool = opts.get::<Option<bool>>("underline")?.unwrap_or(false);
+            let rotation_deg: f32 = opts.get::<Option<f32>>("rotation")?.unwrap_or(0.0);
+            let wrap: Option<f32> = opts.get("wrap")?;
+            unsafe {
+                if tick.state().sketch_session.is_none() {
+                    tick.exec(Instruction::BeginSketch {
+                        face: FaceId::ConstructionPlane(0),
+                    })?;
+                }
+                tick.exec(Instruction::CreateSketchText {
+                    text,
+                    font,
+                    bold,
+                    italic,
+                    underline,
+                    size,
+                    x,
+                    y,
+                    rotation_deg,
+                    wrap,
+                })?;
+            }
+            let element = SceneElement::SketchText(unsafe {
+                tick.state().doc.sketch_texts.len().saturating_sub(1)
+            });
             apply_optional_name(lua, element, Some(opts))
         })?,
     )?;

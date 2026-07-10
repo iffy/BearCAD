@@ -69,6 +69,8 @@ pub struct ContextInput<'a> {
     pub sketch_repeat: Option<SketchRepeatControl>,
     /// In-sketch Slice tool control (#238).
     pub sketch_slice: Option<SketchSliceControl>,
+    /// Selected sketch-text editor (#286).
+    pub sketch_text: Option<SketchTextControl>,
     /// "Edit repeat" entry point.
     pub repeat_edit_start: Option<usize>,
     /// Slice tool state: `Some` while the Slice tool is active.
@@ -270,6 +272,34 @@ pub enum SketchSliceEdit {
     Commit,
 }
 
+/// Editor for a selected sketch text (#282/#286): the string, font, size, style, and rotation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SketchTextControl {
+    pub index: usize,
+    pub text: String,
+    pub font_family: String,
+    /// Installed font families for the chooser.
+    pub families: Vec<String>,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub size_expr: String,
+    /// Rotation in degrees (the model stores radians).
+    pub rotation_deg: String,
+}
+
+/// One edit from the sketch-text context section (#286). Each re-bakes the text.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SketchTextEdit {
+    Text(String),
+    Font(String),
+    Bold(bool),
+    Italic(bool),
+    Underline(bool),
+    Size(String),
+    Rotation(String),
+}
+
 /// One edit from the Combine context section.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BooleanEdit {
@@ -396,6 +426,8 @@ pub struct ContextPaneContent {
     pub sketch_repeat: Option<SketchRepeatControl>,
     /// In-sketch Slice tool control (#238).
     pub sketch_slice: Option<SketchSliceControl>,
+    /// Selected sketch-text editor (#286).
+    pub sketch_text: Option<SketchTextControl>,
     /// "Edit repeat" entry point.
     pub repeat_edit_start: Option<usize>,
     /// Slice tool controls.
@@ -704,6 +736,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let repeat_op = input.repeat_op.clone();
     let sketch_repeat = input.sketch_repeat.clone();
     let sketch_slice = input.sketch_slice.clone();
+    let sketch_text = input.sketch_text.clone();
     let repeat_edit_start = input.repeat_edit_start;
     let slice_op = input.slice_op.clone();
     let slice_edit_start = input.slice_edit_start;
@@ -737,6 +770,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             repeat_op: repeat_op.clone(),
             sketch_repeat: sketch_repeat.clone(),
             sketch_slice: sketch_slice.clone(),
+            sketch_text: sketch_text.clone(),
             repeat_edit_start,
             slice_op: slice_op.clone(),
             slice_edit_start,
@@ -771,6 +805,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             repeat_op: repeat_op.clone(),
             sketch_repeat: sketch_repeat.clone(),
             sketch_slice: sketch_slice.clone(),
+            sketch_text: sketch_text.clone(),
             repeat_edit_start,
             slice_op: slice_op.clone(),
             slice_edit_start,
@@ -805,6 +840,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             repeat_op: repeat_op.clone(),
             sketch_repeat: sketch_repeat.clone(),
             sketch_slice: sketch_slice.clone(),
+            sketch_text: sketch_text.clone(),
             repeat_edit_start,
             slice_op: slice_op.clone(),
             slice_edit_start,
@@ -842,6 +878,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         repeat_op,
         sketch_repeat,
         sketch_slice,
+        sketch_text,
         repeat_edit_start,
         slice_op,
         slice_edit_start,
@@ -1064,6 +1101,7 @@ pub fn show_pane(
     on_repeat_edit: &mut impl FnMut(RepeatEdit),
     on_sketch_repeat_edit: &mut impl FnMut(SketchRepeatEdit),
     on_sketch_slice_edit: &mut impl FnMut(SketchSliceEdit),
+    on_sketch_text_edit: &mut impl FnMut(SketchTextEdit),
     on_repeat_edit_start: &mut impl FnMut(usize),
     on_slice_edit: &mut impl FnMut(SliceEdit),
     on_slice_edit_start: &mut impl FnMut(usize),
@@ -1921,6 +1959,64 @@ pub fn show_pane(
         }
     }
 
+    // Sketch-text editor (#286): edit the selected text's string, font, size, style, rotation.
+    if let Some(control) = &content.sketch_text {
+        any_control = true;
+        ui.separator();
+        ui.label(egui::RichText::new("Text").strong());
+        let mut edit_text = control.text.clone();
+        if ui
+            .add(egui::TextEdit::multiline(&mut edit_text).desired_rows(2).desired_width(f32::INFINITY))
+            .changed()
+        {
+            on_sketch_text_edit(SketchTextEdit::Text(edit_text));
+        }
+        // Font family chooser.
+        egui::ComboBox::from_id_salt("sketch_text_font")
+            .selected_text(control.font_family.clone())
+            .show_ui(ui, |ui| {
+                for fam in &control.families {
+                    if ui
+                        .selectable_label(fam == &control.font_family, fam)
+                        .clicked()
+                    {
+                        on_sketch_text_edit(SketchTextEdit::Font(fam.clone()));
+                    }
+                }
+            });
+        ui.horizontal(|ui| {
+            let mut bold = control.bold;
+            if ui.selectable_label(bold, egui::RichText::new("B").strong()).clicked() {
+                bold = !bold;
+                on_sketch_text_edit(SketchTextEdit::Bold(bold));
+            }
+            let mut italic = control.italic;
+            if ui.selectable_label(italic, egui::RichText::new("I").italics()).clicked() {
+                italic = !italic;
+                on_sketch_text_edit(SketchTextEdit::Italic(italic));
+            }
+            let mut underline = control.underline;
+            if ui.selectable_label(underline, egui::RichText::new("U").underline()).clicked() {
+                underline = !underline;
+                on_sketch_text_edit(SketchTextEdit::Underline(underline));
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Size");
+            let mut size = control.size_expr.clone();
+            if ui.add(egui::TextEdit::singleline(&mut size).desired_width(70.0)).changed() {
+                on_sketch_text_edit(SketchTextEdit::Size(size));
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Rotation°");
+            let mut rot = control.rotation_deg.clone();
+            if ui.add(egui::TextEdit::singleline(&mut rot).desired_width(70.0)).changed() {
+                on_sketch_text_edit(SketchTextEdit::Rotation(rot));
+            }
+        });
+    }
+
     if let Some(op) = content.slice_edit_start {
         any_control = true;
         ui.separator();
@@ -2217,6 +2313,7 @@ mod tests {
             repeat_op: None,
             sketch_repeat: None,
             sketch_slice: None,
+            sketch_text: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2288,6 +2385,7 @@ mod tests {
             repeat_op: None,
             sketch_repeat: None,
             sketch_slice: None,
+            sketch_text: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2350,6 +2448,7 @@ mod tests {
             repeat_op: None,
             sketch_repeat: None,
             sketch_slice: None,
+            sketch_text: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2608,6 +2707,7 @@ mod tests {
             repeat_op: None,
             sketch_repeat: None,
             sketch_slice: None,
+            sketch_text: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2655,6 +2755,7 @@ mod tests {
             repeat_op: None,
             sketch_repeat: None,
             sketch_slice: None,
+            sketch_text: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2688,6 +2789,7 @@ mod tests {
             repeat_op: None,
             sketch_repeat: None,
             sketch_slice: None,
+            sketch_text: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2735,6 +2837,7 @@ mod tests {
             repeat_op: None,
             sketch_repeat: None,
             sketch_slice: None,
+            sketch_text: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2786,6 +2889,7 @@ mod tests {
             repeat_op: None,
             sketch_repeat: None,
             sketch_slice: None,
+            sketch_text: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2880,6 +2984,7 @@ mod tests {
             repeat_op: None,
             sketch_repeat: None,
             sketch_slice: None,
+            sketch_text: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2925,6 +3030,7 @@ mod tests {
             repeat_op: None,
             sketch_repeat: None,
             sketch_slice: None,
+            sketch_text: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2960,6 +3066,7 @@ mod tests {
             repeat_op: None,
             sketch_repeat: None,
             sketch_slice: None,
+            sketch_text: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2999,6 +3106,7 @@ mod tests {
             repeat_op: None,
             sketch_repeat: None,
             sketch_slice: None,
+            sketch_text: None,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,

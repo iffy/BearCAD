@@ -328,6 +328,19 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
         HierarchyNode::RepeatOp(i) => format!("Repeat {i}"),
         HierarchyNode::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
         HierarchyNode::SketchSliceOp(i) => format!("Sketch slice {i}"),
+        HierarchyNode::SketchText(i) => {
+            // Show the string itself (first line, trimmed to keep rows compact).
+            let content = doc
+                .sketch_texts
+                .get(i)
+                .map(|t| t.text.lines().next().unwrap_or("").to_string())
+                .unwrap_or_default();
+            let mut short: String = content.chars().take(16).collect();
+            if short.len() < content.len() {
+                short.push('…');
+            }
+            format!("Text {i} (\"{short}\")")
+        }
         HierarchyNode::SliceOp(i) => format!("Slice {i}"),
         HierarchyNode::Revolution(i) => format!("Revolve {i}"),
         HierarchyNode::Drawing(i) => doc

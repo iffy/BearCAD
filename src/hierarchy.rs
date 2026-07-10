@@ -50,6 +50,8 @@ pub enum HierarchyNode {
     SketchRepeatOp(usize),
     /// A 2D in-sketch slice (#224/#229); its fragment lines nest under it.
     SketchSliceOp(usize),
+    /// A sketch text element (#282/#286); nests under its sketch like a line.
+    SketchText(usize),
     /// A slice operation on bodies (Slice tool); its fragment bodies nest under it.
     SliceOp(usize),
     /// A revolved solid (Revolve tool); its output body nests under it (#211).
@@ -168,6 +170,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::RepeatOp(i) => SceneElement::RepeatOp(i),
         HierarchyNode::SketchRepeatOp(i) => SceneElement::SketchRepeatOp(i),
         HierarchyNode::SketchSliceOp(i) => SceneElement::SketchSliceOp(i),
+        HierarchyNode::SketchText(i) => SceneElement::SketchText(i),
         HierarchyNode::SliceOp(i) => SceneElement::SliceOp(i),
         HierarchyNode::Revolution(i) => SceneElement::Revolution(i),
     })
@@ -881,6 +884,7 @@ fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
         HierarchyNode::RepeatOp(_) => usize::MAX,
         HierarchyNode::SketchRepeatOp(_) => usize::MAX,
         HierarchyNode::SketchSliceOp(_) => usize::MAX,
+        HierarchyNode::SketchText(_) => usize::MAX,
         HierarchyNode::SliceOp(_) => usize::MAX,
         HierarchyNode::Revolution(_) => usize::MAX,
         HierarchyNode::Loft(_) => usize::MAX,
@@ -1256,6 +1260,7 @@ impl ElementFilter {
             HierarchyNode::Line(_)
             | HierarchyNode::Circle(_)
             | HierarchyNode::Constraint(_)
+            | HierarchyNode::SketchText(_)
             | HierarchyNode::EdgeTreatment { .. } => self.sketch_geometry,
             HierarchyNode::Body(_) => self.bodies,
             HierarchyNode::Extrusion(_)
@@ -1825,6 +1830,7 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         HierarchyNode::RepeatOp(_) => IconId::Repeat,
         HierarchyNode::SketchRepeatOp(_) => IconId::Repeat,
         HierarchyNode::SketchSliceOp(_) => IconId::Slice,
+        HierarchyNode::SketchText(_) => IconId::Text,
         HierarchyNode::SliceOp(_) => IconId::Slice,
         HierarchyNode::Revolution(_) => IconId::Revolve,
         HierarchyNode::Loft(_) => IconId::Loft,
@@ -1995,6 +2001,15 @@ fn build_sketch_entry(
             }
             children.push(HierarchyEntry {
                 node: HierarchyNode::Constraint(ci),
+                children: vec![],
+            });
+        }
+        for (ti, text) in doc.sketch_texts.iter().enumerate() {
+            if text.deleted || text.sketch != sketch {
+                continue;
+            }
+            children.push(HierarchyEntry {
+                node: HierarchyNode::SketchText(ti),
                 children: vec![],
             });
         }

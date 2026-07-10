@@ -136,6 +136,7 @@ impl Tool {
             "move" => Some(Tool::Move),
             "repeat" | "linear_repeat" | "pattern" => Some(Tool::Repeat),
             "slice" | "split" => Some(Tool::Slice),
+            "text" => Some(Tool::Text),
             _ => None,
         }
     }
@@ -1397,9 +1398,7 @@ pub enum Action {
         cutter_lines: Vec<usize>,
     },
     /// Place a text element in a sketch (#282): bakes the glyph outlines from the selected system
-    /// font and embeds the font bytes for portability. (Constructed by the Text tool, landing in a
-    /// follow-up slice of #282.)
-    #[allow(dead_code)]
+    /// font and embeds the font bytes for portability.
     CreateSketchText {
         sketch: usize,
         text: String,
@@ -1414,7 +1413,6 @@ pub enum Action {
         wrap_width: Option<f32>,
     },
     /// Re-bake / re-point an existing sketch text (#282): string, font, size, style, position.
-    #[allow(dead_code)]
     EditSketchText {
         index: usize,
         text: String,
@@ -6755,6 +6753,7 @@ impl AppState {
                     origin,
                     rotation,
                     wrap_width,
+                    baseline_line: None,
                     contours: shaped.contours,
                     font_bytes,
                     name: None,

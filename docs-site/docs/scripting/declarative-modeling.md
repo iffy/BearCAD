@@ -56,6 +56,7 @@ bearcad.rect{ width = 80, height = 50, x = 0, y = 0, name = "Box" }
 bearcad.line{ length = 80, angle = 45, name = "Diagonal" }
 bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 } -- explicit endpoints
 bearcad.circle{ x = 10, y = 5, r = 12, name = "Hole" } -- `radius` and `diameter` also accepted
+bearcad.text{ text = "Hello", x = 10, y = 10, size = 12 } -- see the Text tool page
 ```
 
 A scripted line lands **unconstrained**, exactly like clicking with the Line tool. To lock its

@@ -3947,6 +3947,7 @@ mod tests {
             origin: (0.0, 0.0),
             rotation: 0.0,
             wrap_width: None,
+            baseline_line: None,
             contours: shaped.contours,
             font_bytes: bytes,
             name: None,
