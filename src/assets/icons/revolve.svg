@@ -2,7 +2,7 @@
   <!-- Revolve: an extruded pacman with a hole through his middle — a partial solid of
        revolution; the two cut faces of the mouth are the revolved profile. -->
   <!-- inner tube: back bottom rim of the hole, seen through the mouth behind the axis -->
-  <path opacity="0.5" d="M11.2 20.2 A4.8 1.7 0 0 1 20.8 20.2" />
+  <path d="M13.2 18.8 A4.8 1.7 0 0 1 18.8 18.8" />
   <!-- cut faces of the mouth (the rectangular profile), lightly filled -->
   <path fill="currentColor" fill-opacity="0.14" d="M8.8 14.9 L13.2 12.6 L13.2 21.6 L8.8 23.9 Z" />
   <path fill="currentColor" fill-opacity="0.14" d="M23.2 14.9 L18.8 12.6 L18.8 21.6 L23.2 23.9 Z" />
