@@ -4328,6 +4328,45 @@ mod tests {
         );
     }
 
+    /// #263: revolving the concentric-ring (annulus) face 360° about the Y axis makes a hollow
+    /// tube-torus — outer torus minus inner torus. By Pappus, volume = 2π·d·π·(R² − r²) with
+    /// d the centre's distance from the axis.
+    #[test]
+    #[cfg(feature = "occt")]
+    fn revolve_ring_face_makes_a_hollow_torus() {
+        let (mut doc, sketch) = sketch_doc();
+        let (d, big_r, small_r) = (20.0_f32, 5.0_f32, 2.0_f32);
+        doc.circles.push(Circle::from_local_center_radius(sketch, d, 0.0, big_r, 0.0));
+        doc.circles.push(Circle::from_local_center_radius(sketch, d, 0.0, small_r, 0.0));
+        let ring = ExtrudeFace::Boolean {
+            op: crate::model::BooleanOp::Difference,
+            a: Box::new(ExtrudeFace::Circle(0)),
+            b: Box::new(ExtrudeFace::Circle(1)),
+        };
+        doc.revolutions.push(test_revolution(
+            sketch,
+            vec![ring],
+            360.0,
+            false,
+            crate::model::RevolveMode::NewBody,
+        ));
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Revolve(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("torus mesh")).abs();
+        let expected = std::f32::consts::TAU
+            * d
+            * std::f32::consts::PI
+            * (big_r * big_r - small_r * small_r);
+        assert!(
+            (vol - expected).abs() / expected < 0.03,
+            "hollow torus volume {vol} should be ~{expected} (2π·d·π(R²−r²))",
+        );
+    }
+
     /// A 90-degree sweep is a quarter of the ring, symmetric or not.
     #[test]
     fn revolve_partial_sweep_is_proportional_and_symmetric_matches() {
