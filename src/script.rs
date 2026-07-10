@@ -88,6 +88,21 @@ pub enum Instruction {
         cy: f32,
         r: f32,
     },
+    /// Place a text element in the active sketch (#282/#286): glyph outlines baked from a
+    /// system font, the same as the Text tool. `size` is an expression (parameters work).
+    CreateSketchText {
+        text: String,
+        /// Font family; `None` picks the same default the Text tool uses.
+        font: Option<String>,
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        size: String,
+        x: f32,
+        y: f32,
+        rotation_deg: f32,
+        wrap: Option<f32>,
+    },
     /// Extrude coplanar sketch faces into a solid.
     Extrude {
         sketch: SketchId,
@@ -465,6 +480,35 @@ impl Instruction {
             }
             Instruction::CreateCircle { cx, cy, r } => {
                 format!("bearcad.circle{{ x = {cx}, y = {cy}, r = {r} }}")
+            }
+            Instruction::CreateSketchText {
+                text,
+                font,
+                bold,
+                italic,
+                underline,
+                size,
+                x,
+                y,
+                rotation_deg,
+                wrap,
+            } => {
+                let mut args = format!("text = {:?}, x = {x}, y = {y}, size = {:?}", text, size);
+                if let Some(font) = font {
+                    args.push_str(&format!(", font = {font:?}"));
+                }
+                for (flag, name) in [(bold, "bold"), (italic, "italic"), (underline, "underline")] {
+                    if *flag {
+                        args.push_str(&format!(", {name} = true"));
+                    }
+                }
+                if *rotation_deg != 0.0 {
+                    args.push_str(&format!(", rotation = {rotation_deg}"));
+                }
+                if let Some(wrap) = wrap {
+                    args.push_str(&format!(", wrap = {wrap}"));
+                }
+                format!("bearcad.text{{ {args} }}")
             }
             Instruction::Extrude {
                 faces,
@@ -3072,6 +3116,50 @@ impl ScriptRunner {
             }
             Instruction::CreateCircle { cx, cy, r } => {
                 let result = state.apply(Action::CreateCircle { cx, cy, r });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::CreateSketchText {
+                text,
+                font,
+                bold,
+                italic,
+                underline,
+                size,
+                x,
+                y,
+                rotation_deg,
+                wrap,
+            } => {
+                let Some(session) = state.sketch_session else {
+                    self.last_action_error = Some("text needs an open sketch".to_string());
+                    return StepResult::Continue;
+                };
+                let Some(font_family) = font.or_else(crate::default_text_font) else {
+                    self.last_action_error =
+                        Some("no usable system font found for text".to_string());
+                    return StepResult::Continue;
+                };
+                let Some(size_mm) =
+                    crate::value::eval_length_mm_in_doc(&size, &state.doc).filter(|s| *s > 0.0)
+                else {
+                    self.last_action_error =
+                        Some(format!("text size {size:?} doesn't evaluate to a positive length"));
+                    return StepResult::Continue;
+                };
+                let result = state.apply(Action::CreateSketchText {
+                    sketch: session.sketch,
+                    text,
+                    font_family,
+                    bold,
+                    italic,
+                    underline,
+                    size: size_mm,
+                    size_expr: size,
+                    origin: (x, y),
+                    rotation: rotation_deg.to_radians(),
+                    wrap_width: wrap,
+                });
                 self.record_action_error(result);
                 StepResult::Continue
             }

@@ -1677,6 +1677,13 @@ pub struct SketchText {
     /// Optional wrap width (mm); when set, text wraps to this width and grows downward.
     #[serde(default)]
     pub wrap_width: Option<f32>,
+    /// Text-on-curve groundwork (#286): the sketch line/curve the baseline follows. `None` means
+    /// a straight baseline from `origin` (rotated by `rotation`), which is all baking supports
+    /// today — [`crate::text::outline_text`] advances a pen along a straight baseline. Curve
+    /// support later means resolving this into a baseline provider (arc-length position +
+    /// tangent per pen offset) at bake time; the stored model won't need to change shape.
+    #[serde(default)]
+    pub baseline_line: Option<usize>,
     /// Baked glyph contours (sketch-local mm, baseline-relative, pre-transform).
     #[serde(default)]
     pub contours: Vec<Vec<(f32, f32)>>,

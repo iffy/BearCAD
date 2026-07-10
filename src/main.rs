@@ -127,7 +127,7 @@ use dimensions::{
 };
 use face::{
     circle_world_diameter_endpoints, circle_world_perimeter,
-    line_world_polyline, pick_sketch_face, sketch_frame,
+    line_world_polyline, local_to_world, pick_sketch_face, sketch_frame,
     sketch_geometry_frame, sketch_label, world_to_local,
 };
 use model::SketchId;
@@ -429,6 +429,17 @@ struct MoveRotationDrag {
     start_angle_deg: f32,
 }
 
+/// A drag rotating a selected sketch text with the Move tool's rotation ring (#286). The text's
+/// `rotation` follows the cursor's angle around the text origin; the context pane's Rotation°
+/// field reads the model each frame, so it stays in sync automatically.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TextRotationDrag {
+    index: usize,
+    start_cursor_angle: f32,
+    /// Model rotation (radians) when the grab started.
+    start_rotation: f32,
+}
+
 struct VertexDrag {
     point: ConstraintPoint,
 }
@@ -518,6 +529,8 @@ struct App {
     move_gizmo_drag: Option<MoveGizmoDrag>,
     /// In-flight Move rotation-ring drag (#216).
     move_rotation_drag: Option<MoveRotationDrag>,
+    /// In-flight sketch-text rotation drag on the Move tool's ring (#286).
+    text_rotation_drag: Option<TextRotationDrag>,
     launch_maximize_frames_remaining: u8,
     gpu_viewport: bool,
     gpu_view_cube: bool,
@@ -627,6 +640,7 @@ impl App {
             revolve_gizmo_drag: None,
             move_gizmo_drag: None,
             move_rotation_drag: None,
+            text_rotation_drag: None,
             vertex_drag: None,
             bezier_handle_drag: None,
             selected_bezier_handle: None,
@@ -2643,6 +2657,39 @@ impl App {
         (dir != Vec3::ZERO).then_some((center, dir, radius))
     }
 
+    /// The single selected sketch text (#286), if the selection is exactly one text: what the
+    /// context text editor and the Move tool's text rotation ring operate on.
+    fn single_selected_sketch_text(&self) -> Option<usize> {
+        let mut only = None;
+        for element in self.state.scene_selection.iter() {
+            match element {
+                SceneElement::SketchText(i) if only.is_none() => only = Some(i),
+                _ => return None,
+            }
+        }
+        only.filter(|&i| self.state.doc.sketch_texts.get(i).is_some_and(|t| !t.deleted))
+    }
+
+    /// Rotation-ring geometry for the selected sketch text (#286): `(text index, ring centre,
+    /// sketch-plane normal, radius)`. The ring sits in the text's sketch plane, centred on the
+    /// text origin — the point `rotation` turns about.
+    fn text_rotation_geom(&self) -> Option<(usize, Vec3, Vec3, f32)> {
+        let index = self.single_selected_sketch_text()?;
+        let text = self.state.doc.sketch_texts.get(index)?;
+        let frame = sketch_geometry_frame(&self.state.doc, text.sketch)?;
+        let center = local_to_world(&frame, text.origin.0, text.origin.1);
+        // Contours are baseline-relative (origin at (0,0)), so the farthest outline point puts
+        // the ring just outside the glyphs.
+        let mut reach: f32 = 0.0;
+        for contour in &text.contours {
+            for &(u, v) in contour {
+                reach = reach.max(u.hypot(v));
+            }
+        }
+        let radius = reach.max(1.0) * 1.15;
+        Some((index, center, frame.normal, radius))
+    }
+
     fn handle_move_tool(
         &mut self,
         ui: &egui::Ui,
@@ -2653,6 +2700,69 @@ impl App {
         vp: &glam::Mat4,
         pick_occlusion: Option<&construction::PickOcclusion>,
     ) {
+        // Rotation ring for a selected sketch text (#286): the Move tool turns the text about
+        // its origin. The context pane's Rotation° field follows automatically since it reads
+        // the model each frame. Runs before the sketch-session gate so it works in-sketch too.
+        if let Some((index, center, axis, radius)) = self.text_rotation_geom() {
+            let cursor_angle =
+                |pp: egui::Pos2| project(center).map(|c| (pp.y - c.y).atan2(pp.x - c.x));
+            // Screen angles run clockwise (y grows downward); sketch rotation runs
+            // counter-clockwise around the plane normal. Viewing the front of the plane
+            // flips the apparent direction.
+            let sign = if axis.dot(cam.eye() - center) > 0.0 { -1.0 } else { 1.0 };
+            if let Some(drag) = self.text_rotation_drag {
+                if drag.index == index && ui.input(|i| i.pointer.primary_down()) {
+                    if let (Some(angle), Some(existing)) = (
+                        pointer_screen.and_then(cursor_angle),
+                        self.state.doc.sketch_texts.get(index).cloned(),
+                    ) {
+                        let rotation =
+                            drag.start_rotation + sign * (angle - drag.start_cursor_angle);
+                        if rotation != existing.rotation {
+                            self.state.apply(Action::EditSketchText {
+                                index,
+                                text: existing.text,
+                                font_family: existing.font_family,
+                                bold: existing.bold,
+                                italic: existing.italic,
+                                underline: existing.underline,
+                                size: existing.size,
+                                size_expr: existing.size_expr,
+                                rotation,
+                                wrap_width: existing.wrap_width,
+                            });
+                        }
+                    }
+                } else {
+                    self.text_rotation_drag = None;
+                }
+                return;
+            }
+            if ui.input(|i| i.pointer.primary_pressed()) {
+                if let Some(pp) = pointer_screen {
+                    if rotation_ring_hit(pp, &project, center, axis, radius) {
+                        if let Some(angle) = cursor_angle(pp) {
+                            let start_rotation = self
+                                .state
+                                .doc
+                                .sketch_texts
+                                .get(index)
+                                .map(|t| t.rotation)
+                                .unwrap_or(0.0);
+                            self.text_rotation_drag = Some(TextRotationDrag {
+                                index,
+                                start_cursor_angle: angle,
+                                start_rotation,
+                            });
+                            return;
+                        }
+                    }
+                }
+            }
+        } else if self.text_rotation_drag.is_some() {
+            self.text_rotation_drag = None;
+        }
+
         if self.state.sketch_session.is_some() {
             return;
         }
@@ -4441,6 +4551,26 @@ impl eframe::App for App {
                         can_commit: has_t && has_c,
                     }
                 }),
+                sketch_text: {
+                    // A single selected sketch text opens its editor (#286).
+                    self.single_selected_sketch_text()
+                        .and_then(|i| self.state.doc.sketch_texts.get(i).map(|t| (i, t)))
+                        .map(|(i, t)| context::SketchTextControl {
+                            index: i,
+                            text: t.text.clone(),
+                            font_family: t.font_family.clone(),
+                            families: crate::text::system_font_families(),
+                            bold: t.bold,
+                            italic: t.italic,
+                            underline: t.underline,
+                            size_expr: if t.size_expr.is_empty() {
+                                format!("{}", t.size)
+                            } else {
+                                t.size_expr.clone()
+                            },
+                            rotation_deg: format!("{:.0}", t.rotation.to_degrees()),
+                        })
+                },
                 repeat_edit_start: (self.state.tool != Tool::Repeat)
                     .then(|| {
                         let mut only = None;
@@ -4598,6 +4728,7 @@ impl eframe::App for App {
             let mut repeat_edit: Option<context::RepeatEdit> = None;
             let mut sketch_repeat_edit: Option<context::SketchRepeatEdit> = None;
             let mut sketch_slice_edit: Option<context::SketchSliceEdit> = None;
+            let mut sketch_text_edit: Option<context::SketchTextEdit> = None;
             let mut repeat_edit_begin: Option<usize> = None;
             let mut slice_edit: Option<context::SliceEdit> = None;
             let mut slice_edit_begin: Option<usize> = None;
@@ -4642,6 +4773,7 @@ impl eframe::App for App {
                         &mut |edit| repeat_edit = Some(edit),
                         &mut |edit| sketch_repeat_edit = Some(edit),
                         &mut |edit| sketch_slice_edit = Some(edit),
+                        &mut |edit| sketch_text_edit = Some(edit),
                         &mut |op| repeat_edit_begin = Some(op),
                         &mut |edit| slice_edit = Some(edit),
                         &mut |op| slice_edit_begin = Some(op),
@@ -4903,6 +5035,58 @@ impl eframe::App for App {
                                 context::SketchSliceEdit::Commit => {}
                             }
                         }
+                    }
+                }
+            }
+            if let Some(edit) = sketch_text_edit {
+                // Re-resolve the single selected text rather than trusting a stale control index.
+                let selected = self
+                    .single_selected_sketch_text()
+                    .and_then(|i| self.state.doc.sketch_texts.get(i).cloned().map(|t| (i, t)));
+                if let Some((index, existing)) = selected {
+                    let mut text = existing.text.clone();
+                    let mut font_family = existing.font_family.clone();
+                    let mut bold = existing.bold;
+                    let mut italic = existing.italic;
+                    let mut underline = existing.underline;
+                    let mut size = existing.size;
+                    let mut size_expr = existing.size_expr.clone();
+                    let mut rotation = existing.rotation;
+                    let mut valid = true;
+                    match edit {
+                        context::SketchTextEdit::Text(v) => text = v,
+                        context::SketchTextEdit::Font(v) => font_family = v,
+                        context::SketchTextEdit::Bold(v) => bold = v,
+                        context::SketchTextEdit::Italic(v) => italic = v,
+                        context::SketchTextEdit::Underline(v) => underline = v,
+                        // The raw expression is stored either way so typing isn't clobbered;
+                        // the evaluated size only moves once the expression is valid.
+                        context::SketchTextEdit::Size(v) => {
+                            size_expr = v.clone();
+                            if let Some(s) = crate::value::eval_length_mm_in_doc(&v, &self.state.doc)
+                                .filter(|s| *s > 0.0)
+                            {
+                                size = s;
+                            }
+                        }
+                        context::SketchTextEdit::Rotation(v) => match v.trim().parse::<f32>() {
+                            Ok(deg) => rotation = deg.to_radians(),
+                            Err(_) => valid = false,
+                        },
+                    }
+                    if valid && !text.trim().is_empty() {
+                        self.state.apply(Action::EditSketchText {
+                            index,
+                            text,
+                            font_family,
+                            bold,
+                            italic,
+                            underline,
+                            size,
+                            size_expr,
+                            rotation,
+                            wrap_width: existing.wrap_width,
+                        });
                     }
                 }
             }
@@ -8303,6 +8487,7 @@ impl App {
         let mut close = false;
         // Whether this pane is rendering inside the popped-out drawing window (#276).
         let in_window = self.drawing_window == Some(drawing);
+        #[allow(unused_mut)] // only mutated by the native-only "Open in window" button
         let mut pop_out = false;
         #[allow(unused_mut)] // only mutated by the native-only Export SVG button
         let mut export_svg = false;
@@ -10234,6 +10419,7 @@ impl App {
             Vec::new()
         };
         // Move rotation-ring gizmo (#216): a circle around the picked axis at the centroid.
+        // A selected sketch text gets the same ring around its origin instead (#286).
         let move_rotation_gizmo = (self.state.tool == Tool::Move)
             .then(|| self.move_rotation_geom())
             .flatten()
@@ -10249,6 +10435,24 @@ impl App {
                     color: col::PREVIEW,
                     hovered,
                 }
+            })
+            .or_else(|| {
+                (self.state.tool == Tool::Move)
+                    .then(|| self.text_rotation_geom())
+                    .flatten()
+                    .map(|(_, center, axis, radius)| {
+                        let hovered = self.text_rotation_drag.is_some()
+                            || pointer_screen.is_some_and(|pp| {
+                                rotation_ring_hit(pp, &project, center, axis, radius)
+                            });
+                        gpu_viewport::MoveRotationGizmo {
+                            center,
+                            axis,
+                            radius,
+                            color: col::PREVIEW,
+                            hovered,
+                        }
+                    })
             });
         // Live ghost of the in-progress in-sketch repeat's duplicates (#232): dashed copies of
         // the picked lines/circles at every computed offset, so the result previews before commit.

@@ -765,14 +765,33 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   graph, selectable/renamable/deletable/undoable; selecting it selects the whole text. Persisted in
   the `.bearcad` file (`sketch_text` nodes). Editing (`EditSketchText`) re-bakes from the font,
   falling back to the stored outlines when only the transform/style changed and the font is gone.
+- **Context editor (#286):** selecting exactly one text opens its editor in the context pane: a
+  multi-line textarea, a font-family chooser listing the installed families (`fontdb`),
+  **B**/**I**/**U** style toggles, a **Size** field accepting length expressions (parameters
+  work: `w / 2`), and a **Rotation°** field in degrees. Every change re-bakes the glyphs
+  immediately. A size expression is stored as typed; the evaluated size only moves once the
+  expression is valid, so mid-edit states don't clobber the text.
+- **Move-tool rotation (#286):** with the **Move** tool active and one text selected, the
+  rotation-ring gizmo (#216's ring) appears in the sketch plane around the text's baseline
+  origin, sized to the glyph outlines; dragging the ring turns the text about its origin, live.
+  The ring and the context **Rotation°** field read the same model value, so they stay in sync.
+- **Text-on-curve groundwork (#286):** `SketchText` carries an optional `baseline_line`
+  reference (default none = straight baseline). Baking currently advances a pen along a
+  straight baseline (`text::outline_text`); curve support later resolves the reference into a
+  baseline provider (position + tangent per pen offset) at bake time, without reshaping the
+  stored model.
 - **Extrude/cut (#285):** the Extrude tool treats a sketch text as an extrudable face set —
   clicking a text toggles one `ExtrudeFace::TextGlyph { text, glyph }` per glyph (grouped by
   `text::group_glyphs`: the larger loops are outer boundaries, smaller loops nest as holes of the
   tightest enclosing outer). Each glyph builds as a **face-with-holes** (reusing #268: the kernel
   cuts each counter's prism from the glyph's outer prism; the mesh fallback uses hole-aware caps),
   so counters (`o`, `a`, `e`, …) come out. The whole string extrudes or cuts as one operation.
-- **Scriptable:** tool name `text`; element kind `sketch_text`; extrude face spec
-  `{text_glyph = {text = i, glyph = g}}`.
+- **Scriptable:** `bearcad.text{ text =, x =, y =, size = (expression), font =, bold =,
+  italic =, underline =, rotation = (degrees), wrap =, name = }` places a text declaratively
+  (beginning a ground sketch when none is open, like `rect`/`circle`); tool name `text`;
+  element kind `sketch_text` (works with `select`/`set_name`/`set_visible`/`count`); extrude
+  face spec `{text_glyph = {text = i, glyph = g}}`. Each text is a pane row nested under its
+  sketch — `Text N ("string")` with the Text-tool icon — selectable there like any element.
 
 ### 3.4.2 Web build (wasm32)
 

@@ -46,6 +46,12 @@ just like a body.
 
 Editing the move back to zero, or removing the plane/image from the move, returns it home.
 
+## Rotating sketch text
+
+With the Move tool active and a single [sketch text](/docs/tools/text) selected, a rotation
+ring appears around the text in its sketch plane. Drag the ring to turn the text about its
+start point; the text's **Rotation°** field in the context pane stays in sync.
+
 ## Scripting
 
 ```lua

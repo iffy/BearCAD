@@ -32,7 +32,7 @@ use serde_json::{json, Map, Value};
 /// (XY) construction plane when no sketch is active. The caller checks live state and
 /// prepends [`Instruction::BeginSketch`] before executing the returned instruction.
 pub fn opens_sketch_when_none_active(name: &str) -> bool {
-    matches!(name, "rect" | "line" | "circle")
+    matches!(name, "rect" | "line" | "circle" | "text")
 }
 
 /// A whole scene element from a `(kind, index)` pair (mirrors `lua_script::
@@ -49,6 +49,7 @@ pub fn scene_element_from_kind(kind: &str, index: usize) -> Option<SceneElement>
         "constraint" => Some(SceneElement::Constraint(index)),
         "extrusion" => Some(SceneElement::Extrusion(index)),
         "body" => Some(SceneElement::Body(index)),
+        "sketch_text" | "text" => Some(SceneElement::SketchText(index)),
         _ => None,
     }
 }
@@ -255,6 +256,31 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             let bezier = parse_bezier(o)?;
             let dimension = parse_dimension(o, x0, y0, x1, y1)?;
             Ok(Instruction::CreateLine { x0, y0, x1, y1, bezier, dimension })
+        }
+        "text" => {
+            // Size accepts a number or an expression string, like the mlua closure.
+            let size = match o.get("size") {
+                None | Some(Value::Null) => "10".to_string(),
+                Some(Value::Number(n)) => n.to_string(),
+                Some(Value::String(s)) => s.clone(),
+                Some(other) => {
+                    return Err(format!(
+                        "text size must be a number or expression string, got {other}"
+                    ))
+                }
+            };
+            Ok(Instruction::CreateSketchText {
+                text: req_str(o, "text", "text")?,
+                font: opt_str(o, "font")?,
+                bold: opt_bool(o, "bold")?.unwrap_or(false),
+                italic: opt_bool(o, "italic")?.unwrap_or(false),
+                underline: opt_bool(o, "underline")?.unwrap_or(false),
+                size,
+                x: opt_f32(o, "x")?.unwrap_or(0.0),
+                y: opt_f32(o, "y")?.unwrap_or(0.0),
+                rotation_deg: opt_f32(o, "rotation")?.unwrap_or(0.0),
+                wrap: opt_f32(o, "wrap")?,
+            })
         }
 
         // ----- File / import-export (mirrors the desktop closures, which take positional
@@ -1103,10 +1129,14 @@ pub fn query_from_json(name: &str, args: &Value, doc: &Document) -> Result<Value
                 "body" => doc.bodies.iter().filter(|e| !e.deleted).count(),
                 "drawing" => doc.drawings.iter().filter(|e| !e.deleted).count(),
                 "parameter" => doc.parameters.iter().filter(|e| !e.deleted).count(),
+                "sketch_text" | "text" => {
+                    doc.sketch_texts.iter().filter(|e| !e.deleted).count()
+                }
                 other => {
                     return Err(format!(
                         "unknown count kind '{other}' (valid kinds: line, circle, sketch, \
-                         constraint, construction_plane, extrusion, body, drawing, parameter)"
+                         constraint, construction_plane, extrusion, body, drawing, parameter, \
+                         sketch_text)"
                     ))
                 }
             };
