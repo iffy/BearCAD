@@ -1988,6 +1988,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
         Tool::Repeat => "repeat",
         Tool::Slice => "slice",
         Tool::Text => "text",
+        Tool::DrawingAdd => "drawing_add",
     }
 }
 

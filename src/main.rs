@@ -3765,6 +3765,7 @@ impl eframe::App for App {
                 if self.state.editing_drawing.is_some() {
                     for (icon, tool, label) in [
                         (icons::IconId::Select, Tool::Select, "Select"),
+                        (icons::IconId::Plus, Tool::DrawingAdd, "Add view"),
                         (icons::IconId::Dimension, Tool::Dimension, "Dimension"),
                     ] {
                         if icons::selectable_icon_button(
@@ -4571,6 +4572,38 @@ impl eframe::App for App {
                             rotation_deg: format!("{:.0}", t.rotation.to_degrees()),
                         })
                 },
+                drawing_view: {
+                    // The selected projection on the open drawing page (#289).
+                    self.state
+                        .selected_drawing_view
+                        .filter(|(d, _)| self.state.editing_drawing == Some(*d))
+                        .and_then(|(d, v)| {
+                            let view = self
+                                .state
+                                .doc
+                                .drawings
+                                .get(d)
+                                .filter(|dr| !dr.deleted)
+                                .and_then(|dr| dr.views.get(v))?;
+                            let source = match view.sketch {
+                                Some(si) => crate::names::node_label(
+                                    &self.state.doc,
+                                    hierarchy::HierarchyNode::Sketch(si),
+                                ),
+                                None => crate::names::node_label(
+                                    &self.state.doc,
+                                    hierarchy::HierarchyNode::Body(view.body),
+                                ),
+                            };
+                            Some(context::DrawingViewControl {
+                                view: v,
+                                source,
+                                orientation: view.orientation,
+                            })
+                        })
+                },
+                drawing_add_active: self.state.tool == Tool::DrawingAdd
+                    && self.state.editing_drawing.is_some(),
                 repeat_edit_start: (self.state.tool != Tool::Repeat)
                     .then(|| {
                         let mut only = None;
@@ -4729,6 +4762,7 @@ impl eframe::App for App {
             let mut sketch_repeat_edit: Option<context::SketchRepeatEdit> = None;
             let mut sketch_slice_edit: Option<context::SketchSliceEdit> = None;
             let mut sketch_text_edit: Option<context::SketchTextEdit> = None;
+            let mut drawing_view_edit: Option<context::DrawingViewEdit> = None;
             let mut repeat_edit_begin: Option<usize> = None;
             let mut slice_edit: Option<context::SliceEdit> = None;
             let mut slice_edit_begin: Option<usize> = None;
@@ -4774,6 +4808,7 @@ impl eframe::App for App {
                         &mut |edit| sketch_repeat_edit = Some(edit),
                         &mut |edit| sketch_slice_edit = Some(edit),
                         &mut |edit| sketch_text_edit = Some(edit),
+                        &mut |edit| drawing_view_edit = Some(edit),
                         &mut |op| repeat_edit_begin = Some(op),
                         &mut |edit| slice_edit = Some(edit),
                         &mut |op| slice_edit_begin = Some(op),
@@ -5087,6 +5122,22 @@ impl eframe::App for App {
                             rotation,
                             wrap_width: existing.wrap_width,
                         });
+                    }
+                }
+            }
+            if let Some(edit) = drawing_view_edit {
+                if let Some((drawing, view)) = self.state.selected_drawing_view {
+                    match edit {
+                        context::DrawingViewEdit::Orientation(orientation) => {
+                            self.state.apply(Action::SetDrawingViewOrientation {
+                                drawing,
+                                view,
+                                orientation,
+                            });
+                        }
+                        context::DrawingViewEdit::Remove => {
+                            self.state.apply(Action::RemoveDrawingView { drawing, view });
+                        }
                     }
                 }
             }
@@ -8492,7 +8543,6 @@ impl App {
         #[allow(unused_mut)] // only mutated by the native-only Export SVG button
         let mut export_svg = false;
         let mut export_pdf = false;
-        let mut add_view: Option<(usize, DrawingOrientation)> = None;
         let mut remove_view: Option<usize> = None;
         let mut toggle_dim: Option<(usize, [i32; 3], [i32; 3])> = None;
         let mut toggle_angle: Option<(usize, model::DrawingEdgeKey, model::DrawingEdgeKey)> = None;
@@ -8544,57 +8594,9 @@ impl App {
         });
         ui.separator();
 
-        // Add-view controls: pick a body + orientation. Selections persist across frames.
-        let live_bodies: Vec<usize> = self
-            .state
-            .doc
-            .bodies
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| !b.deleted && !b.shadow)
-            .map(|(i, _)| i)
-            .collect();
-        if live_bodies.is_empty() {
-            ui.colored_label(
-                INK,
-                "Add a body to the model first, then add its views to this drawing.",
-            );
-        } else {
-            let body_id = ui.make_persistent_id(("drawing_add_body", drawing));
-            let orient_id = ui.make_persistent_id(("drawing_add_orient", drawing));
-            let mut sel_body = ui
-                .data_mut(|d| d.get_temp::<usize>(body_id))
-                .filter(|b| live_bodies.contains(b))
-                .unwrap_or(live_bodies[0]);
-            let mut sel_orient = ui
-                .data_mut(|d| d.get_temp::<DrawingOrientation>(orient_id))
-                .unwrap_or_default();
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Add view:").color(INK));
-                egui::ComboBox::from_id_salt(body_id)
-                    .selected_text(body_label(&self.state.doc, sel_body))
-                    .show_ui(ui, |ui| {
-                        for bi in &live_bodies {
-                            ui.selectable_value(&mut sel_body, *bi, body_label(&self.state.doc, *bi));
-                        }
-                    });
-                egui::ComboBox::from_id_salt(orient_id)
-                    .selected_text(sel_orient.label())
-                    .show_ui(ui, |ui| {
-                        for o in DrawingOrientation::ALL {
-                            ui.selectable_value(&mut sel_orient, *o, o.label());
-                        }
-                    });
-                if ui.button("Add").clicked() {
-                    add_view = Some((sel_body, sel_orient));
-                }
-            });
-            ui.data_mut(|d| {
-                d.insert_temp(body_id, sel_body);
-                d.insert_temp(orient_id, sel_orient);
-            });
-        }
-        ui.separator();
+        // Views are added with the toolbar's Add-view tool (#289): pick a body or sketch in
+        // the Elements pane and a projection drops onto the page, ready to drag and configure
+        // in the context pane. (The old inline "Add view:" combo row is gone.)
 
         // Only the active Dimension tool gets a usage hint (#292): the idle prompt that used to
         // sit here was noise on every drawing.
@@ -8646,6 +8648,10 @@ impl App {
                 if drag.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                 }
+                // Clicking a card selects it (#289): the context pane opens its view editor.
+                if drag.clicked() {
+                    self.state.selected_drawing_view = Some((drawing, vi));
+                }
                 drag.context_menu(|ui| {
                     ui.label("View");
                     for o in DrawingOrientation::ALL {
@@ -8660,10 +8666,16 @@ impl App {
                         ui.close();
                     }
                 });
+                // The selected card (#289) gets an accent border; others a faint outline.
+                let selected_here = self.state.selected_drawing_view == Some((drawing, vi));
                 painter.rect_stroke(
                     cell.shrink(2.0),
                     2.0,
-                    egui::Stroke::new(1.0, egui::Color32::from_gray(80)),
+                    if selected_here {
+                        egui::Stroke::new(1.5, egui::Color32::from_rgb(90, 150, 230))
+                    } else {
+                        egui::Stroke::new(1.0, egui::Color32::from_gray(80))
+                    },
                     egui::StrokeKind::Inside,
                 );
                 let source_label = match view.sketch {
@@ -8837,13 +8849,6 @@ impl App {
             }
         }
 
-        if let Some((body, orientation)) = add_view {
-            self.state.apply(Action::AddDrawingView {
-                drawing,
-                body,
-                orientation,
-            });
-        }
         if let Some(view) = remove_view {
             self.state.apply(Action::RemoveDrawingView { drawing, view });
         }
@@ -11604,6 +11609,9 @@ impl App {
                 } else {
                     "Text — open a sketch first"
                 }
+            }
+            Tool::DrawingAdd => {
+                "Add view — click a body or sketch in the Elements pane, then drag it into place"
             }
             Tool::Rectangle => {
                 if self.state.creating_rect.is_some() {

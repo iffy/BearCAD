@@ -914,9 +914,16 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   app state), handing the central area back to the 3D view — so the model and a drawing are
   visible at once. Closing the window (or `Esc`) dismisses it. Native only.
 - **Workbenches (#254/#271/#272):** opening a drawing switches to the **Drawing workbench**,
-  whose toolbar shows only the tools that apply to drawings — **Select, Dimension** (#295:
-  no Move tool; the Select tool drags projections directly, #293). Entering the workbench
-  with any other tool active drops back to Select. The Parameters
+  whose toolbar shows only the tools that apply to drawings — **Select, Add view, Dimension**
+  (#295: no Move tool; the Select tool drags projections directly, #293). Entering the
+  workbench with any other tool active drops back to Select.
+- **Add-view tool (#289):** the workbench's **Add view** tool (＋ icon; tool name
+  `drawing_add`) replaces the old inline "Add view:" combo row. With it active, clicking a
+  **body or sketch** in the Elements pane drops a projection of it onto the page and selects
+  it; the **context pane** then shows the view editor — source label, **orientation**
+  dropdown, and **Remove view** — and the card can be dragged into place. Clicking any
+  existing card (any tool) selects it and opens the same editor (selected card gets an
+  accent border; `AppState::selected_drawing_view`). The Parameters
   pane is hidden in the Drawing workbench, and there's no "Back to model" button — press
   **Esc** to return to the model.
 - **Elements-pane filter (#254/#275):** a **Filter** button (funnel icon, #291) at the bottom

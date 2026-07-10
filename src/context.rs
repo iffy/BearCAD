@@ -71,6 +71,10 @@ pub struct ContextInput<'a> {
     pub sketch_slice: Option<SketchSliceControl>,
     /// Selected sketch-text editor (#286).
     pub sketch_text: Option<SketchTextControl>,
+    /// Selected drawing-projection editor (#289).
+    pub drawing_view: Option<DrawingViewControl>,
+    /// The Add-view tool is active with nothing placed yet (#289): renders its pick hint.
+    pub drawing_add_active: bool,
     /// "Edit repeat" entry point.
     pub repeat_edit_start: Option<usize>,
     /// Slice tool state: `Some` while the Slice tool is active.
@@ -273,6 +277,23 @@ pub enum SketchSliceEdit {
 }
 
 /// Editor for a selected sketch text (#282/#286): the string, font, size, style, and rotation.
+/// Editor for the selected drawing projection (#289): shown while a view card is selected on
+/// the open drawing page (or right after the Add-view tool places one).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrawingViewControl {
+    pub view: usize,
+    /// The projected source ("Body 0", "Sketch 1", …).
+    pub source: String,
+    pub orientation: crate::model::DrawingOrientation,
+}
+
+/// One edit from the drawing-view context section (#289).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DrawingViewEdit {
+    Orientation(crate::model::DrawingOrientation),
+    Remove,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SketchTextControl {
     pub index: usize,
@@ -428,6 +449,10 @@ pub struct ContextPaneContent {
     pub sketch_slice: Option<SketchSliceControl>,
     /// Selected sketch-text editor (#286).
     pub sketch_text: Option<SketchTextControl>,
+    /// Selected drawing-projection editor (#289).
+    pub drawing_view: Option<DrawingViewControl>,
+    /// The Add-view tool is active with nothing placed yet (#289).
+    pub drawing_add_active: bool,
     /// "Edit repeat" entry point.
     pub repeat_edit_start: Option<usize>,
     /// Slice tool controls.
@@ -737,6 +762,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let sketch_repeat = input.sketch_repeat.clone();
     let sketch_slice = input.sketch_slice.clone();
     let sketch_text = input.sketch_text.clone();
+    let drawing_view = input.drawing_view.clone();
+    let drawing_add_active = input.drawing_add_active;
     let repeat_edit_start = input.repeat_edit_start;
     let slice_op = input.slice_op.clone();
     let slice_edit_start = input.slice_edit_start;
@@ -771,6 +798,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             sketch_repeat: sketch_repeat.clone(),
             sketch_slice: sketch_slice.clone(),
             sketch_text: sketch_text.clone(),
+            drawing_view: drawing_view.clone(),
+            drawing_add_active,
             repeat_edit_start,
             slice_op: slice_op.clone(),
             slice_edit_start,
@@ -806,6 +835,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             sketch_repeat: sketch_repeat.clone(),
             sketch_slice: sketch_slice.clone(),
             sketch_text: sketch_text.clone(),
+            drawing_view: drawing_view.clone(),
+            drawing_add_active,
             repeat_edit_start,
             slice_op: slice_op.clone(),
             slice_edit_start,
@@ -841,6 +872,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             sketch_repeat: sketch_repeat.clone(),
             sketch_slice: sketch_slice.clone(),
             sketch_text: sketch_text.clone(),
+            drawing_view: drawing_view.clone(),
+            drawing_add_active,
             repeat_edit_start,
             slice_op: slice_op.clone(),
             slice_edit_start,
@@ -879,6 +912,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         sketch_repeat,
         sketch_slice,
         sketch_text,
+        drawing_view,
+        drawing_add_active,
         repeat_edit_start,
         slice_op,
         slice_edit_start,
@@ -1102,6 +1137,7 @@ pub fn show_pane(
     on_sketch_repeat_edit: &mut impl FnMut(SketchRepeatEdit),
     on_sketch_slice_edit: &mut impl FnMut(SketchSliceEdit),
     on_sketch_text_edit: &mut impl FnMut(SketchTextEdit),
+    on_drawing_view_edit: &mut impl FnMut(DrawingViewEdit),
     on_repeat_edit_start: &mut impl FnMut(usize),
     on_slice_edit: &mut impl FnMut(SliceEdit),
     on_slice_edit_start: &mut impl FnMut(usize),
@@ -2017,6 +2053,40 @@ pub fn show_pane(
         });
     }
 
+    // Drawing-projection editor (#289): the selected view card's source, orientation, and a
+    // remove button; the Add-view tool shows its pick hint until something is placed.
+    if let Some(control) = &content.drawing_view {
+        any_control = true;
+        ui.separator();
+        ui.label(egui::RichText::new("View").strong());
+        ui.label(&control.source);
+        egui::ComboBox::from_id_salt("drawing_view_orientation")
+            .selected_text(control.orientation.label())
+            .show_ui(ui, |ui| {
+                for o in crate::model::DrawingOrientation::ALL {
+                    if ui
+                        .selectable_label(control.orientation == *o, o.label())
+                        .clicked()
+                    {
+                        on_drawing_view_edit(DrawingViewEdit::Orientation(*o));
+                    }
+                }
+            });
+        if ui.button("Remove view").clicked() {
+            on_drawing_view_edit(DrawingViewEdit::Remove);
+        }
+    } else if content.drawing_add_active {
+        any_control = true;
+        ui.separator();
+        ui.label(egui::RichText::new("Add view").strong());
+        ui.label(
+            egui::RichText::new(
+                "Click a body or sketch in the Elements pane to place it on the page",
+            )
+            .color(egui::Color32::from_gray(140)),
+        );
+    }
+
     if let Some(op) = content.slice_edit_start {
         any_control = true;
         ui.separator();
@@ -2314,6 +2384,8 @@ mod tests {
             sketch_repeat: None,
             sketch_slice: None,
             sketch_text: None,
+            drawing_view: None,
+            drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2386,6 +2458,8 @@ mod tests {
             sketch_repeat: None,
             sketch_slice: None,
             sketch_text: None,
+            drawing_view: None,
+            drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2449,6 +2523,8 @@ mod tests {
             sketch_repeat: None,
             sketch_slice: None,
             sketch_text: None,
+            drawing_view: None,
+            drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2708,6 +2784,8 @@ mod tests {
             sketch_repeat: None,
             sketch_slice: None,
             sketch_text: None,
+            drawing_view: None,
+            drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2756,6 +2834,8 @@ mod tests {
             sketch_repeat: None,
             sketch_slice: None,
             sketch_text: None,
+            drawing_view: None,
+            drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2790,6 +2870,8 @@ mod tests {
             sketch_repeat: None,
             sketch_slice: None,
             sketch_text: None,
+            drawing_view: None,
+            drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2838,6 +2920,8 @@ mod tests {
             sketch_repeat: None,
             sketch_slice: None,
             sketch_text: None,
+            drawing_view: None,
+            drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2890,6 +2974,8 @@ mod tests {
             sketch_repeat: None,
             sketch_slice: None,
             sketch_text: None,
+            drawing_view: None,
+            drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -2985,6 +3071,8 @@ mod tests {
             sketch_repeat: None,
             sketch_slice: None,
             sketch_text: None,
+            drawing_view: None,
+            drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -3031,6 +3119,8 @@ mod tests {
             sketch_repeat: None,
             sketch_slice: None,
             sketch_text: None,
+            drawing_view: None,
+            drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -3067,6 +3157,8 @@ mod tests {
             sketch_repeat: None,
             sketch_slice: None,
             sketch_text: None,
+            drawing_view: None,
+            drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,
@@ -3107,6 +3199,8 @@ mod tests {
             sketch_repeat: None,
             sketch_slice: None,
             sketch_text: None,
+            drawing_view: None,
+            drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
             slice_edit_start: None,

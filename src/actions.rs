@@ -112,6 +112,10 @@ pub enum Tool {
     /// Place text in a sketch (Text tool, #282): click to drop a text element whose glyph
     /// outlines are baked from a system font; edit its string/font/size/style in the context pane.
     Text,
+    /// Drawing workbench's "Add view" tool (#289): pick a body or sketch (Elements pane) to
+    /// drop a projection on the open drawing page, then drag it into place and set its
+    /// orientation in the context pane.
+    DrawingAdd,
 }
 
 impl Tool {
@@ -137,6 +141,7 @@ impl Tool {
             "repeat" | "linear_repeat" | "pattern" => Some(Tool::Repeat),
             "slice" | "split" => Some(Tool::Slice),
             "text" => Some(Tool::Text),
+            "drawing_add" | "add_view" => Some(Tool::DrawingAdd),
             _ => None,
         }
     }
@@ -1875,6 +1880,10 @@ pub struct AppState {
     /// (never persisted): while `Some`, the central area shows that drawing instead of the
     /// 3D viewport.
     pub editing_drawing: Option<usize>,
+    /// The projection selected on the open drawing page (#289): `(drawing, view)`. Set by the
+    /// Add-view tool placing a projection or by clicking a card; drives the context pane's
+    /// view editor. UI state (never persisted).
+    pub selected_drawing_view: Option<(usize, usize)>,
     /// In-progress image scale calibration (#163/#171): Some while the user is placing
     /// the two reference points / typing the real length.
     pub creating_calibration: Option<CreatingCalibration>,
@@ -1992,6 +2001,7 @@ impl Default for AppState {
             creating_slice: None,
             creating_sketch_slice: None,
             editing_drawing: None,
+            selected_drawing_view: None,
             creating_calibration: None,
             viewport_aspect: 16.0 / 9.0,
             draw_construction: false,
@@ -4078,6 +4088,9 @@ impl AppState {
                         "Text tool — click to place text".to_string()
                     }
                     Tool::Text => "Text tool — open a sketch first".to_string(),
+                    Tool::DrawingAdd => {
+                        "Add view — click a body or sketch in the Elements pane".to_string()
+                    }
                 };
                 if tool == Tool::Dimension {
                     self.try_begin_dimension_from_selection();
@@ -6309,6 +6322,13 @@ impl AppState {
                     return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
                 }
                 d.views.remove(view);
+                // Keep the page selection valid (#289): drop it if it pointed at the removed
+                // view, shift it down if it pointed past it.
+                self.selected_drawing_view = match self.selected_drawing_view {
+                    Some((sd, sv)) if sd == drawing && sv == view => None,
+                    Some((sd, sv)) if sd == drawing && sv > view => Some((sd, sv - 1)),
+                    other => other,
+                };
                 self.status = format!("Removed view {view} from drawing {drawing}");
                 ActionResult::Ok
             }
@@ -6376,11 +6396,18 @@ impl AppState {
                     if self.doc.drawings.get(di).is_none_or(|d| d.deleted) {
                         return ActionResult::Err(format!("No drawing {di}"));
                     }
-                    // The Drawing workbench only offers Select/Dimension (#271, #295 dropped
-                    // Move); if the current tool isn't one of them, drop back to Select.
-                    if !matches!(self.tool, Tool::Select | Tool::Dimension) {
+                    // The Drawing workbench only offers Select/Add view/Dimension (#271,
+                    // #295 dropped Move, #289 added Add view); anything else drops to Select.
+                    if !matches!(self.tool, Tool::Select | Tool::Dimension | Tool::DrawingAdd) {
                         self.tool = Tool::Select;
                     }
+                }
+                if self.editing_drawing != drawing {
+                    self.selected_drawing_view = None;
+                }
+                // The Add-view tool is drawing-workbench-only (#289).
+                if drawing.is_none() && self.tool == Tool::DrawingAdd {
+                    self.tool = Tool::Select;
                 }
                 self.editing_drawing = drawing;
                 ActionResult::Ok
@@ -7526,6 +7553,41 @@ impl AppState {
                 // picking — rather than touching the persistent selection. A line clicked while
                 // the Move tool is active sets its rotation axis (#216), like a viewport pick.
                 let consumed_by_tool = match &element {
+                    // The Add-view tool (#289): a body or sketch clicked (Elements pane) drops
+                    // a projection of it on the open drawing page and selects that projection
+                    // so the context pane opens its editor.
+                    SceneElement::Body(bi)
+                        if self.tool == Tool::DrawingAdd && self.editing_drawing.is_some() =>
+                    {
+                        let drawing = self.editing_drawing.unwrap();
+                        let body = *bi;
+                        let result = self.apply(Action::AddDrawingView {
+                            drawing,
+                            body,
+                            orientation: crate::model::DrawingOrientation::default(),
+                        });
+                        if matches!(result, ActionResult::Ok) {
+                            let vi = self.doc.drawings[drawing].views.len() - 1;
+                            self.selected_drawing_view = Some((drawing, vi));
+                        }
+                        true
+                    }
+                    SceneElement::Sketch(si)
+                        if self.tool == Tool::DrawingAdd && self.editing_drawing.is_some() =>
+                    {
+                        let drawing = self.editing_drawing.unwrap();
+                        let sketch = *si;
+                        let result = self.apply(Action::AddDrawingSketchView {
+                            drawing,
+                            sketch,
+                            orientation: crate::model::DrawingOrientation::default(),
+                        });
+                        if matches!(result, ActionResult::Ok) {
+                            let vi = self.doc.drawings[drawing].views.len() - 1;
+                            self.selected_drawing_view = Some((drawing, vi));
+                        }
+                        true
+                    }
                     SceneElement::Body(bi) => toggle_body_in_active_tool(self, *bi),
                     SceneElement::Line(li) if self.tool == Tool::Move => {
                         self.creating_move
@@ -12223,6 +12285,43 @@ mod tests {
             orientation: DrawingOrientation::Isometric,
         });
         assert_eq!(state.doc.drawings[0].views[0].orientation, DrawingOrientation::Isometric);
+    }
+
+    /// #289: with the Add-view tool active in the Drawing workbench, a clicked body or sketch
+    /// (Elements pane) drops a projection on the page and selects it for the context editor;
+    /// removing the view clears the selection.
+    #[test]
+    fn add_view_tool_click_places_and_selects_a_projection() {
+        let mut state = two_box_state(false);
+        let sketch = state.doc.sketches.len() - 1;
+        state.apply(Action::ExitSketch);
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::EditDrawing { drawing: Some(0) });
+        state.apply(Action::SetTool(Tool::DrawingAdd));
+
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Body(0),
+            additive: false,
+        });
+        assert_eq!(state.doc.drawings[0].views.len(), 1, "body click placed a view");
+        assert_eq!(state.selected_drawing_view, Some((0, 0)), "the new view is selected");
+        assert!(state.scene_selection.is_empty(), "the click fed the tool, not the selection");
+
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Sketch(sketch),
+            additive: false,
+        });
+        assert_eq!(state.doc.drawings[0].views.len(), 2, "sketch click placed a view");
+        assert_eq!(state.doc.drawings[0].views[1].sketch, Some(sketch));
+        assert_eq!(state.selected_drawing_view, Some((0, 1)));
+
+        // Removing the selected view drops the selection; removing an earlier view shifts it.
+        state.apply(Action::RemoveDrawingView { drawing: 0, view: 1 });
+        assert_eq!(state.selected_drawing_view, None);
+        state.selected_drawing_view = Some((0, 0));
+        state.apply(Action::EditDrawing { drawing: None });
+        assert_eq!(state.tool, Tool::Select, "Add-view tool is workbench-only");
+        assert_eq!(state.selected_drawing_view, None, "closing the drawing clears it");
     }
 
     /// #232: an in-sketch repeat takes its direction from a picked edge (its unit vector), and

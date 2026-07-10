@@ -13,11 +13,13 @@ you like, and each one collects **views** — a body shown from a chosen directi
 1. From the **CAD** menu, choose **New Drawing**. The drawing appears in the Elements tree with
    its own icon and opens in the drawing pane, which takes over the central area with a white
    sheet.
-2. **Add view:** pick a body and an orientation — one of the six straight-on directions
-   (Front, Back, Left, Right, Top, Bottom) or **Isometric** — and click **Add**. Each view
-   draws the body as a black wireframe, projected and scaled to fit its card. Repeat to place
-   several views of the same or different bodies, and drag each card wherever it should sit
-   on the page.
+2. **Add view:** pick the **Add view** tool (the ＋ in the toolbar), then click a body or
+   sketch in the Elements pane — a projection of it lands on the page, already selected. Set
+   its direction in the context pane: one of the six straight-on directions (Front, Back,
+   Left, Right, Top, Bottom) or **Isometric**. Each view draws the source as a black
+   wireframe, scaled to fit its card. Drag the card wherever it should sit on the page, and
+   repeat for more views. Clicking any placed view selects it and reopens the same editor —
+   change its orientation or **Remove view** there.
 3. **Dimensions:** a new view arrives with every edge's length dimension already shown. With
    the **Dimension tool** active, click an edge to hide its dimension (click again to bring it
    back). **Shift+click** two edges to show the angle between them (Shift+click either again
