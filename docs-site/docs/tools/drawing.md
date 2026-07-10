@@ -44,8 +44,9 @@ always stays aligned along the shared edge; move the parent and its aligned view
 Aligned views inherit the parent's scale and orientation, so a whole group reads as one set.
 3. **Dimensions:** a new view arrives with every edge's length dimension already shown, drawn
    as proper dimension lines — extension lines, an offset line with arrowheads, and the
-   measurement centred on it. Round features (holes, cylinders) render as a single smooth
-   circle with one diameter dimension (Ø), not a ring of little segments. With the **Dimension tool** active, the edge under the cursor
+   measurement centred on it — the label runs along the dimension line (or sits just past its
+   end when the line is too short to fit). Round features (holes, cylinders) render as a single
+   smooth circle with one diameter dimension (Ø), not a ring of little segments. With the **Dimension tool** active, the edge under the cursor
    highlights; click it to hide its dimension (click again to bring it back). **Shift+click**
    two edges to show the angle between them (Shift+click either again to hide it). **Drag a
    dimension's label** (with the Select or Dimension tool) to push its line further from or

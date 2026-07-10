@@ -9212,14 +9212,34 @@ impl App {
                                 egui::Stroke::NONE,
                             ));
                         }
-                        let label_screen = sp(g.label_pos);
-                        painter.text(
-                            label_screen,
-                            egui::Align2::CENTER_CENTER,
-                            crate::value::format_length_display_in((wa - wb).length(), unit),
+                        // The label runs along the dimension line, or sits past its end if the
+                        // line is too short (#314).
+                        let label_text =
+                            crate::value::format_length_display_in((wa - wb).length(), unit);
+                        let (sla, slb) = (sp(g.line.0), sp(g.line.1));
+                        let out_screen =
+                            (sp(g.line.0 + glam::Vec2::new(outward.x, outward.y)) - sp(g.line.0))
+                                .normalized();
+                        let (lp, ang) = crate::drawing::dimension_label_layout(
+                            glam::Vec2::new(sla.x, sla.y),
+                            glam::Vec2::new(slb.x, slb.y),
+                            glam::Vec2::new(out_screen.x, out_screen.y),
+                            crate::drawing::text_device_width(11.0, &label_text),
+                            5.0,
+                        );
+                        let label_screen = egui::pos2(lp.x, lp.y);
+                        let galley = painter.layout_no_wrap(
+                            label_text,
                             egui::FontId::proportional(11.0),
                             INK,
                         );
+                        // TextShape rotates about its top-left `pos`; offset so the label's
+                        // centre lands at label_screen after rotation (#314).
+                        let rot = egui::emath::Rot2::from_angle(ang);
+                        let pos = label_screen - rot * (galley.size() * 0.5);
+                        let mut shape = egui::epaint::TextShape::new(pos, galley, INK);
+                        shape.angle = ang;
+                        painter.add(shape);
                         // The label is draggable with Select or Dimension (#294): a small
                         // interact rect at the label repositions the whole dimension line.
                         if matches!(self.state.tool, Tool::Select | Tool::Dimension) {

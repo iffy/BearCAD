@@ -257,8 +257,6 @@ pub struct DimLineGeometry {
     pub line: (glam::Vec2, glam::Vec2),
     /// Two arrowhead triangles (three points each) at the dimension line's ends.
     pub arrows: [[glam::Vec2; 3]; 2],
-    /// Where the measurement label sits (centre of the dimension line, nudged outward).
-    pub label_pos: glam::Vec2,
 }
 
 /// Build [`DimLineGeometry`] for an edge from `a` to `b`, offset `outward * offset` from it.
@@ -288,7 +286,6 @@ pub fn dimension_line_geometry(
         ],
         line: (da, db),
         arrows: [head(da, -along), head(db, along)],
-        label_pos: (da + db) * 0.5 + outward * (arrow * 1.6),
     }
 }
 
@@ -461,6 +458,48 @@ trait Canvas {
     fn circle(&mut self, cx: f32, cy: f32, r: f32, color: Rgb, width: f32);
     /// Text is always black in a drawing; `size` is the font size in px.
     fn text(&mut self, x: f32, y: f32, size: f32, anchor: Anchor, content: &str);
+    /// Text rotated `angle` radians clockwise about `(x, y)` — dimension labels running along
+    /// their dimension line (#314). Backends override; the default draws it unrotated.
+    fn text_rot(&mut self, x: f32, y: f32, size: f32, anchor: Anchor, content: &str, angle: f32) {
+        let _ = angle;
+        self.text(x, y, size, anchor, content);
+    }
+}
+
+/// Approximate rendered width (device units) of a dimension label in the drawing's Helvetica —
+/// ~0.55 em per glyph, matching the PDF backend's centring estimate (#314).
+pub fn text_device_width(size: f32, content: &str) -> f32 {
+    0.55 * size * content.chars().count() as f32
+}
+
+/// Where and how to draw a dimension's label (#314): `(pos, angle_radians)`. If the text fits
+/// along the dimension line it runs centred along it (rotated, kept upright); otherwise it's
+/// placed just beyond the line's far end, horizontal, so it never overlaps the arrows.
+/// Everything is in device units (screen px for the editor, points for export).
+pub fn dimension_label_layout(
+    a: glam::Vec2,
+    b: glam::Vec2,
+    outward: glam::Vec2,
+    text_w: f32,
+    gap: f32,
+) -> (glam::Vec2, f32) {
+    let along = b - a;
+    let len = along.length();
+    let dir = if len > 1e-3 { along / len } else { glam::Vec2::new(1.0, 0.0) };
+    let mid = (a + b) * 0.5;
+    if text_w + gap <= len {
+        // Runs along the line; keep it upright (flip the angle if it'd read upside down).
+        let mut angle = dir.y.atan2(dir.x);
+        if angle > std::f32::consts::FRAC_PI_2 {
+            angle -= std::f32::consts::PI;
+        } else if angle < -std::f32::consts::FRAC_PI_2 {
+            angle += std::f32::consts::PI;
+        }
+        (mid + outward * gap, angle)
+    } else {
+        // Too short: sit horizontally just past the far end, on the outward side.
+        (b + dir * (text_w * 0.5 + gap) + outward * gap, 0.0)
+    }
 }
 
 /// The page size (width, height) in PDF points for a drawing — its configured mm page (#298),
@@ -664,14 +703,18 @@ fn render_view_geometry<C: Canvas>(
                 .collect();
             canvas.poly(&pts, BLACK);
         }
-        let lp = to_screen(geom.label_pos);
-        canvas.text(
-            lp.x,
-            lp.y,
-            11.0,
-            Anchor::Middle,
-            &crate::value::format_length_display_in((wa - wb).length(), unit),
+        // The label runs along the dimension line, or sits past its end if too short (#314).
+        let label = crate::value::format_length_display_in((wa - wb).length(), unit);
+        let (sa, sb) = (to_screen(geom.line.0), to_screen(geom.line.1));
+        let out_screen = (to_screen(geom.line.0 + outward) - to_screen(geom.line.0)).normalize();
+        let (lp, ang) = dimension_label_layout(
+            sa,
+            sb,
+            out_screen,
+            text_device_width(11.0, &label),
+            5.0,
         );
+        canvas.text_rot(lp.x, lp.y, 11.0, Anchor::Middle, &label, ang);
     }
 
     // Angle dimensions: the degree value at (or near) the two edges' corner.
@@ -754,6 +797,19 @@ impl Canvas for SvgCanvas {
         self.body.push_str(&format!(
             "<text x=\"{x:.1}\" y=\"{y:.1}\" font-family=\"sans-serif\" font-size=\"{size}\" \
              fill=\"black\" text-anchor=\"{anchor}\">{}</text>\n",
+            svg_esc(content)
+        ));
+    }
+
+    fn text_rot(&mut self, x: f32, y: f32, size: f32, anchor: Anchor, content: &str, angle: f32) {
+        let anchor = match anchor {
+            Anchor::Start => "start",
+            Anchor::Middle => "middle",
+        };
+        let deg = angle.to_degrees();
+        self.body.push_str(&format!(
+            "<text x=\"{x:.1}\" y=\"{y:.1}\" font-family=\"sans-serif\" font-size=\"{size}\" \
+             fill=\"black\" text-anchor=\"{anchor}\" transform=\"rotate({deg:.2} {x:.1} {y:.1})\">{}</text>\n",
             svg_esc(content)
         ));
     }
@@ -892,6 +948,29 @@ impl Canvas for PdfCanvas {
         self.ops.extend_from_slice(&bytes);
         self.push(") Tj ET\n");
     }
+
+    fn text_rot(&mut self, x: f32, y: f32, size: f32, anchor: Anchor, content: &str, angle: f32) {
+        // Rotate about (x, y) via the text matrix. Screen angle is clockwise (y-down); PDF is
+        // y-up, so negate. Centre by shifting half the text width along the rotated baseline.
+        let width = 0.5 * size * content.chars().count() as f32;
+        let half = match anchor {
+            Anchor::Middle => width * 0.5,
+            Anchor::Start => 0.0,
+        };
+        let a = -angle;
+        let (c, s) = (a.cos(), a.sin());
+        let py = self.height - y;
+        let tx = x - half * c;
+        let ty = py - half * s;
+        self.set_fill(BLACK);
+        self.push(&format!(
+            "BT /F1 {size:.2} Tf {c:.4} {s:.4} {:.4} {c:.4} {tx:.2} {ty:.2} Tm (",
+            -s
+        ));
+        let bytes = pdf_text_bytes(content);
+        self.ops.extend_from_slice(&bytes);
+        self.push(") Tj ET\n");
+    }
 }
 
 /// Render one drawing to a self-contained single-page PDF (black-on-white, Helvetica text).
@@ -962,6 +1041,43 @@ fn assemble_pdf(width: f32, height: f32, content: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::model::{Drawing, DrawingView};
+
+    /// #314: a label that fits runs centred along the dimension line (angle matches, kept
+    /// upright); one too wide sits past the far end, horizontal.
+    #[test]
+    fn dimension_label_runs_along_or_beside_the_line() {
+        use std::f32::consts::FRAC_PI_2;
+        let out = glam::Vec2::new(0.0, -1.0);
+        // A long horizontal line: label fits, angle ~0, centred on the midpoint.
+        let (pos, ang) = dimension_label_layout(
+            glam::Vec2::new(0.0, 0.0),
+            glam::Vec2::new(100.0, 0.0),
+            out,
+            30.0,
+            5.0,
+        );
+        assert!(ang.abs() < 1e-3, "horizontal line → horizontal label");
+        assert!((pos.x - 50.0).abs() < 1e-3, "centred along the line");
+        // A long vertical line: label fits, angle ±90° kept upright (magnitude ~90°).
+        let (_, ang_v) = dimension_label_layout(
+            glam::Vec2::new(0.0, 0.0),
+            glam::Vec2::new(0.0, 100.0),
+            glam::Vec2::new(1.0, 0.0),
+            30.0,
+            5.0,
+        );
+        assert!((ang_v.abs() - FRAC_PI_2).abs() < 1e-3, "vertical line → vertical label");
+        // A short line: label can't fit, so it sits past the far end (x > line end), horizontal.
+        let (pos_s, ang_s) = dimension_label_layout(
+            glam::Vec2::new(0.0, 0.0),
+            glam::Vec2::new(4.0, 0.0),
+            out,
+            30.0,
+            5.0,
+        );
+        assert!(ang_s.abs() < 1e-3, "short line → horizontal label");
+        assert!(pos_s.x > 4.0, "label sits past the far end");
+    }
 
     /// #313: a tessellated circle loop is detected (centre/radius); a run of straight edges is
     /// not, so it stays a set of dimensionable segments.
