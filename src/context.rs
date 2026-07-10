@@ -99,6 +99,9 @@ pub struct RevolveControl {
     pub face_count: usize,
     /// One label per picked profile face, shown in the face element picker (#261).
     pub face_rows: Vec<String>,
+    /// Which picker shows the focus ring (#304): exactly one at a time — Profile until a
+    /// face is picked, then Axis until the axis is set, then back to Profile.
+    pub axis_focused: bool,
     pub axis_label: Option<String>,
     pub symmetric: bool,
     pub body_choice: crate::actions::RevolveBodyChoice,
@@ -1386,7 +1389,7 @@ pub fn show_pane(
         if let Some(event) = crate::element_picker::show_labeled(
             ui,
             "revolve_faces",
-            true,
+            !control.axis_focused,
             "Click a profile face",
             crate::icons::IconId::Sketch,
             &control.face_rows,
@@ -1409,7 +1412,7 @@ pub fn show_pane(
         if let Some(event) = crate::element_picker::show_labeled(
             ui,
             "revolve_axis",
-            true,
+            control.axis_focused,
             "Click an axis line",
             crate::icons::IconId::Line,
             &axis_rows,
@@ -2629,6 +2632,7 @@ mod tests {
             revolve: Some(RevolveControl {
                 face_count: 1,
                 face_rows: vec!["Circle 1".to_string()],
+                axis_focused: false,
                 axis_label: Some("the Y axis".to_string()),
                 symmetric: false,
                 body_choice: crate::actions::RevolveBodyChoice::Cut,
@@ -2659,6 +2663,7 @@ mod tests {
                 body_choice: crate::actions::RevolveBodyChoice::NewBody,
                 face_count: 1,
                 face_rows: vec!["Circle 1".to_string()],
+                axis_focused: false,
                 axis_label: None,
                 symmetric: false,
                 cut_bodies: vec![],

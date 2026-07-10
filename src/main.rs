@@ -4713,6 +4713,10 @@ impl eframe::App for App {
                             model::RevolveAxis::Y => "the Y axis".to_string(),
                             model::RevolveAxis::Z => "the Z axis".to_string(),
                         }),
+                        // Exactly one picker shows the focus ring (#304): Axis once a
+                        // profile is picked but no axis yet, Profile otherwise.
+                        axis_focused: cr
+                            .is_some_and(|c| !c.faces.is_empty() && c.axis.is_none()),
                         symmetric: cr.map(|c| c.symmetric).unwrap_or(false),
                         body_choice: cr.map(|c| c.body_choice).unwrap_or_default(),
                         cut_bodies: cr.map(|c| c.cut_bodies.clone()).unwrap_or_default(),
