@@ -2127,10 +2127,14 @@ pub fn show_pane(
                     .color(egui::Color32::from_gray(150)),
             );
         } else {
-            // Interactive orientation cube (#315): drag to spin, click a face to pick that
-            // view; focus it and press 4/5/6/8/2/0 for left/front/right/top/bottom/back.
-            if let Some(o) = show_orientation_cube(ui, "drawing_view_cube", control.orientation) {
-                on_drawing_view_edit(DrawingViewEdit::Orientation(o));
+            // Interactive orientation bear (#315): drag to spin, click a face for that view or
+            // a corner/edge for isometric; focus it and press 4/5/6/8/2/0 for
+            // left/front/right/top/bottom/back.
+            let seed = drawing_orientation_to_standard(control.orientation);
+            if let Some(pick) =
+                crate::view_cube::show_orientation_picker(ui, "drawing_view_bear", seed, None, false)
+            {
+                on_drawing_view_edit(DrawingViewEdit::Orientation(orientation_pick_to_drawing(pick)));
             }
         }
         egui::ComboBox::from_id_salt("drawing_view_style")
@@ -2475,235 +2479,66 @@ pub fn show_pane(
     }
 }
 
-/// The orthographic view a numpad key selects in the orientation cube (#315), matching the
-/// issue's mapping: 4 left, 5 front, 6 right, 8 top, 2 bottom, 0 back.
-pub fn orientation_from_numpad(key: egui::Key) -> Option<crate::model::DrawingOrientation> {
+/// Map a drawing orientation to the bear picker's `StandardView` for seeding its pose (#315).
+/// Isometric has no straight-on equivalent, so it seeds to Front.
+fn drawing_orientation_to_standard(o: crate::model::DrawingOrientation) -> crate::camera::StandardView {
+    use crate::camera::StandardView as S;
     use crate::model::DrawingOrientation as O;
-    use egui::Key;
-    Some(match key {
-        Key::Num4 => O::Left,
-        Key::Num5 => O::Front,
-        Key::Num6 => O::Right,
-        Key::Num8 => O::Top,
-        Key::Num2 => O::Bottom,
-        Key::Num0 => O::Back,
-        _ => return None,
-    })
+    match o {
+        O::Front | O::Isometric => S::Front,
+        O::Back => S::Back,
+        O::Left => S::Left,
+        O::Right => S::Right,
+        O::Top => S::Top,
+        O::Bottom => S::Bottom,
+    }
 }
 
-/// The six cube faces (#315): outward normal (unit, in the cube's model space) and the view
-/// it selects. +Y front / -Y back, ±X right/left, ±Z top/bottom — the labels the user reads on
-/// the cube face map straight to the orientation.
-fn cube_faces() -> [(glam::Vec3, crate::model::DrawingOrientation, &'static str); 6] {
+/// Map a bear-picker choice back to a drawing orientation (#315).
+fn orientation_pick_to_drawing(
+    pick: crate::view_cube::OrientationPick,
+) -> crate::model::DrawingOrientation {
+    use crate::camera::StandardView as S;
     use crate::model::DrawingOrientation as O;
-    [
-        (glam::Vec3::Y, O::Front, "FR"),
-        (glam::Vec3::NEG_Y, O::Back, "BK"),
-        (glam::Vec3::X, O::Right, "R"),
-        (glam::Vec3::NEG_X, O::Left, "L"),
-        (glam::Vec3::Z, O::Top, "TP"),
-        (glam::Vec3::NEG_Z, O::Bottom, "BT"),
-    ]
+    match pick {
+        crate::view_cube::OrientationPick::Isometric => O::Isometric,
+        crate::view_cube::OrientationPick::Standard(v) => match v {
+            S::Front => O::Front,
+            S::Back => O::Back,
+            S::Left => O::Left,
+            S::Right => O::Right,
+            S::Top => O::Top,
+            S::Bottom => O::Bottom,
+        },
+    }
 }
 
-/// The four corners of cube face `i` (outward normal order matching [`cube_faces`]), each a
-/// ±1 model-space vertex, wound so the outward normal is consistent.
-fn cube_face_corners(normal: glam::Vec3) -> [glam::Vec3; 4] {
-    // Build an in-face basis (u, v) so u×v = normal.
-    let up = if normal.z.abs() < 0.9 { glam::Vec3::Z } else { glam::Vec3::X };
-    let u = up.cross(normal).normalize();
-    let v = normal.cross(u).normalize();
-    [
-        normal - u - v,
-        normal + u - v,
-        normal + u + v,
-        normal - u + v,
-    ]
-}
-
-/// An interactive orientation-picker cube (#315): a small 3D cube the user spins by dragging,
-/// with clickable labelled faces; focusable, and numpad 4/5/6/8/2/0 pick the six orthographic
-/// views. Returns the chosen orientation when the user picks one this frame.
-pub fn show_orientation_cube(
-    ui: &mut egui::Ui,
-    id_source: &str,
-    current: crate::model::DrawingOrientation,
-) -> Option<crate::model::DrawingOrientation> {
-    let id = ui.make_persistent_id(id_source);
-    let size = egui::vec2(96.0, 96.0);
-    let (rect, response) =
-        ui.allocate_exact_size(size, egui::Sense::click_and_drag().union(egui::Sense::focusable_noninteractive()));
-    // Make it a real focus target so keys route here (#315).
-    let response = response.interact(egui::Sense::click());
-    if response.clicked() {
-        response.request_focus();
-    }
-
-    // View rotation (yaw, pitch) persisted per widget; seeded to a three-quarter view.
-    let mut rot = ui
-        .data(|d| d.get_temp::<(f32, f32)>(id))
-        .unwrap_or((0.6, -0.5));
-    if response.dragged() {
-        let d = response.drag_delta();
-        rot.0 += d.x * 0.01;
-        rot.1 = (rot.1 + d.y * 0.01).clamp(-1.4, 1.4);
-    }
-    ui.data_mut(|d| d.insert_temp(id, rot));
-
-    let mut picked = None;
-    // Numpad while focused.
-    if response.has_focus() {
-        let keys = [
-            egui::Key::Num0,
-            egui::Key::Num2,
-            egui::Key::Num4,
-            egui::Key::Num5,
-            egui::Key::Num6,
-            egui::Key::Num8,
-        ];
-        for k in keys {
-            if ui.input(|i| i.key_pressed(k)) {
-                if let Some(o) = orientation_from_numpad(k) {
-                    picked = Some(o);
-                }
-            }
-        }
-    }
-
-    // Project a model-space point to the widget with the current yaw/pitch (simple orthographic).
-    let (sy, cy) = rot.0.sin_cos();
-    let (sp, cp) = rot.1.sin_cos();
-    let project = |p: glam::Vec3| -> (egui::Pos2, f32) {
-        // Yaw about Z, then pitch about the screen X axis.
-        let x = p.x * cy - p.y * sy;
-        let y = p.x * sy + p.y * cy;
-        let z = p.z;
-        let y2 = y * cp - z * sp;
-        let depth = y * sp + z * cp; // toward viewer
-        let scale = size.x * 0.28;
-        (
-            rect.center() + egui::vec2(x * scale, -y2 * scale),
-            depth,
-        )
-    };
-
-    let painter = ui.painter_at(rect);
-    // Background + focus ring.
-    painter.rect_filled(rect, 4.0, egui::Color32::from_gray(32));
-    if response.has_focus() {
-        painter.rect_stroke(
-            rect,
-            4.0,
-            egui::Stroke::new(1.5, egui::Color32::from_rgb(90, 150, 230)),
-            egui::StrokeKind::Inside,
-        );
-    }
-
-    // Faces sorted back-to-front by centre depth; only front-facing ones are clickable.
-    let mut faces: Vec<(f32, usize)> = cube_faces()
-        .iter()
-        .enumerate()
-        .map(|(i, (n, _, _))| (project(*n).1, i))
-        .collect();
-    faces.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let hover = response.hover_pos();
-    for (depth, fi) in faces {
-        let (normal, orient, label) = cube_faces()[fi];
-        let front = depth > 0.0;
-        let corners = cube_face_corners(normal);
-        let pts: Vec<egui::Pos2> = corners.iter().map(|c| project(*c).0).collect();
-        let is_current = orient == current;
-        let hovered = front
-            && hover.is_some_and(|h| point_in_convex_poly(h, &pts));
-        let fill = if is_current {
-            egui::Color32::from_rgb(70, 110, 170)
-        } else if hovered {
-            egui::Color32::from_gray(90)
-        } else if front {
-            egui::Color32::from_gray(64)
-        } else {
-            egui::Color32::from_gray(44)
-        };
-        painter.add(egui::Shape::convex_polygon(
-            pts.clone(),
-            fill,
-            egui::Stroke::new(1.0, egui::Color32::from_gray(110)),
-        ));
-        if front {
-            let c = pts.iter().fold(egui::Pos2::ZERO, |a, p| a + p.to_vec2()) / 4.0;
-            painter.text(
-                c,
-                egui::Align2::CENTER_CENTER,
-                label,
-                egui::FontId::proportional(11.0),
-                egui::Color32::from_gray(220),
-            );
-            if response.clicked() && hovered {
-                picked = Some(orient);
-            }
-        }
-    }
-    ui.label(
-        egui::RichText::new(current.label())
-            .color(egui::Color32::from_gray(150))
-            .size(11.0),
-    );
-    if picked.is_some() {
-        // Snap the cube toward the chosen face so it's clear what was selected.
-        response.request_focus();
-    }
-    picked
-}
-
-/// Point-in-polygon for a small convex screen polygon (cube-face hit test, #315).
-fn point_in_convex_poly(p: egui::Pos2, poly: &[egui::Pos2]) -> bool {
-    let n = poly.len();
-    let mut sign = 0.0;
-    for i in 0..n {
-        let a = poly[i];
-        let b = poly[(i + 1) % n];
-        let cross = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
-        if cross.abs() > 1e-3 {
-            if sign == 0.0 {
-                sign = cross.signum();
-            } else if cross.signum() != sign {
-                return false;
-            }
-        }
-    }
-    true
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// #315: the orientation cube's numpad mapping (4/5/6/8/2/0) and every cube face maps to a
-    /// distinct orthographic view; the face geometry winds consistently around its normal.
+    /// #315: the bear orientation picker's StandardView ↔ DrawingOrientation mapping round-trips
+    /// for the six straight-on views, and isometric picks map to Isometric.
     #[test]
-    fn orientation_cube_mappings() {
+    fn orientation_bear_mappings_round_trip() {
+        use crate::camera::StandardView as S;
         use crate::model::DrawingOrientation as O;
-        use egui::Key;
-        assert_eq!(orientation_from_numpad(Key::Num4), Some(O::Left));
-        assert_eq!(orientation_from_numpad(Key::Num5), Some(O::Front));
-        assert_eq!(orientation_from_numpad(Key::Num6), Some(O::Right));
-        assert_eq!(orientation_from_numpad(Key::Num8), Some(O::Top));
-        assert_eq!(orientation_from_numpad(Key::Num2), Some(O::Bottom));
-        assert_eq!(orientation_from_numpad(Key::Num0), Some(O::Back));
-        assert_eq!(orientation_from_numpad(Key::Num7), None);
-
-        // The six faces cover six distinct orientations, and each face's corners lie on its
-        // side of the cube (their component along the normal is +1).
-        let faces = cube_faces();
-        let mut seen: Vec<O> = Vec::new();
-        for (n, o, _) in faces {
-            assert!(!seen.contains(&o), "duplicate orientation for a face");
-            seen.push(o);
-            for c in cube_face_corners(n) {
-                assert!((c.dot(n) - 1.0).abs() < 1e-4, "corner off the face plane");
-            }
+        use crate::view_cube::OrientationPick;
+        for (o, s) in [
+            (O::Front, S::Front),
+            (O::Back, S::Back),
+            (O::Left, S::Left),
+            (O::Right, S::Right),
+            (O::Top, S::Top),
+            (O::Bottom, S::Bottom),
+        ] {
+            assert_eq!(drawing_orientation_to_standard(o), s);
+            assert_eq!(orientation_pick_to_drawing(OrientationPick::Standard(s)), o);
         }
-        assert_eq!(seen.len(), 6);
+        // Isometric seeds to Front but a corner/edge pick maps back to Isometric.
+        assert_eq!(drawing_orientation_to_standard(O::Isometric), S::Front);
+        assert_eq!(orientation_pick_to_drawing(OrientationPick::Isometric), O::Isometric);
     }
     use crate::model::{Document, FaceId, Line};
     use crate::selection::click_scene_selection;

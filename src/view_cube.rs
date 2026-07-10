@@ -1347,6 +1347,125 @@ fn cube_rect_in_viewport(viewport: Rect) -> Rect {
 }
 
 /// Show the view-cube HUD overlay in the top-right of `viewport`.
+/// What a click on the standalone orientation-picker bear (#315) chose: one of the six
+/// straight-on views, or the isometric three-quarter (from a corner/edge).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OrientationPick {
+    Standard(StandardView),
+    Isometric,
+}
+
+/// A standalone **bear** orientation picker (#315) for the drawing view editor: reuses the HUD
+/// bear's rendering and face/edge/corner picking. Drag to spin a local camera; click a face for
+/// that straight-on view, or an edge/corner for the isometric view; focus it and press
+/// 4/5/6/8/2/0 for left/front/right/top/bottom/back. `current` seeds the bear's pose. Returns
+/// the chosen view when the user picks one this frame.
+pub fn show_orientation_picker(
+    ui: &mut Ui,
+    id_source: impl std::hash::Hash,
+    current: StandardView,
+    render_state: Option<&eframe::egui_wgpu::RenderState>,
+    gpu_bear: bool,
+) -> Option<OrientationPick> {
+    let id = ui.make_persistent_id(id_source);
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(CUBE_SIZE), Sense::hover());
+    // A local camera persisted per widget, seeded to the current view.
+    let mut cam = ui.data(|d| d.get_temp::<Camera>(id)).unwrap_or_else(|| {
+        let (yaw, pitch) = current.yaw_pitch();
+        let mut c = Camera::default();
+        c.yaw = yaw;
+        c.pitch = pitch;
+        c
+    });
+    let dt = ui.input(|i| i.stable_dt);
+    if cam.tick_transition(dt) {
+        ui.ctx().request_repaint();
+    }
+
+    let center = rect.center();
+    let scale = CUBE_SIZE * 0.42;
+    let faces = project_faces(&cam, center, scale);
+    let edges = project_edges(&cam, center, scale);
+    let corners = project_corners(&cam, center, scale);
+
+    let response = ui.interact(rect, id.with("pick"), Sense::click_and_drag());
+    if response.clicked() {
+        response.request_focus();
+    }
+
+    let mut picked = None;
+    if response.has_focus() {
+        for (k, view) in [
+            (egui::Key::Num4, StandardView::Left),
+            (egui::Key::Num5, StandardView::Front),
+            (egui::Key::Num6, StandardView::Right),
+            (egui::Key::Num8, StandardView::Top),
+            (egui::Key::Num2, StandardView::Bottom),
+            (egui::Key::Num0, StandardView::Back),
+        ] {
+            if ui.input(|i| i.key_pressed(k)) {
+                cam.start_view_transition(view, VIEW_TRANSITION_DURATION);
+                picked = Some(OrientationPick::Standard(view));
+            }
+        }
+    }
+
+    if response.dragged() {
+        cam.orbit_trackball(response.drag_delta());
+    }
+    let hover_pick = response
+        .hover_pos()
+        .and_then(|p| pick_cube(&faces, &edges, &corners, p));
+    if response.clicked() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            if response.drag_delta().length() < DRAG_CLICK_THRESHOLD {
+                if let Some(pick) = pick_cube(&faces, &edges, &corners, pos) {
+                    apply_cube_pick(&mut cam, pick);
+                    picked = Some(match pick {
+                        CubePick::Face(v) => OrientationPick::Standard(v),
+                        CubePick::Edge(_) | CubePick::Corner(_) => OrientationPick::Isometric,
+                    });
+                }
+            }
+        }
+    }
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(if hover_pick.is_some() {
+            egui::CursorIcon::PointingHand
+        } else {
+            egui::CursorIcon::Grab
+        });
+    }
+
+    // Render: panel background, axes, bear, hover highlights, focus ring.
+    let painter = ui.painter().clone();
+    painter.rect_filled(rect, 6.0, Color32::from_rgba_unmultiplied(18, 20, 26, 200));
+    let axes = project_axes(&cam, center, scale);
+    draw_axes(ui, &axes);
+    draw_bear(ui, &painter, rect, &cam, center, scale, render_state, gpu_bear);
+    match hover_pick {
+        Some(CubePick::Face(view)) => {
+            if let Some(face) = faces.iter().find(|f| f.view == view) {
+                draw_hovered_face(&painter, face);
+            }
+        }
+        Some(CubePick::Edge(id)) => draw_hovered_edge(&painter, &edges, id),
+        Some(CubePick::Corner(id)) => draw_hovered_corner(&painter, &corners, id),
+        None => {}
+    }
+    if response.has_focus() {
+        painter.rect_stroke(
+            rect,
+            6.0,
+            Stroke::new(1.5, Color32::from_rgb(90, 150, 230)),
+            eframe::egui::StrokeKind::Inside,
+        );
+    }
+
+    ui.data_mut(|d| d.insert_temp(id, cam));
+    picked
+}
+
 pub fn show_hud(
     ctx: &egui::Context,
     cam: &mut Camera,

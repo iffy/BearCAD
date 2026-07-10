@@ -975,12 +975,13 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   the Elements pane onto the page places a projection at the drop point (the page shows an
   accent border while a compatible drag hovers), selected and ready to configure — the same
   result as the Add-view tool. Plain clicks on those rows still select as usual.
-- **Orientation cube (#315):** a selected view's orientation is chosen with an **interactive
-  cube** in the context pane (replacing the dropdown): drag it to spin, click a labelled face
-  to set that orthographic view, and — when the widget has focus — the numpad picks views
-  (**4** left, **5** front, **6** right, **8** top, **2** bottom, **0** back;
-  `context::orientation_from_numpad`). Front-facing faces highlight on hover and the current
-  view's face is tinted. Adding a view now selects it, so the cube appears immediately.
+- **Orientation bear (#315):** a selected view's orientation is chosen with an **interactive
+  navigation bear** in the context pane (the same widget as the viewport's HUD bear, replacing
+  the dropdown; `view_cube::show_orientation_picker`): drag it to spin, click a face for that
+  straight-on view or a corner/edge for the isometric, and — when the widget has focus — the
+  numpad picks views (**4** left, **5** front, **6** right, **8** top, **2** bottom, **0**
+  back). It drives a local camera and maps the picked `StandardView` to a `DrawingOrientation`.
+  Adding a view now selects it, so the bear appears immediately.
 - **View styles (#301):** each view renders in one of three styles, picked in the view
   editor: **Visible edges** (hidden lines removed — every feature edge is depth-sampled
   against the body's mesh and only the unoccluded runs stroke), **Wireframe** (every feature
