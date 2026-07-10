@@ -6399,6 +6399,8 @@ impl AppState {
                 };
                 view.dimensioned_edges = default_dimensioned_edges(&self.doc, &view);
                 self.doc.drawings[drawing].views.push(view);
+                self.selected_drawing_view =
+                    Some((drawing, self.doc.drawings[drawing].views.len() - 1));
                 self.status = format!(
                     "Added {} view of body {body} to drawing {drawing}",
                     orientation.label()
@@ -6429,6 +6431,8 @@ impl AppState {
                 };
                 view.dimensioned_edges = default_dimensioned_edges(&self.doc, &view);
                 self.doc.drawings[drawing].views.push(view);
+                self.selected_drawing_view =
+                    Some((drawing, self.doc.drawings[drawing].views.len() - 1));
                 self.status = format!("Added sketch {sketch} to drawing {drawing}");
                 ActionResult::Ok
             }
