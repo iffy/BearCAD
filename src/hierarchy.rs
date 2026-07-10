@@ -965,6 +965,8 @@ pub fn build_hierarchy(
                     | crate::model::BodySource::Repeated { .. }
                     | crate::model::BodySource::Sliced { .. }
                     | crate::model::BodySource::Loft(_)
+                    // A revolved body nests under its Revolution node (#305), not the root.
+                    | crate::model::BodySource::Revolve(_)
             )
         {
             roots.push(HierarchyEntry {
@@ -3820,6 +3822,12 @@ mod tests {
         assert!(
             rev.children.iter().any(|c| c.node == HierarchyNode::Body(0)),
             "the revolved body nests under the revolution",
+        );
+        // The body's *only* parent is the revolution (#305): it must not also surface as a
+        // top-level orphan under Document.
+        assert!(
+            !root.children.iter().any(|e| e.node == HierarchyNode::Body(0)),
+            "a revolved body is not a Document-level orphan",
         );
         // It maps to a selectable scene element.
         assert_eq!(
