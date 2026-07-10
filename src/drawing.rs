@@ -38,10 +38,14 @@ fn edge_key(a: Vec3, b: Vec3) -> crate::model::DrawingEdgeKey {
     )
 }
 
-const CELL_W: f32 = 520.0;
-const CELL_H: f32 = 380.0;
-const HEADER: f32 = 48.0;
-const MARGIN: f32 = 30.0;
+/// PDF points per millimetre (1 pt = 1/72 in): exports are sized in points so the PDF page
+/// physically matches the drawing's configured mm page (#298).
+const PT_PER_MM: f32 = 72.0 / 25.4;
+/// A placed view card's size as a fraction of the page — the same 0.42 the editor uses, so the
+/// export lays out where the editor showed it (#297).
+const CELL_FRAC: f32 = 0.42;
+/// Padding inside a view card between its border and the projected geometry.
+const CELL_PAD: f32 = 12.0;
 
 /// The world-space feature edges a drawing view projects (#278): a body's solid-mesh unique
 /// edges, or — when the view's `sketch` is set — that sketch's line/circle geometry. Shared by
@@ -95,54 +99,60 @@ trait Canvas {
     fn text(&mut self, x: f32, y: f32, size: f32, anchor: Anchor, content: &str);
 }
 
-/// The page size (width, height) for a drawing, or `None` if the index is missing/deleted.
+/// The page size (width, height) in PDF points for a drawing — its configured mm page (#298),
+/// landscape US-Letter by default — or `None` if the index is missing/deleted.
 fn page_dims(doc: &Document, index: usize) -> Option<(f32, f32)> {
     let drawing = doc.drawings.get(index).filter(|d| !d.deleted)?;
-    let n = drawing.views.len();
-    let cols = if n <= 1 { 1 } else { 2 };
-    let rows = n.div_ceil(cols).max(1);
-    Some((cols as f32 * CELL_W, HEADER + rows as f32 * CELL_H))
+    Some((
+        drawing.page_width_mm * PT_PER_MM,
+        drawing.page_height_mm * PT_PER_MM,
+    ))
 }
 
-/// Draw a whole drawing (title, per-view cells, projected edges, dimensions) into `canvas`.
+/// Draw a whole drawing into `canvas`, WYSIWYG with the editor (#297): each view is a card
+/// centred at its `pos_x`/`pos_y` page fraction, sized like the editor's cards, on the
+/// drawing's configured page. The title sits in the top margin.
 fn render_drawing<C: Canvas>(doc: &Document, index: usize, canvas: &mut C) -> Option<()> {
     let drawing = doc.drawings.get(index).filter(|d| !d.deleted)?;
-    let n = drawing.views.len();
-    let cols = if n <= 1 { 1 } else { 2 };
     let (width, height) = page_dims(doc, index)?;
     let unit = doc.default_length_unit;
 
     canvas.rect(0.0, 0.0, width, height, Some(WHITE), None, 0.0);
+    let margin = (drawing.margin_mm * PT_PER_MM).clamp(0.0, width.min(height) * 0.4);
     let title = drawing
         .name
         .as_deref()
         .filter(|t| !t.trim().is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| format!("Drawing {index}"));
-    canvas.text(MARGIN, 30.0, 20.0, Anchor::Start, &title);
+    canvas.text(margin.max(12.0), (margin * 0.7).max(16.0), 14.0, Anchor::Start, &title);
 
-    for (vi, view) in drawing.views.iter().enumerate() {
-        let (col, row) = (vi % cols, vi / cols);
-        let cell_x = col as f32 * CELL_W;
-        let cell_y = HEADER + row as f32 * CELL_H;
-        canvas.rect(cell_x + 3.0, cell_y + 3.0, CELL_W - 6.0, CELL_H - 6.0, None, Some(GRAY), 1.0);
+    let cell_w = width * CELL_FRAC;
+    let cell_h = height * CELL_FRAC;
+    for view in &drawing.views {
+        let cell_x = view.pos_x * width - cell_w * 0.5;
+        let cell_y = view.pos_y * height - cell_h * 0.5;
+        canvas.rect(cell_x + 3.0, cell_y + 3.0, cell_w - 6.0, cell_h - 6.0, None, Some(GRAY), 1.0);
         let source = match view.sketch {
             Some(si) => crate::names::node_label(doc, crate::hierarchy::HierarchyNode::Sketch(si)),
             None => crate::names::node_label(doc, crate::hierarchy::HierarchyNode::Body(view.body)),
         };
         let label = format!("{source} — {}", view.orientation.label());
-        canvas.text(cell_x + 12.0, cell_y + 22.0, 13.0, Anchor::Start, &label);
-        render_view_geometry(canvas, doc, view, cell_x, cell_y, unit);
+        canvas.text(cell_x + CELL_PAD, cell_y + 20.0, 11.0, Anchor::Start, &label);
+        render_view_geometry(canvas, doc, view, cell_x, cell_y, cell_w, cell_h, unit);
     }
     Some(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_view_geometry<C: Canvas>(
     canvas: &mut C,
     doc: &Document,
     view: &DrawingView,
     cell_x: f32,
     cell_y: f32,
+    cell_w: f32,
+    cell_h: f32,
     unit: crate::value::LengthUnit,
 ) {
     let world_edges = drawing_view_world_edges(doc, view);
@@ -162,11 +172,14 @@ fn render_view_geometry<C: Canvas>(
         max = max.max(*a).max(*b);
     }
     let extent = (max - min).max(glam::Vec2::splat(1e-3));
-    let area_w = CELL_W - 2.0 * MARGIN;
-    let area_h = CELL_H - MARGIN - 40.0;
+    // The caption strip takes the top of the card; geometry fits below it.
+    let caption_h = 26.0;
+    let area_w = cell_w - 2.0 * CELL_PAD;
+    let area_h = cell_h - caption_h - 2.0 * CELL_PAD;
     let scale = (area_w / extent.x).min(area_h / extent.y) * 0.9;
     let bbox_center = (min + max) * 0.5;
-    let area_center = glam::Vec2::new(cell_x + CELL_W * 0.5, cell_y + 40.0 + area_h * 0.5);
+    let area_center =
+        glam::Vec2::new(cell_x + cell_w * 0.5, cell_y + caption_h + CELL_PAD + area_h * 0.5);
     // Model +up maps to screen -y (y grows downward).
     let to_screen = |p: glam::Vec2| {
         let d = (p - bbox_center) * scale;
@@ -522,6 +535,55 @@ mod tests {
                 (l.len() == 18 && l.ends_with(" n")).then(|| l[..10].parse().unwrap())
             })
             .collect()
+    }
+
+    /// #298: the exported page is the drawing's configured mm page in PDF points — the
+    /// default is landscape US-Letter, 792 × 612 pt.
+    #[test]
+    fn pdf_page_matches_the_configured_page_size() {
+        let doc = doc_with_drawing();
+        let pdf = drawing_to_pdf(&doc, 0).unwrap();
+        let text = String::from_utf8_lossy(&pdf);
+        assert!(
+            text.contains("/MediaBox [0 0 792.00 612.00]"),
+            "default landscape-letter MediaBox, got: {}",
+            text.lines().find(|l| l.contains("MediaBox")).unwrap_or("<none>")
+        );
+
+        let mut doc = doc;
+        doc.drawings[0].page_width_mm = 210.0; // portrait A4
+        doc.drawings[0].page_height_mm = 297.0;
+        let pdf = drawing_to_pdf(&doc, 0).unwrap();
+        let text = String::from_utf8_lossy(&pdf);
+        let media = text.lines().find(|l| l.contains("MediaBox")).unwrap().to_string();
+        assert!(
+            media.contains("[0 0 595.") && media.contains(" 841."),
+            "A4 MediaBox in points, got: {media}"
+        );
+    }
+
+    /// #297: exports are WYSIWYG — a view's card lands at its `pos_x`/`pos_y` page fraction,
+    /// so two views placed apart export apart (not into a fixed grid).
+    #[test]
+    fn svg_places_views_at_their_page_positions() {
+        let mut doc = doc_with_drawing();
+        let mut second = doc.drawings[0].views[0].clone();
+        doc.drawings[0].views[0].pos_x = 0.25;
+        doc.drawings[0].views[0].pos_y = 0.3;
+        second.pos_x = 0.75;
+        second.pos_y = 0.7;
+        doc.drawings[0].views.push(second);
+        let svg = drawing_to_svg(&doc, 0).unwrap();
+        let (page_w, page_h) = page_dims(&doc, 0).unwrap();
+        // Card rects are the only GRAY-stroked rects; their x = pos_x*W - cell_w/2 + 3.
+        let cell_w = page_w * CELL_FRAC;
+        let cell_h = page_h * CELL_FRAC;
+        for (px, py) in [(0.25f32, 0.3f32), (0.75, 0.7)] {
+            let x = px * page_w - cell_w * 0.5 + 3.0;
+            let y = py * page_h - cell_h * 0.5 + 3.0;
+            let needle = format!("<rect x=\"{x:.1}\" y=\"{y:.1}\"");
+            assert!(svg.contains(&needle), "expected a card at {needle}");
+        }
     }
 
     #[test]

@@ -947,8 +947,8 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
 - **Views:** a drawing collects **views**, each a chosen body shown in one orientation — the
   six straight-on directions (Front/Back/Left/Right/Top/Bottom) or an **Isometric**
   three-quarter view. Each view renders as a black wireframe of the body's feature edges,
-  orthographically/isometrically projected and auto-fit into its cell; views are laid out in
-  a grid and added/removed from the drawing pane.
+  orthographically/isometrically projected and auto-fit into its cell; views sit wherever
+  they were placed on the page and are added/removed from the drawing pane.
 - **Dimensions:** a newly added projection starts with **every edge's length dimension
   shown** (#299). With the **Dimension tool** active (#277), clicking an edge in a view
   toggles its **length dimension** — the measured length is drawn beside the edge.
@@ -957,7 +957,10 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   that survives rebuilds), stored per view.
 - **Export:** a drawing exports to a self-contained black-on-white vector document (title,
   view captions, projected edges, dimensions) as either a single-page **PDF** or an **SVG**
-  (which also prints to PDF through any browser/OS print dialog). Both backends share the same
+  (which also prints to PDF through any browser/OS print dialog). Exports are **WYSIWYG**
+  (#297): each view card lands at its placed page position, and the exported page **is the
+  drawing's configured page** (#298) — the PDF MediaBox is `page_width_mm × page_height_mm`
+  in points, landscape US-Letter (792 × 612 pt) by default. Both backends share the same
   layout through a `Canvas` trait in `src/drawing.rs`; the PDF is hand-rolled (no dependency),
   so it works identically on native and web (download in the browser). The drawing pane has
   **Export PDF…** and (native) **Export SVG…** buttons.
