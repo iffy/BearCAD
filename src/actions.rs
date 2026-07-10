@@ -1303,6 +1303,21 @@ pub enum Action {
         dir: crate::model::AlignDir,
         pos: f32,
     },
+    /// Add a free text annotation to a drawing page (#312) at a page-fraction position; returns
+    /// with it selected. `wrap_frac` set = a wrapped box, `None` = a growing single line.
+    AddDrawingAnnotation {
+        drawing: usize,
+        text: String,
+        pos_x: f32,
+        pos_y: f32,
+        wrap_frac: Option<f32>,
+    },
+    /// Edit a drawing annotation's text (#312); empty text removes it.
+    EditDrawingAnnotationText { drawing: usize, annotation: usize, text: String },
+    /// Move a drawing annotation to a page-fraction position (#312).
+    MoveDrawingAnnotation { drawing: usize, annotation: usize, pos_x: f32, pos_y: f32 },
+    /// Remove a drawing annotation (#312).
+    RemoveDrawingAnnotation { drawing: usize, annotation: usize },
     /// Remove a body view from a drawing by its index.
     RemoveDrawingView { drawing: usize, view: usize },
     /// Toggle the length dimension of one edge (by quantized world endpoints) in a drawing view.
@@ -1927,6 +1942,9 @@ pub struct AppState {
     /// Add-view tool placing a projection or by clicking a card; drives the context pane's
     /// view editor. UI state (never persisted).
     pub selected_drawing_view: Option<(usize, usize)>,
+    /// The text annotation selected on the open drawing page (#312): `(drawing, annotation)`.
+    /// Drives the context pane's annotation editor. UI state (never persisted).
+    pub selected_drawing_annotation: Option<(usize, usize)>,
     /// In-progress image scale calibration (#163/#171): Some while the user is placing
     /// the two reference points / typing the real length.
     pub creating_calibration: Option<CreatingCalibration>,
@@ -2047,6 +2065,7 @@ impl Default for AppState {
             creating_sketch_slice: None,
             editing_drawing: None,
             selected_drawing_view: None,
+            selected_drawing_annotation: None,
             creating_calibration: None,
             viewport_aspect: 16.0 / 9.0,
             draw_construction: false,
@@ -6523,6 +6542,74 @@ impl AppState {
                 self.status = format!("Set view style: {}", style.label());
                 ActionResult::Ok
             }
+            Action::AddDrawingAnnotation { drawing, text, pos_x, pos_y, wrap_frac } => {
+                if self.doc.drawings.get(drawing).is_none_or(|d| d.deleted) {
+                    return ActionResult::Err(format!("No drawing {drawing}"));
+                }
+                let d = &mut self.doc.drawings[drawing];
+                d.annotations.push(crate::model::DrawingAnnotation {
+                    text,
+                    pos_x: pos_x.clamp(0.0, 1.0),
+                    pos_y: pos_y.clamp(0.0, 1.0),
+                    size_frac: 0.025,
+                    wrap_frac,
+                    deleted: false,
+                });
+                let ai = d.annotations.len() - 1;
+                self.selected_drawing_annotation = Some((drawing, ai));
+                self.status = "Added text".to_string();
+                ActionResult::Ok
+            }
+            Action::EditDrawingAnnotationText { drawing, annotation, text } => {
+                let Some(a) = self
+                    .doc
+                    .drawings
+                    .get_mut(drawing)
+                    .filter(|d| !d.deleted)
+                    .and_then(|d| d.annotations.get_mut(annotation))
+                else {
+                    return ActionResult::Err(format!("No annotation {annotation}"));
+                };
+                if text.trim().is_empty() {
+                    a.deleted = true;
+                    self.selected_drawing_annotation = None;
+                    self.status = "Removed empty text".to_string();
+                } else {
+                    a.text = text;
+                }
+                ActionResult::Ok
+            }
+            Action::MoveDrawingAnnotation { drawing, annotation, pos_x, pos_y } => {
+                let Some(a) = self
+                    .doc
+                    .drawings
+                    .get_mut(drawing)
+                    .filter(|d| !d.deleted)
+                    .and_then(|d| d.annotations.get_mut(annotation))
+                else {
+                    return ActionResult::Err(format!("No annotation {annotation}"));
+                };
+                a.pos_x = pos_x.clamp(0.0, 1.0);
+                a.pos_y = pos_y.clamp(0.0, 1.0);
+                ActionResult::Ok
+            }
+            Action::RemoveDrawingAnnotation { drawing, annotation } => {
+                let Some(a) = self
+                    .doc
+                    .drawings
+                    .get_mut(drawing)
+                    .filter(|d| !d.deleted)
+                    .and_then(|d| d.annotations.get_mut(annotation))
+                else {
+                    return ActionResult::Err(format!("No annotation {annotation}"));
+                };
+                a.deleted = true;
+                if self.selected_drawing_annotation == Some((drawing, annotation)) {
+                    self.selected_drawing_annotation = None;
+                }
+                self.status = "Removed text".to_string();
+                ActionResult::Ok
+            }
             Action::RemoveDrawingView { drawing, view } => {
                 let Some(d) = self.doc.drawings.get_mut(drawing).filter(|d| !d.deleted) else {
                     return ActionResult::Err(format!("No drawing {drawing}"));
@@ -6624,18 +6711,23 @@ impl AppState {
                     if self.doc.drawings.get(di).is_none_or(|d| d.deleted) {
                         return ActionResult::Err(format!("No drawing {di}"));
                     }
-                    // The Drawing workbench only offers Select/Add view/Aligned view/Dimension
-                    // (#271, #295 dropped Move, #289 Add view, #296 Aligned view); anything
-                    // else drops to Select.
+                    // The Drawing workbench offers Select/Add view/Aligned view/Dimension/Text
+                    // (#271, #295 dropped Move, #289 Add view, #296 Aligned view, #312 Text);
+                    // anything else drops to Select.
                     if !matches!(
                         self.tool,
-                        Tool::Select | Tool::Dimension | Tool::DrawingAdd | Tool::DrawingAlign
+                        Tool::Select
+                            | Tool::Dimension
+                            | Tool::DrawingAdd
+                            | Tool::DrawingAlign
+                            | Tool::Text
                     ) {
                         self.tool = Tool::Select;
                     }
                 }
                 if self.editing_drawing != drawing {
                     self.selected_drawing_view = None;
+                    self.selected_drawing_annotation = None;
                 }
                 // The Add-view / Aligned-view tools are drawing-workbench-only (#289/#296).
                 if drawing.is_none() && matches!(self.tool, Tool::DrawingAdd | Tool::DrawingAlign) {

@@ -950,6 +950,16 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   would need a non-canonical "up" (e.g. a Bottom parent's sideways child) simply aren't
   offered, and an isometric parent has no aligned children. Scriptable:
   `bearcad.drawing_align_view{ drawing, parent, dir = "below"/"above"/"right"/"left", pos? }`.
+- **Text annotations (#312):** the **Text** tool (the same tool, `T` shortcut, brought into
+  the Drawing workbench) places **free text on the page** — click for a growing single-line
+  box, drag a rectangle for one that word-wraps to that width. Annotations
+  (`Drawing::annotations`, `DrawingAnnotation`) store page-fraction position and a
+  page-height-fraction size so they hold across page-size changes; they render as plain text
+  (not glyph outlines) wrapped by egui in the editor and by `drawing::wrap_text_lines` in the
+  exports. The **Select** tool clicks to select and drags to move them; the context pane shows
+  a multi-line editor + Remove (`Action::AddDrawingAnnotation`/`EditDrawingAnnotationText`/
+  `MoveDrawingAnnotation`/`RemoveDrawingAnnotation`; `AppState::selected_drawing_annotation`).
+  Scriptable: `bearcad.drawing_text{ drawing, text, x, y, wrap? }`.
 - **Add-view tool (#289):** the workbench's **Add view** tool (＋ icon; tool name
   `drawing_add`) replaces the old inline "Add view:" combo row. With it active, clicking a
   **body or sketch** in the Elements pane drops a projection of it onto the page and selects

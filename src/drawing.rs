@@ -562,7 +562,51 @@ fn render_drawing<C: Canvas>(doc: &Document, index: usize, canvas: &mut C) -> Op
             unit,
         );
     }
+
+    // Free text annotations (#312): wrapped to their box, positioned by page fraction.
+    for ann in &drawing.annotations {
+        if ann.deleted {
+            continue;
+        }
+        let font = (ann.size_frac * height).clamp(4.0, 400.0);
+        let x = ann.pos_x * width;
+        let y = ann.pos_y * height + font; // baseline of the first line
+        let wrap = ann.wrap_frac.map(|w| (w * width).max(font));
+        let line_h = font * 1.25;
+        for (i, line) in wrap_text_lines(&ann.text, font, wrap).iter().enumerate() {
+            canvas.text(x, y + i as f32 * line_h, font, Anchor::Start, line);
+        }
+    }
     Some(())
+}
+
+/// Word-wrap `text` to `wrap_width` device units (`None` = no wrap), splitting on explicit
+/// newlines too (#312). Uses the same ~0.55em glyph estimate as the PDF centring.
+fn wrap_text_lines(text: &str, font: f32, wrap_width: Option<f32>) -> Vec<String> {
+    let mut out = Vec::new();
+    for para in text.split('\n') {
+        match wrap_width {
+            None => out.push(para.to_string()),
+            Some(w) => {
+                let mut line = String::new();
+                for word in para.split(' ') {
+                    let candidate = if line.is_empty() {
+                        word.to_string()
+                    } else {
+                        format!("{line} {word}")
+                    };
+                    if !line.is_empty() && text_device_width(font, &candidate) > w {
+                        out.push(std::mem::take(&mut line));
+                        line = word.to_string();
+                    } else {
+                        line = candidate;
+                    }
+                }
+                out.push(line);
+            }
+        }
+    }
+    out
 }
 
 #[allow(clippy::too_many_arguments)]

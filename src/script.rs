@@ -145,6 +145,14 @@ pub enum Instruction {
         body: usize,
         orientation: crate::model::DrawingOrientation,
     },
+    /// Add a free text annotation to a drawing page (#312).
+    AddDrawingAnnotation {
+        drawing: usize,
+        text: String,
+        x: f32,
+        y: f32,
+        wrap: Option<f32>,
+    },
     /// Add an aligned child projection (#296): parent view index, direction, free-axis pos.
     AddAlignedDrawingView {
         drawing: usize,
@@ -620,6 +628,10 @@ impl Instruction {
                 "bearcad.drawing_view{{ drawing = {drawing}, body = {body}, orientation = {:?} }}",
                 orientation.label().to_ascii_lowercase()
             ),
+            Instruction::AddDrawingAnnotation { drawing, text, x, y, wrap } => {
+                let wrap = wrap.map(|w| format!(", wrap = {w}")).unwrap_or_default();
+                format!("bearcad.drawing_text{{ drawing = {drawing}, text = {text:?}, x = {x}, y = {y}{wrap} }}")
+            }
             Instruction::AddAlignedDrawingView { drawing, parent, dir, pos } => format!(
                 "bearcad.drawing_align_view{{ drawing = {drawing}, parent = {parent}, dir = {:?}, pos = {pos} }}",
                 format!("{dir:?}").to_ascii_lowercase()
@@ -3263,6 +3275,17 @@ impl ScriptRunner {
                     drawing,
                     body,
                     orientation,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::AddDrawingAnnotation { drawing, text, x, y, wrap } => {
+                let result = state.apply(Action::AddDrawingAnnotation {
+                    drawing,
+                    text,
+                    pos_x: x,
+                    pos_y: y,
+                    wrap_frac: wrap,
                 });
                 self.record_action_error(result);
                 StepResult::Continue

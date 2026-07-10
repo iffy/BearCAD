@@ -34,6 +34,13 @@ you like, and each one collects **views** — a body shown from a chosen directi
      **Wireframe** (every edge, the default), or **Shaded** (grey-shaded faces under the
      visible edges). The editor and both exports render the same style.
 
+## Text notes
+
+Add free text to a page with the **Text** tool (or press **T** in the drawing workbench):
+click where you want it for a box that grows to fit, or drag a rectangle for one that wraps
+the text to that width. Switch to the **Select** tool to drag notes around the page, and edit
+or remove a selected note from the context pane.
+
 ## Aligned views
 
 To place a second view of a body that stays lined up with the first, use the **Aligned view**

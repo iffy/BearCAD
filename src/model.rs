@@ -2014,6 +2014,31 @@ pub struct Drawing {
     /// Uniform page margin in millimetres (#273). Default: 0.5 in.
     #[serde(default = "default_page_margin_mm")]
     pub margin_mm: f32,
+    /// Free text annotations placed on the page (#312): notes, titles, callouts.
+    #[serde(default)]
+    pub annotations: Vec<DrawingAnnotation>,
+}
+
+/// A free text annotation on a drawing page (#312). Positions and sizes are page-relative
+/// fractions so they stay put across page-size changes and render identically at any zoom.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DrawingAnnotation {
+    pub text: String,
+    /// Top-left of the text block, as a fraction of the page (0..1) from the top-left.
+    pub pos_x: f32,
+    pub pos_y: f32,
+    /// Font size as a fraction of the page height (so it scales with the sheet). ~0.025 default.
+    #[serde(default = "default_annotation_size")]
+    pub size_frac: f32,
+    /// Optional wrap width as a fraction of page width; `None` is a single growing line (#312).
+    #[serde(default)]
+    pub wrap_frac: Option<f32>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+fn default_annotation_size() -> f32 {
+    0.025
 }
 
 fn default_page_width_mm() -> f32 {
@@ -2038,6 +2063,7 @@ impl Default for Drawing {
             page_width_mm: default_page_width_mm(),
             page_height_mm: default_page_height_mm(),
             margin_mm: default_page_margin_mm(),
+            annotations: Vec::new(),
         }
     }
 }

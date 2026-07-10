@@ -73,6 +73,8 @@ pub struct ContextInput<'a> {
     pub sketch_text: Option<SketchTextControl>,
     /// Selected drawing-projection editor (#289).
     pub drawing_view: Option<DrawingViewControl>,
+    /// Selected drawing text annotation editor (#312).
+    pub drawing_annotation: Option<DrawingAnnotationControl>,
     /// The Add-view tool is active with nothing placed yet (#289): renders its pick hint.
     pub drawing_add_active: bool,
     /// "Edit repeat" entry point.
@@ -297,6 +299,19 @@ pub struct DrawingViewControl {
     pub style: crate::model::DrawingViewStyle,
 }
 
+/// Editor for a selected drawing text annotation (#312).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrawingAnnotationControl {
+    pub text: String,
+}
+
+/// One edit from the drawing-annotation context section (#312).
+#[derive(Clone, Debug, PartialEq)]
+pub enum DrawingAnnotationEdit {
+    Text(String),
+    Remove,
+}
+
 /// One edit from the drawing-view context section (#289).
 #[derive(Clone, Debug, PartialEq)]
 pub enum DrawingViewEdit {
@@ -470,6 +485,8 @@ pub struct ContextPaneContent {
     pub sketch_text: Option<SketchTextControl>,
     /// Selected drawing-projection editor (#289).
     pub drawing_view: Option<DrawingViewControl>,
+    /// Selected drawing text annotation editor (#312).
+    pub drawing_annotation: Option<DrawingAnnotationControl>,
     /// The Add-view tool is active with nothing placed yet (#289).
     pub drawing_add_active: bool,
     /// "Edit repeat" entry point.
@@ -782,6 +799,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let sketch_slice = input.sketch_slice.clone();
     let sketch_text = input.sketch_text.clone();
     let drawing_view = input.drawing_view.clone();
+    let drawing_annotation = input.drawing_annotation.clone();
     let drawing_add_active = input.drawing_add_active;
     let repeat_edit_start = input.repeat_edit_start;
     let slice_op = input.slice_op.clone();
@@ -818,6 +836,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             sketch_slice: sketch_slice.clone(),
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
+            drawing_annotation: drawing_annotation.clone(),
             drawing_add_active,
             repeat_edit_start,
             slice_op: slice_op.clone(),
@@ -855,6 +874,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             sketch_slice: sketch_slice.clone(),
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
+            drawing_annotation: drawing_annotation.clone(),
             drawing_add_active,
             repeat_edit_start,
             slice_op: slice_op.clone(),
@@ -892,6 +912,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             sketch_slice: sketch_slice.clone(),
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
+            drawing_annotation: drawing_annotation.clone(),
             drawing_add_active,
             repeat_edit_start,
             slice_op: slice_op.clone(),
@@ -932,6 +953,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         sketch_slice,
         sketch_text,
         drawing_view,
+        drawing_annotation,
         drawing_add_active,
         repeat_edit_start,
         slice_op,
@@ -1157,6 +1179,7 @@ pub fn show_pane(
     on_sketch_slice_edit: &mut impl FnMut(SketchSliceEdit),
     on_sketch_text_edit: &mut impl FnMut(SketchTextEdit),
     on_drawing_view_edit: &mut impl FnMut(DrawingViewEdit),
+    on_drawing_annotation_edit: &mut impl FnMut(DrawingAnnotationEdit),
     on_repeat_edit_start: &mut impl FnMut(usize),
     on_slice_edit: &mut impl FnMut(SliceEdit),
     on_slice_edit_start: &mut impl FnMut(usize),
@@ -2171,6 +2194,27 @@ pub fn show_pane(
         );
     }
 
+    // Drawing text annotation editor (#312): a multiline textarea + remove button.
+    if let Some(control) = &content.drawing_annotation {
+        any_control = true;
+        ui.separator();
+        ui.label(egui::RichText::new("Text").strong());
+        let mut edit_text = control.text.clone();
+        if ui
+            .add(
+                egui::TextEdit::multiline(&mut edit_text)
+                    .desired_rows(2)
+                    .desired_width(f32::INFINITY),
+            )
+            .changed()
+        {
+            on_drawing_annotation_edit(DrawingAnnotationEdit::Text(edit_text));
+        }
+        if ui.button("Remove text").clicked() {
+            on_drawing_annotation_edit(DrawingAnnotationEdit::Remove);
+        }
+    }
+
     if let Some(op) = content.slice_edit_start {
         any_control = true;
         ui.separator();
@@ -2469,6 +2513,7 @@ mod tests {
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_annotation: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -2543,6 +2588,7 @@ mod tests {
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_annotation: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -2608,6 +2654,7 @@ mod tests {
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_annotation: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -2871,6 +2918,7 @@ mod tests {
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_annotation: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -2921,6 +2969,7 @@ mod tests {
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_annotation: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -2957,6 +3006,7 @@ mod tests {
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_annotation: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3007,6 +3057,7 @@ mod tests {
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_annotation: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3061,6 +3112,7 @@ mod tests {
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_annotation: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3158,6 +3210,7 @@ mod tests {
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_annotation: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3206,6 +3259,7 @@ mod tests {
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_annotation: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3244,6 +3298,7 @@ mod tests {
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_annotation: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3286,6 +3341,7 @@ mod tests {
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
+            drawing_annotation: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,

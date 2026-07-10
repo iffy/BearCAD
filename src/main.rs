@@ -540,6 +540,9 @@ struct App {
     /// Text tool press anchor in sketch-local coords (#282): set on press; on release a drag
     /// beyond a threshold creates a wrapped textbox of that width, a click a growing one.
     text_tool_anchor: Option<(f32, f32)>,
+    /// Text tool press anchor on the drawing page as a page fraction (#312), for the same
+    /// click-vs-drag placement of a page annotation.
+    drawing_text_anchor: Option<(f32, f32)>,
     angle_gizmo_drag: Option<AngleGizmoDrag>,
     vertex_drag: Option<VertexDrag>,
     bezier_handle_drag: Option<BezierHandleDrag>,
@@ -671,6 +674,7 @@ impl App {
             drawing_dim_label_drag: None,
             drawing_align_parent: None,
             text_tool_anchor: None,
+            drawing_text_anchor: None,
             angle_gizmo_drag: None,
             extrude_gizmo_drag: None,
             pending_extrude_target: None,
@@ -3971,6 +3975,7 @@ impl eframe::App for App {
                         (icons::IconId::Plus, Tool::DrawingAdd, "Add view"),
                         (icons::IconId::Projection, Tool::DrawingAlign, "Aligned view"),
                         (icons::IconId::Dimension, Tool::Dimension, "Dimension"),
+                        (icons::IconId::Text, Tool::Text, "Text"),
                     ] {
                         if icons::selectable_icon_button(
                             ui,
@@ -4822,6 +4827,19 @@ impl eframe::App for App {
                             })
                         })
                 },
+                drawing_annotation: self
+                    .state
+                    .selected_drawing_annotation
+                    .filter(|(d, _)| self.state.editing_drawing == Some(*d))
+                    .and_then(|(d, a)| {
+                        self.state
+                            .doc
+                            .drawings
+                            .get(d)
+                            .and_then(|dr| dr.annotations.get(a))
+                            .filter(|ann| !ann.deleted)
+                            .map(|ann| context::DrawingAnnotationControl { text: ann.text.clone() })
+                    }),
                 drawing_add_active: self.state.tool == Tool::DrawingAdd
                     && self.state.editing_drawing.is_some(),
                 repeat_edit_start: (self.state.tool != Tool::Repeat)
@@ -4987,6 +5005,7 @@ impl eframe::App for App {
             let mut sketch_slice_edit: Option<context::SketchSliceEdit> = None;
             let mut sketch_text_edit: Option<context::SketchTextEdit> = None;
             let mut drawing_view_edit: Option<context::DrawingViewEdit> = None;
+            let mut drawing_annotation_edit: Option<context::DrawingAnnotationEdit> = None;
             let mut repeat_edit_begin: Option<usize> = None;
             let mut slice_edit: Option<context::SliceEdit> = None;
             let mut slice_edit_begin: Option<usize> = None;
@@ -5033,6 +5052,7 @@ impl eframe::App for App {
                         &mut |edit| sketch_slice_edit = Some(edit),
                         &mut |edit| sketch_text_edit = Some(edit),
                         &mut |edit| drawing_view_edit = Some(edit),
+                        &mut |edit| drawing_annotation_edit = Some(edit),
                         &mut |op| repeat_edit_begin = Some(op),
                         &mut |edit| slice_edit = Some(edit),
                         &mut |op| slice_edit_begin = Some(op),
@@ -5384,6 +5404,23 @@ impl eframe::App for App {
                         }
                         context::DrawingViewEdit::Remove => {
                             self.state.apply(Action::RemoveDrawingView { drawing, view });
+                        }
+                    }
+                }
+            }
+            if let Some(edit) = drawing_annotation_edit {
+                if let Some((drawing, annotation)) = self.state.selected_drawing_annotation {
+                    match edit {
+                        context::DrawingAnnotationEdit::Text(text) => {
+                            self.state.apply(Action::EditDrawingAnnotationText {
+                                drawing,
+                                annotation,
+                                text,
+                            });
+                        }
+                        context::DrawingAnnotationEdit::Remove => {
+                            self.state
+                                .apply(Action::RemoveDrawingAnnotation { drawing, annotation });
                         }
                     }
                 }
@@ -9314,6 +9351,115 @@ impl App {
             }
         }
 
+        // Free text annotations on the page (#312): render them, let the Select tool drag
+        // them, and let the Text tool place new ones (click = growing, drag = wrapped box).
+        if let Some(page) = page_rect {
+            let mut place: Option<(f32, f32, Option<f32>)> = None; // pos_x, pos_y, wrap_frac
+            let mut move_ann: Option<(usize, f32, f32)> = None;
+            let mut select_ann: Option<usize> = None;
+            let annotations = self
+                .state
+                .doc
+                .drawings
+                .get(drawing)
+                .map(|d| d.annotations.clone())
+                .unwrap_or_default();
+            for (ai, ann) in annotations.iter().enumerate() {
+                if ann.deleted {
+                    continue;
+                }
+                let font_px = (ann.size_frac * page.height()).clamp(6.0, 200.0);
+                let pos = page.min + egui::vec2(ann.pos_x * page.width(), ann.pos_y * page.height());
+                let wrap_px = ann
+                    .wrap_frac
+                    .map(|w| (w * page.width()).max(10.0))
+                    .unwrap_or(f32::INFINITY);
+                let galley = ui.painter().layout(
+                    ann.text.clone(),
+                    egui::FontId::proportional(font_px),
+                    INK,
+                    wrap_px,
+                );
+                let rect = egui::Rect::from_min_size(pos, galley.size());
+                let selected = self.state.selected_drawing_annotation == Some((drawing, ai));
+                if selected {
+                    ui.painter().rect_stroke(
+                        rect.expand(2.0),
+                        1.0,
+                        egui::Stroke::new(1.0, egui::Color32::from_rgb(90, 150, 230)),
+                        egui::StrokeKind::Outside,
+                    );
+                }
+                ui.painter().galley(pos, galley, INK);
+                // Select-tool drag/select (#312).
+                if self.state.tool == Tool::Select {
+                    let resp = ui.interact(
+                        rect,
+                        ui.make_persistent_id(("drawing_annotation", drawing, ai)),
+                        egui::Sense::click_and_drag(),
+                    );
+                    if resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                    }
+                    if resp.clicked() {
+                        select_ann = Some(ai);
+                    }
+                    if resp.dragged() {
+                        select_ann = Some(ai);
+                        let d = resp.drag_delta();
+                        let nx = (ann.pos_x + d.x / page.width()).clamp(0.0, 1.0);
+                        let ny = (ann.pos_y + d.y / page.height()).clamp(0.0, 1.0);
+                        move_ann = Some((ai, nx, ny));
+                    }
+                }
+            }
+
+            // Text tool placement: press anchors, release commits (#312/#282 click-vs-drag).
+            if self.state.tool == Tool::Text {
+                if let Some(pp) = pointer_screen {
+                    let frac = |p: egui::Pos2| {
+                        (
+                            ((p.x - page.min.x) / page.width()).clamp(0.0, 1.0),
+                            ((p.y - page.min.y) / page.height()).clamp(0.0, 1.0),
+                        )
+                    };
+                    if ui.input(|i| i.pointer.primary_pressed()) && page.contains(pp) {
+                        self.drawing_text_anchor = Some(frac(pp));
+                    } else if ui.input(|i| i.pointer.primary_released()) {
+                        if let Some((ax, ay)) = self.drawing_text_anchor.take() {
+                            let (rx, _ry) = frac(pp);
+                            let wrap = ((rx - ax).abs() >= 0.03).then_some((rx - ax).abs());
+                            place = Some((ax.min(rx), ay, wrap));
+                        }
+                    }
+                }
+            } else {
+                self.drawing_text_anchor = None;
+            }
+
+            if let Some((ai, nx, ny)) = move_ann {
+                self.state.apply(Action::MoveDrawingAnnotation {
+                    drawing,
+                    annotation: ai,
+                    pos_x: nx,
+                    pos_y: ny,
+                });
+            }
+            if let Some(ai) = select_ann {
+                self.state.selected_drawing_annotation = Some((drawing, ai));
+                self.state.selected_drawing_view = None;
+            }
+            if let Some((px, py, wrap)) = place {
+                self.state.apply(Action::AddDrawingAnnotation {
+                    drawing,
+                    text: "Text".to_string(),
+                    pos_x: px,
+                    pos_y: py,
+                    wrap_frac: wrap,
+                });
+            }
+        }
+
         // Aligned-view tool (#296): once a parent projection is chosen, the mouse's direction
         // from it picks the child orientation (down/up/left/right); a ghost previews it lined
         // up with the parent, and a click commits it.
@@ -12310,7 +12456,9 @@ impl App {
                 }
             }
             Tool::Text => {
-                if self.state.sketch_session.is_some() {
+                if self.state.editing_drawing.is_some() {
+                    "Text — click on the page for a growing box, or drag to make a wrapped box"
+                } else if self.state.sketch_session.is_some() {
                     "Text — click in the sketch to place text • edit it in the context pane"
                 } else {
                     "Text — open a sketch first"

@@ -2973,6 +2973,20 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Add a free text annotation to a drawing page (#312), positioned by page fraction.
+    api.set(
+        "drawing_text",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let drawing: usize = opts.get("drawing")?;
+            let text: String = opts.get("text")?;
+            let x: f32 = opts.get::<Option<f32>>("x")?.unwrap_or(0.1);
+            let y: f32 = opts.get::<Option<f32>>("y")?.unwrap_or(0.1);
+            let wrap: Option<f32> = opts.get("wrap")?;
+            unsafe { tick.exec(Instruction::AddDrawingAnnotation { drawing, text, x, y, wrap }) }
+        })?,
+    )?;
+
     // Add an aligned child projection (#296): `dir` is "below"/"above"/"right"/"left".
     api.set(
         "drawing_align_view",
