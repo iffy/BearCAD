@@ -23,6 +23,138 @@ pub struct LineDragSession {
     pub initial_positions: HashMap<ConstraintPoint, (f32, f32)>,
 }
 
+/// A whole-selection drag (#306): the Move tool's in-sketch gizmo translating every selected
+/// line and circle (with their coincident closures) plus any selected sketch texts together.
+#[derive(Clone)]
+pub struct SelectionDragSession {
+    /// Line indices whose chord length must survive the solve (the #243 stretch guard).
+    pub line_indices: Vec<usize>,
+    pub anchor_uv: (f32, f32),
+    /// Drag-start position of every point in the selection's coincident closure.
+    pub initial_positions: HashMap<ConstraintPoint, (f32, f32)>,
+    /// Drag-start origin of every selected text.
+    pub initial_text_origins: Vec<(usize, (f32, f32))>,
+}
+
+/// Capture a selection drag (#306): seed points from every selected line/circle in `sketch`,
+/// expanded to their coincident groups, plus selected texts. Errs when nothing movable is
+/// selected in this sketch.
+pub fn begin_selection_drag_session(
+    doc: &Document,
+    sketch: SketchId,
+    elements: &[SceneElement],
+    anchor_uv: (f32, f32),
+) -> Result<SelectionDragSession, String> {
+    let mut seeds: Vec<ConstraintPoint> = Vec::new();
+    let mut line_indices = Vec::new();
+    let mut texts = Vec::new();
+    for element in elements {
+        match element {
+            SceneElement::Line(li) => {
+                if doc.lines.get(*li).is_some_and(|l| !l.deleted && l.sketch == sketch) {
+                    line_indices.push(*li);
+                    seeds.extend(line_drag_seed_points(ConstraintLine::Line(*li)));
+                }
+            }
+            SceneElement::Circle(ci) => {
+                if doc.circles.get(*ci).is_some_and(|c| !c.deleted && c.sketch == sketch) {
+                    seeds.push(ConstraintPoint::CircleCenter(*ci));
+                }
+            }
+            SceneElement::SketchText(ti) => {
+                if doc
+                    .sketch_texts
+                    .get(*ti)
+                    .is_some_and(|t| !t.deleted && t.sketch == sketch)
+                {
+                    texts.push(*ti);
+                }
+            }
+            _ => {}
+        }
+    }
+    if seeds.is_empty() && texts.is_empty() {
+        return Err("Nothing movable selected in this sketch".to_string());
+    }
+    let mut points = Vec::new();
+    for seed in &seeds {
+        points.extend(coincident_group(doc, sketch, seed.clone()));
+    }
+    points.sort_by_key(|point| constraint_point_sort_key(point.clone()));
+    points.dedup();
+    let mut initial_positions = HashMap::new();
+    for point in points {
+        let uv = point_uv(doc, sketch, point.clone())?;
+        initial_positions.insert(point, uv);
+    }
+    let initial_text_origins = texts
+        .iter()
+        .map(|&ti| (ti, doc.sketch_texts[ti].origin))
+        .collect();
+    Ok(SelectionDragSession {
+        line_indices,
+        anchor_uv,
+        initial_positions,
+        initial_text_origins,
+    })
+}
+
+/// Translate the captured selection to follow `current_uv` (#306), mirroring [`drag_line`]:
+/// every closure point moves rigidly, gets pinned, and the constraints re-solve; if the
+/// solve would stretch any selected line (a pinned corner elsewhere), the step rolls back
+/// (#243). Selected texts translate with the same delta (the solver doesn't touch them).
+pub fn drag_selection(
+    doc: &mut Document,
+    sketch: SketchId,
+    session: &SelectionDragSession,
+    current_uv: (f32, f32),
+) -> Result<(), String> {
+    let du = current_uv.0 - session.anchor_uv.0;
+    let dv = current_uv.1 - session.anchor_uv.1;
+    let lines_before = doc.lines.clone();
+    let circles_before = doc.circles.clone();
+    let len_before: Vec<(usize, f32)> = session
+        .line_indices
+        .iter()
+        .filter_map(|&i| doc.lines.get(i).map(|l| (i, l.chord_length())))
+        .collect();
+    for (point, (iu, iv)) in &session.initial_positions {
+        if !point_in_sketch(doc, point.clone(), sketch) {
+            continue;
+        }
+        set_point_uv(doc, sketch, point.clone(), iu + du, iv + dv)?;
+    }
+    let pins: Vec<(ConstraintPoint, (f32, f32))> = session
+        .initial_positions
+        .iter()
+        .filter(|(point, _)| point_in_sketch(doc, (*point).clone(), sketch))
+        .map(|(point, (iu, iv))| {
+            let projected = project_drag_uv(doc, sketch, point.clone(), iu + du, iv + dv)
+                .unwrap_or((iu + du, iv + dv));
+            (point.clone(), projected)
+        })
+        .collect();
+    if !pins.is_empty() {
+        solve_document_constraints_with_pins(doc, &pins)?;
+    }
+    let stretched = len_before.iter().any(|&(i, len0)| {
+        doc.lines
+            .get(i)
+            .is_some_and(|l| (l.chord_length() - len0).abs() > 1e-3)
+    });
+    if stretched {
+        doc.lines = lines_before;
+        doc.circles = circles_before;
+        return Ok(());
+    }
+    for &(ti, (ou, ov)) in &session.initial_text_origins {
+        if let Some(text) = doc.sketch_texts.get_mut(ti) {
+            text.origin = (ou + du, ov + dv);
+        }
+    }
+    Ok(())
+}
+
 pub fn point_in_sketch(doc: &Document, point: ConstraintPoint, sketch: SketchId) -> bool {
     point_sketch(doc, point) == Some(sketch)
 }
@@ -867,6 +999,56 @@ mod tests {
             "dragged edge length changed from {len0} to {}",
             doc.lines[lines[0]].chord_length()
         );
+    }
+
+    /// #306: the in-sketch Move gizmo translates a whole selection (a rectangle's four lines
+    /// plus a text) rigidly by the drag delta, preserving every edge length.
+    #[test]
+    fn selection_drag_translates_lines_and_text() {
+        let (mut doc, sketch) = sketch_doc();
+        let lines =
+            crate::construction::add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 6.0, [false; 4]);
+        doc.sketch_texts.push(crate::model::SketchText {
+            sketch,
+            text: "A".to_string(),
+            font_family: String::new(),
+            bold: false,
+            italic: false,
+            underline: false,
+            size: 5.0,
+            size_expr: "5".to_string(),
+            origin: (2.0, 2.0),
+            rotation: 0.0,
+            wrap_width: None,
+            baseline_line: None,
+            contours: Vec::new(),
+            font_bytes: Vec::new(),
+            name: None,
+            deleted: false,
+        });
+        let elements: Vec<SceneElement> = lines
+            .iter()
+            .map(|&li| SceneElement::Line(li))
+            .chain(std::iter::once(SceneElement::SketchText(0)))
+            .collect();
+        let len0: Vec<f32> = lines.iter().map(|&li| doc.lines[li].chord_length()).collect();
+
+        let session = begin_selection_drag_session(&doc, sketch, &elements, (0.0, 0.0)).unwrap();
+        drag_selection(&mut doc, sketch, &session, (7.0, -3.0)).unwrap();
+
+        // Every edge kept its length; the text origin shifted by the same delta.
+        for (&li, &l0) in lines.iter().zip(&len0) {
+            assert!((doc.lines[li].chord_length() - l0).abs() < 1e-3, "edge {li} resized");
+        }
+        assert!((doc.sketch_texts[0].origin.0 - 9.0).abs() < 1e-3);
+        assert!((doc.sketch_texts[0].origin.1 - (-1.0)).abs() < 1e-3);
+        // The bottom-left corner rode along too (0,0) -> (7,-3).
+        let bl = doc
+            .lines
+            .iter()
+            .flat_map(|l| [(l.x0, l.y0), (l.x1, l.y1)])
+            .find(|&(x, y)| (x - 7.0).abs() < 1e-2 && (y + 3.0).abs() < 1e-2);
+        assert!(bl.is_some(), "a corner translated to the drag target");
     }
 
     #[test]

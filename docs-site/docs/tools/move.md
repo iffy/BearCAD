@@ -33,6 +33,19 @@ originals.
 
 Because the amounts are expressions, editing a parameter re-places every body moved by it.
 
+## Moving geometry inside a sketch
+
+Inside an open sketch, the Move tool works differently — it moves sketch geometry, not whole
+bodies. Select the lines, circles, or text you want to move (with the Select tool), then
+switch to Move: a gizmo appears at the centre of your selection.
+
+- **Drag the centre disc** to slide the whole selection anywhere on the sketch plane.
+- **Drag the red horizontal arrow** to move it left/right only, or the **green vertical
+  arrow** to move it up/down only.
+
+Constraints keep holding as you drag — coincident corners stay joined, and if a fixed point
+would force an edge to stretch, that move is refused instead (lengths never change).
+
 ## Moving construction planes and tracing images
 
 The Move tool also moves **construction planes** and **tracing images** — pick one from the

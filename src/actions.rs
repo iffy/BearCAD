@@ -1085,6 +1085,12 @@ pub enum Action {
     },
     /// Continue dragging the active line segment to sketch-local `(u, v)`.
     DragLine { u: f32, v: f32 },
+    /// Begin translating the whole scene selection with the in-sketch Move gizmo (#306).
+    BeginSelectionDrag { anchor_u: f32, anchor_v: f32 },
+    /// Follow the in-sketch Move gizmo to `(u, v)` on the sketch plane (#306).
+    DragSelection { u: f32, v: f32 },
+    /// Finish the in-sketch Move gizmo drag (#306).
+    EndSelectionDrag,
     /// Finish an interactive line drag.
     EndLineDrag,
     /// Move a curved line's tangent handle (`near_start` selects the one near `(x0,y0)` vs.
@@ -1941,6 +1947,8 @@ pub struct AppState {
     /// `kernel_fallback_warning` into `status`.
     pub(crate) kernel_fallback_warning_pending: bool,
     pub line_drag_session: Option<crate::vertex_drag::LineDragSession>,
+    /// In-progress whole-selection drag from the Move tool's in-sketch gizmo (#306).
+    pub selection_drag_session: Option<crate::vertex_drag::SelectionDragSession>,
     /// Snap a moved/drawn point to nearby geometry (and add a constraint when left there).
     pub snapping_enabled: bool,
     /// The point being dragged and what it is currently snapped to (committed on release).
@@ -2038,6 +2046,7 @@ impl Default for AppState {
             kernel_fallback_warning: None,
             kernel_fallback_warning_pending: false,
             line_drag_session: None,
+            selection_drag_session: None,
             snapping_enabled: true,
             active_snap: None,
             line_start_snap: None,
@@ -5274,6 +5283,48 @@ impl AppState {
             }
             Action::EndLineDrag => {
                 self.line_drag_session = None;
+                ActionResult::Ok
+            }
+            Action::BeginSelectionDrag { anchor_u, anchor_v } => {
+                let Some(sketch) = self.sketch_session.map(|s| s.sketch) else {
+                    return ActionResult::Err("Not in sketch mode".to_string());
+                };
+                let elements: Vec<SceneElement> = self.scene_selection.iter().collect();
+                for element in &elements {
+                    if let Err(e) =
+                        require_element_editable(&self.document_health, element.clone())
+                    {
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                }
+                match vertex_drag::begin_selection_drag_session(
+                    &self.doc,
+                    sketch,
+                    &elements,
+                    (anchor_u, anchor_v),
+                ) {
+                    Ok(session) => {
+                        self.selection_drag_session = Some(session);
+                        ActionResult::Ok
+                    }
+                    Err(e) => ActionResult::Err(e),
+                }
+            }
+            Action::DragSelection { u, v } => {
+                let Some(sketch) = self.sketch_session.map(|s| s.sketch) else {
+                    return ActionResult::Err("Not in sketch mode".to_string());
+                };
+                let Some(session) = self.selection_drag_session.clone() else {
+                    return ActionResult::Err("No selection drag in progress".to_string());
+                };
+                match vertex_drag::drag_selection(&mut self.doc, sketch, &session, (u, v)) {
+                    Ok(()) => ActionResult::Ok,
+                    Err(e) => ActionResult::Err(e),
+                }
+            }
+            Action::EndSelectionDrag => {
+                self.selection_drag_session = None;
                 ActionResult::Ok
             }
             Action::SetBezierHandle { line, near_start, u, v } => {

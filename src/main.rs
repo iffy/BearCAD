@@ -440,6 +440,16 @@ struct TextRotationDrag {
     start_rotation: f32,
 }
 
+/// A drag on the Move tool's in-sketch selection gizmo (#306): the centred handle moves the
+/// selection freely; the horizontal/vertical arrows constrain the move to that sketch axis.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SketchMoveDrag {
+    /// `None` = free drag; `Some(0)` = horizontal (sketch u), `Some(1)` = vertical (sketch v).
+    axis: Option<usize>,
+    /// Grab point on the sketch plane (also the selection-drag session's anchor).
+    anchor_uv: (f32, f32),
+}
+
 struct VertexDrag {
     point: ConstraintPoint,
 }
@@ -531,6 +541,8 @@ struct App {
     move_rotation_drag: Option<MoveRotationDrag>,
     /// In-flight sketch-text rotation drag on the Move tool's ring (#286).
     text_rotation_drag: Option<TextRotationDrag>,
+    /// In-flight in-sketch selection move on the Move tool's gizmo (#306).
+    sketch_move_drag: Option<SketchMoveDrag>,
     launch_maximize_frames_remaining: u8,
     gpu_viewport: bool,
     gpu_view_cube: bool,
@@ -641,6 +653,7 @@ impl App {
             move_gizmo_drag: None,
             move_rotation_drag: None,
             text_rotation_drag: None,
+            sketch_move_drag: None,
             vertex_drag: None,
             bezier_handle_drag: None,
             selected_bezier_handle: None,
@@ -2690,6 +2703,137 @@ impl App {
         Some((index, center, frame.normal, radius))
     }
 
+    /// The in-sketch Move gizmo (#306): centred at the selected geometry's bbox centre on the
+    /// active sketch plane. Returns `(centre_uv, frame)` when the Move tool is active in a
+    /// sketch with a movable selection. The gizmo has a free-drag centre plus u/v arrows.
+    fn sketch_move_gizmo(&self) -> Option<((f32, f32), face::SketchFrame)> {
+        let session = self.state.sketch_session?;
+        let frame = sketch_geometry_frame(&self.state.doc, session.sketch)?;
+        let mut min = (f32::INFINITY, f32::INFINITY);
+        let mut max = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+        let mut acc = |u: f32, v: f32| {
+            min = (min.0.min(u), min.1.min(v));
+            max = (max.0.max(u), max.1.max(v));
+        };
+        for element in self.state.scene_selection.iter() {
+            match element {
+                SceneElement::Line(li) => {
+                    if let Some(l) =
+                        self.state.doc.lines.get(li).filter(|l| !l.deleted && l.sketch == session.sketch)
+                    {
+                        acc(l.x0, l.y0);
+                        acc(l.x1, l.y1);
+                    }
+                }
+                SceneElement::Circle(ci) => {
+                    if let Some(c) = self
+                        .state
+                        .doc
+                        .circles
+                        .get(ci)
+                        .filter(|c| !c.deleted && c.sketch == session.sketch)
+                    {
+                        acc(c.cx, c.cy);
+                    }
+                }
+                SceneElement::SketchText(ti) => {
+                    if let Some(t) = self
+                        .state
+                        .doc
+                        .sketch_texts
+                        .get(ti)
+                        .filter(|t| !t.deleted && t.sketch == session.sketch)
+                    {
+                        acc(t.origin.0, t.origin.1);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !min.0.is_finite() {
+            return None;
+        }
+        Some((((min.0 + max.0) * 0.5, (min.1 + max.1) * 0.5), frame))
+    }
+
+    /// The in-sketch Move gizmo (#306): a free-drag centre handle plus horizontal/vertical
+    /// push-pull arrows that constrain the move to a sketch axis. Runs before the Move tool's
+    /// sketch-session gate. Returns true if it consumed the interaction this frame.
+    fn handle_sketch_move_gizmo(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+    ) -> bool {
+        let Some(session) = self.state.sketch_session else {
+            self.sketch_move_drag = None;
+            return false;
+        };
+        let Some((center_uv, frame)) = self.sketch_move_gizmo() else {
+            if self.sketch_move_drag.is_some() {
+                self.sketch_move_drag = None;
+            }
+            return false;
+        };
+        let cursor_uv = |pp: egui::Pos2| {
+            sketch_plane_point(cam, viewport, vp, &self.state.doc, session, pp)
+                .map(|w| world_to_local(&frame, w))
+        };
+
+        // Follow an in-flight drag.
+        if let Some(drag) = self.sketch_move_drag {
+            if ui.input(|i| i.pointer.primary_down()) {
+                if let Some((mut u, mut v)) = pointer_screen.and_then(cursor_uv) {
+                    // Axis arrows lock the free coordinate to the grab point.
+                    match drag.axis {
+                        Some(0) => v = drag.anchor_uv.1,
+                        Some(1) => u = drag.anchor_uv.0,
+                        _ => {}
+                    }
+                    self.state.apply(Action::DragSelection { u, v });
+                }
+            } else {
+                self.state.apply(Action::EndSelectionDrag);
+                self.sketch_move_drag = None;
+            }
+            return true;
+        }
+
+        // Grab a handle on press.
+        if ui.input(|i| i.pointer.primary_pressed()) {
+            if let Some(pp) = pointer_screen {
+                let center_w = local_to_world(&frame, center_uv.0, center_uv.1);
+                let handle_len = SKETCH_MOVE_ARROW_MM;
+                let u_tip = local_to_world(&frame, center_uv.0 + handle_len, center_uv.1);
+                let v_tip = local_to_world(&frame, center_uv.0, center_uv.1 + handle_len);
+                let hit = |w: Vec3, r: f32| project(w).is_some_and(|sp| (sp - pp).length() <= r);
+                // Axis arrow tips first (they sit outside the centre handle), then the centre.
+                let axis = if hit(u_tip, 12.0) {
+                    Some(0)
+                } else if hit(v_tip, 12.0) {
+                    Some(1)
+                } else if hit(center_w, 14.0) {
+                    None
+                } else {
+                    return false;
+                };
+                if let Some((u, v)) = cursor_uv(pp) {
+                    if matches!(
+                        self.state.apply(Action::BeginSelectionDrag { anchor_u: u, anchor_v: v }),
+                        actions::ActionResult::Ok
+                    ) {
+                        self.sketch_move_drag = Some(SketchMoveDrag { axis, anchor_uv: (u, v) });
+                    }
+                }
+                return true;
+            }
+        }
+        false
+    }
+
     fn handle_move_tool(
         &mut self,
         ui: &egui::Ui,
@@ -2700,6 +2844,11 @@ impl App {
         vp: &glam::Mat4,
         pick_occlusion: Option<&construction::PickOcclusion>,
     ) {
+        // In-sketch selection gizmo (#306): a centred free-drag handle plus u/v arrows to
+        // translate the whole selection. Runs before the text ring and the session gate.
+        if self.handle_sketch_move_gizmo(ui, project, pointer_screen, cam, viewport, vp) {
+            return;
+        }
         // Rotation ring for a selected sketch text (#286): the Move tool turns the text about
         // its origin. The context pane's Rotation° field follows automatically since it reads
         // the model each frame. Runs before the sketch-session gate so it works in-sketch too.
@@ -4360,7 +4509,11 @@ impl eframe::App for App {
                         })
                     })
                     .flatten(),
-                move_op: (self.state.tool == Tool::Move).then(|| {
+                // The body-move controls are hidden inside a sketch (#306): there, the Move
+                // tool is the in-sketch selection gizmo, not the whole-body move.
+                move_op: (self.state.tool == Tool::Move
+                    && self.state.sketch_session.is_none())
+                .then(|| {
                     let cm = self.state.creating_move.as_ref();
                     context::MoveControl {
                         targets: cm.map(|c| c.targets.clone()).unwrap_or_default(),
@@ -7498,6 +7651,8 @@ fn extrude_face_id(face: model::ExtrudeFace) -> FaceId {
 /// Distance, in sketch units, that the extrude gizmo handle floats above the
 /// solid's top face so it sits a little above the surface rather than on it.
 const EXTRUDE_GIZMO_LIFT: f32 = 4.0;
+/// Length (sketch mm) of the in-sketch Move gizmo's u/v push-pull arrows (#306).
+const SKETCH_MOVE_ARROW_MM: f32 = 12.0;
 
 /// World position of the revolve arc gizmo's push/pull handle (#262): `zero_dir` rotated
 /// `angle_deg` around `axis`, scaled out to `radius` from `center`.
@@ -10795,6 +10950,38 @@ impl App {
             }
         }
 
+        // In-sketch Move gizmo (#306): a centre disc for free drags plus u/v push-pull arrows.
+        if self.state.tool == Tool::Move && sketch_session.is_some() {
+            if let Some((center_uv, frame)) = self.sketch_move_gizmo() {
+                let active_axis = self.sketch_move_drag.map(|d| d.axis);
+                let center_w = local_to_world(&frame, center_uv.0, center_uv.1);
+                if let Some(cp) = project(center_w) {
+                    let u_tip = local_to_world(&frame, center_uv.0 + SKETCH_MOVE_ARROW_MM, center_uv.1);
+                    let v_tip = local_to_world(&frame, center_uv.0, center_uv.1 + SKETCH_MOVE_ARROW_MM);
+                    // u arrow (horizontal) and v arrow (vertical), each highlighted while its
+                    // axis drag is active or a free drag is running.
+                    for (tip_w, this_axis, color) in [
+                        (u_tip, Some(0usize), col::X_AXIS),
+                        (v_tip, Some(1usize), col::Y_AXIS),
+                    ] {
+                        if let Some(tp) = project(tip_w) {
+                            let hot = matches!(active_axis, Some(a) if a == this_axis || a.is_none());
+                            let w = if hot { 3.0 } else { 2.0 };
+                            painter.line_segment([cp, tp], egui::Stroke::new(w, color));
+                            painter.circle_filled(tp, if hot { 5.0 } else { 4.0 }, color);
+                        }
+                    }
+                    // Centre free-drag handle.
+                    let center_hot = matches!(active_axis, Some(None));
+                    painter.circle_filled(
+                        cp,
+                        if center_hot { 6.0 } else { 5.0 },
+                        col::PREVIEW,
+                    );
+                }
+            }
+        }
+
         if let Some(active_session) = sketch_session {
             let active_sketch = active_session.sketch;
             let mut commit_committed_dim = false;
@@ -11740,7 +11927,10 @@ impl App {
             }
             Tool::Move => {
                 let cm = self.state.creating_move.as_ref();
-                if cm.is_some_and(|c| !c.targets.is_empty()) {
+                if self.state.sketch_session.is_some() {
+                    // In-sketch selection gizmo (#306).
+                    "Move — drag the centre handle to move the selection, or the arrows to move along an axis"
+                } else if cm.is_some_and(|c| !c.targets.is_empty()) {
                     "Move — click bodies to add/remove • set offset/rotation in the context pane • Enter: commit"
                 } else {
                     "Move — click one or more bodies to move"

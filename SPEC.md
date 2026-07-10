@@ -491,6 +491,17 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   differing-axis rotation or a translate+rotate mix starts a fresh op, since `MoveOperation`'s
   single-axis representation can't express an arbitrary composition). Moving sub-body geometry
   (faces/edges/vertices) remains a follow-up (#185).
+  **In-sketch selection gizmo (#306):** inside an open sketch the Move tool is a different
+  thing entirely — the body-move controls are hidden, and instead a gizmo appears at the
+  selected geometry's bounding-box centre: a **centre disc** drags the whole selection freely
+  across the plane, and a **horizontal (u, red)** and **vertical (v, green)** push-pull arrow
+  constrain the drag to that sketch axis. It translates every selected line and circle (with
+  their coincident closures) and any selected sketch texts together, re-solving constraints
+  each step and rolling back if a pin would stretch a selected edge (the #243 guard), reusing
+  the line-drag machinery (`vertex_drag::begin_selection_drag_session` / `drag_selection`,
+  driven by `Action::BeginSelectionDrag`/`DragSelection`/`EndSelectionDrag`). Select the
+  geometry first (Select tool), then switch to Move — the selection persists across the tool
+  switch.
 
 - **Linear repeat tool (#182/#257):** copies of whole bodies spaced along an axis, chosen with
   an **element picker** of one edge/axis (a global X/Y/Z axis or a clicked straight sketch
