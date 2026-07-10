@@ -85,12 +85,58 @@ pub fn closed_line_loops(doc: &Document, sketch: SketchId) -> Vec<Vec<usize>> {
         );
     }
 
+    // Keep only *vertex-simple* loops (#238): the walk enumerates every line-cycle, but a cycle
+    // may pass through the same vertex twice — e.g. after a face slice, the boundary pieces on
+    // either side of the cut chord meet the chord's endpoints, so a naive cycle can run "straight
+    // through" a cut point and enclose both faces at once. A genuine face visits each vertex once;
+    // a self-touching cycle isn't a face, so drop it. Ordinary sketches have only simple loops, so
+    // this is a no-op for them.
+    found.retain(|lines| loop_is_vertex_simple(doc, sketch, lines));
+
     found.sort_by(|a, b| {
         let min_a = *a.iter().min().unwrap();
         let min_b = *b.iter().min().unwrap();
         min_a.cmp(&min_b).then(a.len().cmp(&b.len()))
     });
     found
+}
+
+/// Whether a closed line loop visits every vertex exactly once (no vertex-key repeats) — the test
+/// that separates real faces from self-touching cycles the walk can enumerate (#238). Vertices are
+/// keyed by coincidence group, exactly as [`closed_line_loops`] walks them.
+fn loop_is_vertex_simple(doc: &Document, sketch: SketchId, lines: &[usize]) -> bool {
+    let n = lines.len();
+    if n < 3 {
+        return false;
+    }
+    let keys: Vec<((usize, bool), (usize, bool))> = lines
+        .iter()
+        .map(|&i| {
+            (
+                vertex_key(doc, sketch, i, LineEnd::Start),
+                vertex_key(doc, sketch, i, LineEnd::End),
+            )
+        })
+        .collect();
+    // The shared vertex between consecutive lines (wrapping); a face has `n` distinct ones.
+    let mut shared = Vec::with_capacity(n);
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let (s0, e0) = keys[i];
+        let (s1, e1) = keys[j];
+        let v = if e0 == s1 || e0 == e1 {
+            e0
+        } else if s0 == s1 || s0 == e1 {
+            s0
+        } else {
+            return false; // consecutive lines don't actually share a vertex
+        };
+        shared.push(v);
+    }
+    let mut sorted = shared.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    sorted.len() == n
 }
 
 fn walk(
@@ -637,6 +683,40 @@ mod tests {
         let mut sorted = loops[0].clone();
         sorted.sort_unstable();
         assert_eq!(sorted, vec![0, 1, 2]);
+    }
+
+    /// #238: two triangles meeting at a single shared vertex (a bowtie) are two faces, not three —
+    /// the 6-line cycle that runs through the shared vertex twice is self-touching, not a face, and
+    /// the vertex-simplicity filter drops it. This is the same shape a face-slice produces at a cut
+    /// point, so getting it right is what makes Option-A face slicing detect exactly two loops.
+    #[test]
+    fn two_triangles_sharing_a_vertex_are_two_faces_not_three() {
+        let mut doc = Document::default();
+        doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        // Triangle 1: P0(0,0) P1(10,0) V(5,5).
+        doc.lines.push(line(0, 0.0, 0.0, 10.0, 0.0)); // 0
+        doc.lines.push(line(0, 10.0, 0.0, 5.0, 5.0)); // 1
+        doc.lines.push(line(0, 5.0, 5.0, 0.0, 0.0)); // 2
+        // Triangle 2: V(5,5) P3(10,10) P4(0,10).
+        doc.lines.push(line(0, 5.0, 5.0, 10.0, 10.0)); // 3
+        doc.lines.push(line(0, 10.0, 10.0, 0.0, 10.0)); // 4
+        doc.lines.push(line(0, 0.0, 10.0, 5.0, 5.0)); // 5
+        let joins = [
+            (0, LineEnd::End, 1, LineEnd::Start),
+            (1, LineEnd::End, 2, LineEnd::Start),
+            (2, LineEnd::End, 0, LineEnd::Start),
+            (3, LineEnd::End, 4, LineEnd::Start),
+            (4, LineEnd::End, 5, LineEnd::Start),
+            (5, LineEnd::End, 3, LineEnd::Start),
+            // Glue the four endpoints that all sit at the shared apex V.
+            (1, LineEnd::End, 3, LineEnd::Start),
+            (2, LineEnd::Start, 5, LineEnd::End),
+        ];
+        for (la, ea, lb, eb) in joins {
+            doc.constraints.push(coincident(0, point(la, ea), point(lb, eb)));
+        }
+        let loops = closed_line_loops(&doc, 0);
+        assert_eq!(loops.len(), 2, "bowtie is two faces, got {loops:?}");
     }
 
     #[test]
