@@ -85,6 +85,9 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
         // K/F: no conflict with any other tool letter or constraint mnemonic (A/T/I/M/V/H).
         Tool::Chamfer => Some(ShortcutHint::plain("K")),
         Tool::Fillet => Some(ShortcutHint::plain("F")),
+        // T also means the Tangent constraint in tangent contexts (#311); the plain-T binding
+        // selects the Text tool everywhere else.
+        Tool::Text => Some(ShortcutHint::plain("T")),
         // No plain-letter shortcut yet; toolbar/palette only.
         Tool::Loft
         | Tool::Revolve
@@ -92,7 +95,6 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
         | Tool::Move
         | Tool::Repeat
         | Tool::Slice
-        | Tool::Text
         | Tool::DrawingAdd
         | Tool::DrawingAlign => None,
         Tool::Select => None,

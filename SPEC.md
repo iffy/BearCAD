@@ -760,7 +760,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   transient snapshot marker, #168 — calibration can adopt the same mechanism).
 
 ### 3.4.3 Sketch text (#282)
-- **Text tool:** with a sketch open, the **Text** tool (sketch toolbar) places a `SketchText`
+- **Text tool:** with a sketch open, the **Text** tool (sketch toolbar, or the **T** shortcut
+  — #311; T still means the Tangent constraint while drawing a line, with a sketch vertex
+  selected, or in the Constraint tool) places a `SketchText`
   element. **Clicking** drops a textbox that grows in width to fit the text; **dragging a
   rectangle** (#282) drops one that **word-wraps** to the dragged width and grows downward (the
   drag width becomes the `wrap_width`). Its glyph outlines are **baked** at create/edit time

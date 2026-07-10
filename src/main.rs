@@ -1599,12 +1599,23 @@ impl App {
                 }
             }
 
-            // `T` is also the mnemonic for the Tangent geometric constraint (Tool::Constraint,
-            // handled separately below), so curve-mode/tangent-constraint shortcuts are scoped
-            // to everywhere else — while drawing/selected with the line tool, or a sketch
-            // vertex selection in Select tool (#73).
+            // `T` selects the Text tool (#311), except where it already means the Tangent
+            // constraint: the Constraint tool (its mnemonic, handled below), while drawing a
+            // line, or with a sketch vertex selected (#73 curve mode). It's also the mnemonic
+            // for tangent in the Constraint tool.
             if self.state.tool != Tool::Constraint && ctx.input(|i| i.key_pressed(egui::Key::T)) {
-                self.state.apply(Action::ToggleTangentConstraint);
+                let tangent_context = self.state.creating_line.is_some()
+                    || self.state.tool == Tool::Line
+                    || self
+                        .state
+                        .scene_selection
+                        .iter()
+                        .any(|e| matches!(e, SceneElement::Point(_)));
+                if tangent_context {
+                    self.state.apply(Action::ToggleTangentConstraint);
+                } else if self.state.tool != Tool::Text {
+                    self.state.apply(Action::SetTool(Tool::Text));
+                }
             }
 
             if ctx.input(|i| i.key_pressed(egui::Key::N)) {

@@ -12,7 +12,7 @@ glyph outlines you can edit, rotate, and extrude or cut like any other sketch pr
 
 ## How to use it
 
-1. Open a sketch and pick the **Text** tool.
+1. Open a sketch and pick the **Text** tool (or press **T**).
 2. **Click** where the text should start for a box that grows to fit, or **drag a rectangle**
    to make a box that wraps the text to that width and grows downward. Either way a text
    element appears, selected, so its editor opens in the context pane immediately.
