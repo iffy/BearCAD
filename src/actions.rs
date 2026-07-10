@@ -1349,6 +1349,8 @@ pub enum Action {
         sketch: usize,
         line_targets: Vec<usize>,
         circle_targets: Vec<usize>,
+        #[allow(dead_code)]
+        face_targets: Vec<Vec<usize>>,
         cutter_lines: Vec<usize>,
     },
     /// Re-point an existing in-sketch slice (#224).
@@ -1356,6 +1358,8 @@ pub enum Action {
         op: usize,
         line_targets: Vec<usize>,
         circle_targets: Vec<usize>,
+        #[allow(dead_code)]
+        face_targets: Vec<Vec<usize>>,
         cutter_lines: Vec<usize>,
     },
     /// Commit the in-progress Slice-tool operation.
@@ -2951,13 +2955,24 @@ fn validate_sketch_slice_inputs(
     sketch: usize,
     line_targets: &[usize],
     circle_targets: &[usize],
+    face_targets: &[Vec<usize>],
     cutter_lines: &[usize],
 ) -> Result<(), String> {
     if doc.sketches.get(sketch).filter(|s| !s.deleted).is_none() {
         return Err(format!("Sketch {sketch} not found"));
     }
-    if line_targets.is_empty() && circle_targets.is_empty() {
-        return Err("Pick at least one line or circle to slice".to_string());
+    if line_targets.is_empty() && circle_targets.is_empty() && face_targets.is_empty() {
+        return Err("Pick at least one line, circle, or face to slice".to_string());
+    }
+    for loop_lines in face_targets {
+        for &li in loop_lines {
+            let Some(line) = doc.lines.get(li).filter(|l| !l.deleted) else {
+                return Err(format!("Face boundary line {li} not found"));
+            };
+            if line.sketch != sketch {
+                return Err(format!("Face boundary line {li} is not in sketch {sketch}"));
+            }
+        }
     }
     if cutter_lines.is_empty() {
         return Err("Pick at least one cutter line".to_string());
@@ -6611,9 +6626,9 @@ impl AppState {
                 self.status = "Edited sketch repeat".to_string();
                 ActionResult::Ok
             }
-            Action::CreateSketchSliceOperation { sketch, line_targets, circle_targets, cutter_lines } => {
+            Action::CreateSketchSliceOperation { sketch, line_targets, circle_targets, face_targets, cutter_lines } => {
                 if let Err(e) = validate_sketch_slice_inputs(
-                    &self.doc, sketch, &line_targets, &circle_targets, &cutter_lines,
+                    &self.doc, sketch, &line_targets, &circle_targets, &face_targets, &cutter_lines,
                 ) {
                     self.status = e.clone();
                     return ActionResult::Err(e);
@@ -6624,7 +6639,9 @@ impl AppState {
                     line_targets,
                     cutter_lines,
                     circle_targets,
+                    face_targets,
                     line_outputs: Vec::new(),
+                    constraint_outputs: Vec::new(),
                     name: None,
                     deleted: false,
                 });
@@ -6641,7 +6658,7 @@ impl AppState {
                 self.status = format!("Sliced into {frags} fragment(s)");
                 ActionResult::Ok
             }
-            Action::EditSketchSliceOperation { op, line_targets, circle_targets, cutter_lines } => {
+            Action::EditSketchSliceOperation { op, line_targets, circle_targets, face_targets, cutter_lines } => {
                 let Some(sketch) =
                     self.doc.sketch_slice_ops.get(op).filter(|o| !o.deleted).map(|o| o.sketch)
                 else {
@@ -6650,7 +6667,7 @@ impl AppState {
                     return ActionResult::Err(e);
                 };
                 if let Err(e) = validate_sketch_slice_inputs(
-                    &self.doc, sketch, &line_targets, &circle_targets, &cutter_lines,
+                    &self.doc, sketch, &line_targets, &circle_targets, &face_targets, &cutter_lines,
                 ) {
                     self.status = e.clone();
                     return ActionResult::Err(e);
@@ -6660,6 +6677,7 @@ impl AppState {
                     let entry = &mut self.doc.sketch_slice_ops[op];
                     entry.line_targets = line_targets;
                     entry.circle_targets = circle_targets;
+                    entry.face_targets = face_targets;
                     entry.cutter_lines = cutter_lines;
                 }
                 if !rebuild_sketch_slice(&mut self.doc, op) {
@@ -8645,6 +8663,21 @@ fn rebuild_sketch_slice(doc: &mut crate::model::Document, op_index: usize) -> bo
             l.deleted = true;
         }
     }
+    // Face-slice targets (#238): un-shadow every boundary line (any were shadowed as crossed
+    // edges) and tombstone the coincidence constraints a prior run generated.
+    for loop_lines in &op.face_targets {
+        for &li in loop_lines {
+            if let Some(l) = doc.lines.get_mut(li) {
+                l.shadow = false;
+            }
+        }
+    }
+    for &ci in &op.constraint_outputs {
+        if let Some(c) = doc.constraints.get_mut(ci) {
+            c.deleted = true;
+        }
+    }
+    let mut constraint_outputs: Vec<usize> = Vec::new();
     let mut outputs = Vec::new();
     for &a in &op.line_targets {
         let al = doc.lines[a].clone();
@@ -8742,11 +8775,126 @@ fn rebuild_sketch_slice(doc: &mut crate::model::Document, op_index: usize) -> bo
             }
         }
     }
+    // Face-loop targets (#238): bisect each face where the cutter crosses its boundary twice.
+    for loop_lines in &op.face_targets {
+        slice_face_loop(doc, op.sketch, loop_lines, &op.cutter_lines, &mut outputs, &mut constraint_outputs);
+    }
     if outputs.is_empty() {
         return false;
     }
     doc.sketch_slice_ops[op_index].line_outputs = outputs;
+    doc.sketch_slice_ops[op_index].constraint_outputs = constraint_outputs;
     true
+}
+
+/// Bisect one sketch **face** (a closed boundary loop) with the cutter lines (#238, Option A). The
+/// cutter is expected to cross the loop's boundary at exactly two points, on two distinct edges;
+/// those edges are split, a cut **chord** is emitted between the crossings, and coincidence
+/// constraints stitch the fragments so the loop resolves into two faces. The split pieces inherit
+/// the crossed edges' corner coincidences, so the uncrossed neighbours attach to the right side.
+/// Anything that isn't a clean two-point crossing is left untouched (no partial mangling).
+fn slice_face_loop(
+    doc: &mut crate::model::Document,
+    sketch: crate::model::SketchId,
+    loop_lines: &[usize],
+    cutter_lines: &[usize],
+    outputs: &mut Vec<usize>,
+    constraint_outputs: &mut Vec<usize>,
+) {
+    use crate::model::{ConstraintEntity, ConstraintKind, ConstraintPoint, LineEnd};
+    // Find boundary edges crossed by a cutter (interior crossing), and the crossing point on each.
+    let mut crossed: Vec<(usize, f32)> = Vec::new(); // (line index, param along it)
+    for &li in loop_lines {
+        let Some(l) = doc.lines.get(li).filter(|l| !l.deleted && !l.shadow) else {
+            continue;
+        };
+        let al = l.clone();
+        let mut ts: Vec<f32> = Vec::new();
+        for &b in cutter_lines {
+            if b == li {
+                continue;
+            }
+            if let Some(bl) = doc.lines.get(b).filter(|l| !l.deleted) {
+                ts.extend(curve_crossing_params(&al, bl));
+            }
+        }
+        ts.retain(|t| *t > 1e-4 && *t < 1.0 - 1e-4);
+        ts.sort_by(|p, q| p.partial_cmp(q).unwrap_or(std::cmp::Ordering::Equal));
+        ts.dedup_by(|p, q| (*p - *q).abs() < 1e-4);
+        for t in ts {
+            crossed.push((li, t));
+        }
+    }
+    // Only the clean bisect case: exactly two crossings, on two different edges.
+    if crossed.len() != 2 || crossed[0].0 == crossed[1].0 {
+        return;
+    }
+
+    // Split a crossed straight edge at param `t`, returning the two fragment line indices
+    // (start-piece, end-piece); the fragments are pushed to `outputs` and the original shadowed.
+    let mut split_edge = |doc: &mut crate::model::Document, li: usize, t: f32| -> Option<(usize, usize, (f32, f32))> {
+        let l = doc.lines.get(li)?.clone();
+        if l.bezier.is_some() {
+            return None; // curved boundary edges aren't handled by the clean bisect
+        }
+        let (mx, my) = (l.x0 + (l.x1 - l.x0) * t, l.y0 + (l.y1 - l.y0) * t);
+        let mut make = |x0: f32, y0: f32, x1: f32, y1: f32| -> usize {
+            let mut frag = shifted_line_copy(&l, 0.0, 0.0);
+            frag.x0 = x0;
+            frag.y0 = y0;
+            frag.x1 = x1;
+            frag.y1 = y1;
+            frag.bezier = None;
+            frag.shadow = false;
+            let idx = doc.lines.len();
+            outputs.push(idx);
+            doc.lines.push(frag);
+            doc.shape_order.push(crate::model::ShapeKind::Line);
+            idx
+        };
+        let a = make(l.x0, l.y0, mx, my); // start-piece: L.start .. X
+        let b = make(mx, my, l.x1, l.y1); // end-piece:   X .. L.end
+        doc.lines[li].shadow = true;
+        Some((a, b, (mx, my)))
+    };
+
+    let (l1, t1) = crossed[0];
+    let (l2, t2) = crossed[1];
+    let Some((l1a, l1b, x1)) = split_edge(doc, l1, t1) else { return };
+    let Some((l2a, l2b, x2)) = split_edge(doc, l2, t2) else { return };
+
+    // The cut chord between the two crossing points.
+    let chord = doc.lines.len();
+    doc.lines.push(crate::model::Line::from_local_endpoints(sketch, x1.0, x1.1, x2.0, x2.1));
+    doc.shape_order.push(crate::model::ShapeKind::Line);
+    outputs.push(chord);
+
+    let mut glue = |doc: &mut crate::model::Document, a: ConstraintPoint, b: ConstraintPoint| {
+        constraint_outputs.push(doc.constraints.len());
+        doc.constraints.push(crate::model::Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(a),
+                b: ConstraintEntity::Point(b),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+    };
+    let ep = |line: usize, end: LineEnd| ConstraintPoint::LineEndpoint { line, end };
+    // Pieces inherit the crossed edge's corner coincidences.
+    glue(doc, ep(l1a, LineEnd::Start), ep(l1, LineEnd::Start));
+    glue(doc, ep(l1b, LineEnd::End), ep(l1, LineEnd::End));
+    glue(doc, ep(l2a, LineEnd::Start), ep(l2, LineEnd::Start));
+    glue(doc, ep(l2b, LineEnd::End), ep(l2, LineEnd::End));
+    // Crossing point 1: both L1 pieces and the chord's start meet at X1.
+    glue(doc, ep(l1a, LineEnd::End), ep(chord, LineEnd::Start));
+    glue(doc, ep(l1b, LineEnd::Start), ep(chord, LineEnd::Start));
+    // Crossing point 2: both L2 pieces and the chord's end meet at X2.
+    glue(doc, ep(l2a, LineEnd::End), ep(chord, LineEnd::End));
+    glue(doc, ep(l2b, LineEnd::Start), ep(chord, LineEnd::End));
 }
 
 /// (Re)generate the duplicated entities of an in-sketch repeat (#222) at `op_index`, resizing the
@@ -11621,6 +11769,7 @@ mod tests {
             sketch: si,
             line_targets: vec![0],
             circle_targets: Vec::new(),
+            face_targets: Vec::new(),
             cutter_lines: vec![1],
         });
         assert!(matches!(result, ActionResult::Ok));
@@ -11659,6 +11808,7 @@ mod tests {
             sketch: si,
             line_targets: Vec::new(),
             circle_targets: vec![0],
+            face_targets: Vec::new(),
             cutter_lines: vec![0],
         });
         assert!(matches!(result, ActionResult::Ok));
@@ -11674,6 +11824,50 @@ mod tests {
                 assert!(((x * x + y * y).sqrt() - 5.0).abs() < 0.05, "endpoint on circle");
             }
         }
+    }
+
+    /// #238: slicing a square **face** with a line crossing two opposite edges splits it into two
+    /// faces — the crossed edges are split, a cut chord is added, and coincidence surgery makes the
+    /// loop detector see exactly two loops (that still close). Undo restores the single face.
+    #[test]
+    fn sketch_slice_bisects_a_square_face_into_two() {
+        let mut state = AppState::default();
+        let si = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let square = crate::construction::add_line_rectangle(&mut state.doc, si, 0.0, 0.0, 10.0, 10.0, [false; 4]);
+        // Initially one face.
+        assert_eq!(crate::polygon::closed_line_loops(&state.doc, si).len(), 1);
+        // A vertical cutter at x=5 crosses the bottom (y=0) and top (y=10) edges.
+        state
+            .doc
+            .lines
+            .push(crate::model::Line::from_local_endpoints(si, 5.0, -2.0, 5.0, 12.0));
+        let cutter = state.doc.lines.len() - 1;
+
+        let result = state.apply(Action::CreateSketchSliceOperation {
+            sketch: si,
+            line_targets: Vec::new(),
+            circle_targets: Vec::new(),
+            face_targets: vec![square.to_vec()],
+            cutter_lines: vec![cutter],
+        });
+        assert!(matches!(result, ActionResult::Ok), "{}", state.status);
+
+        let loops = crate::polygon::closed_line_loops(&state.doc, si);
+        assert_eq!(loops.len(), 2, "square bisects into two faces, got {loops:?}");
+        // Every resulting loop must actually close (its vertices resolve in order).
+        for lines in &loops {
+            assert!(
+                crate::polygon::loop_vertices_uv(&state.doc, si, lines).is_some(),
+                "each face loop closes"
+            );
+        }
+
+        state.apply(Action::UndoLast);
+        assert_eq!(
+            crate::polygon::closed_line_loops(&state.doc, si).len(),
+            1,
+            "undo restores the single face"
+        );
     }
 
     /// #255: a drawing can be renamed (and cleared back to default with an empty name).

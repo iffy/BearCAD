@@ -1618,10 +1618,21 @@ pub struct SketchSliceOperation {
     /// are emitted as curved (bezier) fragment lines, the source circle is shadowed.
     #[serde(default)]
     pub circle_targets: Vec<usize>,
+    /// Target **face** loops (#238): each entry is the line indices of a closed sketch face to
+    /// slice. The cutter is expected to cross the loop's boundary at two points; the two crossed
+    /// boundary edges are split, a cut **chord** is emitted between the crossings, and coincidence
+    /// constraints are generated so the loop resolves into two faces (see `rebuild_sketch_slice`).
+    #[serde(default)]
+    pub face_targets: Vec<Vec<usize>>,
     /// Generated fragment-line indices, target-major (all fragments of target 0, then target 1…).
-    /// Both split lines *and* split-circle arcs land here (arcs are bezier `Line`s).
+    /// Both split lines *and* split-circle arcs land here (arcs are bezier `Line`s); face-slice
+    /// boundary fragments and cut chords land here too.
     #[serde(default)]
     pub line_outputs: Vec<usize>,
+    /// Generated coincidence-constraint indices (#238) that stitch a face slice's fragments into
+    /// two loops. Tombstoned and regenerated on every rebuild, like `line_outputs`.
+    #[serde(default)]
+    pub constraint_outputs: Vec<usize>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]

@@ -85,13 +85,28 @@ pub fn closed_line_loops(doc: &Document, sketch: SketchId) -> Vec<Vec<usize>> {
         );
     }
 
-    // Keep only *vertex-simple* loops (#238): the walk enumerates every line-cycle, but a cycle
-    // may pass through the same vertex twice — e.g. after a face slice, the boundary pieces on
-    // either side of the cut chord meet the chord's endpoints, so a naive cycle can run "straight
-    // through" a cut point and enclose both faces at once. A genuine face visits each vertex once;
-    // a self-touching cycle isn't a face, so drop it. Ordinary sketches have only simple loops, so
-    // this is a no-op for them.
-    found.retain(|lines| loop_is_vertex_simple(doc, sketch, lines));
+    // Two filters make the cycle enumeration behave like planar-face extraction after a slice
+    // (#238), while staying a no-op for ordinary sketches:
+    //  1. Vertex-simple: drop self-touching cycles that pass through the same vertex twice (e.g. a
+    //     naive cycle running "straight through" a cut point, enclosing both faces at once).
+    //  2. Minimal face: drop a loop that another alive line subdivides — an internal **chord**
+    //     connecting two of its *non-adjacent* boundary vertices. This is exactly the cut chord
+    //     relative to the reconstructed outer boundary, so the un-split perimeter is rejected in
+    //     favour of the two half-faces. A disjoint nested shape shares no vertices with the outer
+    //     loop, so it never triggers this — nested faces still resolve normally.
+    let ordered: Vec<Option<Vec<(usize, bool)>>> = found
+        .iter()
+        .map(|lines| loop_shared_vertices(doc, sketch, lines))
+        .collect();
+    let mut keep = Vec::with_capacity(found.len());
+    for (lines, verts) in found.into_iter().zip(ordered) {
+        let Some(verts) = verts else { continue }; // not vertex-simple
+        if !loop_is_minimal_face(doc, sketch, &lines, &verts) {
+            continue;
+        }
+        keep.push(lines);
+    }
+    let mut found = keep;
 
     found.sort_by(|a, b| {
         let min_a = *a.iter().min().unwrap();
@@ -101,13 +116,18 @@ pub fn closed_line_loops(doc: &Document, sketch: SketchId) -> Vec<Vec<usize>> {
     found
 }
 
-/// Whether a closed line loop visits every vertex exactly once (no vertex-key repeats) — the test
-/// that separates real faces from self-touching cycles the walk can enumerate (#238). Vertices are
-/// keyed by coincidence group, exactly as [`closed_line_loops`] walks them.
-fn loop_is_vertex_simple(doc: &Document, sketch: SketchId, lines: &[usize]) -> bool {
+/// The ordered coincidence-keyed vertices around a closed line loop (vertex `i` is shared by
+/// `lines[i]` and `lines[i+1]`), or `None` if the loop isn't vertex-simple — it revisits a vertex,
+/// or consecutive lines don't actually share one. Vertices are keyed exactly as
+/// [`closed_line_loops`] walks them.
+fn loop_shared_vertices(
+    doc: &Document,
+    sketch: SketchId,
+    lines: &[usize],
+) -> Option<Vec<(usize, bool)>> {
     let n = lines.len();
     if n < 3 {
-        return false;
+        return None;
     }
     let keys: Vec<((usize, bool), (usize, bool))> = lines
         .iter()
@@ -118,7 +138,6 @@ fn loop_is_vertex_simple(doc: &Document, sketch: SketchId, lines: &[usize]) -> b
             )
         })
         .collect();
-    // The shared vertex between consecutive lines (wrapping); a face has `n` distinct ones.
     let mut shared = Vec::with_capacity(n);
     for i in 0..n {
         let j = (i + 1) % n;
@@ -129,14 +148,45 @@ fn loop_is_vertex_simple(doc: &Document, sketch: SketchId, lines: &[usize]) -> b
         } else if s0 == s1 || s0 == e1 {
             s0
         } else {
-            return false; // consecutive lines don't actually share a vertex
+            return None;
         };
         shared.push(v);
     }
     let mut sorted = shared.clone();
     sorted.sort_unstable();
     sorted.dedup();
-    sorted.len() == n
+    (sorted.len() == n).then_some(shared)
+}
+
+/// Whether `lines` (with ordered boundary vertices `verts`) is a **minimal** face — no other alive,
+/// non-shadow line of the sketch bridges two of its *non-adjacent* boundary vertices (which would
+/// subdivide it). Used to reject a slice's reconstructed outer perimeter in favour of the two
+/// halves the cut chord makes (#238).
+fn loop_is_minimal_face(
+    doc: &Document,
+    sketch: SketchId,
+    lines: &[usize],
+    verts: &[(usize, bool)],
+) -> bool {
+    let n = verts.len();
+    let pos: std::collections::HashMap<(usize, bool), usize> =
+        verts.iter().enumerate().map(|(i, &v)| (v, i)).collect();
+    for (li, l) in doc.lines.iter().enumerate() {
+        if l.sketch != sketch || l.deleted || l.shadow || lines.contains(&li) {
+            continue;
+        }
+        let a = vertex_key(doc, sketch, li, LineEnd::Start);
+        let b = vertex_key(doc, sketch, li, LineEnd::End);
+        if let (Some(&ia), Some(&ib)) = (pos.get(&a), pos.get(&b)) {
+            let adjacent = ia == ib
+                || (ia + 1) % n == ib
+                || (ib + 1) % n == ia;
+            if !adjacent {
+                return false; // an internal chord subdivides this loop
+            }
+        }
+    }
+    true
 }
 
 fn walk(
