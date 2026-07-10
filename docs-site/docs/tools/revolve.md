@@ -3,7 +3,9 @@ sidebar_position: 11
 title: Revolve
 ---
 
-# <img src="/img/icons/revolve.svg" width="30" /> Revolve
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
+# <img src={useBaseUrl("/img/icons/revolve.svg")} width="30" /> Revolve
 
 Revolve spins a flat profile around an axis into a solid — rings, shafts, vases, grooves.
 

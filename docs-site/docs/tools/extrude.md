@@ -3,7 +3,9 @@ sidebar_position: 10
 title: Extrude
 ---
 
-# <img src="/img/icons/extrude.svg" width="30" /> Extrude
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
+# <img src={useBaseUrl("/img/icons/extrude.svg")} width="30" /> Extrude
 
 **Shortcut:** `E`
 

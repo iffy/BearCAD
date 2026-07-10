@@ -3,7 +3,9 @@ sidebar_position: 12
 title: Combine
 ---
 
-# <img src="/img/icons/combine.svg" width="30" /> Combine
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
+# <img src={useBaseUrl("/img/icons/combine.svg")} width="30" /> Combine
 
 Combine performs boolean operations on whole bodies: merge them into one, cut one out of
 another, keep only their overlap, or keep everything *except* the overlap.

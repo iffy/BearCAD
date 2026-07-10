@@ -3,7 +3,9 @@ sidebar_position: 7
 title: Fillet
 ---
 
-# <img src="/img/icons/fillet.svg" width="30" /> Fillet
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
+# <img src={useBaseUrl("/img/icons/fillet.svg")} width="30" /> Fillet
 
 **Shortcut:** `F`
 

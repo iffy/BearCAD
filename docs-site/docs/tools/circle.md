@@ -3,7 +3,9 @@ sidebar_position: 6
 title: Circle
 ---
 
-# <img src="/img/icons/circle.svg" width="30" /> Circle
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
+# <img src={useBaseUrl("/img/icons/circle.svg")} width="30" /> Circle
 
 **Shortcut:** `O`
 

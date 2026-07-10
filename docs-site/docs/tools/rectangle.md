@@ -3,7 +3,9 @@ sidebar_position: 4
 title: Rectangle
 ---
 
-# <img src="/img/icons/rectangle.svg" width="30" /> Rectangle
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
+# <img src={useBaseUrl("/img/icons/rectangle.svg")} width="30" /> Rectangle
 
 **Shortcut:** `R`
 

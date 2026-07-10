@@ -3,7 +3,9 @@ sidebar_position: 2
 title: Select
 ---
 
-# <img src="/img/icons/select.svg" width="30" /> Select
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
+# <img src={useBaseUrl("/img/icons/select.svg")} width="30" /> Select
 
 **Shortcut:** none — it's the default. **Esc** (with nothing in progress) always returns
 to Select.

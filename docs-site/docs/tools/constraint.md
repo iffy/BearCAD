@@ -3,7 +3,9 @@ sidebar_position: 13
 title: Constraint
 ---
 
-# <img src="/img/icons/constraint.svg" width="30" /> Constraint
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
+# <img src={useBaseUrl("/img/icons/constraint.svg")} width="30" /> Constraint
 
 **Shortcut:** `C`
 

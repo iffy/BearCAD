@@ -3,7 +3,9 @@ sidebar_position: 12
 title: Dimension
 ---
 
-# <img src="/img/icons/dimension.svg" width="30" /> Dimension
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
+# <img src={useBaseUrl("/img/icons/dimension.svg")} width="30" /> Dimension
 
 **Shortcut:** `D`
 

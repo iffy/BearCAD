@@ -3,7 +3,9 @@ sidebar_position: 5
 title: Line
 ---
 
-# <img src="/img/icons/line.svg" width="30" /> Line
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
+# <img src={useBaseUrl("/img/icons/line.svg")} width="30" /> Line
 
 **Shortcut:** `L`
 

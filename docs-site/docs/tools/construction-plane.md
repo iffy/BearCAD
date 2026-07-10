@@ -3,7 +3,9 @@ sidebar_position: 9
 title: Construction Plane
 ---
 
-# <img src="/img/icons/plane.svg" width="30" /> Construction Plane
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
+# <img src={useBaseUrl("/img/icons/plane.svg")} width="30" /> Construction Plane
 
 **Shortcut:** `P`
 

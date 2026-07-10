@@ -3,7 +3,9 @@ sidebar_position: 18
 title: Drawings
 ---
 
-# <img src="/img/icons/drawing.svg" width="30" /> Technical drawings
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
+# <img src={useBaseUrl("/img/icons/drawing.svg")} width="30" /> Technical drawings
 
 A drawing is a black-on-white sheet of a part for printing. A document can hold as many as
 you like, and each one collects **views** — a body shown from a chosen direction.

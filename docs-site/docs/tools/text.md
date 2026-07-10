@@ -3,7 +3,9 @@ sidebar_position: 17
 title: Text
 ---
 
-# <img src="/img/icons/text.svg" width="30" /> Text
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
+# <img src={useBaseUrl("/img/icons/text.svg")} width="30" /> Text
 
 Text places real, engraving-ready lettering in a sketch — part numbers, labels, logos — as
 glyph outlines you can edit, rotate, and extrude or cut like any other sketch profile.

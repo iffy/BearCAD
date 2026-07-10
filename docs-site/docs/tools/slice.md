@@ -3,7 +3,9 @@ sidebar_position: 16
 title: Slice
 ---
 
-# <img src="/img/icons/slice.svg" width="30" /> Slice
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
+# <img src={useBaseUrl("/img/icons/slice.svg")} width="30" /> Slice
 
 Slice cuts whole bodies apart with flat cutters — halving a part, carving a slot line, or
 splitting a model into printable pieces.

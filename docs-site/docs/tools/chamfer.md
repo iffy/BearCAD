@@ -3,7 +3,9 @@ sidebar_position: 8
 title: Chamfer
 ---
 
-# <img src="/img/icons/chamfer.svg" width="30" /> Chamfer
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
+# <img src={useBaseUrl("/img/icons/chamfer.svg")} width="30" /> Chamfer
 
 **Shortcut:** `K`
 

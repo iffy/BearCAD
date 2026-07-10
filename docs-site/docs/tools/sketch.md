@@ -3,7 +3,9 @@ sidebar_position: 3
 title: Sketch
 ---
 
-# <img src="/img/icons/sketch.svg" width="30" /> Sketch
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
+# <img src={useBaseUrl("/img/icons/sketch.svg")} width="30" /> Sketch
 
 **Shortcut:** `S`
 
