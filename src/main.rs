@@ -3760,11 +3760,11 @@ impl eframe::App for App {
             .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 // Workbench toolbars (#254/#271): the Drawing workbench (a drawing open) shows
-                // only the tools that apply to drawings — Select, Move, Dimension.
+                // only the tools that apply to drawings — Select and Dimension (#295: no Move;
+                // the Select tool drags projections directly).
                 if self.state.editing_drawing.is_some() {
                     for (icon, tool, label) in [
                         (icons::IconId::Select, Tool::Select, "Select"),
-                        (icons::IconId::Move, Tool::Move, "Move"),
                         (icons::IconId::Dimension, Tool::Dimension, "Dimension"),
                     ] {
                         if icons::selectable_icon_button(

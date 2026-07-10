@@ -6350,9 +6350,9 @@ impl AppState {
                     if self.doc.drawings.get(di).is_none_or(|d| d.deleted) {
                         return ActionResult::Err(format!("No drawing {di}"));
                     }
-                    // The Drawing workbench only offers Select/Move/Dimension (#271); if the
-                    // current tool isn't one of them, drop back to Select on entry.
-                    if !matches!(self.tool, Tool::Select | Tool::Move | Tool::Dimension) {
+                    // The Drawing workbench only offers Select/Dimension (#271, #295 dropped
+                    // Move); if the current tool isn't one of them, drop back to Select.
+                    if !matches!(self.tool, Tool::Select | Tool::Dimension) {
                         self.tool = Tool::Select;
                     }
                 }
@@ -12123,7 +12123,7 @@ mod tests {
     }
 
     /// #271: opening a drawing (entering the Drawing workbench) drops a model-only tool back to
-    /// Select, since the Drawing workbench only offers Select/Move/Dimension.
+    /// Select, since the Drawing workbench only offers Select/Dimension (#295 dropped Move).
     #[test]
     fn opening_a_drawing_resets_a_model_tool_to_select() {
         let mut state = AppState::default();
@@ -12131,6 +12131,10 @@ mod tests {
         state.apply(Action::SetTool(Tool::Extrude));
         state.apply(Action::EditDrawing { drawing: Some(0) });
         assert_eq!(state.tool, Tool::Select, "Extrude isn't a Drawing-workbench tool");
+        state.apply(Action::EditDrawing { drawing: None });
+        state.apply(Action::SetTool(Tool::Move));
+        state.apply(Action::EditDrawing { drawing: Some(0) });
+        assert_eq!(state.tool, Tool::Select, "Move is no longer a Drawing-workbench tool (#295)");
 
         // A Drawing-workbench tool is preserved.
         state.apply(Action::SetTool(Tool::Dimension));
