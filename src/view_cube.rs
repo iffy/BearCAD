@@ -1391,11 +1391,13 @@ fn cube_rect_in_viewport(viewport: Rect) -> Rect {
 
 /// Show the view-cube HUD overlay in the top-right of `viewport`.
 /// What a click on the standalone orientation-picker bear (#315) chose: one of the six
-/// straight-on views, or the isometric three-quarter (from a corner/edge).
+/// straight-on views, a diagonal **edge** view (#339/#344), or a **corner** three-quarter view
+/// (#344).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OrientationPick {
     Standard(StandardView),
-    Isometric,
+    Edge(CubeEdgeId),
+    Corner(CubeCornerId),
 }
 
 /// A standalone **bear** orientation picker (#315) for the drawing view editor: reuses the HUD
@@ -1467,7 +1469,8 @@ pub fn show_orientation_picker(
                     apply_cube_pick(&mut cam, pick);
                     picked = Some(match pick {
                         CubePick::Face(v) => OrientationPick::Standard(v),
-                        CubePick::Edge(_) | CubePick::Corner(_) => OrientationPick::Isometric,
+                        CubePick::Edge(id) => OrientationPick::Edge(id),
+                        CubePick::Corner(id) => OrientationPick::Corner(id),
                     });
                 }
             }

@@ -1057,10 +1057,13 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   element graph, #252). It's a display-only leaf (no `SceneElement`).
 - **Views:** a drawing collects **views**, each a chosen body shown in one orientation — the
   six straight-on directions (Front/Back/Left/Right/Top/Bottom), an **Isometric** three-quarter
-  view, or one of the twelve **diagonal edge views** (`DrawingOrientation::Edge(EdgeView)`, #339)
-  that look square at a cube edge (Front-Right, Front-Top, …). An edge view's basis is derived
-  from its two faces: the camera looks along their averaged into-page bisector with world +Z up
-  (`drawing::view_axes`). Each view renders as a black wireframe of the body's feature edges,
+  view, one of the twelve **diagonal edge views** (`DrawingOrientation::Edge(EdgeView)`, #339)
+  that look square at a cube edge (Front-Right, Front-Top, …), or one of the eight **corner
+  views** (`DrawingOrientation::Corner(CornerView)`, #344) that look at a cube corner. Clicking an
+  edge or corner on the orientation bear picks that specific view (#344) — not a fixed isometric.
+  An edge/corner view's basis is derived from its two/three faces: the camera looks along their
+  averaged into-page direction with world +Z up (`drawing::view_axes`, orthonormal via
+  Gram-Schmidt). Each view renders as a black wireframe of the body's feature edges,
   orthographically/isometrically projected and auto-fit into its cell; views sit wherever
   they were placed on the page and are added/removed from the drawing pane.
 - **Curves (#313/#319):** tessellated circles (a cylinder rim, an extruded-circle boundary)

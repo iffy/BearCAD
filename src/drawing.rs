@@ -36,6 +36,20 @@ pub fn view_axes(orientation: DrawingOrientation) -> (Vec3, Vec3) {
             let right = up.cross(out).normalize();
             (right, up)
         }
+        // A corner three-quarter view (#344): the camera looks along the average of its three
+        // faces' into-page directions (the corner's diagonal), world +Z up. No corner points
+        // straight up, so the Gram-Schmidt up is always well-defined.
+        O::Corner(c) => {
+            let (fa, fb, fc) = c.faces();
+            let face_out = |f| {
+                let (r, u) = view_axes(f);
+                r.cross(u)
+            };
+            let out = (face_out(fa) + face_out(fb) + face_out(fc)).normalize();
+            let up = (Vec3::Z - Vec3::Z.dot(out) * out).normalize();
+            let right = up.cross(out).normalize();
+            (right, up)
+        }
     }
 }
 
@@ -1399,6 +1413,27 @@ mod tests {
         let inv = 1.0 / 2.0_f32.sqrt();
         assert!((r - glam::Vec3::new(inv, inv, 0.0)).length() < 1e-4, "got {r:?}");
         assert!((u - glam::Vec3::Z).length() < 1e-4, "got {u:?}");
+    }
+
+    /// #344: every corner view projects with a valid orthonormal basis, and distinct corners give
+    /// distinct views (not one fixed isometric).
+    #[test]
+    fn corner_view_bases_are_orthonormal_and_distinct() {
+        use crate::model::{CornerView, DrawingOrientation as O};
+        let mut outs = Vec::new();
+        for c in CornerView::ALL {
+            let (r, u) = view_axes(O::Corner(*c));
+            assert!((r.length() - 1.0).abs() < 1e-4, "{c:?} right unit");
+            assert!((u.length() - 1.0).abs() < 1e-4, "{c:?} up unit");
+            assert!(r.dot(u).abs() < 1e-4, "{c:?} right ⟂ up");
+            outs.push(r.cross(u));
+        }
+        // The eight corner view directions are all different.
+        for i in 0..outs.len() {
+            for j in (i + 1)..outs.len() {
+                assert!((outs[i] - outs[j]).length() > 0.1, "corners {i},{j} share a view");
+            }
+        }
     }
 
     /// #314: a label that fits runs centred along the dimension line (angle matches, kept

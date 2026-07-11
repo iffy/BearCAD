@@ -1912,9 +1912,78 @@ impl EdgeView {
     }
 }
 
+/// A three-quarter "corner" view (#344): looking square at one of the cube's eight corners — the
+/// view you get by clicking a corner on the navigation bear. Each corner meets three faces; its
+/// basis is the average of theirs (see [`DrawingOrientation::view_axes`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CornerView {
+    FrontLeftBottom,
+    FrontRightBottom,
+    BackRightBottom,
+    BackLeftBottom,
+    FrontLeftTop,
+    FrontRightTop,
+    BackRightTop,
+    BackLeftTop,
+}
+
+impl CornerView {
+    pub const ALL: &'static [CornerView] = &[
+        CornerView::FrontLeftBottom,
+        CornerView::FrontRightBottom,
+        CornerView::BackRightBottom,
+        CornerView::BackLeftBottom,
+        CornerView::FrontLeftTop,
+        CornerView::FrontRightTop,
+        CornerView::BackRightTop,
+        CornerView::BackLeftTop,
+    ];
+
+    /// The three orthographic faces this corner meets; its view basis is their average.
+    pub fn faces(self) -> (DrawingOrientation, DrawingOrientation, DrawingOrientation) {
+        use DrawingOrientation as O;
+        match self {
+            CornerView::FrontLeftBottom => (O::Front, O::Left, O::Bottom),
+            CornerView::FrontRightBottom => (O::Front, O::Right, O::Bottom),
+            CornerView::BackRightBottom => (O::Back, O::Right, O::Bottom),
+            CornerView::BackLeftBottom => (O::Back, O::Left, O::Bottom),
+            CornerView::FrontLeftTop => (O::Front, O::Left, O::Top),
+            CornerView::FrontRightTop => (O::Front, O::Right, O::Top),
+            CornerView::BackRightTop => (O::Back, O::Right, O::Top),
+            CornerView::BackLeftTop => (O::Back, O::Left, O::Top),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CornerView::FrontLeftBottom => "Front-Left-Bottom",
+            CornerView::FrontRightBottom => "Front-Right-Bottom",
+            CornerView::BackRightBottom => "Back-Right-Bottom",
+            CornerView::BackLeftBottom => "Back-Left-Bottom",
+            CornerView::FrontLeftTop => "Front-Left-Top",
+            CornerView::FrontRightTop => "Front-Right-Top",
+            CornerView::BackRightTop => "Back-Right-Top",
+            CornerView::BackLeftTop => "Back-Left-Top",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            CornerView::FrontLeftBottom => "front-left-bottom",
+            CornerView::FrontRightBottom => "front-right-bottom",
+            CornerView::BackRightBottom => "back-right-bottom",
+            CornerView::BackLeftBottom => "back-left-bottom",
+            CornerView::FrontLeftTop => "front-left-top",
+            CornerView::FrontRightTop => "front-right-top",
+            CornerView::BackRightTop => "back-right-top",
+            CornerView::BackLeftTop => "back-left-top",
+        }
+    }
+}
+
 /// The orientation a body is projected from in a technical drawing view (#180). The six
-/// orthographic "straight-on" directions, an isometric three-quarter view, plus the twelve
-/// diagonal edge views (#339).
+/// orthographic "straight-on" directions, an isometric three-quarter view, the twelve diagonal
+/// edge views (#339), plus the eight corner three-quarter views (#344).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum DrawingOrientation {
     #[default]
@@ -1927,6 +1996,8 @@ pub enum DrawingOrientation {
     Isometric,
     /// A diagonal edge view (#339).
     Edge(EdgeView),
+    /// A corner three-quarter view (#344).
+    Corner(CornerView),
 }
 
 impl DrawingOrientation {
@@ -1950,6 +2021,14 @@ impl DrawingOrientation {
         DrawingOrientation::Edge(EdgeView::RightBottom),
         DrawingOrientation::Edge(EdgeView::BackBottom),
         DrawingOrientation::Edge(EdgeView::LeftBottom),
+        DrawingOrientation::Corner(CornerView::FrontLeftBottom),
+        DrawingOrientation::Corner(CornerView::FrontRightBottom),
+        DrawingOrientation::Corner(CornerView::BackRightBottom),
+        DrawingOrientation::Corner(CornerView::BackLeftBottom),
+        DrawingOrientation::Corner(CornerView::FrontLeftTop),
+        DrawingOrientation::Corner(CornerView::FrontRightTop),
+        DrawingOrientation::Corner(CornerView::BackRightTop),
+        DrawingOrientation::Corner(CornerView::BackLeftTop),
     ];
 
     pub fn label(self) -> &'static str {
@@ -1961,6 +2040,7 @@ impl DrawingOrientation {
             DrawingOrientation::Top => "Top",
             DrawingOrientation::Bottom => "Bottom",
             DrawingOrientation::Edge(e) => e.label(),
+            DrawingOrientation::Corner(c) => c.label(),
             DrawingOrientation::Isometric => "Isometric",
         }
     }
@@ -1977,7 +2057,13 @@ impl DrawingOrientation {
             other => EdgeView::ALL
                 .iter()
                 .find(|e| e.name() == other)
-                .map(|e| DrawingOrientation::Edge(*e)),
+                .map(|e| DrawingOrientation::Edge(*e))
+                .or_else(|| {
+                    CornerView::ALL
+                        .iter()
+                        .find(|c| c.name() == other)
+                        .map(|c| DrawingOrientation::Corner(*c))
+                }),
         }
     }
 }

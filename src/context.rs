@@ -2591,6 +2591,20 @@ fn drawing_orientation_to_cube_pick(
             Some(CubePick::Face(drawing_orientation_to_standard(o)))
         }
         O::Isometric => Some(CubePick::Corner(CubeCornerId::FrontRightTop)),
+        O::Corner(c) => {
+            use crate::model::CornerView as CV;
+            let id = match c {
+                CV::FrontLeftBottom => CubeCornerId::FrontLeftBottom,
+                CV::FrontRightBottom => CubeCornerId::FrontRightBottom,
+                CV::BackRightBottom => CubeCornerId::BackRightBottom,
+                CV::BackLeftBottom => CubeCornerId::BackLeftBottom,
+                CV::FrontLeftTop => CubeCornerId::FrontLeftTop,
+                CV::FrontRightTop => CubeCornerId::FrontRightTop,
+                CV::BackRightTop => CubeCornerId::BackRightTop,
+                CV::BackLeftTop => CubeCornerId::BackLeftTop,
+            };
+            Some(CubePick::Corner(id))
+        }
         O::Edge(e) => {
             let id = match e {
                 E::FrontRight => CubeEdgeId::FrontRight,
@@ -2623,8 +2637,9 @@ fn drawing_orientation_to_standard(o: crate::model::DrawingOrientation) -> crate
         O::Right => S::Right,
         O::Top => S::Top,
         O::Bottom => S::Bottom,
-        // An edge view (#339) has no single straight-on face; seed the bear from its first face.
+        // An edge/corner view (#339/#344) has no single straight-on face; seed from its first.
         O::Edge(e) => drawing_orientation_to_standard(e.faces().0),
+        O::Corner(c) => drawing_orientation_to_standard(c.faces().0),
     }
 }
 
@@ -2634,8 +2649,9 @@ fn orientation_pick_to_drawing(
 ) -> crate::model::DrawingOrientation {
     use crate::camera::StandardView as S;
     use crate::model::DrawingOrientation as O;
+    use crate::model::{CornerView as CV, EdgeView as EV};
+    use crate::view_cube::{CubeCornerId as CC, CubeEdgeId as CE};
     match pick {
-        crate::view_cube::OrientationPick::Isometric => O::Isometric,
         crate::view_cube::OrientationPick::Standard(v) => match v {
             S::Front => O::Front,
             S::Back => O::Back,
@@ -2644,6 +2660,31 @@ fn orientation_pick_to_drawing(
             S::Top => O::Top,
             S::Bottom => O::Bottom,
         },
+        // A bear edge/corner click now picks that specific view (#344), not a fixed isometric.
+        crate::view_cube::OrientationPick::Edge(id) => O::Edge(match id {
+            CE::FrontRight => EV::FrontRight,
+            CE::BackRight => EV::BackRight,
+            CE::BackLeft => EV::BackLeft,
+            CE::FrontLeft => EV::FrontLeft,
+            CE::FrontTop => EV::FrontTop,
+            CE::RightTop => EV::RightTop,
+            CE::BackTop => EV::BackTop,
+            CE::LeftTop => EV::LeftTop,
+            CE::FrontBottom => EV::FrontBottom,
+            CE::RightBottom => EV::RightBottom,
+            CE::BackBottom => EV::BackBottom,
+            CE::LeftBottom => EV::LeftBottom,
+        }),
+        crate::view_cube::OrientationPick::Corner(id) => O::Corner(match id {
+            CC::FrontLeftBottom => CV::FrontLeftBottom,
+            CC::FrontRightBottom => CV::FrontRightBottom,
+            CC::BackRightBottom => CV::BackRightBottom,
+            CC::BackLeftBottom => CV::BackLeftBottom,
+            CC::FrontLeftTop => CV::FrontLeftTop,
+            CC::FrontRightTop => CV::FrontRightTop,
+            CC::BackRightTop => CV::BackRightTop,
+            CC::BackLeftTop => CV::BackLeftTop,
+        }),
     }
 }
 
@@ -2670,9 +2711,18 @@ mod tests {
             assert_eq!(drawing_orientation_to_standard(o), s);
             assert_eq!(orientation_pick_to_drawing(OrientationPick::Standard(s)), o);
         }
-        // Isometric seeds to Front but a corner/edge pick maps back to Isometric.
+        // Isometric seeds to Front; a bear edge/corner click now picks that specific view (#344).
         assert_eq!(drawing_orientation_to_standard(O::Isometric), S::Front);
-        assert_eq!(orientation_pick_to_drawing(OrientationPick::Isometric), O::Isometric);
+        assert_eq!(
+            orientation_pick_to_drawing(OrientationPick::Edge(crate::view_cube::CubeEdgeId::FrontRight)),
+            O::Edge(crate::model::EdgeView::FrontRight)
+        );
+        assert_eq!(
+            orientation_pick_to_drawing(OrientationPick::Corner(
+                crate::view_cube::CubeCornerId::BackLeftTop
+            )),
+            O::Corner(crate::model::CornerView::BackLeftTop)
+        );
     }
 
     /// #340: every orientation maps to a bear pose highlight — a face, a corner (Isometric), or a
