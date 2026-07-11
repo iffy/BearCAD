@@ -31,7 +31,8 @@ its editor in the context pane:
   natural line spacing. You can embed **variables** in curly braces — `Bore {d}` prints the
   current value of the `d` parameter and re-bakes whenever `d` changes. Any expression works
   inside the braces (`{d / 2}`), the value prints in the document's unit, and an unknown name
-  shows `#NA`. Double a brace (`{{`) to print a literal one.
+  shows `#NA`. Double a brace (`{{`) to print a literal one. While typing a name inside braces,
+  a completion list of your parameters appears — press **Tab** to accept the highlighted one.
 - **Font** — a chooser listing every font family installed on your computer.
 - **B / I / U** — bold, italic, and underline toggles. Bold and italic select the matching
   face of the family.

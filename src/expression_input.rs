@@ -180,6 +180,43 @@ fn token_query(text: &str, token: (usize, usize)) -> String {
     text.chars().skip(token.0).take(token.1 - token.0).collect()
 }
 
+/// Whether `cursor` (a char index) sits inside an open `{…}` interpolation field (#338), honoring
+/// `{{`/`}}` escapes. Used to scope variable autocomplete to brace fields in free-text areas.
+pub fn cursor_inside_interp_field(text: &str, cursor: usize) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let end = cursor.min(chars.len());
+    let mut i = 0;
+    let mut in_field = false;
+    while i < end {
+        let c = chars[i];
+        if in_field {
+            if c == '}' {
+                in_field = false;
+            }
+            i += 1;
+        } else if c == '{' && chars.get(i + 1) == Some(&'{') {
+            i += 2; // escaped literal brace
+        } else if c == '}' && chars.get(i + 1) == Some(&'}') {
+            i += 2; // escaped literal brace
+        } else {
+            if c == '{' {
+                in_field = true;
+            }
+            i += 1;
+        }
+    }
+    in_field
+}
+
+/// Like [`identifier_token_at_cursor`], but only when the cursor is inside a `{…}` field (#338),
+/// so variable completion fires inside brace fields but not on ordinary words of free text.
+pub fn interp_identifier_token_at_cursor(text: &str, cursor: usize) -> Option<(usize, usize)> {
+    if !cursor_inside_interp_field(text, cursor) {
+        return None;
+    }
+    identifier_token_at_cursor(text, cursor)
+}
+
 fn char_range_to_byte_range(text: &str, start: usize, end: usize) -> (usize, usize) {
     let byte_start = text
         .char_indices()
@@ -257,6 +294,12 @@ fn cursor_char_index(state: Option<&TextEditState>, text: &str) -> usize {
         .unwrap_or_else(|| text.chars().count())
 }
 
+/// The current caret char index for the text-edit widget `id`, for positioning `{…}` variable
+/// autocomplete on free-text areas (#338).
+pub fn text_edit_cursor_char_index(ctx: &egui::Context, id: Id, text: &str) -> usize {
+    cursor_char_index(TextEditState::load(ctx, id).as_ref(), text)
+}
+
 /// Handle autocomplete keyboard input before the text edit runs.
 pub fn expression_autocomplete_handle_keys(
     ui: &mut egui::Ui,
@@ -266,11 +309,44 @@ pub fn expression_autocomplete_handle_keys(
     doc: &Document,
     exclude_names: &[&str],
 ) -> bool {
+    autocomplete_handle_keys_with(ui, ctx, id, text, doc, exclude_names, identifier_token_at_cursor)
+}
+
+/// Like [`expression_autocomplete_handle_keys`], but scoped to `{…}` fields for free-text areas
+/// with variable interpolation (#338).
+pub fn interp_autocomplete_handle_keys(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    id: Id,
+    text: &mut String,
+    doc: &Document,
+    exclude_names: &[&str],
+) -> bool {
+    autocomplete_handle_keys_with(
+        ui,
+        ctx,
+        id,
+        text,
+        doc,
+        exclude_names,
+        interp_identifier_token_at_cursor,
+    )
+}
+
+fn autocomplete_handle_keys_with(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    id: Id,
+    text: &mut String,
+    doc: &Document,
+    exclude_names: &[&str],
+    token_at: impl Fn(&str, usize) -> Option<(usize, usize)>,
+) -> bool {
     let Some(mut text_state) = TextEditState::load(ctx, id) else {
         return false;
     };
     let cursor = cursor_char_index(Some(&text_state), text);
-    let Some(token) = identifier_token_at_cursor(text, cursor) else {
+    let Some(token) = token_at(text, cursor) else {
         return false;
     };
     let query = token_query(text, token);
@@ -322,7 +398,7 @@ pub fn expression_autocomplete_handle_keys(
 
 /// Show the autocomplete dropdown below a focused expression field.
 pub fn expression_autocomplete_show_dropdown(
-    _ui: &mut egui::Ui,
+    ui: &mut egui::Ui,
     ctx: &egui::Context,
     anchor: &Response,
     id: Id,
@@ -331,7 +407,42 @@ pub fn expression_autocomplete_show_dropdown(
     exclude_names: &[&str],
     cursor_char_index: usize,
 ) -> bool {
-    let Some(token) = identifier_token_at_cursor(text, cursor_char_index) else {
+    autocomplete_show_dropdown_with(
+        ui, ctx, anchor, id, text, doc, exclude_names, cursor_char_index,
+        identifier_token_at_cursor,
+    )
+}
+
+/// Like [`expression_autocomplete_show_dropdown`], scoped to `{…}` fields (#338).
+pub fn interp_autocomplete_show_dropdown(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    anchor: &Response,
+    id: Id,
+    text: &mut String,
+    doc: &Document,
+    exclude_names: &[&str],
+    cursor_char_index: usize,
+) -> bool {
+    autocomplete_show_dropdown_with(
+        ui, ctx, anchor, id, text, doc, exclude_names, cursor_char_index,
+        interp_identifier_token_at_cursor,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn autocomplete_show_dropdown_with(
+    _ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    anchor: &Response,
+    id: Id,
+    text: &mut String,
+    doc: &Document,
+    exclude_names: &[&str],
+    cursor_char_index: usize,
+    token_at: impl Fn(&str, usize) -> Option<(usize, usize)>,
+) -> bool {
+    let Some(token) = token_at(text, cursor_char_index) else {
         return false;
     };
     let query = token_query(text, token);
@@ -515,6 +626,28 @@ mod tests {
     fn identifier_token_at_cursor_ignores_unit_suffix() {
         let text = "10mm";
         assert_eq!(identifier_token_at_cursor(text, 4), None);
+    }
+
+    /// #338: variable autocomplete in free text fires only inside a `{…}` field, honoring
+    /// `{{`/`}}` escapes.
+    #[test]
+    fn interp_token_only_inside_brace_fields() {
+        // Cursor after "wid" inside a field → token found.
+        let inside = "Dim: {wid";
+        let end = inside.chars().count();
+        assert_eq!(interp_identifier_token_at_cursor(inside, end), Some((6, 9)));
+        // Same word in plain text (no open brace) → no completion.
+        let plain = "Dim: wid";
+        assert_eq!(interp_identifier_token_at_cursor(plain, plain.chars().count()), None);
+        // After the field closes → no completion.
+        let closed = "{foo} bar";
+        assert!(!cursor_inside_interp_field(closed, closed.chars().count()));
+        // An escaped `{{` does not open a field.
+        let escaped = "{{lit";
+        assert!(!cursor_inside_interp_field(escaped, escaped.chars().count()));
+        // A real field after an escape still opens.
+        let mixed = "{{x}} {foo";
+        assert!(cursor_inside_interp_field(mixed, mixed.chars().count()));
     }
 
     #[test]

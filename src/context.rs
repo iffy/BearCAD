@@ -2057,11 +2057,33 @@ pub fn show_pane(
         ui.separator();
         ui.label(egui::RichText::new("Text").strong());
         let mut edit_text = control.text.clone();
-        if ui
-            .add(egui::TextEdit::multiline(&mut edit_text).desired_rows(2).desired_width(f32::INFINITY))
-            .changed()
+        // {…} variable autocomplete (#338): handle Tab/arrows before the field, dropdown after.
+        let text_id = ui.make_persistent_id("sketch_text_edit_field");
+        let ectx = ui.ctx().clone();
+        if ectx.memory(|m| m.focused()) == Some(text_id)
+            && crate::expression_input::interp_autocomplete_handle_keys(
+                ui, &ectx, text_id, &mut edit_text, doc, &[],
+            )
         {
-            on_sketch_text_edit(SketchTextEdit::Text(edit_text));
+            on_sketch_text_edit(SketchTextEdit::Text(edit_text.clone()));
+        }
+        let text_resp = ui.add(
+            egui::TextEdit::multiline(&mut edit_text)
+                .id(text_id)
+                .desired_rows(2)
+                .desired_width(f32::INFINITY),
+        );
+        if text_resp.changed() {
+            on_sketch_text_edit(SketchTextEdit::Text(edit_text.clone()));
+        }
+        if text_resp.has_focus() {
+            let cursor =
+                crate::expression_input::text_edit_cursor_char_index(&ectx, text_id, &edit_text);
+            if crate::expression_input::interp_autocomplete_show_dropdown(
+                ui, &ectx, &text_resp, text_id, &mut edit_text, doc, &[], cursor,
+            ) {
+                on_sketch_text_edit(SketchTextEdit::Text(edit_text.clone()));
+            }
         }
         // Font family chooser.
         egui::ComboBox::from_id_salt("sketch_text_font")
@@ -2230,15 +2252,33 @@ pub fn show_pane(
         ui.separator();
         ui.label(egui::RichText::new("Text").strong());
         let mut edit_text = control.text.clone();
-        if ui
-            .add(
-                egui::TextEdit::multiline(&mut edit_text)
-                    .desired_rows(2)
-                    .desired_width(f32::INFINITY),
+        // {…} variable autocomplete (#338): handle Tab/arrows before the field, dropdown after.
+        let text_id = ui.make_persistent_id("drawing_annotation_edit_field");
+        let ectx = ui.ctx().clone();
+        if ectx.memory(|m| m.focused()) == Some(text_id)
+            && crate::expression_input::interp_autocomplete_handle_keys(
+                ui, &ectx, text_id, &mut edit_text, doc, &[],
             )
-            .changed()
         {
-            on_drawing_annotation_edit(DrawingAnnotationEdit::Text(edit_text));
+            on_drawing_annotation_edit(DrawingAnnotationEdit::Text(edit_text.clone()));
+        }
+        let text_resp = ui.add(
+            egui::TextEdit::multiline(&mut edit_text)
+                .id(text_id)
+                .desired_rows(2)
+                .desired_width(f32::INFINITY),
+        );
+        if text_resp.changed() {
+            on_drawing_annotation_edit(DrawingAnnotationEdit::Text(edit_text.clone()));
+        }
+        if text_resp.has_focus() {
+            let cursor =
+                crate::expression_input::text_edit_cursor_char_index(&ectx, text_id, &edit_text);
+            if crate::expression_input::interp_autocomplete_show_dropdown(
+                ui, &ectx, &text_resp, text_id, &mut edit_text, doc, &[], cursor,
+            ) {
+                on_drawing_annotation_edit(DrawingAnnotationEdit::Text(edit_text.clone()));
+            }
         }
         if ui.button("Remove text").clicked() {
             on_drawing_annotation_edit(DrawingAnnotationEdit::Remove);

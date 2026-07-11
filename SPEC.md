@@ -976,7 +976,10 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   context-pane editor still shows the raw template. Sketch text bakes its glyph outlines from the
   interpolated string while storing the raw template, and `recompute_document_geometry`
   re-bakes every sketch text (`parameters::rebake_sketch_texts`) when a parameter changes, so the
-  text follows edits like any other parametric feature.
+  text follows edits like any other parametric feature. Both text editors offer **parameter-name
+  tab completion scoped to `{…}` fields** (`expression_input::interp_autocomplete_*`): typing a
+  name inside braces shows the parameter dropdown (Tab/Space/arrows to accept), but ordinary words
+  of prose don't trigger it.
 - **Add-view tool (#289):** the workbench's **Add view** tool (＋ icon; tool name
   `drawing_add`) replaces the old inline "Add view:" combo row. With it active, clicking a
   **body or sketch** in the Elements pane drops a projection of it onto the page and selects

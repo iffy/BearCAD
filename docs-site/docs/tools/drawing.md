@@ -54,7 +54,8 @@ or remove a selected note from the context pane.
 Notes can embed **variables** in curly braces: `Width: {plate_w}` shows the current value of the
 `plate_w` parameter, and the note updates whenever the parameter changes. Any expression works
 inside the braces (`{plate_w + 3in}`), the value prints in the document's unit, and an unknown
-name shows `#NA`. To print a literal brace, double it: `{{` becomes `{`.
+name shows `#NA`. To print a literal brace, double it: `{{` becomes `{`. While typing a name
+inside braces, a completion list of your parameters pops up — press **Tab** to accept it.
 
 ## Aligned views
 
