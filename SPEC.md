@@ -81,6 +81,11 @@ features in dependency order.
   default sketching plane when none is chosen. X and Y span the ground; Z is height.
 - Internal canonical length unit is millimetres (§5.3); the ground plane and all geometry
   are expressed in this convention.
+- **Adaptive ground grid & origin axes (#353):** the grid and the origin X/Y/Z axis triad scale
+  with the camera so they stay a usable on-screen size for parts of any magnitude — the axes are
+  kept at least ~90 px long and the grid spacing snaps to a "nice" 1/2/5×10ⁿ step
+  (`gpu_viewport::nice_grid_step`) sized to the zoom, so a 20 ft part doesn't shrink them to a
+  dot. Line count stays bounded (extent is a fixed multiple of the current step).
 
 ---
 

@@ -44,6 +44,26 @@ use glam::{Mat4, Quat, Vec3};
 
 pub const GRID_EXTENT: f32 = 200.0;
 pub const GRID_STEP: f32 = 20.0;
+
+/// Round a desired grid spacing up to a "nice" 1/2/5×10ⁿ value (#353), so an adaptive grid steps
+/// through familiar magnitudes (…, 10, 20, 50, 100, 200, …) as the camera zooms.
+pub fn nice_grid_step(desired: f32) -> f32 {
+    if !(desired.is_finite()) || desired <= 0.0 {
+        return GRID_STEP;
+    }
+    let pow = 10f32.powf(desired.log10().floor());
+    let m = desired / pow; // 1..10
+    let nice = if m <= 1.0 {
+        1.0
+    } else if m <= 2.0 {
+        2.0
+    } else if m <= 5.0 {
+        5.0
+    } else {
+        10.0
+    };
+    nice * pow
+}
 /// Brightness multiplier for geometry outside the active sketch (other sketches, planes).
 pub const SKETCH_DIMMED: f32 = 0.50;
 /// Ground grid and world axes stay readable while sketching.
@@ -1592,7 +1612,35 @@ impl<'a> SceneMesh<'a> {
         dim: bool,
         palette: &ViewportPalette,
     ) {
-        let e = GRID_EXTENT;
+        // Keep the grid and origin axes a usable on-screen size when zoomed out for large parts
+        // (#353): measure how many pixels one world-mm spans at the origin, then scale the grid
+        // extent/step and axis length so the axes are always at least ~MIN_AXIS_PX pixels and the
+        // grid stays a readable reference instead of collapsing to a dot.
+        const MIN_AXIS_PX: f32 = 90.0;
+        const TARGET_GRID_STEP_PX: f32 = 26.0;
+        // Pixels per world-mm along the camera's screen-horizontal, measured at the origin.
+        let ppw = {
+            let fwd = (cam.target - cam.eye()).normalize_or_zero();
+            let mut right = fwd.cross(Vec3::Z);
+            if right.length_squared() < 1e-6 {
+                right = Vec3::X;
+            }
+            let right = right.normalize();
+            match (
+                cam.project(Vec3::ZERO, viewport, view_proj),
+                cam.project(right * 10.0, viewport, view_proj),
+            ) {
+                (Some(a), Some(b)) => ((b - a).length() / 10.0).max(1e-6),
+                _ => 1.0,
+            }
+        };
+        // Grid step: a "nice" 1/2/5×10ⁿ multiple whose on-screen spacing is near the target, but
+        // never below the default fine step when zoomed in.
+        let grid_step = nice_grid_step((TARGET_GRID_STEP_PX / ppw).max(GRID_STEP));
+        // Extent covers a generous multiple of the step (bounded line count), and at least enough
+        // that the axes reach MIN_AXIS_PX.
+        let axis_len = (MIN_AXIS_PX / ppw).max(GRID_EXTENT);
+        let e = (grid_step * 24.0).max(axis_len).max(GRID_EXTENT);
         // Solid ground (#159): one filled plane in the grid's grey (darkened so bodies and
         // sketches still read against it), pushed slightly away from the camera with the
         // same bias the grid lines use so body bottoms resting on z = 0 never z-fight it.
@@ -1637,12 +1685,12 @@ impl<'a> SceneMesh<'a> {
                 view_proj,
                 GRID_DEPTH_BIAS,
             );
-                t += GRID_STEP;
+                t += grid_step;
             }
         }
         self.push_line_segment_with_bias(
             Vec3::ZERO,
-            Vec3::new(e, 0.0, 0.0),
+            Vec3::new(axis_len, 0.0, 0.0),
             sketch_ground_color(palette.x_axis, dim),
             2.0,
             cam,
@@ -1652,7 +1700,7 @@ impl<'a> SceneMesh<'a> {
         );
         self.push_line_segment_with_bias(
             Vec3::ZERO,
-            Vec3::new(0.0, e, 0.0),
+            Vec3::new(0.0, axis_len, 0.0),
             sketch_ground_color(palette.y_axis, dim),
             2.0,
             cam,
@@ -1662,7 +1710,7 @@ impl<'a> SceneMesh<'a> {
         );
         self.push_line_segment_with_bias(
             Vec3::ZERO,
-            Vec3::new(0.0, 0.0, e),
+            Vec3::new(0.0, 0.0, axis_len),
             sketch_ground_color(palette.z_axis, dim),
             2.0,
             cam,
@@ -5371,6 +5419,20 @@ mod tests {
             with_gizmo.indices.len() > base.indices.len(),
             "extrude gizmo should add triangles to the viewport scene"
         );
+    }
+
+    /// #353: the adaptive grid step snaps a desired spacing up to a 1/2/5×10ⁿ magnitude.
+    #[test]
+    fn nice_grid_step_snaps_to_familiar_magnitudes() {
+        assert_eq!(nice_grid_step(1.0), 1.0);
+        assert_eq!(nice_grid_step(1.5), 2.0);
+        assert_eq!(nice_grid_step(3.0), 5.0);
+        assert_eq!(nice_grid_step(7.0), 10.0);
+        assert_eq!(nice_grid_step(120.0), 200.0);
+        assert_eq!(nice_grid_step(2500.0), 5000.0);
+        // Degenerate inputs fall back to the default fine step.
+        assert_eq!(nice_grid_step(0.0), GRID_STEP);
+        assert_eq!(nice_grid_step(f32::NAN), GRID_STEP);
     }
 
     #[test]
