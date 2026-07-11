@@ -1059,8 +1059,11 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   **normal linear dimension** — extension lines, an offset dimension line with arrowheads, the
   value running along it (#320) — since it reads as a length. **Silhouette edges (#319):** a body view also strokes the
   view-dependent silhouette (`solid_mesh_silhouette_edges`: edges where the two adjacent faces
-  face opposite ways), so a cylinder's straight sides show — they're added to the stroke
-  geometry only, not to circle detection or dimensioning, so the rims stay clean circles.
+  face opposite ways), so a cylinder's straight sides show. They're kept out of **circle
+  detection** so the rims stay clean circles, but they **are dimensionable** (#334): the
+  dimensioning candidate set is `drawing::drawing_view_dimensionable_edges` (crease edges plus
+  silhouette edges, deduped), so the **length** of a smooth extrusion — which has no crease edge
+  down its side — can be dimensioned like any straight edge, in the editor and both exports.
 - **Dimensions:** a newly added projection starts with **no dimensions shown** (#331). The
   projection's context pane has **Show all dimensions** and **Hide all dimensions** buttons
   (`Action::SetAllDrawingDimensions`, `DrawingViewEdit::SetAllDimensions`): *Show all* populates

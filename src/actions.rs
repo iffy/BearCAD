@@ -2756,8 +2756,11 @@ fn default_dimensioned_edges(
     // (#294) — and skip tessellated-circle segments, which are covered by a single diameter
     // dimension instead (#313).
     let (right, up) = crate::drawing::view_axes(view.orientation);
-    let world = crate::drawing::drawing_view_world_edges(doc, view);
-    let world_circles = crate::drawing::classify_world_circles(&world);
+    // Circle detection stays on crease-only edges (#319); the candidate set adds silhouette edges
+    // so a smooth extrusion's length is dimensioned too (#334).
+    let creases = crate::drawing::drawing_view_world_edges(doc, view);
+    let world = crate::drawing::drawing_view_dimensionable_edges(doc, view);
+    let world_circles = crate::drawing::classify_world_circles(&creases);
     let pcircles: Vec<crate::drawing::ProjectedCircle> = world_circles
         .iter()
         .map(|c| crate::drawing::project_world_circle(c, right, up))

@@ -5386,6 +5386,39 @@ mod tests {
         );
     }
 
+    /// #334: a smooth extrusion (cylinder) has no crease edge down its side, so its **length**
+    /// is only dimensionable via the view-dependent silhouette edges. `drawing_view_dimensionable_edges`
+    /// adds them, so a side view exposes more edges than the crease-only set.
+    #[test]
+    fn cylinder_length_is_dimensionable_via_silhouette() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.circle{ x = 0, y = 0, r = 10 }
+            bearcad.extrude{ circle = 0, distance = 30 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+        "#,
+        );
+        let view = &state.doc.drawings[0].views[0];
+        let creases = crate::drawing::drawing_view_world_edges(&state.doc, view);
+        let dimensionable = crate::drawing::drawing_view_dimensionable_edges(&state.doc, view);
+        assert!(
+            dimensionable.len() > creases.len(),
+            "silhouette side edges join the dimensionable set (#334): creases={}, dimensionable={}",
+            creases.len(),
+            dimensionable.len()
+        );
+        // At least one added edge spans the 30mm extrusion length in projected space.
+        let (right, up) = crate::drawing::view_axes(view.orientation);
+        let has_length = dimensionable.iter().any(|(a, b)| {
+            let pa = glam::Vec2::new(a.dot(right), a.dot(up));
+            let pb = glam::Vec2::new(b.dot(right), b.dot(up));
+            ((pb - pa).length() - 30.0).abs() < 0.5
+        });
+        assert!(has_length, "a side edge measures the 30mm length");
+    }
+
     /// #331: "Show all dimensions" populates the deduped, staggered default set and "Hide all"
     /// clears it, both via `Action::SetAllDrawingDimensions`.
     #[test]

@@ -9051,7 +9051,11 @@ impl App {
                 );
                 let (right, up) = crate::drawing::view_axes(view.orientation);
                 let project = |p: Vec3| egui::vec2(p.dot(right), p.dot(up));
-                let world_edges = crate::drawing::drawing_view_world_edges(&self.state.doc, view);
+                // Crease edges drive circle detection (#319); the dimensionable set also carries
+                // silhouette edges so a smooth extrusion's length can be dimensioned (#334).
+                let crease_edges = crate::drawing::drawing_view_world_edges(&self.state.doc, view);
+                let world_edges =
+                    crate::drawing::drawing_view_dimensionable_edges(&self.state.doc, view);
                 if world_edges.is_empty() {
                     continue;
                 }
@@ -9102,7 +9106,7 @@ impl App {
                 // Detect tessellated circles in world space (#313) and project them for this
                 // view — round face-on, a foreshortened line edge-on (#319).
                 let (vright, vup) = crate::drawing::view_axes(view.orientation);
-                let world_circles = crate::drawing::classify_world_circles(&world_edges);
+                let world_circles = crate::drawing::classify_world_circles(&crease_edges);
                 let pcircles: Vec<crate::drawing::ProjectedCircle> = world_circles
                     .iter()
                     .map(|c| crate::drawing::project_world_circle(c, vright, vup))

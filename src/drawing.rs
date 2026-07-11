@@ -335,6 +335,34 @@ pub fn drawing_view_silhouette_edges(doc: &Document, view: &DrawingView) -> Vec<
     crate::gpu_viewport::solid_mesh_silhouette_edges(&mesh, right.cross(up))
 }
 
+/// The edges a view can dimension (#334): its crease/feature edges plus the view-dependent
+/// silhouette edges (a cylinder's straight sides), so the **length** of a smooth extrusion — which
+/// has no crease edge down its side — can be dimensioned like any straight edge. Silhouette edges
+/// are deduped against the crease set by quantized endpoints. Circle detection deliberately stays
+/// on the crease-only [`drawing_view_world_edges`] (#319), so this is used only for dimensioning.
+pub fn drawing_view_dimensionable_edges(doc: &Document, view: &DrawingView) -> Vec<(Vec3, Vec3)> {
+    let mut edges = drawing_view_world_edges(doc, view);
+    let mut seen: std::collections::HashSet<crate::model::DrawingEdgeKey> = edges
+        .iter()
+        .map(|(a, b)| {
+            crate::model::normalized_edge_key(
+                crate::hierarchy::quantize_body_point(*a),
+                crate::hierarchy::quantize_body_point(*b),
+            )
+        })
+        .collect();
+    for (a, b) in drawing_view_silhouette_edges(doc, view) {
+        let key = crate::model::normalized_edge_key(
+            crate::hierarchy::quantize_body_point(a),
+            crate::hierarchy::quantize_body_point(b),
+        );
+        if seen.insert(key) {
+            edges.push((a, b));
+        }
+    }
+    edges
+}
+
 /// The architectural dimension-line geometry for one edge (#294), all in the view's projected
 /// 2D mm space. `a`/`b` are the edge endpoints; `outward` is the unit perpendicular pointing
 /// away from the geometry centroid; `offset` is how far out along `outward` the dimension line
@@ -774,7 +802,10 @@ fn render_view_geometry<C: Canvas>(
     cell_h: f32,
     unit: crate::value::LengthUnit,
 ) {
-    let world_edges = drawing_view_world_edges(doc, view);
+    // Crease edges drive circle detection (#319); the dimensionable set also carries silhouette
+    // edges so a smooth extrusion's length can be dimensioned (#334).
+    let crease_edges = drawing_view_world_edges(doc, view);
+    let world_edges = drawing_view_dimensionable_edges(doc, view);
     if world_edges.is_empty() {
         return;
     }
@@ -813,7 +844,7 @@ fn render_view_geometry<C: Canvas>(
     // Detect tessellated circles (#313) in world space and project them for this view: round
     // when face-on, a foreshortened line when edge-on (#319). Their segments are drawn as the
     // smooth circle/line and dimensioned once (the diameter), not per short segment.
-    let world_circles = classify_world_circles(&world_edges);
+    let world_circles = classify_world_circles(&crease_edges);
     let pcircles: Vec<ProjectedCircle> = world_circles
         .iter()
         .map(|c| project_world_circle(c, right, up))

@@ -72,7 +72,9 @@ Aligned views inherit the parent's scale and orientation, so a whole group reads
    measurement centred on it, all drawn with a lighter, thinner stroke than the model edges so
    the part outline stays the eye's focus — the label runs along the dimension line (or sits just
    past its end when the line is too short to fit). Round features (holes, cylinders) render as a single
-   smooth circle with one diameter dimension (Ø), not a ring of little segments. The set stays
+   smooth circle with one diameter dimension (Ø), not a ring of little segments. Round and other
+   smooth extrusions can still be dimensioned along their **length** — click their straight side
+   (the cylinder wall) with the Dimension tool, or use Show all dimensions. The set stays
    readable: coincident edges (a box's bottom edge, front and back, land on
    the same line) share one dimension, and parallel dimensions that would otherwise sit on top of
    each other are stacked onto separate lines so no measurement label overlaps another. With the **Dimension tool** active, the edge under the cursor
