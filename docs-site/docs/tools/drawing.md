@@ -82,7 +82,8 @@ Aligned views inherit the parent's scale and orientation, so a whole group reads
    either the model edge **or the dimension line itself**. **Shift+click**
    two edges to show the angle between them (Shift+click either again to hide it). **Drag a
    dimension's label** (with the Select or Dimension tool) to push its line further from or
-   closer to the edge.
+   closer to the edge — with the Select tool, hovering a dimension highlights its line and label
+   so you can see which one you're about to move.
 4. Remove a view with the **×** beside it. Click **Back** in the toolbar to return to the 3D
    model. Reopen a
    drawing any time by clicking its row (or right-click → **Edit drawing**).

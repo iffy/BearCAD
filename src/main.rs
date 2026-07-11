@@ -9440,9 +9440,26 @@ impl App {
                                 ui.make_persistent_id(("drawing_dim_label", drawing, vi, key)),
                                 egui::Sense::drag(),
                             );
-                            if lr.hovered() || self.drawing_dim_label_drag.map(|d| d.key) == Some(key)
-                            {
+                            let active =
+                                lr.hovered() || self.drawing_dim_label_drag.map(|d| d.key) == Some(key);
+                            if active {
                                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                            }
+                            // With the Select tool, highlight the dimension being hovered so it's
+                            // obvious which one a drag will move (#326): accent the dimension line
+                            // and outline its label.
+                            if active && self.state.tool == Tool::Select {
+                                let accent = egui::Color32::from_rgb(90, 150, 230);
+                                painter.line_segment(
+                                    [sp(g.line.0), sp(g.line.1)],
+                                    egui::Stroke::new(2.0, accent),
+                                );
+                                painter.rect_stroke(
+                                    label_rect,
+                                    2.0,
+                                    egui::Stroke::new(1.0, accent),
+                                    egui::StrokeKind::Outside,
+                                );
                             }
                             if lr.drag_started() {
                                 if let Some(pp) = lr.interact_pointer_pos() {
