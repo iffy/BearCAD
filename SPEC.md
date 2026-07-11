@@ -967,6 +967,16 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   active, the context pane belongs to placing/editing text: a projection that happens to still be
   selected does **not** show its view editor (#329), and the **Default units** section is hidden
   (#330) — both reappear under the Select/Dimension tools.
+- **Variable interpolation in text (#338):** both drawing annotations and sketch text may embed
+  `{expression}` fields that resolve against the document's parameters
+  (`value::interpolate_text`). A field evaluates any length/angle expression — a bare parameter
+  (`{foo}`), or arithmetic (`{foo + 3in}`) — and substitutes the value formatted in the
+  document's default unit; `{{`/`}}` are literal braces; an unknown variable or syntax error
+  renders as `#NA`. Drawing annotations interpolate at render time (editor and exports), so the
+  context-pane editor still shows the raw template. Sketch text bakes its glyph outlines from the
+  interpolated string while storing the raw template, and `recompute_document_geometry`
+  re-bakes every sketch text (`parameters::rebake_sketch_texts`) when a parameter changes, so the
+  text follows edits like any other parametric feature.
 - **Add-view tool (#289):** the workbench's **Add view** tool (＋ icon; tool name
   `drawing_add`) replaces the old inline "Add view:" combo row. With it active, clicking a
   **body or sketch** in the Elements pane drops a projection of it onto the page and selects

@@ -7211,12 +7211,16 @@ impl AppState {
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
+                // Bake the interpolated string (#338) — `{expr}` fields resolve against the
+                // document's parameters — while the model stores the raw template so editing and
+                // re-baking on parameter changes see the `{…}` source.
+                let baked = crate::value::interpolate_text(&text, &self.doc);
                 let Some((shaped, font_bytes)) = crate::text::shape_with_system_font_wrapped(
                     &font_family,
                     bold,
                     italic,
                     size,
-                    &text,
+                    &baked,
                     wrap_width,
                 ) else {
                     let e = format!("Font \"{font_family}\" not found or unreadable");
@@ -7267,15 +7271,17 @@ impl AppState {
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
-                // Re-bake from the font; fall back to the existing outlines/bytes if the font is
-                // gone but only the transform/style changed and the string is unchanged.
+                // Re-bake from the font using the interpolated string (#338), storing the raw
+                // template; fall back to the existing outlines/bytes if the font is gone but only
+                // the transform/style changed and the template is unchanged.
+                let baked = crate::value::interpolate_text(&text, &self.doc);
                 let (contours, font_bytes) =
                     match crate::text::shape_with_system_font_wrapped(
                         &font_family,
                         bold,
                         italic,
                         size,
-                        &text,
+                        &baked,
                         wrap_width,
                     ) {
                         Some((shaped, bytes)) => (shaped.contours, bytes),
@@ -12632,6 +12638,51 @@ mod tests {
         assert!(
             state.doc.sketch_texts[0].contours.len() > a_contours,
             "re-bake reflects the longer string"
+        );
+    }
+
+    /// #338: sketch text stores its raw `{expr}` template but bakes the interpolated string, and
+    /// changing a referenced parameter re-bakes the outlines (via recompute_document_geometry).
+    #[test]
+    fn sketch_text_interpolates_and_rebakes_on_parameter_change() {
+        let family = ["Helvetica", "Arial", "DejaVu Sans", "Liberation Sans"]
+            .into_iter()
+            .find(|f| crate::text::font_bytes(f, false, false).is_some());
+        let Some(family) = family else {
+            eprintln!("no usable system font; skipping");
+            return;
+        };
+        let mut state = AppState::default();
+        crate::parameters::add_parameter(&mut state.doc, "foo".to_string(), "20mm".to_string())
+            .unwrap();
+        let si = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let result = state.apply(Action::CreateSketchText {
+            sketch: si,
+            text: "W={foo}".to_string(),
+            font_family: family.to_string(),
+            bold: false,
+            italic: false,
+            underline: false,
+            size: 10.0,
+            size_expr: "10".to_string(),
+            origin: (0.0, 0.0),
+            rotation: 0.0,
+            wrap_width: None,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{}", state.status);
+        // The raw template is stored; the outlines are baked from the interpolated string.
+        assert_eq!(state.doc.sketch_texts[0].text, "W={foo}");
+        let baked_20 = state.doc.sketch_texts[0].contours.len();
+        assert!(baked_20 > 0, "outlines baked from the interpolated string");
+
+        // Changing foo to a longer value re-bakes with more glyphs ("W=200.0 mm" vs "W=20.0 mm").
+        let pi = crate::parameters::parameter_index_by_name(&state.doc, "foo").unwrap();
+        crate::parameters::set_parameter_expression(&mut state.doc, pi, "200mm".to_string())
+            .unwrap();
+        assert_eq!(state.doc.sketch_texts[0].text, "W={foo}", "template unchanged");
+        assert!(
+            state.doc.sketch_texts[0].contours.len() > baked_20,
+            "re-bake reflects the longer interpolated value"
         );
     }
 

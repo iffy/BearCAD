@@ -51,6 +51,11 @@ click where you want it for a box that grows to fit, or drag a rectangle for one
 the text to that width. Switch to the **Select** tool to drag notes around the page, and edit
 or remove a selected note from the context pane.
 
+Notes can embed **variables** in curly braces: `Width: {plate_w}` shows the current value of the
+`plate_w` parameter, and the note updates whenever the parameter changes. Any expression works
+inside the braces (`{plate_w + 3in}`), the value prints in the document's unit, and an unknown
+name shows `#NA`. To print a literal brace, double it: `{{` becomes `{`.
+
 ## Aligned views
 
 To place a second view of a body that stays lined up with the first, use the **Aligned view**

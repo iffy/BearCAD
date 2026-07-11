@@ -9467,8 +9467,11 @@ impl App {
                     .wrap_frac
                     .map(|w| (w * page.width()).max(10.0))
                     .unwrap_or(f32::INFINITY);
+                // Substitute {expr} variable fields against the document's parameters (#338); the
+                // context-pane editor still holds the raw template.
+                let rendered = crate::value::interpolate_text(&ann.text, &self.state.doc);
                 let galley = ui.painter().layout(
-                    ann.text.clone(),
+                    rendered,
                     egui::FontId::proportional(font_px),
                     INK,
                     wrap_px,

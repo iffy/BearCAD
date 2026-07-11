@@ -28,7 +28,10 @@ Selecting a single text element (click it in the Elements pane, or place a new o
 its editor in the context pane:
 
 - **Text** — a multi-line box; newlines stack lines below each other with the font's
-  natural line spacing.
+  natural line spacing. You can embed **variables** in curly braces — `Bore {d}` prints the
+  current value of the `d` parameter and re-bakes whenever `d` changes. Any expression works
+  inside the braces (`{d / 2}`), the value prints in the document's unit, and an unknown name
+  shows `#NA`. Double a brace (`{{`) to print a literal one.
 - **Font** — a chooser listing every font family installed on your computer.
 - **B / I / U** — bold, italic, and underline toggles. Bold and italic select the matching
   face of the family.

@@ -382,6 +382,68 @@ pub fn eval_parameter_in_doc(text: &str, doc: &Document) -> Option<EvaluatedPara
         })
 }
 
+/// The placeholder rendered for a `{…}` field whose expression can't be evaluated (#338).
+pub const INTERP_NA: &str = "#NA";
+
+/// Interpolate `{expression}` fields in `template` against the document's parameters (#338).
+///
+/// - `{expr}` evaluates `expr` (any length/angle expression, including parameter references and
+///   arithmetic like `foo + 3in`) and substitutes the value, formatted in the document's default
+///   unit. An expression that fails to evaluate (unknown variable, syntax error) renders as
+///   [`INTERP_NA`].
+/// - `{{` and `}}` are literal `{` and `}`. A `}` with no open field is literal.
+/// - An unterminated `{` (no closing `}`) is emitted literally so nothing is silently dropped.
+pub fn interpolate_text(template: &str, doc: &Document) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' if chars.peek() == Some(&'{') => {
+                chars.next();
+                out.push('{');
+            }
+            '}' if chars.peek() == Some(&'}') => {
+                chars.next();
+                out.push('}');
+            }
+            '{' => {
+                // Collect up to the next single '}'. Expressions never contain braces.
+                let mut expr = String::new();
+                let mut closed = false;
+                for e in chars.by_ref() {
+                    if e == '}' {
+                        closed = true;
+                        break;
+                    }
+                    expr.push(e);
+                }
+                if closed {
+                    out.push_str(&eval_interp_field(&expr, doc));
+                } else {
+                    // Unterminated field — keep the raw text rather than lose it.
+                    out.push('{');
+                    out.push_str(&expr);
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Evaluate one `{…}` field's expression to its display string, or [`INTERP_NA`] on failure.
+fn eval_interp_field(expr: &str, doc: &Document) -> String {
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        return INTERP_NA.to_string();
+    }
+    match eval_parameter_in_doc(trimmed, doc) {
+        Some(EvaluatedParameter::LengthMm(v)) => format_length_display_in(v, doc.default_length_unit),
+        Some(EvaluatedParameter::AngleRad(v)) => format_angle_display_in(v, doc.default_angle_unit),
+        None => INTERP_NA.to_string(),
+    }
+}
+
 /// Whether a parameter expression parses as a length or angle value.
 pub fn valid_parameter_expression_with_params(text: &str, params: &[(&str, &str)]) -> bool {
     eval_length_mm_with_params(text, params).is_some()
@@ -1249,6 +1311,47 @@ mod tests {
             }
             _ => panic!("expected angle parameter"),
         }
+    }
+
+    /// #338: `{expr}` fields interpolate against the document's parameters; `{{`/`}}` escape
+    /// literal braces, unknown/invalid expressions render as `#NA`, and arbitrary arithmetic
+    /// works. Values format in the document's default length/angle unit.
+    #[test]
+    fn interpolate_text_substitutes_expression_fields() {
+        let mut doc = Document::default();
+        doc.parameters.push(crate::model::Parameter {
+            name: "foo".to_string(),
+            expression: "20mm".to_string(),
+            deleted: false,
+            source: None,
+        });
+        assert_eq!(interpolate_text("Dim: {foo}", &doc), "Dim: 20.0 mm");
+        // Arbitrary expression: foo + 3in = 20 + 76.2 = 96.2 mm.
+        assert_eq!(interpolate_text("{foo + 3in}", &doc), "96.2 mm");
+        // Literal braces via doubling.
+        assert_eq!(interpolate_text("This is {{cool}}", &doc), "This is {cool}");
+        // Unknown variable → #NA.
+        assert_eq!(interpolate_text("{bar}", &doc), "#NA");
+        // Empty field → #NA; plain text passes through.
+        assert_eq!(interpolate_text("a {} b", &doc), "a #NA b");
+        assert_eq!(interpolate_text("no fields here", &doc), "no fields here");
+        // Unterminated field keeps its raw text.
+        assert_eq!(interpolate_text("open {foo", &doc), "open {foo");
+    }
+
+    /// #338: an interpolated length follows the document's display unit, so the same value reads
+    /// differently when the document is set to inches.
+    #[test]
+    fn interpolate_text_uses_document_display_unit() {
+        let mut doc = Document::default();
+        doc.parameters.push(crate::model::Parameter {
+            name: "foo".to_string(),
+            expression: "3in".to_string(),
+            deleted: false,
+            source: None,
+        });
+        doc.default_length_unit = LengthUnit::In;
+        assert_eq!(interpolate_text("{foo}", &doc), "3.0 in");
     }
 
     #[test]

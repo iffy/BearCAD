@@ -724,7 +724,9 @@ fn render_drawing<C: Canvas>(doc: &Document, index: usize, canvas: &mut C) -> Op
         let y = ann.pos_y * height + font; // baseline of the first line
         let wrap = ann.wrap_frac.map(|w| (w * width).max(font));
         let line_h = font * 1.25;
-        for (i, line) in wrap_text_lines(&ann.text, font, wrap).iter().enumerate() {
+        // Substitute {expr} variable fields against the document's parameters (#338).
+        let rendered = crate::value::interpolate_text(&ann.text, doc);
+        for (i, line) in wrap_text_lines(&rendered, font, wrap).iter().enumerate() {
             canvas.text(x, y + i as f32 * line_h, font, Anchor::Start, line);
         }
     }

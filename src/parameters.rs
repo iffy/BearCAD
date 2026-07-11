@@ -439,7 +439,47 @@ pub fn recompute_document_geometry(doc: &mut Document) -> Result<(), String> {
     let result = solve_document_constraints(doc);
     crate::projection::refresh_projections(doc);
     rebake_extrusion_distances(doc);
+    rebake_sketch_texts(doc);
     result
+}
+
+/// Re-bake sketch-text glyph outlines from their raw templates (#338), so `{expr}` fields and
+/// `size_expr` follow parameter edits. Text with no `{` and a constant/blank `size_expr` still
+/// re-bakes harmlessly (identical result); a font that's since gone leaves the existing outlines.
+pub fn rebake_sketch_texts(doc: &mut Document) {
+    for i in 0..doc.sketch_texts.len() {
+        let t = &doc.sketch_texts[i];
+        if t.deleted {
+            continue;
+        }
+        let (template, family, bold, italic, wrap, size_expr, cur_size) = (
+            t.text.clone(),
+            t.font_family.clone(),
+            t.bold,
+            t.italic,
+            t.wrap_width,
+            t.size_expr.clone(),
+            t.size,
+        );
+        // A parametric size follows its expression; a blank/constant expression keeps the value.
+        let size = if size_expr.trim().is_empty() {
+            cur_size
+        } else {
+            crate::value::eval_length_mm_in_doc(&size_expr, doc)
+                .map(f32::abs)
+                .filter(|s| *s > 0.0)
+                .unwrap_or(cur_size)
+        };
+        let baked = crate::value::interpolate_text(&template, doc);
+        if let Some((shaped, bytes)) =
+            crate::text::shape_with_system_font_wrapped(&family, bold, italic, size, &baked, wrap)
+        {
+            let t = &mut doc.sketch_texts[i];
+            t.size = size;
+            t.contours = shaped.contours;
+            t.font_bytes = bytes;
+        }
+    }
 }
 
 /// Re-evaluate each extrusion's stored `distance` from its `expression` (#251), so an extrusion
