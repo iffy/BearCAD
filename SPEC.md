@@ -1105,7 +1105,11 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   staying highlighted). **Delete/Backspace** removes the selected drawing element (#336): a
   projection (`RemoveDrawingView`), a text note (`RemoveDrawingAnnotation`), or a dimension
   (hidden via `ToggleDrawingDimension`); the handler skips when a text field wants keyboard input
-  so Backspace still edits note text. The label **runs along its dimension line**, always reading
+  so Backspace still edits note text. With the **Select tool**, the context pane also shows a
+  **Drawing elements picker** (#328) listing the page's projections, text notes, and shown
+  dimensions (`context::DrawingElementPicker`): each row hover-highlights its element on the page
+  (`AppState::hovered_drawing_element`) and clicking a row selects it (with the same selected
+  styling as clicking on the page). The label **runs along its dimension line**, always reading
   **left-to-right or bottom-to-top** (#322; `drawing::readable_text_angle` normalizes the angle
   into `[-90°, 90°)`, so a downward vertical reads upward and a down-to-the-right slope reads
   top-left → bottom-right); when the line is too short for the text, the label is placed just

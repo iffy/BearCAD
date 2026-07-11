@@ -49,7 +49,9 @@ and it looks the same in the editor as in the exported PDF/SVG.
 Add free text to a page with the **Text** tool (or press **T** in the drawing workbench):
 click where you want it for a box that grows to fit, or drag a rectangle for one that wraps
 the text to that width. Switch to the **Select** tool to drag notes around the page, and edit
-or remove a selected note from the context pane.
+or remove a selected note from the context pane. With the Select tool, the context pane also
+lists all of the page's elements — projections, notes, and dimensions — as a **Drawing elements**
+picker: hover a row to highlight that element on the page, and click it to select it.
 
 Notes can embed **variables** in curly braces: `Width: {plate_w}` shows the current value of the
 `plate_w` parameter, and the note updates whenever the parameter changes. Any expression works

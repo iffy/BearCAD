@@ -78,6 +78,8 @@ pub struct ContextInput<'a> {
     pub drawing_view: Option<DrawingViewControl>,
     /// Selected drawing text annotation editor (#312).
     pub drawing_annotation: Option<DrawingAnnotationControl>,
+    /// Select-tool picker of the open drawing's projections/text/dimensions (#328).
+    pub drawing_elements: Option<DrawingElementPicker>,
     /// The Add-view tool is active with nothing placed yet (#289): renders its pick hint.
     pub drawing_add_active: bool,
     /// "Edit repeat" entry point.
@@ -308,11 +310,44 @@ pub struct DrawingAnnotationControl {
     pub text: String,
 }
 
+/// A pickable element on the open drawing page (#328): a projection, a text note, or a shown
+/// dimension. Identifies the element for selecting and for highlighting it on the page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrawingElementRef {
+    Projection(usize),
+    Text(usize),
+    Dimension { view: usize, a: [i32; 3], b: [i32; 3] },
+}
+
+/// One row of the Select-tool drawing-element picker (#328).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrawingElementRow {
+    pub reference: DrawingElementRef,
+    pub label: String,
+    pub icon: crate::icons::IconId,
+    pub selected: bool,
+}
+
+/// The Select-tool element picker listing the open drawing's projections, text notes, and shown
+/// dimensions (#328): each row hover-highlights its element on the page and shows a selected style.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrawingElementPicker {
+    pub rows: Vec<DrawingElementRow>,
+}
+
 /// One edit from the drawing-annotation context section (#312).
 #[derive(Clone, Debug, PartialEq)]
 pub enum DrawingAnnotationEdit {
     Text(String),
     Remove,
+}
+
+/// An interaction with the Select-tool drawing-element picker (#328): selecting a row, or the set
+/// of hover (`Some(ref)` while a row is hovered, `None` when nothing is).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DrawingElementPick {
+    Select(DrawingElementRef),
+    Hover(Option<DrawingElementRef>),
 }
 
 /// One edit from the drawing-view context section (#289).
@@ -493,6 +528,8 @@ pub struct ContextPaneContent {
     pub drawing_view: Option<DrawingViewControl>,
     /// Selected drawing text annotation editor (#312).
     pub drawing_annotation: Option<DrawingAnnotationControl>,
+    /// Select-tool picker of the open drawing's projections/text/dimensions (#328).
+    pub drawing_elements: Option<DrawingElementPicker>,
     /// The Add-view tool is active with nothing placed yet (#289).
     pub drawing_add_active: bool,
     /// "Edit repeat" entry point.
@@ -814,6 +851,10 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         input.drawing_view.clone()
     };
     let drawing_annotation = input.drawing_annotation.clone();
+    // The Select-tool drawing-element picker (#328) belongs to the Select tool only.
+    let drawing_elements = (input.tool == Tool::Select)
+        .then(|| input.drawing_elements.clone())
+        .flatten();
     let drawing_add_active = input.drawing_add_active;
     let repeat_edit_start = input.repeat_edit_start;
     let slice_op = input.slice_op.clone();
@@ -851,6 +892,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
             drawing_annotation: drawing_annotation.clone(),
+            drawing_elements: drawing_elements.clone(),
             drawing_add_active,
             repeat_edit_start,
             slice_op: slice_op.clone(),
@@ -889,6 +931,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
             drawing_annotation: drawing_annotation.clone(),
+            drawing_elements: drawing_elements.clone(),
             drawing_add_active,
             repeat_edit_start,
             slice_op: slice_op.clone(),
@@ -927,6 +970,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
             drawing_annotation: drawing_annotation.clone(),
+            drawing_elements: drawing_elements.clone(),
             drawing_add_active,
             repeat_edit_start,
             slice_op: slice_op.clone(),
@@ -968,6 +1012,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         sketch_text,
         drawing_view,
         drawing_annotation,
+        drawing_elements,
         drawing_add_active,
         repeat_edit_start,
         slice_op,
@@ -1194,6 +1239,7 @@ pub fn show_pane(
     on_sketch_text_edit: &mut impl FnMut(SketchTextEdit),
     on_drawing_view_edit: &mut impl FnMut(DrawingViewEdit),
     on_drawing_annotation_edit: &mut impl FnMut(DrawingAnnotationEdit),
+    on_drawing_element_pick: &mut impl FnMut(DrawingElementPick),
     on_repeat_edit_start: &mut impl FnMut(usize),
     on_slice_edit: &mut impl FnMut(SliceEdit),
     on_slice_edit_start: &mut impl FnMut(usize),
@@ -2285,6 +2331,40 @@ pub fn show_pane(
         }
     }
 
+    // Select-tool element picker (#328): lists the open drawing's projections, text notes, and
+    // shown dimensions. A row hover-highlights its element on the page; clicking selects it; the
+    // selected element's row shows a selected style.
+    if let Some(picker) = &content.drawing_elements {
+        any_control = true;
+        ui.separator();
+        ui.label(egui::RichText::new("Drawing elements").strong());
+        if picker.rows.is_empty() {
+            ui.label(
+                egui::RichText::new("Nothing on the page yet")
+                    .color(egui::Color32::from_gray(140))
+                    .size(11.0),
+            );
+        }
+        let mut any_hovered = false;
+        for row in &picker.rows {
+            let resp = ui.horizontal(|ui| {
+                ui.image(crate::icons::sized_texture(ctx, row.icon));
+                ui.selectable_label(row.selected, &row.label)
+            });
+            let label_resp = resp.inner;
+            if label_resp.hovered() {
+                any_hovered = true;
+                on_drawing_element_pick(DrawingElementPick::Hover(Some(row.reference)));
+            }
+            if label_resp.clicked() {
+                on_drawing_element_pick(DrawingElementPick::Select(row.reference));
+            }
+        }
+        if !any_hovered {
+            on_drawing_element_pick(DrawingElementPick::Hover(None));
+        }
+    }
+
     if let Some(op) = content.slice_edit_start {
         any_control = true;
         ui.separator();
@@ -2643,6 +2723,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_elements: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -2704,6 +2785,35 @@ mod tests {
         assert!(text.units.is_none(), "Text tool hides the Default-units section (#330)");
     }
 
+    /// #328: the drawing-element picker only shows under the Select tool.
+    #[test]
+    fn drawing_element_picker_is_select_tool_only() {
+        let doc = Document::default();
+        let selection = SceneSelection::default();
+        let picker = DrawingElementPicker {
+            rows: vec![DrawingElementRow {
+                reference: DrawingElementRef::Projection(0),
+                label: "Body 0 — Front".to_string(),
+                icon: crate::icons::IconId::Projection,
+                selected: false,
+            }],
+        };
+        let under_select = context_pane_content(&ContextInput {
+            tool: Tool::Select,
+            in_drawing_workbench: true,
+            drawing_elements: Some(picker.clone()),
+            ..input(&doc, &selection)
+        });
+        assert!(under_select.drawing_elements.is_some(), "Select tool shows the picker");
+        let under_dim = context_pane_content(&ContextInput {
+            tool: Tool::Dimension,
+            in_drawing_workbench: true,
+            drawing_elements: Some(picker),
+            ..input(&doc, &selection)
+        });
+        assert!(under_dim.drawing_elements.is_none(), "other tools hide the picker");
+    }
+
     /// #268: the Extrude tool surfaces its picked profile faces as an element picker.
     #[test]
     fn extrude_tool_surfaces_a_face_picker() {
@@ -2756,6 +2866,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_elements: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -2823,6 +2934,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_elements: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3093,6 +3205,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_elements: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3145,6 +3258,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_elements: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3182,6 +3296,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_elements: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3234,6 +3349,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_elements: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3289,6 +3405,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_elements: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3388,6 +3505,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_elements: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3438,6 +3556,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_elements: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3477,6 +3596,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_elements: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3521,6 +3641,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_elements: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,

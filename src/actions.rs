@@ -1956,6 +1956,9 @@ pub struct AppState {
     /// the dimensioned edge's quantized world endpoints. Set by clicking a dimension with the
     /// Select tool; Delete/Backspace hides it. UI state (never persisted).
     pub selected_drawing_dimension: Option<(usize, usize, [i32; 3], [i32; 3])>,
+    /// The drawing element the Select-tool element picker is hovering (#328), highlighted on the
+    /// page. UI state (never persisted).
+    pub hovered_drawing_element: Option<crate::context::DrawingElementRef>,
     /// In-progress image scale calibration (#163/#171): Some while the user is placing
     /// the two reference points / typing the real length.
     pub creating_calibration: Option<CreatingCalibration>,
@@ -2078,6 +2081,7 @@ impl Default for AppState {
             selected_drawing_view: None,
             selected_drawing_annotation: None,
             selected_drawing_dimension: None,
+            hovered_drawing_element: None,
             creating_calibration: None,
             viewport_aspect: 16.0 / 9.0,
             draw_construction: false,

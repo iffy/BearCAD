@@ -2736,6 +2736,57 @@ impl App {
 
     /// The single selected sketch text (#286), if the selection is exactly one text: what the
     /// context text editor and the Move tool's text rotation ring operate on.
+    /// Build the Select-tool drawing-element picker (#328): the open drawing's projections, text
+    /// notes, and shown dimensions, each flagged selected against the current selection state.
+    /// `None` unless a drawing is open (the picker only renders under the Select tool anyway).
+    fn build_drawing_element_picker(&self) -> Option<context::DrawingElementPicker> {
+        use context::{DrawingElementRef, DrawingElementRow};
+        let di = self.state.editing_drawing?;
+        let drawing = self.state.doc.drawings.get(di).filter(|d| !d.deleted)?;
+        let mut rows = Vec::new();
+        for (vi, view) in drawing.views.iter().enumerate() {
+            rows.push(DrawingElementRow {
+                reference: DrawingElementRef::Projection(vi),
+                label: crate::names::node_label(
+                    &self.state.doc,
+                    hierarchy::HierarchyNode::DrawingProjection { drawing: di, view: vi },
+                ),
+                icon: icons::IconId::Projection,
+                selected: self.state.selected_drawing_view == Some((di, vi)),
+            });
+            // Each shown length dimension of the view is pickable.
+            for (a, b) in &view.dimensioned_edges {
+                let len = (hierarchy::dequantize_body_point(*a)
+                    - hierarchy::dequantize_body_point(*b))
+                .length();
+                rows.push(DrawingElementRow {
+                    reference: DrawingElementRef::Dimension { view: vi, a: *a, b: *b },
+                    label: format!(
+                        "Dim: {}",
+                        crate::value::format_length_display_in(len, self.state.doc.default_length_unit)
+                    ),
+                    icon: icons::IconId::Dimension,
+                    selected: self.state.selected_drawing_dimension == Some((di, vi, *a, *b)),
+                });
+            }
+        }
+        for (ai, ann) in drawing.annotations.iter().enumerate() {
+            if ann.deleted {
+                continue;
+            }
+            rows.push(DrawingElementRow {
+                reference: DrawingElementRef::Text(ai),
+                label: crate::names::node_label(
+                    &self.state.doc,
+                    hierarchy::HierarchyNode::DrawingAnnotation { drawing: di, annotation: ai },
+                ),
+                icon: icons::IconId::Text,
+                selected: self.state.selected_drawing_annotation == Some((di, ai)),
+            });
+        }
+        Some(context::DrawingElementPicker { rows })
+    }
+
     fn single_selected_sketch_text(&self) -> Option<usize> {
         let mut only = None;
         for element in self.state.scene_selection.iter() {
@@ -4877,6 +4928,7 @@ impl eframe::App for App {
                             .filter(|ann| !ann.deleted)
                             .map(|ann| context::DrawingAnnotationControl { text: ann.text.clone() })
                     }),
+                drawing_elements: self.build_drawing_element_picker(),
                 drawing_add_active: self.state.tool == Tool::DrawingAdd
                     && self.state.editing_drawing.is_some(),
                 repeat_edit_start: (self.state.tool != Tool::Repeat)
@@ -5043,6 +5095,8 @@ impl eframe::App for App {
             let mut sketch_text_edit: Option<context::SketchTextEdit> = None;
             let mut drawing_view_edit: Option<context::DrawingViewEdit> = None;
             let mut drawing_annotation_edit: Option<context::DrawingAnnotationEdit> = None;
+            let mut drawing_element_hover: Option<Option<context::DrawingElementRef>> = None;
+            let mut drawing_element_select: Option<context::DrawingElementRef> = None;
             let mut repeat_edit_begin: Option<usize> = None;
             let mut slice_edit: Option<context::SliceEdit> = None;
             let mut slice_edit_begin: Option<usize> = None;
@@ -5090,6 +5144,10 @@ impl eframe::App for App {
                         &mut |edit| sketch_text_edit = Some(edit),
                         &mut |edit| drawing_view_edit = Some(edit),
                         &mut |edit| drawing_annotation_edit = Some(edit),
+                        &mut |pick| match pick {
+                            context::DrawingElementPick::Hover(h) => drawing_element_hover = Some(h),
+                            context::DrawingElementPick::Select(r) => drawing_element_select = Some(r),
+                        },
                         &mut |op| repeat_edit_begin = Some(op),
                         &mut |edit| slice_edit = Some(edit),
                         &mut |op| slice_edit_begin = Some(op),
@@ -5466,6 +5524,33 @@ impl eframe::App for App {
                             self.state
                                 .apply(Action::RemoveDrawingAnnotation { drawing, annotation });
                         }
+                    }
+                }
+            }
+            // Select-tool element picker (#328): row hover sets the page highlight; a row click
+            // selects that element (clearing the other drawing selections).
+            if let Some(hover) = drawing_element_hover {
+                self.state.hovered_drawing_element = hover;
+            }
+            // Don't leave a stale picker highlight when the picker isn't shown (non-Select tool).
+            if self.state.tool != Tool::Select {
+                self.state.hovered_drawing_element = None;
+            }
+            if let (Some(reference), Some(di)) =
+                (drawing_element_select, self.state.editing_drawing)
+            {
+                self.state.selected_drawing_view = None;
+                self.state.selected_drawing_annotation = None;
+                self.state.selected_drawing_dimension = None;
+                match reference {
+                    context::DrawingElementRef::Projection(vi) => {
+                        self.state.selected_drawing_view = Some((di, vi));
+                    }
+                    context::DrawingElementRef::Text(ai) => {
+                        self.state.selected_drawing_annotation = Some((di, ai));
+                    }
+                    context::DrawingElementRef::Dimension { view, a, b } => {
+                        self.state.selected_drawing_dimension = Some((di, view, a, b));
                     }
                 }
             }
@@ -9022,7 +9107,10 @@ impl App {
                 let selected_here = self.state.selected_drawing_view == Some((drawing, vi));
                 let align_parent_here = self.drawing_align_parent == Some(vi)
                     && self.state.tool == Tool::DrawingAlign;
-                let stroke = if selected_here || align_parent_here {
+                // The Select-tool element picker hovering this projection's row highlights it (#328).
+                let picker_hover_here = self.state.hovered_drawing_element
+                    == Some(context::DrawingElementRef::Projection(vi));
+                let stroke = if selected_here || align_parent_here || picker_hover_here {
                     egui::Stroke::new(1.5, egui::Color32::from_rgb(90, 150, 230))
                 } else if drag.hovered() {
                     egui::Stroke::new(1.5, egui::Color32::from_rgb(120, 140, 170))
@@ -9473,8 +9561,16 @@ impl App {
                             }
                             let is_selected_dim = self.state.selected_drawing_dimension
                                 == Some((drawing, vi, key.0, key.1));
-                            let active =
-                                lr.hovered() || self.drawing_dim_label_drag.map(|d| d.key) == Some(key);
+                            // The element picker hovering this dimension's row highlights it (#328).
+                            let picker_hover_dim = self.state.hovered_drawing_element
+                                == Some(context::DrawingElementRef::Dimension {
+                                    view: vi,
+                                    a: key.0,
+                                    b: key.1,
+                                });
+                            let active = lr.hovered()
+                                || picker_hover_dim
+                                || self.drawing_dim_label_drag.map(|d| d.key) == Some(key);
                             if active {
                                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                             }
@@ -9577,7 +9673,10 @@ impl App {
                 );
                 let rect = egui::Rect::from_min_size(pos, galley.size());
                 let selected = self.state.selected_drawing_annotation == Some((drawing, ai));
-                if selected {
+                // The Select-tool element picker hovering this note's row highlights it (#328).
+                let picker_hover = self.state.hovered_drawing_element
+                    == Some(context::DrawingElementRef::Text(ai));
+                if selected || picker_hover {
                     ui.painter().rect_stroke(
                         rect.expand(2.0),
                         1.0,
