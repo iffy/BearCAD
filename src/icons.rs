@@ -85,11 +85,13 @@ pub enum IconId {
     Back,
     /// Export toolbar action (#348): an arrow leaving a tray; opens an SVG/PDF picker.
     Export,
+    /// Import toolbar action (#352): an arrow dropping into a tray; opens an STL/STEP/Image picker.
+    Import,
 }
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 61] = [
+    pub const ALL: [Self; 62] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -151,6 +153,7 @@ impl IconId {
         Self::Filter,
         Self::Back,
         Self::Export,
+        Self::Import,
     ];
 
     pub fn svg_source(self) -> &'static str {
@@ -216,6 +219,7 @@ impl IconId {
             Self::Filter => include_str!("assets/icons/filter.svg"),
             Self::Back => include_str!("assets/icons/back.svg"),
             Self::Export => include_str!("assets/icons/export.svg"),
+            Self::Import => include_str!("assets/icons/import.svg"),
         }
     }
 
@@ -282,6 +286,7 @@ impl IconId {
             Self::Filter => "Filter",
             Self::Back => "Back",
             Self::Export => "Export",
+            Self::Import => "Import",
         }
     }
 }

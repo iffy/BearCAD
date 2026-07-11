@@ -4271,6 +4271,37 @@ impl eframe::App for App {
                 {
                     self.state.apply(Action::ZoomToFit);
                 }
+                // Import/Export toolbar buttons (#352): the same actions as the File menu, grouped
+                // under a popup on each icon.
+                ui.separator();
+                ui.menu_image_button(icons::sized_texture(ui.ctx(), icons::IconId::Import), |ui| {
+                    if ui.button("Import STL…").clicked() {
+                        self.import_stl();
+                        ui.close();
+                    }
+                    if ui.button("Import STEP…").clicked() {
+                        self.import_step();
+                        ui.close();
+                    }
+                    if ui.button("Import Image…").clicked() {
+                        self.import_image();
+                        ui.close();
+                    }
+                })
+                .response
+                .on_hover_text("Import STL, STEP, or an image");
+                ui.menu_image_button(icons::sized_texture(ui.ctx(), icons::IconId::Export), |ui| {
+                    if ui.button("Export STL…").clicked() {
+                        self.export_stl_all();
+                        ui.close();
+                    }
+                    if ui.button("Export STEP…").clicked() {
+                        self.export_step_all();
+                        ui.close();
+                    }
+                })
+                .response
+                .on_hover_text("Export all bodies as STL or STEP");
                 if let Some(session) = self.state.sketch_session {
                     ui.separator();
                     ui.label(sketch_label(&self.state.doc, session.sketch));

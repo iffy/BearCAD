@@ -34,27 +34,31 @@ pub fn bar(ctx: &egui::Context, pane_visible: impl Fn(Pane) -> bool) -> Option<M
                     ui.close();
                 }
                 ui.separator();
-                if ui.button("Import STL…").clicked() {
-                    picked = Some(MenuCommand::ImportStl);
-                    ui.close();
-                }
-                if ui.button("Import STEP…").clicked() {
-                    picked = Some(MenuCommand::ImportStep);
-                    ui.close();
-                }
-                if ui.button("Import Image…").clicked() {
-                    picked = Some(MenuCommand::ImportImage);
-                    ui.close();
-                }
-                ui.separator();
-                if ui.button("Export STL…").clicked() {
-                    picked = Some(MenuCommand::ExportStl);
-                    ui.close();
-                }
-                if ui.button("Export STEP…").clicked() {
-                    picked = Some(MenuCommand::ExportStep);
-                    ui.close();
-                }
+                // Imports/exports are grouped under submenus (#352).
+                ui.menu_button("Import", |ui| {
+                    if ui.button("STL…").clicked() {
+                        picked = Some(MenuCommand::ImportStl);
+                        ui.close();
+                    }
+                    if ui.button("STEP…").clicked() {
+                        picked = Some(MenuCommand::ImportStep);
+                        ui.close();
+                    }
+                    if ui.button("Image…").clicked() {
+                        picked = Some(MenuCommand::ImportImage);
+                        ui.close();
+                    }
+                });
+                ui.menu_button("Export", |ui| {
+                    if ui.button("STL…").clicked() {
+                        picked = Some(MenuCommand::ExportStl);
+                        ui.close();
+                    }
+                    if ui.button("STEP…").clicked() {
+                        picked = Some(MenuCommand::ExportStep);
+                        ui.close();
+                    }
+                });
                 ui.separator();
                 if ui.button("Document JSON…").clicked() {
                     picked = Some(MenuCommand::DocumentJson);

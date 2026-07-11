@@ -232,12 +232,14 @@ impl NativeMenu {
                 Code::KeyS,
             )),
         );
-        let export_stl = MenuItem::with_id("export_stl", "Export STL…", true, None);
-        let export_step = MenuItem::with_id("export_step", "Export STEP…", true, None);
+        // Import/Export items live under grouped submenus (#352); their IDs are unchanged so the
+        // command dispatch still matches, only the visible labels drop the redundant verb.
+        let export_stl = MenuItem::with_id("export_stl", "STL…", true, None);
+        let export_step = MenuItem::with_id("export_step", "STEP…", true, None);
         let load_script = MenuItem::with_id("load_script", "Load Script…", true, None);
-        let import_stl = MenuItem::with_id("import_stl", "Import STL…", true, None);
-        let import_image = MenuItem::with_id("import_image", "Import Image…", true, None);
-        let import_step = MenuItem::with_id("import_step", "Import STEP…", true, None);
+        let import_stl = MenuItem::with_id("import_stl", "STL…", true, None);
+        let import_image = MenuItem::with_id("import_image", "Image…", true, None);
+        let import_step = MenuItem::with_id("import_step", "STEP…", true, None);
         let document_json = MenuItem::with_id("document_json", "Document JSON…", true, None);
         let quit = MenuItem::with_id(
             "quit",
@@ -293,12 +295,16 @@ impl NativeMenu {
         file_menu.append(&save)?;
         file_menu.append(&save_as)?;
         file_menu.append(&PredefinedMenuItem::separator())?;
-        file_menu.append(&export_stl)?;
-        file_menu.append(&export_step)?;
+        let import_menu = Submenu::new("Import", true);
+        import_menu.append(&import_stl)?;
+        import_menu.append(&import_step)?;
+        import_menu.append(&import_image)?;
+        let export_menu = Submenu::new("Export", true);
+        export_menu.append(&export_stl)?;
+        export_menu.append(&export_step)?;
+        file_menu.append(&import_menu)?;
+        file_menu.append(&export_menu)?;
         file_menu.append(&load_script)?;
-        file_menu.append(&import_stl)?;
-        file_menu.append(&import_image)?;
-        file_menu.append(&import_step)?;
         file_menu.append(&document_json)?;
         #[cfg(not(target_os = "macos"))]
         {
