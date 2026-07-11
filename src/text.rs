@@ -60,6 +60,28 @@ pub fn font_bytes(family: &str, bold: bool, italic: bool) -> Option<Vec<u8>> {
     db.with_face_data(id, |data, _index| data.to_vec())
 }
 
+/// The nine anchor points of a sketch text (#356/#359) in the text's **baseline space** (pre
+/// origin/rotation): the four bounding-box corners, four edge midpoints, and the centre, in
+/// `TextAnchor::ALL` order. An empty text yields nine origins.
+pub fn sketch_text_anchor_points(text: &crate::model::SketchText) -> [(f32, f32); 9] {
+    let (mut min, mut max) = ((f32::MAX, f32::MAX), (f32::MIN, f32::MIN));
+    for c in &text.contours {
+        for &(x, y) in c {
+            min = (min.0.min(x), min.1.min(y));
+            max = (max.0.max(x), max.1.max(y));
+        }
+    }
+    if min.0 > max.0 {
+        return [(0.0, 0.0); 9];
+    }
+    let mut out = [(0.0, 0.0); 9];
+    for (i, anchor) in crate::model::TextAnchor::ALL.into_iter().enumerate() {
+        let (fx, fy) = anchor.fractions();
+        out[i] = (min.0 + fx * (max.0 - min.0), min.1 + fy * (max.1 - min.1));
+    }
+    out
+}
+
 /// Extract the outline of `text` set in the given font bytes at `size_mm` (cap-to-baseline scale
 /// follows the font's units-per-em). Returns every glyph contour in millimetres, positioned along
 /// the baseline (newlines start a new line below). `None` if the bytes aren't a parseable face.
@@ -355,6 +377,41 @@ pub fn contour_signed_area(contour: &[(f32, f32)]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #356/#359: the nine anchor points sit on the text's bounding-box corners/midpoints/centre.
+    #[test]
+    fn sketch_text_anchors_span_the_bounding_box() {
+        use crate::model::TextAnchor as A;
+        // A synthetic text whose "contours" bound the box [2,20]×[0,10].
+        let mut text = crate::model::SketchText {
+            sketch: 0,
+            text: "x".into(),
+            font_family: String::new(),
+            bold: false,
+            italic: false,
+            underline: false,
+            size: 10.0,
+            size_expr: "10".into(),
+            origin: (0.0, 0.0),
+            rotation: 0.0,
+            wrap_width: None,
+            baseline_line: None,
+            contours: vec![vec![(2.0, 0.0), (20.0, 0.0), (20.0, 10.0), (2.0, 10.0)]],
+            font_bytes: Vec::new(),
+            pin: None,
+            name: None,
+            deleted: false,
+        };
+        let pts = sketch_text_anchor_points(&text);
+        let idx = |a: A| A::ALL.iter().position(|x| *x == a).unwrap();
+        assert_eq!(pts[idx(A::BottomLeft)], (2.0, 0.0));
+        assert_eq!(pts[idx(A::TopRight)], (20.0, 10.0));
+        assert_eq!(pts[idx(A::Center)], (11.0, 5.0));
+        assert_eq!(pts[idx(A::TopCenter)], (11.0, 10.0));
+        // Empty text → nine origins.
+        text.contours.clear();
+        assert_eq!(sketch_text_anchor_points(&text), [(0.0, 0.0); 9]);
+    }
 
     /// A plain text font's bytes, or skip (CI without fonts). Prefers common sans/serif families so
     /// the glyph shapes are predictable; falls back to the first parseable installed font.

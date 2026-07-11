@@ -886,6 +886,19 @@ impl ViewportScene {
                 }
                 mesh.push_polyline_segment(&pts, color, 2.0, input.cam, input.viewport, &vp);
             }
+            // A selected text shows its nine anchor points (#356/#359) — the corners, edge
+            // midpoints, and centre — so they can be picked to pin the text to a sketch point.
+            if selected {
+                let anchor_color = input.palette.preview;
+                for &pt in &crate::text::sketch_text_anchor_points(text) {
+                    let world = {
+                        let rx = pt.0 * cos - pt.1 * sin + text.origin.0;
+                        let ry = pt.0 * sin + pt.1 * cos + text.origin.1;
+                        crate::face::local_to_world(&frame, rx, ry)
+                    };
+                    mesh.push_point_marker(world, anchor_color, 4.5, input.cam, input.viewport, &vp);
+                }
+            }
         }
 
         // Draggable tangent-handle markers for curved lines in the active sketch (#54): a

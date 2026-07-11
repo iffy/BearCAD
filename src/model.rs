@@ -663,9 +663,7 @@ pub enum TextAnchor {
 }
 
 impl TextAnchor {
-    /// All nine anchors, in reading order (top-left → bottom-right). (Used by the anchor picker
-    /// UI, #356 follow-up.)
-    #[allow(dead_code)]
+    /// All nine anchors, in reading order (top-left → bottom-right).
     pub const ALL: [TextAnchor; 9] = [
         TextAnchor::TopLeft,
         TextAnchor::TopCenter,
