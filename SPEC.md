@@ -1085,8 +1085,10 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   top margin (that never showed in the editor).
 - **Export:** a drawing exports to a self-contained black-on-white vector document (title
   annotation, view captions, projected edges, dimensions) as either a single-page **PDF** or an **SVG**
-  (which also prints to PDF through any browser/OS print dialog). Exports are **WYSIWYG**
-  (#297): each view card lands at its placed page position, and the exported page **is the
+  (which also prints to PDF through any browser/OS print dialog). Exports show only the
+  projection and its caption — **no grey card border** (#337); that rectangle is an editor-only
+  affordance for selecting and dragging a view. Exports are **WYSIWYG**
+  (#297): each view lands at its placed page position, and the exported page **is the
   drawing's configured page** (#298) — the PDF MediaBox is `page_width_mm × page_height_mm`
   in points, landscape US-Letter (792 × 612 pt) by default. Both backends share the same
   layout through a `Canvas` trait in `src/drawing.rs`; the PDF is hand-rolled (no dependency),

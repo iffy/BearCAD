@@ -75,7 +75,8 @@ Aligned views inherit the parent's scale and orientation, so a whole group reads
 5. **Export** with **Export PDF…** for a single-page vector PDF, or **Export SVG…** for a
    vector SVG you can open in any browser and print. Both are black-on-white, scale
    losslessly, and are WYSIWYG: the page is the drawing's configured page size (landscape
-   8.5×11 by default) with every view exactly where you placed it.
+   8.5×11 by default) with every view exactly where you placed it. The grey card outline you
+   see around each view in the editor is just a selection handle — it isn't printed.
 
 ## Scripting
 

@@ -600,7 +600,6 @@ pub fn styled_view_geometry(doc: &Document, view: &DrawingView) -> StyledViewGeo
 struct Rgb(u8, u8, u8);
 const BLACK: Rgb = Rgb(0, 0, 0);
 const WHITE: Rgb = Rgb(255, 255, 255);
-const GRAY: Rgb = Rgb(200, 200, 200);
 
 /// Horizontal text alignment relative to the given `x`.
 #[derive(Clone, Copy)]
@@ -688,7 +687,8 @@ fn render_drawing<C: Canvas>(doc: &Document, index: usize, canvas: &mut C) -> Op
         let (px, py) = resolved_view_pos(doc, index, vi);
         let cell_x = px * width - cell_w * 0.5;
         let cell_y = py * height - cell_h * 0.5;
-        canvas.rect(cell_x + 3.0, cell_y + 3.0, cell_w - 6.0, cell_h - 6.0, None, Some(GRAY), 1.0);
+        // No card border in exports (#337): the grey rectangle is an editor-only affordance for
+        // selecting/dragging a view; a printed drawing shows just the projection and its caption.
         let source = match view.sketch {
             Some(si) => crate::names::node_label(doc, crate::hierarchy::HierarchyNode::Sketch(si)),
             None => crate::names::node_label(doc, crate::hierarchy::HierarchyNode::Body(view.body)),
@@ -1542,14 +1542,15 @@ mod tests {
         doc.drawings[0].views.push(second);
         let svg = drawing_to_svg(&doc, 0).unwrap();
         let (page_w, page_h) = page_dims(&doc, 0).unwrap();
-        // Card rects are the only GRAY-stroked rects; their x = pos_x*W - cell_w/2 + 3.
+        // Exports have no card border (#337); each view's caption text is placed at
+        // (cell_x + CELL_PAD, cell_y + 20), so its position pins the card.
         let cell_w = page_w * CELL_FRAC;
         let cell_h = page_h * CELL_FRAC;
         for (px, py) in [(0.25f32, 0.3f32), (0.75, 0.7)] {
-            let x = px * page_w - cell_w * 0.5 + 3.0;
-            let y = py * page_h - cell_h * 0.5 + 3.0;
-            let needle = format!("<rect x=\"{x:.1}\" y=\"{y:.1}\"");
-            assert!(svg.contains(&needle), "expected a card at {needle}");
+            let x = px * page_w - cell_w * 0.5 + CELL_PAD;
+            let y = py * page_h - cell_h * 0.5 + 20.0;
+            let needle = format!("<text x=\"{x:.1}\" y=\"{y:.1}\"");
+            assert!(svg.contains(&needle), "expected a view caption at {needle}");
         }
     }
 
