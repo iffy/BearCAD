@@ -58,8 +58,9 @@ always stays aligned along the shared edge; move the parent and its aligned view
 Aligned views inherit the parent's scale and orientation, so a whole group reads as one set.
 3. **Dimensions:** a new view arrives with every edge's length dimension already shown, drawn
    as proper dimension lines — extension lines, an offset line with arrowheads, and the
-   measurement centred on it — the label runs along the dimension line (or sits just past its
-   end when the line is too short to fit). Round features (holes, cylinders) render as a single
+   measurement centred on it, all drawn with a lighter, thinner stroke than the model edges so
+   the part outline stays the eye's focus — the label runs along the dimension line (or sits just
+   past its end when the line is too short to fit). Round features (holes, cylinders) render as a single
    smooth circle with one diameter dimension (Ø), not a ring of little segments. The starting set
    is arranged to stay readable: coincident edges (a box's bottom edge, front and back, land on
    the same line) share one dimension, and parallel dimensions that would otherwise sit on top of

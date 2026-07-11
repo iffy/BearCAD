@@ -285,6 +285,13 @@ const CELL_FRAC: f32 = 0.42;
 /// Padding inside a view card between its border and the projected geometry.
 const CELL_PAD: f32 = 12.0;
 
+/// Stroke width for the model's projected edges and detected circles (#327). Kept clearly
+/// heavier than the dimension/extension lines so the part outline reads as the primary geometry.
+pub const MODEL_STROKE: f32 = 1.6;
+/// Stroke width for dimension lines, their extension lines, and diameter lines (#327) — thinner
+/// than [`MODEL_STROKE`] so annotations sit visually beneath the model outline.
+pub const DIM_STROKE: f32 = 0.6;
+
 /// The world-space feature edges a drawing view projects (#278): a body's solid-mesh unique
 /// edges, or — when the view's `sketch` is set — that sketch's line/circle geometry. Shared by
 /// the editor pane and the SVG/PDF export so both draw the same thing.
@@ -831,18 +838,18 @@ fn render_view_geometry<C: Canvas>(
             continue;
         }
         let (sa, sb) = (to_screen(*a), to_screen(*b));
-        canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, 1.2);
+        canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, MODEL_STROKE);
     }
     // Smooth detected circles (round) or their foreshortened diameter line (edge-on).
     for pc in &pcircles {
         match pc {
             ProjectedCircle::Round { center, radius } => {
                 let sc = to_screen(*center);
-                canvas.circle(sc.x, sc.y, radius * scale, BLACK, 1.2);
+                canvas.circle(sc.x, sc.y, radius * scale, BLACK, MODEL_STROKE);
             }
             ProjectedCircle::EdgeOn { a, b } => {
                 let (sa, sb) = (to_screen(*a), to_screen(*b));
-                canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, 1.2);
+                canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, MODEL_STROKE);
             }
         }
     }
@@ -863,7 +870,7 @@ fn render_view_geometry<C: Canvas>(
                 let dir = glam::Vec2::new(0.70710677, -0.70710677);
                 let (a, b) = (*center - dir * *radius, *center + dir * *radius);
                 let (sa, sb) = (to_screen(a), to_screen(b));
-                canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, 0.8);
+                canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, DIM_STROKE);
                 let mid = (sa + sb) * 0.5;
                 canvas.text_rot(mid.x, mid.y, 11.0, Anchor::Middle, &label, readable_text_angle(sb - sa));
             }
@@ -874,7 +881,7 @@ fn render_view_geometry<C: Canvas>(
                 let geom = dimension_line_geometry(*a, *b, outward, default_gap, arrow);
                 let sl = |canvas: &mut C, p: glam::Vec2, q: glam::Vec2| {
                     let (sp, sq) = (to_screen(p), to_screen(q));
-                    canvas.line(sp.x, sp.y, sq.x, sq.y, BLACK, 0.8);
+                    canvas.line(sp.x, sp.y, sq.x, sq.y, BLACK, DIM_STROKE);
                 };
                 for (p, q) in geom.extensions {
                     sl(canvas, p, q);
@@ -914,7 +921,7 @@ fn render_view_geometry<C: Canvas>(
         let geom = dimension_line_geometry(*a, *b, outward, default_gap + extra, arrow);
         let stroke_line = |canvas: &mut C, p: glam::Vec2, q: glam::Vec2| {
             let (sp, sq) = (to_screen(p), to_screen(q));
-            canvas.line(sp.x, sp.y, sq.x, sq.y, BLACK, 0.8);
+            canvas.line(sp.x, sp.y, sq.x, sq.y, BLACK, DIM_STROKE);
         };
         for (p, q) in geom.extensions {
             stroke_line(canvas, p, q);

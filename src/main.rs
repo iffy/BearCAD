@@ -9191,7 +9191,7 @@ impl App {
                                 to_screen(egui::vec2(a.x, a.y)),
                                 to_screen(egui::vec2(b.x, b.y)),
                             ],
-                            egui::Stroke::new(1.2, INK),
+                            egui::Stroke::new(crate::drawing::MODEL_STROKE, INK),
                         );
                     }
                 }
@@ -9221,11 +9221,11 @@ impl App {
                     match pc {
                         crate::drawing::ProjectedCircle::Round { center, radius } => {
                             let sc = to_screen(egui::vec2(center.x, center.y));
-                            painter.circle_stroke(sc, radius * scale, egui::Stroke::new(1.2, INK));
+                            painter.circle_stroke(sc, radius * scale, egui::Stroke::new(crate::drawing::MODEL_STROKE, INK));
                             let dir = egui::vec2(0.70710677, -0.70710677);
                             let cv = egui::vec2(center.x, center.y);
                             let (sa, sb) = (to_screen(cv - dir * *radius), to_screen(cv + dir * *radius));
-                            painter.line_segment([sa, sb], egui::Stroke::new(0.8, INK));
+                            painter.line_segment([sa, sb], egui::Stroke::new(crate::drawing::DIM_STROKE, INK));
                             let d = sb - sa;
                             draw_rot_label(
                                 &painter,
@@ -9238,7 +9238,7 @@ impl App {
                             let (av, bv) = (egui::vec2(a.x, a.y), egui::vec2(b.x, b.y));
                             painter.line_segment(
                                 [to_screen(av), to_screen(bv)],
-                                egui::Stroke::new(1.2, INK),
+                                egui::Stroke::new(crate::drawing::MODEL_STROKE, INK),
                             );
                             let outward = {
                                 let seg = bv - av;
@@ -9256,9 +9256,9 @@ impl App {
                             );
                             let sp = |p: glam::Vec2| to_screen(egui::vec2(p.x, p.y));
                             for (p, q) in g.extensions {
-                                painter.line_segment([sp(p), sp(q)], egui::Stroke::new(0.8, INK));
+                                painter.line_segment([sp(p), sp(q)], egui::Stroke::new(crate::drawing::DIM_STROKE, INK));
                             }
-                            painter.line_segment([sp(g.line.0), sp(g.line.1)], egui::Stroke::new(0.8, INK));
+                            painter.line_segment([sp(g.line.0), sp(g.line.1)], egui::Stroke::new(crate::drawing::DIM_STROKE, INK));
                             for tri in g.arrows {
                                 painter.add(egui::Shape::convex_polygon(
                                     tri.iter().map(|p| sp(*p)).collect(),
@@ -9302,7 +9302,7 @@ impl App {
                             egui::Stroke::new(2.4, egui::Color32::from_rgb(90, 150, 230)),
                         );
                     } else if styled.is_none() && !is_circle_seg {
-                        painter.line_segment([sa, sb], egui::Stroke::new(1.2, INK));
+                        painter.line_segment([sa, sb], egui::Stroke::new(crate::drawing::MODEL_STROKE, INK));
                     }
                     if dims.contains(&key) && (*b - *a).length() >= 1e-3 && !is_circle_seg {
                         // Architectural dimension line (#294): extension lines, an offset
@@ -9333,11 +9333,11 @@ impl App {
                         );
                         let sp = |p: glam::Vec2| to_screen(egui::vec2(p.x, p.y));
                         for (p, q) in g.extensions {
-                            painter.line_segment([sp(p), sp(q)], egui::Stroke::new(0.8, INK));
+                            painter.line_segment([sp(p), sp(q)], egui::Stroke::new(crate::drawing::DIM_STROKE, INK));
                         }
                         painter.line_segment(
                             [sp(g.line.0), sp(g.line.1)],
-                            egui::Stroke::new(0.8, INK),
+                            egui::Stroke::new(crate::drawing::DIM_STROKE, INK),
                         );
                         for tri in g.arrows {
                             painter.add(egui::Shape::convex_polygon(

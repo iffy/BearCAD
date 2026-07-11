@@ -1052,7 +1052,11 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   dimension lines** (#294): two extension lines off the edge, a dimension line offset outward
   (on the side away from the geometry centroid) with **arrowheads** at each end, and the
   measurement centred on it — in the editor and both exports, from one shared
-  `drawing::dimension_line_geometry`. The default dimension set is **deduped by projected
+  `drawing::dimension_line_geometry`. Dimension lines, their extension lines, and diameter lines
+  are stroked **thinner than the model outline** (#327): the projected model edges and detected
+  circles use `drawing::MODEL_STROKE` and the annotations use the lighter `drawing::DIM_STROKE`,
+  so the part reads as the primary geometry and the dimensions sit visually beneath it (editor
+  and exports share both constants). The default dimension set is **deduped by projected
   segment** so coincident front/back edges (a box's bottom edge seen from the front) get one
   dimension, not two stacked on the same line; the surviving representative is chosen
   deterministically (smallest world key), so reopening a drawing dimensions the same edge every
