@@ -78,6 +78,10 @@ pub struct ContextInput<'a> {
     pub drawing_view: Option<DrawingViewControl>,
     /// Selected drawing text annotation editor (#312).
     pub drawing_annotation: Option<DrawingAnnotationControl>,
+    /// The Select tool's drawing element picker rows (#346): one `(drawing, element, label)` per
+    /// selected projection/text/dimension, in selection order. Populated only in the drawing
+    /// workbench with the Select tool active; drives the always-visible combo-box picker.
+    pub drawing_selection: Vec<(usize, DrawingElementRef, String)>,
     /// The Add-view tool is active with nothing placed yet (#289): renders its pick hint.
     pub drawing_add_active: bool,
     /// "Edit repeat" entry point.
@@ -335,6 +339,14 @@ pub enum DrawingAnnotationEdit {
 }
 
 
+/// One edit from the Select tool's drawing element picker (#346): remove one element from the
+/// selection, or clear it entirely.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrawingSelectionEdit {
+    Remove(usize, DrawingElementRef),
+    Clear,
+}
+
 /// One edit from the drawing-view context section (#289).
 #[derive(Clone, Debug, PartialEq)]
 pub enum DrawingViewEdit {
@@ -521,6 +533,10 @@ pub struct ContextPaneContent {
     pub drawing_view: Option<DrawingViewControl>,
     /// Selected drawing text annotation editor (#312).
     pub drawing_annotation: Option<DrawingAnnotationControl>,
+    /// The Select tool's always-visible drawing element picker (#346): `(drawing, element, label)`
+    /// per selected projection/text/dimension. `Some` (possibly empty) whenever the Select tool is
+    /// active in the drawing workbench.
+    pub drawing_selection: Option<Vec<(usize, DrawingElementRef, String)>>,
     /// The Add-view tool is active with nothing placed yet (#289).
     pub drawing_add_active: bool,
     /// "Edit repeat" entry point.
@@ -764,6 +780,10 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let selection_picker = (!drawing && !input.in_drawing_workbench)
         .then(|| selection_picker_for(input.tool, input.selection))
         .flatten();
+    // The drawing workbench's Select tool gets its own always-visible element picker (#346),
+    // mirroring the multi-selection of projections/text/dimensions.
+    let drawing_selection = (input.in_drawing_workbench && input.tool == Tool::Select)
+        .then(|| input.drawing_selection.clone());
     // Tool-owned element pickers (#213). Each is a Body-filtered picker built from the tool's
     // in-progress set. Bodies consumed destructively (Revolve cut) get the red highlight override.
     let mut tool_pickers = Vec::new();
@@ -879,6 +899,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
             drawing_annotation: drawing_annotation.clone(),
+            drawing_selection: None,
             drawing_add_active,
             repeat_edit_start,
             slice_op: slice_op.clone(),
@@ -917,6 +938,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
             drawing_annotation: drawing_annotation.clone(),
+            drawing_selection: None,
             drawing_add_active,
             repeat_edit_start,
             slice_op: slice_op.clone(),
@@ -955,6 +977,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
             drawing_annotation: drawing_annotation.clone(),
+            drawing_selection: None,
             drawing_add_active,
             repeat_edit_start,
             slice_op: slice_op.clone(),
@@ -996,6 +1019,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         sketch_text,
         drawing_view,
         drawing_annotation,
+        drawing_selection,
         drawing_add_active,
         repeat_edit_start,
         slice_op,
@@ -1222,6 +1246,7 @@ pub fn show_pane(
     on_sketch_text_edit: &mut impl FnMut(SketchTextEdit),
     on_drawing_view_edit: &mut impl FnMut(DrawingViewEdit),
     on_drawing_annotation_edit: &mut impl FnMut(DrawingAnnotationEdit),
+    on_drawing_selection_edit: &mut impl FnMut(DrawingSelectionEdit),
     on_repeat_edit_start: &mut impl FnMut(usize),
     on_slice_edit: &mut impl FnMut(SliceEdit),
     on_slice_edit_start: &mut impl FnMut(usize),
@@ -1276,6 +1301,39 @@ pub fn show_pane(
                     }
                     crate::element_picker::PickerEvent::Clear => {
                         on_selection_edit(SelectionEdit::Clear)
+                    }
+                }
+            }
+        });
+    }
+
+    // The drawing workbench's Select tool has its own always-visible element picker (#346): a
+    // label-only combo box over the selected projections/text/dimensions, kept in sync with the
+    // Elements pane and the page.
+    if let Some(rows) = &content.drawing_selection {
+        any_control = true;
+        ui.label(egui::RichText::new("Selection").strong());
+        let labels: Vec<String> = rows.iter().map(|(_, _, label)| label.clone()).collect();
+        ui.add_enabled_ui(controls_enabled, |ui| {
+            if let Some(event) = crate::element_picker::show_labeled(
+                ui,
+                "drawing_selection_picker",
+                true,
+                "Nothing selected",
+                crate::icons::IconId::Drawing,
+                &labels,
+            ) {
+                match event {
+                    crate::element_picker::PickerEvent::Focus => {}
+                    crate::element_picker::PickerEvent::Remove(i) => {
+                        if let Some((drawing, element, _)) = rows.get(i) {
+                            on_drawing_selection_edit(DrawingSelectionEdit::Remove(
+                                *drawing, *element,
+                            ));
+                        }
+                    }
+                    crate::element_picker::PickerEvent::Clear => {
+                        on_drawing_selection_edit(DrawingSelectionEdit::Clear)
                     }
                 }
             }
@@ -2839,6 +2897,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_selection: Vec::new(),
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -2956,6 +3015,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_selection: Vec::new(),
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3023,6 +3083,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_selection: Vec::new(),
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3293,6 +3354,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_selection: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3345,6 +3407,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_selection: Vec::new(),
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3382,6 +3445,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_selection: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3434,6 +3498,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_selection: Vec::new(),
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3489,6 +3554,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_selection: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3588,6 +3654,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_selection: Vec::new(),
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3638,6 +3705,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_selection: Vec::new(),
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3677,6 +3745,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_selection: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3721,6 +3790,7 @@ mod tests {
             sketch_text: None,
             drawing_view: None,
             drawing_annotation: None,
+            drawing_selection: Vec::new(),
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,

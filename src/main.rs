@@ -1674,24 +1674,34 @@ impl App {
                 && self.state.editing_drawing.is_some()
                 && !ctx.wants_keyboard_input()
             {
-                // Delete/Backspace removes the selected drawing element (#336): a placed
-                // projection, a text note, or — if one is selected — a dimension. The
-                // `wants_keyboard_input` guard keeps Backspace editing the annotation textarea
-                // instead of deleting the note.
-                if let Some((drawing, view)) = self.state.selected_drawing_view.take() {
-                    self.state.apply(Action::RemoveDrawingView { drawing, view });
-                } else if let Some((drawing, annotation)) =
-                    self.state.selected_drawing_annotation.take()
-                {
-                    self.state
-                        .apply(Action::RemoveDrawingAnnotation { drawing, annotation });
-                } else if let Some((drawing, view, a, b)) =
-                    self.state.selected_drawing_dimension.take()
-                {
-                    // A selected dimension deletes by hiding it (same as toggling it off).
-                    self.state
-                        .apply(Action::ToggleDrawingDimension { drawing, view, a, b });
+                // Delete/Backspace removes every selected drawing element (#336/#346): placed
+                // projections, text notes, and shown dimensions. The `wants_keyboard_input` guard
+                // keeps Backspace editing the annotation textarea instead of deleting the note.
+                let selected = self.state.selected_drawing_elements.clone();
+                let mut views_to_remove: Vec<(usize, usize)> = Vec::new();
+                for (drawing, element) in selected {
+                    match element {
+                        context::DrawingElementRef::Projection(view) => {
+                            views_to_remove.push((drawing, view));
+                        }
+                        context::DrawingElementRef::Text(annotation) => {
+                            self.state
+                                .apply(Action::RemoveDrawingAnnotation { drawing, annotation });
+                        }
+                        context::DrawingElementRef::Dimension { view, a, b } => {
+                            // A selected dimension deletes by hiding it (toggling it off).
+                            self.state
+                                .apply(Action::ToggleDrawingDimension { drawing, view, a, b });
+                        }
+                    }
                 }
+                // Remove views highest-index-first so earlier indices stay valid as later ones
+                // shift down.
+                views_to_remove.sort_by(|a, b| b.1.cmp(&a.1));
+                for (drawing, view) in views_to_remove {
+                    self.state.apply(Action::RemoveDrawingView { drawing, view });
+                }
+                self.state.clear_drawing_selection();
             }
 
             if self.state.tool == Tool::Constraint {
@@ -4400,15 +4410,15 @@ impl eframe::App for App {
             // pane row shows the selected style (#341).
             let selected_drawing_leaf: Option<hierarchy::HierarchyNode> = self
                 .state
-                .selected_drawing_view
+                .selected_drawing_view()
                 .map(|(d, v)| hierarchy::HierarchyNode::DrawingProjection { drawing: d, view: v })
                 .or_else(|| {
-                    self.state.selected_drawing_annotation.map(|(d, a)| {
+                    self.state.selected_drawing_annotation().map(|(d, a)| {
                         hierarchy::HierarchyNode::DrawingAnnotation { drawing: d, annotation: a }
                     })
                 })
                 .or_else(|| {
-                    self.state.selected_drawing_dimension.map(|(d, v, a, b)| {
+                    self.state.selected_drawing_dimension().map(|(d, v, a, b)| {
                         hierarchy::HierarchyNode::DrawingDimension { drawing: d, view: v, a, b }
                     })
                 });
@@ -4567,20 +4577,29 @@ impl eframe::App for App {
             // Selecting a drawing element from the Elements pane (#341): mirror the on-page
             // selection so its context editor opens and it highlights.
             if let Some(node) = select_drawing_element {
-                self.state.selected_drawing_view = None;
-                self.state.selected_drawing_annotation = None;
-                self.state.selected_drawing_dimension = None;
-                match node {
+                use context::DrawingElementRef as R;
+                let picked = match node {
                     hierarchy::HierarchyNode::DrawingProjection { drawing, view } => {
-                        self.state.selected_drawing_view = Some((drawing, view));
+                        Some((drawing, R::Projection(view)))
                     }
                     hierarchy::HierarchyNode::DrawingAnnotation { drawing, annotation } => {
-                        self.state.selected_drawing_annotation = Some((drawing, annotation));
+                        Some((drawing, R::Text(annotation)))
                     }
                     hierarchy::HierarchyNode::DrawingDimension { drawing, view, a, b } => {
-                        self.state.selected_drawing_dimension = Some((drawing, view, a, b));
+                        Some((drawing, R::Dimension { view, a, b }))
                     }
-                    _ => {}
+                    _ => None,
+                };
+                if let Some((drawing, element)) = picked {
+                    // Clicking a drawing element in the Elements pane updates the Select tool's
+                    // multi-selection (#346), mirroring the model tool: a plain click replaces,
+                    // Cmd/Ctrl-click adds/removes.
+                    let additive = ctx.input(|i| selection::additive_click_modifiers(&i.modifiers));
+                    if additive {
+                        self.state.toggle_drawing_element(drawing, element);
+                    } else {
+                        self.state.select_drawing_only(drawing, element);
+                    }
                 }
             }
             if let Some((extrusion, index)) = edit_edge_treatment {
@@ -4987,7 +5006,7 @@ impl eframe::App for App {
                 drawing_view: {
                     // The selected projection on the open drawing page (#289).
                     self.state
-                        .selected_drawing_view
+                        .selected_drawing_view()
                         .filter(|(d, _)| self.state.editing_drawing == Some(*d))
                         .and_then(|(d, v)| {
                             let view = self
@@ -5060,7 +5079,7 @@ impl eframe::App for App {
                 },
                 drawing_annotation: self
                     .state
-                    .selected_drawing_annotation
+                    .selected_drawing_annotation()
                     .filter(|(d, _)| self.state.editing_drawing == Some(*d))
                     .and_then(|(d, a)| {
                         self.state
@@ -5071,6 +5090,33 @@ impl eframe::App for App {
                             .filter(|ann| !ann.deleted)
                             .map(|ann| context::DrawingAnnotationControl { text: ann.text.clone() })
                     }),
+                drawing_selection: self
+                    .state
+                    .selected_drawing_elements
+                    .iter()
+                    .map(|(d, element)| {
+                        let node = match element {
+                            context::DrawingElementRef::Projection(view) => {
+                                hierarchy::HierarchyNode::DrawingProjection { drawing: *d, view: *view }
+                            }
+                            context::DrawingElementRef::Text(annotation) => {
+                                hierarchy::HierarchyNode::DrawingAnnotation {
+                                    drawing: *d,
+                                    annotation: *annotation,
+                                }
+                            }
+                            context::DrawingElementRef::Dimension { view, a, b } => {
+                                hierarchy::HierarchyNode::DrawingDimension {
+                                    drawing: *d,
+                                    view: *view,
+                                    a: *a,
+                                    b: *b,
+                                }
+                            }
+                        };
+                        (*d, *element, crate::names::node_label(&self.state.doc, node))
+                    })
+                    .collect(),
                 drawing_add_active: self.state.tool == Tool::DrawingAdd
                     && self.state.editing_drawing.is_some(),
                 repeat_edit_start: (self.state.tool != Tool::Repeat)
@@ -5237,6 +5283,7 @@ impl eframe::App for App {
             let mut sketch_text_edit: Option<context::SketchTextEdit> = None;
             let mut drawing_view_edit: Option<context::DrawingViewEdit> = None;
             let mut drawing_annotation_edit: Option<context::DrawingAnnotationEdit> = None;
+            let mut drawing_selection_edit: Option<context::DrawingSelectionEdit> = None;
             let mut repeat_edit_begin: Option<usize> = None;
             let mut slice_edit: Option<context::SliceEdit> = None;
             let mut slice_edit_begin: Option<usize> = None;
@@ -5284,6 +5331,7 @@ impl eframe::App for App {
                         &mut |edit| sketch_text_edit = Some(edit),
                         &mut |edit| drawing_view_edit = Some(edit),
                         &mut |edit| drawing_annotation_edit = Some(edit),
+                        &mut |edit| drawing_selection_edit = Some(edit),
                         &mut |op| repeat_edit_begin = Some(op),
                         &mut |edit| slice_edit = Some(edit),
                         &mut |op| slice_edit_begin = Some(op),
@@ -5627,7 +5675,7 @@ impl eframe::App for App {
                 }
             }
             if let Some(edit) = drawing_view_edit {
-                if let Some((drawing, view)) = self.state.selected_drawing_view {
+                if let Some((drawing, view)) = self.state.selected_drawing_view() {
                     match edit {
                         context::DrawingViewEdit::Orientation(orientation) => {
                             self.state.apply(Action::SetDrawingViewOrientation {
@@ -5683,7 +5731,7 @@ impl eframe::App for App {
                 }
             }
             if let Some(edit) = drawing_annotation_edit {
-                if let Some((drawing, annotation)) = self.state.selected_drawing_annotation {
+                if let Some((drawing, annotation)) = self.state.selected_drawing_annotation() {
                     match edit {
                         context::DrawingAnnotationEdit::Text(text) => {
                             self.state.apply(Action::EditDrawingAnnotationText {
@@ -5696,6 +5744,16 @@ impl eframe::App for App {
                             self.state
                                 .apply(Action::RemoveDrawingAnnotation { drawing, annotation });
                         }
+                    }
+                }
+            }
+            if let Some(edit) = drawing_selection_edit {
+                match edit {
+                    context::DrawingSelectionEdit::Remove(drawing, element) => {
+                        self.state.deselect_drawing_element(drawing, element);
+                    }
+                    context::DrawingSelectionEdit::Clear => {
+                        self.state.clear_drawing_selection();
                     }
                 }
             }
@@ -9207,8 +9265,12 @@ impl App {
                         self.drawing_align_parent = Some(vi);
                         align_parent_set_this_frame = true;
                     } else {
-                        self.state.selected_drawing_view = Some((drawing, vi));
-                        self.state.selected_drawing_dimension = None;
+                        let element = context::DrawingElementRef::Projection(vi);
+                        if ui.input(|i| selection::additive_click_modifiers(&i.modifiers)) {
+                            self.state.toggle_drawing_element(drawing, element);
+                        } else {
+                            self.state.select_drawing_only(drawing, element);
+                        }
                     }
                 }
                 drag.context_menu(|ui| {
@@ -9227,7 +9289,9 @@ impl App {
                 });
                 // The selected card (#289) gets an accent border; a hovered card gets a lighter
                 // one so it's clear the whole card is clickable (#316); others a faint outline.
-                let selected_here = self.state.selected_drawing_view == Some((drawing, vi));
+                let selected_here = self
+                    .state
+                    .is_drawing_element_selected(drawing, context::DrawingElementRef::Projection(vi));
                 let align_parent_here = self.drawing_align_parent == Some(vi)
                     && self.state.tool == Tool::DrawingAlign;
                 // The Select-tool element picker hovering this projection's row highlights it (#328).
@@ -9688,13 +9752,21 @@ impl App {
                             // Clicking a dimension with the Select tool selects it (#336), so
                             // Delete/Backspace can remove it; clears any card/note selection.
                             if lr.clicked() && self.state.tool == Tool::Select {
-                                self.state.selected_drawing_dimension =
-                                    Some((drawing, vi, key.0, key.1));
-                                self.state.selected_drawing_view = None;
-                                self.state.selected_drawing_annotation = None;
+                                let element = context::DrawingElementRef::Dimension {
+                                    view: vi,
+                                    a: key.0,
+                                    b: key.1,
+                                };
+                                if ui.input(|i| selection::additive_click_modifiers(&i.modifiers)) {
+                                    self.state.toggle_drawing_element(drawing, element);
+                                } else {
+                                    self.state.select_drawing_only(drawing, element);
+                                }
                             }
-                            let is_selected_dim = self.state.selected_drawing_dimension
-                                == Some((drawing, vi, key.0, key.1));
+                            let is_selected_dim = self.state.is_drawing_element_selected(
+                                drawing,
+                                context::DrawingElementRef::Dimension { view: vi, a: key.0, b: key.1 },
+                            );
                             // The element picker hovering this dimension's row highlights it (#328).
                             let picker_hover_dim = self.state.hovered_drawing_element
                                 == Some(context::DrawingElementRef::Dimension {
@@ -9806,7 +9878,9 @@ impl App {
                     wrap_px,
                 );
                 let rect = egui::Rect::from_min_size(pos, galley.size());
-                let selected = self.state.selected_drawing_annotation == Some((drawing, ai));
+                let selected = self
+                    .state
+                    .is_drawing_element_selected(drawing, context::DrawingElementRef::Text(ai));
                 // The Select-tool element picker hovering this note's row highlights it (#328).
                 let picker_hover = self.state.hovered_drawing_element
                     == Some(context::DrawingElementRef::Text(ai));
@@ -9874,17 +9948,18 @@ impl App {
                 });
             }
             if let Some(ai) = select_ann {
-                self.state.selected_drawing_annotation = Some((drawing, ai));
-                self.state.selected_drawing_view = None;
-                self.state.selected_drawing_dimension = None;
+                let element = context::DrawingElementRef::Text(ai);
+                if ui.input(|i| selection::additive_click_modifiers(&i.modifiers)) {
+                    self.state.toggle_drawing_element(drawing, element);
+                } else {
+                    self.state.select_drawing_only(drawing, element);
+                }
             }
             // Clicking blank page space with the Select tool deselects everything (#346). `bg` is
             // the page-background interact created before the cards/notes, so it only reports a
             // click when nothing on top consumed it.
             else if self.state.tool == Tool::Select && bg.clicked() {
-                self.state.selected_drawing_view = None;
-                self.state.selected_drawing_annotation = None;
-                self.state.selected_drawing_dimension = None;
+                self.state.clear_drawing_selection();
             }
             if let Some((px, py, wrap)) = place {
                 self.state.apply(Action::AddDrawingAnnotation {
@@ -9977,7 +10052,8 @@ impl App {
                             );
                             if added {
                                 let vi = self.state.doc.drawings[drawing].views.len() - 1;
-                                self.state.selected_drawing_view = Some((drawing, vi));
+                                self.state
+                                    .select_drawing_only(drawing, context::DrawingElementRef::Projection(vi));
                                 self.drawing_align_parent = None;
                             }
                         }
@@ -10050,7 +10126,8 @@ impl App {
                             pos_x: nx,
                             pos_y: ny,
                         });
-                        self.state.selected_drawing_view = Some((drawing, view));
+                        self.state
+                            .select_drawing_only(drawing, context::DrawingElementRef::Projection(view));
                     }
                 }
             }

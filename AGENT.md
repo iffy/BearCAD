@@ -12,4 +12,4 @@ For every completed task/feature/fix, record the change with `changer add ...` (
 
 When writing docs, I really *really* **REALLY** prefer brevity. Be as succinct as possible in the docs, but also thorough. Don't reference todoer issue numbers in the docs, but please reference them in the Git Commits.
 
-Always work directly on the `master` branch. Do not create feature branches — commit your work straight to `master`. If other branches have pending work, merge them into `master`.
+Always work directly on the `master` branch. Do not create feature branches unless I specifically tell you to — commit your work straight to `master` and push to `origin` when a task is complete.

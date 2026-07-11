@@ -1951,17 +1951,13 @@ pub struct AppState {
     /// (never persisted): while `Some`, the central area shows that drawing instead of the
     /// 3D viewport.
     pub editing_drawing: Option<usize>,
-    /// The projection selected on the open drawing page (#289): `(drawing, view)`. Set by the
-    /// Add-view tool placing a projection or by clicking a card; drives the context pane's
-    /// view editor. UI state (never persisted).
-    pub selected_drawing_view: Option<(usize, usize)>,
-    /// The text annotation selected on the open drawing page (#312): `(drawing, annotation)`.
-    /// Drives the context pane's annotation editor. UI state (never persisted).
-    pub selected_drawing_annotation: Option<(usize, usize)>,
-    /// The dimension selected on the open drawing page (#336): `(drawing, view, a, b)` with `a`/`b`
-    /// the dimensioned edge's quantized world endpoints. Set by clicking a dimension with the
-    /// Select tool; Delete/Backspace hides it. UI state (never persisted).
-    pub selected_drawing_dimension: Option<(usize, usize, [i32; 3], [i32; 3])>,
+    /// The elements selected on the open drawing page (#346): projections, text notes, and shown
+    /// dimensions, each tagged with its owning drawing index. Multi-select, mirrored by the Select
+    /// tool's element picker and the Elements pane. The single-element `selected_drawing_view` /
+    /// `_annotation` / `_dimension` accessors derive their per-type context editors from this set
+    /// (each returns `Some` only when exactly one element of that type is selected). UI state
+    /// (never persisted).
+    pub selected_drawing_elements: Vec<(usize, crate::context::DrawingElementRef)>,
     /// The drawing element the Select-tool element picker is hovering (#328), highlighted on the
     /// page. UI state (never persisted).
     pub hovered_drawing_element: Option<crate::context::DrawingElementRef>,
@@ -2084,9 +2080,7 @@ impl Default for AppState {
             creating_slice: None,
             creating_sketch_slice: None,
             editing_drawing: None,
-            selected_drawing_view: None,
-            selected_drawing_annotation: None,
-            selected_drawing_dimension: None,
+            selected_drawing_elements: Vec::new(),
             hovered_drawing_element: None,
             creating_calibration: None,
             viewport_aspect: 16.0 / 9.0,
@@ -2148,6 +2142,106 @@ impl MeshExportFormat {
 }
 
 impl AppState {
+    /// The single selected projection `(drawing, view)` — `Some` only when exactly one element is
+    /// selected and it is a projection, so the view context editor shows for a lone selection (#346).
+    pub fn selected_drawing_view(&self) -> Option<(usize, usize)> {
+        match self.selected_drawing_elements.as_slice() {
+            [(d, crate::context::DrawingElementRef::Projection(v))] => Some((*d, *v)),
+            _ => None,
+        }
+    }
+
+    /// The single selected text annotation `(drawing, annotation)`, or `None` unless exactly one
+    /// text element is selected (#346).
+    pub fn selected_drawing_annotation(&self) -> Option<(usize, usize)> {
+        match self.selected_drawing_elements.as_slice() {
+            [(d, crate::context::DrawingElementRef::Text(a))] => Some((*d, *a)),
+            _ => None,
+        }
+    }
+
+    /// The single selected dimension `(drawing, view, a, b)`, or `None` unless exactly one
+    /// dimension is selected (#346).
+    pub fn selected_drawing_dimension(&self) -> Option<(usize, usize, [i32; 3], [i32; 3])> {
+        match self.selected_drawing_elements.as_slice() {
+            [(d, crate::context::DrawingElementRef::Dimension { view, a, b })] => {
+                Some((*d, *view, *a, *b))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether a specific drawing element is currently selected (#346).
+    pub fn is_drawing_element_selected(
+        &self,
+        drawing: usize,
+        element: crate::context::DrawingElementRef,
+    ) -> bool {
+        self.selected_drawing_elements.contains(&(drawing, element))
+    }
+
+    /// Replace the drawing selection with exactly this one element (#346).
+    pub fn select_drawing_only(&mut self, drawing: usize, element: crate::context::DrawingElementRef) {
+        self.selected_drawing_elements = vec![(drawing, element)];
+    }
+
+    /// Toggle a drawing element in the multi-selection (#346): remove it if present, else add it.
+    pub fn toggle_drawing_element(
+        &mut self,
+        drawing: usize,
+        element: crate::context::DrawingElementRef,
+    ) {
+        if let Some(pos) = self
+            .selected_drawing_elements
+            .iter()
+            .position(|e| e == &(drawing, element))
+        {
+            self.selected_drawing_elements.remove(pos);
+        } else {
+            self.selected_drawing_elements.push((drawing, element));
+        }
+    }
+
+    /// Remove a specific element from the drawing selection if present (#346).
+    pub fn deselect_drawing_element(
+        &mut self,
+        drawing: usize,
+        element: crate::context::DrawingElementRef,
+    ) {
+        self.selected_drawing_elements
+            .retain(|e| e != &(drawing, element));
+    }
+
+    /// Clear the whole drawing selection (#346).
+    pub fn clear_drawing_selection(&mut self) {
+        self.selected_drawing_elements.clear();
+    }
+
+    /// Fix up the selection after view `view` of `drawing` is removed (its later siblings shift
+    /// down by one): drop any selected projection/dimension on that view and renumber higher ones
+    /// (#346). Annotations are tombstoned, not renumbered, so they need no shifting.
+    pub fn drawing_selection_view_removed(&mut self, drawing: usize, view: usize) {
+        use crate::context::DrawingElementRef as R;
+        self.selected_drawing_elements.retain(|(d, e)| {
+            !(*d == drawing
+                && match e {
+                    R::Projection(v) => *v == view,
+                    R::Dimension { view: v, .. } => *v == view,
+                    R::Text(_) => false,
+                })
+        });
+        for (d, e) in self.selected_drawing_elements.iter_mut() {
+            if *d != drawing {
+                continue;
+            }
+            match e {
+                R::Projection(v) if *v > view => *v -= 1,
+                R::Dimension { view: v, .. } if *v > view => *v -= 1,
+                _ => {}
+            }
+        }
+    }
+
     pub fn refresh_document_health(&mut self) {
         self.document_health = recompute_document_health(&self.doc);
         // #103 part 2: this is the one seam every document mutation already goes through
@@ -6485,8 +6579,8 @@ impl AppState {
                     style: Default::default(),
                 };
                 self.doc.drawings[drawing].views.push(view);
-                self.selected_drawing_view =
-                    Some((drawing, self.doc.drawings[drawing].views.len() - 1));
+                let vi = self.doc.drawings[drawing].views.len() - 1;
+                self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
                 self.status = format!(
                     "Added {} view of body {body} to drawing {drawing}",
                     orientation.label()
@@ -6518,8 +6612,8 @@ impl AppState {
                     style: Default::default(),
                 };
                 self.doc.drawings[drawing].views.push(view);
-                self.selected_drawing_view =
-                    Some((drawing, self.doc.drawings[drawing].views.len() - 1));
+                let vi = self.doc.drawings[drawing].views.len() - 1;
+                self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
                 self.status = format!("Added sketch {sketch} to drawing {drawing}");
                 ActionResult::Ok
             }
@@ -6648,7 +6742,7 @@ impl AppState {
                     deleted: false,
                 });
                 let ai = d.annotations.len() - 1;
-                self.selected_drawing_annotation = Some((drawing, ai));
+                self.select_drawing_only(drawing, crate::context::DrawingElementRef::Text(ai));
                 self.status = "Added text".to_string();
                 ActionResult::Ok
             }
@@ -6664,7 +6758,10 @@ impl AppState {
                 };
                 if text.trim().is_empty() {
                     a.deleted = true;
-                    self.selected_drawing_annotation = None;
+                    self.deselect_drawing_element(
+                        drawing,
+                        crate::context::DrawingElementRef::Text(annotation),
+                    );
                     self.status = "Removed empty text".to_string();
                 } else {
                     a.text = text;
@@ -6696,9 +6793,10 @@ impl AppState {
                     return ActionResult::Err(format!("No annotation {annotation}"));
                 };
                 a.deleted = true;
-                if self.selected_drawing_annotation == Some((drawing, annotation)) {
-                    self.selected_drawing_annotation = None;
-                }
+                self.deselect_drawing_element(
+                    drawing,
+                    crate::context::DrawingElementRef::Text(annotation),
+                );
                 self.status = "Removed text".to_string();
                 ActionResult::Ok
             }
@@ -6710,13 +6808,9 @@ impl AppState {
                     return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
                 }
                 d.views.remove(view);
-                // Keep the page selection valid (#289): drop it if it pointed at the removed
-                // view, shift it down if it pointed past it.
-                self.selected_drawing_view = match self.selected_drawing_view {
-                    Some((sd, sv)) if sd == drawing && sv == view => None,
-                    Some((sd, sv)) if sd == drawing && sv > view => Some((sd, sv - 1)),
-                    other => other,
-                };
+                // Keep the page selection valid (#289/#346): drop any selection on the removed
+                // view and shift later views down by one.
+                self.drawing_selection_view_removed(drawing, view);
                 self.status = format!("Removed view {view} from drawing {drawing}");
                 ActionResult::Ok
             }
@@ -6860,8 +6954,7 @@ impl AppState {
                     }
                 }
                 if self.editing_drawing != drawing {
-                    self.selected_drawing_view = None;
-                    self.selected_drawing_annotation = None;
+                    self.clear_drawing_selection();
                 }
                 // The Add-view / Aligned-view tools are drawing-workbench-only (#289/#296).
                 if drawing.is_none() && matches!(self.tool, Tool::DrawingAdd | Tool::DrawingAlign) {
@@ -8055,7 +8148,7 @@ impl AppState {
                         });
                         if matches!(result, ActionResult::Ok) {
                             let vi = self.doc.drawings[drawing].views.len() - 1;
-                            self.selected_drawing_view = Some((drawing, vi));
+                            self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
                         }
                         true
                     }
@@ -8071,7 +8164,7 @@ impl AppState {
                         });
                         if matches!(result, ActionResult::Ok) {
                             let vi = self.doc.drawings[drawing].views.len() - 1;
-                            self.selected_drawing_view = Some((drawing, vi));
+                            self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
                         }
                         true
                     }
@@ -13033,7 +13126,7 @@ mod tests {
             additive: false,
         });
         assert_eq!(state.doc.drawings[0].views.len(), 1, "body click placed a view");
-        assert_eq!(state.selected_drawing_view, Some((0, 0)), "the new view is selected");
+        assert_eq!(state.selected_drawing_view(), Some((0, 0)), "the new view is selected");
         assert!(state.scene_selection.is_empty(), "the click fed the tool, not the selection");
 
         state.apply(Action::ClickSceneElement {
@@ -13042,15 +13135,60 @@ mod tests {
         });
         assert_eq!(state.doc.drawings[0].views.len(), 2, "sketch click placed a view");
         assert_eq!(state.doc.drawings[0].views[1].sketch, Some(sketch));
-        assert_eq!(state.selected_drawing_view, Some((0, 1)));
+        assert_eq!(state.selected_drawing_view(), Some((0, 1)));
 
         // Removing the selected view drops the selection; removing an earlier view shifts it.
         state.apply(Action::RemoveDrawingView { drawing: 0, view: 1 });
-        assert_eq!(state.selected_drawing_view, None);
-        state.selected_drawing_view = Some((0, 0));
+        assert_eq!(state.selected_drawing_view(), None);
+        state.select_drawing_only(0, crate::context::DrawingElementRef::Projection(0));
         state.apply(Action::EditDrawing { drawing: None });
         assert_eq!(state.tool, Tool::Select, "Add-view tool is workbench-only");
-        assert_eq!(state.selected_drawing_view, None, "closing the drawing clears it");
+        assert_eq!(state.selected_drawing_view(), None, "closing the drawing clears it");
+    }
+
+    #[test]
+    fn drawing_multiselect_toggle_and_single_accessors() {
+        use crate::context::DrawingElementRef as R;
+        let mut s = AppState::default();
+        s.editing_drawing = Some(0);
+        // One projection selected → the single-element view accessor resolves it.
+        s.select_drawing_only(0, R::Projection(2));
+        assert_eq!(s.selected_drawing_view(), Some((0, 2)));
+        assert!(s.is_drawing_element_selected(0, R::Projection(2)));
+        // Toggle a text in: now two are selected, so no single-element editor shows.
+        s.toggle_drawing_element(0, R::Text(1));
+        assert_eq!(s.selected_drawing_elements.len(), 2);
+        assert_eq!(s.selected_drawing_view(), None);
+        assert_eq!(s.selected_drawing_annotation(), None);
+        // Toggle the projection back off → only the text remains, and its accessor resolves.
+        s.toggle_drawing_element(0, R::Projection(2));
+        assert_eq!(s.selected_drawing_annotation(), Some((0, 1)));
+        s.deselect_drawing_element(0, R::Text(1));
+        assert!(s.selected_drawing_elements.is_empty());
+    }
+
+    #[test]
+    fn drawing_selection_shifts_when_a_view_is_removed() {
+        use crate::context::DrawingElementRef as R;
+        let a = [0, 0, 0];
+        let b = [1, 0, 0];
+        let mut s = AppState::default();
+        s.editing_drawing = Some(0);
+        s.selected_drawing_elements = vec![
+            (0, R::Projection(1)),
+            (0, R::Projection(3)),
+            (0, R::Dimension { view: 4, a, b }),
+            (0, R::Text(0)),
+        ];
+        // Remove view 2: lower indices unchanged, higher ones shift down, text untouched.
+        s.drawing_selection_view_removed(0, 2);
+        assert!(s.is_drawing_element_selected(0, R::Projection(1)));
+        assert!(s.is_drawing_element_selected(0, R::Projection(2)));
+        assert!(s.is_drawing_element_selected(0, R::Dimension { view: 3, a, b }));
+        assert!(s.is_drawing_element_selected(0, R::Text(0)));
+        // Removing a view that is itself selected drops it.
+        s.drawing_selection_view_removed(0, 2);
+        assert!(!s.is_drawing_element_selected(0, R::Projection(2)));
     }
 
     /// #232: an in-sketch repeat takes its direction from a picked edge (its unit vector), and
