@@ -12,7 +12,13 @@ The viewport always has one active **tool**. **Select** is the default — it on
 around and picks things, so moving the camera never accidentally creates geometry. Switch to
 a drawing tool when you want to draw.
 
-## Tool reference
+BearCAD has two workbenches, each with its own toolbar: the **3D modeling** workbench (the
+default), and the **technical drawings** workbench you enter by opening a drawing. A few tools —
+Select, Dimension, Text — appear in both but do a different job in each.
+
+## Modeling tools
+
+These make up the toolbar in the 3D modeling workbench.
 
 | | Tool | Shortcut | What it does |
 |---|---|---|---|
@@ -37,6 +43,21 @@ a drawing tool when you want to draw.
 
 Reference images for tracing over (import, scale calibration) are covered in
 [Tracing images](/docs/tools/tracing).
+
+## Technical drawing tools
+
+Opening a drawing switches to the **technical drawings** workbench, whose toolbar carries a
+smaller, drawing-specific set. Select, Dimension, and Text share a name with a modeling tool but
+act on the page instead of the model. Everything these tools do is covered in
+[Drawings](/docs/tools/drawing).
+
+| | Tool | Shortcut | What it does on a drawing |
+|---|---|---|---|
+| <img src={useBaseUrl("/img/icons/select.svg")} width="22" /> | [Select](/docs/tools/select) | — | Pick and drag views, text notes, and dimensions around the page. |
+| **＋** | [Add view](/docs/tools/drawing) | — | Drop a projection of a body or sketch onto the page. |
+| | [Aligned view](/docs/tools/drawing#aligned-views) | — | Add a projection lined up with an existing one. |
+| <img src={useBaseUrl("/img/icons/dimension.svg")} width="22" /> | [Dimension](/docs/tools/drawing#dimensions) | `D` | Show or hide a view's length, diameter, and angle dimensions. |
+| <img src={useBaseUrl("/img/icons/text.svg")} width="22" /> | [Text](/docs/tools/drawing#text-notes) | `T` | Add page **text notes** (with live parameter variables). |
 
 ## Habits that apply everywhere
 
