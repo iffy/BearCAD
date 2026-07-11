@@ -49,9 +49,10 @@ and it looks the same in the editor as in the exported PDF/SVG.
 Add free text to a page with the **Text** tool (or press **T** in the drawing workbench):
 click where you want it for a box that grows to fit, or drag a rectangle for one that wraps
 the text to that width. Switch to the **Select** tool to drag notes around the page, and edit
-or remove a selected note from the context pane. With the Select tool, the context pane also
-lists all of the page's elements — projections, notes, and dimensions — as a **Drawing elements**
-picker: hover a row to highlight that element on the page, and click it to select it.
+or remove a selected note from the context pane. All of the page's elements — projections, notes,
+and dimensions — are also listed in the **Elements pane**, nested under the drawing just like a
+sketch's geometry (each projection's dimensions sit under it). Hover a row to highlight that
+element on the page, and click it to select it.
 
 Notes can embed **variables** in curly braces: `Width: {plate_w}` shows the current value of the
 `plate_w` parameter, and the note updates whenever the parameter changes. Any expression works
@@ -94,9 +95,9 @@ right, plus the diagonal edge views in between — front-right, back-left, and s
    it. Click **Back** in the toolbar to return to the 3D
    model. Reopen a
    drawing any time by clicking its row (or right-click → **Edit drawing**). While a drawing is
-   open, the **Elements pane** lists it with its projections and text notes nested underneath, so
-   you can see everything that's on the page (click any of those rows to jump back into the
-   drawing).
+   open, the **Elements pane** lists it with its projections, text notes, and dimensions nested
+   underneath (each projection's dimensions under it), so you can see everything that's on the page
+   — click any of those rows to jump into the drawing and select that element.
 5. **Export** with **Export PDF…** for a single-page vector PDF, or **Export SVG…** for a
    vector SVG you can open in any browser and print. Both are black-on-white, scale
    losslessly, and are WYSIWYG: the page is the drawing's configured page size (landscape

@@ -1028,9 +1028,11 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   operations, images, drawings). Hiding a type prunes those nodes but promotes their kept
   children (hiding "Operations" still shows the result bodies, un-nested). The Drawing
   workbench defaults the filter to sketches + bodies + **drawings** (#333), so the open drawing's
-  **projections and text notes** appear in the pane. Each drawing's text notes are
-  `HierarchyNode::DrawingAnnotation` children (Text icon, labelled by their text), alongside its
-  `DrawingProjection` children; both are display-only leaves whose row click opens the drawing.
+  **projections, text notes, and dimensions** appear in the pane. Each drawing's text notes are
+  `HierarchyNode::DrawingAnnotation` children (Text icon) alongside its `DrawingProjection`
+  children, and each projection's shown dimensions are `DrawingDimension` children nested under it
+  (Dimension icon, labelled by their length, #341); all are display-only leaves whose row click
+  opens the drawing and selects the element.
 - **Page dimensions (#254/#273):** each drawing has a page size and margin (`page_width_mm`,
   `page_height_mm`, `margin_mm`), defaulting to a **landscape US-Letter** sheet (11 × 8.5 in)
   with **0.5 in** margins. The editor draws the page outline and margin at the page's aspect
@@ -1113,11 +1115,13 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   staying highlighted). **Delete/Backspace** removes the selected drawing element (#336): a
   projection (`RemoveDrawingView`), a text note (`RemoveDrawingAnnotation`), or a dimension
   (hidden via `ToggleDrawingDimension`); the handler skips when a text field wants keyboard input
-  so Backspace still edits note text. With the **Select tool**, the context pane also shows a
-  **Drawing elements picker** (#328) listing the page's projections, text notes, and shown
-  dimensions (`context::DrawingElementPicker`): each row hover-highlights its element on the page
-  (`AppState::hovered_drawing_element`) and clicking a row selects it (with the same selected
-  styling as clicking on the page). The label **runs along its dimension line**, always reading
+  so Backspace still edits note text. The open drawing's **projections, text notes, and
+  dimensions are listed in the Elements pane** (#328/#341), nested like a sketch's geometry —
+  projections and text under the drawing, each projection's dimensions under it
+  (`HierarchyNode::DrawingProjection`/`DrawingAnnotation`/`DrawingDimension`). Clicking a row
+  opens the drawing and **selects** that element (its row shows the selected style and its context
+  editor opens); hovering a row **highlights** the element on the page
+  (`AppState::hovered_drawing_element`). The label **runs along its dimension line**, always reading
   **left-to-right or bottom-to-top** (#322; `drawing::readable_text_angle` normalizes the angle
   into `[-90°, 90°)`, so a downward vertical reads upward and a down-to-the-right slope reads
   top-left → bottom-right); when the line is too short for the text, the label is placed just

@@ -77,6 +77,10 @@ pub enum HierarchyNode {
     /// `annotation` indexes the drawing's `annotations`. Like a projection it's a display-only
     /// leaf with no [`SceneElement`]; clicking it opens the drawing.
     DrawingAnnotation { drawing: usize, annotation: usize },
+    /// A length dimension shown on a projection (#341), nested under its
+    /// [`HierarchyNode::DrawingProjection`]. `a`/`b` are the dimensioned edge's quantized world
+    /// endpoints. A display-only leaf; clicking it opens the drawing and selects the dimension.
+    DrawingDimension { drawing: usize, view: usize, a: [i32; 3], b: [i32; 3] },
 }
 
 /// Identifies an element whose visibility can be toggled.
@@ -161,6 +165,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         | HierarchyNode::Drawing(_)
         | HierarchyNode::DrawingProjection { .. }
         | HierarchyNode::DrawingAnnotation { .. }
+        | HierarchyNode::DrawingDimension { .. }
         | HierarchyNode::Loft(_) => return None,
         HierarchyNode::ConstructionPlane(i) => SceneElement::ConstructionPlane(i),
         HierarchyNode::Sketch(i) => SceneElement::Sketch(i),
@@ -906,6 +911,11 @@ fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
         HierarchyNode::DrawingProjection { view, .. } => view,
         // Text notes list after all projections within the drawing (#333).
         HierarchyNode::DrawingAnnotation { annotation, .. } => annotation.saturating_add(1_000_000),
+        // Dimensions order within their projection by their appearance in the view's set (#341);
+        // the exact rank only tiebreaks siblings, so a stable hash of the endpoints suffices.
+        HierarchyNode::DrawingDimension { a, b, .. } => {
+            (a[0].wrapping_add(b[0]).wrapping_mul(31)) as usize
+        }
     }
 }
 
@@ -1166,12 +1176,27 @@ pub fn build_hierarchy(
     // the geometry DAG), each right-clickable to open its drawing pane.
     for (di, drawing) in doc.drawings.iter().enumerate() {
         if !drawing.deleted {
-            // Each placed view is a "projection" child of the drawing (#281); each text note is a
-            // "text" child (#333).
-            let mut children: Vec<HierarchyEntry> = (0..drawing.views.len())
-                .map(|vi| HierarchyEntry {
+            // Each placed view is a "projection" child of the drawing (#281), with its shown
+            // dimensions nested under it (#341); each text note is a "text" child (#333).
+            let mut children: Vec<HierarchyEntry> = drawing
+                .views
+                .iter()
+                .enumerate()
+                .map(|(vi, view)| HierarchyEntry {
                     node: HierarchyNode::DrawingProjection { drawing: di, view: vi },
-                    children: Vec::new(),
+                    children: view
+                        .dimensioned_edges
+                        .iter()
+                        .map(|(a, b)| HierarchyEntry {
+                            node: HierarchyNode::DrawingDimension {
+                                drawing: di,
+                                view: vi,
+                                a: *a,
+                                b: *b,
+                            },
+                            children: Vec::new(),
+                        })
+                        .collect(),
                 })
                 .collect();
             for (ai, ann) in drawing.annotations.iter().enumerate() {
@@ -1300,7 +1325,8 @@ impl ElementFilter {
             HierarchyNode::Image(_) => self.images,
             HierarchyNode::Drawing(_)
             | HierarchyNode::DrawingProjection { .. }
-            | HierarchyNode::DrawingAnnotation { .. } => self.drawings,
+            | HierarchyNode::DrawingAnnotation { .. }
+            | HierarchyNode::DrawingDimension { .. } => self.drawings,
         }
     }
 }
@@ -1870,6 +1896,7 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         HierarchyNode::Drawing(_) => IconId::Drawing,
         HierarchyNode::DrawingProjection { .. } => IconId::Projection,
         HierarchyNode::DrawingAnnotation { .. } => IconId::Text,
+        HierarchyNode::DrawingDimension { .. } => IconId::Dimension,
     })
 }
 
@@ -2138,6 +2165,9 @@ pub fn show_pane(
     on_edit_extrusion: &mut impl FnMut(usize),
     on_edit_edge_treatment: &mut impl FnMut(usize, usize),
     on_edit_drawing: &mut impl FnMut(usize),
+    on_select_drawing_element: &mut impl FnMut(HierarchyNode),
+    on_hover_drawing_element: &mut impl FnMut(Option<HierarchyNode>),
+    selected_drawing_leaf: Option<HierarchyNode>,
     on_rename_drawing: &mut impl FnMut(usize, String),
     on_export_body: &mut impl FnMut(usize),
     on_export_body_step: &mut impl FnMut(usize),
@@ -2220,6 +2250,9 @@ pub fn show_pane(
                         on_edit_extrusion,
                         on_edit_edge_treatment,
                         on_edit_drawing,
+                        on_select_drawing_element,
+                        on_hover_drawing_element,
+                        selected_drawing_leaf,
                         on_rename_drawing,
                         on_export_body,
                         on_export_body_step,
@@ -2562,6 +2595,9 @@ fn show_row(
     on_edit_extrusion: &mut impl FnMut(usize),
     on_edit_edge_treatment: &mut impl FnMut(usize, usize),
     on_edit_drawing: &mut impl FnMut(usize),
+    on_select_drawing_element: &mut impl FnMut(HierarchyNode),
+    on_hover_drawing_element: &mut impl FnMut(Option<HierarchyNode>),
+    selected_drawing_leaf: Option<HierarchyNode>,
     on_rename_drawing: &mut impl FnMut(usize, String),
     on_export_body: &mut impl FnMut(usize),
     on_export_body_step: &mut impl FnMut(usize),
@@ -2672,18 +2708,28 @@ fn show_row(
         return;
     }
 
-    // A drawing projection (#281) or text note (#333): a display-only leaf; clicking opens the
-    // drawing.
+    // A drawing projection (#281), text note (#333), or dimension (#341): a display-only leaf.
+    // Clicking opens the drawing and selects that element (like clicking a sketch's child), so
+    // its editor opens and it highlights on the page.
     if let HierarchyNode::DrawingProjection { drawing, .. }
-    | HierarchyNode::DrawingAnnotation { drawing, .. } = node
+    | HierarchyNode::DrawingAnnotation { drawing, .. }
+    | HierarchyNode::DrawingDimension { drawing, .. } = node
     {
         ui.horizontal(|ui| {
             ui.add_space(depth as f32 * 18.0);
             if let Some(icon) = icon_for_hierarchy_node(doc, node) {
                 ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
             }
-            if ui.selectable_label(false, node_label(doc, node)).clicked() {
+            let resp = ui.selectable_label(
+                selected_drawing_leaf == Some(node),
+                node_label(doc, node),
+            );
+            if resp.clicked() {
                 on_edit_drawing(drawing);
+                on_select_drawing_element(node);
+            }
+            if resp.hovered() {
+                on_hover_drawing_element(Some(node));
             }
         });
         return;
@@ -2935,6 +2981,47 @@ mod tests {
         assert_eq!(
             node_label(&doc, HierarchyNode::DrawingProjection { drawing: 0, view: 0 }),
             "Plate — Front"
+        );
+    }
+
+    /// #341: a projection's shown dimensions appear as `DrawingDimension` children nested under it.
+    #[test]
+    fn drawing_dimensions_nest_under_their_projection() {
+        let mut doc = Document::default();
+        let a = crate::hierarchy::quantize_body_point(glam::Vec3::ZERO);
+        let b = crate::hierarchy::quantize_body_point(glam::Vec3::new(40.0, 0.0, 0.0));
+        doc.drawings.push(crate::model::Drawing {
+            views: vec![crate::model::DrawingView {
+                body: 0,
+                sketch: None,
+                orientation: crate::model::DrawingOrientation::Front,
+                dimensioned_edges: vec![(a, b)],
+                angle_dims: Vec::new(),
+                dimension_offsets: Vec::new(),
+                aligned_parent: None,
+                aligned_dir: None,
+                scale: None,
+                style: Default::default(),
+                pos_x: 0.5,
+                pos_y: 0.5,
+            }],
+            ..Default::default()
+        });
+        let tree = build_hierarchy(&doc, None);
+        let drawing = tree[0]
+            .children
+            .iter()
+            .find(|e| e.node == HierarchyNode::Drawing(0))
+            .expect("drawing node");
+        let projection = drawing
+            .children
+            .iter()
+            .find(|e| matches!(e.node, HierarchyNode::DrawingProjection { .. }))
+            .expect("projection node");
+        assert_eq!(
+            projection.children.iter().map(|c| c.node).collect::<Vec<_>>(),
+            vec![HierarchyNode::DrawingDimension { drawing: 0, view: 0, a, b }],
+            "the dimension nests under its projection"
         );
     }
 

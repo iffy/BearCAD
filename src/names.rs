@@ -407,6 +407,14 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
                 None => "Text".to_string(),
             }
         }
+        HierarchyNode::DrawingDimension { drawing, view, a, b } => {
+            let unit = doc.default_length_unit;
+            let len = (crate::hierarchy::dequantize_body_point(a)
+                - crate::hierarchy::dequantize_body_point(b))
+            .length();
+            let _ = (drawing, view);
+            format!("Dim: {}", crate::value::format_length_display_in(len, unit))
+        }
     }
 }
 
