@@ -703,8 +703,9 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     };
     let extrude_faces = input.extrude_faces.clone();
     // The Repeat tool's own context is busy enough; its distances are plain lengths, so the
-    // Default-units section isn't shown while it's active (#257).
-    let units = (input.tool != Tool::Repeat)
+    // Default-units section isn't shown while it's active (#257). The Text tool has nothing to do
+    // with the document's default units either, so it's suppressed there too (#330).
+    let units = (input.tool != Tool::Repeat && input.tool != Tool::Text)
         .then(|| units_control_from_selection(input.doc, input.selection))
         .flatten();
     let edge_picker = input
@@ -801,7 +802,14 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let sketch_repeat = input.sketch_repeat.clone();
     let sketch_slice = input.sketch_slice.clone();
     let sketch_text = input.sketch_text.clone();
-    let drawing_view = input.drawing_view.clone();
+    // With the Text tool active, the pane belongs to placing/editing text — a projection that
+    // happens to still be selected must not show its editor here (#329). The Dimension/Select
+    // tools keep the projection editor.
+    let drawing_view = if input.tool == Tool::Text {
+        None
+    } else {
+        input.drawing_view.clone()
+    };
     let drawing_annotation = input.drawing_annotation.clone();
     let drawing_add_active = input.drawing_add_active;
     let repeat_edit_start = input.repeat_edit_start;
@@ -2597,6 +2605,41 @@ mod tests {
             ..input(&doc, &selection)
         });
         assert!(repeat.units.is_none(), "Repeat tool hides the units control");
+    }
+
+    /// #329/#330: with the Text tool active, the projection editor and the Default-units section
+    /// are suppressed — the pane belongs to placing/editing text, not to a projection that
+    /// happens to still be selected. The Dimension tool keeps the projection editor.
+    #[test]
+    fn text_tool_hides_projection_editor_and_units() {
+        let doc = Document::default();
+        let selection = SceneSelection::default();
+        let view_control = DrawingViewControl {
+            view: 0,
+            source: "Body 0".to_string(),
+            orientation: crate::model::DrawingOrientation::Front,
+            scale: String::new(),
+            aligned: false,
+            style: crate::model::DrawingViewStyle::default(),
+        };
+        // Dimension tool: projection editor and units both present.
+        let dim = context_pane_content(&ContextInput {
+            tool: Tool::Dimension,
+            in_drawing_workbench: true,
+            drawing_view: Some(view_control.clone()),
+            ..input(&doc, &selection)
+        });
+        assert!(dim.drawing_view.is_some(), "Dimension tool keeps the projection editor");
+        assert!(dim.units.is_some(), "Dimension tool still shows units");
+        // Text tool: both suppressed.
+        let text = context_pane_content(&ContextInput {
+            tool: Tool::Text,
+            in_drawing_workbench: true,
+            drawing_view: Some(view_control),
+            ..input(&doc, &selection)
+        });
+        assert!(text.drawing_view.is_none(), "Text tool hides the projection editor (#329)");
+        assert!(text.units.is_none(), "Text tool hides the Default-units section (#330)");
     }
 
     /// #268: the Extrude tool surfaces its picked profile faces as an element picker.

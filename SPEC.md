@@ -963,7 +963,10 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   exports. The **Select** tool clicks to select and drags to move them; the context pane shows
   a multi-line editor + Remove (`Action::AddDrawingAnnotation`/`EditDrawingAnnotationText`/
   `MoveDrawingAnnotation`/`RemoveDrawingAnnotation`; `AppState::selected_drawing_annotation`).
-  Scriptable: `bearcad.drawing_text{ drawing, text, x, y, wrap? }`.
+  Scriptable: `bearcad.drawing_text{ drawing, text, x, y, wrap? }`. While the **Text** tool is
+  active, the context pane belongs to placing/editing text: a projection that happens to still be
+  selected does **not** show its view editor (#329), and the **Default units** section is hidden
+  (#330) — both reappear under the Select/Dimension tools.
 - **Add-view tool (#289):** the workbench's **Add view** tool (＋ icon; tool name
   `drawing_add`) replaces the old inline "Add view:" combo row. With it active, clicking a
   **body or sketch** in the Elements pane drops a projection of it onto the page and selects
