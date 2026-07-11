@@ -9119,8 +9119,57 @@ impl App {
                     )
                 };
 
+                let unit = self.state.doc.default_length_unit;
+                let dims = view.dimensioned_edges.clone();
+                let pending_here = pending_angle.filter(|(pv, _)| *pv == vi).map(|(_, k)| k);
+                let bbox_center_v = egui::vec2(bbox_center.x, bbox_center.y);
+                let diag = extent.length().max(1.0);
+                let default_gap = diag * 0.05;
+                let arrow = diag * 0.025;
+                // The on-screen dimension line segment for edge `i` if it currently carries a
+                // dimension (#324), so the Dimension tool can pick a dimension by hovering its
+                // line/label, not only the model edge. Mirrors the render loop's geometry.
+                let dim_line_screen = |i: usize| -> Option<(egui::Pos2, egui::Pos2)> {
+                    let (a, b) = proj[i];
+                    if on_circle(a, b) || (b - a).length() < 1e-3 {
+                        return None;
+                    }
+                    let (wa, wb) = world_edges[i];
+                    let key = edge_key(wa, wb);
+                    if !dims.contains(&key) {
+                        return None;
+                    }
+                    let outward = {
+                        let seg = b - a;
+                        let mut p = egui::vec2(-seg.y, seg.x).normalized();
+                        if p == egui::Vec2::ZERO {
+                            p = egui::vec2(0.0, -1.0);
+                        }
+                        let mid = (a + b) * 0.5;
+                        if p.dot(mid - bbox_center_v) < 0.0 { -p } else { p }
+                    };
+                    let extra = view
+                        .dimension_offsets
+                        .iter()
+                        .find(|(k, _)| *k == key)
+                        .map(|(_, o)| *o)
+                        .unwrap_or(0.0);
+                    let g = crate::drawing::dimension_line_geometry(
+                        glam::Vec2::new(a.x, a.y),
+                        glam::Vec2::new(b.x, b.y),
+                        glam::Vec2::new(outward.x, outward.y),
+                        default_gap + extra,
+                        arrow,
+                    );
+                    Some((
+                        to_screen(egui::vec2(g.line.0.x, g.line.0.y)),
+                        to_screen(egui::vec2(g.line.1.x, g.line.1.y)),
+                    ))
+                };
+
                 // On the Dimension tool, the edge nearest the cursor previews so it's clear a
-                // click toggles it (#294). Computed here; drawn in the per-edge loop below.
+                // click toggles it (#294). The dimension's own line/label counts as the edge too
+                // (#324), so an already-shown dimension can be toggled off by hovering its line.
                 let hovered_edge = (self.state.tool == Tool::Dimension)
                     .then(|| {
                         let pp = pointer_screen?;
@@ -9129,7 +9178,10 @@ impl App {
                         }
                         let mut best: Option<(f32, usize)> = None;
                         for (i, (a, b)) in proj.iter().enumerate() {
-                            let d = dist_point_to_segment(pp, to_screen(*a), to_screen(*b));
+                            let mut d = dist_point_to_segment(pp, to_screen(*a), to_screen(*b));
+                            if let Some((la, lb)) = dim_line_screen(i) {
+                                d = d.min(dist_point_to_segment(pp, la, lb));
+                            }
                             if best.is_none_or(|(bd, _)| d < bd) {
                                 best = Some((d, i));
                             }
@@ -9206,13 +9258,6 @@ impl App {
                         );
                     }
                 }
-                let unit = self.state.doc.default_length_unit;
-                let dims = view.dimensioned_edges.clone();
-                let pending_here = pending_angle.filter(|(pv, _)| *pv == vi).map(|(_, k)| k);
-                let bbox_center_v = egui::vec2(bbox_center.x, bbox_center.y);
-                let diag = extent.length().max(1.0);
-                let default_gap = diag * 0.05;
-                let arrow = diag * 0.025;
                 // A rotated label drawn centred at a screen point (#314/#320).
                 let draw_rot_label = |painter: &egui::Painter, text: String, at: egui::Pos2, ang: f32| {
                     let galley =

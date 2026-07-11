@@ -78,7 +78,8 @@ Aligned views inherit the parent's scale and orientation, so a whole group reads
    readable: coincident edges (a box's bottom edge, front and back, land on
    the same line) share one dimension, and parallel dimensions that would otherwise sit on top of
    each other are stacked onto separate lines so no measurement label overlaps another. With the **Dimension tool** active, the edge under the cursor
-   highlights; click it to show or hide that one dimension. **Shift+click**
+   highlights; click it to show or hide that one dimension. To turn a dimension off you can hover
+   either the model edge **or the dimension line itself**. **Shift+click**
    two edges to show the angle between them (Shift+click either again to hide it). **Drag a
    dimension's label** (with the Select or Dimension tool) to push its line further from or
    closer to the edge.

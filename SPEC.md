@@ -1090,8 +1090,10 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   `drawing::plan_dimension_tiers`, applied as `dimension_offsets` when the projection is
   created). With the **Dimension tool** active (#277), the edge
   nearest the cursor **hovers** (highlighted) to show a click will toggle it; clicking toggles
-  its dimension, **Shift+click** two edges toggles the **angle** between them (drawn at their
-  corner). A dimension **label is draggable** (Select or Dimension tool) to slide the whole
+  its dimension. The hit-test also covers a shown dimension's **own line/label** (#324), so an
+  existing dimension can be toggled off by hovering its dimension line, not just the model edge
+  (`dim_line_screen` mirrors the render geometry in the hover pass). **Shift+click** two edges
+  toggles the **angle** between them (drawn at their corner). A dimension **label is draggable** (Select or Dimension tool) to slide the whole
   dimension line further from or closer to the edge; the offset is stored per view as a
   `dimension_offsets` override (`Action::SetDrawingDimensionOffset`), cleared when the
   dimension is hidden. The label **runs along its dimension line**, always reading
