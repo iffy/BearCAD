@@ -83,13 +83,28 @@ bearcad.ui.wait_ms(100)   -- wait 100 milliseconds
 bearcad.ui.screenshot()                       -- writes screenshot-bearcad.png
 bearcad.ui.screenshot("out.png")
 bearcad.ui.screenshot("out.png", true)        -- whole_window = true: capture the entire window
+bearcad.ui.screenshot("win1.png", true, 1)    -- capture extra window 1 (see New windows below)
 ```
 
 By default, `screenshot` captures the 3D viewport only (the view bear is suppressed for that
-frame); pass `whole_window = true` to capture the entire window instead. This is the mechanism
+frame); pass `whole_window = true` to capture the entire window instead. The third argument,
+`window`, chooses which editor window to capture — `0` (the default) is the oldest/main window,
+and `1`+ are [extra windows](#new-windows) in the order they were opened. This is the mechanism
 behind BearCAD's visual regression testing: an instruction script can drive an exact interactive
 flow (e.g. the rectangle tool's click → move → type → enter sequence) and emit a screenshot to
 compare against a golden image in CI.
+
+## New windows
+
+```lua
+bearcad.ui.new_window()                       -- open another editor window onto the same document
+```
+
+`new_window` opens a second (third, …) editor window showing the **same document**. Each window
+keeps its **own** camera, active tool, selection, open sketch or drawing, pane layout and element
+visibility — only the document is shared, so an edit in one window shows live in all of them.
+Combine it with `screenshot`'s `window` argument to capture each window independently. Native only
+(a no-op on the web build).
 
 ## A worked example
 
