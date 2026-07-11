@@ -1130,7 +1130,9 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   (`HierarchyNode::DrawingProjection`/`DrawingAnnotation`/`DrawingDimension`). Clicking a row
   opens the drawing and **selects** that element (its row shows the selected style and its context
   editor opens); hovering a row **highlights** the element on the page
-  (`AppState::hovered_drawing_element`). The label **runs along its dimension line**, always reading
+  (`AppState::hovered_drawing_element`). Clicking **blank page space** with the Select tool
+  **deselects everything** (#346) — the page-background interact reports the click only when no
+  card/note/dimension consumed it. The label **runs along its dimension line**, always reading
   **left-to-right or bottom-to-top** (#322; `drawing::readable_text_angle` normalizes the angle
   into `[-90°, 90°)`, so a downward vertical reads upward and a down-to-the-right slope reads
   top-left → bottom-right); when the line is too short for the text, the label is placed just

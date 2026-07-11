@@ -9752,6 +9752,14 @@ impl App {
                 self.state.selected_drawing_view = None;
                 self.state.selected_drawing_dimension = None;
             }
+            // Clicking blank page space with the Select tool deselects everything (#346). `bg` is
+            // the page-background interact created before the cards/notes, so it only reports a
+            // click when nothing on top consumed it.
+            else if self.state.tool == Tool::Select && bg.clicked() {
+                self.state.selected_drawing_view = None;
+                self.state.selected_drawing_annotation = None;
+                self.state.selected_drawing_dimension = None;
+            }
             if let Some((px, py, wrap)) = place {
                 self.state.apply(Action::AddDrawingAnnotation {
                     drawing,
