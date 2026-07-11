@@ -4010,6 +4010,54 @@ impl eframe::App for App {
             self.drain_web_io(ctx);
         }
 
+        let render_state = frame.wgpu_render_state();
+        self.draw_workspace(ctx, render_state);
+
+        // A popped-out drawing (#276) renders in its own OS window so it can sit beside the 3D
+        // view. Uses an *immediate* viewport so the render closure can borrow `self`.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(di) = self.drawing_window {
+            if self.state.doc.drawings.get(di).is_none_or(|d| d.deleted) {
+                self.drawing_window = None;
+            } else {
+                let title =
+                    crate::names::node_label(&self.state.doc, hierarchy::HierarchyNode::Drawing(di));
+                let builder = egui::ViewportBuilder::default()
+                    .with_title(format!("Drawing — {title}"))
+                    .with_inner_size([900.0, 700.0]);
+                let mut close = false;
+                ctx.show_viewport_immediate(
+                    egui::ViewportId::from_hash_of("drawing_popout"),
+                    builder,
+                    |vctx, _class| {
+                        theme::apply(vctx);
+                        egui::CentralPanel::default()
+                            .frame(egui::Frame::NONE)
+                            .show(vctx, |ui| {
+                                self.draw_drawing_pane(ui, di);
+                            });
+                        if vctx.input(|i| i.viewport().close_requested()) {
+                            close = true;
+                        }
+                    },
+                );
+                if close {
+                    self.drawing_window = None;
+                }
+            }
+        }
+    }
+}
+
+impl App {
+    /// Render the full editor workspace (toolbar, side panels, status bar and the
+    /// central 3D/drawing view) into `ctx`. Factored out of `update` so it can be drawn
+    /// into each window's viewport for multi-window support (#347).
+    fn draw_workspace(
+        &mut self,
+        ctx: &egui::Context,
+        render_state: Option<&eframe::egui_wgpu::RenderState>,
+    ) {
         egui::TopBottomPanel::top("toolbar")
             .frame(theme::panel_frame())
             .show(ctx, |ui| {
@@ -5922,7 +5970,6 @@ impl eframe::App for App {
             }
         }
 
-        let render_state = frame.wgpu_render_state();
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
@@ -5938,40 +5985,6 @@ impl eframe::App for App {
                     }
                 }
             });
-
-        // A popped-out drawing (#276) renders in its own OS window so it can sit beside the 3D
-        // view. Uses an *immediate* viewport so the render closure can borrow `self`.
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(di) = self.drawing_window {
-            if self.state.doc.drawings.get(di).is_none_or(|d| d.deleted) {
-                self.drawing_window = None;
-            } else {
-                let title =
-                    crate::names::node_label(&self.state.doc, hierarchy::HierarchyNode::Drawing(di));
-                let builder = egui::ViewportBuilder::default()
-                    .with_title(format!("Drawing — {title}"))
-                    .with_inner_size([900.0, 700.0]);
-                let mut close = false;
-                ctx.show_viewport_immediate(
-                    egui::ViewportId::from_hash_of("drawing_popout"),
-                    builder,
-                    |vctx, _class| {
-                        theme::apply(vctx);
-                        egui::CentralPanel::default()
-                            .frame(egui::Frame::NONE)
-                            .show(vctx, |ui| {
-                                self.draw_drawing_pane(ui, di);
-                            });
-                        if vctx.input(|i| i.viewport().close_requested()) {
-                            close = true;
-                        }
-                    },
-                );
-                if close {
-                    self.drawing_window = None;
-                }
-            }
-        }
     }
 }
 
