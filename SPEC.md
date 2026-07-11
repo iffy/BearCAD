@@ -1049,7 +1049,15 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   dimension lines** (#294): two extension lines off the edge, a dimension line offset outward
   (on the side away from the geometry centroid) with **arrowheads** at each end, and the
   measurement centred on it — in the editor and both exports, from one shared
-  `drawing::dimension_line_geometry`. With the **Dimension tool** active (#277), the edge
+  `drawing::dimension_line_geometry`. The default dimension set is **deduped by projected
+  segment** so coincident front/back edges (a box's bottom edge seen from the front) get one
+  dimension, not two stacked on the same line; the surviving representative is chosen
+  deterministically (smallest world key), so reopening a drawing dimensions the same edge every
+  time. To keep the initial set legible, parallel dimensions whose lines would land at the same
+  distance and whose spans overlap are pushed out onto successive **tiers**, the way CAD stacks
+  parallel dimensions, so no number label overlaps another dimension line or label (#321;
+  `drawing::plan_dimension_tiers`, applied as `dimension_offsets` when the projection is
+  created). With the **Dimension tool** active (#277), the edge
   nearest the cursor **hovers** (highlighted) to show a click will toggle it; clicking toggles
   its dimension, **Shift+click** two edges toggles the **angle** between them (drawn at their
   corner). A dimension **label is draggable** (Select or Dimension tool) to slide the whole

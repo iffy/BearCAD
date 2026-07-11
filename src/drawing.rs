@@ -371,6 +371,71 @@ pub fn dimension_line_geometry(
     }
 }
 
+/// Plan per-dimension **extra offsets** (beyond the default gap) so dimension lines and their
+/// number labels don't overlap each other (#321): parallel dimensions whose lines would land at
+/// the same distance and whose spans overlap are pushed out onto successive "tiers", the way CAD
+/// stacks parallel dimensions. Input is one `(a, b, outward)` per dimension in projected mm;
+/// output is the extra offset for each, in the same order. Greedy interval colouring per
+/// parallel group, longest-span dimensions taking the innermost tier.
+pub fn plan_dimension_tiers(dims: &[(glam::Vec2, glam::Vec2, glam::Vec2)], gap: f32) -> Vec<f32> {
+    let n = dims.len();
+    // Per-dimension: line direction, span [s0,s1] along it, and the signed distance of the
+    // dimension line from the origin along `outward` (its "height", so parallel lines at the
+    // same height on the same side are the ones that can collide).
+    struct Info {
+        dir: glam::Vec2,
+        outward: glam::Vec2,
+        s0: f32,
+        s1: f32,
+        height: f32,
+        len: f32,
+    }
+    let info: Vec<Info> = dims
+        .iter()
+        .map(|&(a, b, outward)| {
+            let seg = b - a;
+            let len = seg.length().max(1e-6);
+            let dir = seg / len;
+            let s0 = a.dot(dir);
+            let s1 = b.dot(dir);
+            let (s0, s1) = if s0 <= s1 { (s0, s1) } else { (s1, s0) };
+            // Dimension line sits at the edge midpoint pushed out by the default gap.
+            let mid = (a + b) * 0.5 + outward * gap;
+            Info { dir, outward, s0, s1, height: mid.dot(outward), len }
+        })
+        .collect();
+
+    // Process longest first so big datums stay innermost; assign the lowest free tier.
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&i, &j| info[j].len.total_cmp(&info[i].len));
+    let mut tier = vec![0usize; n];
+    let mut placed: Vec<usize> = Vec::new(); // indices already assigned
+    for &i in &order {
+        let mut t = 0;
+        'search: loop {
+            for &j in &placed {
+                if tier[j] != t {
+                    continue;
+                }
+                // Same tier: collide if parallel, same side, near the same height, spans overlap.
+                let parallel = info[i].dir.dot(info[j].dir).abs() > 0.99;
+                let same_side = info[i].outward.dot(info[j].outward) > 0.9;
+                let same_height = (info[i].height - info[j].height).abs() < gap * 0.5;
+                let overlap = info[i].s0 < info[j].s1 - 1e-3 && info[j].s0 < info[i].s1 - 1e-3;
+                if parallel && same_side && same_height && overlap {
+                    t += 1;
+                    continue 'search;
+                }
+            }
+            break;
+        }
+        tier[i] = t;
+        placed.push(i);
+    }
+    // Each tier steps out by ~1.4 gaps so a label on the inner line clears the outer one.
+    tier.iter().map(|&t| t as f32 * gap * 1.4).collect()
+}
+
 /// The rotation (radians, clockwise in screen space) that makes a label along direction `dir`
 /// always read **left-to-right or bottom-to-top** (#322): the angle is normalized into
 /// `[-90°, 90°)`, so a downward vertical reads upward (−90°) rather than top-to-bottom, and a
@@ -1252,6 +1317,30 @@ mod tests {
         );
         assert!(ang_s.abs() < 1e-3, "short line → horizontal label");
         assert!(pos_s.x > 4.0, "label sits past the far end");
+    }
+
+    /// #321: two parallel dimensions on the same side whose spans overlap land on different
+    /// tiers (different offsets); a non-overlapping pair shares the innermost tier.
+    #[test]
+    fn overlapping_parallel_dimensions_get_staggered() {
+        let out = glam::Vec2::new(0.0, -1.0);
+        // Two horizontal dimensions on the same side, spans overlapping in x.
+        let dims = vec![
+            (glam::Vec2::new(0.0, 0.0), glam::Vec2::new(10.0, 0.0), out),
+            (glam::Vec2::new(2.0, 0.0), glam::Vec2::new(8.0, 0.0), out),
+        ];
+        let offs = plan_dimension_tiers(&dims, 1.0);
+        assert!(
+            (offs[0] - offs[1]).abs() > 1e-3,
+            "overlapping parallel dims should be on different tiers: {offs:?}"
+        );
+        // Two horizontal dims on the same side but non-overlapping spans → same tier (0).
+        let dims2 = vec![
+            (glam::Vec2::new(0.0, 0.0), glam::Vec2::new(10.0, 0.0), out),
+            (glam::Vec2::new(20.0, 0.0), glam::Vec2::new(30.0, 0.0), out),
+        ];
+        let offs2 = plan_dimension_tiers(&dims2, 1.0);
+        assert!((offs2[0]).abs() < 1e-4 && (offs2[1]).abs() < 1e-4, "non-overlapping share tier 0");
     }
 
     /// #313/#319: a tessellated circle in a plane is detected in 3D (centre/radius/normal); a

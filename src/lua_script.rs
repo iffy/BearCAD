@@ -5342,31 +5342,38 @@ mod tests {
     /// edge's world endpoints; calling it again on the same edge hides it.
     #[test]
     fn lua_drawing_dimension_toggles_an_edge() {
-        let script = |repeats: usize| {
-            let toggles = "bearcad.drawing_dimension{ drawing = d, view = 0, a = {0,0,0}, b = {40,0,0} }\n".repeat(repeats);
-            format!(
-                r#"
-                bearcad.new()
-                bearcad.rect{{ x = 0, y = 0, width = 40, height = 25 }}
-                bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 15 }}
-                local d = bearcad.drawing{{}}
-                bearcad.drawing_view{{ drawing = d, body = 0, orientation = "front" }}
-                {toggles}
-            "#
-            )
+        // Derive the toggle endpoints from whichever edge the projection actually dimensions by
+        // default. Coincident front/back edges collapse to one dimension (#321), so we can't
+        // assume any specific hard-coded edge survives — pick a real one from the baseline.
+        let base_script = r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 40, height = 25 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+        "#;
+        let script = |repeats: usize, a: glam::Vec3, b: glam::Vec3| {
+            let toggle = format!(
+                "bearcad.drawing_dimension{{ drawing = d, view = 0, a = {{{},{},{}}}, b = {{{},{},{}}} }}\n",
+                a.x, a.y, a.z, b.x, b.y, b.z
+            );
+            format!("{base_script}\n{}", toggle.repeat(repeats))
         };
         // New views start with every edge dimensioned (#299), so the first toggle *hides*
         // this edge and a second toggle shows it again.
-        let baseline = run_lua(&script(0));
+        let baseline = run_lua(base_script);
         let all = baseline.doc.drawings[0].views[0].dimensioned_edges.len();
         assert!(all > 0, "a new projection starts with all dimensions on (#299)");
-        // The stored key is the quantized endpoints (order-normalized).
-        let qa = crate::hierarchy::quantize_body_point(glam::Vec3::ZERO);
-        let qb = crate::hierarchy::quantize_body_point(glam::Vec3::new(40.0, 0.0, 0.0));
-        let expected = if qa <= qb { (qa, qb) } else { (qb, qa) };
-        assert!(baseline.doc.drawings[0].views[0].dimensioned_edges.contains(&expected));
+        // Pick a real dimensioned edge and dequantize its endpoints to drive the toggle.
+        let expected = *baseline.doc.drawings[0].views[0]
+            .dimensioned_edges
+            .iter()
+            .next()
+            .expect("at least one edge is dimensioned");
+        let a = crate::hierarchy::dequantize_body_point(expected.0);
+        let b = crate::hierarchy::dequantize_body_point(expected.1);
 
-        let hidden = run_lua(&script(1));
+        let hidden = run_lua(&script(1, a, b));
         assert_eq!(
             hidden.doc.drawings[0].views[0].dimensioned_edges.len(),
             all - 1,
@@ -5374,7 +5381,7 @@ mod tests {
         );
         assert!(!hidden.doc.drawings[0].views[0].dimensioned_edges.contains(&expected));
 
-        let shown = run_lua(&script(2));
+        let shown = run_lua(&script(2, a, b));
         assert_eq!(
             shown.doc.drawings[0].views[0].dimensioned_edges.len(),
             all,

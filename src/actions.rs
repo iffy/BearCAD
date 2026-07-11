@@ -2735,11 +2735,15 @@ pub(crate) fn extrude_face_sketch(doc: &Document, face: &ExtrudeFace) -> Option<
 /// an `ExtrudeFace`.
 /// Every feature edge of a drawing view as a normalized quantized-endpoint dimension key
 /// (#299): a newly added projection starts with all its length dimensions shown, and the
-/// Dimension tool's edge clicks toggle them off from there.
+/// Dimension tool's edge clicks toggle them off from there. Also returns per-edge offset
+/// overrides (#321) that stagger parallel dimensions so their labels don't overlap.
 fn default_dimensioned_edges(
     doc: &Document,
     view: &crate::model::DrawingView,
-) -> Vec<crate::model::DrawingEdgeKey> {
+) -> (
+    Vec<crate::model::DrawingEdgeKey>,
+    Vec<(crate::model::DrawingEdgeKey, f32)>,
+) {
     // Skip edges that project to (near) a point in this view — an edge pointing straight into
     // the page has no meaningful length to dimension here, and its 3D length would mislead
     // (#294) — and skip tessellated-circle segments, which are covered by a single diameter
@@ -2751,24 +2755,65 @@ fn default_dimensioned_edges(
         .iter()
         .map(|c| crate::drawing::project_world_circle(c, right, up))
         .collect();
-    let mut keys: Vec<crate::model::DrawingEdgeKey> = world
+    // Candidate dimensions: keep the projected edge + its key, deduped by key.
+    let mut min = glam::Vec2::splat(f32::MAX);
+    let mut max = glam::Vec2::splat(f32::MIN);
+    let mut seen: std::collections::HashSet<crate::model::DrawingEdgeKey> =
+        std::collections::HashSet::new();
+    // First pass: one candidate per distinct world edge (source order is HashMap-iteration
+    // order and so nondeterministic, so we can't pick the projected-dedup representative here).
+    let mut raw: Vec<(crate::model::DrawingEdgeKey, glam::Vec2, glam::Vec2)> = Vec::new();
+    for &(a, b) in &world {
+        let pa = glam::Vec2::new(a.dot(right), a.dot(up));
+        let pb = glam::Vec2::new(b.dot(right), b.dot(up));
+        min = min.min(pa).min(pb);
+        max = max.max(pa).max(pb);
+        if (pb - pa).length() <= 1e-3 || crate::drawing::projected_segment_on_circle(pa, pb, &pcircles) {
+            continue;
+        }
+        let key = crate::model::normalized_edge_key(
+            crate::hierarchy::quantize_body_point(a),
+            crate::hierarchy::quantize_body_point(b),
+        );
+        if seen.insert(key) {
+            raw.push((key, pa, pb));
+        }
+    }
+    // Sort by world key so the projected-segment dedup below keeps a *deterministic*
+    // representative (the smallest key) regardless of the source edge order.
+    raw.sort_by(|x, y| x.0.cmp(&y.0));
+    // Dedupe by *projected* segment so front/back edges that project onto the same line
+    // (a box's top edge seen from the front) get one dimension, not two stacked (#321).
+    let mut seen_proj: std::collections::HashSet<([i32; 2], [i32; 2])> =
+        std::collections::HashSet::new();
+    let mut cands: Vec<(crate::model::DrawingEdgeKey, glam::Vec2, glam::Vec2)> = Vec::new();
+    for (key, pa, pb) in raw {
+        let q = |p: glam::Vec2| [(p.x * 100.0).round() as i32, (p.y * 100.0).round() as i32];
+        let (qa, qb) = (q(pa), q(pb));
+        let pkey = if qa <= qb { (qa, qb) } else { (qb, qa) };
+        if seen_proj.insert(pkey) {
+            cands.push((key, pa, pb));
+        }
+    }
+    // Stagger parallel dimensions so their labels don't overlap (#321). `outward` points away
+    // from the geometry centroid, matching the renderers.
+    let extent = (max - min).max(glam::Vec2::splat(1e-3));
+    let bbox_center = (min + max) * 0.5;
+    let gap = extent.length().max(1.0) * 0.05;
+    let dims: Vec<(glam::Vec2, glam::Vec2, glam::Vec2)> = cands
         .iter()
-        .filter(|(a, b)| {
-            let pa = glam::Vec2::new(a.dot(right), a.dot(up));
-            let pb = glam::Vec2::new(b.dot(right), b.dot(up));
-            (pb - pa).length() > 1e-3
-                && !crate::drawing::projected_segment_on_circle(pa, pb, &pcircles)
-        })
-        .map(|&(a, b)| {
-            crate::model::normalized_edge_key(
-                crate::hierarchy::quantize_body_point(a),
-                crate::hierarchy::quantize_body_point(b),
-            )
-        })
+        .map(|(_, pa, pb)| (*pa, *pb, crate::drawing::dimension_outward(*pa, *pb, bbox_center)))
         .collect();
-    keys.sort();
-    keys.dedup();
-    keys
+    let offsets = crate::drawing::plan_dimension_tiers(&dims, gap);
+
+    let keys: Vec<crate::model::DrawingEdgeKey> = cands.iter().map(|(k, _, _)| *k).collect();
+    let overrides: Vec<(crate::model::DrawingEdgeKey, f32)> = cands
+        .iter()
+        .zip(&offsets)
+        .filter(|(_, &o)| o.abs() > 1e-4)
+        .map(|((k, _, _), &o)| (*k, o))
+        .collect();
+    (keys, overrides)
 }
 
 fn create_implicit_extrude_sketch(
@@ -6393,7 +6438,11 @@ impl AppState {
                     scale: None,
                     style: Default::default(),
                 };
-                view.dimensioned_edges = default_dimensioned_edges(&self.doc, &view);
+                {
+                    let (keys, offs) = default_dimensioned_edges(&self.doc, &view);
+                    view.dimensioned_edges = keys;
+                    view.dimension_offsets = offs;
+                }
                 self.doc.drawings[drawing].views.push(view);
                 self.selected_drawing_view =
                     Some((drawing, self.doc.drawings[drawing].views.len() - 1));
@@ -6425,7 +6474,11 @@ impl AppState {
                     scale: None,
                     style: Default::default(),
                 };
-                view.dimensioned_edges = default_dimensioned_edges(&self.doc, &view);
+                {
+                    let (keys, offs) = default_dimensioned_edges(&self.doc, &view);
+                    view.dimensioned_edges = keys;
+                    view.dimension_offsets = offs;
+                }
                 self.doc.drawings[drawing].views.push(view);
                 self.selected_drawing_view =
                     Some((drawing, self.doc.drawings[drawing].views.len() - 1));
@@ -6470,7 +6523,11 @@ impl AppState {
                     aligned_parent: Some(parent),
                     aligned_dir: Some(dir),
                 };
-                view.dimensioned_edges = default_dimensioned_edges(&self.doc, &view);
+                {
+                    let (keys, offs) = default_dimensioned_edges(&self.doc, &view);
+                    view.dimensioned_edges = keys;
+                    view.dimension_offsets = offs;
+                }
                 self.doc.drawings[drawing].views.push(view);
                 self.status = format!("Added {} view aligned to view {parent}", orientation.label());
                 ActionResult::Ok
