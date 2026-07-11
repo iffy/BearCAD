@@ -65,49 +65,43 @@ inside braces, a completion list of your parameters pops up — press **Tab** to
 
 ## Aligned views
 
-To place a second view of a body that stays lined up with the first, use the **Aligned view**
-tool. Click an existing projection, then move the mouse: below it previews the bottom view,
-above it the top, to the sides the left/right views — all constrained to line up with the
-parent's edges. Click to drop it. You can drag an aligned view any distance away, but it
-always stays aligned along the shared edge; move the parent and its aligned views follow.
-Aligned views inherit the parent's scale, so a whole group reads as one set. An aligned view's
-direction sets its orientation, rotated as needed to stay lined up with the base — so you can add
-views on all four sides of any base view (for a top view, that's a front view below, a back view
-above, and right/left views rotated to match).
-3. **Dimensions:** a new view arrives with **no dimensions shown**. Select the projection and
-   use the **Show all dimensions** button in the context pane to add them all at once (or **Hide
-   all dimensions** to clear them). They're drawn
-   as proper dimension lines — extension lines, an offset line with arrowheads, and the
-   measurement centred on it, all drawn with a lighter, thinner stroke than the model edges so
-   the part outline stays the eye's focus — the label runs along the dimension line (or sits just
-   past its end when the line is too short to fit). Round features (holes, cylinders) render as a single
-   smooth circle with one diameter dimension (Ø), not a ring of little segments — and that Ø
-   dimension is controlled by **Show all / Hide all dimensions** too, so hiding all really hides
-   everything. Round and other
-   smooth extrusions can still be dimensioned along their **length** — click their straight side
-   (the cylinder wall) with the Dimension tool, or use Show all dimensions. The set stays
-   readable: coincident edges (a box's bottom edge, front and back, land on
-   the same line) share one dimension, and parallel dimensions that would otherwise sit on top of
-   each other are stacked onto separate lines so no measurement label overlaps another. With the **Dimension tool** active, the edge under the cursor
-   highlights; click it to show or hide that one dimension. To turn a dimension off you can hover
-   either the model edge **or the dimension line itself**. **Shift+click**
-   two edges to show the angle between them (Shift+click either again to hide it). **Drag a
-   dimension's label** (with the Select or Dimension tool) to push its line further from or
-   closer to the edge — with the Select tool, hovering a dimension highlights its line and label
-   so you can see which one you're about to move.
-4. Remove a view with the **×** beside it, or select any element — a projection, a text note, or
-   a dimension (click it with the Select tool) — and press **Delete** or **Backspace** to remove
-   it. Click **Back** in the toolbar to return to the 3D
-   model. Reopen a
-   drawing any time by clicking its row (or right-click → **Edit drawing**). While a drawing is
-   open, the **Elements pane** lists it with its projections, text notes, and dimensions nested
-   underneath (each projection's dimensions under it), so you can see everything that's on the page
-   — click any of those rows to jump into the drawing and select that element.
-5. **Export** with the **Export** button in the toolbar — its popup lets you pick a single-page
-   vector **PDF**, or an **SVG** you can open in any browser and print. Both are black-on-white,
-   scale losslessly, and are WYSIWYG: the page is the drawing's configured page size (landscape
-   8.5×11 by default) with every view exactly where you placed it. The grey card outline you
-   see around each view in the editor is just a selection handle — it isn't printed.
+The **Aligned view** tool adds a projection that stays lined up with an existing one. Click a
+placed view, then move the mouse — below, above, left, or right of it previews that neighbouring
+view — and click to drop it. The child locks to the parent's shared edge: drag it any distance
+away and it still lines up, and moving the parent carries its aligned views along. Each child
+inherits the parent's scale and takes the orientation implied by its direction, so a few clicks
+build a full orthographic layout around any base view.
+
+![A Top view with a Right view aligned beside it and a Front view aligned below](/img/screenshots/aligned-views.png)
+
+## Dimensions
+
+A new view arrives with **no dimensions shown**. Select it and click **Show all dimensions** in
+the context pane to add them all at once (**Hide all dimensions** clears them). They draw as proper
+dimension lines — extension lines, an offset line with arrowheads, and the measurement centred on
+it — in a lighter, thinner stroke than the model edges. Round features (holes, cylinders) get a
+single diameter dimension (Ø); a cylinder can also be dimensioned along its **length** by clicking
+its side wall.
+
+With the **Dimension tool** active, the edge under the cursor highlights — click it to show or hide
+that one dimension (hover either the model edge or the dimension line itself). **Shift+click** two
+edges to show the angle between them. **Drag a dimension's label** (with the Select or Dimension
+tool) to push its line nearer or further from the edge. Coincident edges share one dimension, and
+parallel dimensions that would overlap are stacked onto separate lines so no label covers another.
+
+## Removing views and elements
+
+Remove a view with the **×** on its card, or select any element — a projection, a text note, or a
+dimension — and press **Delete** or **Backspace**. Click **Back** in the toolbar to return to the
+3D model; reopen a drawing any time from its **Elements pane** row (or right-click → **Edit
+drawing**), where its projections, text notes, and dimensions are listed nested underneath.
+
+## Exporting
+
+Use the **Export** button in the toolbar to save a single-page vector **PDF** or an **SVG** you can
+open in any browser. Both are black-on-white, scale losslessly, and are WYSIWYG: the page is the
+drawing's configured size (landscape 8.5×11 by default) with every view where you placed it. The
+grey card outline in the editor is just a selection handle — it isn't printed.
 
 ## Scripting
 
