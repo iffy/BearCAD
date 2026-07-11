@@ -371,6 +371,21 @@ pub fn dimension_line_geometry(
     }
 }
 
+/// The rotation (radians, clockwise in screen space) that makes a label along direction `dir`
+/// always read **left-to-right or bottom-to-top** (#322): the angle is normalized into
+/// `[-90°, 90°)`, so a downward vertical reads upward (−90°) rather than top-to-bottom, and a
+/// down-to-the-right slope reads top-left → bottom-right.
+pub fn readable_text_angle(dir: glam::Vec2) -> f32 {
+    let mut angle = dir.y.atan2(dir.x);
+    while angle >= std::f32::consts::FRAC_PI_2 {
+        angle -= std::f32::consts::PI;
+    }
+    while angle < -std::f32::consts::FRAC_PI_2 {
+        angle += std::f32::consts::PI;
+    }
+    angle
+}
+
 /// The outward unit perpendicular for an edge's dimension line: the side of the edge facing
 /// away from the geometry centroid `center` (#294), so labels sit outside the part.
 pub fn dimension_outward(a: glam::Vec2, b: glam::Vec2, center: glam::Vec2) -> glam::Vec2 {
@@ -564,14 +579,7 @@ pub fn dimension_label_layout(
     let dir = if len > 1e-3 { along / len } else { glam::Vec2::new(1.0, 0.0) };
     let mid = (a + b) * 0.5;
     if text_w + gap <= len {
-        // Runs along the line; keep it upright (flip the angle if it'd read upside down).
-        let mut angle = dir.y.atan2(dir.x);
-        if angle > std::f32::consts::FRAC_PI_2 {
-            angle -= std::f32::consts::PI;
-        } else if angle < -std::f32::consts::FRAC_PI_2 {
-            angle += std::f32::consts::PI;
-        }
-        (mid + outward * gap, angle)
+        (mid + outward * gap, readable_text_angle(dir))
     } else {
         // Too short: sit horizontally just past the far end, on the outward side.
         (b + dir * (text_w * 0.5 + gap) + outward * gap, 0.0)
@@ -797,14 +805,7 @@ fn render_view_geometry<C: Canvas>(
                 let (sa, sb) = (to_screen(a), to_screen(b));
                 canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, 0.8);
                 let mid = (sa + sb) * 0.5;
-                canvas.text_rot(
-                    mid.x,
-                    mid.y,
-                    11.0,
-                    Anchor::Middle,
-                    &label,
-                    (sb - sa).y.atan2((sb - sa).x),
-                );
+                canvas.text_rot(mid.x, mid.y, 11.0, Anchor::Middle, &label, readable_text_angle(sb - sa));
             }
             // Edge-on (looks like a line, #320): a normal linear dimension — extension lines,
             // an offset dimension line with arrowheads, and the value running along it.
@@ -1224,7 +1225,8 @@ mod tests {
         );
         assert!(ang.abs() < 1e-3, "horizontal line → horizontal label");
         assert!((pos.x - 50.0).abs() < 1e-3, "centred along the line");
-        // A long vertical line: label fits, angle ±90° kept upright (magnitude ~90°).
+        // A downward vertical line (screen y grows down): the label reads bottom-to-top
+        // (angle −90°), never top-to-bottom (#322).
         let (_, ang_v) = dimension_label_layout(
             glam::Vec2::new(0.0, 0.0),
             glam::Vec2::new(0.0, 100.0),
@@ -1232,7 +1234,14 @@ mod tests {
             30.0,
             5.0,
         );
-        assert!((ang_v.abs() - FRAC_PI_2).abs() < 1e-3, "vertical line → vertical label");
+        assert!((ang_v + FRAC_PI_2).abs() < 1e-3, "downward vertical → reads bottom-to-top (−90°)");
+        // The reverse direction reads the same way.
+        assert!(
+            (readable_text_angle(glam::Vec2::new(0.0, -1.0)) + FRAC_PI_2).abs() < 1e-3,
+            "upward vertical also reads bottom-to-top"
+        );
+        // A down-to-the-right slope is allowed to read top-left → bottom-right (positive angle).
+        assert!(readable_text_angle(glam::Vec2::new(1.0, 1.0)) > 0.0);
         // A short line: label can't fit, so it sits past the far end (x > line end), horizontal.
         let (pos_s, ang_s) = dimension_label_layout(
             glam::Vec2::new(0.0, 0.0),

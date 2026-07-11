@@ -9216,11 +9216,12 @@ impl App {
                             let cv = egui::vec2(center.x, center.y);
                             let (sa, sb) = (to_screen(cv - dir * *radius), to_screen(cv + dir * *radius));
                             painter.line_segment([sa, sb], egui::Stroke::new(0.8, INK));
+                            let d = sb - sa;
                             draw_rot_label(
                                 &painter,
                                 label,
                                 (sa + sb.to_vec2()) * 0.5,
-                                (sb - sa).angle(),
+                                crate::drawing::readable_text_angle(glam::Vec2::new(d.x, d.y)),
                             );
                         }
                         crate::drawing::ProjectedCircle::EdgeOn { a, b } => {
