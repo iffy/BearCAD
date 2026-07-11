@@ -594,6 +594,42 @@ struct App {
     /// `run_app` can translate it into a non-zero process exit code after the eframe
     /// event loop returns — a script failure must fail the process, not just the UI.
     script_failed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Additional independent editor windows (#347). Each holds its own view state — camera,
+    /// tool, selection, sketch session, open drawing and its zoom/pan — and shares only the
+    /// document (plus its undo history) with the main window, so edits made in any window show
+    /// live in all of them. Native only; rendered by drawing `draw_workspace` into a per-window
+    /// viewport. Empty until the user picks File ▸ New Window.
+    #[cfg(not(target_arch = "wasm32"))]
+    extra_windows: Vec<WindowSnapshot>,
+    /// Monotonic id source giving each extra window a stable [`egui::ViewportId`] so its panel
+    /// state persists across frames.
+    #[cfg(not(target_arch = "wasm32"))]
+    next_window_id: u64,
+    /// Which window is being rendered this pass (#347): 0 = main, 1+ = extra windows. Transient;
+    /// set before each `draw_workspace` so window-aware bits (e.g. screenshot HUD suppression)
+    /// know which viewport they're in.
+    current_window: usize,
+}
+
+/// The per-window view state of one extra editor window (#347). Everything here is swapped into
+/// `App` (via [`App::swap_window`]) while that window's [`App::draw_workspace`] runs, then swapped
+/// back out — so each window edits its own camera/tool/selection while the document underneath
+/// stays shared.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+struct WindowSnapshot {
+    /// Stable id for this window's [`egui::ViewportId`].
+    id: u64,
+    /// The window's own [`AppState`]. Its document-identity fields (`doc`, undo/redo stacks,
+    /// path, health, command log) are placeholders — [`App::swap_window`] keeps the real ones
+    /// resident on `App` so every window shares one document.
+    state: AppState,
+    drawing_zoom: f32,
+    drawing_pan: egui::Vec2,
+    element_filter: hierarchy::ElementFilter,
+    element_filter_expanded: bool,
+    element_filter_drawing_workbench: bool,
+    graph_layout: hierarchy::GraphLayout,
 }
 
 /// One completed async browser file-dialog interaction (web build): picked file bytes to
@@ -704,6 +740,11 @@ impl App {
             drawing_pan: egui::Vec2::ZERO,
             drawing_window: None,
             script_failed,
+            #[cfg(not(target_arch = "wasm32"))]
+            extra_windows: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            next_window_id: 0,
+            current_window: 0,
         }
     }
 
@@ -1243,6 +1284,10 @@ impl App {
     /// in-window menu bar, so both frontends behave identically.
     fn handle_menu_command(&mut self, ctx: &egui::Context, command: MenuCommand) {
         match command {
+            MenuCommand::NewWindow => {
+                #[cfg(not(target_arch = "wasm32"))]
+                self.open_new_window();
+            }
             MenuCommand::Open => self.open(),
             MenuCommand::Save => self.save(),
             MenuCommand::SaveAs => self.save_as(),
@@ -3993,6 +4038,16 @@ impl eframe::App for App {
 
         self.process_screenshots(ctx);
         self.tick_script(ctx);
+        // A script may have asked to open extra editor windows (#347); do it here where `App`
+        // (not the `AppState`-scoped script runner) can push to `extra_windows`.
+        let new_windows = self
+            .script
+            .as_mut()
+            .map_or(0, |runner| runner.take_new_windows());
+        for _ in 0..new_windows {
+            #[cfg(not(target_arch = "wasm32"))]
+            self.open_new_window();
+        }
         self.tick_exit_after_startup(ctx);
         self.synthetic.inject(ctx);
 
@@ -4011,6 +4066,7 @@ impl eframe::App for App {
         }
 
         let render_state = frame.wgpu_render_state();
+        self.current_window = 0;
         self.draw_workspace(ctx, render_state);
 
         // A popped-out drawing (#276) renders in its own OS window so it can sit beside the 3D
@@ -4046,10 +4102,100 @@ impl eframe::App for App {
                 }
             }
         }
+
+        // Extra editor windows (#347): each renders the whole workspace into its own OS
+        // viewport with its own view state swapped in, sharing the document so edits sync
+        // live. Immediate viewports let the render closure borrow `self`.
+        #[cfg(not(target_arch = "wasm32"))]
+        if !self.extra_windows.is_empty() {
+            let mut windows = std::mem::take(&mut self.extra_windows);
+            let mut index = 0usize;
+            windows.retain_mut(|w| {
+                index += 1;
+                let window_no = index; // 0 is the main window; extras are 1, 2, …
+                let vid = egui::ViewportId::from_hash_of(("bearcad_window", w.id));
+                let builder = egui::ViewportBuilder::default()
+                    .with_title(format!("BearCAD — window {}", window_no + 1))
+                    .with_inner_size([1100.0, 800.0]);
+                self.swap_window(w);
+                self.current_window = window_no;
+                let mut keep = true;
+                ctx.show_viewport_immediate(vid, builder, |vctx, _class| {
+                    theme::apply(vctx);
+                    self.draw_workspace(vctx, render_state);
+                    // Collect any capture from a prior frame, then dispatch a pending screenshot
+                    // now that this window's 3D-viewport rect is known (#347).
+                    self.process_screenshots(vctx);
+                    let vp = self.last_viewport;
+                    if let Some(runner) = &mut self.script {
+                        runner.dispatch_window_screenshot(window_no, vctx, vp);
+                    }
+                    if vctx.input(|i| i.viewport().close_requested()) {
+                        keep = false;
+                    }
+                });
+                self.swap_window(w);
+                keep
+            });
+            self.extra_windows = windows;
+        }
     }
 }
 
 impl App {
+    /// Open a new independent editor window (#347), showing the same document from a fresh
+    /// default view. Native only.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_new_window(&mut self) {
+        let id = self.next_window_id;
+        self.next_window_id += 1;
+        self.extra_windows.push(WindowSnapshot {
+            id,
+            drawing_zoom: 1.0,
+            ..Default::default()
+        });
+    }
+
+    /// Swap this window's per-view state in or out of `App` around a `draw_workspace` call
+    /// (#347). Called once before rendering the window and once after (the operation is its own
+    /// inverse). The document and its history/logging stay resident on `App` — the second
+    /// `mem::swap` on each such field undoes the wholesale `AppState` swap for it — so every
+    /// window edits one shared document while keeping its own camera, tool and selection.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn swap_window(&mut self, w: &mut WindowSnapshot) {
+        std::mem::swap(&mut self.state, &mut w.state);
+        // Keep the document and everything that identifies/records it shared across windows.
+        std::mem::swap(&mut self.state.doc, &mut w.state.doc);
+        std::mem::swap(&mut self.state.path, &mut w.state.path);
+        std::mem::swap(&mut self.state.undo_stack, &mut w.state.undo_stack);
+        std::mem::swap(&mut self.state.redo_stack, &mut w.state.redo_stack);
+        std::mem::swap(&mut self.state.undo_group_depth, &mut w.state.undo_group_depth);
+        std::mem::swap(
+            &mut self.state.edge_treatment_undo,
+            &mut w.state.edge_treatment_undo,
+        );
+        std::mem::swap(
+            &mut self.state.construction_plane_edit_undo,
+            &mut w.state.construction_plane_edit_undo,
+        );
+        std::mem::swap(&mut self.state.command_log, &mut w.state.command_log);
+        std::mem::swap(&mut self.state.document_health, &mut w.state.document_health);
+        std::mem::swap(
+            &mut self.state.kernel_fallback_warning,
+            &mut w.state.kernel_fallback_warning,
+        );
+        // Per-window App-level view state (not part of `AppState`).
+        std::mem::swap(&mut self.drawing_zoom, &mut w.drawing_zoom);
+        std::mem::swap(&mut self.drawing_pan, &mut w.drawing_pan);
+        std::mem::swap(&mut self.element_filter, &mut w.element_filter);
+        std::mem::swap(&mut self.element_filter_expanded, &mut w.element_filter_expanded);
+        std::mem::swap(
+            &mut self.element_filter_drawing_workbench,
+            &mut w.element_filter_drawing_workbench,
+        );
+        std::mem::swap(&mut self.graph_layout, &mut w.graph_layout);
+    }
+
     /// Render the full editor workspace (toolbar, side panels, status bar and the
     /// central 3D/drawing view) into `ctx`. Factored out of `update` so it can be drawn
     /// into each window's viewport for multi-window support (#347).
@@ -12837,7 +12983,7 @@ impl App {
         let suppress_hud_for_screenshot = self
             .script
             .as_ref()
-            .is_some_and(|runner| runner.screenshot_suppresses_hud());
+            .is_some_and(|runner| runner.screenshot_suppresses_hud(self.current_window));
         if self.state.panes.is_visible(Pane::ViewCube) && !suppress_hud_for_screenshot {
             let command_log = self
                 .state

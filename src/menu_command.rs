@@ -8,6 +8,8 @@ use crate::actions::Pane;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuCommand {
     NewDocument,
+    /// Open a second independent editor window onto the same document (#347). Native only.
+    NewWindow,
     Open,
     Save,
     SaveAs,
@@ -44,6 +46,8 @@ impl MenuCommand {
     pub fn to_action(self) -> Option<Action> {
         match self {
             MenuCommand::NewDocument => Some(Action::NewDocument),
+            // Opens another OS window; handled in the app frame loop.
+            MenuCommand::NewWindow => None,
             MenuCommand::Open | MenuCommand::Save | MenuCommand::SaveAs => None,
             // Needs a file-save dialog, handled in the app frame loop.
             MenuCommand::ExportStl

@@ -439,11 +439,16 @@ pub enum Instruction {
     WaitMs(u64),
     WaitFrames(u32),
     /// Save a screenshot. `whole_window` captures the full window; otherwise just the 3D
-    /// viewport (with the view-cube HUD suppressed).
+    /// viewport (with the view-cube HUD suppressed). `window` selects which editor window to
+    /// capture (#347): 0 = the main (oldest) window, 1+ = extra windows in creation order.
     Screenshot {
         path: String,
         whole_window: bool,
+        window: usize,
     },
+    /// Open a new independent editor window onto the same document (#347). Native only; a no-op
+    /// on the web build.
+    NewWindow,
     Quit,
 }
 
@@ -1044,13 +1049,14 @@ impl Instruction {
             Instruction::Type(text) => format!("bearcad.ui.type({text:?})"),
             Instruction::WaitMs(ms) => format!("bearcad.ui.wait_ms({ms})"),
             Instruction::WaitFrames(n) => format!("bearcad.ui.wait({n})"),
-            Instruction::Screenshot { path, whole_window } => {
-                if *whole_window {
-                    format!("bearcad.ui.screenshot({path:?}, true)")
-                } else {
-                    format!("bearcad.ui.screenshot({path:?})")
+            Instruction::Screenshot { path, whole_window, window } => {
+                match (*whole_window, *window) {
+                    (false, 0) => format!("bearcad.ui.screenshot({path:?})"),
+                    (true, 0) => format!("bearcad.ui.screenshot({path:?}, true)"),
+                    (whole, w) => format!("bearcad.ui.screenshot({path:?}, {whole}, {w})"),
                 }
             }
+            Instruction::NewWindow => "bearcad.ui.new_window()".to_string(),
             Instruction::SetGizmo { name, value, relative } => {
                 if *relative {
                     format!("bearcad.drag_gizmo{{ name = {name:?}, by = {value} }}")
@@ -2465,8 +2471,15 @@ struct ReplRunner {}
 /// A pending screenshot request, resolved when egui delivers the captured frame.
 struct ScreenshotRequest {
     path: String,
+    /// Which editor window to capture (#347): 0 = main/root viewport, 1+ = extra windows.
+    window: usize,
+    /// Capture the whole window rather than cropping to the 3D viewport.
+    whole_window: bool,
     /// `Some` crops the captured framebuffer to the 3D viewport; `None` keeps the whole window.
+    /// For extra windows this stays `None` until the window renders and its rect is known.
     crop: Option<ScreenshotCrop>,
+    /// The capture command has been sent to the target viewport (so it isn't re-sent each frame).
+    dispatched: bool,
 }
 
 struct ScreenshotCrop {
@@ -2485,6 +2498,9 @@ pub struct ScriptRunner {
     wait_until: Option<Instant>,
     wait_frames_remaining: u32,
     screenshot_pending: Option<ScreenshotRequest>,
+    /// Count of extra editor windows a script has asked to open (#347), drained by the app each
+    /// frame — the runner can't reach `App::extra_windows` itself.
+    new_window_requests: u32,
     waiting_view_transition: bool,
     /// Prevents re-printing an instruction while waiting (e.g. for viewport layout).
     logged_pc: Option<usize>,
@@ -2509,6 +2525,7 @@ impl ScriptRunner {
             wait_until: None,
             wait_frames_remaining: 0,
             screenshot_pending: None,
+            new_window_requests: 0,
             waiting_view_transition: false,
             logged_pc: None,
             last_action_error: None,
@@ -3021,11 +3038,40 @@ impl ScriptRunner {
         Ok(())
     }
 
-    /// Whether the view-cube HUD should be hidden this frame for a pending viewport screenshot.
-    pub fn screenshot_suppresses_hud(&self) -> bool {
+    /// Whether the view-cube HUD should be hidden this frame while capturing a cropped (3D
+    /// viewport) screenshot of `window` (#347). Whole-window captures keep the HUD.
+    pub fn screenshot_suppresses_hud(&self, window: usize) -> bool {
         self.screenshot_pending
             .as_ref()
-            .is_some_and(|request| request.crop.is_some())
+            .is_some_and(|request| !request.whole_window && request.window == window)
+    }
+
+    /// Take and reset the count of extra editor windows a script has asked to open (#347).
+    pub fn take_new_windows(&mut self) -> u32 {
+        std::mem::take(&mut self.new_window_requests)
+    }
+
+    /// Dispatch a pending screenshot targeting `window` (an extra window, #347): resolve its crop
+    /// from that window's 3D-viewport `rect` and send the capture command to its `ctx`. Called
+    /// once per frame from inside the window's viewport pass; a no-op once already dispatched.
+    pub fn dispatch_window_screenshot(
+        &mut self,
+        window: usize,
+        ctx: &egui::Context,
+        viewport: Option<egui::Rect>,
+    ) {
+        if let Some(request) = &mut self.screenshot_pending {
+            if request.window == window && !request.dispatched {
+                if !request.whole_window {
+                    request.crop = viewport.map(|rect| ScreenshotCrop {
+                        rect,
+                        pixels_per_point: ctx.pixels_per_point(),
+                    });
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+                request.dispatched = true;
+            }
+        }
     }
 }
 
@@ -4003,18 +4049,36 @@ impl ScriptRunner {
                     StepResult::Wait
                 }
             }
-            Instruction::Screenshot { path, whole_window } => {
-                let crop = if whole_window {
-                    None
-                } else {
+            Instruction::Screenshot { path, whole_window, window } => {
+                // The main (oldest) window renders in the root viewport, so it can be captured
+                // right here from the prelude: resolve its crop and send the command now. Extra
+                // windows (#347) are dispatched by the app once their own viewport renders, since
+                // only then is their 3D-viewport rect known — see `dispatch_window_screenshot`.
+                let crop = if window == 0 && !whole_window {
                     viewport.map(|rect| ScreenshotCrop {
                         rect,
                         pixels_per_point: ctx.pixels_per_point(),
                     })
+                } else {
+                    None
                 };
-                self.screenshot_pending = Some(ScreenshotRequest { path, crop });
-                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+                if window == 0 {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(
+                        egui::UserData::default(),
+                    ));
+                }
+                self.screenshot_pending = Some(ScreenshotRequest {
+                    path,
+                    window,
+                    whole_window,
+                    crop,
+                    dispatched: window == 0,
+                });
                 StepResult::Wait
+            }
+            Instruction::NewWindow => {
+                self.new_window_requests += 1;
+                StepResult::Continue
             }
             Instruction::SetGizmo { name, value, relative } => {
                 let target = if relative {

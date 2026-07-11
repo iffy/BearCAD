@@ -19,6 +19,7 @@ use std::sync::{Mutex, OnceLock};
 #[derive(Clone, Debug)]
 pub struct MenuIds {
     pub new_document: MenuId,
+    pub new_window: MenuId,
     pub open: MenuId,
     pub save: MenuId,
     pub save_as: MenuId,
@@ -74,6 +75,9 @@ pub fn command_for_id(
 ) -> Option<MenuCommand> {
     if ids.new_document == id {
         return Some(MenuCommand::NewDocument);
+    }
+    if ids.new_window == id {
+        return Some(MenuCommand::NewWindow);
     }
     if ids.open == id {
         return Some(MenuCommand::Open);
@@ -211,6 +215,15 @@ impl NativeMenu {
             true,
             Some(Accelerator::new(Some(primary), Code::KeyN)),
         );
+        let new_window = MenuItem::with_id(
+            "new_window",
+            "New Window",
+            true,
+            Some(Accelerator::new(
+                Some(primary | Modifiers::SHIFT),
+                Code::KeyN,
+            )),
+        );
         let open = MenuItem::with_id(
             "open",
             "Open…",
@@ -290,6 +303,7 @@ impl NativeMenu {
 
         let file_sep = PredefinedMenuItem::separator();
         file_menu.append(&new_document)?;
+        file_menu.append(&new_window)?;
         file_menu.append(&open)?;
         file_menu.append(&file_sep)?;
         file_menu.append(&save)?;
@@ -344,6 +358,7 @@ impl NativeMenu {
 
         let ids = MenuIds {
             new_document: new_document.id().clone(),
+            new_window: new_window.id().clone(),
             open: open.id().clone(),
             save: save.id().clone(),
             save_as: save_as.id().clone(),
@@ -448,6 +463,7 @@ mod tests {
         let pane_menu_id = MenuId::new(pane_id);
         let ids = MenuIds {
             new_document: MenuId::new("new_document"),
+            new_window: MenuId::new("new_window"),
             open: MenuId::new("open"),
             save: MenuId::new("save"),
             save_as: MenuId::new("save_as"),
