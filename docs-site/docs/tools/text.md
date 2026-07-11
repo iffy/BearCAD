@@ -43,6 +43,13 @@ its editor in the context pane:
   word-wrap the text to that width (it grows downward). Dragging a rectangle with the Text
   tool sets this for you.
 
+## Pinning text to a point
+
+Select a text and it shows **nine anchor dots** (corners, edge midpoints, centre). In the context
+pane's **Pin** row, choose an anchor and click **to point…**, then click a sketch vertex — the text
+snaps so that anchor sits on the vertex and **stays there** as the model changes. **Unpin** releases
+it. (Press **Esc** to cancel picking.)
+
 ## Rotating with the Move tool
 
 With the **Move** tool active and a text selected, a rotation ring appears around the text.

@@ -383,6 +383,8 @@ pub enum SketchTextEdit {
     Rotation(String),
     /// Wrap width in mm (#282): empty clears wrapping (a growing single-line box).
     Wrap(String),
+    /// Start pinning this anchor: the next sketch vertex clicked becomes the pin target (#359).
+    BeginPin(crate::model::TextAnchor),
     /// Remove the text's position pin (#356/#359).
     Unpin,
 }
@@ -2170,19 +2172,35 @@ pub fn show_pane(
                 on_sketch_text_edit(SketchTextEdit::Wrap(wrap));
             }
         });
-        // Position pin (#356/#359): if pinned to a sketch point, offer to release it.
-        if control.pinned {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("Pinned to a point")
-                        .color(egui::Color32::from_gray(150))
-                        .size(11.0),
-                );
-                if ui.button("Unpin").clicked() {
-                    on_sketch_text_edit(SketchTextEdit::Unpin);
-                }
-            });
-        }
+        // Position pin (#356/#359): pick an anchor and click a sketch vertex to pin the text; a
+        // pinned text can be released.
+        ui.horizontal(|ui| {
+            ui.label("Pin");
+            let anchor_id = egui::Id::new(("sketch_text_pin_anchor", control.index));
+            let mut anchor = ui
+                .data(|d| d.get_temp::<crate::model::TextAnchor>(anchor_id))
+                .unwrap_or(crate::model::TextAnchor::Center);
+            egui::ComboBox::from_id_salt(anchor_id)
+                .selected_text(text_anchor_label(anchor))
+                .show_ui(ui, |ui| {
+                    for a in crate::model::TextAnchor::ALL {
+                        if ui.selectable_label(anchor == a, text_anchor_label(a)).clicked() {
+                            anchor = a;
+                        }
+                    }
+                });
+            ui.data_mut(|d| d.insert_temp(anchor_id, anchor));
+            if ui
+                .button("to point…")
+                .on_hover_text("Then click a sketch vertex to pin this anchor to it")
+                .clicked()
+            {
+                on_sketch_text_edit(SketchTextEdit::BeginPin(anchor));
+            }
+            if control.pinned && ui.button("Unpin").clicked() {
+                on_sketch_text_edit(SketchTextEdit::Unpin);
+            }
+        });
     }
 
     // Drawing-projection editor (#289): the selected view card's source, orientation, and a
@@ -2593,6 +2611,22 @@ pub fn show_pane(
                 .color(egui::Color32::from_gray(140))
                 .size(12.0),
         );
+    }
+}
+
+/// Short label for a text anchor in the pin picker (#359).
+fn text_anchor_label(a: crate::model::TextAnchor) -> &'static str {
+    use crate::model::TextAnchor as A;
+    match a {
+        A::TopLeft => "Top-left",
+        A::TopCenter => "Top",
+        A::TopRight => "Top-right",
+        A::MiddleLeft => "Left",
+        A::Center => "Centre",
+        A::MiddleRight => "Right",
+        A::BottomLeft => "Bottom-left",
+        A::BottomCenter => "Bottom",
+        A::BottomRight => "Bottom-right",
     }
 }
 

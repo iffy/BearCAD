@@ -809,9 +809,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   `geometric_constraints::point_uv`) so the chosen anchor stays coincident with that point — so a
   text constrained to a vertex follows it as the model changes. Scriptable:
   `bearcad.pin_text{ text, anchor = "center"|"top_left"|…, line = i, endpoint = "start"|"end" }`
-  (or `circle = i`; `pin = false` unpins). A **selected** sketch text shows its nine anchor points
-  as dots in the viewport (`text::sketch_text_anchor_points`, #359); clicking one then a sketch
-  point pins it (interactive picking, #359).
+  (or `circle = i`; `pin = false` unpins). Interactively (#359): a **selected** sketch text shows
+  its nine anchor points as dots in the viewport (`text::sketch_text_anchor_points`); the text
+  editor's **Pin** row picks an anchor and, on **to point…**, arms `App::pending_text_pin` so the
+  next sketch **vertex** clicked (resolved through the existing `find_snap`) becomes the pin target
+  (Escape cancels). An **Unpin** button releases it.
 - **Text-on-curve groundwork (#286):** `SketchText` carries an optional `baseline_line`
   reference (default none = straight baseline). Baking currently advances a pen along a
   straight baseline (`text::outline_text`); curve support later resolves the reference into a
