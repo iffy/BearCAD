@@ -39,6 +39,10 @@ you like, and each one collects **views** — a body shown from a chosen directi
 
 ## Text notes
 
+A new drawing starts with its **title** already on the page as a text note in the top-left
+(the drawing's name). It's an ordinary note — drag it, edit it, or delete it like any other,
+and it looks the same in the editor as in the exported PDF/SVG.
+
 Add free text to a page with the **Text** tool (or press **T** in the drawing workbench):
 click where you want it for a box that grows to fit, or drag a rectangle for one that wraps
 the text to that width. Switch to the **Select** tool to drag notes around the page, and edit

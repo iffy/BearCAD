@@ -1074,8 +1074,13 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   with rotated text via egui `TextShape` in the editor and SVG `rotate()` / a PDF text matrix
   in the exports). All dimensions are keyed to the edges' quantized world endpoints (a geometry
   identity that survives rebuilds), stored per view.
-- **Export:** a drawing exports to a self-contained black-on-white vector document (title,
-  view captions, projected edges, dimensions) as either a single-page **PDF** or an **SVG**
+- **Title (#335):** a new drawing arrives with its **title as a normal text annotation**
+  (defaulting to the drawing's name, or `Drawing N`), placed in the top-left margin. It is an
+  ordinary note — draggable, editable, and deletable like any other — so it appears identically
+  in the WYSIWYG editor and both exports. The exporter no longer stamps its own title into the
+  top margin (that never showed in the editor).
+- **Export:** a drawing exports to a self-contained black-on-white vector document (title
+  annotation, view captions, projected edges, dimensions) as either a single-page **PDF** or an **SVG**
   (which also prints to PDF through any browser/OS print dialog). Exports are **WYSIWYG**
   (#297): each view card lands at its placed page position, and the exported page **is the
   drawing's configured page** (#298) — the PDF MediaBox is `page_width_mm × page_height_mm`

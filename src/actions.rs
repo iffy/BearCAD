@@ -6373,14 +6373,31 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::CreateDrawing { name } => {
-                self.doc.drawings.push(crate::model::Drawing {
+                let mut drawing = crate::model::Drawing {
                     name: name.and_then(|n| {
                         let t = n.trim().to_string();
                         (!t.is_empty()).then_some(t)
                     }),
                     ..Default::default()
+                };
+                let index = self.doc.drawings.len();
+                // The title is a normal text annotation the user can move or delete (#335), not a
+                // fixed export-only stamp. Place it in the top-left margin so it matches where the
+                // old baked-in title sat, and default its text to the drawing's name.
+                let title = drawing
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("Drawing {index}"));
+                let pos_x = (drawing.margin_mm / drawing.page_width_mm).clamp(0.0, 0.4);
+                drawing.annotations.push(crate::model::DrawingAnnotation {
+                    text: title,
+                    pos_x,
+                    pos_y: 0.02,
+                    size_frac: 0.028,
+                    wrap_frac: None,
+                    deleted: false,
                 });
-                let index = self.doc.drawings.len() - 1;
+                self.doc.drawings.push(drawing);
                 self.editing_drawing = Some(index);
                 self.status = format!("Added drawing {index}");
                 ActionResult::Ok
@@ -15367,6 +15384,24 @@ mod tests {
             ActionResult::Ok
         );
         assert_eq!(state.doc.lines[0].name.as_deref(), Some("Guide"));
+    }
+
+    /// #335: a new drawing arrives with its title as a normal, deletable text annotation
+    /// (defaulting to the drawing's name), instead of an export-only title stamp.
+    #[test]
+    fn create_drawing_adds_a_title_annotation() {
+        let mut state = AppState::default();
+        assert_eq!(
+            state.apply(Action::CreateDrawing { name: Some("Bracket".to_string()) }),
+            ActionResult::Ok
+        );
+        let drawing = &state.doc.drawings[0];
+        assert_eq!(drawing.annotations.len(), 1, "one default title annotation");
+        assert_eq!(drawing.annotations[0].text, "Bracket");
+        assert!(!drawing.annotations[0].deleted);
+        // An unnamed drawing falls back to a "Drawing N" title.
+        state.apply(Action::CreateDrawing { name: None });
+        assert_eq!(state.doc.drawings[1].annotations[0].text, "Drawing 1");
     }
 
     #[test]

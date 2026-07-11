@@ -670,14 +670,9 @@ fn render_drawing<C: Canvas>(doc: &Document, index: usize, canvas: &mut C) -> Op
     let unit = doc.default_length_unit;
 
     canvas.rect(0.0, 0.0, width, height, Some(WHITE), None, 0.0);
-    let margin = (drawing.margin_mm * PT_PER_MM).clamp(0.0, width.min(height) * 0.4);
-    let title = drawing
-        .name
-        .as_deref()
-        .filter(|t| !t.trim().is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("Drawing {index}"));
-    canvas.text(margin.max(12.0), (margin * 0.7).max(16.0), 14.0, Anchor::Start, &title);
+    // The title is a normal, deletable text annotation created with the drawing (#335), rendered
+    // in the annotation loop below just like any other note — the export no longer stamps its own
+    // title into the top margin (that never appeared in the WYSIWYG editor).
 
     let cell_w = width * CELL_FRAC;
     let cell_h = height * CELL_FRAC;
@@ -1421,6 +1416,16 @@ mod tests {
                 style: Default::default(),
                 pos_x: 0.5,
                 pos_y: 0.5,
+            }],
+            // The title now renders as a normal text annotation, added with the drawing (#335),
+            // not a baked-in export stamp — mirror that here.
+            annotations: vec![crate::model::DrawingAnnotation {
+                text: "Plate".to_string(),
+                pos_x: 0.045,
+                pos_y: 0.02,
+                size_frac: 0.028,
+                wrap_frac: None,
+                deleted: false,
             }],
             deleted: false,
             ..Default::default()
