@@ -2139,9 +2139,19 @@ pub fn show_pane(
             // a corner/edge for isometric; focus it and press 4/5/6/8/2/0 for
             // left/front/right/top/bottom/back.
             let seed = drawing_orientation_to_standard(control.orientation);
-            if let Some(pick) =
-                crate::view_cube::show_orientation_picker(ui, "drawing_view_bear", seed, None, false)
-            {
+            // Highlight the current view's face in blue (#323) — but isometric has no single
+            // face, so it seeds to Front for the pose yet shows no face highlight.
+            let selected_face = (control.orientation
+                != crate::model::DrawingOrientation::Isometric)
+                .then_some(seed);
+            if let Some(pick) = crate::view_cube::show_orientation_picker(
+                ui,
+                "drawing_view_bear",
+                seed,
+                selected_face,
+                None,
+                false,
+            ) {
                 on_drawing_view_edit(DrawingViewEdit::Orientation(orientation_pick_to_drawing(pick)));
             }
         }

@@ -21,6 +21,9 @@ const EDGE_STROKE_HOVER: f32 = 3.5;
 const FACE_STROKE_HOVER: f32 = 2.0;
 const CORNER_RADIUS_HOVER: f32 = 5.5;
 const BBOX_HOVER_STROKE: Color32 = Color32::from_rgb(255, 220, 120);
+/// The selected-view highlight on the bear (#323): a translucent blue fill and a solid blue edge.
+const SELECTED_FACE_FILL: Color32 = Color32::from_rgba_premultiplied(40, 90, 170, 90);
+const SELECTED_FACE_STROKE: Color32 = Color32::from_rgb(90, 150, 230);
 const PRESET_TOGGLE_SIZE: f32 = 20.0;
 const PRESET_TOGGLE_MARGIN: f32 = 3.0;
 const PRESET_TOGGLE_ICON_PAD: f32 = 4.0;
@@ -1126,6 +1129,17 @@ fn draw_hovered_face(painter: &egui::Painter, face: &ProjectedFace) {
     }
 }
 
+/// Blue highlight marking the currently-selected view's face on the bear (#323): a translucent
+/// blue fill plus a solid blue outline, so a glance at the bear shows which way the drawing view
+/// looks. Only drawn when that face is front-facing (present in `project_faces`).
+fn draw_selected_face(painter: &egui::Painter, face: &ProjectedFace) {
+    painter.add(egui::Shape::convex_polygon(
+        face.points.to_vec(),
+        SELECTED_FACE_FILL,
+        Stroke::new(2.0, SELECTED_FACE_STROKE),
+    ));
+}
+
 fn view_preset_toggle_rect(pad_rect: Rect) -> Rect {
     Rect::from_min_size(
         Pos2::new(
@@ -1364,6 +1378,7 @@ pub fn show_orientation_picker(
     ui: &mut Ui,
     id_source: impl std::hash::Hash,
     current: StandardView,
+    selected_face: Option<StandardView>,
     render_state: Option<&eframe::egui_wgpu::RenderState>,
     gpu_bear: bool,
 ) -> Option<OrientationPick> {
@@ -1443,6 +1458,14 @@ pub fn show_orientation_picker(
     let axes = project_axes(&cam, center, scale);
     draw_axes(ui, &axes);
     draw_bear(ui, &painter, rect, &cam, center, scale, render_state, gpu_bear);
+    // Mark the currently-selected view's face in blue (#323), under the (yellow) hover highlight
+    // so hovering another face still reads clearly. Only standard faces have a single plane; an
+    // isometric orientation seeds to a corner-ish `current` and simply shows no face highlight.
+    if let Some(sel) = selected_face {
+        if let Some(face) = faces.iter().find(|f| f.view == sel) {
+            draw_selected_face(&painter, face);
+        }
+    }
     match hover_pick {
         Some(CubePick::Face(view)) => {
             if let Some(face) = faces.iter().find(|f| f.view == view) {
