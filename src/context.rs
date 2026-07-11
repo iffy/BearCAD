@@ -2662,6 +2662,8 @@ fn drawing_orientation_to_standard(o: crate::model::DrawingOrientation) -> crate
         O::Right => S::Right,
         O::Top => S::Top,
         O::Bottom => S::Bottom,
+        // An edge view (#339) has no single straight-on face; seed the bear from its first face.
+        O::Edge(e) => drawing_orientation_to_standard(e.faces().0),
     }
 }
 

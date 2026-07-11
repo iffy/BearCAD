@@ -952,9 +952,10 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   **inherits the parent's scale** and can't change it (`drawing::resolved_view_scale`), and its
   orientation starts at the derived value but is **changeable among the views that stay in line**
   with the base (#332): the context editor shows a chooser limited to
-  `drawing::aligned_inline_orientations` — the orthographic views reachable by rotating about the
-  shared screen axis (Front/Back/Left/Right for a side child of a Front parent, Front/Back/Top/
-  Bottom for a stacked one). Directions whose unfolded view
+  `drawing::aligned_inline_orientations` — the views reachable by rotating about the shared screen
+  axis. For a side child of a Front parent that's Front/Back/Left/Right **plus the four diagonal
+  edge views** Front-Right/Back-Right/Back-Left/Front-Left (#339); for a stacked child it's the
+  Front/Back/Top/Bottom ring with its diagonal edges. Directions whose unfolded view
   would need a non-canonical "up" (e.g. a Bottom parent's sideways child) simply aren't
   offered, and an isometric parent has no aligned children. Scriptable:
   `bearcad.drawing_align_view{ drawing, parent, dir = "below"/"above"/"right"/"left", pos? }`.
@@ -1051,8 +1052,11 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   a second input beyond its drawing parent (the full multi-parent relationship lands with the
   element graph, #252). It's a display-only leaf (no `SceneElement`).
 - **Views:** a drawing collects **views**, each a chosen body shown in one orientation — the
-  six straight-on directions (Front/Back/Left/Right/Top/Bottom) or an **Isometric**
-  three-quarter view. Each view renders as a black wireframe of the body's feature edges,
+  six straight-on directions (Front/Back/Left/Right/Top/Bottom), an **Isometric** three-quarter
+  view, or one of the twelve **diagonal edge views** (`DrawingOrientation::Edge(EdgeView)`, #339)
+  that look square at a cube edge (Front-Right, Front-Top, …). An edge view's basis is derived
+  from its two faces: the camera looks along their averaged into-page bisector with world +Z up
+  (`drawing::view_axes`). Each view renders as a black wireframe of the body's feature edges,
   orthographically/isometrically projected and auto-fit into its cell; views sit wherever
   they were placed on the page and are added/removed from the drawing pane.
 - **Curves (#313/#319):** tessellated circles (a cylinder rim, an extruded-circle boundary)

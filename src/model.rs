@@ -1822,8 +1822,99 @@ pub enum ShapeKind {
     EdgeTreatmentEdit,
 }
 
+/// A diagonal "edge" view (#339): looking square at one of the cube's twelve edges — the view you
+/// get by clicking an edge on the navigation bear. Each edge sits between two orthographic faces;
+/// its basis is derived from theirs (see [`DrawingOrientation::view_axes`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EdgeView {
+    FrontRight,
+    BackRight,
+    BackLeft,
+    FrontLeft,
+    FrontTop,
+    RightTop,
+    BackTop,
+    LeftTop,
+    FrontBottom,
+    RightBottom,
+    BackBottom,
+    LeftBottom,
+}
+
+impl EdgeView {
+    pub const ALL: &'static [EdgeView] = &[
+        EdgeView::FrontRight,
+        EdgeView::BackRight,
+        EdgeView::BackLeft,
+        EdgeView::FrontLeft,
+        EdgeView::FrontTop,
+        EdgeView::RightTop,
+        EdgeView::BackTop,
+        EdgeView::LeftTop,
+        EdgeView::FrontBottom,
+        EdgeView::RightBottom,
+        EdgeView::BackBottom,
+        EdgeView::LeftBottom,
+    ];
+
+    /// The two orthographic faces this edge lies between; its view basis is their average.
+    pub fn faces(self) -> (DrawingOrientation, DrawingOrientation) {
+        use DrawingOrientation as O;
+        match self {
+            EdgeView::FrontRight => (O::Front, O::Right),
+            EdgeView::BackRight => (O::Back, O::Right),
+            EdgeView::BackLeft => (O::Back, O::Left),
+            EdgeView::FrontLeft => (O::Front, O::Left),
+            EdgeView::FrontTop => (O::Front, O::Top),
+            EdgeView::RightTop => (O::Right, O::Top),
+            EdgeView::BackTop => (O::Back, O::Top),
+            EdgeView::LeftTop => (O::Left, O::Top),
+            EdgeView::FrontBottom => (O::Front, O::Bottom),
+            EdgeView::RightBottom => (O::Right, O::Bottom),
+            EdgeView::BackBottom => (O::Back, O::Bottom),
+            EdgeView::LeftBottom => (O::Left, O::Bottom),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            EdgeView::FrontRight => "Front-Right",
+            EdgeView::BackRight => "Back-Right",
+            EdgeView::BackLeft => "Back-Left",
+            EdgeView::FrontLeft => "Front-Left",
+            EdgeView::FrontTop => "Front-Top",
+            EdgeView::RightTop => "Right-Top",
+            EdgeView::BackTop => "Back-Top",
+            EdgeView::LeftTop => "Left-Top",
+            EdgeView::FrontBottom => "Front-Bottom",
+            EdgeView::RightBottom => "Right-Bottom",
+            EdgeView::BackBottom => "Back-Bottom",
+            EdgeView::LeftBottom => "Left-Bottom",
+        }
+    }
+
+    /// Script/name spelling, e.g. `"front-right"`.
+    pub fn name(self) -> &'static str {
+        match self {
+            EdgeView::FrontRight => "front-right",
+            EdgeView::BackRight => "back-right",
+            EdgeView::BackLeft => "back-left",
+            EdgeView::FrontLeft => "front-left",
+            EdgeView::FrontTop => "front-top",
+            EdgeView::RightTop => "right-top",
+            EdgeView::BackTop => "back-top",
+            EdgeView::LeftTop => "left-top",
+            EdgeView::FrontBottom => "front-bottom",
+            EdgeView::RightBottom => "right-bottom",
+            EdgeView::BackBottom => "back-bottom",
+            EdgeView::LeftBottom => "left-bottom",
+        }
+    }
+}
+
 /// The orientation a body is projected from in a technical drawing view (#180). The six
-/// orthographic "straight-on" directions plus an isometric three-quarter view.
+/// orthographic "straight-on" directions, an isometric three-quarter view, plus the twelve
+/// diagonal edge views (#339).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum DrawingOrientation {
     #[default]
@@ -1834,6 +1925,8 @@ pub enum DrawingOrientation {
     Top,
     Bottom,
     Isometric,
+    /// A diagonal edge view (#339).
+    Edge(EdgeView),
 }
 
 impl DrawingOrientation {
@@ -1845,6 +1938,18 @@ impl DrawingOrientation {
         DrawingOrientation::Top,
         DrawingOrientation::Bottom,
         DrawingOrientation::Isometric,
+        DrawingOrientation::Edge(EdgeView::FrontRight),
+        DrawingOrientation::Edge(EdgeView::BackRight),
+        DrawingOrientation::Edge(EdgeView::BackLeft),
+        DrawingOrientation::Edge(EdgeView::FrontLeft),
+        DrawingOrientation::Edge(EdgeView::FrontTop),
+        DrawingOrientation::Edge(EdgeView::RightTop),
+        DrawingOrientation::Edge(EdgeView::BackTop),
+        DrawingOrientation::Edge(EdgeView::LeftTop),
+        DrawingOrientation::Edge(EdgeView::FrontBottom),
+        DrawingOrientation::Edge(EdgeView::RightBottom),
+        DrawingOrientation::Edge(EdgeView::BackBottom),
+        DrawingOrientation::Edge(EdgeView::LeftBottom),
     ];
 
     pub fn label(self) -> &'static str {
@@ -1855,6 +1960,7 @@ impl DrawingOrientation {
             DrawingOrientation::Right => "Right",
             DrawingOrientation::Top => "Top",
             DrawingOrientation::Bottom => "Bottom",
+            DrawingOrientation::Edge(e) => e.label(),
             DrawingOrientation::Isometric => "Isometric",
         }
     }
@@ -1868,7 +1974,10 @@ impl DrawingOrientation {
             "top" => Some(DrawingOrientation::Top),
             "bottom" => Some(DrawingOrientation::Bottom),
             "isometric" | "iso" | "diagonal" => Some(DrawingOrientation::Isometric),
-            _ => None,
+            other => EdgeView::ALL
+                .iter()
+                .find(|e| e.name() == other)
+                .map(|e| DrawingOrientation::Edge(*e)),
         }
     }
 }

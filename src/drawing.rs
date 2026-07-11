@@ -24,6 +24,18 @@ pub fn view_axes(orientation: DrawingOrientation) -> (Vec3, Vec3) {
             let up = out.cross(right).normalize();
             (right, up)
         }
+        // A diagonal edge view (#339): the camera looks along the average of its two faces'
+        // into-page directions (the 45° bisector), with world +Z as up (Gram-Schmidt'd square to
+        // that direction — no cube edge points straight up, so this is always well-defined).
+        O::Edge(e) => {
+            let (fa, fb) = e.faces();
+            let (ra, ua) = view_axes(fa);
+            let (rb, ub) = view_axes(fb);
+            let out = (ra.cross(ua) + rb.cross(ub)).normalize();
+            let up = (Vec3::Z - Vec3::Z.dot(out) * out).normalize();
+            let right = up.cross(out).normalize();
+            (right, up)
+        }
     }
 }
 
@@ -1348,14 +1360,38 @@ mod tests {
         for o in [O::Front, O::Back, O::Left, O::Right] {
             assert!(side.contains(&o), "{o:?} should be an in-line side view");
         }
+        // The diagonal vertical-edge views (#339) share the vertical axis too, so they're in-line.
+        use crate::model::EdgeView;
+        for e in [EdgeView::FrontRight, EdgeView::BackRight, EdgeView::BackLeft, EdgeView::FrontLeft] {
+            assert!(side.contains(&O::Edge(e)), "{e:?} should be an in-line diagonal");
+        }
         assert!(!side.contains(&O::Top) && !side.contains(&O::Bottom));
         assert!(!side.contains(&O::Isometric));
+        assert!(!side.contains(&O::Edge(EdgeView::FrontTop)), "tilted edges aren't in-line here");
 
         let stack = aligned_inline_orientations(O::Front, AlignDir::Below);
         for o in [O::Front, O::Back, O::Top, O::Bottom] {
             assert!(stack.contains(&o), "{o:?} should be an in-line stacked view");
         }
         assert!(!stack.contains(&O::Left) && !stack.contains(&O::Right));
+    }
+
+    /// #339: every edge view projects with a valid orthonormal basis, and a vertical-edge view
+    /// (Front-Right) is the 45° rotation of Front about the vertical axis.
+    #[test]
+    fn edge_view_bases_are_orthonormal() {
+        use crate::model::{DrawingOrientation as O, EdgeView};
+        for e in EdgeView::ALL {
+            let (r, u) = view_axes(O::Edge(*e));
+            assert!((r.length() - 1.0).abs() < 1e-4, "{e:?} right unit");
+            assert!((u.length() - 1.0).abs() < 1e-4, "{e:?} up unit");
+            assert!(r.dot(u).abs() < 1e-4, "{e:?} right ⟂ up");
+        }
+        // Front is (right=X, up=Z); Front-Right rotates 45° about Z → right=(X+Y)/√2, up=Z.
+        let (r, u) = view_axes(O::Edge(EdgeView::FrontRight));
+        let inv = 1.0 / 2.0_f32.sqrt();
+        assert!((r - glam::Vec3::new(inv, inv, 0.0)).length() < 1e-4, "got {r:?}");
+        assert!((u - glam::Vec3::Z).length() < 1e-4, "got {u:?}");
     }
 
     /// #314: a label that fits runs centred along the dimension line (angle matches, kept

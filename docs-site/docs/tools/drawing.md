@@ -69,7 +69,7 @@ always stays aligned along the shared edge; move the parent and its aligned view
 Aligned views inherit the parent's scale, so a whole group reads as one set. A placed aligned
 view's orientation can still be changed from its context pane — the chooser offers just the views
 that stay lined up with the base (for a side view off a front view, that's front, back, left, or
-right).
+right, plus the diagonal edge views in between — front-right, back-left, and so on).
 3. **Dimensions:** a new view arrives with **no dimensions shown**. Select the projection and
    use the **Show all dimensions** button in the context pane to add them all at once (or **Hide
    all dimensions** to clear them). They're drawn
@@ -127,5 +127,6 @@ bearcad.export_drawing_svg{ drawing = d, path = "plate.svg" }
 ```
 
 `bearcad.drawing{}` returns the drawing's index; `orientation` defaults to `"front"` and
-accepts `front`/`back`/`left`/`right`/`top`/`bottom`/`iso`. `bearcad.count("drawing")` returns
+accepts `front`/`back`/`left`/`right`/`top`/`bottom`/`iso`, or a diagonal edge view like
+`front-right` or `back-left`. `bearcad.count("drawing")` returns
 how many drawings the document has.
