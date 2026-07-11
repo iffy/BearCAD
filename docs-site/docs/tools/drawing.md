@@ -100,9 +100,9 @@ above, and right/left views rotated to match).
    open, the **Elements pane** lists it with its projections, text notes, and dimensions nested
    underneath (each projection's dimensions under it), so you can see everything that's on the page
    — click any of those rows to jump into the drawing and select that element.
-5. **Export** with **Export PDF…** for a single-page vector PDF, or **Export SVG…** for a
-   vector SVG you can open in any browser and print. Both are black-on-white, scale
-   losslessly, and are WYSIWYG: the page is the drawing's configured page size (landscape
+5. **Export** with the **Export** button in the toolbar — its popup lets you pick a single-page
+   vector **PDF**, or an **SVG** you can open in any browser and print. Both are black-on-white,
+   scale losslessly, and are WYSIWYG: the page is the drawing's configured page size (landscape
    8.5×11 by default) with every view exactly where you placed it. The grey card outline you
    see around each view in the editor is just a selection handle — it isn't printed.
 

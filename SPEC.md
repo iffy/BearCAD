@@ -1159,8 +1159,8 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   drawing's configured page** (#298) — the PDF MediaBox is `page_width_mm × page_height_mm`
   in points, landscape US-Letter (792 × 612 pt) by default. Both backends share the same
   layout through a `Canvas` trait in `src/drawing.rs`; the PDF is hand-rolled (no dependency),
-  so it works identically on native and web (download in the browser). The drawing pane has
-  **Export PDF…** and (native) **Export SVG…** buttons.
+  so it works identically on native and web (download in the browser). Export is a single
+  **Export icon** in the drawing workbench toolbar (#348) whose popup picks **SVG** or **PDF**.
 - **Scripting:** `bearcad.drawing{ name? }` creates a drawing (returning its index),
   `bearcad.drawing_view{ drawing, body, orientation? }` adds a view (`orientation` is
   `"front"`/`"top"`/`"iso"`/…, default front),

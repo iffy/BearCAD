@@ -83,11 +83,13 @@ pub enum IconId {
     /// Drawing workbench "Back to the 3D model" toolbar action (#325): a left arrow SVG (never
     /// a font glyph, which renders as an empty box on some platforms).
     Back,
+    /// Export toolbar action (#348): an arrow leaving a tray; opens an SVG/PDF picker.
+    Export,
 }
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 60] = [
+    pub const ALL: [Self; 61] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -148,6 +150,7 @@ impl IconId {
         Self::RepeatGapOffset,
         Self::Filter,
         Self::Back,
+        Self::Export,
     ];
 
     pub fn svg_source(self) -> &'static str {
@@ -212,6 +215,7 @@ impl IconId {
             Self::RepeatGapOffset => include_str!("assets/icons/repeat_gap_offset.svg"),
             Self::Filter => include_str!("assets/icons/filter.svg"),
             Self::Back => include_str!("assets/icons/back.svg"),
+            Self::Export => include_str!("assets/icons/export.svg"),
         }
     }
 
@@ -277,6 +281,7 @@ impl IconId {
             Self::RepeatGapOffset => "Start-to-start offset",
             Self::Filter => "Filter",
             Self::Back => "Back",
+            Self::Export => "Export",
         }
     }
 }

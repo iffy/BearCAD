@@ -4032,6 +4032,23 @@ impl eframe::App for App {
                         self.drawing_zoom = 1.0;
                         self.drawing_pan = egui::Vec2::ZERO;
                     }
+                    // Export (#348): one toolbar icon whose popup picks the format.
+                    if let Some(dwg) = self.state.editing_drawing {
+                        ui.separator();
+                        let tex = icons::sized_texture(ui.ctx(), icons::IconId::Export);
+                        ui.menu_image_button(tex, |ui| {
+                            if ui.button("Export SVG…").clicked() {
+                                self.export_drawing_svg(dwg);
+                                ui.close();
+                            }
+                            if ui.button("Export PDF…").clicked() {
+                                self.export_drawing_pdf(dwg);
+                                ui.close();
+                            }
+                        })
+                        .response
+                        .on_hover_text("Export the drawing (SVG or PDF)");
+                    }
                     return;
                 }
                 if icons::selectable_icon_button(
@@ -8953,9 +8970,6 @@ impl App {
         let in_window = self.drawing_window == Some(drawing);
         #[allow(unused_mut)] // only mutated by the native-only "Open in window" button
         let mut pop_out = false;
-        #[allow(unused_mut)] // only mutated by the native-only Export SVG button
-        let mut export_svg = false;
-        let mut export_pdf = false;
         let mut remove_view: Option<usize> = None;
         let mut toggle_dim: Option<(usize, [i32; 3], [i32; 3])> = None;
         let mut toggle_angle: Option<(usize, model::DrawingEdgeKey, model::DrawingEdgeKey)> = None;
@@ -8971,12 +8985,11 @@ impl App {
         // Escape no longer leaves the Drawing workbench (#318) — it's used for cancelling
         // in-progress tool actions. A Back button (in the toolbar, left of Select) returns to
         // the model instead.
-        // The drawing-name title and the "Use the Back button…" hint were removed (#349): the Back
-        // button in the toolbar already returns to the model, and the drawing's name is shown in
-        // the Elements pane. Only the pop-out/export actions remain on this row.
-        ui.horizontal(|ui| {
-            #[cfg(not(target_arch = "wasm32"))]
-            if !in_window {
+        // The title/hint were removed (#349) and export moved to the toolbar's Export icon (#348),
+        // so only the pop-out action remains on this row (until #347 moves it to the OS menu).
+        #[cfg(not(target_arch = "wasm32"))]
+        if !in_window {
+            ui.horizontal(|ui| {
                 if ui
                     .button("Open in window")
                     .on_hover_text("Open this drawing in its own window, beside the 3D view")
@@ -8984,20 +8997,9 @@ impl App {
                 {
                     pop_out = true;
                 }
-                ui.separator();
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                if ui.button("Export SVG…").on_hover_text("Vector SVG — prints to PDF").clicked() {
-                    export_svg = true;
-                }
-                ui.separator();
-            }
-            if ui.button("Export PDF…").on_hover_text("Single-page vector PDF").clicked() {
-                export_pdf = true;
-            }
-        });
-        ui.separator();
+            });
+            ui.separator();
+        }
 
         // Views are added with the toolbar's Add-view tool (#289): pick a body or sketch in
         // the Elements pane and a projection drops onto the page, ready to drag and configure
@@ -9945,26 +9947,6 @@ impl App {
             Some(p) => ui.data_mut(|d| d.insert_temp(pending_angle_id, p)),
             None => ui.data_mut(|d| d.remove::<(usize, model::DrawingEdgeKey)>(pending_angle_id)),
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        if export_svg {
-            let name = crate::names::node_label(&self.state.doc, hierarchy::HierarchyNode::Drawing(drawing));
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter("SVG drawing", &["svg"])
-                .set_file_name(format!("{name}.svg"))
-                .save_file()
-            {
-                self.state.apply(Action::ExportDrawingSvg {
-                    drawing,
-                    path: path.to_string_lossy().to_string(),
-                });
-            }
-        }
-        #[cfg(target_arch = "wasm32")]
-        let _ = export_svg;
-
-        if export_pdf {
-            self.export_drawing_pdf(drawing);
-        }
 
         if let Some((width_mm, height_mm, margin_mm)) = set_page {
             self.state.apply(Action::SetDrawingPage { drawing, width_mm, height_mm, margin_mm });
@@ -9989,6 +9971,36 @@ impl App {
                 drawing,
                 path: path.to_string_lossy().to_string(),
             });
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn export_drawing_svg(&mut self, drawing: usize) {
+        let name = crate::names::node_label(&self.state.doc, hierarchy::HierarchyNode::Drawing(drawing));
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("SVG drawing", &["svg"])
+            .set_file_name(format!("{name}.svg"))
+            .save_file()
+        {
+            self.state.apply(Action::ExportDrawingSvg {
+                drawing,
+                path: path.to_string_lossy().to_string(),
+            });
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn export_drawing_svg(&mut self, drawing: usize) {
+        let name = crate::names::node_label(&self.state.doc, hierarchy::HierarchyNode::Drawing(drawing));
+        match crate::drawing::drawing_to_svg(&self.state.doc, drawing) {
+            Some(svg) => self.web_save_bytes(
+                "SVG drawing",
+                &["svg"],
+                format!("{name}.svg"),
+                svg.into_bytes(),
+                format!("Exported {name}"),
+            ),
+            None => self.state.status = format!("Export failed: no drawing {drawing}"),
         }
     }
 
