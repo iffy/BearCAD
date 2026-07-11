@@ -2167,29 +2167,14 @@ pub fn show_pane(
         ui.separator();
         ui.label(egui::RichText::new("View").strong());
         ui.label(&control.source);
-        // An aligned child stays in line with its base, but its orientation can be changed among
-        // the views that keep that alignment (#332); a chooser offers just that in-line set.
+        // An aligned child's orientation is derived from its base and placement direction — it
+        // unfolds (and rotates) to stay in line (#351) — so it's shown read-only. Change the view
+        // by placing it in a different direction.
         if control.aligned {
-            ui.label(egui::RichText::new("aligned").color(egui::Color32::from_gray(150)));
-            if control.inline_orientations.is_empty() {
-                ui.label(
-                    egui::RichText::new(control.orientation.label())
-                        .color(egui::Color32::from_gray(150)),
-                );
-            } else {
-                egui::ComboBox::from_id_salt("drawing_aligned_orientation")
-                    .selected_text(control.orientation.label())
-                    .show_ui(ui, |ui| {
-                        for o in &control.inline_orientations {
-                            if ui
-                                .selectable_label(control.orientation == *o, o.label())
-                                .clicked()
-                            {
-                                on_drawing_view_edit(DrawingViewEdit::Orientation(*o));
-                            }
-                        }
-                    });
-            }
+            ui.label(
+                egui::RichText::new(format!("{} · aligned", control.orientation.label()))
+                    .color(egui::Color32::from_gray(150)),
+            );
         } else {
             // Interactive orientation bear (#315): drag to spin, click a face for that view or
             // a corner/edge for isometric; focus it and press 4/5/6/8/2/0 for

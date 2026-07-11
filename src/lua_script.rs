@@ -5400,9 +5400,10 @@ mod tests {
             bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
         "#,
         );
-        let view = &state.doc.drawings[0].views[0];
+        let views = &state.doc.drawings[0].views;
+        let view = &views[0];
         let creases = crate::drawing::drawing_view_world_edges(&state.doc, view);
-        let dimensionable = crate::drawing::drawing_view_dimensionable_edges(&state.doc, view);
+        let dimensionable = crate::drawing::drawing_view_dimensionable_edges(&state.doc, views, view);
         assert!(
             dimensionable.len() > creases.len(),
             "silhouette side edges join the dimensionable set (#334): creases={}, dimensionable={}",

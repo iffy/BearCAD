@@ -950,14 +950,14 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   parent (recursively, so chains stay consistent) in both the editor and export. Dragging a
   child only slides it along its free axis; moving the parent carries its children. A child
   **inherits the parent's scale** and can't change it (`drawing::resolved_view_scale`), and its
-  orientation starts at the derived value but is **changeable among the views that stay in line**
-  with the base (#332): the context editor shows a chooser limited to
-  `drawing::aligned_inline_orientations` — the views reachable by rotating about the shared screen
-  axis. For a side child of a Front parent that's Front/Back/Left/Right **plus the four diagonal
-  edge views** Front-Right/Back-Right/Back-Left/Front-Left (#339); for a stacked child it's the
-  Front/Back/Top/Bottom ring with its diagonal edges. Directions whose unfolded view
-  would need a non-canonical "up" (e.g. a Bottom parent's sideways child) simply aren't
-  offered, and an isometric parent has no aligned children. Scriptable:
+  orientation is **derived from the base and placement direction** and shown read-only (change it
+  by re-placing in another direction). Crucially, an aligned child **renders with the unfolded
+  basis** (`drawing::resolved_view_axes`), not a fixed canonical orientation — for a non-Front base
+  the unfolded view is *rotated*, so **all four directions work from any base** (#351): a Top base
+  gives Front below, Back above, and rotated Right/Left to the sides. Every projection site (editor,
+  export, silhouette, dimension candidates) uses `resolved_view_axes` so the rotation is consistent;
+  the child's stored `orientation` is just the nearest face for its label. All six straight-on bases
+  offer all four directions; an isometric/edge/corner parent has no aligned children. Scriptable:
   `bearcad.drawing_align_view{ drawing, parent, dir = "below"/"above"/"right"/"left", pos? }`.
 - **Text annotations (#312):** the **Text** tool (the same tool, `T` shortcut, brought into
   the Drawing workbench) places **free text on the page** — click for a growing single-line

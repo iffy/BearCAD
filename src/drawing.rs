@@ -66,6 +66,11 @@ pub fn aligned_child_orientation(
     dir: crate::model::AlignDir,
 ) -> Option<DrawingOrientation> {
     use crate::model::AlignDir;
+    use DrawingOrientation as O;
+    // Only the six straight-on views unfold into aligned children; iso/edge/corner parents don't.
+    if !matches!(parent, O::Front | O::Back | O::Left | O::Right | O::Top | O::Bottom) {
+        return None;
+    }
     let (r, u) = view_axes(parent);
     let o = r.cross(u); // "into the page" for this view basis
     let (cr, cu) = match dir {
@@ -74,7 +79,11 @@ pub fn aligned_child_orientation(
         AlignDir::Right => (-o, u),
         AlignDir::Left => (o, u),
     };
-    orientation_from_axes(cr, cu)
+    // The unfolded child may be a *rotated* face view (e.g. a Top base's Left/Right children),
+    // which isn't an axis-aligned canonical orientation (#351). Its true rotated basis comes from
+    // `resolved_view_axes`; here we just pick the nearest face by view direction for its label, so
+    // all four directions are offerable rather than only the ones that happen to stay canonical.
+    orientation_from_axes(cr, cu).or_else(|| nearest_face_by_view_dir(cr.cross(cu)))
 }
 
 /// The orthographic orientations an aligned child may take while staying **in line** with its
@@ -104,6 +113,31 @@ pub fn aligned_inline_orientations(
             }
         })
         .collect()
+}
+
+/// The projection basis `(right, up)` a view actually renders with (#357). A non-aligned view uses
+/// `view_axes(orientation)`; an **aligned child** uses the glass-box **unfolding** of its parent's
+/// basis about their shared screen axis, so it stays lined up *and correctly rotated* for any base
+/// orientation — e.g. a Top base yields Front below, Back above, and rotated Left/Right to the
+/// sides (#351). `views` is the drawing's view list; the parent is looked up by `aligned_parent`
+/// (recursively, so chains stay consistent).
+pub fn resolved_view_axes(views: &[DrawingView], view: &DrawingView) -> (Vec3, Vec3) {
+    use crate::model::AlignDir;
+    if let (Some(p), Some(dir)) = (view.aligned_parent, view.aligned_dir) {
+        if let Some(parent) = views.get(p) {
+            if !std::ptr::eq(parent, view) {
+                let (pr, pu) = resolved_view_axes(views, parent);
+                let po = pr.cross(pu); // parent's "into the page"
+                return match dir {
+                    AlignDir::Below => (pr, -po),
+                    AlignDir::Above => (pr, po),
+                    AlignDir::Right => (-po, pu),
+                    AlignDir::Left => (po, pu),
+                };
+            }
+        }
+    }
+    view_axes(view.orientation)
 }
 
 /// The on-page position of a view (#296), resolving an aligned child's shared axis to its
@@ -155,6 +189,21 @@ fn orientation_from_axes(right: Vec3, up: Vec3) -> Option<DrawingOrientation> {
     ALL.into_iter().find(|&o| {
         let (r, u) = view_axes(o);
         (r - right).length() < 1e-3 && (u - up).length() < 1e-3
+    })
+}
+
+/// The straight-on face whose view direction (into the page) best matches `view_dir` — used to
+/// **label** a rotated aligned child (#351) by the face it looks at, when its unfolded basis isn't
+/// an axis-aligned canonical orientation.
+fn nearest_face_by_view_dir(view_dir: Vec3) -> Option<DrawingOrientation> {
+    use DrawingOrientation as O;
+    const ALL: [O; 6] = [O::Front, O::Back, O::Left, O::Right, O::Top, O::Bottom];
+    ALL.into_iter().max_by(|&a, &b| {
+        let dir = |o| {
+            let (r, u) = view_axes(o);
+            r.cross(u).dot(view_dir)
+        };
+        dir(a).partial_cmp(&dir(b)).unwrap_or(std::cmp::Ordering::Equal)
     })
 }
 
@@ -379,14 +428,18 @@ pub fn drawing_view_world_edges(doc: &Document, view: &DrawingView) -> Vec<(Vec3
 
 /// The view-dependent silhouette edges of a body view (#319): a cylinder's straight sides and
 /// other smooth-surface outlines that aren't crease edges. Empty for sketch views.
-pub fn drawing_view_silhouette_edges(doc: &Document, view: &DrawingView) -> Vec<(Vec3, Vec3)> {
+pub fn drawing_view_silhouette_edges(
+    doc: &Document,
+    views: &[DrawingView],
+    view: &DrawingView,
+) -> Vec<(Vec3, Vec3)> {
     if view.sketch.is_some() {
         return Vec::new();
     }
     let Some(mesh) = crate::extrude::body_solid_mesh(doc, view.body) else {
         return Vec::new();
     };
-    let (right, up) = view_axes(view.orientation);
+    let (right, up) = resolved_view_axes(views, view);
     crate::gpu_viewport::solid_mesh_silhouette_edges(&mesh, right.cross(up))
 }
 
@@ -395,7 +448,11 @@ pub fn drawing_view_silhouette_edges(doc: &Document, view: &DrawingView) -> Vec<
 /// has no crease edge down its side — can be dimensioned like any straight edge. Silhouette edges
 /// are deduped against the crease set by quantized endpoints. Circle detection deliberately stays
 /// on the crease-only [`drawing_view_world_edges`] (#319), so this is used only for dimensioning.
-pub fn drawing_view_dimensionable_edges(doc: &Document, view: &DrawingView) -> Vec<(Vec3, Vec3)> {
+pub fn drawing_view_dimensionable_edges(
+    doc: &Document,
+    views: &[DrawingView],
+    view: &DrawingView,
+) -> Vec<(Vec3, Vec3)> {
     let mut edges = drawing_view_world_edges(doc, view);
     let mut seen: std::collections::HashSet<crate::model::DrawingEdgeKey> = edges
         .iter()
@@ -406,7 +463,7 @@ pub fn drawing_view_dimensionable_edges(doc: &Document, view: &DrawingView) -> V
             )
         })
         .collect();
-    for (a, b) in drawing_view_silhouette_edges(doc, view) {
+    for (a, b) in drawing_view_silhouette_edges(doc, views, view) {
         let key = crate::model::normalized_edge_key(
             crate::hierarchy::quantize_body_point(a),
             crate::hierarchy::quantize_body_point(b),
@@ -568,15 +625,19 @@ pub struct StyledViewGeometry {
 
 /// Project a view's geometry under its display style (#301). Sketch views have no solid to
 /// occlude or shade, so they always render as plain wireframe.
-pub fn styled_view_geometry(doc: &Document, view: &DrawingView) -> StyledViewGeometry {
+pub fn styled_view_geometry(
+    doc: &Document,
+    views: &[DrawingView],
+    view: &DrawingView,
+) -> StyledViewGeometry {
     use crate::model::DrawingViewStyle;
-    let (right, up) = view_axes(view.orientation);
+    let (right, up) = resolved_view_axes(views, view);
     let project = |p: Vec3| glam::Vec2::new(p.dot(right), p.dot(up));
     // Crease edges plus the view-dependent silhouette (#319) so smooth-surface outlines (a
     // cylinder's straight sides) are stroked; circle detection/dimensioning use crease edges
     // only, so the silhouette here doesn't affect them.
     let mut edges = drawing_view_world_edges(doc, view);
-    edges.extend(drawing_view_silhouette_edges(doc, view));
+    edges.extend(drawing_view_silhouette_edges(doc, views, view));
     let wireframe = || StyledViewGeometry {
         tris: Vec::new(),
         segments: edges.iter().map(|(a, b)| (project(*a), project(*b))).collect(),
@@ -787,6 +848,7 @@ fn render_drawing<C: Canvas>(doc: &Document, index: usize, canvas: &mut C) -> Op
         render_view_geometry(
             canvas,
             doc,
+            &drawing.views,
             view,
             scale_text.as_deref(),
             cell_x,
@@ -849,6 +911,7 @@ fn wrap_text_lines(text: &str, font: f32, wrap_width: Option<f32>) -> Vec<String
 fn render_view_geometry<C: Canvas>(
     canvas: &mut C,
     doc: &Document,
+    views: &[DrawingView],
     view: &DrawingView,
     scale_text: Option<&str>,
     cell_x: f32,
@@ -860,11 +923,11 @@ fn render_view_geometry<C: Canvas>(
     // Crease edges drive circle detection (#319); the dimensionable set also carries silhouette
     // edges so a smooth extrusion's length can be dimensioned (#334).
     let crease_edges = drawing_view_world_edges(doc, view);
-    let world_edges = drawing_view_dimensionable_edges(doc, view);
+    let world_edges = drawing_view_dimensionable_edges(doc, views, view);
     if world_edges.is_empty() {
         return;
     }
-    let (right, up) = view_axes(view.orientation);
+    let (right, up) = resolved_view_axes(views, view);
     let project = |p: Vec3| glam::Vec2::new(p.dot(right), p.dot(up));
     let proj: Vec<(glam::Vec2, glam::Vec2)> = world_edges
         .iter()
@@ -907,7 +970,7 @@ fn render_view_geometry<C: Canvas>(
 
     // Strokes (and shaded fills) come from the view's display style (#301); the fit above
     // always uses the full wireframe bbox so switching styles never re-scales the view.
-    let styled = styled_view_geometry(doc, view);
+    let styled = styled_view_geometry(doc, views, view);
     for (pts, shade) in &styled.tris {
         let level = (shade.clamp(0.0, 1.0) * 255.0) as u8;
         let fill = Rgb(level, level, level);
@@ -1370,6 +1433,40 @@ fn assemble_pdf(width: f32, height: f32, content: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::model::{Drawing, DrawingView};
+
+    /// #351: an aligned child unfolds from its parent's basis for *any* base orientation, so a Top
+    /// base yields Front below, Back above, and rotated Left/Right to the sides — all four
+    /// directions offerable, and each rendered with the correct (possibly rotated) basis.
+    #[test]
+    fn aligned_children_unfold_for_a_top_base() {
+        use crate::model::{AlignDir, DrawingOrientation as O};
+        // All four directions are offered from a Top base (not just Below).
+        for dir in [AlignDir::Below, AlignDir::Above, AlignDir::Left, AlignDir::Right] {
+            assert!(aligned_child_orientation(O::Top, dir).is_some(), "{dir:?} offered");
+        }
+        assert_eq!(aligned_child_orientation(O::Top, AlignDir::Below), Some(O::Front));
+
+        // The rendered bases come from resolved_view_axes unfolding the Top parent (X, -Y).
+        let parent = DrawingView {
+            body: 0, sketch: None, orientation: O::Top,
+            dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
+            dimensioned_circles: Vec::new(), aligned_parent: None, aligned_dir: None,
+            scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
+        };
+        let child = |dir| DrawingView {
+            aligned_parent: Some(0), aligned_dir: Some(dir), ..parent.clone()
+        };
+        let views = |dir| vec![parent.clone(), child(dir)];
+        // Top parent basis = (X, -Y), into-page = X×(-Y) = -Z.
+        let vb = views(AlignDir::Below);
+        assert_eq!(resolved_view_axes(&vb, &vb[1]), (Vec3::X, Vec3::Z), "below → Front basis");
+        let va = views(AlignDir::Above);
+        assert_eq!(resolved_view_axes(&va, &va[1]), (Vec3::X, -Vec3::Z), "above → rotated Back");
+        let vr = views(AlignDir::Right);
+        assert_eq!(resolved_view_axes(&vr, &vr[1]), (Vec3::Z, -Vec3::Y), "right → rotated Right");
+        let vl = views(AlignDir::Left);
+        assert_eq!(resolved_view_axes(&vl, &vl[1]), (-Vec3::Z, -Vec3::Y), "left → rotated Left");
+    }
 
     /// #332: an aligned child dragged to the side of a Front parent can be re-oriented to any of
     /// the four views that share the vertical axis (Front/Back/Left/Right), and one dragged above

@@ -2755,6 +2755,7 @@ pub(crate) fn extrude_face_sketch(doc: &Document, face: &ExtrudeFace) -> Option<
 /// overrides (#321) that stagger parallel dimensions so their labels don't overlap.
 fn default_dimensioned_edges(
     doc: &Document,
+    views: &[crate::model::DrawingView],
     view: &crate::model::DrawingView,
 ) -> (
     Vec<crate::model::DrawingEdgeKey>,
@@ -2764,11 +2765,11 @@ fn default_dimensioned_edges(
     // the page has no meaningful length to dimension here, and its 3D length would mislead
     // (#294) — and skip tessellated-circle segments, which are covered by a single diameter
     // dimension instead (#313).
-    let (right, up) = crate::drawing::view_axes(view.orientation);
+    let (right, up) = crate::drawing::resolved_view_axes(views, view);
     // Circle detection stays on crease-only edges (#319); the candidate set adds silhouette edges
     // so a smooth extrusion's length is dimensioned too (#334).
     let creases = crate::drawing::drawing_view_world_edges(doc, view);
-    let world = crate::drawing::drawing_view_dimensionable_edges(doc, view);
+    let world = crate::drawing::drawing_view_dimensionable_edges(doc, views, view);
     let world_circles = crate::drawing::classify_world_circles(&creases);
     let pcircles: Vec<crate::drawing::ProjectedCircle> = world_circles
         .iter()
@@ -6755,7 +6756,7 @@ impl AppState {
                     return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
                 };
                 let (keys, offsets) = if show {
-                    default_dimensioned_edges(&self.doc, &v)
+                    default_dimensioned_edges(&self.doc, &self.doc.drawings[drawing].views, &v)
                 } else {
                     (Vec::new(), Vec::new())
                 };
@@ -12865,6 +12866,7 @@ mod tests {
         };
         let wire = crate::drawing::styled_view_geometry(
             &state.doc,
+            &state.doc.drawings[0].views,
             &state.doc.drawings[0].views[0],
         );
         assert!(wire.tris.is_empty() && !wire.segments.is_empty());
@@ -12878,6 +12880,7 @@ mod tests {
         assert_eq!(state.doc.drawings[0].views[0].style, DrawingViewStyle::Visible);
         let visible = crate::drawing::styled_view_geometry(
             &state.doc,
+            &state.doc.drawings[0].views,
             &state.doc.drawings[0].views[0],
         );
         assert!(visible.tris.is_empty());
@@ -12894,6 +12897,7 @@ mod tests {
         });
         let shaded = crate::drawing::styled_view_geometry(
             &state.doc,
+            &state.doc.drawings[0].views,
             &state.doc.drawings[0].views[0],
         );
         assert!(!shaded.tris.is_empty(), "shaded style fills front faces");
