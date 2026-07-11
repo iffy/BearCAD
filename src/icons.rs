@@ -80,11 +80,14 @@ pub enum IconId {
     RepeatGapOffset,
     /// Elements-pane filter funnel (#275/#291).
     Filter,
+    /// Drawing workbench "Back to the 3D model" toolbar action (#325): a left arrow SVG (never
+    /// a font glyph, which renders as an empty box on some platforms).
+    Back,
 }
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 59] = [
+    pub const ALL: [Self; 60] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -144,6 +147,7 @@ impl IconId {
         Self::RepeatGapBetween,
         Self::RepeatGapOffset,
         Self::Filter,
+        Self::Back,
     ];
 
     pub fn svg_source(self) -> &'static str {
@@ -207,6 +211,7 @@ impl IconId {
             Self::RepeatGapBetween => include_str!("assets/icons/repeat_gap_between.svg"),
             Self::RepeatGapOffset => include_str!("assets/icons/repeat_gap_offset.svg"),
             Self::Filter => include_str!("assets/icons/filter.svg"),
+            Self::Back => include_str!("assets/icons/back.svg"),
         }
     }
 
@@ -271,6 +276,7 @@ impl IconId {
             Self::RepeatGapBetween => "Gap between",
             Self::RepeatGapOffset => "Start-to-start offset",
             Self::Filter => "Filter",
+            Self::Back => "Back",
         }
     }
 }

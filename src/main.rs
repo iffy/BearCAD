@@ -3970,9 +3970,14 @@ impl eframe::App for App {
                 // only the tools that apply to drawings — Select and Dimension (#295: no Move;
                 // the Select tool drags projections directly).
                 if self.state.editing_drawing.is_some() {
-                    // Back to the model (#318): left of Select, replacing Esc-to-exit.
+                    // Back to the model (#318): left of Select, replacing Esc-to-exit. The arrow
+                    // is a bundled SVG icon, not a font glyph (#325) — the old "← Back" text
+                    // showed an empty box wherever the font lacked the arrow.
                     if ui
-                        .button("← Back")
+                        .add(egui::Button::image_and_text(
+                            icons::sized_texture(ui.ctx(), icons::IconId::Back),
+                            "Back",
+                        ))
                         .on_hover_text("Return to the 3D model")
                         .clicked()
                     {
@@ -8869,7 +8874,7 @@ impl App {
             if !in_window {
                 ui.separator();
                 if ui
-                    .button("⇱ Open in window")
+                    .button("Open in window")
                     .on_hover_text("Open this drawing in its own window, beside the 3D view")
                     .clicked()
                 {
@@ -9020,8 +9025,13 @@ impl App {
                     egui::pos2(cell.max.x - 24.0, cell.min.y + 4.0),
                     egui::vec2(20.0, 20.0),
                 );
+                // Remove uses the bundled ✕ SVG (IconId::Close), never a font glyph (#325).
                 if ui
-                    .put(x_rect, egui::Button::new("×").small())
+                    .put(
+                        x_rect,
+                        egui::ImageButton::new(icons::sized_texture(ui.ctx(), icons::IconId::Close))
+                            .frame(true),
+                    )
                     .on_hover_text("Remove view")
                     .clicked()
                 {
