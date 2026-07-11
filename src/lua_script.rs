@@ -5419,6 +5419,41 @@ mod tests {
         assert!(has_length, "a side edge measures the 30mm length");
     }
 
+    /// #342: Show all / Hide all also control a circle's diameter dimension (it's no longer
+    /// always drawn), so Hide all clears `dimensioned_circles` and Show all repopulates it.
+    #[test]
+    fn show_and_hide_all_dimensions_controls_circle_diameters() {
+        let mut state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.circle{ x = 0, y = 0, r = 10 }
+            bearcad.extrude{ circle = 0, distance = 30 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "top" }
+        "#,
+        );
+        // A new view starts with no circle diameters shown (#331/#342).
+        assert!(state.doc.drawings[0].views[0].dimensioned_circles.is_empty());
+        state.apply(crate::actions::Action::SetAllDrawingDimensions {
+            drawing: 0,
+            view: 0,
+            show: true,
+        });
+        assert!(
+            !state.doc.drawings[0].views[0].dimensioned_circles.is_empty(),
+            "Show all reveals the circle's diameter dimension"
+        );
+        state.apply(crate::actions::Action::SetAllDrawingDimensions {
+            drawing: 0,
+            view: 0,
+            show: false,
+        });
+        assert!(
+            state.doc.drawings[0].views[0].dimensioned_circles.is_empty(),
+            "Hide all clears the circle's diameter dimension (#342)"
+        );
+    }
+
     /// #331: "Show all dimensions" populates the deduped, staggered default set and "Hide all"
     /// clears it, both via `Action::SetAllDrawingDimensions`.
     #[test]

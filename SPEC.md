@@ -1085,7 +1085,11 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   the deduped, staggered default set (every edge's length dimension — except edges pointing
   straight into the page, which project to a point and carry no meaningful in-view length (#294),
   and except tessellated-circle segments, which get a single diameter dimension instead (#313));
-  *Hide all* clears them. User-added angle dimensions are left untouched by both. Individual edges
+  *Hide all* clears them. A detected circle's **diameter dimension is toggleable too** (#342),
+  tracked per view in `dimensioned_circles` (keyed by the circle's quantized world centre): it
+  starts hidden like the rest, *Show all* reveals every circle's Ø and *Hide all* clears them —
+  the circle **outline** always draws, only its Ø dimension is gated. User-added angle dimensions
+  are left untouched by both. Individual edges
   are still toggled with the Dimension tool (or `bearcad.drawing_dimension`). Length dimensions
   render as proper **architectural
   dimension lines** (#294): two extension lines off the edge, a dimension line offset outward

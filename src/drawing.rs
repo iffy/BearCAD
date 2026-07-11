@@ -935,8 +935,15 @@ fn render_view_geometry<C: Canvas>(
     let diag = extent.length().max(1.0);
     let default_gap = diag * 0.05;
     let arrow = diag * 0.025;
-    // A single diameter dimension per detected circle (#313), replacing its segments' dims.
+    // A single diameter dimension per detected circle (#313), replacing its segments' dims — but
+    // only for circles whose diameter is shown (#342), so Show/Hide all controls them too.
     for (wc, pc) in world_circles.iter().zip(&pcircles) {
+        if !view
+            .dimensioned_circles
+            .contains(&crate::hierarchy::quantize_body_point(wc.center))
+        {
+            continue;
+        }
         let label = format!("Ø{}", crate::value::format_length_display_in(wc.radius * 2.0, unit));
         match pc {
             // Face-on: a diameter line across the circle with the value beside it.
@@ -1535,6 +1542,7 @@ mod tests {
                 dimensioned_edges: Vec::new(),
                 angle_dims: Vec::new(),
                 dimension_offsets: Vec::new(),
+                dimensioned_circles: Vec::new(),
                 aligned_parent: None,
                 aligned_dir: None,
                 scale: None,

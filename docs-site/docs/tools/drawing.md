@@ -78,7 +78,9 @@ right, plus the diagonal edge views in between — front-right, back-left, and s
    measurement centred on it, all drawn with a lighter, thinner stroke than the model edges so
    the part outline stays the eye's focus — the label runs along the dimension line (or sits just
    past its end when the line is too short to fit). Round features (holes, cylinders) render as a single
-   smooth circle with one diameter dimension (Ø), not a ring of little segments. Round and other
+   smooth circle with one diameter dimension (Ø), not a ring of little segments — and that Ø
+   dimension is controlled by **Show all / Hide all dimensions** too, so hiding all really hides
+   everything. Round and other
    smooth extrusions can still be dimensioned along their **length** — click their straight side
    (the cylinder wall) with the Dimension tool, or use Show all dimensions. The set stays
    readable: coincident edges (a box's bottom edge, front and back, land on

@@ -6469,6 +6469,7 @@ impl AppState {
                     dimensioned_edges: Vec::new(),
                     angle_dims: Vec::new(),
                 dimension_offsets: Vec::new(),
+                dimensioned_circles: Vec::new(),
                 aligned_parent: None,
                 aligned_dir: None,
                     pos_x: (0.35 + step).min(0.9),
@@ -6501,6 +6502,7 @@ impl AppState {
                     dimensioned_edges: Vec::new(),
                     angle_dims: Vec::new(),
                 dimension_offsets: Vec::new(),
+                dimensioned_circles: Vec::new(),
                 aligned_parent: None,
                 aligned_dir: None,
                     pos_x: (0.35 + step).min(0.9),
@@ -6546,6 +6548,7 @@ impl AppState {
                     dimensioned_edges: Vec::new(),
                     angle_dims: Vec::new(),
                     dimension_offsets: Vec::new(),
+                    dimensioned_circles: Vec::new(),
                     pos_x,
                     pos_y,
                     scale: pv.scale.clone(),
@@ -6756,9 +6759,21 @@ impl AppState {
                 } else {
                     (Vec::new(), Vec::new())
                 };
+                // A circle's diameter dimension is toggled by the same buttons (#342): Show all
+                // dimensions every detected circle, Hide all clears them.
+                let circles = if show {
+                    let creases = crate::drawing::drawing_view_world_edges(&self.doc, &v);
+                    crate::drawing::classify_world_circles(&creases)
+                        .iter()
+                        .map(|c| crate::hierarchy::quantize_body_point(c.center))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 let target = &mut self.doc.drawings[drawing].views[view];
                 target.dimensioned_edges = keys;
                 target.dimension_offsets = offsets;
+                target.dimensioned_circles = circles;
                 // Angle dimensions are user-added, so leave them alone; this only flips the
                 // length/diameter set the buttons control (#331).
                 self.status = if show {

@@ -9380,12 +9380,19 @@ impl App {
                 // (#319), each with one diameter dimension. Edge-on uses a full linear
                 // dimension (extension lines + arrows), like a regular length (#320).
                 for (wc, pc) in world_circles.iter().zip(&pcircles) {
+                    // The circle outline always draws; its diameter dimension only when shown (#342).
+                    let show_dim = view
+                        .dimensioned_circles
+                        .contains(&hierarchy::quantize_body_point(wc.center));
                     let label =
                         format!("Ø{}", crate::value::format_length_display_in(wc.radius * 2.0, unit));
                     match pc {
                         crate::drawing::ProjectedCircle::Round { center, radius } => {
                             let sc = to_screen(egui::vec2(center.x, center.y));
                             painter.circle_stroke(sc, radius * scale, egui::Stroke::new(crate::drawing::MODEL_STROKE, INK));
+                            if !show_dim {
+                                continue;
+                            }
                             let dir = egui::vec2(0.70710677, -0.70710677);
                             let cv = egui::vec2(center.x, center.y);
                             let (sa, sb) = (to_screen(cv - dir * *radius), to_screen(cv + dir * *radius));
@@ -9404,6 +9411,9 @@ impl App {
                                 [to_screen(av), to_screen(bv)],
                                 egui::Stroke::new(crate::drawing::MODEL_STROKE, INK),
                             );
+                            if !show_dim {
+                                continue;
+                            }
                             let outward = {
                                 let seg = bv - av;
                                 let mut p = egui::vec2(-seg.y, seg.x).normalized();

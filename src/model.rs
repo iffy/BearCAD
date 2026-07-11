@@ -2017,6 +2017,12 @@ pub struct DrawingView {
     /// writes an override here; it survives rebuilds because the key is geometry-based.
     #[serde(default)]
     pub dimension_offsets: Vec<(([i32; 3], [i32; 3]), f32)>,
+    /// Detected circles (holes, cylinders) whose **diameter** dimension is shown, keyed by the
+    /// circle's quantized world centre (#342). Like `dimensioned_edges`, a new view starts empty
+    /// and "Show all dimensions" populates it; "Hide all" clears it, so a circle's Ø dimension is
+    /// toggleable rather than always drawn.
+    #[serde(default)]
+    pub dimensioned_circles: Vec<[i32; 3]>,
     /// Print scale as `"page:model"` text, e.g. `"1:20"` (#300). Always stored validated
     /// (see [`parse_drawing_scale`]); `None` auto-fits the projection to its card.
     #[serde(default)]
