@@ -718,7 +718,7 @@ struct ProjectedCorner {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum CubePick {
+pub enum CubePick {
     Corner(CubeCornerId),
     Edge(CubeEdgeId),
     Face(StandardView),
@@ -1129,15 +1129,44 @@ fn draw_hovered_face(painter: &egui::Painter, face: &ProjectedFace) {
     }
 }
 
-/// Blue highlight marking the currently-selected view's face on the bear (#323): a translucent
-/// blue fill plus a solid blue outline, so a glance at the bear shows which way the drawing view
-/// looks. Only drawn when that face is front-facing (present in `project_faces`).
-fn draw_selected_face(painter: &egui::Painter, face: &ProjectedFace) {
-    painter.add(egui::Shape::convex_polygon(
-        face.points.to_vec(),
-        SELECTED_FACE_FILL,
-        Stroke::new(2.0, SELECTED_FACE_STROKE),
-    ));
+/// Draw the selected view's highlight on the bear (#340) **unculled** — a chosen face, edge, or
+/// corner is marked even when it's on the far side of the bear, so the current view always reads.
+/// Projects the picked element's own geometry directly (no back-face culling) and draws it on top.
+fn draw_selected_pose(painter: &egui::Painter, cam: &Camera, center: Pos2, scale: f32, pick: CubePick) {
+    let (right, up, forward) = view_cube_basis(cam);
+    let max_r = cube_silhouette_radius(right, up, forward, scale);
+    let project = |v: Vec3| {
+        clamp_point_to_silhouette(
+            project_to_hud(transform_vertex(v, right, up, forward), center, scale),
+            center,
+            max_r,
+        )
+    };
+    match pick {
+        CubePick::Face(view) => {
+            if let Some(face) = FACES.iter().find(|f| f.view == view) {
+                let pts: Vec<Pos2> = face.corners.iter().map(|c| project(*c)).collect();
+                painter.add(egui::Shape::convex_polygon(
+                    pts,
+                    SELECTED_FACE_FILL,
+                    Stroke::new(2.0, SELECTED_FACE_STROKE),
+                ));
+            }
+        }
+        CubePick::Edge(id) => {
+            if let Some(edge) = EDGES.iter().find(|e| e.id == id) {
+                painter.line_segment(
+                    [project(edge.a), project(edge.b)],
+                    Stroke::new(EDGE_STROKE_HOVER, SELECTED_FACE_STROKE),
+                );
+            }
+        }
+        CubePick::Corner(id) => {
+            if let Some(corner) = CORNERS.iter().find(|c| c.id == id) {
+                painter.circle_filled(project(corner.pos), CORNER_RADIUS_HOVER, SELECTED_FACE_STROKE);
+            }
+        }
+    }
 }
 
 fn view_preset_toggle_rect(pad_rect: Rect) -> Rect {
@@ -1378,7 +1407,7 @@ pub fn show_orientation_picker(
     ui: &mut Ui,
     id_source: impl std::hash::Hash,
     current: StandardView,
-    selected_face: Option<StandardView>,
+    selected: Option<CubePick>,
     render_state: Option<&eframe::egui_wgpu::RenderState>,
     gpu_bear: bool,
 ) -> Option<OrientationPick> {
@@ -1458,13 +1487,11 @@ pub fn show_orientation_picker(
     let axes = project_axes(&cam, center, scale);
     draw_axes(ui, &axes);
     draw_bear(ui, &painter, rect, &cam, center, scale, render_state, gpu_bear);
-    // Mark the currently-selected view's face in blue (#323), under the (yellow) hover highlight
-    // so hovering another face still reads clearly. Only standard faces have a single plane; an
-    // isometric orientation seeds to a corner-ish `current` and simply shows no face highlight.
-    if let Some(sel) = selected_face {
-        if let Some(face) = faces.iter().find(|f| f.view == sel) {
-            draw_selected_face(&painter, face);
-        }
+    // Mark the currently-selected view (#323/#340) — face, edge, or corner — under the (yellow)
+    // hover highlight so hovering elsewhere still reads clearly. Drawn unculled so the chosen
+    // element shows even when it's on the far side of the bear.
+    if let Some(pick) = selected {
+        draw_selected_pose(&painter, &cam, center, scale, pick);
     }
     match hover_pick {
         Some(CubePick::Face(view)) => {

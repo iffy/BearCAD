@@ -1002,10 +1002,12 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   straight-on view or a corner/edge for the isometric, and — when the widget has focus — the
   numpad picks views (**4** left, **5** front, **6** right, **8** top, **2** bottom, **0**
   back). It drives a local camera and maps the picked `StandardView` to a `DrawingOrientation`.
-  Adding a view now selects it, so the bear appears immediately. The **currently-selected view's
-  face is highlighted in blue** on the bear (#323) — a translucent blue fill and outline on that
-  plane (the same face that highlights on hover), so a glance shows which way the view looks even
-  while spinning the bear; an isometric view has no single face, so it shows no highlight.
+  Adding a view now selects it, so the bear appears immediately. The **currently-selected view is
+  highlighted in blue** on the bear (#323/#340) — a face fill for the six straight-on views, a dot
+  on the top-front-right **corner** for Isometric, or the matching **edge** for a diagonal edge
+  view (`drawing_orientation_to_cube_pick` → `view_cube::CubePick`). The highlight is drawn
+  **unculled** (`draw_selected_pose`), so the chosen face/edge/corner still shows even when it's on
+  the far side of the bear, and a glance always tells which way the view looks while spinning.
 - **View styles (#301):** each view renders in one of three styles, picked in the view
   editor: **Visible edges** (hidden lines removed — every feature edge is depth-sampled
   against the body's mesh and only the unoccluded runs stroke), **Wireframe** (every feature

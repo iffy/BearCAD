@@ -2195,16 +2195,14 @@ pub fn show_pane(
             // a corner/edge for isometric; focus it and press 4/5/6/8/2/0 for
             // left/front/right/top/bottom/back.
             let seed = drawing_orientation_to_standard(control.orientation);
-            // Highlight the current view's face in blue (#323) — but isometric has no single
-            // face, so it seeds to Front for the pose yet shows no face highlight.
-            let selected_face = (control.orientation
-                != crate::model::DrawingOrientation::Isometric)
-                .then_some(seed);
+            // Highlight the current view on the bear (#323/#340): a face, a corner (Isometric),
+            // or a cube edge (a diagonal edge view, #339). Drawn even when behind the bear.
+            let selected = drawing_orientation_to_cube_pick(control.orientation);
             if let Some(pick) = crate::view_cube::show_orientation_picker(
                 ui,
                 "drawing_view_bear",
                 seed,
-                selected_face,
+                selected,
                 None,
                 false,
             ) {
@@ -2580,6 +2578,39 @@ pub fn show_pane(
     }
 }
 
+/// Map a drawing orientation to the bear's selected-pose highlight (#340): a face for the six
+/// orthographic views, the top-front-right corner for Isometric, or the matching cube edge for a
+/// diagonal edge view (#339).
+fn drawing_orientation_to_cube_pick(
+    o: crate::model::DrawingOrientation,
+) -> Option<crate::view_cube::CubePick> {
+    use crate::model::{DrawingOrientation as O, EdgeView as E};
+    use crate::view_cube::{CubeCornerId, CubeEdgeId, CubePick};
+    match o {
+        O::Front | O::Back | O::Left | O::Right | O::Top | O::Bottom => {
+            Some(CubePick::Face(drawing_orientation_to_standard(o)))
+        }
+        O::Isometric => Some(CubePick::Corner(CubeCornerId::FrontRightTop)),
+        O::Edge(e) => {
+            let id = match e {
+                E::FrontRight => CubeEdgeId::FrontRight,
+                E::BackRight => CubeEdgeId::BackRight,
+                E::BackLeft => CubeEdgeId::BackLeft,
+                E::FrontLeft => CubeEdgeId::FrontLeft,
+                E::FrontTop => CubeEdgeId::FrontTop,
+                E::RightTop => CubeEdgeId::RightTop,
+                E::BackTop => CubeEdgeId::BackTop,
+                E::LeftTop => CubeEdgeId::LeftTop,
+                E::FrontBottom => CubeEdgeId::FrontBottom,
+                E::RightBottom => CubeEdgeId::RightBottom,
+                E::BackBottom => CubeEdgeId::BackBottom,
+                E::LeftBottom => CubeEdgeId::LeftBottom,
+            };
+            Some(CubePick::Edge(id))
+        }
+    }
+}
+
 /// Map a drawing orientation to the bear picker's `StandardView` for seeding its pose (#315).
 /// Isometric has no straight-on equivalent, so it seeds to Front.
 fn drawing_orientation_to_standard(o: crate::model::DrawingOrientation) -> crate::camera::StandardView {
@@ -2642,6 +2673,30 @@ mod tests {
         // Isometric seeds to Front but a corner/edge pick maps back to Isometric.
         assert_eq!(drawing_orientation_to_standard(O::Isometric), S::Front);
         assert_eq!(orientation_pick_to_drawing(OrientationPick::Isometric), O::Isometric);
+    }
+
+    /// #340: every orientation maps to a bear pose highlight — a face, a corner (Isometric), or a
+    /// cube edge (diagonal edge views), so the chosen view is always marked.
+    #[test]
+    fn orientation_to_cube_pick_covers_faces_edges_corners() {
+        use crate::model::{DrawingOrientation as O, EdgeView};
+        use crate::view_cube::{CubeCornerId, CubeEdgeId, CubePick};
+        assert_eq!(
+            drawing_orientation_to_cube_pick(O::Front),
+            Some(CubePick::Face(crate::camera::StandardView::Front))
+        );
+        assert_eq!(
+            drawing_orientation_to_cube_pick(O::Isometric),
+            Some(CubePick::Corner(CubeCornerId::FrontRightTop))
+        );
+        assert_eq!(
+            drawing_orientation_to_cube_pick(O::Edge(EdgeView::FrontRight)),
+            Some(CubePick::Edge(CubeEdgeId::FrontRight))
+        );
+        // Every orientation resolves to some highlight.
+        for o in O::ALL {
+            assert!(drawing_orientation_to_cube_pick(*o).is_some(), "{o:?} has a pose");
+        }
     }
     use crate::model::{Document, FaceId, Line};
     use crate::selection::click_scene_selection;

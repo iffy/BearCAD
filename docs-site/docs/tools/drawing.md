@@ -29,9 +29,9 @@ you like, and each one collects **views** — a body shown from a chosen directi
    an interactive **navigation bear** (like the one in the 3D view): spin it by dragging, click
    a face to look from that side or a corner for the isometric view, or click the bear and
    press the numpad (4 left, 5 front, 6 right, 8 top, 2 bottom, 0 back). The view's current
-   direction is shown as a **blue highlight** on the matching face of the bear, so you can tell
-   at a glance which way it's looking (an isometric view has no single face, so it isn't
-   highlighted).
+   direction is shown as a **blue highlight** on the bear — a face, an edge, or a corner (for an
+   isometric view) — so you can tell at a glance which way it's looking. The highlight stays
+   visible even when that face has turned to the back of the bear.
    - **Scale:** type a print scale like `1:20` (one page millimetre represents twenty model
      millimetres) and the view draws at exactly that size on the page and in exports — the
      caption shows it, e.g. `Body 0 — Front (1:20)`. Any positive ratio works (`2:3`,
