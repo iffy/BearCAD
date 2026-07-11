@@ -1393,11 +1393,13 @@ fn cube_rect_in_viewport(viewport: Rect) -> Rect {
 /// What a click on the standalone orientation-picker bear (#315) chose: one of the six
 /// straight-on views, a diagonal **edge** view (#339/#344), or a **corner** three-quarter view
 /// (#344).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum OrientationPick {
     Standard(StandardView),
     Edge(CubeEdgeId),
     Corner(CubeCornerId),
+    /// A free (arbitrary) angle spun on the widget (#345): the projection `(right, up)` basis.
+    Free { right: [f32; 3], up: [f32; 3] },
 }
 
 /// A standalone **bear** orientation picker (#315) for the drawing view editor: reuses the HUD
@@ -1405,11 +1407,21 @@ pub enum OrientationPick {
 /// that straight-on view, or an edge/corner for the isometric view; focus it and press
 /// 4/5/6/8/2/0 for left/front/right/top/bottom/back. `current` seeds the bear's pose. Returns
 /// the chosen view when the user picks one this frame.
+/// The projection `(right, up)` basis for the widget camera's current angle (#345). The bear's
+/// screen basis has the opposite handedness to a drawing's `view_axes` (its `right×up = -forward`),
+/// so `right` is negated — this makes a spun Front pose reproduce the Front projection exactly.
+pub fn free_basis(cam: &Camera) -> ([f32; 3], [f32; 3]) {
+    let (right, up, _forward) = view_cube_basis(cam);
+    ((-right).to_array(), up.to_array())
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn show_orientation_picker(
     ui: &mut Ui,
     id_source: impl std::hash::Hash,
     current: StandardView,
     selected: Option<CubePick>,
+    free: bool,
     render_state: Option<&eframe::egui_wgpu::RenderState>,
     gpu_bear: bool,
 ) -> Option<OrientationPick> {
@@ -1440,7 +1452,7 @@ pub fn show_orientation_picker(
     }
 
     let mut picked = None;
-    if response.has_focus() {
+    if !free && response.has_focus() {
         for (k, view) in [
             (egui::Key::Num4, StandardView::Left),
             (egui::Key::Num5, StandardView::Front),
@@ -1458,11 +1470,17 @@ pub fn show_orientation_picker(
 
     if response.dragged() {
         cam.orbit_trackball(response.drag_delta());
+        // Free mode (#345): spinning the widget *is* the choice — commit the current angle as a
+        // free-basis projection rather than snapping to a preset.
+        if free {
+            let (right, up) = free_basis(&cam);
+            picked = Some(OrientationPick::Free { right, up });
+        }
     }
     let hover_pick = response
         .hover_pos()
         .and_then(|p| pick_cube(&faces, &edges, &corners, p));
-    if response.clicked() {
+    if !free && response.clicked() {
         if let Some(pos) = response.interact_pointer_pos() {
             if response.drag_delta().length() < DRAG_CLICK_THRESHOLD {
                 if let Some(pick) = pick_cube(&faces, &edges, &corners, pos) {

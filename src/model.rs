@@ -1983,8 +1983,9 @@ impl CornerView {
 
 /// The orientation a body is projected from in a technical drawing view (#180). The six
 /// orthographic "straight-on" directions, an isometric three-quarter view, the twelve diagonal
-/// edge views (#339), plus the eight corner three-quarter views (#344).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// edge views (#339), the eight corner three-quarter views (#344), plus a free angle (#345).
+/// (No `Eq`/`Hash`: the `Free` basis holds floats.)
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub enum DrawingOrientation {
     #[default]
     Front,
@@ -1998,6 +1999,9 @@ pub enum DrawingOrientation {
     Edge(EdgeView),
     /// A corner three-quarter view (#344).
     Corner(CornerView),
+    /// A free (arbitrary) viewing angle (#345): the projection's `(right, up)` basis is stored
+    /// directly, set by spinning the orientation widget rather than picking a preset.
+    Free { right: [f32; 3], up: [f32; 3] },
 }
 
 impl DrawingOrientation {
@@ -2042,6 +2046,7 @@ impl DrawingOrientation {
             DrawingOrientation::Edge(e) => e.label(),
             DrawingOrientation::Corner(c) => c.label(),
             DrawingOrientation::Isometric => "Isometric",
+            DrawingOrientation::Free { .. } => "Free angle",
         }
     }
 

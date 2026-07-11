@@ -5012,6 +5012,10 @@ impl eframe::App for App {
                                 scale,
                                 aligned,
                                 inline_orientations,
+                                free_angle: matches!(
+                                    view.orientation,
+                                    model::DrawingOrientation::Free { .. }
+                                ),
                                 style: view.style,
                             })
                         })
@@ -5596,6 +5600,31 @@ impl eframe::App for App {
                                 drawing,
                                 view,
                                 show,
+                            });
+                        }
+                        context::DrawingViewEdit::SetFreeAngle(free) => {
+                            // Entering free mode seeds the free basis from the current orientation
+                            // so the projection doesn't jump; leaving it snaps back to Front (#345).
+                            let orientation = if free {
+                                let (r, u) = self
+                                    .state
+                                    .doc
+                                    .drawings
+                                    .get(drawing)
+                                    .and_then(|d| d.views.get(view))
+                                    .map(|v| crate::drawing::view_axes(v.orientation))
+                                    .unwrap_or((Vec3::X, Vec3::Z));
+                                model::DrawingOrientation::Free {
+                                    right: r.to_array(),
+                                    up: u.to_array(),
+                                }
+                            } else {
+                                model::DrawingOrientation::Front
+                            };
+                            self.state.apply(Action::SetDrawingViewOrientation {
+                                drawing,
+                                view,
+                                orientation,
                             });
                         }
                         context::DrawingViewEdit::Remove => {

@@ -302,6 +302,9 @@ pub struct DrawingViewControl {
     /// line with its base. Empty for a non-aligned view (or a child of an Isometric parent), which
     /// keeps the full orientation bear/picker.
     pub inline_orientations: Vec<crate::model::DrawingOrientation>,
+    /// Whether this view is at a **free** (arbitrary) angle (#345): the widget spins to any angle
+    /// instead of picking a preset from the bear.
+    pub free_angle: bool,
     /// How the projection renders (#301).
     pub style: crate::model::DrawingViewStyle,
 }
@@ -341,6 +344,8 @@ pub enum DrawingViewEdit {
     /// Show every length/diameter dimension (`true`) or hide them all (`false`) for this view
     /// (#331). Views start with none shown; these two buttons flip the whole set at once.
     SetAllDimensions(bool),
+    /// Switch between preset (bear) orientations and a free (arbitrary) angle (#345).
+    SetFreeAngle(bool),
     Remove,
 }
 
@@ -2176,9 +2181,14 @@ pub fn show_pane(
                     .color(egui::Color32::from_gray(150)),
             );
         } else {
+            // Toggle between preset (bear) orientations and a free spin (#345).
+            let mut free = control.free_angle;
+            if ui.checkbox(&mut free, "Free angle").changed() {
+                on_drawing_view_edit(DrawingViewEdit::SetFreeAngle(free));
+            }
             // Interactive orientation bear (#315): drag to spin, click a face for that view or
             // a corner/edge for isometric; focus it and press 4/5/6/8/2/0 for
-            // left/front/right/top/bottom/back.
+            // left/front/right/top/bottom/back. In free mode, spinning sets an arbitrary angle.
             let seed = drawing_orientation_to_standard(control.orientation);
             // Highlight the current view on the bear (#323/#340): a face, a corner (Isometric),
             // or a cube edge (a diagonal edge view, #339). Drawn even when behind the bear.
@@ -2188,6 +2198,7 @@ pub fn show_pane(
                 "drawing_view_bear",
                 seed,
                 selected,
+                control.free_angle,
                 None,
                 false,
             ) {
@@ -2607,6 +2618,8 @@ fn drawing_orientation_to_cube_pick(
             };
             Some(CubePick::Edge(id))
         }
+        // A free angle (#345) isn't a cube face/edge/corner, so nothing is highlighted.
+        O::Free { .. } => None,
     }
 }
 
@@ -2625,6 +2638,8 @@ fn drawing_orientation_to_standard(o: crate::model::DrawingOrientation) -> crate
         // An edge/corner view (#339/#344) has no single straight-on face; seed from its first.
         O::Edge(e) => drawing_orientation_to_standard(e.faces().0),
         O::Corner(c) => drawing_orientation_to_standard(c.faces().0),
+        // A free angle (#345) seeds the bear to Front (the widget then follows the stored basis).
+        O::Free { .. } => S::Front,
     }
 }
 
@@ -2670,6 +2685,8 @@ fn orientation_pick_to_drawing(
             CC::BackRightTop => CV::BackRightTop,
             CC::BackLeftTop => CV::BackLeftTop,
         }),
+        // A free-angle spin (#345) carries its own basis.
+        crate::view_cube::OrientationPick::Free { right, up } => O::Free { right, up },
     }
 }
 
@@ -2806,6 +2823,7 @@ mod tests {
             scale: String::new(),
             aligned: false,
             inline_orientations: Vec::new(),
+            free_angle: false,
             style: crate::model::DrawingViewStyle::default(),
         };
         // Dimension tool: projection editor and units both present.

@@ -1018,6 +1018,12 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   view (`drawing_orientation_to_cube_pick` → `view_cube::CubePick`). The highlight is drawn
   **unculled** (`draw_selected_pose`), so the chosen face/edge/corner still shows even when it's on
   the far side of the bear, and a glance always tells which way the view looks while spinning.
+- **Free angle (#345):** a **Free angle** checkbox in the view editor switches the orientation from
+  a bear preset to an arbitrary angle stored as its own `(right, up)` basis
+  (`DrawingOrientation::Free`). In free mode spinning the widget *is* the choice — each drag commits
+  the current camera angle as the projection basis (`view_cube::free_basis`, whose sign convention
+  makes a spun Front pose reproduce the Front projection exactly); presets and the numpad are
+  disabled. Turning the checkbox off snaps back to a Front preset.
 - **View styles (#301):** each view renders in one of three styles, picked in the view
   editor: **Visible edges** (hidden lines removed — every feature edge is depth-sampled
   against the body's mesh and only the unoccluded runs stroke), **Wireframe** (every feature

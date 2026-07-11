@@ -50,6 +50,15 @@ pub fn view_axes(orientation: DrawingOrientation) -> (Vec3, Vec3) {
             let right = up.cross(out).normalize();
             (right, up)
         }
+        // A free (arbitrary) angle (#345): use the stored basis directly, re-orthonormalised
+        // defensively so a slightly-off basis still projects cleanly.
+        O::Free { right, up } => {
+            let r = Vec3::from_array(right).normalize_or(Vec3::X);
+            let u0 = Vec3::from_array(up).normalize_or(Vec3::Z);
+            let out = r.cross(u0).normalize_or(Vec3::Y);
+            let u = out.cross(r).normalize_or(Vec3::Z);
+            (r, u)
+        }
     }
 }
 
@@ -1433,6 +1442,23 @@ fn assemble_pdf(width: f32, height: f32, content: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::model::{Drawing, DrawingView};
+
+    /// #345: a free-angle orientation projects with its stored basis, so a free basis equal to a
+    /// preset's reproduces that preset exactly (the convention `view_cube::free_basis` is chosen so
+    /// a spun Front pose == the Front projection).
+    #[test]
+    fn free_orientation_uses_its_stored_basis() {
+        use crate::model::DrawingOrientation as O;
+        let (fr, fu) = view_axes(O::Front);
+        let free = O::Free { right: fr.to_array(), up: fu.to_array() };
+        let (r, u) = view_axes(free);
+        assert!((r - fr).length() < 1e-5 && (u - fu).length() < 1e-5, "free == Front basis");
+        // A denormalised / non-orthogonal stored basis is re-orthonormalised, not trusted blindly.
+        let sloppy = O::Free { right: [2.0, 0.0, 0.0], up: [0.3, 0.0, 4.0] };
+        let (r, u) = view_axes(sloppy);
+        assert!((r.length() - 1.0).abs() < 1e-4 && (u.length() - 1.0).abs() < 1e-4);
+        assert!(r.dot(u).abs() < 1e-4, "re-orthonormalised");
+    }
 
     /// #351: an aligned child unfolds from its parent's basis for *any* base orientation, so a Top
     /// base yields Front below, Back above, and rotated Left/Right to the sides — all four
