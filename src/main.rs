@@ -1643,6 +1643,28 @@ impl App {
                 && delete_pressed
             {
                 self.state.apply(Action::DeleteSelection);
+            } else if delete_pressed
+                && self.state.editing_drawing.is_some()
+                && !ctx.wants_keyboard_input()
+            {
+                // Delete/Backspace removes the selected drawing element (#336): a placed
+                // projection, a text note, or — if one is selected — a dimension. The
+                // `wants_keyboard_input` guard keeps Backspace editing the annotation textarea
+                // instead of deleting the note.
+                if let Some((drawing, view)) = self.state.selected_drawing_view.take() {
+                    self.state.apply(Action::RemoveDrawingView { drawing, view });
+                } else if let Some((drawing, annotation)) =
+                    self.state.selected_drawing_annotation.take()
+                {
+                    self.state
+                        .apply(Action::RemoveDrawingAnnotation { drawing, annotation });
+                } else if let Some((drawing, view, a, b)) =
+                    self.state.selected_drawing_dimension.take()
+                {
+                    // A selected dimension deletes by hiding it (same as toggling it off).
+                    self.state
+                        .apply(Action::ToggleDrawingDimension { drawing, view, a, b });
+                }
             }
 
             if self.state.tool == Tool::Constraint {
@@ -8978,6 +9000,7 @@ impl App {
                         align_parent_set_this_frame = true;
                     } else {
                         self.state.selected_drawing_view = Some((drawing, vi));
+                        self.state.selected_drawing_dimension = None;
                     }
                 }
                 drag.context_menu(|ui| {
@@ -9438,17 +9461,27 @@ impl App {
                             let lr = ui.interact(
                                 label_rect,
                                 ui.make_persistent_id(("drawing_dim_label", drawing, vi, key)),
-                                egui::Sense::drag(),
+                                egui::Sense::click_and_drag(),
                             );
+                            // Clicking a dimension with the Select tool selects it (#336), so
+                            // Delete/Backspace can remove it; clears any card/note selection.
+                            if lr.clicked() && self.state.tool == Tool::Select {
+                                self.state.selected_drawing_dimension =
+                                    Some((drawing, vi, key.0, key.1));
+                                self.state.selected_drawing_view = None;
+                                self.state.selected_drawing_annotation = None;
+                            }
+                            let is_selected_dim = self.state.selected_drawing_dimension
+                                == Some((drawing, vi, key.0, key.1));
                             let active =
                                 lr.hovered() || self.drawing_dim_label_drag.map(|d| d.key) == Some(key);
                             if active {
                                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                             }
                             // With the Select tool, highlight the dimension being hovered so it's
-                            // obvious which one a drag will move (#326): accent the dimension line
-                            // and outline its label.
-                            if active && self.state.tool == Tool::Select {
+                            // obvious which one a drag will move (#326); a selected dimension stays
+                            // highlighted so it's clear what Delete will remove (#336).
+                            if (active || is_selected_dim) && self.state.tool == Tool::Select {
                                 let accent = egui::Color32::from_rgb(90, 150, 230);
                                 painter.line_segment(
                                     [sp(g.line.0), sp(g.line.1)],
@@ -9610,6 +9643,7 @@ impl App {
             if let Some(ai) = select_ann {
                 self.state.selected_drawing_annotation = Some((drawing, ai));
                 self.state.selected_drawing_view = None;
+                self.state.selected_drawing_dimension = None;
             }
             if let Some((px, py, wrap)) = place {
                 self.state.apply(Action::AddDrawingAnnotation {

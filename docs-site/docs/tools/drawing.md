@@ -84,7 +84,9 @@ Aligned views inherit the parent's scale and orientation, so a whole group reads
    dimension's label** (with the Select or Dimension tool) to push its line further from or
    closer to the edge — with the Select tool, hovering a dimension highlights its line and label
    so you can see which one you're about to move.
-4. Remove a view with the **×** beside it. Click **Back** in the toolbar to return to the 3D
+4. Remove a view with the **×** beside it, or select any element — a projection, a text note, or
+   a dimension (click it with the Select tool) — and press **Delete** or **Backspace** to remove
+   it. Click **Back** in the toolbar to return to the 3D
    model. Reopen a
    drawing any time by clicking its row (or right-click → **Edit drawing**).
 5. **Export** with **Export PDF…** for a single-page vector PDF, or **Export SVG…** for a

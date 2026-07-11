@@ -1098,7 +1098,11 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   `dimension_offsets` override (`Action::SetDrawingDimensionOffset`), cleared when the
   dimension is hidden. With the **Select tool**, hovering a dimension **highlights** it — the
   dimension line is accented and its label outlined (#326) — so it's obvious which dimension a
-  drag will move. The label **runs along its dimension line**, always reading
+  drag will move; **clicking** a dimension selects it (`AppState::selected_drawing_dimension`,
+  staying highlighted). **Delete/Backspace** removes the selected drawing element (#336): a
+  projection (`RemoveDrawingView`), a text note (`RemoveDrawingAnnotation`), or a dimension
+  (hidden via `ToggleDrawingDimension`); the handler skips when a text field wants keyboard input
+  so Backspace still edits note text. The label **runs along its dimension line**, always reading
   **left-to-right or bottom-to-top** (#322; `drawing::readable_text_angle` normalizes the angle
   into `[-90°, 90°)`, so a downward vertical reads upward and a down-to-the-right slope reads
   top-left → bottom-right); when the line is too short for the text, the label is placed just

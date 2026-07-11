@@ -1952,6 +1952,10 @@ pub struct AppState {
     /// The text annotation selected on the open drawing page (#312): `(drawing, annotation)`.
     /// Drives the context pane's annotation editor. UI state (never persisted).
     pub selected_drawing_annotation: Option<(usize, usize)>,
+    /// The dimension selected on the open drawing page (#336): `(drawing, view, a, b)` with `a`/`b`
+    /// the dimensioned edge's quantized world endpoints. Set by clicking a dimension with the
+    /// Select tool; Delete/Backspace hides it. UI state (never persisted).
+    pub selected_drawing_dimension: Option<(usize, usize, [i32; 3], [i32; 3])>,
     /// In-progress image scale calibration (#163/#171): Some while the user is placing
     /// the two reference points / typing the real length.
     pub creating_calibration: Option<CreatingCalibration>,
@@ -2073,6 +2077,7 @@ impl Default for AppState {
             editing_drawing: None,
             selected_drawing_view: None,
             selected_drawing_annotation: None,
+            selected_drawing_dimension: None,
             creating_calibration: None,
             viewport_aspect: 16.0 / 9.0,
             draw_construction: false,
