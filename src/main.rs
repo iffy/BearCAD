@@ -8971,19 +8971,12 @@ impl App {
         // Escape no longer leaves the Drawing workbench (#318) — it's used for cancelling
         // in-progress tool actions. A Back button (in the toolbar, left of Select) returns to
         // the model instead.
+        // The drawing-name title and the "Use the Back button…" hint were removed (#349): the Back
+        // button in the toolbar already returns to the model, and the drawing's name is shown in
+        // the Elements pane. Only the pop-out/export actions remain on this row.
         ui.horizontal(|ui| {
-            let title =
-                crate::names::node_label(&self.state.doc, hierarchy::HierarchyNode::Drawing(drawing));
-            ui.label(egui::RichText::new(title).color(INK).strong());
-            ui.separator();
-            ui.label(
-                egui::RichText::new(if in_window { "Close the window to dismiss" } else { "Use the Back button to return to the model" })
-                    .color(egui::Color32::from_gray(120))
-                    .size(11.0),
-            );
             #[cfg(not(target_arch = "wasm32"))]
             if !in_window {
-                ui.separator();
                 if ui
                     .button("Open in window")
                     .on_hover_text("Open this drawing in its own window, beside the 3D view")
@@ -8991,15 +8984,15 @@ impl App {
                 {
                     pop_out = true;
                 }
+                ui.separator();
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
-                ui.separator();
                 if ui.button("Export SVG…").on_hover_text("Vector SVG — prints to PDF").clicked() {
                     export_svg = true;
                 }
+                ui.separator();
             }
-            ui.separator();
             if ui.button("Export PDF…").on_hover_text("Single-page vector PDF").clicked() {
                 export_pdf = true;
             }
