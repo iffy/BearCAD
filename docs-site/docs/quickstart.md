@@ -64,6 +64,10 @@ the next step. When the loop closes, the profile fills in: it's now a face you c
 Now tell BearCAD what you *meant*. Press **C** for the Constraint tool, then for each
 constraint select the line(s) and press the constraint's key (or click it in the pane):
 
+First, pin the profile down: select the **bend corner** (where the base meets the leg) and the
+**origin**, then press **I** — **Coincident**. That anchors one corner to `(0, 0)` so the
+sketch is located, not free to slide around. Then square up the rest:
+
 1. Select the bottom base line, press **H** — **Horizontal**.
 2. Select the bottom base line and the inner base line, press **A** — **Parallel**.
 3. Select the two tilted leg lines, press **A** — **Parallel**.
@@ -139,13 +143,14 @@ now rounded.
 
 ## 9. Engrave a label
 
-Let's brand it. Press **T** for the Text tool and click the inner face — the side with the two
-screw holes. Type `BearCAD`, and position it so it's centered on the face (drag it with the
-Select tool, or nudge the size until it fits). Then press **E** for Extrude, click the text (the
-whole word selects as one), and push the handle **into** the face (type `1` for a 1 mm depth) and
-pick **Cut** — the letters are engraved into the bracket, letter counters and all.
+Let's brand it. Press **T** for the Text tool and click the **outer face** of the base flange —
+the flat wall on the back of the two screw holes. Type `BearCAD`, and position it so it's centered
+on the face (drag it with the Select tool, or nudge the size until it fits). Then press **E** for
+Extrude, click the text (the whole word selects as one), and push the handle **into** the face
+(type `1` for a 1 mm depth) and pick **Cut** — the letters are engraved into the bracket, letter
+counters and all. Orbit around to the front of that face and you can read it:
 
-![The bracket with "BearCAD" engraved on the hole face](/img/screenshots/quickstart-engrave.png)
+![The bracket turned around to show "BearCAD" engraved on the outer face of the base](/img/screenshots/quickstart-engrave.png)
 
 ## 10. Change your mind
 

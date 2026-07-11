@@ -62,6 +62,12 @@ local function geo(kind, a, b)
   bearcad.add_geometric_constraint(kind)
   bearcad.clear_selection()
 end
+-- Anchor the whole profile: pin the bend corner (line 0's start, at 0,0) to the sketch
+-- origin so it's fully located, not free to drift.
+bearcad.select{ kind = "line", index = 0, ["end"] = "start" }
+bearcad.select({ kind = "origin" }, true)
+bearcad.add_geometric_constraint("coincident")
+bearcad.clear_selection()
 geo("horizontal", 0)
 geo("parallel", 0, 2)
 geo("parallel", 3, 5)
@@ -116,13 +122,15 @@ for _, k in ipairs({0, 1, 3, 4}) do
 end
 shot("quickstart-corners.png")
 
--- Step 9: engrave a "BearCAD" label on the holes face (the L2 side wall), cut 1 mm deep.
+-- Step 9: engrave a "BearCAD" label on the outer face of the base flange (edge 0, the wall
+-- opposite the countersinks), cut 1 mm deep, then turn the view around to read it.
 bearcad.begin_sketch{ kind = "extrude_side", extrusion = 0, profile = "polygon",
-                      profile_lines = loop, edge = 2 }
-bearcad.text{ text = "BearCAD", x = 4, y = -24, size = 5 }
+                      profile_lines = loop, edge = 0 }
+bearcad.text{ text = "BearCAD", x = 6, y = 17, size = 5 }
 bearcad.exit_sketch()
 bearcad.extrude{ text = 0, distance = 1, body = "cut" }
-bearcad.ui.view("corner", "front_left_top")
+bearcad.clear_selection()
+bearcad.ui.view("corner", "front_right_bottom")
 shot("quickstart-engrave.png")
 
 -- Step 10: the parametric payoff — open the bend flatter by editing the
