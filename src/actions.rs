@@ -1495,6 +1495,12 @@ pub enum Action {
         rotation: f32,
         wrap_width: Option<f32>,
     },
+    /// Pin (or unpin, with `pin = None`) a sketch text's anchor to a sketch point (#356), so the
+    /// text follows that point on every rebuild.
+    SetSketchTextPin {
+        index: usize,
+        pin: Option<(crate::model::ConstraintPoint, crate::model::TextAnchor)>,
+    },
     /// Re-point an existing in-sketch slice (#224).
     EditSketchSliceOperation {
         op: usize,
@@ -7270,6 +7276,7 @@ impl AppState {
                     baseline_line: None,
                     contours: shaped.contours,
                     font_bytes,
+                    pin: None,
                     name: None,
                     deleted: false,
                 });
@@ -7335,6 +7342,16 @@ impl AppState {
                 t.contours = contours;
                 t.font_bytes = font_bytes;
                 self.status = "Edited text".to_string();
+                ActionResult::Ok
+            }
+            Action::SetSketchTextPin { index, pin } => {
+                let Some(t) = self.doc.sketch_texts.get_mut(index).filter(|t| !t.deleted) else {
+                    return ActionResult::Err(format!("Sketch text {index} not found"));
+                };
+                t.pin = pin;
+                // Immediately re-place the text so the pin takes effect (#356).
+                let _ = crate::parameters::recompute_document_geometry(&mut self.doc);
+                self.status = "Pinned text".to_string();
                 ActionResult::Ok
             }
             Action::CreateSketchSliceOperation { sketch, line_targets, circle_targets, face_targets, cutter_lines } => {
@@ -12711,6 +12728,65 @@ mod tests {
         assert!(
             state.doc.sketch_texts[0].contours.len() > baked_20,
             "re-bake reflects the longer interpolated value"
+        );
+    }
+
+    /// #356: a sketch text pinned by one of its nine anchors follows that point — rebuilding moves
+    /// the text so the anchor stays coincident with the target.
+    #[test]
+    fn pinned_sketch_text_follows_its_anchor_point() {
+        let family = ["Helvetica", "Arial", "DejaVu Sans", "Liberation Sans"]
+            .into_iter()
+            .find(|f| crate::text::font_bytes(f, false, false).is_some());
+        let Some(family) = family else {
+            eprintln!("no usable system font; skipping");
+            return;
+        };
+        let mut state = AppState::default();
+        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        // A line whose start endpoint (30, 40) is the pin target.
+        state
+            .doc
+            .lines
+            .push(Line::from_local_endpoints(sketch, 30.0, 40.0, 60.0, 40.0));
+        state.apply(Action::CreateSketchText {
+            sketch,
+            text: "Hi".to_string(),
+            font_family: family.to_string(),
+            bold: false,
+            italic: false,
+            underline: false,
+            size: 10.0,
+            size_expr: "10".to_string(),
+            origin: (0.0, 0.0),
+            rotation: 0.0,
+            wrap_width: None,
+        });
+        // Pin the text's centre to the line's start endpoint, then rebuild.
+        state.doc.sketch_texts[0].pin = Some((
+            crate::model::ConstraintPoint::LineEndpoint {
+                line: 0,
+                end: crate::model::LineEnd::Start,
+            },
+            crate::model::TextAnchor::Center,
+        ));
+        crate::parameters::recompute_document_geometry(&mut state.doc).unwrap();
+        // The text's centre anchor now sits on (30, 40).
+        let t = &state.doc.sketch_texts[0];
+        let (mut min, mut max) = ((f32::MAX, f32::MAX), (f32::MIN, f32::MIN));
+        for c in &t.contours {
+            for &(x, y) in c {
+                min = (min.0.min(x), min.1.min(y));
+                max = (max.0.max(x), max.1.max(y));
+            }
+        }
+        let center = (
+            t.origin.0 + (min.0 + max.0) * 0.5,
+            t.origin.1 + (min.1 + max.1) * 0.5,
+        );
+        assert!(
+            (center.0 - 30.0).abs() < 1e-2 && (center.1 - 40.0).abs() < 1e-2,
+            "text centre {center:?} should sit on the pinned point (30, 40)"
         );
     }
 

@@ -3960,6 +3960,7 @@ mod tests {
             baseline_line: None,
             contours: shaped.contours,
             font_bytes: bytes,
+            pin: None,
             name: None,
             deleted: false,
         });

@@ -1023,6 +1023,7 @@ mod tests {
             baseline_line: None,
             contours: Vec::new(),
             font_bytes: Vec::new(),
+            pin: None,
             name: None,
             deleted: false,
         });

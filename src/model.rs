@@ -645,6 +645,56 @@ pub enum LineEnd {
 
 /// A point-like sketch entity for coincident and other constraints.
 ///
+/// One of a text box's nine anchor points (#356): the four corners, four edge midpoints, and the
+/// centre. Used to pin a sketch text to a sketch point (`SketchText::pin`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TextAnchor {
+    TopLeft,
+    TopCenter,
+    TopRight,
+    MiddleLeft,
+    #[default]
+    Center,
+    MiddleRight,
+    BottomLeft,
+    BottomCenter,
+    BottomRight,
+}
+
+impl TextAnchor {
+    /// All nine anchors, in reading order (top-left → bottom-right). (Used by the anchor picker
+    /// UI, #356 follow-up.)
+    #[allow(dead_code)]
+    pub const ALL: [TextAnchor; 9] = [
+        TextAnchor::TopLeft,
+        TextAnchor::TopCenter,
+        TextAnchor::TopRight,
+        TextAnchor::MiddleLeft,
+        TextAnchor::Center,
+        TextAnchor::MiddleRight,
+        TextAnchor::BottomLeft,
+        TextAnchor::BottomCenter,
+        TextAnchor::BottomRight,
+    ];
+
+    /// `(fx, fy)` fractions across the text's bounding box: x 0=left/0.5=centre/1=right, y
+    /// 0=bottom/0.5=middle/1=top (baseline space, y up).
+    pub fn fractions(self) -> (f32, f32) {
+        let x = match self {
+            TextAnchor::TopLeft | TextAnchor::MiddleLeft | TextAnchor::BottomLeft => 0.0,
+            TextAnchor::TopCenter | TextAnchor::Center | TextAnchor::BottomCenter => 0.5,
+            TextAnchor::TopRight | TextAnchor::MiddleRight | TextAnchor::BottomRight => 1.0,
+        };
+        let y = match self {
+            TextAnchor::TopLeft | TextAnchor::TopCenter | TextAnchor::TopRight => 1.0,
+            TextAnchor::MiddleLeft | TextAnchor::Center | TextAnchor::MiddleRight => 0.5,
+            TextAnchor::BottomLeft | TextAnchor::BottomCenter | TextAnchor::BottomRight => 0.0,
+        };
+        (x, y)
+    }
+}
+
 /// Not `Copy`: [`FaceVertex`](Self::FaceVertex) embeds a [`FaceId`], which is not `Copy`
 /// (its `Polygon`/extrusion-profile variants own a `Vec<usize>`). Callers that used to rely on
 /// implicit copies now need an explicit `.clone()`.
@@ -1690,6 +1740,12 @@ pub struct SketchText {
     /// Embedded source font bytes (base64 in JSON) for reproducible rendering.
     #[serde(default, with = "font_bytes_base64")]
     pub font_bytes: Vec<u8>,
+    /// Position pin (#356): one of the text's nine anchor points held coincident with a sketch
+    /// point (a line endpoint, circle centre, or face vertex). When set, `origin` is recomputed on
+    /// every rebuild so the anchor stays on that point — so constraining the text somewhere keeps
+    /// it there as the model changes.
+    #[serde(default)]
+    pub pin: Option<(ConstraintPoint, TextAnchor)>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]

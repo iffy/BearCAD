@@ -802,6 +802,14 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   rotation-ring gizmo (#216's ring) appears in the sketch plane around the text's baseline
   origin, sized to the glyph outlines; dragging the ring turns the text about its origin, live.
   The ring and the context **Rotation°** field read the same model value, so they stay in sync.
+- **Anchor pin (#356):** a `SketchText` can be **pinned** by one of its nine bounding-box anchors
+  (`model::TextAnchor` — four corners, four edge midpoints, centre) to a sketch point
+  (`SketchText::pin = (ConstraintPoint, TextAnchor)`). On every rebuild the text's `origin` is
+  recomputed (`parameters::apply_sketch_text_pin`, resolving the target with
+  `geometric_constraints::point_uv`) so the chosen anchor stays coincident with that point — so a
+  text constrained to a vertex follows it as the model changes. Scriptable:
+  `bearcad.pin_text{ text, anchor = "center"|"top_left"|…, line = i, endpoint = "start"|"end" }`
+  (or `circle = i`; `pin = false` unpins). Interactive anchor-picking in the sketch is a follow-up.
 - **Text-on-curve groundwork (#286):** `SketchText` carries an optional `baseline_line`
   reference (default none = straight baseline). Baking currently advances a pen along a
   straight baseline (`text::outline_text`); curve support later resolves the reference into a

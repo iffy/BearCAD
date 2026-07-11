@@ -71,6 +71,9 @@ bearcad.count("sketch_text")
 
 -- Engrave a text: extrude/cut the whole word (all its glyphs) in one call.
 bearcad.extrude{ text = 0, distance = 1, body = "cut" }
+
+-- Pin a text's anchor to a sketch point so it follows it as the model changes.
+bearcad.pin_text{ text = 0, anchor = "center", line = 2, endpoint = "start" }
 ```
 
 Like `rect` and `circle`, `text` begins a ground sketch when none is open. `size` accepts an

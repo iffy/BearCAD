@@ -334,6 +334,23 @@ fn parse_extrude_face_table(table: &Table) -> mlua::Result<crate::model::Extrude
     ))
 }
 
+/// Parse a text-anchor name like `"center"` / `"top_left"` (#356).
+fn parse_text_anchor(name: &str) -> mlua::Result<crate::model::TextAnchor> {
+    use crate::model::TextAnchor as A;
+    Ok(match name.to_ascii_lowercase().replace(['-', ' '], "_").as_str() {
+        "top_left" => A::TopLeft,
+        "top_center" | "top" => A::TopCenter,
+        "top_right" => A::TopRight,
+        "middle_left" | "left" => A::MiddleLeft,
+        "center" | "middle" | "" => A::Center,
+        "middle_right" | "right" => A::MiddleRight,
+        "bottom_left" => A::BottomLeft,
+        "bottom_center" | "bottom" => A::BottomCenter,
+        "bottom_right" => A::BottomRight,
+        other => return Err(mlua::Error::external(format!("unknown text anchor '{other}'"))),
+    })
+}
+
 fn parse_boolean_face_table(table: &Table) -> mlua::Result<crate::model::ExtrudeFace> {
     let op: String = table.get("op")?;
     let op = match op.to_ascii_lowercase().as_str() {
@@ -2356,6 +2373,46 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 tick.state().doc.sketch_texts.len().saturating_sub(1)
             });
             apply_optional_name(lua, element, Some(opts))
+        })?,
+    )?;
+
+    // Pin a sketch text's anchor to a sketch point so it follows that point (#356):
+    // `pin_text{ text = i, anchor = "center", line = j, end = "start" }` or
+    // `pin_text{ text = i, anchor = "top_left", circle = k }`. `pin = false` unpins.
+    api.set(
+        "pin_text",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let index: usize = opts.get("text")?;
+            if matches!(opts.get::<Value>("pin")?, Value::Boolean(false)) {
+                unsafe { tick.exec(Instruction::SetSketchTextPin { index, pin: None }) }?;
+                return Ok(());
+            }
+            let anchor = parse_text_anchor(&opts.get::<Option<String>>("anchor")?.unwrap_or_default())?;
+            let point = if let Some(line) = opts.get::<Option<usize>>("line")? {
+                // `end` is a Lua keyword, so `endpoint` is accepted as the non-reserved spelling.
+                let end_name: Option<String> = match opts.get::<Option<String>>("endpoint")? {
+                    Some(s) => Some(s),
+                    None => opts.get::<Option<String>>("end")?,
+                };
+                let end = match end_name.as_deref() {
+                    Some("end") => crate::model::LineEnd::End,
+                    _ => crate::model::LineEnd::Start,
+                };
+                crate::model::ConstraintPoint::LineEndpoint { line, end }
+            } else if let Some(circle) = opts.get::<Option<usize>>("circle")? {
+                crate::model::ConstraintPoint::CircleCenter(circle)
+            } else {
+                return Err(mlua::Error::external(
+                    "pin_text needs a `line`(+`end`) or `circle` target",
+                ));
+            };
+            unsafe {
+                tick.exec(Instruction::SetSketchTextPin {
+                    index,
+                    pin: Some((point, anchor)),
+                })
+            }
         })?,
     )?;
 
@@ -5468,6 +5525,38 @@ mod tests {
             state.doc.drawings[0].views[0].dimensioned_circles.is_empty(),
             "Hide all clears the circle's diameter dimension (#342)"
         );
+    }
+
+    /// #356: `bearcad.pin_text` pins a text anchor to a sketch point; the text then follows it.
+    #[test]
+    fn lua_pin_text_follows_its_point() {
+        let family = ["Helvetica", "Arial", "DejaVu Sans", "Liberation Sans"]
+            .into_iter()
+            .find(|f| crate::text::font_bytes(f, false, false).is_some());
+        if family.is_none() {
+            eprintln!("no usable system font; skipping");
+            return;
+        }
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.line{ x = 30, y = 40, x1 = 60, y1 = 40 }
+            bearcad.text{ text = "Hi", x = 0, y = 0, size = 10 }
+            bearcad.pin_text{ text = 0, anchor = "center", line = 0, endpoint = "start" }
+        "#,
+        );
+        let t = &state.doc.sketch_texts[0];
+        assert!(t.pin.is_some(), "the pin is set");
+        let (mut min, mut max) = ((f32::MAX, f32::MAX), (f32::MIN, f32::MIN));
+        for c in &t.contours {
+            for &(x, y) in c {
+                min = (min.0.min(x), min.1.min(y));
+                max = (max.0.max(x), max.1.max(y));
+            }
+        }
+        let cx = t.origin.0 + (min.0 + max.0) * 0.5;
+        let cy = t.origin.1 + (min.1 + max.1) * 0.5;
+        assert!((cx - 30.0).abs() < 1e-2 && (cy - 40.0).abs() < 1e-2, "centre at ({cx}, {cy})");
     }
 
     /// #355: `bearcad.extrude{ text = i }` extrudes a whole sketch text (all its glyphs), so a
