@@ -137,7 +137,17 @@ now rounded.
 
 ![The finished bracket with rounded flange corners](/img/screenshots/quickstart-corners.png)
 
-## 9. Change your mind
+## 9. Engrave a label
+
+Let's brand it. Press **T** for the Text tool and click the inner face — the side with the two
+screw holes. Type `BearCAD`, and position it so it's centered on the face (drag it with the
+Select tool, or nudge the size until it fits). Then press **E** for Extrude, click the text (the
+whole word selects as one), and push the handle **into** the face (type `1` for a 1 mm depth) and
+pick **Cut** — the letters are engraved into the bracket, letter counters and all.
+
+![The bracket with "BearCAD" engraved on the hole face](/img/screenshots/quickstart-engrave.png)
+
+## 10. Change your mind
 
 This is the parametric payoff: open the **Parameters** pane and change `bend_angle` from
 `120deg` to `150deg`. The whole part rebuilds at the new angle — bend, holes, countersinks,
@@ -145,9 +155,10 @@ corner rounds and all. Try `leg`, `width`, or `hole` too.
 
 ![The same bracket rebuilt with a 150-degree bend](/img/screenshots/quickstart-angle.png)
 
-## 10. Export
+## 11. Export
 
-**File → Export STL…** (for 3D printing) or **File → Export STEP…** (for other CAD apps).
+**File → Export → STL…** (for 3D printing) or **File → Export → STEP…** (for other CAD apps) —
+or use the **Export** button in the toolbar.
 
 > Every screenshot on this page is generated automatically from
 > [`docs-site/screenshots/quickstart.lua`](https://github.com/iffy/BearCAD/tree/master/docs-site/screenshots/quickstart.lua),

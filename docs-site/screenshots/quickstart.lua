@@ -116,7 +116,16 @@ for _, k in ipairs({0, 1, 3, 4}) do
 end
 shot("quickstart-corners.png")
 
--- Step 9: the parametric payoff — open the bend flatter by editing the
+-- Step 9: engrave a "BearCAD" label on the holes face (the L2 side wall), cut 1 mm deep.
+bearcad.begin_sketch{ kind = "extrude_side", extrusion = 0, profile = "polygon",
+                      profile_lines = loop, edge = 2 }
+bearcad.text{ text = "BearCAD", x = 4, y = -24, size = 5 }
+bearcad.exit_sketch()
+bearcad.extrude{ text = 0, distance = 1, body = "cut" }
+bearcad.ui.view("corner", "front_left_top")
+shot("quickstart-engrave.png")
+
+-- Step 10: the parametric payoff — open the bend flatter by editing the
 -- bend_angle parameter (index 5 in the Parameters pane).
 bearcad.parameter("value", 5, "150deg")
 shot("quickstart-angle.png")

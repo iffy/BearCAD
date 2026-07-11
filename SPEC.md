@@ -300,7 +300,8 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     **Body** (the solid result) that depends on it: the body nests under the extrusion in the
     Elements pane and is removed if the extrusion is deleted.
     Created in script via
-    `bearcad.extrude{ circle|polygon|circles, distance?, name?, body?, to? }`.
+    `bearcad.extrude{ circle|polygon|circles|text, distance?, name?, body?, to? }` (`text = i`
+    extrudes/engraves a whole sketch text — all its glyph regions, #355).
     **Extrude to object (#114):** instead of a fixed distance, `to = { plane = i }` /
     `{ face = <face spec> }` / `{ vertex = <point> }` snaps the extrusion to that object's
     extended plane, and the link is parametric — the snapped extrusion follows when the

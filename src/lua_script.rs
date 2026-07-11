@@ -2408,6 +2408,21 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             if let Some(lines) = opts.get::<Option<Vec<usize>>>("polygon")? {
                 faces.push(crate::model::ExtrudeFace::Polygon(lines));
             }
+            // `text = index`: extrude/engrave a whole sketch text — every glyph region of it,
+            // counters (letter holes) preserved (#285/#355).
+            if let Some(ti) = opts.get::<Option<usize>>("text")? {
+                let glyphs = unsafe {
+                    tick.state()
+                        .doc
+                        .sketch_texts
+                        .get(ti)
+                        .map(|t| crate::text::group_glyphs(&t.contours).len())
+                        .ok_or_else(|| mlua::Error::external(format!("no sketch text {ti}")))?
+                };
+                for glyph in 0..glyphs {
+                    faces.push(crate::model::ExtrudeFace::TextGlyph { text: ti, glyph });
+                }
+            }
             // `boolean = {op = "intersection"|"difference", a = <face spec>, b = <face
             // spec>}`: a boolean-combined region of two other (possibly nested) faces
             // (#16/#62) — the toggleable intersection/difference regions of two overlapping
@@ -5453,6 +5468,41 @@ mod tests {
             state.doc.drawings[0].views[0].dimensioned_circles.is_empty(),
             "Hide all clears the circle's diameter dimension (#342)"
         );
+    }
+
+    /// #355: `bearcad.extrude{ text = i }` extrudes a whole sketch text (all its glyphs), so a
+    /// label can be engraved from a script.
+    #[test]
+    fn lua_extrude_text_engraves_all_glyphs() {
+        let family = ["Helvetica", "Arial", "DejaVu Sans", "Liberation Sans"]
+            .into_iter()
+            .find(|f| crate::text::font_bytes(f, false, false).is_some());
+        if family.is_none() {
+            eprintln!("no usable system font; skipping");
+            return;
+        }
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.text{ text = "Bear", x = 0, y = 0, size = 10 }
+            bearcad.exit_sketch()
+            bearcad.extrude{ text = 0, distance = 2, name = "Label" }
+        "#,
+        );
+        assert_eq!(
+            state.doc.extrusions.iter().filter(|e| !e.deleted).count(),
+            1,
+            "the text extrudes into one extrusion"
+        );
+        // Its faces are the text's glyph regions.
+        let ex = state.doc.extrusions.iter().find(|e| !e.deleted).unwrap();
+        assert!(
+            ex.faces
+                .iter()
+                .all(|f| matches!(f, crate::model::ExtrudeFace::TextGlyph { text: 0, .. })),
+            "extruded faces are the text's glyphs"
+        );
+        assert!(!ex.faces.is_empty(), "a 4-letter word has glyph faces");
     }
 
     /// #331: "Show all dimensions" populates the deduped, staggered default set and "Hide all"

@@ -68,6 +68,9 @@ bearcad.text{ text = "Label", size = "w / 2", font = "Helvetica",
               bold = true, rotation = 30, name = "Lid label" }
 bearcad.select{ kind = "sketch_text", index = 0 }
 bearcad.count("sketch_text")
+
+-- Engrave a text: extrude/cut the whole word (all its glyphs) in one call.
+bearcad.extrude{ text = 0, distance = 1, body = "cut" }
 ```
 
 Like `rect` and `circle`, `text` begins a ground sketch when none is open. `size` accepts an
