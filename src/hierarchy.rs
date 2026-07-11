@@ -73,6 +73,10 @@ pub enum HierarchyNode {
     /// no [`SceneElement`] (not selectable/hideable through the scene graph); its source
     /// body/sketch is a second input, surfaced once the element graph (#252) lands.
     DrawingProjection { drawing: usize, view: usize },
+    /// A text note on a drawing page (#333), nested under its [`HierarchyNode::Drawing`].
+    /// `annotation` indexes the drawing's `annotations`. Like a projection it's a display-only
+    /// leaf with no [`SceneElement`]; clicking it opens the drawing.
+    DrawingAnnotation { drawing: usize, annotation: usize },
 }
 
 /// Identifies an element whose visibility can be toggled.
@@ -156,6 +160,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         | HierarchyNode::EdgeTreatment { .. }
         | HierarchyNode::Drawing(_)
         | HierarchyNode::DrawingProjection { .. }
+        | HierarchyNode::DrawingAnnotation { .. }
         | HierarchyNode::Loft(_) => return None,
         HierarchyNode::ConstructionPlane(i) => SceneElement::ConstructionPlane(i),
         HierarchyNode::Sketch(i) => SceneElement::Sketch(i),
@@ -899,6 +904,8 @@ fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
         HierarchyNode::Drawing(_) => usize::MAX,
         // Projections order by their view index within the drawing (#281).
         HierarchyNode::DrawingProjection { view, .. } => view,
+        // Text notes list after all projections within the drawing (#333).
+        HierarchyNode::DrawingAnnotation { annotation, .. } => annotation.saturating_add(1_000_000),
     }
 }
 
@@ -1159,13 +1166,22 @@ pub fn build_hierarchy(
     // the geometry DAG), each right-clickable to open its drawing pane.
     for (di, drawing) in doc.drawings.iter().enumerate() {
         if !drawing.deleted {
-            // Each placed view is a "projection" child of the drawing (#281).
-            let children = (0..drawing.views.len())
+            // Each placed view is a "projection" child of the drawing (#281); each text note is a
+            // "text" child (#333).
+            let mut children: Vec<HierarchyEntry> = (0..drawing.views.len())
                 .map(|vi| HierarchyEntry {
                     node: HierarchyNode::DrawingProjection { drawing: di, view: vi },
                     children: Vec::new(),
                 })
                 .collect();
+            for (ai, ann) in drawing.annotations.iter().enumerate() {
+                if !ann.deleted {
+                    children.push(HierarchyEntry {
+                        node: HierarchyNode::DrawingAnnotation { drawing: di, annotation: ai },
+                        children: Vec::new(),
+                    });
+                }
+            }
             roots.push(HierarchyEntry {
                 node: HierarchyNode::Drawing(di),
                 children,
@@ -1232,7 +1248,9 @@ impl Default for ElementFilter {
 }
 
 impl ElementFilter {
-    /// The Drawing workbench default: only sketches and bodies (#254/#275).
+    /// The Drawing workbench default: the sources you can add views from (sketches and bodies)
+    /// plus the drawings themselves — so the open drawing's projections and text notes show in the
+    /// Elements pane (#254/#275/#333).
     pub fn for_drawing_workbench() -> Self {
         Self {
             planes: false,
@@ -1241,7 +1259,7 @@ impl ElementFilter {
             bodies: true,
             operations: false,
             images: false,
-            drawings: false,
+            drawings: true,
         }
     }
 
@@ -1280,7 +1298,9 @@ impl ElementFilter {
             | HierarchyNode::Revolution(_)
             | HierarchyNode::Loft(_) => self.operations,
             HierarchyNode::Image(_) => self.images,
-            HierarchyNode::Drawing(_) | HierarchyNode::DrawingProjection { .. } => self.drawings,
+            HierarchyNode::Drawing(_)
+            | HierarchyNode::DrawingProjection { .. }
+            | HierarchyNode::DrawingAnnotation { .. } => self.drawings,
         }
     }
 }
@@ -1849,6 +1869,7 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         }
         HierarchyNode::Drawing(_) => IconId::Drawing,
         HierarchyNode::DrawingProjection { .. } => IconId::Projection,
+        HierarchyNode::DrawingAnnotation { .. } => IconId::Text,
     })
 }
 
@@ -2651,8 +2672,11 @@ fn show_row(
         return;
     }
 
-    // A drawing projection (#281): a display-only leaf; clicking opens the drawing.
-    if let HierarchyNode::DrawingProjection { drawing, .. } = node {
+    // A drawing projection (#281) or text note (#333): a display-only leaf; clicking opens the
+    // drawing.
+    if let HierarchyNode::DrawingProjection { drawing, .. }
+    | HierarchyNode::DrawingAnnotation { drawing, .. } = node
+    {
         ui.horizontal(|ui| {
             ui.add_space(depth as f32 * 18.0);
             if let Some(icon) = icon_for_hierarchy_node(doc, node) {
@@ -2914,6 +2938,41 @@ mod tests {
         );
     }
 
+    /// #333: a drawing's text notes appear as `DrawingAnnotation` children under the drawing,
+    /// after its projections, labelled by their text.
+    #[test]
+    fn drawing_annotations_show_as_hierarchy_children() {
+        let mut doc = Document::default();
+        doc.drawings.push(crate::model::Drawing {
+            annotations: vec![crate::model::DrawingAnnotation {
+                text: "Scale 1:2".to_string(),
+                pos_x: 0.05,
+                pos_y: 0.05,
+                size_frac: 0.03,
+                wrap_frac: None,
+                deleted: false,
+            }],
+            ..Default::default()
+        });
+        let tree = build_hierarchy(&doc, None);
+        let drawing = tree[0]
+            .children
+            .iter()
+            .find(|e| e.node == HierarchyNode::Drawing(0))
+            .expect("drawing node present");
+        assert!(
+            drawing
+                .children
+                .iter()
+                .any(|c| c.node == HierarchyNode::DrawingAnnotation { drawing: 0, annotation: 0 }),
+            "the text note is a child of the drawing"
+        );
+        assert_eq!(
+            node_label(&doc, HierarchyNode::DrawingAnnotation { drawing: 0, annotation: 0 }),
+            "Text: Scale 1:2"
+        );
+    }
+
     /// #275: hiding a category prunes those nodes but promotes their kept children — so hiding
     /// "Operations" while keeping "Bodies" still shows the result body, just un-nested.
     #[test]
@@ -2951,15 +3010,18 @@ mod tests {
         assert!(out[0].children.is_empty(), "no kept descendants remain");
     }
 
-    /// #275: the Drawing workbench filter shows only sketches and bodies.
+    /// #275/#333: the Drawing workbench filter shows the sources (sketches and bodies) plus the
+    /// drawings themselves, so the open drawing's projections and text notes appear in the pane.
     #[test]
-    fn drawing_workbench_filter_shows_only_sketches_and_bodies() {
+    fn drawing_workbench_filter_shows_sources_and_drawings() {
         let f = ElementFilter::for_drawing_workbench();
-        assert!(f.sketches && f.bodies);
-        assert!(!f.planes && !f.operations && !f.sketch_geometry && !f.images && !f.drawings);
+        assert!(f.sketches && f.bodies && f.drawings);
+        assert!(!f.planes && !f.operations && !f.sketch_geometry && !f.images);
         assert!(f.shows(HierarchyNode::Body(0)));
         assert!(f.shows(HierarchyNode::Sketch(0)));
         assert!(f.shows(HierarchyNode::Document), "the root is always shown");
+        assert!(f.shows(HierarchyNode::DrawingProjection { drawing: 0, view: 0 }));
+        assert!(f.shows(HierarchyNode::DrawingAnnotation { drawing: 0, annotation: 0 }));
         assert!(!f.shows(HierarchyNode::ConstructionPlane(0)));
         assert!(!f.shows(HierarchyNode::Extrusion(0)));
     }

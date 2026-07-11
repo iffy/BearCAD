@@ -390,6 +390,23 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
                 None => "Projection".to_string(),
             }
         }
+        HierarchyNode::DrawingAnnotation { drawing, annotation } => {
+            match doc.drawings.get(drawing).and_then(|d| d.annotations.get(annotation)) {
+                Some(a) => {
+                    let first = a.text.lines().next().unwrap_or("").trim();
+                    if first.is_empty() {
+                        format!("Text {annotation}")
+                    } else {
+                        let mut s: String = first.chars().take(20).collect();
+                        if first.chars().count() > 20 {
+                            s.push('…');
+                        }
+                        format!("Text: {s}")
+                    }
+                }
+                None => "Text".to_string(),
+            }
+        }
     }
 }
 

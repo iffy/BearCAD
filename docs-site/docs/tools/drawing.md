@@ -88,7 +88,10 @@ Aligned views inherit the parent's scale and orientation, so a whole group reads
    a dimension (click it with the Select tool) — and press **Delete** or **Backspace** to remove
    it. Click **Back** in the toolbar to return to the 3D
    model. Reopen a
-   drawing any time by clicking its row (or right-click → **Edit drawing**).
+   drawing any time by clicking its row (or right-click → **Edit drawing**). While a drawing is
+   open, the **Elements pane** lists it with its projections and text notes nested underneath, so
+   you can see everything that's on the page (click any of those rows to jump back into the
+   drawing).
 5. **Export** with **Export PDF…** for a single-page vector PDF, or **Export SVG…** for a
    vector SVG you can open in any browser and print. Both are black-on-white, scale
    losslessly, and are WYSIWYG: the page is the drawing's configured page size (landscape

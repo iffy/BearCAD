@@ -1022,7 +1022,10 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   of the Elements pane expands into per-type show/hide toggles (planes, sketches, sketch geometry, bodies,
   operations, images, drawings). Hiding a type prunes those nodes but promotes their kept
   children (hiding "Operations" still shows the result bodies, un-nested). The Drawing
-  workbench defaults the filter to sketches + bodies only.
+  workbench defaults the filter to sketches + bodies + **drawings** (#333), so the open drawing's
+  **projections and text notes** appear in the pane. Each drawing's text notes are
+  `HierarchyNode::DrawingAnnotation` children (Text icon, labelled by their text), alongside its
+  `DrawingProjection` children; both are display-only leaves whose row click opens the drawing.
 - **Page dimensions (#254/#273):** each drawing has a page size and margin (`page_width_mm`,
   `page_height_mm`, `margin_mm`), defaulting to a **landscape US-Letter** sheet (11 × 8.5 in)
   with **0.5 in** margins. The editor draws the page outline and margin at the page's aspect
