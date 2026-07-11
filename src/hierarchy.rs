@@ -503,14 +503,22 @@ fn declutter_label_bands(
     positions: &[GraphNodePosition],
     sim_x: &HashMap<HierarchyNode, f32>,
     label_widths: &HashMap<HierarchyNode, f32>,
-) -> HashMap<HierarchyNode, f32> {
+    available_width: f32,
+) -> HashMap<HierarchyNode, (f32, usize)> {
     let x_of = |n: &HierarchyNode| sim_x.get(n).copied().unwrap_or(0.0);
     let w_of = |n: &HierarchyNode| label_widths.get(n).copied().unwrap_or(0.0);
+    // A node's full right extent (dot + gap + label + clearance).
+    let extent = |n: &HierarchyNode| {
+        2.0 * GRAPH_NODE_RADIUS_PX + GRAPH_LABEL_GAP_PX + w_of(n) + GRAPH_LABEL_CLEAR_PX
+    };
 
     let mut by_depth: BTreeMap<usize, Vec<HierarchyNode>> = BTreeMap::new();
     for p in positions {
         by_depth.entry(p.depth).or_default().push(p.node);
     }
+
+    let usable_right = (available_width - GRAPH_MARGIN).max(GRAPH_MARGIN + 1.0);
+    let usable = (usable_right - GRAPH_MARGIN).max(1.0);
 
     let mut out = HashMap::new();
     for (_, mut band) in by_depth {
@@ -525,23 +533,53 @@ fn declutter_label_bands(
         if n == 0 {
             continue;
         }
-        // Sweep left→right, pushing each node right only as far as needed to clear the previous
-        // node's whole label box, never left of where the sim placed it.
-        let mut new_x = vec![0.0f32; n];
-        new_x[0] = x_of(&band[0]);
-        for i in 1..n {
-            let prev_right_extent =
-                2.0 * GRAPH_NODE_RADIUS_PX + GRAPH_LABEL_GAP_PX + w_of(&band[i - 1]) + GRAPH_LABEL_CLEAR_PX;
-            let min_next = new_x[i - 1] + prev_right_extent;
-            new_x[i] = x_of(&band[i]).max(min_next);
-        }
-        // Recenter on the band's original centroid so the spread grows symmetrically instead of
-        // marching the whole band rightward each time it's cleared.
-        let sim_mean = band.iter().map(x_of).sum::<f32>() / n as f32;
-        let new_mean = new_x.iter().sum::<f32>() / n as f32;
-        let shift = sim_mean - new_mean;
-        for (node, x) in band.iter().zip(new_x) {
-            out.insert(*node, x + shift);
+        let total_extent: f32 = band.iter().map(&extent).sum();
+        if total_extent <= usable {
+            // Fits in one row: keep the organic sweep, recentred on the band's centroid so no
+            // single label overflows the pane (#248).
+            let mut new_x = vec![0.0f32; n];
+            new_x[0] = x_of(&band[0]);
+            for i in 1..n {
+                let min_next = new_x[i - 1] + extent(&band[i - 1]);
+                new_x[i] = x_of(&band[i]).max(min_next);
+            }
+            let sim_mean = band.iter().map(x_of).sum::<f32>() / n as f32;
+            let new_mean = new_x.iter().sum::<f32>() / n as f32;
+            let shift = sim_mean - new_mean;
+            let placed: Vec<f32> = new_x.iter().map(|x| x + shift).collect();
+            // Translate the whole band (never per-node clamp, which would collapse spacing) so it
+            // sits within [margin, usable_right]; since it fits (total_extent ≤ usable) this always
+            // succeeds without overlap.
+            let left = placed.iter().copied().fold(f32::MAX, f32::min);
+            let right = placed
+                .iter()
+                .zip(&band)
+                .map(|(x, node)| x + extent(node))
+                .fold(f32::MIN, f32::max);
+            let mut adjust = 0.0;
+            if left < GRAPH_MARGIN {
+                adjust = GRAPH_MARGIN - left;
+            }
+            if right + adjust > usable_right {
+                adjust -= right + adjust - usable_right;
+            }
+            for (node, x) in band.iter().zip(placed) {
+                out.insert(*node, (x + adjust, 0usize));
+            }
+        } else {
+            // Too wide for the pane: pack left→right and wrap into stacked sub-rows so the band
+            // grows *taller* instead of overflowing the width (#350).
+            let mut cursor = GRAPH_MARGIN;
+            let mut row = 0usize;
+            for node in &band {
+                let ext = extent(node);
+                if cursor > GRAPH_MARGIN && cursor + ext > usable_right {
+                    row += 1;
+                    cursor = GRAPH_MARGIN;
+                }
+                out.insert(*node, (cursor, row));
+                cursor += ext;
+            }
         }
     }
     out
@@ -2411,20 +2449,39 @@ fn show_graph_view(
         .iter()
         .filter_map(|p| graph_layout.pos_of(p.node).map(|v| (p.node, v.x)))
         .collect();
-    let display_x = declutter_label_bands(&positions, &sim_x, &label_widths);
+    // Each node gets an x within the pane and a sub-row within its depth band; wide bands wrap
+    // into stacked sub-rows so the graph fits the pane width and grows taller instead (#350).
+    let display = declutter_label_bands(&positions, &sim_x, &label_widths, available_width);
 
-    // Content height from the current simulated y-extent so tall graphs scroll (#34).
-    let max_y = positions
-        .iter()
-        .filter_map(|p| graph_layout.pos_of(p.node).map(|v| v.y))
-        .fold(0.0_f32, f32::max);
-    // Width from the decluttered spread so a band wider than the pane can scroll into view
-    // rather than pile its labels off the right edge.
-    let max_x = display_x.values().copied().fold(available_width, f32::max);
-    let content_width = max_x + GRAPH_MARGIN;
-    let content_height = max_y + TOP_PADDING + BOTTOM_PADDING + NODE_RADIUS;
+    // Vertical layout: bands stack top-to-bottom, each as tall as its wrapped sub-row count, so
+    // the whole graph fits the pane width (no horizontal scroll) and only grows downward (#350).
+    const ROW_H: f32 = 46.0;
+    let depth_of: HashMap<HierarchyNode, usize> =
+        positions.iter().map(|p| (p.node, p.depth)).collect();
+    let row_of = |n: &HierarchyNode| display.get(n).map(|(_, r)| *r).unwrap_or(0);
+    let mut band_rows: BTreeMap<usize, usize> = BTreeMap::new();
+    for p in &positions {
+        let rows = row_of(&p.node) + 1;
+        band_rows
+            .entry(p.depth)
+            .and_modify(|m| *m = (*m).max(rows))
+            .or_insert(rows);
+    }
+    let mut base_y: HashMap<usize, f32> = HashMap::new();
+    let mut acc = 0.0f32;
+    for (&depth, &rows) in &band_rows {
+        base_y.insert(depth, acc);
+        acc += rows as f32 * ROW_H;
+    }
+    let node_y = move |n: &HierarchyNode| -> f32 {
+        let base = depth_of.get(n).and_then(|d| base_y.get(d)).copied().unwrap_or(0.0);
+        base + row_of(n) as f32 * ROW_H
+    };
 
-    egui::ScrollArea::both()
+    let content_width = available_width;
+    let content_height = acc + TOP_PADDING + BOTTOM_PADDING + NODE_RADIUS;
+
+    egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             let (rect, _response) =
@@ -2432,10 +2489,8 @@ fn show_graph_view(
             let painter = ui.painter_at(rect);
 
             let pos_of = |node: HierarchyNode| -> egui::Pos2 {
-                let local = graph_layout.pos_of(node).unwrap_or(egui::Vec2::ZERO);
-                // x comes from the decluttered spread (#248); y stays as simulated.
-                let x = display_x.get(&node).copied().unwrap_or(local.x);
-                egui::pos2(rect.left() + x, rect.top() + TOP_PADDING + local.y)
+                let x = display.get(&node).map(|(x, _)| *x).unwrap_or(GRAPH_MARGIN);
+                egui::pos2(rect.left() + x, rect.top() + TOP_PADDING + node_y(&node))
             };
 
             // Edges first, so node dots paint over the line endpoints.
@@ -3796,21 +3851,24 @@ mod tests {
             .collect();
         let label_widths: HashMap<HierarchyNode, f32> =
             positions.iter().map(|p| (p.node, 60.0)).collect();
-        let display_x = declutter_label_bands(&positions, &sim_x, &label_widths);
+        // A very wide pane so nothing wraps — same-band nodes must be cleared horizontally.
+        let display = declutter_label_bands(&positions, &sim_x, &label_widths, 100_000.0);
 
-        // Every node keeps a placement, and no two label boxes (dot + rightward text) overlap.
-        // Different depth bands are >= LAYER_HEIGHT apart vertically, so only same-band labels
-        // can collide — and those must be cleared horizontally.
+        // Every node keeps a placement, and no two label boxes (dot + rightward text) overlap
+        // when they're in the same band *and* the same sub-row.
         const R: f32 = 9.0;
         const GAP: f32 = 4.0;
         for (i, a) in positions.iter().enumerate() {
-            assert!(display_x.contains_key(&a.node), "no placement for {:?}", a.node);
+            assert!(display.contains_key(&a.node), "no placement for {:?}", a.node);
             for b in positions.iter().skip(i + 1) {
                 if a.depth != b.depth {
                     continue;
                 }
-                let xa = display_x[&a.node];
-                let xb = display_x[&b.node];
+                let (xa, ra) = display[&a.node];
+                let (xb, rb) = display[&b.node];
+                if ra != rb {
+                    continue;
+                }
                 let overlap = (xa + R + GAP + label_widths[&a.node])
                     .min(xb + R + GAP + label_widths[&b.node])
                     - (xa - R).max(xb - R);
@@ -3821,6 +3879,29 @@ mod tests {
                     b.node
                 );
             }
+        }
+    }
+
+    /// #350: a band too wide for the pane wraps into stacked sub-rows (grows taller) instead of
+    /// overflowing the width.
+    #[test]
+    fn declutter_wraps_wide_bands_into_rows() {
+        let nodes: Vec<HierarchyNode> = (0..8).map(HierarchyNode::Constraint).collect();
+        let positions: Vec<GraphNodePosition> = nodes
+            .iter()
+            .enumerate()
+            .map(|(i, &node)| GraphNodePosition { node, parent: None, depth: 1, column: 1, row: i })
+            .collect();
+        let sim_x: HashMap<HierarchyNode, f32> =
+            nodes.iter().enumerate().map(|(i, &n)| (n, i as f32 * 20.0)).collect();
+        let label_widths: HashMap<HierarchyNode, f32> = nodes.iter().map(|&n| (n, 60.0)).collect();
+        // A narrow pane: 8 nodes × ~88px each can't fit ~200px, so they wrap onto several rows.
+        let display = declutter_label_bands(&positions, &sim_x, &label_widths, 200.0);
+        let max_row = nodes.iter().map(|n| display[n].1).max().unwrap();
+        assert!(max_row >= 1, "a wide band should wrap onto more than one row");
+        // Every placement stays within the pane width.
+        for n in &nodes {
+            assert!(display[n].0 >= GRAPH_MARGIN - 0.1 && display[n].0 <= 200.0, "x within pane");
         }
     }
 
@@ -3844,13 +3925,18 @@ mod tests {
                 row: i,
             })
             .collect();
-        // Already 200 px apart — far beyond any label — so declutter must not move them.
-        let sim_x: HashMap<HierarchyNode, f32> =
-            nodes.iter().enumerate().map(|(i, &n)| (n, i as f32 * 200.0)).collect();
+        // Already 200 px apart — far beyond any label — so declutter must not move them (a wide
+        // pane so nothing wraps; positions kept ≥ the left margin so no clamp bites).
+        let sim_x: HashMap<HierarchyNode, f32> = nodes
+            .iter()
+            .enumerate()
+            .map(|(i, &n)| (n, GRAPH_MARGIN + i as f32 * 200.0))
+            .collect();
         let label_widths: HashMap<HierarchyNode, f32> = nodes.iter().map(|&n| (n, 40.0)).collect();
-        let out = declutter_label_bands(&positions, &sim_x, &label_widths);
+        let out = declutter_label_bands(&positions, &sim_x, &label_widths, 100_000.0);
         for &n in &nodes {
-            assert!((out[&n] - sim_x[&n]).abs() < 1e-3, "spread band moved for {n:?}");
+            assert_eq!(out[&n].1, 0, "spread band stays on one row for {n:?}");
+            assert!((out[&n].0 - sim_x[&n]).abs() < 1e-3, "spread band moved for {n:?}");
         }
     }
 
