@@ -788,21 +788,49 @@ fn render_view_geometry<C: Canvas>(
     let arrow = diag * 0.025;
     // A single diameter dimension per detected circle (#313), replacing its segments' dims.
     for (wc, pc) in world_circles.iter().zip(&pcircles) {
-        let (a, b) = match pc {
+        let label = format!("Ø{}", crate::value::format_length_display_in(wc.radius * 2.0, unit));
+        match pc {
+            // Face-on: a diameter line across the circle with the value beside it.
             ProjectedCircle::Round { center, radius } => {
                 let dir = glam::Vec2::new(0.70710677, -0.70710677);
-                (*center - dir * *radius, *center + dir * *radius)
+                let (a, b) = (*center - dir * *radius, *center + dir * *radius);
+                let (sa, sb) = (to_screen(a), to_screen(b));
+                canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, 0.8);
+                let mid = (sa + sb) * 0.5;
+                canvas.text_rot(
+                    mid.x,
+                    mid.y,
+                    11.0,
+                    Anchor::Middle,
+                    &label,
+                    (sb - sa).y.atan2((sb - sa).x),
+                );
             }
-            // Edge-on: the diameter is the projected line itself.
-            ProjectedCircle::EdgeOn { a, b } => (*a, *b),
-        };
-        let sa = to_screen(a);
-        let sb = to_screen(b);
-        let mid = (sa + sb) * 0.5;
-        canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, 0.8);
-        // Diameter value (the circle's true world diameter).
-        let d = crate::value::format_length_display_in(wc.radius * 2.0, unit);
-        canvas.text(mid.x, mid.y - 3.0, 11.0, Anchor::Middle, &format!("⌀{d}"));
+            // Edge-on (looks like a line, #320): a normal linear dimension — extension lines,
+            // an offset dimension line with arrowheads, and the value running along it.
+            ProjectedCircle::EdgeOn { a, b } => {
+                let outward = dimension_outward(*a, *b, bbox_center);
+                let geom = dimension_line_geometry(*a, *b, outward, default_gap, arrow);
+                let sl = |canvas: &mut C, p: glam::Vec2, q: glam::Vec2| {
+                    let (sp, sq) = (to_screen(p), to_screen(q));
+                    canvas.line(sp.x, sp.y, sq.x, sq.y, BLACK, 0.8);
+                };
+                for (p, q) in geom.extensions {
+                    sl(canvas, p, q);
+                }
+                sl(canvas, geom.line.0, geom.line.1);
+                for tri in geom.arrows {
+                    let pts: Vec<(f32, f32)> =
+                        tri.iter().map(|p| { let s = to_screen(*p); (s.x, s.y) }).collect();
+                    canvas.poly(&pts, BLACK);
+                }
+                let (sla, slb) = (to_screen(geom.line.0), to_screen(geom.line.1));
+                let out_screen =
+                    (to_screen(geom.line.0 + outward) - to_screen(geom.line.0)).normalize_or_zero();
+                let (lp, ang) = dimension_label_layout(sla, slb, out_screen, text_device_width(11.0, &label), 5.0);
+                canvas.text_rot(lp.x, lp.y, 11.0, Anchor::Middle, &label, ang);
+            }
+        }
     }
     for (i, (a, b)) in proj.iter().enumerate() {
         let (wa, wb) = world_edges[i];

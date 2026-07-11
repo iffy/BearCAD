@@ -9185,42 +9185,92 @@ impl App {
                         );
                     }
                 }
-                // Detected circles (#313): a smooth circle face-on or a diameter line edge-on
-                // (#319), each with one diameter dimension.
                 let unit = self.state.doc.default_length_unit;
-                for (wc, pc) in world_circles.iter().zip(&pcircles) {
-                    let (a, b) = match pc {
-                        crate::drawing::ProjectedCircle::Round { center, radius } => {
-                            let sc = to_screen(egui::vec2(center.x, center.y));
-                            painter.circle_stroke(sc, radius * scale, egui::Stroke::new(1.2, INK));
-                            let dir = egui::vec2(0.70710677, -0.70710677);
-                            let cv = egui::vec2(center.x, center.y);
-                            (cv - dir * *radius, cv + dir * *radius)
-                        }
-                        crate::drawing::ProjectedCircle::EdgeOn { a, b } => {
-                            let (av, bv) = (egui::vec2(a.x, a.y), egui::vec2(b.x, b.y));
-                            painter
-                                .line_segment([to_screen(av), to_screen(bv)], egui::Stroke::new(1.2, INK));
-                            (av, bv)
-                        }
-                    };
-                    let (sa, sb) = (to_screen(a), to_screen(b));
-                    painter.line_segment([sa, sb], egui::Stroke::new(0.8, INK));
-                    let d = crate::value::format_length_display_in(wc.radius * 2.0, unit);
-                    painter.text(
-                        (sa + sb.to_vec2()) * 0.5 + egui::vec2(0.0, -8.0),
-                        egui::Align2::CENTER_CENTER,
-                        format!("⌀{d}"),
-                        egui::FontId::proportional(11.0),
-                        INK,
-                    );
-                }
                 let dims = view.dimensioned_edges.clone();
                 let pending_here = pending_angle.filter(|(pv, _)| *pv == vi).map(|(_, k)| k);
                 let bbox_center_v = egui::vec2(bbox_center.x, bbox_center.y);
                 let diag = extent.length().max(1.0);
                 let default_gap = diag * 0.05;
                 let arrow = diag * 0.025;
+                // A rotated label drawn centred at a screen point (#314/#320).
+                let draw_rot_label = |painter: &egui::Painter, text: String, at: egui::Pos2, ang: f32| {
+                    let galley =
+                        painter.layout_no_wrap(text, egui::FontId::proportional(11.0), INK);
+                    let rot = egui::emath::Rot2::from_angle(ang);
+                    let pos = at - rot * (galley.size() * 0.5);
+                    let mut shape = egui::epaint::TextShape::new(pos, galley, INK);
+                    shape.angle = ang;
+                    painter.add(shape);
+                };
+                // Detected circles (#313): a smooth circle face-on or a diameter line edge-on
+                // (#319), each with one diameter dimension. Edge-on uses a full linear
+                // dimension (extension lines + arrows), like a regular length (#320).
+                for (wc, pc) in world_circles.iter().zip(&pcircles) {
+                    let label =
+                        format!("Ø{}", crate::value::format_length_display_in(wc.radius * 2.0, unit));
+                    match pc {
+                        crate::drawing::ProjectedCircle::Round { center, radius } => {
+                            let sc = to_screen(egui::vec2(center.x, center.y));
+                            painter.circle_stroke(sc, radius * scale, egui::Stroke::new(1.2, INK));
+                            let dir = egui::vec2(0.70710677, -0.70710677);
+                            let cv = egui::vec2(center.x, center.y);
+                            let (sa, sb) = (to_screen(cv - dir * *radius), to_screen(cv + dir * *radius));
+                            painter.line_segment([sa, sb], egui::Stroke::new(0.8, INK));
+                            draw_rot_label(
+                                &painter,
+                                label,
+                                (sa + sb.to_vec2()) * 0.5,
+                                (sb - sa).angle(),
+                            );
+                        }
+                        crate::drawing::ProjectedCircle::EdgeOn { a, b } => {
+                            let (av, bv) = (egui::vec2(a.x, a.y), egui::vec2(b.x, b.y));
+                            painter.line_segment(
+                                [to_screen(av), to_screen(bv)],
+                                egui::Stroke::new(1.2, INK),
+                            );
+                            let outward = {
+                                let seg = bv - av;
+                                let mut p = egui::vec2(-seg.y, seg.x).normalized();
+                                if p == egui::Vec2::ZERO { p = egui::vec2(0.0, -1.0); }
+                                let mid = (av + bv) * 0.5;
+                                if p.dot(mid - bbox_center_v) < 0.0 { -p } else { p }
+                            };
+                            let g = crate::drawing::dimension_line_geometry(
+                                glam::Vec2::new(av.x, av.y),
+                                glam::Vec2::new(bv.x, bv.y),
+                                glam::Vec2::new(outward.x, outward.y),
+                                default_gap,
+                                arrow,
+                            );
+                            let sp = |p: glam::Vec2| to_screen(egui::vec2(p.x, p.y));
+                            for (p, q) in g.extensions {
+                                painter.line_segment([sp(p), sp(q)], egui::Stroke::new(0.8, INK));
+                            }
+                            painter.line_segment([sp(g.line.0), sp(g.line.1)], egui::Stroke::new(0.8, INK));
+                            for tri in g.arrows {
+                                painter.add(egui::Shape::convex_polygon(
+                                    tri.iter().map(|p| sp(*p)).collect(),
+                                    INK,
+                                    egui::Stroke::NONE,
+                                ));
+                            }
+                            let (sla, slb) = (sp(g.line.0), sp(g.line.1));
+                            let out_screen = (sp(g.line.0
+                                + glam::Vec2::new(outward.x, outward.y))
+                                - sp(g.line.0))
+                            .normalized();
+                            let (lp, ang) = crate::drawing::dimension_label_layout(
+                                glam::Vec2::new(sla.x, sla.y),
+                                glam::Vec2::new(slb.x, slb.y),
+                                glam::Vec2::new(out_screen.x, out_screen.y),
+                                crate::drawing::text_device_width(11.0, &label),
+                                5.0,
+                            );
+                            draw_rot_label(&painter, label, egui::pos2(lp.x, lp.y), ang);
+                        }
+                    }
+                }
                 for (i, (a, b)) in proj.iter().enumerate() {
                     // Circle-tessellation segments are drawn as the smooth circle above (#313).
                     let is_circle_seg = on_circle(*a, *b);

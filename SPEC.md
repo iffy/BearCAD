@@ -1034,8 +1034,11 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   that fit a planar circle) and **projected per view** (`project_world_circle`): **round** when
   the circle faces the viewer (a real SVG `<circle>` / PDF Bézier-arc, not a polygon), or a
   **foreshortened diameter line** when edge-on. Either way it carries a **single diameter
-  dimension** (`Ø…`), and its segments are excluded from the straight-edge strokes and the
-  length-dimension set. **Silhouette edges (#319):** a body view also strokes the
+  dimension** (`Ø…`, using the WinAnsi-safe Ø glyph, #320), and its segments are excluded from
+  the straight-edge strokes and the length-dimension set. A **face-on** circle gets a diameter
+  line across it with the value; an **edge-on** circle (which looks like a plain line) gets a
+  **normal linear dimension** — extension lines, an offset dimension line with arrowheads, the
+  value running along it (#320) — since it reads as a length. **Silhouette edges (#319):** a body view also strokes the
   view-dependent silhouette (`solid_mesh_silhouette_edges`: edges where the two adjacent faces
   face opposite ways), so a cylinder's straight sides show — they're added to the stroke
   geometry only, not to circle detection or dimensioning, so the rims stay clean circles.
