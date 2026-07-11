@@ -305,6 +305,9 @@ pub struct DrawingViewControl {
     /// Whether this view is at a **free** (arbitrary) angle (#345): the widget spins to any angle
     /// instead of picking a preset from the bear.
     pub free_angle: bool,
+    /// The source body/sketch's world edges (#358), shown as a live wireframe in the orientation
+    /// widget while in free mode. Only populated when `free_angle` (empty otherwise).
+    pub source_edges: Vec<(glam::Vec3, glam::Vec3)>,
     /// How the projection renders (#301).
     pub style: crate::model::DrawingViewStyle,
 }
@@ -2193,12 +2196,14 @@ pub fn show_pane(
             // Highlight the current view on the bear (#323/#340): a face, a corner (Isometric),
             // or a cube edge (a diagonal edge view, #339). Drawn even when behind the bear.
             let selected = drawing_orientation_to_cube_pick(control.orientation);
+            let body_edges = control.free_angle.then_some(control.source_edges.as_slice());
             if let Some(pick) = crate::view_cube::show_orientation_picker(
                 ui,
                 "drawing_view_bear",
                 seed,
                 selected,
                 control.free_angle,
+                body_edges,
                 None,
                 false,
             ) {
@@ -2824,6 +2829,7 @@ mod tests {
             aligned: false,
             inline_orientations: Vec::new(),
             free_angle: false,
+            source_edges: Vec::new(),
             style: crate::model::DrawingViewStyle::default(),
         };
         // Dimension tool: projection editor and units both present.

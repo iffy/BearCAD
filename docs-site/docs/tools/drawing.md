@@ -32,7 +32,9 @@ you like, and each one collects **views** — a body shown from a chosen directi
    direction is shown as a **blue highlight** on the bear — a face, an edge, or a corner (for an
    isometric view) — so you can tell at a glance which way it's looking. The highlight stays
    visible even when that face has turned to the back of the bear. Tick **Free angle** to spin the
-   view to any arbitrary angle instead of snapping to the standard faces/edges/corners.
+   view to any arbitrary angle instead of snapping to the standard faces/edges/corners — the
+   widget then shows a small wireframe of the part itself, so you spin the actual body to the
+   angle you want.
    - **Scale:** type a print scale like `1:20` (one page millimetre represents twenty model
      millimetres) and the view draws at exactly that size on the page and in exports — the
      caption shows it, e.g. `Body 0 — Front (1:20)`. Any positive ratio works (`2:3`,

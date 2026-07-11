@@ -1129,6 +1129,34 @@ fn draw_hovered_face(painter: &egui::Painter, face: &ProjectedFace) {
     }
 }
 
+/// Draw a live wireframe of a view's source body inside the orientation widget (#358), projected
+/// through the widget camera with the **same basis the drawing projection uses** (`free_basis`), so
+/// what you spin here matches the placed view. Auto-fit (shrunk) into the widget rect.
+fn draw_body_wireframe(painter: &egui::Painter, cam: &Camera, rect: Rect, edges: &[(Vec3, Vec3)]) {
+    let (right_arr, up_arr) = free_basis(cam);
+    let right = Vec3::from_array(right_arr);
+    let up = Vec3::from_array(up_arr);
+    let proj = |v: Vec3| egui::vec2(v.dot(right), v.dot(up));
+    let (mut min, mut max) = (egui::vec2(f32::MAX, f32::MAX), egui::vec2(f32::MIN, f32::MIN));
+    for (a, b) in edges {
+        for p in [proj(*a), proj(*b)] {
+            min = min.min(p);
+            max = max.max(p);
+        }
+    }
+    let extent = (max - min).max(egui::vec2(1e-3, 1e-3));
+    let fit = (rect.width().min(rect.height()) * 0.7) / extent.max_elem();
+    let bbox_center = (min + max) * 0.5;
+    let to_screen = |v: Vec3| {
+        let d = (proj(v) - bbox_center) * fit;
+        rect.center() + egui::vec2(d.x, -d.y)
+    };
+    let stroke = Stroke::new(1.2, Color32::from_gray(210));
+    for (a, b) in edges {
+        painter.line_segment([to_screen(*a), to_screen(*b)], stroke);
+    }
+}
+
 /// Draw the selected view's highlight on the bear (#340) **unculled** — a chosen face, edge, or
 /// corner is marked even when it's on the far side of the bear, so the current view always reads.
 /// Projects the picked element's own geometry directly (no back-face culling) and draws it on top.
@@ -1422,6 +1450,7 @@ pub fn show_orientation_picker(
     current: StandardView,
     selected: Option<CubePick>,
     free: bool,
+    body_edges: Option<&[(Vec3, Vec3)]>,
     render_state: Option<&eframe::egui_wgpu::RenderState>,
     gpu_bear: bool,
 ) -> Option<OrientationPick> {
@@ -1502,12 +1531,22 @@ pub fn show_orientation_picker(
         });
     }
 
-    // Render: panel background, axes, bear, hover highlights, focus ring.
+    // Render: panel background, axes, then either the bear (presets) or — in free mode with a
+    // source body supplied (#358) — a live wireframe of that body at the widget's angle, so you
+    // spin the actual part to the angle you want.
     let painter = ui.painter().clone();
     painter.rect_filled(rect, 6.0, Color32::from_rgba_unmultiplied(18, 20, 26, 200));
     let axes = project_axes(&cam, center, scale);
     draw_axes(ui, &axes);
-    draw_bear(ui, &painter, rect, &cam, center, scale, render_state, gpu_bear);
+    if free {
+        if let Some(edges) = body_edges.filter(|e| !e.is_empty()) {
+            draw_body_wireframe(&painter, &cam, rect, edges);
+        } else {
+            draw_bear(ui, &painter, rect, &cam, center, scale, render_state, gpu_bear);
+        }
+    } else {
+        draw_bear(ui, &painter, rect, &cam, center, scale, render_state, gpu_bear);
+    }
     // Mark the currently-selected view (#323/#340) — face, edge, or corner — under the (yellow)
     // hover highlight so hovering elsewhere still reads clearly. Drawn unculled so the chosen
     // element shows even when it's on the far side of the bear.

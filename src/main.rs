@@ -5016,6 +5016,16 @@ impl eframe::App for App {
                                     view.orientation,
                                     model::DrawingOrientation::Free { .. }
                                 ),
+                                // The source wireframe for the free-angle widget (#358), only
+                                // gathered when needed.
+                                source_edges: if matches!(
+                                    view.orientation,
+                                    model::DrawingOrientation::Free { .. }
+                                ) {
+                                    crate::drawing::drawing_view_world_edges(&self.state.doc, view)
+                                } else {
+                                    Vec::new()
+                                },
                                 style: view.style,
                             })
                         })
