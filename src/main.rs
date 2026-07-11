@@ -4954,6 +4954,7 @@ impl eframe::App for App {
                             },
                             rotation_deg: format!("{:.0}", t.rotation.to_degrees()),
                             wrap: t.wrap_width.map(|w| format!("{w:.0}")).unwrap_or_default(),
+                            pinned: t.pin.is_some(),
                         })
                 },
                 drawing_view: {
@@ -5536,7 +5537,9 @@ impl eframe::App for App {
                     let mut rotation = existing.rotation;
                     let mut wrap_width = existing.wrap_width;
                     let mut valid = true;
+                    let mut unpin = false;
                     match edit {
+                        context::SketchTextEdit::Unpin => unpin = true,
                         context::SketchTextEdit::Text(v) => text = v,
                         context::SketchTextEdit::Font(v) => font_family = v,
                         context::SketchTextEdit::Bold(v) => bold = v,
@@ -5571,7 +5574,9 @@ impl eframe::App for App {
                             }
                         }
                     }
-                    if valid && !text.trim().is_empty() {
+                    if unpin {
+                        self.state.apply(Action::SetSketchTextPin { index, pin: None });
+                    } else if valid && !text.trim().is_empty() {
                         self.state.apply(Action::EditSketchText {
                             index,
                             text,

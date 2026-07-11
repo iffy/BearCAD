@@ -367,6 +367,8 @@ pub struct SketchTextControl {
     pub rotation_deg: String,
     /// Wrap width in mm, empty when unwrapped (#282).
     pub wrap: String,
+    /// True when this text is pinned to a sketch point (#356/#359); enables the Unpin button.
+    pub pinned: bool,
 }
 
 /// One edit from the sketch-text context section (#286). Each re-bakes the text.
@@ -381,6 +383,8 @@ pub enum SketchTextEdit {
     Rotation(String),
     /// Wrap width in mm (#282): empty clears wrapping (a growing single-line box).
     Wrap(String),
+    /// Remove the text's position pin (#356/#359).
+    Unpin,
 }
 
 /// One edit from the Combine context section.
@@ -2166,6 +2170,19 @@ pub fn show_pane(
                 on_sketch_text_edit(SketchTextEdit::Wrap(wrap));
             }
         });
+        // Position pin (#356/#359): if pinned to a sketch point, offer to release it.
+        if control.pinned {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Pinned to a point")
+                        .color(egui::Color32::from_gray(150))
+                        .size(11.0),
+                );
+                if ui.button("Unpin").clicked() {
+                    on_sketch_text_edit(SketchTextEdit::Unpin);
+                }
+            });
+        }
     }
 
     // Drawing-projection editor (#289): the selected view card's source, orientation, and a
