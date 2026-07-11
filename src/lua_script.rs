@@ -5342,9 +5342,8 @@ mod tests {
     /// edge's world endpoints; calling it again on the same edge hides it.
     #[test]
     fn lua_drawing_dimension_toggles_an_edge() {
-        // Derive the toggle endpoints from whichever edge the projection actually dimensions by
-        // default. Coincident front/back edges collapse to one dimension (#321), so we can't
-        // assume any specific hard-coded edge survives — pick a real one from the baseline.
+        // Views start with no dimensions shown (#331), so the first toggle *shows* this edge and
+        // a second toggle hides it again.
         let base_script = r#"
             bearcad.new()
             bearcad.rect{ x = 0, y = 0, width = 40, height = 25 }
@@ -5359,35 +5358,68 @@ mod tests {
             );
             format!("{base_script}\n{}", toggle.repeat(repeats))
         };
-        // New views start with every edge dimensioned (#299), so the first toggle *hides*
-        // this edge and a second toggle shows it again.
         let baseline = run_lua(base_script);
-        let all = baseline.doc.drawings[0].views[0].dimensioned_edges.len();
-        assert!(all > 0, "a new projection starts with all dimensions on (#299)");
-        // Pick a real dimensioned edge and dequantize its endpoints to drive the toggle.
-        let expected = *baseline.doc.drawings[0].views[0]
-            .dimensioned_edges
-            .iter()
-            .next()
-            .expect("at least one edge is dimensioned");
-        let a = crate::hierarchy::dequantize_body_point(expected.0);
-        let b = crate::hierarchy::dequantize_body_point(expected.1);
-
-        let hidden = run_lua(&script(1, a, b));
-        assert_eq!(
-            hidden.doc.drawings[0].views[0].dimensioned_edges.len(),
-            all - 1,
-            "one toggle hides the dimension"
+        assert!(
+            baseline.doc.drawings[0].views[0].dimensioned_edges.is_empty(),
+            "a new projection starts with no dimensions shown (#331)"
         );
-        assert!(!hidden.doc.drawings[0].views[0].dimensioned_edges.contains(&expected));
+        // A bottom edge of the front view; toggling it adds then removes its dimension.
+        let a = glam::Vec3::new(0.0, 0.0, 0.0);
+        let b = glam::Vec3::new(40.0, 0.0, 0.0);
+        let expected = crate::model::normalized_edge_key(
+            crate::hierarchy::quantize_body_point(a),
+            crate::hierarchy::quantize_body_point(b),
+        );
 
-        let shown = run_lua(&script(2, a, b));
+        let shown = run_lua(&script(1, a, b));
         assert_eq!(
             shown.doc.drawings[0].views[0].dimensioned_edges.len(),
-            all,
-            "toggling the same edge twice shows it again"
+            1,
+            "one toggle shows the dimension"
         );
         assert!(shown.doc.drawings[0].views[0].dimensioned_edges.contains(&expected));
+
+        let hidden = run_lua(&script(2, a, b));
+        assert!(
+            hidden.doc.drawings[0].views[0].dimensioned_edges.is_empty(),
+            "toggling the same edge twice hides it again"
+        );
+    }
+
+    /// #331: "Show all dimensions" populates the deduped, staggered default set and "Hide all"
+    /// clears it, both via `Action::SetAllDrawingDimensions`.
+    #[test]
+    fn show_and_hide_all_dimensions() {
+        let script = r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 40, height = 25 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+        "#;
+        let mut state = run_lua(script);
+        assert!(state.doc.drawings[0].views[0].dimensioned_edges.is_empty());
+        assert_eq!(
+            state.apply(crate::actions::Action::SetAllDrawingDimensions {
+                drawing: 0,
+                view: 0,
+                show: true,
+            }),
+            crate::actions::ActionResult::Ok
+        );
+        assert!(
+            !state.doc.drawings[0].views[0].dimensioned_edges.is_empty(),
+            "Show all populates the default dimension set"
+        );
+        state.apply(crate::actions::Action::SetAllDrawingDimensions {
+            drawing: 0,
+            view: 0,
+            show: false,
+        });
+        assert!(
+            state.doc.drawings[0].views[0].dimensioned_edges.is_empty(),
+            "Hide all clears the dimension set"
+        );
     }
 
     /// #180: `bearcad.drawing_angle{}` toggles the angle dimension between two edges of a view,

@@ -324,6 +324,9 @@ pub enum DrawingViewEdit {
     /// A valid print-scale text (`"1:20"`), or `None` for auto-fit (#300). Only ever emitted
     /// with text that parses — invalid drafts stay local to the field.
     Scale(Option<String>),
+    /// Show every length/diameter dimension (`true`) or hide them all (`false`) for this view
+    /// (#331). Views start with none shown; these two buttons flip the whole set at once.
+    SetAllDimensions(bool),
     Remove,
 }
 
@@ -2195,6 +2198,15 @@ pub fn show_pane(
                 } else {
                     ui.data_mut(|d| d.remove::<String>(draft_id));
                 }
+            }
+        });
+        // Dimensions are off by default (#331); these flip the whole set on or off at once.
+        ui.horizontal(|ui| {
+            if ui.button("Show all dimensions").clicked() {
+                on_drawing_view_edit(DrawingViewEdit::SetAllDimensions(true));
+            }
+            if ui.button("Hide all dimensions").clicked() {
+                on_drawing_view_edit(DrawingViewEdit::SetAllDimensions(false));
             }
         });
         if ui.button("Remove view").clicked() {

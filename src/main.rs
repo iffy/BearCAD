@@ -5417,6 +5417,13 @@ impl eframe::App for App {
                             self.state
                                 .apply(Action::SetDrawingViewStyle { drawing, view, style });
                         }
+                        context::DrawingViewEdit::SetAllDimensions(show) => {
+                            self.state.apply(Action::SetAllDrawingDimensions {
+                                drawing,
+                                view,
+                                show,
+                            });
+                        }
                         context::DrawingViewEdit::Remove => {
                             self.state.apply(Action::RemoveDrawingView { drawing, view });
                         }

@@ -59,20 +59,22 @@ above it the top, to the sides the left/right views — all constrained to line 
 parent's edges. Click to drop it. You can drag an aligned view any distance away, but it
 always stays aligned along the shared edge; move the parent and its aligned views follow.
 Aligned views inherit the parent's scale and orientation, so a whole group reads as one set.
-3. **Dimensions:** a new view arrives with every edge's length dimension already shown, drawn
+3. **Dimensions:** a new view arrives with **no dimensions shown**. Select the projection and
+   use the **Show all dimensions** button in the context pane to add them all at once (or **Hide
+   all dimensions** to clear them). They're drawn
    as proper dimension lines — extension lines, an offset line with arrowheads, and the
    measurement centred on it, all drawn with a lighter, thinner stroke than the model edges so
    the part outline stays the eye's focus — the label runs along the dimension line (or sits just
    past its end when the line is too short to fit). Round features (holes, cylinders) render as a single
-   smooth circle with one diameter dimension (Ø), not a ring of little segments. The starting set
-   is arranged to stay readable: coincident edges (a box's bottom edge, front and back, land on
+   smooth circle with one diameter dimension (Ø), not a ring of little segments. The set stays
+   readable: coincident edges (a box's bottom edge, front and back, land on
    the same line) share one dimension, and parallel dimensions that would otherwise sit on top of
    each other are stacked onto separate lines so no measurement label overlaps another. With the **Dimension tool** active, the edge under the cursor
-   highlights; click it to hide its dimension (click again to bring it back). **Shift+click**
+   highlights; click it to show or hide that one dimension. **Shift+click**
    two edges to show the angle between them (Shift+click either again to hide it). **Drag a
    dimension's label** (with the Select or Dimension tool) to push its line further from or
    closer to the edge.
-4. Remove a view with the **×** beside it. Click **← Back** in the toolbar to return to the 3D
+4. Remove a view with the **×** beside it. Click **Back** in the toolbar to return to the 3D
    model. Reopen a
    drawing any time by clicking its row (or right-click → **Edit drawing**).
 5. **Export** with **Export PDF…** for a single-page vector PDF, or **Export SVG…** for a

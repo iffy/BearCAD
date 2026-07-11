@@ -1048,10 +1048,15 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   view-dependent silhouette (`solid_mesh_silhouette_edges`: edges where the two adjacent faces
   face opposite ways), so a cylinder's straight sides show — they're added to the stroke
   geometry only, not to circle detection or dimensioning, so the rims stay clean circles.
-- **Dimensions:** a newly added projection starts with **every edge's length dimension
-  shown** (#299) — except edges pointing straight into the page, which project to a point and
-  carry no meaningful in-view length (#294), and except tessellated-circle segments, which get
-  a single diameter dimension instead (#313). Length dimensions render as proper **architectural
+- **Dimensions:** a newly added projection starts with **no dimensions shown** (#331). The
+  projection's context pane has **Show all dimensions** and **Hide all dimensions** buttons
+  (`Action::SetAllDrawingDimensions`, `DrawingViewEdit::SetAllDimensions`): *Show all* populates
+  the deduped, staggered default set (every edge's length dimension — except edges pointing
+  straight into the page, which project to a point and carry no meaningful in-view length (#294),
+  and except tessellated-circle segments, which get a single diameter dimension instead (#313));
+  *Hide all* clears them. User-added angle dimensions are left untouched by both. Individual edges
+  are still toggled with the Dimension tool (or `bearcad.drawing_dimension`). Length dimensions
+  render as proper **architectural
   dimension lines** (#294): two extension lines off the edge, a dimension line offset outward
   (on the side away from the geometry centroid) with **arrowheads** at each end, and the
   measurement centred on it — in the editor and both exports, from one shared

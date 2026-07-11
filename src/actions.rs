@@ -1327,6 +1327,13 @@ pub enum Action {
         a: [i32; 3],
         b: [i32; 3],
     },
+    /// Show every length/diameter dimension for a view (`show = true`, populating the deduped,
+    /// staggered default set) or hide them all (`show = false`, clearing the set), #331.
+    SetAllDrawingDimensions {
+        drawing: usize,
+        view: usize,
+        show: bool,
+    },
     /// Toggle the angle dimension between two edges (each by quantized world endpoints).
     ToggleDrawingAngle {
         drawing: usize,
@@ -6441,7 +6448,9 @@ impl AppState {
                 // Cascade new placements down-right from the page centre so they don't fully
                 // stack (#274); wrap back after a handful.
                 let step = (self.doc.drawings[drawing].views.len() % 6) as f32 * 0.06;
-                let mut view = crate::model::DrawingView {
+                // Views start with no dimensions shown (#331); the projection's context pane has
+                // "Show all dimensions"/"Hide all dimensions" buttons to populate or clear them.
+                let view = crate::model::DrawingView {
                     body,
                     sketch: None,
                     orientation,
@@ -6455,11 +6464,6 @@ impl AppState {
                     scale: None,
                     style: Default::default(),
                 };
-                {
-                    let (keys, offs) = default_dimensioned_edges(&self.doc, &view);
-                    view.dimensioned_edges = keys;
-                    view.dimension_offsets = offs;
-                }
                 self.doc.drawings[drawing].views.push(view);
                 self.selected_drawing_view =
                     Some((drawing, self.doc.drawings[drawing].views.len() - 1));
@@ -6477,7 +6481,8 @@ impl AppState {
                     return ActionResult::Err(format!("No drawing {drawing}"));
                 }
                 let step = (self.doc.drawings[drawing].views.len() % 6) as f32 * 0.06;
-                let mut view = crate::model::DrawingView {
+                // Views start with no dimensions shown (#331).
+                let view = crate::model::DrawingView {
                     body: 0,
                     sketch: Some(sketch),
                     orientation,
@@ -6491,11 +6496,6 @@ impl AppState {
                     scale: None,
                     style: Default::default(),
                 };
-                {
-                    let (keys, offs) = default_dimensioned_edges(&self.doc, &view);
-                    view.dimensioned_edges = keys;
-                    view.dimension_offsets = offs;
-                }
                 self.doc.drawings[drawing].views.push(view);
                 self.selected_drawing_view =
                     Some((drawing, self.doc.drawings[drawing].views.len() - 1));
@@ -6526,7 +6526,8 @@ impl AppState {
                 } else {
                     (pos.clamp(0.0, 1.0), pv.pos_y)
                 };
-                let mut view = crate::model::DrawingView {
+                // Views start with no dimensions shown (#331).
+                let view = crate::model::DrawingView {
                     body: pv.body,
                     sketch: pv.sketch,
                     orientation,
@@ -6540,11 +6541,6 @@ impl AppState {
                     aligned_parent: Some(parent),
                     aligned_dir: Some(dir),
                 };
-                {
-                    let (keys, offs) = default_dimensioned_edges(&self.doc, &view);
-                    view.dimensioned_edges = keys;
-                    view.dimension_offsets = offs;
-                }
                 self.doc.drawings[drawing].views.push(view);
                 self.status = format!("Added {} view aligned to view {parent}", orientation.label());
                 ActionResult::Ok
@@ -6728,6 +6724,36 @@ impl AppState {
                     v.dimensioned_edges.push(key);
                     self.status = "Showed edge dimension".to_string();
                 }
+                ActionResult::Ok
+            }
+            Action::SetAllDrawingDimensions { drawing, view, show } => {
+                // Resolve the view (cloned) so we can compute the default set without holding a
+                // mutable borrow of the document across the call.
+                let Some(v) = self
+                    .doc
+                    .drawings
+                    .get(drawing)
+                    .filter(|d| !d.deleted)
+                    .and_then(|d| d.views.get(view))
+                    .cloned()
+                else {
+                    return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
+                };
+                let (keys, offsets) = if show {
+                    default_dimensioned_edges(&self.doc, &v)
+                } else {
+                    (Vec::new(), Vec::new())
+                };
+                let target = &mut self.doc.drawings[drawing].views[view];
+                target.dimensioned_edges = keys;
+                target.dimension_offsets = offsets;
+                // Angle dimensions are user-added, so leave them alone; this only flips the
+                // length/diameter set the buttons control (#331).
+                self.status = if show {
+                    "Showed all dimensions".to_string()
+                } else {
+                    "Hid all dimensions".to_string()
+                };
                 ActionResult::Ok
             }
             Action::SetDrawingDimensionOffset { drawing, view, a, b, offset } => {
