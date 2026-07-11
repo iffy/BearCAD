@@ -950,7 +950,11 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   parent (recursively, so chains stay consistent) in both the editor and export. Dragging a
   child only slides it along its free axis; moving the parent carries its children. A child
   **inherits the parent's scale** and can't change it (`drawing::resolved_view_scale`), and its
-  orientation is derived (both read-only in the context editor). Directions whose unfolded view
+  orientation starts at the derived value but is **changeable among the views that stay in line**
+  with the base (#332): the context editor shows a chooser limited to
+  `drawing::aligned_inline_orientations` — the orthographic views reachable by rotating about the
+  shared screen axis (Front/Back/Left/Right for a side child of a Front parent, Front/Back/Top/
+  Bottom for a stacked one). Directions whose unfolded view
   would need a non-canonical "up" (e.g. a Bottom parent's sideways child) simply aren't
   offered, and an isometric parent has no aligned children. Scriptable:
   `bearcad.drawing_align_view{ drawing, parent, dir = "below"/"above"/"right"/"left", pos? }`.

@@ -51,6 +51,35 @@ pub fn aligned_child_orientation(
     orientation_from_axes(cr, cu)
 }
 
+/// The orthographic orientations an aligned child may take while staying **in line** with its
+/// base (#332): rotating the view about the screen axis the two share keeps the alignment intact.
+/// A horizontally-placed child (Left/Right) shares the parent's vertical (up) axis, so it can be
+/// any view whose up axis matches the parent's (Front/Back/Left/Right for a Front parent); a
+/// vertically-placed child (Above/Below) shares the horizontal (right) axis. The parent's own
+/// derived child orientation is always included. Empty for a non-orthographic (Isometric) parent.
+pub fn aligned_inline_orientations(
+    parent: DrawingOrientation,
+    dir: crate::model::AlignDir,
+) -> Vec<DrawingOrientation> {
+    let (pr, pu) = view_axes(parent);
+    // Which parent screen axis the child shares depends on the drag direction.
+    let shared = if dir.shares_pos_x() { pr } else { pu };
+    let axis_matches = |a: Vec3, b: Vec3| a.dot(b).abs() > 0.9;
+    DrawingOrientation::ALL
+        .iter()
+        .copied()
+        .filter(|o| !matches!(o, DrawingOrientation::Isometric))
+        .filter(|o| {
+            let (r, u) = view_axes(*o);
+            if dir.shares_pos_x() {
+                axis_matches(r, shared)
+            } else {
+                axis_matches(u, shared)
+            }
+        })
+        .collect()
+}
+
 /// The on-page position of a view (#296), resolving an aligned child's shared axis to its
 /// parent's so the two always line up regardless of which was dragged. Non-aligned views (and
 /// children whose parent is gone) return their own stored `(pos_x, pos_y)`.
@@ -1308,6 +1337,26 @@ fn assemble_pdf(width: f32, height: f32, content: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::model::{Drawing, DrawingView};
+
+    /// #332: an aligned child dragged to the side of a Front parent can be re-oriented to any of
+    /// the four views that share the vertical axis (Front/Back/Left/Right), and one dragged above
+    /// or below to the four sharing the horizontal axis (Front/Back/Top/Bottom).
+    #[test]
+    fn aligned_inline_orientations_stay_in_line() {
+        use crate::model::{AlignDir, DrawingOrientation as O};
+        let side = aligned_inline_orientations(O::Front, AlignDir::Right);
+        for o in [O::Front, O::Back, O::Left, O::Right] {
+            assert!(side.contains(&o), "{o:?} should be an in-line side view");
+        }
+        assert!(!side.contains(&O::Top) && !side.contains(&O::Bottom));
+        assert!(!side.contains(&O::Isometric));
+
+        let stack = aligned_inline_orientations(O::Front, AlignDir::Below);
+        for o in [O::Front, O::Back, O::Top, O::Bottom] {
+            assert!(stack.contains(&o), "{o:?} should be an in-line stacked view");
+        }
+        assert!(!stack.contains(&O::Left) && !stack.contains(&O::Right));
+    }
 
     /// #314: a label that fits runs centred along the dimension line (angle matches, kept
     /// upright); one too wide sits past the far end, horizontal.

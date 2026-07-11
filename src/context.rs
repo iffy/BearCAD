@@ -297,9 +297,13 @@ pub struct DrawingViewControl {
     pub orientation: crate::model::DrawingOrientation,
     /// The stored print scale text (`"1:20"`), empty for auto-fit (#300).
     pub scale: String,
-    /// True when this view is an aligned child (#296): its orientation is derived and its
-    /// scale is inherited from the parent, so both are read-only here.
+    /// True when this view is an aligned child (#296): its scale is inherited from the parent, so
+    /// it's read-only here.
     pub aligned: bool,
+    /// For an aligned child (#332): the orthographic orientations it may take while staying in
+    /// line with its base. Empty for a non-aligned view (or a child of an Isometric parent), which
+    /// keeps the full orientation bear/picker.
+    pub inline_orientations: Vec<crate::model::DrawingOrientation>,
     /// How the projection renders (#301).
     pub style: crate::model::DrawingViewStyle,
 }
@@ -2199,12 +2203,29 @@ pub fn show_pane(
         ui.separator();
         ui.label(egui::RichText::new("View").strong());
         ui.label(&control.source);
-        // An aligned child's orientation is derived from its parent (#296) — shown, not editable.
+        // An aligned child stays in line with its base, but its orientation can be changed among
+        // the views that keep that alignment (#332); a chooser offers just that in-line set.
         if control.aligned {
-            ui.label(
-                egui::RichText::new(format!("{} · aligned", control.orientation.label()))
-                    .color(egui::Color32::from_gray(150)),
-            );
+            ui.label(egui::RichText::new("aligned").color(egui::Color32::from_gray(150)));
+            if control.inline_orientations.is_empty() {
+                ui.label(
+                    egui::RichText::new(control.orientation.label())
+                        .color(egui::Color32::from_gray(150)),
+                );
+            } else {
+                egui::ComboBox::from_id_salt("drawing_aligned_orientation")
+                    .selected_text(control.orientation.label())
+                    .show_ui(ui, |ui| {
+                        for o in &control.inline_orientations {
+                            if ui
+                                .selectable_label(control.orientation == *o, o.label())
+                                .clicked()
+                            {
+                                on_drawing_view_edit(DrawingViewEdit::Orientation(*o));
+                            }
+                        }
+                    });
+            }
         } else {
             // Interactive orientation bear (#315): drag to spin, click a face for that view or
             // a corner/edge for isometric; focus it and press 4/5/6/8/2/0 for
@@ -2763,6 +2784,7 @@ mod tests {
             orientation: crate::model::DrawingOrientation::Front,
             scale: String::new(),
             aligned: false,
+            inline_orientations: Vec::new(),
             style: crate::model::DrawingViewStyle::default(),
         };
         // Dimension tool: projection editor and units both present.

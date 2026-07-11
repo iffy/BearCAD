@@ -66,7 +66,10 @@ tool. Click an existing projection, then move the mouse: below it previews the b
 above it the top, to the sides the left/right views — all constrained to line up with the
 parent's edges. Click to drop it. You can drag an aligned view any distance away, but it
 always stays aligned along the shared edge; move the parent and its aligned views follow.
-Aligned views inherit the parent's scale and orientation, so a whole group reads as one set.
+Aligned views inherit the parent's scale, so a whole group reads as one set. A placed aligned
+view's orientation can still be changed from its context pane — the chooser offers just the views
+that stay lined up with the base (for a side view off a front view, that's front, back, left, or
+right).
 3. **Dimensions:** a new view arrives with **no dimensions shown**. Select the projection and
    use the **Show all dimensions** button in the context pane to add them all at once (or **Hide
    all dimensions** to clear them). They're drawn

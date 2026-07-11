@@ -4905,12 +4905,31 @@ impl eframe::App for App {
                             } else {
                                 view.scale.clone().unwrap_or_default()
                             };
+                            // The orientations an aligned child may switch between while staying in
+                            // line with its base (#332).
+                            let inline_orientations = match (view.aligned_parent, view.aligned_dir) {
+                                (Some(p), Some(dir)) => self
+                                    .state
+                                    .doc
+                                    .drawings
+                                    .get(d)
+                                    .and_then(|dr| dr.views.get(p))
+                                    .map(|pv| {
+                                        crate::drawing::aligned_inline_orientations(
+                                            pv.orientation,
+                                            dir,
+                                        )
+                                    })
+                                    .unwrap_or_default(),
+                                _ => Vec::new(),
+                            };
                             Some(context::DrawingViewControl {
                                 view: v,
                                 source,
                                 orientation: view.orientation,
                                 scale,
                                 aligned,
+                                inline_orientations,
                                 style: view.style,
                             })
                         })
