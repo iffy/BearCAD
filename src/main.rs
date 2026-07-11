@@ -1335,17 +1335,28 @@ impl App {
                 // spin the view (#135; see `fps_look_warmup`).
                 self.fps_look_warmup = 10;
             }
-            ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(if active {
-                egui::viewport::CursorGrab::Locked
+            let grab = if active {
+                // macOS gets *no* grab: `CursorGrab::Locked` freezes the pointer so egui reports
+                // no motion and mouse-look dies (#121); instead we warp the visible cursor back to
+                // the crosshair each frame (below) and derive the look delta from its offset.
+                // Everywhere else, `Locked` is the real thing.
+                #[cfg(target_os = "macos")]
+                {
+                    egui::viewport::CursorGrab::None
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    egui::viewport::CursorGrab::Locked
+                }
             } else {
                 egui::viewport::CursorGrab::None
-            }));
+            };
+            ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(grab));
             // On macOS, winit builds its hidden-cursor image by decoding a static GIF through
             // ImageIO the first time the view resets its cursor rects; that decode has been
-            // observed to SIGBUS on entering FPS mode (#119). `CursorGrab::Locked` already
-            // freezes the OS cursor in place and disconnects it from mouse deltas, so skip
-            // `CursorVisible` there and instead pin the frozen arrow to the crosshair below —
-            // everywhere else the cursor is genuinely hidden as SPEC promises.
+            // observed to SIGBUS on entering FPS mode (#119). So skip `CursorVisible` there and
+            // instead pin the still-visible arrow to the crosshair (below) — everywhere else the
+            // cursor is genuinely hidden as SPEC promises.
             #[cfg(not(target_os = "macos"))]
             ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(!active));
             self.fps_cursor_grabbed = active;
@@ -1416,13 +1427,25 @@ impl App {
             self.state.apply(Action::SetTool(fps::cycle_tool(self.state.tool, step)));
         }
 
-        // Mouse look from raw pointer motion (the cursor itself is locked at center,
-        // so clicks interact with whatever the crosshair points at).
+        // Mouse look. Off macOS the pointer is grabbed at the centre, so egui's frame-to-frame
+        // motion is the look delta. On macOS the pointer isn't grabbed (see above); the delta is
+        // instead its offset from the crosshair, which the per-frame warp resets to zero — so an
+        // un-moved cursor contributes nothing and a moved one contributes exactly its motion.
         if self.fps_look_warmup > 0 {
             self.fps_look_warmup -= 1;
-        } else if let Some(motion) = ctx.input(|i| i.pointer.motion()) {
-            if let Some(player) = self.state.fps.as_mut() {
-                player.look_by_pixels(motion.x, motion.y);
+        } else {
+            #[cfg(target_os = "macos")]
+            let look = self.last_viewport.and_then(|viewport| {
+                ctx.input(|i| i.pointer.latest_pos())
+                    .map(|pos| pos - viewport.center())
+                    .filter(|d| *d != egui::Vec2::ZERO)
+            });
+            #[cfg(not(target_os = "macos"))]
+            let look = ctx.input(|i| i.pointer.motion());
+            if let Some(look) = look {
+                if let Some(player) = self.state.fps.as_mut() {
+                    player.look_by_pixels(look.x, look.y);
+                }
             }
         }
 

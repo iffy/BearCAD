@@ -2042,10 +2042,12 @@ document is millimeters, so the player is person-scale: eye height
   *scale* (but not position) carries over to the next FPS entry in the same session.
 - **Movement:** WASD walks/strafes on the ground plane (heading follows the view yaw, but
   walking never leaves the ground); the mouse looks (raw pointer motion; the OS cursor is
-  locked and hidden). On macOS the cursor is locked but stays visible, pinned to the
-  crosshair each frame instead of hidden — winit's hidden-cursor image on that platform
-  decodes a GIF through ImageIO on first use, which has been observed to crash (#119); the
-  visible-but-pinned cursor sidesteps that path. **Space** jumps (ballistic, gravity 9.81&nbsp;m/s²); **double-tap
+  locked and hidden). On macOS the cursor stays **visible and un-grabbed**, warped back to the
+  crosshair each frame; mouse-look reads the pointer's offset from the crosshair rather than a
+  grabbed motion delta (#121). This is because a hidden cursor on macOS decodes a GIF through
+  ImageIO on first use, which has been observed to crash (#119), and `CursorGrab::Locked` there
+  freezes the pointer so egui reports no motion at all — warping a visible cursor sidesteps both.
+  **Space** jumps (ballistic, gravity 9.81&nbsp;m/s²); **double-tap
   Space** toggles Minecraft-style flying (no gravity; Space ascends, Shift descends; flying
   into the ground lands and resumes walking). **Esc** leaves FPS mode.
 - **Weapon-style tool switching:** number keys **1–9** pick tool slots (Select, Sketch,
