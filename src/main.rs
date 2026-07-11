@@ -4066,8 +4066,40 @@ impl eframe::App for App {
         }
 
         let render_state = frame.wgpu_render_state();
-        self.current_window = 0;
-        self.draw_workspace(ctx, render_state);
+
+        // The root viewport is the only one eframe can screenshot (immediate child viewports are
+        // painted by the parent and never receive the capture, #347). So when a script asks to
+        // capture an extra window, render *that window's* view into the root for this one frame
+        // and capture the root; otherwise render the main window as usual.
+        #[cfg(not(target_arch = "wasm32"))]
+        let shot_window = self
+            .script
+            .as_ref()
+            .and_then(|r| r.pending_screenshot_window())
+            .filter(|&w| w >= 1 && w <= self.extra_windows.len());
+        #[cfg(target_arch = "wasm32")]
+        let shot_window: Option<usize> = None;
+
+        match shot_window {
+            #[cfg(not(target_arch = "wasm32"))]
+            Some(window_no) => {
+                let mut snap = self.extra_windows.remove(window_no - 1);
+                self.swap_window(&mut snap);
+                self.current_window = window_no;
+                self.draw_workspace(ctx, render_state);
+                let vp = self.last_viewport;
+                if let Some(runner) = &mut self.script {
+                    runner.dispatch_window_screenshot(window_no, ctx, vp);
+                }
+                self.swap_window(&mut snap);
+                self.current_window = 0;
+                self.extra_windows.insert(window_no - 1, snap);
+            }
+            _ => {
+                self.current_window = 0;
+                self.draw_workspace(ctx, render_state);
+            }
+        }
 
         // A popped-out drawing (#276) renders in its own OS window so it can sit beside the 3D
         // view. Uses an *immediate* viewport so the render closure can borrow `self`.
@@ -4123,13 +4155,6 @@ impl eframe::App for App {
                 ctx.show_viewport_immediate(vid, builder, |vctx, _class| {
                     theme::apply(vctx);
                     self.draw_workspace(vctx, render_state);
-                    // Collect any capture from a prior frame, then dispatch a pending screenshot
-                    // now that this window's 3D-viewport rect is known (#347).
-                    self.process_screenshots(vctx);
-                    let vp = self.last_viewport;
-                    if let Some(runner) = &mut self.script {
-                        runner.dispatch_window_screenshot(window_no, vctx, vp);
-                    }
                     if vctx.input(|i| i.viewport().close_requested()) {
                         keep = false;
                     }

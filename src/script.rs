@@ -3046,6 +3046,11 @@ impl ScriptRunner {
             .is_some_and(|request| !request.whole_window && request.window == window)
     }
 
+    /// The window a pending screenshot targets, if any (#347).
+    pub fn pending_screenshot_window(&self) -> Option<usize> {
+        self.screenshot_pending.as_ref().map(|r| r.window)
+    }
+
     /// Take and reset the count of extra editor windows a script has asked to open (#347).
     pub fn take_new_windows(&mut self) -> u32 {
         std::mem::take(&mut self.new_window_requests)
