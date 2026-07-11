@@ -24,6 +24,9 @@ translucent preview shows the result the whole time.
 - Double-click a finished extrusion (or right-click → **Edit**) to change its faces or
   depth later.
 - Typing a digit while the tool is active jumps straight into the distance field.
+- A **Flip** button next to the distance field extrudes to the **other side** of the sketch
+  plane, keeping the same depth — handy for pulling a profile down instead of up without
+  dragging the handle back through the plane.
 
 ## Extrude up to something
 

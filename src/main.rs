@@ -1898,6 +1898,7 @@ impl App {
         let ctx = ui.ctx();
         let id = egui::Id::new(EXTRUDE_DISTANCE_FIELD_ID);
         let mut commit = false;
+        let mut flip = false;
 
         // Enter commits the extrusion even when the distance field is unfocused (e.g.
         // while driving depth with the pull handle), matching the other sketch tools.
@@ -1954,8 +1955,29 @@ impl App {
                         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             commit = true;
                         }
+                        // Flip which side of the sketch plane the profile extrudes to (#354):
+                        // negating the distance reverses the direction while keeping the depth.
+                        if ui
+                            .button("Flip")
+                            .on_hover_text("Extrude to the other side of the sketch")
+                            .clicked()
+                        {
+                            flip = true;
+                        }
                     });
                 });
+        }
+        if flip {
+            if let Some(d) = self
+                .state
+                .creating_extrusion
+                .as_ref()
+                .map(|ce| ce.evaluated_distance(&self.state.doc))
+            {
+                // A zero depth has no side to flip; nudge to a small default so the flip is visible.
+                let d = if d.abs() < 1e-4 { actions::DEFAULT_EXTRUDE_DISTANCE } else { d };
+                self.state.apply(Action::SetExtrudeDistance { distance: -d });
+            }
         }
         if commit {
             self.state.apply(Action::CommitExtrusion);

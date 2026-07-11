@@ -337,6 +337,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     multi-face extrusion, unlike coplanar sketch profiles. Sketching on an existing body's
     face merges into that body by default (§3.2's `body?` choice, #32), so pushing/pulling a
     face this way naturally extends the solid rather than creating a disjoint one.
+  - **Flip direction (#354):** the extrude distance popup has a **Flip** button that reverses which
+    side of the sketch plane the profile extrudes to (it negates the distance, keeping the typed
+    depth), so a profile can be extruded to either side without having to drag the gizmo back
+    through the plane. Dragging the gizmo past the plane still works too.
   - **Extrude-to-object**: during a gizmo drag, hovering a vertex/face/plane snaps the depth to
     that object and, on release, constrains the extrusion to it (`ExtrudeTarget`). This includes
     another body's cap/side wall (#126), not just a construction plane or flat sketch profile —
