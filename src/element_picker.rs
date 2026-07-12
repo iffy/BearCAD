@@ -632,6 +632,27 @@ pub fn show(
     )
 }
 
+/// Render a label picker (#213/#363) whose rows carry their own icons, for non-[`SceneElement`]
+/// sets with mixed item types (e.g. the drawing Select tool's projections/text/dimensions). The
+/// collapsed summary counts rows per icon in first-seen order.
+pub fn show_rows(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash,
+    focused: bool,
+    placeholder: &str,
+    rows: &[(IconId, String)],
+) -> Option<PickerEvent> {
+    let mut summary: Vec<(IconId, usize)> = Vec::new();
+    for (icon, _) in rows {
+        if let Some(entry) = summary.iter_mut().find(|(i, _)| i == icon) {
+            entry.1 += 1;
+        } else {
+            summary.push((*icon, 1));
+        }
+    }
+    render_combo(ui, id_source, focused, placeholder, &summary, rows)
+}
+
 /// Render a label-only picker (#213) with the same combo-box look as [`show`], for tool sets
 /// whose items are not [`SceneElement`]s (Chamfer/Fillet edges, Loft sections, Slice cutters,
 /// …). All rows share one `icon`; `labels` are the popup rows in order.

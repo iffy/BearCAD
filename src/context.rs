@@ -331,6 +331,15 @@ pub enum DrawingElementRef {
     Dimension { view: usize, a: [i32; 3], b: [i32; 3] },
 }
 
+/// The icon for a drawing element, matching the one the Elements pane uses for it (#363).
+pub fn drawing_element_icon(element: DrawingElementRef) -> crate::icons::IconId {
+    match element {
+        DrawingElementRef::Projection(_) => crate::icons::IconId::Projection,
+        DrawingElementRef::Text(_) => crate::icons::IconId::Text,
+        DrawingElementRef::Dimension { .. } => crate::icons::IconId::Dimension,
+    }
+}
+
 /// One edit from the drawing-annotation context section (#312).
 #[derive(Clone, Debug, PartialEq)]
 pub enum DrawingAnnotationEdit {
@@ -1313,15 +1322,18 @@ pub fn show_pane(
     if let Some(rows) = &content.drawing_selection {
         any_control = true;
         ui.label(egui::RichText::new("Selection").strong());
-        let labels: Vec<String> = rows.iter().map(|(_, _, label)| label.clone()).collect();
+        // Each row carries the same icon the Elements pane uses for that element kind (#363).
+        let icon_rows: Vec<(crate::icons::IconId, String)> = rows
+            .iter()
+            .map(|(_, element, label)| (drawing_element_icon(*element), label.clone()))
+            .collect();
         ui.add_enabled_ui(controls_enabled, |ui| {
-            if let Some(event) = crate::element_picker::show_labeled(
+            if let Some(event) = crate::element_picker::show_rows(
                 ui,
                 "drawing_selection_picker",
                 true,
                 "Nothing selected",
-                crate::icons::IconId::Drawing,
-                &labels,
+                &icon_rows,
             ) {
                 match event {
                     crate::element_picker::PickerEvent::Focus => {}
