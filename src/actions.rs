@@ -6659,6 +6659,8 @@ impl AppState {
                     aligned_dir: Some(dir),
                 };
                 self.doc.drawings[drawing].views.push(view);
+                let vi = self.doc.drawings[drawing].views.len() - 1;
+                self.select_drawing_only(drawing, crate::context::DrawingElementRef::Projection(vi));
                 self.status = format!("Added {} view aligned to view {parent}", orientation.label());
                 ActionResult::Ok
             }

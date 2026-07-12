@@ -2317,14 +2317,30 @@ pub fn show_pane(
         ui.separator();
         ui.label(egui::RichText::new("View").strong());
         ui.label(&control.source);
-        // An aligned child's orientation is derived from its base and placement direction — it
-        // unfolds (and rotates) to stay in line (#351) — so it's shown read-only. Change the view
-        // by placing it in a different direction.
+        // An aligned child stays lined up with its base, but its **angle** can be adjusted within
+        // the ring of orientations that keep the shared edge (#367): a dropdown of those (the
+        // straight-on faces and diagonal edge views that don't involve the perpendicular pole).
+        // A child of an isometric base has no such ring, so it stays read-only.
         if control.aligned {
-            ui.label(
-                egui::RichText::new(format!("{} · aligned", control.orientation.label()))
-                    .color(egui::Color32::from_gray(150)),
-            );
+            if control.inline_orientations.is_empty() {
+                ui.label(
+                    egui::RichText::new(format!("{} · aligned", control.orientation.label()))
+                        .color(egui::Color32::from_gray(150)),
+                );
+            } else {
+                egui::ComboBox::from_id_salt("aligned_view_orientation")
+                    .selected_text(format!("{} · aligned", control.orientation.label()))
+                    .show_ui(ui, |ui| {
+                        for o in &control.inline_orientations {
+                            if ui
+                                .selectable_label(control.orientation == *o, o.label())
+                                .clicked()
+                            {
+                                on_drawing_view_edit(DrawingViewEdit::Orientation(*o));
+                            }
+                        }
+                    });
+            }
         } else {
             // Interactive orientation bear (#315): drag to spin, click a face for that view or
             // a corner/edge for isometric; focus it and press 4/5/6/8/2/0 for

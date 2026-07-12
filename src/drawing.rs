@@ -109,10 +109,17 @@ pub fn aligned_inline_orientations(
     // Which parent screen axis the child shares depends on the drag direction.
     let shared = if dir.shares_pos_x() { pr } else { pu };
     let axis_matches = |a: Vec3, b: Vec3| a.dot(b).abs() > 0.9;
-    DrawingOrientation::ALL
+    // The ring the child can rotate through about the shared edge (#367): the straight-on faces
+    // *and* the diagonal edge views that keep that shared axis (front-right-edge, right-back-edge,
+    // …), excluding the base's own orientation. Anything involving the perpendicular pole (top or
+    // bottom for a left/right ring) is filtered out because its axis no longer matches.
+    let candidates = DrawingOrientation::ALL
         .iter()
         .copied()
         .filter(|o| !matches!(o, DrawingOrientation::Isometric))
+        .chain(crate::model::EdgeView::ALL.iter().map(|e| DrawingOrientation::Edge(*e)));
+    candidates
+        .filter(|o| *o != parent)
         .filter(|o| {
             let (r, u) = view_axes(*o);
             if dir.shares_pos_x() {
@@ -137,12 +144,27 @@ pub fn resolved_view_axes(views: &[DrawingView], view: &DrawingView) -> (Vec3, V
             if !std::ptr::eq(parent, view) {
                 let (pr, pu) = resolved_view_axes(views, parent);
                 let po = pr.cross(pu); // parent's "into the page"
-                return match dir {
+                let (r0, u0) = match dir {
                     AlignDir::Below => (pr, -po),
                     AlignDir::Above => (pr, po),
                     AlignDir::Right => (-po, pu),
                     AlignDir::Left => (po, pu),
                 };
+                // Render the user's chosen ring orientation in the parent's *unfolded* frame (#367):
+                // `unfold` is the rotation that carries the default orientation's canonical basis
+                // onto the unfolded basis (r0, u0); applying it to the chosen orientation's basis
+                // keeps the child lined up while showing the new angle. No pick → default → identity.
+                if let Some(default) = aligned_child_orientation(parent.orientation, dir) {
+                    if view.orientation != default {
+                        let (dr, du) = view_axes(default);
+                        let canon = glam::Mat3::from_cols(dr, du, dr.cross(du));
+                        let unfolded = glam::Mat3::from_cols(r0, u0, r0.cross(u0));
+                        let rot = unfolded * canon.transpose();
+                        let (cr, cu) = view_axes(view.orientation);
+                        return ((rot * cr).normalize_or_zero(), (rot * cu).normalize_or_zero());
+                    }
+                }
+                return (r0, u0);
             }
         }
     }
@@ -1560,7 +1582,10 @@ mod tests {
             scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
         };
         let child = |dir| DrawingView {
-            aligned_parent: Some(0), aligned_dir: Some(dir), ..parent.clone()
+            aligned_parent: Some(0), aligned_dir: Some(dir),
+            // Children carry their default (auto-derived) orientation, so no #367 ring roll applies.
+            orientation: aligned_child_orientation(O::Top, dir).unwrap(),
+            ..parent.clone()
         };
         let views = |dir| vec![parent.clone(), child(dir)];
         // Top parent basis = (X, -Y), into-page = X×(-Y) = -Z.
@@ -1581,9 +1606,12 @@ mod tests {
     fn aligned_inline_orientations_stay_in_line() {
         use crate::model::{AlignDir, DrawingOrientation as O};
         let side = aligned_inline_orientations(O::Front, AlignDir::Right);
-        for o in [O::Front, O::Back, O::Left, O::Right] {
+        for o in [O::Back, O::Left, O::Right] {
             assert!(side.contains(&o), "{o:?} should be an in-line side view");
         }
+        // The base's own orientation is excluded from the ring (#367) — a right view pointing
+        // Front would just duplicate the base.
+        assert!(!side.contains(&O::Front), "the base orientation is not offered");
         // The diagonal vertical-edge views (#339) share the vertical axis too, so they're in-line.
         use crate::model::EdgeView;
         for e in [EdgeView::FrontRight, EdgeView::BackRight, EdgeView::BackLeft, EdgeView::FrontLeft] {
@@ -1594,10 +1622,39 @@ mod tests {
         assert!(!side.contains(&O::Edge(EdgeView::FrontTop)), "tilted edges aren't in-line here");
 
         let stack = aligned_inline_orientations(O::Front, AlignDir::Below);
-        for o in [O::Front, O::Back, O::Top, O::Bottom] {
+        for o in [O::Back, O::Top, O::Bottom] {
             assert!(stack.contains(&o), "{o:?} should be an in-line stacked view");
         }
+        assert!(!stack.contains(&O::Front), "the base orientation is not offered");
         assert!(!stack.contains(&O::Left) && !stack.contains(&O::Right));
+    }
+
+    /// #367: an aligned child re-oriented to a ring member renders exactly that orientation while
+    /// staying lined up. For an axis-aligned (Front) base the unfold is identity, so the rolled
+    /// basis equals the chosen orientation's canonical basis for every ring member.
+    #[test]
+    fn aligned_child_ring_roll_renders_the_chosen_orientation() {
+        use crate::model::{AlignDir, DrawingOrientation as O};
+        let parent = DrawingView {
+            body: 0, sketch: None, orientation: O::Front,
+            dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
+            dimensioned_circles: Vec::new(), aligned_parent: None, aligned_dir: None,
+            scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
+        };
+        for dir in [AlignDir::Right, AlignDir::Left, AlignDir::Above, AlignDir::Below] {
+            for o in aligned_inline_orientations(O::Front, dir) {
+                let child = DrawingView {
+                    aligned_parent: Some(0), aligned_dir: Some(dir), orientation: o, ..parent.clone()
+                };
+                let views = vec![parent.clone(), child];
+                let (gr, gu) = resolved_view_axes(&views, &views[1]);
+                let (wr, wu) = view_axes(o);
+                assert!(
+                    (gr - wr).length() < 1e-4 && (gu - wu).length() < 1e-4,
+                    "{dir:?}/{o:?}: got ({gr:?},{gu:?}) want ({wr:?},{wu:?})"
+                );
+            }
+        }
     }
 
     /// #339: every edge view projects with a valid orthonormal basis, and a vertical-edge view
