@@ -5090,20 +5090,6 @@ impl eframe::App for App {
                                 scale,
                                 aligned,
                                 inline_orientations,
-                                free_angle: matches!(
-                                    view.orientation,
-                                    model::DrawingOrientation::Free { .. }
-                                ),
-                                // The source wireframe for the free-angle widget (#358), only
-                                // gathered when needed.
-                                source_edges: if matches!(
-                                    view.orientation,
-                                    model::DrawingOrientation::Free { .. }
-                                ) {
-                                    crate::drawing::drawing_view_world_edges(&self.state.doc, view)
-                                } else {
-                                    Vec::new()
-                                },
                                 style: view.style,
                             })
                         })
@@ -5741,29 +5727,14 @@ impl eframe::App for App {
                                 show,
                             });
                         }
-                        context::DrawingViewEdit::SetFreeAngle(free) => {
-                            // Entering free mode seeds the free basis from the current orientation
-                            // so the projection doesn't jump; leaving it snaps back to Front (#345).
-                            let orientation = if free {
-                                let (r, u) = self
-                                    .state
-                                    .doc
-                                    .drawings
-                                    .get(drawing)
-                                    .and_then(|d| d.views.get(view))
-                                    .map(|v| crate::drawing::view_axes(v.orientation))
-                                    .unwrap_or((Vec3::X, Vec3::Z));
-                                model::DrawingOrientation::Free {
-                                    right: r.to_array(),
-                                    up: u.to_array(),
-                                }
-                            } else {
-                                model::DrawingOrientation::Front
-                            };
+                        context::DrawingViewEdit::UseCurrentView => {
+                            // Set the projection to the 3D viewport's current angle (#366): a free
+                            // orientation whose basis matches what the camera is showing.
+                            let (right, up) = crate::view_cube::free_basis(&self.state.cam);
                             self.state.apply(Action::SetDrawingViewOrientation {
                                 drawing,
                                 view,
-                                orientation,
+                                orientation: model::DrawingOrientation::Free { right, up },
                             });
                         }
                         context::DrawingViewEdit::Remove => {

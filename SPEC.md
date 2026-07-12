@@ -1037,15 +1037,13 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   view (`drawing_orientation_to_cube_pick` → `view_cube::CubePick`). The highlight is drawn
   **unculled** (`draw_selected_pose`), so the chosen face/edge/corner still shows even when it's on
   the far side of the bear, and a glance always tells which way the view looks while spinning.
-- **Free angle (#345):** a **Free angle** checkbox in the view editor switches the orientation from
-  a bear preset to an arbitrary angle stored as its own `(right, up)` basis
-  (`DrawingOrientation::Free`). In free mode spinning the widget *is* the choice — each drag commits
-  the current camera angle as the projection basis (`view_cube::free_basis`, whose sign convention
-  makes a spun Front pose reproduce the Front projection exactly); presets and the numpad are
-  disabled. Turning the checkbox off snaps back to a Front preset. In free mode the widget shows a
-  **live wireframe of the view's source body** (its crease edges, auto-fit into the widget) instead
-  of the bear (#358, `view_cube::draw_body_wireframe`), projected with the same basis so what you
-  spin matches the placed view.
+- **Arbitrary angle — "Use this view" (#345/#366):** the view editor has a **Use this view** button
+  immediately below the orientation bear. It sets the projection to whatever the 3D viewport is
+  currently showing, stored as an arbitrary `(right, up)` basis (`DrawingOrientation::Free`) taken
+  from the live camera (`view_cube::free_basis`, whose sign convention makes a Front camera pose
+  reproduce the Front projection exactly). So to get a non-standard angle you orbit the 3D model,
+  then click the button. The bear itself only ever picks presets (faces/edges/corners); there is no
+  free-spin mode.
 - **View styles (#301):** each view renders in one of three styles, picked in the view
   editor: **Visible edges** (hidden lines removed — every feature edge is depth-sampled
   against the body's mesh and only the unoccluded runs stroke), **Wireframe** (every feature
