@@ -534,9 +534,14 @@ struct App {
     /// In-flight drag of a drawing dimension label (#294): `(drawing, view, edge key, start
     /// offset mm, drag-start pointer)`.
     drawing_dim_label_drag: Option<DrawingDimLabelDrag>,
-    /// The Aligned-view tool's chosen parent view (#296): the view index within the open
-    /// drawing, once the user has clicked a projection to align to.
+    /// The Aligned-view tool's chosen **base** view (#296/#365): the view index within the open
+    /// drawing whose projection a new aligned view lines up with. Seeded from a selected projection
+    /// when the tool is entered, or picked from the "Base view" element picker / by clicking a
+    /// projection.
     drawing_align_parent: Option<usize>,
+    /// The tool active on the previous frame (#365), so entering the Aligned-view tool can seed its
+    /// base from the current selection exactly once.
+    prev_tool: Tool,
     /// Text tool press anchor in sketch-local coords (#282): set on press; on release a drag
     /// beyond a threshold creates a wrapped textbox of that width, a click a growing one.
     text_tool_anchor: Option<(f32, f32)>,
@@ -676,6 +681,7 @@ impl App {
             dim_label_drag: None,
             drawing_dim_label_drag: None,
             drawing_align_parent: None,
+            prev_tool: Tool::Select,
             text_tool_anchor: None,
             drawing_text_anchor: None,
             pending_text_pin: None,
@@ -4032,6 +4038,20 @@ impl eframe::App for App {
         self.tick_fps_mode(ctx, dt);
         self.handle_keyboard_shortcuts(ctx);
 
+        // Aligned-view tool base (#365): on entering the tool, seed its base from a lone selected
+        // projection (so you needn't re-pick it); leaving the tool clears it.
+        if self.state.tool == Tool::DrawingAlign {
+            if self.prev_tool != Tool::DrawingAlign {
+                self.drawing_align_parent = match self.state.selected_drawing_view() {
+                    Some((d, v)) if Some(d) == self.state.editing_drawing => Some(v),
+                    _ => None,
+                };
+            }
+        } else {
+            self.drawing_align_parent = None;
+        }
+        self.prev_tool = self.state.tool;
+
         #[cfg(not(target_arch = "wasm32"))]
         self.handle_native_menu(ctx);
         #[cfg(target_arch = "wasm32")]
@@ -4591,14 +4611,25 @@ impl eframe::App for App {
                     _ => None,
                 };
                 if let Some((drawing, element)) = picked {
-                    // Clicking a drawing element in the Elements pane updates the Select tool's
-                    // multi-selection (#346), mirroring the model tool: a plain click replaces,
-                    // Cmd/Ctrl-click adds/removes.
-                    let additive = ctx.input(|i| selection::additive_click_modifiers(&i.modifiers));
-                    if additive {
-                        self.state.toggle_drawing_element(drawing, element);
+                    // While the Aligned-view tool is active, clicking a projection picks it as the
+                    // base to align to (#365) rather than changing the Select tool's selection.
+                    if self.state.tool == Tool::DrawingAlign {
+                        if let context::DrawingElementRef::Projection(view) = element {
+                            if Some(drawing) == self.state.editing_drawing {
+                                self.drawing_align_parent = Some(view);
+                            }
+                        }
                     } else {
-                        self.state.select_drawing_only(drawing, element);
+                        // Clicking a drawing element in the Elements pane updates the Select tool's
+                        // multi-selection (#346), mirroring the model tool: a plain click replaces,
+                        // Cmd/Ctrl-click adds/removes.
+                        let additive =
+                            ctx.input(|i| selection::additive_click_modifiers(&i.modifiers));
+                        if additive {
+                            self.state.toggle_drawing_element(drawing, element);
+                        } else {
+                            self.state.select_drawing_only(drawing, element);
+                        }
                     }
                 }
             }
@@ -5119,6 +5150,15 @@ impl eframe::App for App {
                     .collect(),
                 drawing_add_active: self.state.tool == Tool::DrawingAdd
                     && self.state.editing_drawing.is_some(),
+                drawing_align_active: self.state.tool == Tool::DrawingAlign
+                    && self.state.editing_drawing.is_some(),
+                drawing_align_base: self.drawing_align_parent.and_then(|v| {
+                    let d = self.state.editing_drawing?;
+                    Some((v, crate::names::node_label(
+                        &self.state.doc,
+                        hierarchy::HierarchyNode::DrawingProjection { drawing: d, view: v },
+                    )))
+                }),
                 repeat_edit_start: (self.state.tool != Tool::Repeat)
                     .then(|| {
                         let mut only = None;
@@ -5284,6 +5324,7 @@ impl eframe::App for App {
             let mut drawing_view_edit: Option<context::DrawingViewEdit> = None;
             let mut drawing_annotation_edit: Option<context::DrawingAnnotationEdit> = None;
             let mut drawing_selection_edit: Option<context::DrawingSelectionEdit> = None;
+            let mut drawing_align_clear = false;
             let mut repeat_edit_begin: Option<usize> = None;
             let mut slice_edit: Option<context::SliceEdit> = None;
             let mut slice_edit_begin: Option<usize> = None;
@@ -5332,6 +5373,7 @@ impl eframe::App for App {
                         &mut |edit| drawing_view_edit = Some(edit),
                         &mut |edit| drawing_annotation_edit = Some(edit),
                         &mut |edit| drawing_selection_edit = Some(edit),
+                        &mut || drawing_align_clear = true,
                         &mut |op| repeat_edit_begin = Some(op),
                         &mut |edit| slice_edit = Some(edit),
                         &mut |op| slice_edit_begin = Some(op),
@@ -5756,6 +5798,9 @@ impl eframe::App for App {
                         self.state.clear_drawing_selection();
                     }
                 }
+            }
+            if drawing_align_clear {
+                self.drawing_align_parent = None;
             }
             if let Some(op) = repeat_edit_begin {
                 if let Some(existing) = self.state.doc.repeat_ops.get(op).cloned() {

@@ -65,12 +65,14 @@ inside braces, a completion list of your parameters pops up — press **Tab** to
 
 ## Aligned views
 
-The **Aligned view** tool adds a projection that stays lined up with an existing one. Click a
-placed view, then move the mouse — below, above, left, or right of it previews that neighbouring
-view — and click to drop it. The child locks to the parent's shared edge: drag it any distance
-away and it still lines up, and moving the parent carries its aligned views along. Each child
-inherits the parent's scale and takes the orientation implied by its direction, so a few clicks
-build a full orthographic layout around any base view.
+The **Aligned view** tool adds a projection that stays lined up with an existing one. Pick the
+**base view** to align to — if a projection is already selected when you choose the tool it's used
+automatically, otherwise pick one from the tool's **Base view** picker in the context pane (or just
+click a projection on the page). Then move the mouse — below, above, left, or right of the base
+previews that neighbouring view — and click to drop it. The child locks to the base's shared edge:
+drag it any distance away and it still lines up, and moving the base carries its aligned views
+along. Each child inherits the base's scale and takes the orientation implied by its direction, so
+a few clicks build a full orthographic layout around any base view.
 
 ![A Top view with a Right view aligned beside it and a Front view aligned below](/img/screenshots/aligned-views.png)
 

@@ -961,8 +961,11 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   hovered card gets a highlight border. The model-only **Selection** element picker is hidden
   here (#317), since projections and annotations have their own selection state.
 - **Aligned-projection tool (#296):** the workbench's **Aligned view** tool (projection icon;
-  tool name `drawing_align`) derives an orthographic child from an existing projection. Click a
-  parent view, then move the mouse — the direction from the parent picks the child
+  tool name `drawing_align`/`aligned_view`) derives an orthographic child from an existing
+  projection. It picks a **base view** to align to: a single selected projection is used
+  automatically on entering the tool, otherwise it's chosen from the tool's **Base view** element
+  picker in the context pane or by clicking a projection on the page (#365). Then move the mouse —
+  the direction from the base picks the child
   (down → Bottom, up → Top, right → Right, left → Left for a Front parent, by glass-box
   unfolding: `drawing::aligned_child_orientation`), previewed as a ghost card with the derived
   orientation labelled; click commits `AddAlignedDrawingView`. The child stays **lined up**
@@ -970,8 +973,12 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   position (`pos_x`), left/right shares the vertical (`pos_y`) — enforced by
   `drawing::resolved_view_pos`, which resolves an aligned child's shared coordinate from its
   parent (recursively, so chains stay consistent) in both the editor and export. Dragging a
-  child only slides it along its free axis; moving the parent carries its children. A child
-  **inherits the parent's scale** and can't change it (`drawing::resolved_view_scale`), and its
+  child only slides it along its free axis; moving the parent carries its children. Alignment lines
+  up the **projected geometry**, not just the cards (#364): a child inherits the base's auto-fit
+  scale (`drawing::view_autofit_scale`) and centres its geometry on the base along the shared
+  projected axis (`drawing::view_render_center`), so the part's edges register across the group in
+  both the editor and exports. A child **inherits the parent's scale** and can't change it
+  (`drawing::resolved_view_scale`), and its
   orientation is **derived from the base and placement direction** and shown read-only (change it
   by re-placing in another direction). Crucially, an aligned child **renders with the unfolded
   basis** (`drawing::resolved_view_axes`), not a fixed canonical orientation — for a non-Front base

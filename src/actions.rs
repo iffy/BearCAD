@@ -146,6 +146,7 @@ impl Tool {
             "slice" | "split" => Some(Tool::Slice),
             "text" => Some(Tool::Text),
             "drawing_add" | "add_view" => Some(Tool::DrawingAdd),
+            "drawing_align" | "aligned_view" | "align_view" => Some(Tool::DrawingAlign),
             _ => None,
         }
     }

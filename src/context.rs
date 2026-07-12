@@ -84,6 +84,10 @@ pub struct ContextInput<'a> {
     pub drawing_selection: Vec<(usize, DrawingElementRef, String)>,
     /// The Add-view tool is active with nothing placed yet (#289): renders its pick hint.
     pub drawing_add_active: bool,
+    /// The Aligned-view tool is active (#365): renders its "Base view" element picker.
+    pub drawing_align_active: bool,
+    /// The Aligned-view tool's current base projection `(view, label)`, if one is chosen (#365).
+    pub drawing_align_base: Option<(usize, String)>,
     /// "Edit repeat" entry point.
     pub repeat_edit_start: Option<usize>,
     /// Slice tool state: `Some` while the Slice tool is active.
@@ -548,6 +552,9 @@ pub struct ContextPaneContent {
     pub drawing_selection: Option<Vec<(usize, DrawingElementRef, String)>>,
     /// The Add-view tool is active with nothing placed yet (#289).
     pub drawing_add_active: bool,
+    /// The Aligned-view tool's "Base view" picker (#365): `Some` when the tool is active; the inner
+    /// option is the chosen base projection `(view, label)` or `None` while none is picked.
+    pub drawing_align: Option<Option<(usize, String)>>,
     /// "Edit repeat" entry point.
     pub repeat_edit_start: Option<usize>,
     /// Slice tool controls.
@@ -793,6 +800,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     // mirroring the multi-selection of projections/text/dimensions.
     let drawing_selection = (input.in_drawing_workbench && input.tool == Tool::Select)
         .then(|| input.drawing_selection.clone());
+    // The Aligned-view tool shows a "Base view" picker (#365) for the projection to align to.
+    let drawing_align = input.drawing_align_active.then(|| input.drawing_align_base.clone());
     // Tool-owned element pickers (#213). Each is a Body-filtered picker built from the tool's
     // in-progress set. Bodies consumed destructively (Revolve cut) get the red highlight override.
     let mut tool_pickers = Vec::new();
@@ -909,6 +918,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             drawing_view: drawing_view.clone(),
             drawing_annotation: drawing_annotation.clone(),
             drawing_selection: None,
+            drawing_align: None,
             drawing_add_active,
             repeat_edit_start,
             slice_op: slice_op.clone(),
@@ -948,6 +958,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             drawing_view: drawing_view.clone(),
             drawing_annotation: drawing_annotation.clone(),
             drawing_selection: None,
+            drawing_align: None,
             drawing_add_active,
             repeat_edit_start,
             slice_op: slice_op.clone(),
@@ -987,6 +998,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             drawing_view: drawing_view.clone(),
             drawing_annotation: drawing_annotation.clone(),
             drawing_selection: None,
+            drawing_align: None,
             drawing_add_active,
             repeat_edit_start,
             slice_op: slice_op.clone(),
@@ -1029,6 +1041,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         drawing_view,
         drawing_annotation,
         drawing_selection,
+        drawing_align,
         drawing_add_active,
         repeat_edit_start,
         slice_op,
@@ -1256,6 +1269,7 @@ pub fn show_pane(
     on_drawing_view_edit: &mut impl FnMut(DrawingViewEdit),
     on_drawing_annotation_edit: &mut impl FnMut(DrawingAnnotationEdit),
     on_drawing_selection_edit: &mut impl FnMut(DrawingSelectionEdit),
+    on_drawing_align_clear: &mut impl FnMut(),
     on_repeat_edit_start: &mut impl FnMut(usize),
     on_slice_edit: &mut impl FnMut(SliceEdit),
     on_slice_edit_start: &mut impl FnMut(usize),
@@ -1347,6 +1361,35 @@ pub fn show_pane(
                     crate::element_picker::PickerEvent::Clear => {
                         on_drawing_selection_edit(DrawingSelectionEdit::Clear)
                     }
+                }
+            }
+        });
+    }
+
+    // The Aligned-view tool's "Base view" picker (#365): the projection a new aligned view lines
+    // up with. Seeded from a selected projection on tool entry; otherwise pick one by clicking a
+    // projection (on the page or in the Elements pane). Always focused as a pick cue.
+    if let Some(base) = &content.drawing_align {
+        any_control = true;
+        ui.label(egui::RichText::new("Base view").strong());
+        let rows: Vec<(crate::icons::IconId, String)> = base
+            .iter()
+            .map(|(_, label)| (crate::icons::IconId::Projection, label.clone()))
+            .collect();
+        ui.add_enabled_ui(controls_enabled, |ui| {
+            if let Some(event) = crate::element_picker::show_rows(
+                ui,
+                "drawing_align_base_picker",
+                true,
+                "Click a projection to align to",
+                &rows,
+            ) {
+                if matches!(
+                    event,
+                    crate::element_picker::PickerEvent::Remove(_)
+                        | crate::element_picker::PickerEvent::Clear
+                ) {
+                    on_drawing_align_clear();
                 }
             }
         });
@@ -2910,6 +2953,8 @@ mod tests {
             drawing_view: None,
             drawing_annotation: None,
             drawing_selection: Vec::new(),
+            drawing_align_active: false,
+            drawing_align_base: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3028,6 +3073,8 @@ mod tests {
             drawing_view: None,
             drawing_annotation: None,
             drawing_selection: Vec::new(),
+            drawing_align_active: false,
+            drawing_align_base: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3096,6 +3143,8 @@ mod tests {
             drawing_view: None,
             drawing_annotation: None,
             drawing_selection: Vec::new(),
+            drawing_align_active: false,
+            drawing_align_base: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3367,6 +3416,7 @@ mod tests {
             drawing_view: None,
             drawing_annotation: None,
             drawing_selection: None,
+            drawing_align: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3420,6 +3470,8 @@ mod tests {
             drawing_view: None,
             drawing_annotation: None,
             drawing_selection: Vec::new(),
+            drawing_align_active: false,
+            drawing_align_base: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3458,6 +3510,7 @@ mod tests {
             drawing_view: None,
             drawing_annotation: None,
             drawing_selection: None,
+            drawing_align: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3511,6 +3564,8 @@ mod tests {
             drawing_view: None,
             drawing_annotation: None,
             drawing_selection: Vec::new(),
+            drawing_align_active: false,
+            drawing_align_base: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3567,6 +3622,7 @@ mod tests {
             drawing_view: None,
             drawing_annotation: None,
             drawing_selection: None,
+            drawing_align: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3667,6 +3723,8 @@ mod tests {
             drawing_view: None,
             drawing_annotation: None,
             drawing_selection: Vec::new(),
+            drawing_align_active: false,
+            drawing_align_base: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3718,6 +3776,8 @@ mod tests {
             drawing_view: None,
             drawing_annotation: None,
             drawing_selection: Vec::new(),
+            drawing_align_active: false,
+            drawing_align_base: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3758,6 +3818,7 @@ mod tests {
             drawing_view: None,
             drawing_annotation: None,
             drawing_selection: None,
+            drawing_align: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
@@ -3803,6 +3864,8 @@ mod tests {
             drawing_view: None,
             drawing_annotation: None,
             drawing_selection: Vec::new(),
+            drawing_align_active: false,
+            drawing_align_base: None,
             drawing_add_active: false,
             repeat_edit_start: None,
             slice_op: None,
