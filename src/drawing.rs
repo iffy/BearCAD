@@ -191,6 +191,81 @@ pub fn resolved_view_scale(doc: &Document, drawing: usize, view: usize) -> Optio
     }
 }
 
+/// The projected `(right, up)` bounding box of a view's geometry, or `None` if it has none.
+fn view_projected_bbox(
+    doc: &Document,
+    views: &[DrawingView],
+    view: usize,
+) -> Option<(glam::Vec2, glam::Vec2)> {
+    let v = views.get(view)?;
+    let world_edges = drawing_view_dimensionable_edges(doc, views, v);
+    if world_edges.is_empty() {
+        return None;
+    }
+    let (right, up) = resolved_view_axes(views, v);
+    let (mut min, mut max) = (glam::Vec2::splat(f32::MAX), glam::Vec2::splat(f32::MIN));
+    for (a, b) in &world_edges {
+        for p in [a, b] {
+            let pr = glam::Vec2::new(p.dot(right), p.dot(up));
+            min = min.min(pr);
+            max = max.max(pr);
+        }
+    }
+    Some((min, max))
+}
+
+/// A view's own projected extent (size), floored to a tiny positive value per axis.
+fn view_projected_extent(doc: &Document, views: &[DrawingView], view: usize) -> glam::Vec2 {
+    match view_projected_bbox(doc, views, view) {
+        Some((min, max)) => (max - min).max(glam::Vec2::splat(1e-3)),
+        None => glam::Vec2::splat(1.0),
+    }
+}
+
+/// Auto-fit scale for a view within an `area_w`×`area_h` card, filling `fit` of it. An aligned
+/// child inherits its parent's auto-fit scale (walking to the aligned root) so a whole aligned
+/// group renders at one size — a prerequisite for their edges lining up (#364).
+pub fn view_autofit_scale(
+    doc: &Document,
+    views: &[DrawingView],
+    view: usize,
+    area_w: f32,
+    area_h: f32,
+    fit: f32,
+) -> f32 {
+    if let Some(v) = views.get(view) {
+        if let Some(p) = v.aligned_parent {
+            if p != view && views.get(p).is_some() {
+                return view_autofit_scale(doc, views, p, area_w, area_h, fit);
+            }
+        }
+    }
+    let e = view_projected_extent(doc, views, view);
+    (area_w / e.x).min(area_h / e.y) * fit
+}
+
+/// The bbox center to render a view's geometry about. An aligned child adopts its parent's center
+/// along their **shared** projected axis (horizontal for above/below, vertical for left/right) so
+/// the part's edges line up across the aligned group, not just the view cards (#364).
+pub fn view_render_center(doc: &Document, views: &[DrawingView], view: usize) -> glam::Vec2 {
+    let (min, max) =
+        view_projected_bbox(doc, views, view).unwrap_or((glam::Vec2::ZERO, glam::Vec2::ZERO));
+    let mut center = (min + max) * 0.5;
+    if let Some(v) = views.get(view) {
+        if let (Some(p), Some(dir)) = (v.aligned_parent, v.aligned_dir) {
+            if p != view && views.get(p).is_some() {
+                let parent_center = view_render_center(doc, views, p);
+                if dir.shares_pos_x() {
+                    center.x = parent_center.x;
+                } else {
+                    center.y = parent_center.y;
+                }
+            }
+        }
+    }
+    center
+}
+
 /// Match a `(right, up)` axis pair back to one of the six orthographic [`DrawingOrientation`]s.
 fn orientation_from_axes(right: Vec3, up: Vec3) -> Option<DrawingOrientation> {
     use DrawingOrientation as O;
@@ -859,6 +934,7 @@ fn render_drawing<C: Canvas>(doc: &Document, index: usize, canvas: &mut C) -> Op
             doc,
             &drawing.views,
             view,
+            vi,
             scale_text.as_deref(),
             cell_x,
             cell_y,
@@ -922,6 +998,7 @@ fn render_view_geometry<C: Canvas>(
     doc: &Document,
     views: &[DrawingView],
     view: &DrawingView,
+    view_index: usize,
     scale_text: Option<&str>,
     cell_x: f32,
     cell_y: f32,
@@ -955,11 +1032,14 @@ fn render_view_geometry<C: Canvas>(
     let area_h = cell_h - caption_h - 2.0 * CELL_PAD;
     // A set print scale (#300) draws at exactly `factor` page-mm per model-mm (points on the
     // export canvas); otherwise auto-fit to the card.
+    let _ = extent;
     let scale = match scale_text.and_then(crate::model::parse_drawing_scale) {
         Some(factor) => factor * PT_PER_MM,
-        None => (area_w / extent.x).min(area_h / extent.y) * 0.9,
+        // Aligned children share their parent's auto-fit scale so edges line up (#364).
+        None => view_autofit_scale(doc, views, view_index, area_w, area_h, 0.9),
     };
-    let bbox_center = (min + max) * 0.5;
+    // Aligned children align to their parent along the shared edge (#364), not just their card.
+    let bbox_center = view_render_center(doc, views, view_index);
     let area_center =
         glam::Vec2::new(cell_x + cell_w * 0.5, cell_y + caption_h + CELL_PAD + area_h * 0.5);
     // Model +up maps to screen -y (y grows downward).

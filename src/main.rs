@@ -9383,13 +9383,24 @@ impl App {
                 // An aligned child inherits its parent's scale (#296/#300).
                 let resolved_scale =
                     crate::drawing::resolved_view_scale(&self.state.doc, drawing, vi);
+                let _ = extent;
                 let scale = match resolved_scale.as_deref().and_then(model::parse_drawing_scale) {
                     Some(factor) => factor * px_per_page_mm,
-                    None => {
-                        (draw_area.width() / extent.x).min(draw_area.height() / extent.y) * 0.9
-                    }
+                    // Aligned children share their parent's auto-fit scale so edges line up (#364).
+                    None => crate::drawing::view_autofit_scale(
+                        &self.state.doc,
+                        &views,
+                        vi,
+                        draw_area.width(),
+                        draw_area.height(),
+                        0.9,
+                    ),
                 };
-                let bbox_center = (min + max) * 0.5;
+                // Aligned children line up to their parent along the shared edge (#364).
+                let bbox_center = {
+                    let c = crate::drawing::view_render_center(&self.state.doc, &views, vi);
+                    egui::vec2(c.x, c.y)
+                };
                 // Model +up maps to screen -y; center the fitted bbox in the draw area.
                 let to_screen = |p: egui::Vec2| {
                     let d = (p - bbox_center) * scale;
