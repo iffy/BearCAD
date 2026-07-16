@@ -262,7 +262,7 @@ fn match_pattern(pattern: &[ConstraintRole], refs: &[ConstraintRef]) -> Option<(
                     if points.len().saturating_sub(point_i) > points_still_needed {
                         return None;
                     }
-                    return Some((false, vec![role_name(*role)]));
+                    return Some((false, vec![missing_role_name(*role, line_i)]));
                 }
             }
             ConstraintRole::Point => {
@@ -283,7 +283,7 @@ fn match_pattern(pattern: &[ConstraintRole], refs: &[ConstraintRef]) -> Option<(
                     if lines.len().saturating_sub(line_i) > lines_still_needed {
                         return None;
                     }
-                    return Some((false, vec![role_name(*role)]));
+                    return Some((false, vec![missing_role_name(*role, point_i)]));
                 }
             }
         }
@@ -295,10 +295,14 @@ fn match_pattern(pattern: &[ConstraintRole], refs: &[ConstraintRef]) -> Option<(
     Some((true, Vec::new()))
 }
 
-fn role_name(role: ConstraintRole) -> &'static str {
-    match role {
-        ConstraintRole::Line => "line",
-        ConstraintRole::Point => "point",
+/// Reason text for a missing role: "another line" when one of the same role is
+/// already selected (e.g. Parallel with one line picked), plain "line" otherwise (#405).
+fn missing_role_name(role: ConstraintRole, already_matched: usize) -> &'static str {
+    match (role, already_matched > 0) {
+        (ConstraintRole::Line, false) => "line",
+        (ConstraintRole::Line, true) => "another line",
+        (ConstraintRole::Point, false) => "point",
+        (ConstraintRole::Point, true) => "another point",
     }
 }
 
@@ -916,6 +920,41 @@ mod tests {
         assert!(rows.iter().all(|row| !row.enabled));
         assert_eq!(rows[0].kind, GeometricConstraintType::Parallel);
         assert_eq!(rows[0].missing, vec!["line", "line"]);
+    }
+
+    /// #405: with one line already selected, two-line constraints must ask for
+    /// "another line", not repeat "line" as if nothing were selected.
+    #[test]
+    fn single_line_selection_asks_for_another_line() {
+        let mut sel = SceneSelection::default();
+        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        let rows = constraint_pane_rows(&sel);
+        let row = |kind| rows.iter().find(|r| r.kind == kind).unwrap();
+        for kind in [
+            GeometricConstraintType::Parallel,
+            GeometricConstraintType::Perpendicular,
+            GeometricConstraintType::Equal,
+        ] {
+            assert!(!row(kind).enabled);
+            assert_eq!(row(kind).missing, vec!["another line"], "{kind:?}");
+        }
+        // One point + Coincident asks for the second point the same way.
+        let mut sel = SceneSelection::default();
+        click_scene_selection(
+            &mut sel,
+            SceneElement::Point(crate::model::ConstraintPoint::LineEndpoint {
+                line: 0,
+                end: crate::model::LineEnd::Start,
+            }),
+            false,
+        );
+        let rows = constraint_pane_rows(&sel);
+        let coincident = rows
+            .iter()
+            .find(|r| r.kind == GeometricConstraintType::Coincident)
+            .unwrap();
+        assert!(!coincident.enabled);
+        assert_eq!(coincident.missing, vec!["another point"]);
     }
 
     #[test]
