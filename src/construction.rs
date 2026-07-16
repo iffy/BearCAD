@@ -365,13 +365,19 @@ pub fn apply_construction_plane_edit(
 }
 
 /// Build an orthonormal (u, v) basis on a plane from its unit normal.
+/// Stable in-plane axes for a face-anchored plane (#399): `u = up_hint × n`, `v = n × u`,
+/// with `up_hint = +Z` (falling back to `+Y` for near-±Z normals). A plane offset from
+/// Ground inherits Ground's axes exactly (u = +X, v = +Y for n = +Z), and a vertical
+/// plane's v points world-up. The previous `n × hint` rule came out rotated 90° from the
+/// parent plane, so identical sketch coordinates on an offset plane landed rotated relative
+/// to the plane they were offset from — a loft between same-(u,v) circles leaned sideways.
 pub fn plane_basis(normal: Vec3) -> (Vec3, Vec3) {
     let n = normal.normalize_or_zero();
     if n.length_squared() < 1e-8 {
         return (Vec3::X, Vec3::Y);
     }
-    let hint = if n.z.abs() < 0.9 { Vec3::Z } else { Vec3::X };
-    let u = n.cross(hint).normalize_or_zero();
+    let up = if n.z.abs() < 0.9 { Vec3::Z } else { Vec3::Y };
+    let u = up.cross(n).normalize_or_zero();
     let v = n.cross(u);
     (u, v)
 }
@@ -2085,6 +2091,23 @@ pub fn add_line_rectangle(
 mod tests {
     use super::*;
     use eframe::egui::Pos2;
+
+    #[test]
+    fn face_plane_axes_match_the_ground_and_point_up(){
+        // #399: a plane offset from Ground must inherit Ground's axes exactly — the old
+        // basis came out rotated 90°, so same-(u,v) sketches on parent and offset plane
+        // didn't line up (a loft between them leaned sideways).
+        let plane = plane_from_face(30.0, Vec3::ZERO, Vec3::Z);
+        assert!((plane.u_axis - Vec3::X).length() < 1e-5, "u = +X, got {:?}", plane.u_axis);
+        assert!((plane.v_axis - Vec3::Y).length() < 1e-5, "v = +Y, got {:?}", plane.v_axis);
+        // A vertical plane's v points world-up so sketches read upright.
+        let wall = plane_from_face(0.0, Vec3::ZERO, -Vec3::Y);
+        assert!((wall.v_axis - Vec3::Z).length() < 1e-5, "wall v = +Z, got {:?}", wall.v_axis);
+        assert!(
+            wall.u_axis.cross(wall.v_axis).dot(wall.normal) > 0.99,
+            "basis stays right-handed"
+        );
+    }
 
     #[test]
     fn face_offset_moves_along_normal() {

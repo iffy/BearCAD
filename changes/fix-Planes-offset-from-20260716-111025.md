@@ -1,0 +1,1 @@
+Planes offset from a face now inherit that face's in-plane axes (u=+X, v=+Y for a plane offset from Ground) and vertical planes' v points world-up — sketch coordinates line up across parallel planes, so lofts between same-placed sections stay straight instead of leaning.

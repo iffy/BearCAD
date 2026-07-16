@@ -4682,6 +4682,45 @@ mod tests {
 
     /// Two equal circles on planes 10mm apart loft into a closed prism whose signed
     /// volume matches the swept n-gon (~pi*r^2*h), proving the walls and caps close up.
+    /// #399: a loft between circles sketched at the same off-origin (u, v) on Ground and an
+    /// offset plane is a straight (vertical) frustum — the offset plane's basis matches
+    /// Ground's, so the second ring keeps its in-plane offset instead of collapsing to the
+    /// plane centre and leaning the solid.
+    #[test]
+    fn loft_stays_straight_for_off_origin_sections() {
+        let mut doc = Document::default();
+        doc.construction_planes.push(crate::construction::plane_from_face(
+            30.0,
+            Vec3::ZERO,
+            Vec3::Z,
+        ));
+        let s0 = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        doc.circles
+            .push(crate::model::Circle::from_local_center_radius(s0, -30.0, 0.0, 6.0, 0.0));
+        let s1 = doc.add_sketch(crate::model::FaceId::ConstructionPlane(1));
+        doc.circles
+            .push(crate::model::Circle::from_local_center_radius(s1, -30.0, 0.0, 3.0, 0.0));
+        let loft = crate::model::Loft {
+            sections: vec![
+                crate::model::LoftSection { sketch: s0, face: ExtrudeFace::Circle(0) },
+                crate::model::LoftSection { sketch: s1, face: ExtrudeFace::Circle(1) },
+            ],
+            name: None,
+            deleted: false,
+        };
+        let mesh = loft_mesh(&doc, &loft).expect("loft builds");
+        let (min, max) = mesh.bounds().unwrap();
+        assert!(
+            (min.x + 36.0).abs() < 0.2 && (max.x + 24.0).abs() < 0.2,
+            "x spans the r=6 ring at -30, got {min:?}..{max:?}"
+        );
+        assert!(
+            min.y.abs() <= 6.2 && max.y.abs() <= 6.2,
+            "y stays within the bottom ring radius (no lean), got {min:?}..{max:?}"
+        );
+        assert!((max.z - 30.0).abs() < 0.2, "reaches the offset plane");
+    }
+
     #[test]
     fn loft_mesh_between_two_circles_closes_with_expected_volume() {
         let mut doc = Document::default();
