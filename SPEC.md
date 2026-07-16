@@ -1010,6 +1010,8 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   exports. The **Select** tool clicks to select and drags to move them; the context pane shows
   a multi-line editor + Remove (`Action::AddDrawingAnnotation`/`EditDrawingAnnotationText`/
   `MoveDrawingAnnotation`/`RemoveDrawingAnnotation`; `AppState::selected_drawing_annotation`).
+  **Double-clicking** a textbox on the page focuses that editor with the text selected (#379,
+  `ContextPaneState::focus_annotation_field`), so typing immediately replaces it.
   Scriptable: `bearcad.drawing_text{ drawing, text, x, y, wrap? }`. While the **Text** tool is
   active, the context pane belongs to placing/editing text: a projection that happens to still be
   selected does **not** show its view editor (#329), and the **Default units** section is hidden

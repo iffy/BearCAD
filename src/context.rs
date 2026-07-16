@@ -629,6 +629,9 @@ pub struct NameControl {
 pub struct ContextPaneState {
     pub name_draft: String,
     pub focus_name_field: bool,
+    /// Focus the drawing-annotation text field with everything selected (#379) — set when a
+    /// page textbox is double-clicked, so typing immediately replaces its text.
+    pub focus_annotation_field: bool,
     pub synced_element: Option<SceneElement>,
     /// Length draft for the image scale calibration control (#171).
     pub calibrate_length_draft: String,
@@ -2457,6 +2460,22 @@ pub fn show_pane(
         );
         if text_resp.changed() {
             on_drawing_annotation_edit(DrawingAnnotationEdit::Text(edit_text.clone()));
+        }
+        // A double-clicked page textbox focuses this field with the text selected (#379),
+        // so typing replaces it immediately (same pattern as the name field above).
+        if pane_state.focus_annotation_field {
+            text_resp.request_focus();
+            if text_resp.has_focus() {
+                let len = edit_text.chars().count();
+                let mut state =
+                    egui::TextEdit::load_state(&ectx, text_id).unwrap_or_default();
+                state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                    egui::text::CCursor::default(),
+                    egui::text::CCursor::new(len),
+                )));
+                state.store(&ectx, text_id);
+                pane_state.focus_annotation_field = false;
+            }
         }
         if text_resp.has_focus() {
             let cursor =

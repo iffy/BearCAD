@@ -9993,6 +9993,12 @@ impl App {
                     if resp.clicked() {
                         select_ann = Some(ai);
                     }
+                    // Double-clicking a textbox jumps to its context-pane editor (#379):
+                    // the field takes focus with the text selected, so typing replaces it.
+                    if resp.double_clicked() {
+                        select_ann = Some(ai);
+                        self.state.context_pane.focus_annotation_field = true;
+                    }
                     if resp.dragged() {
                         select_ann = Some(ai);
                         let d = resp.drag_delta();

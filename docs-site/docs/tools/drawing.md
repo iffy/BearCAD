@@ -51,7 +51,8 @@ and it looks the same in the editor as in the exported PDF/SVG.
 Add free text to a page with the **Text** tool (or press **T** in the drawing workbench):
 click where you want it for a box that grows to fit, or drag a rectangle for one that wraps
 the text to that width. Switch to the **Select** tool to drag notes around the page, and edit
-or remove a selected note from the context pane. All of the page's elements — projections, notes,
+or remove a selected note from the context pane. **Double-click** a note to jump straight to
+that editor with its text selected — just start typing to replace it. All of the page's elements — projections, notes,
 and dimensions — are also listed in the **Elements pane**, nested under the drawing just like a
 sketch's geometry (each projection's dimensions sit under it). Hover a row to highlight that
 element on the page, and click it to select it.
