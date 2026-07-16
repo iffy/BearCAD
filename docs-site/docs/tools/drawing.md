@@ -77,9 +77,10 @@ previews that neighbouring view — and click to drop it. The child locks to the
 drag it any distance away and it still lines up, and moving the base carries its aligned views
 along. Each child inherits the base's scale and takes the orientation implied by its direction, so
 a few clicks build a full orthographic layout around any base view. You can also **adjust an aligned
-view's angle** from its context pane: it offers a dropdown of the orientations that keep the shared
-edge (for a right-of-front view: right, back, left, and the diagonal edge views between them — never
-top or bottom), so you can spin the projection while it stays lined up. Selecting an aligned view
+view's angle** from its context pane: the same navigation bear as any view, limited to the
+orientations that keep the shared edge (for a right-of-front view: right, back, left, and the
+diagonal edge views between them — never top or bottom), so you can spin the projection while it
+stays lined up. Selecting an aligned view
 also offers a **Projection lines** checkbox: two dashed, lightweight lines connect the outer
 silhouette edges of the pair across the gap — at the far left and right for a view below or above
 its base, at the top and bottom for one beside it — in the editor and in the exported PDF/SVG.

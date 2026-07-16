@@ -987,11 +987,13 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   both the editor and exports. A child **inherits the parent's scale** and can't change it
   (`drawing::resolved_view_scale`), and its
   orientation **defaults** to the base+direction derivation but can be **adjusted within the ring
-  of angles that keep the shared edge** (#367): the view editor shows a dropdown of those
-  orientations (`drawing::aligned_inline_orientations` — the straight-on faces *and* the diagonal
+  of angles that keep the shared edge** (#367): the view editor shows the same **orientation
+  bear** as a normal view (#370), restricted to that ring — only its faces/edges hover-highlight
+  and click; everything else is inert (`show_orientation_picker`'s `allowed` set). The ring is
+  `drawing::aligned_inline_orientations` — the straight-on faces *and* the diagonal
   edge views sharing the fold axis, excluding the base's own orientation and anything using the
   perpendicular pole, so a Front base with a right child offers right/back/left and the four
-  vertical-edge views, never top/bottom). Picking one rolls the projection about the shared edge:
+  vertical-edge views, never top/bottom. Picking one rolls the projection about the shared edge:
   `resolved_view_axes` maps the chosen orientation into the parent's unfolded frame, so it renders
   the new angle while staying lined up. Crucially, an aligned child **renders with the unfolded
   basis** (`drawing::resolved_view_axes`), not a fixed canonical orientation — for a non-Front base

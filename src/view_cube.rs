@@ -1453,7 +1453,12 @@ pub fn show_orientation_picker(
     body_edges: Option<&[(Vec3, Vec3)]>,
     render_state: Option<&eframe::egui_wgpu::RenderState>,
     gpu_bear: bool,
+    // Restrict pickable faces/edges/corners to this set (#370): anything else neither
+    // hover-highlights nor clicks — an aligned child only offers the orientations that keep
+    // its shared edge. `None` = everything is pickable.
+    allowed: Option<&[CubePick]>,
 ) -> Option<OrientationPick> {
+    let allow = |p: CubePick| allowed.is_none_or(|a| a.contains(&p));
     let id = ui.make_persistent_id(id_source);
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(CUBE_SIZE), Sense::hover());
     // A local camera persisted per widget, seeded to the current view.
@@ -1490,7 +1495,7 @@ pub fn show_orientation_picker(
             (egui::Key::Num2, StandardView::Bottom),
             (egui::Key::Num0, StandardView::Back),
         ] {
-            if ui.input(|i| i.key_pressed(k)) {
+            if ui.input(|i| i.key_pressed(k)) && allow(CubePick::Face(view)) {
                 cam.start_view_transition(view, VIEW_TRANSITION_DURATION);
                 picked = Some(OrientationPick::Standard(view));
             }
@@ -1508,11 +1513,14 @@ pub fn show_orientation_picker(
     }
     let hover_pick = response
         .hover_pos()
-        .and_then(|p| pick_cube(&faces, &edges, &corners, p));
+        .and_then(|p| pick_cube(&faces, &edges, &corners, p))
+        .filter(|p| allow(*p));
     if !free && response.clicked() {
         if let Some(pos) = response.interact_pointer_pos() {
             if response.drag_delta().length() < DRAG_CLICK_THRESHOLD {
-                if let Some(pick) = pick_cube(&faces, &edges, &corners, pos) {
+                if let Some(pick) =
+                    pick_cube(&faces, &edges, &corners, pos).filter(|p| allow(*p))
+                {
                     apply_cube_pick(&mut cam, pick);
                     picked = Some(match pick {
                         CubePick::Face(v) => OrientationPick::Standard(v),

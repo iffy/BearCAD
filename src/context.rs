@@ -2339,37 +2339,29 @@ pub fn show_pane(
         ui.label(egui::RichText::new("View").strong());
         ui.label(&control.source);
         // An aligned child stays lined up with its base, but its **angle** can be adjusted within
-        // the ring of orientations that keep the shared edge (#367): a dropdown of those (the
-        // straight-on faces and diagonal edge views that don't involve the perpendicular pole).
-        // A child of an isometric base has no such ring, so it stays read-only.
-        if control.aligned {
-            if control.inline_orientations.is_empty() {
-                ui.label(
-                    egui::RichText::new(format!("{} · aligned", control.orientation.label()))
-                        .color(egui::Color32::from_gray(150)),
-                );
-            } else {
-                egui::ComboBox::from_id_salt("aligned_view_orientation")
-                    .selected_text(format!("{} · aligned", control.orientation.label()))
-                    .show_ui(ui, |ui| {
-                        for o in &control.inline_orientations {
-                            if ui
-                                .selectable_label(control.orientation == *o, o.label())
-                                .clicked()
-                            {
-                                on_drawing_view_edit(DrawingViewEdit::Orientation(*o));
-                            }
-                        }
-                    });
-            }
+        // the ring of orientations that keep the shared edge (#367). A child of an isometric
+        // base has no such ring, so it stays read-only.
+        if control.aligned && control.inline_orientations.is_empty() {
+            ui.label(
+                egui::RichText::new(format!("{} · aligned", control.orientation.label()))
+                    .color(egui::Color32::from_gray(150)),
+            );
         } else {
             // Interactive orientation bear (#315): drag to spin, click a face for that view or
             // a corner/edge for isometric; focus it and press 4/5/6/8/2/0 for
-            // left/front/right/top/bottom/back.
+            // left/front/right/top/bottom/back. An aligned child gets the same bear (#370),
+            // restricted to the faces/edges of its shared-edge ring — anything else neither
+            // highlights nor clicks.
             let seed = drawing_orientation_to_standard(control.orientation);
             // Highlight the current view on the bear (#323/#340): a face, a corner (Isometric),
             // or a cube edge (a diagonal edge view, #339). Drawn even when behind the bear.
             let selected = drawing_orientation_to_cube_pick(control.orientation);
+            let ring: Vec<crate::view_cube::CubePick> = control
+                .inline_orientations
+                .iter()
+                .filter_map(|o| drawing_orientation_to_cube_pick(*o))
+                .collect();
+            let allowed = control.aligned.then_some(ring.as_slice());
             if let Some(pick) = crate::view_cube::show_orientation_picker(
                 ui,
                 "drawing_view_bear",
@@ -2379,13 +2371,21 @@ pub fn show_pane(
                 None,
                 None,
                 false,
+                allowed,
             ) {
                 on_drawing_view_edit(DrawingViewEdit::Orientation(orientation_pick_to_drawing(pick)));
             }
-            // Set the projection to whatever the 3D viewport is currently showing (#366) — the way
-            // to get an arbitrary angle now that the free-spin toggle is gone.
-            if ui.button("Use this view").clicked() {
-                on_drawing_view_edit(DrawingViewEdit::UseCurrentView);
+            if control.aligned {
+                ui.label(
+                    egui::RichText::new(format!("{} · aligned", control.orientation.label()))
+                        .color(egui::Color32::from_gray(150)),
+                );
+            } else {
+                // Set the projection to whatever the 3D viewport is currently showing (#366) —
+                // the way to get an arbitrary angle now that the free-spin toggle is gone.
+                if ui.button("Use this view").clicked() {
+                    on_drawing_view_edit(DrawingViewEdit::UseCurrentView);
+                }
             }
         }
         egui::ComboBox::from_id_salt("drawing_view_style")
