@@ -400,6 +400,8 @@ pub struct SketchTextControl {
     pub italic: bool,
     pub underline: bool,
     pub size_expr: String,
+    /// The evaluated size in mm — what the ± steppers add to / subtract from (#385).
+    pub size_mm: f32,
     /// Rotation in degrees (the model stores radians).
     pub rotation_deg: String,
     /// Wrap width in mm, empty when unwrapped (#282).
@@ -2362,6 +2364,25 @@ pub fn show_pane(
             let mut size = control.size_expr.clone();
             if ui.add(egui::TextEdit::singleline(&mut size).desired_width(70.0)).changed() {
                 on_sketch_text_edit(SketchTextEdit::Size(size));
+            }
+            // ± steppers (#385): bump the evaluated size by 1 mm (replacing any expression
+            // with the stepped literal), never below 1 mm.
+            let stepped = |delta: f32| {
+                let v = (control.size_mm + delta).max(1.0);
+                let mut text = format!("{v:.2}");
+                while text.ends_with('0') {
+                    text.pop();
+                }
+                if text.ends_with('.') {
+                    text.pop();
+                }
+                text
+            };
+            if ui.small_button("−").on_hover_text("Smaller by 1 mm").clicked() {
+                on_sketch_text_edit(SketchTextEdit::Size(stepped(-1.0)));
+            }
+            if ui.small_button("+").on_hover_text("Larger by 1 mm").clicked() {
+                on_sketch_text_edit(SketchTextEdit::Size(stepped(1.0)));
             }
         });
         labeled_row(ui, "Rotation°", |ui| {

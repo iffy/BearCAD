@@ -811,7 +811,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 - **Context editor (#286):** selecting exactly one text opens its editor in the context pane: a
   multi-line textarea, a font-family chooser listing the installed families (`fontdb`),
   **B**/**I**/**U** style toggles, a **Size** field accepting length expressions (parameters
-  work: `w / 2`), a **Rotation°** field in degrees, and a **Wrap width** field (mm; empty
+  work: `w / 2`) with **± stepper buttons** that bump the evaluated size by 1 mm (#385,
+  replacing any expression with the stepped literal, floored at 1 mm), a **Rotation°** field
+  in degrees, and a **Wrap width** field (mm; empty
   grows the box to fit, a value word-wraps to that width, #282). Every change re-bakes the
   glyphs immediately. A size expression is stored as typed; the evaluated size only moves once
   the expression is valid, so mid-edit states don't clobber the text.

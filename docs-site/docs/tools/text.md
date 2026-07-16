@@ -37,7 +37,8 @@ its editor in the context pane:
 - **B / I / U** — bold, italic, and underline toggles. Bold and italic select the matching
   face of the family.
 - **Size** — the font size in mm. This is an expression field: numbers, units (`1cm`),
-  parameters, and arithmetic (`w / 2`) all work, so lettering scales with your model.
+  parameters, and arithmetic (`w / 2`) all work, so lettering scales with your model. The
+  **+**/**−** buttons beside it nudge the size by 1 mm.
 - **Rotation°** — turns the text about its start point, in degrees.
 - **Wrap width** — leave empty to grow the box to fit the text, or enter a width in mm to
   word-wrap the text to that width (it grows downward). Dragging a rectangle with the Text

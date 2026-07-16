@@ -5031,6 +5031,7 @@ impl eframe::App for App {
                             } else {
                                 t.size_expr.clone()
                             },
+                            size_mm: t.size,
                             rotation_deg: format!("{:.0}", t.rotation.to_degrees()),
                             wrap: t.wrap_width.map(|w| format!("{w:.0}")).unwrap_or_default(),
                             pinned: t.pin.is_some(),
