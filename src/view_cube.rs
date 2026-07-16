@@ -185,9 +185,23 @@ fn bear_mesh() -> &'static [MeshTriangle] {
     static MESH: std::sync::OnceLock<Vec<MeshTriangle>> = std::sync::OnceLock::new();
     MESH.get_or_init(|| {
         let raw = parse_ascii_stl(BEAR_STL).expect("bear.stl");
-        // bear.stl forward is +X; skip the old −Y reorientation.
+        // bear.stl's nose points +X; rotate it to −Y so the bear **faces the Front view**
+        // (#395) — the front view's camera sits at −Y, so clicking the face of the bear on
+        // any orientation picker picks Front.
+        let rotate = |v: Vec3| Vec3::new(v.y, -v.x, v.z);
+        let faced: Vec<MeshTriangle> = raw
+            .iter()
+            .map(|t| MeshTriangle {
+                vertices: [
+                    rotate(t.vertices[0]),
+                    rotate(t.vertices[1]),
+                    rotate(t.vertices[2]),
+                ],
+                normal: rotate(t.normal),
+            })
+            .collect();
         scale_mesh(
-            &fit_mesh_to_unit_cube(&raw, HALF, BEAR_MESH_MARGIN),
+            &fit_mesh_to_unit_cube(&faced, HALF, BEAR_MESH_MARGIN),
             BEAR_MESH_SCALE,
         )
     })
