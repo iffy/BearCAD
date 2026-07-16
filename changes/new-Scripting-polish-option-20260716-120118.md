@@ -1,0 +1,1 @@
+Scripting polish: option tables reject unrecognized keys with the accepted keys named; 'gap' works as an alias for 'spacing' in every repeat call; count("image") counts imported images; drawing_view takes sketch= to project a sketch (exactly one of body/sketch).

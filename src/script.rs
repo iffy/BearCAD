@@ -161,6 +161,12 @@ pub enum Instruction {
         body: usize,
         orientation: crate::model::DrawingOrientation,
     },
+    /// Add a sketch projection to a drawing (#278/#403) — `bearcad.drawing_view{ sketch = i }`.
+    AddDrawingSketchView {
+        drawing: usize,
+        sketch: usize,
+        orientation: crate::model::DrawingOrientation,
+    },
     /// Add a free text annotation to a drawing page (#312).
     AddDrawingAnnotation {
         drawing: usize,
@@ -701,6 +707,14 @@ impl Instruction {
                 orientation,
             } => format!(
                 "bearcad.drawing_view{{ drawing = {drawing}, body = {body}, orientation = {:?} }}",
+                orientation.label().to_ascii_lowercase()
+            ),
+            Instruction::AddDrawingSketchView {
+                drawing,
+                sketch,
+                orientation,
+            } => format!(
+                "bearcad.drawing_view{{ drawing = {drawing}, sketch = {sketch}, orientation = {:?} }}",
                 orientation.label().to_ascii_lowercase()
             ),
             Instruction::AddDrawingAnnotation { drawing, text, x, y, wrap } => {
@@ -3476,6 +3490,19 @@ impl ScriptRunner {
                 let result = state.apply(Action::AddDrawingView {
                     drawing,
                     body,
+                    orientation,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::AddDrawingSketchView {
+                drawing,
+                sketch,
+                orientation,
+            } => {
+                let result = state.apply(Action::AddDrawingSketchView {
+                    drawing,
+                    sketch,
                     orientation,
                 });
                 self.record_action_error(result);

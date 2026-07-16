@@ -612,7 +612,17 @@ fn parse_repeat_op_args(
             }
         })
     };
-    Ok((targets, axis, mode, expr("count")?, expr("spacing")?, expr("length")?))
+    // `gap` is what the Repeat pane calls the field; accept it as an alias of `spacing` (#403).
+    let spacing = match (expr("spacing")?, expr("gap")?) {
+        (s, g) if !s.is_empty() && !g.is_empty() => {
+            return Err(mlua::Error::external(
+                "repeat takes `spacing` or its alias `gap`, not both",
+            ))
+        }
+        (s, g) if s.is_empty() => g,
+        (s, _) => s,
+    };
+    Ok((targets, axis, mode, expr("count")?, spacing, expr("length")?))
 }
 
 /// Parses `bearcad.repeat_sketch{}`/`bearcad.edit_sketch_repeat{}` arguments (#222): the host
@@ -676,6 +686,16 @@ fn parse_sketch_repeat_op_args(
             }
         })
     };
+    // `gap` is the pane's name for the field; alias of `spacing` (#403).
+    let spacing = match (expr("spacing")?, expr("gap")?) {
+        (s, g) if !s.is_empty() && !g.is_empty() => {
+            return Err(mlua::Error::external(
+                "repeat takes `spacing` or its alias `gap`, not both",
+            ))
+        }
+        (s, g) if s.is_empty() => g,
+        (s, _) => s,
+    };
     Ok((
         sketch,
         lines,
@@ -684,7 +704,7 @@ fn parse_sketch_repeat_op_args(
         dir_v,
         mode,
         expr("count")?,
-        expr("spacing")?,
+        spacing,
         expr("length")?,
     ))
 }
@@ -764,6 +784,24 @@ fn constraint_kind_name(kind: &ConstraintKind) -> &'static str {
         ConstraintKind::Vertical { .. } => "vertical",
         ConstraintKind::Angle { .. } => "angle",
     }
+}
+
+/// Reject unrecognized keys in an options table (#403): a typo like `gap` for `spacing`
+/// used to be silently ignored and fail confusingly downstream ("Repeat doesn't
+/// evaluate…"). The error names every accepted key.
+fn check_keys(opts: &Table, call: &str, allowed: &[&str]) -> mlua::Result<()> {
+    for pair in opts.clone().pairs::<Value, Value>() {
+        let (key, _) = pair?;
+        let Value::String(s) = key else { continue };
+        let key = s.to_str()?.to_string();
+        if !allowed.contains(&key.as_str()) {
+            return Err(mlua::Error::external(format!(
+                "{call}: unknown key `{key}` (accepted keys: {})",
+                allowed.join(", ")
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// A size argument that is either a plain number or a parameter-expression string
@@ -1288,11 +1326,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "sketch_text" | "text" => {
                     doc.sketch_texts.iter().filter(|e| !e.deleted).count()
                 }
+                "image" => doc.tracing_images.iter().filter(|e| !e.deleted).count(),
                 other => {
                     return Err(mlua::Error::external(format!(
                         "unknown count kind '{other}' (valid kinds: line, circle, sketch, \
                          constraint, construction_plane, extrusion, body, drawing, parameter, \
-                         sketch_text)"
+                         sketch_text, image)"
                     )))
                 }
             };
@@ -2222,6 +2261,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "rect",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(&opts, "rect", &["x", "y", "width", "height", "name"])?;
             let (width, width_expr) = scalar_arg(lua, &opts, "width")?
                 .ok_or_else(|| mlua::Error::external("rect requires a `width`"))?;
             let (height, height_expr) = scalar_arg(lua, &opts, "height")?
@@ -2258,6 +2298,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "line",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "line",
+                &["x", "y", "x1", "y1", "length", "angle", "bezier", "dimension", "name"],
+            )?;
             // Either give explicit endpoints (x,y)-(x1,y1), or origin + length + optional angle.
             let x0: f32 = opts.get("x").unwrap_or(0.0);
             let y0: f32 = opts.get("y").unwrap_or(0.0);
@@ -2316,6 +2361,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "circle",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(&opts, "circle", &["x", "y", "r", "radius", "diameter", "name"])?;
             let cx: f32 = opts.get("x").unwrap_or(0.0);
             let cy: f32 = opts.get("y").unwrap_or(0.0);
             // Accept a radius (`r` or its `radius` alias, #108) or a `diameter`, in that
@@ -2464,6 +2510,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "extrude",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "extrude",
+                &["distance", "to", "circle", "circles", "polygon", "text", "boolean", "body", "name"],
+            )?;
             // `to = { plane = i } | { face = <face spec> } | { vertex = <point> }` snaps the
             // extrusion to that object's extended plane (#114) — the scripted equivalent of
             // pulling the gizmo onto a surface. With a target, `distance` may be omitted.
@@ -2597,6 +2648,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "repeat_bodies",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "repeat_bodies",
+                &["bodies", "axis", "mode", "count", "spacing", "gap", "length", "name"],
+            )?;
             let (targets, axis, mode, count, spacing, length) = parse_repeat_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::CreateRepeatOp {
@@ -2620,6 +2676,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "edit_repeat",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "edit_repeat",
+                &["index", "bodies", "axis", "mode", "count", "spacing", "gap", "length"],
+            )?;
             let op: usize = opts.get("index")?;
             let (targets, axis, mode, count, spacing, length) = parse_repeat_op_args(&opts)?;
             unsafe {
@@ -2646,6 +2707,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "repeat_sketch",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "repeat_sketch",
+                &["sketch", "lines", "circles", "angle", "dir", "mode", "count", "spacing", "gap", "length"],
+            )?;
             let (sketch, lines, circles, dir_u, dir_v, mode, count, spacing, length) =
                 parse_sketch_repeat_op_args(&opts)?;
             let result = unsafe {
@@ -2672,6 +2738,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "edit_sketch_repeat",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "edit_sketch_repeat",
+                &["index", "sketch", "lines", "circles", "angle", "dir", "mode", "count", "spacing", "gap", "length"],
+            )?;
             let op: usize = opts.get("index")?;
             let (_sketch, lines, circles, dir_u, dir_v, mode, count, spacing, length) =
                 parse_sketch_repeat_op_args(&opts)?;
@@ -2758,6 +2829,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "slice_sketch",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "slice_sketch",
+                &["sketch", "lines", "circles", "faces", "cutters"],
+            )?;
             let sketch: usize = opts.get::<Option<usize>>("sketch")?.unwrap_or(0);
             let line_targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("lines")?.unwrap_or_default();
             let circle_targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("circles")?.unwrap_or_default();
@@ -2784,6 +2860,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "edit_sketch_slice",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "edit_sketch_slice",
+                &["index", "lines", "circles", "faces", "cutters"],
+            )?;
             let op: usize = opts.get("index")?;
             let line_targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("lines")?.unwrap_or_default();
             let circle_targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("circles")?.unwrap_or_default();
@@ -2839,6 +2920,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "combine",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(&opts, "combine", &["op", "a", "b", "keep_b", "name"])?;
             let (kind, a, b, keep_b) = parse_boolean_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::CreateBooleanOp { kind, a, b, keep_b })?;
@@ -2855,6 +2937,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "edit_boolean",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(&opts, "edit_boolean", &["index", "op", "a", "b", "keep_b"])?;
             let op: usize = opts.get("index")?;
             let (kind, a, b, keep_b) = parse_boolean_op_args(&opts)?;
             unsafe {
@@ -2868,6 +2951,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "slice",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(&opts, "slice", &["bodies", "cutters", "extend", "name"])?;
             let (targets, cutters, extend_infinite) = parse_slice_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::CreateSliceOp { targets, cutters, extend_infinite })?;
@@ -2884,6 +2968,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "edit_slice",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(&opts, "edit_slice", &["index", "bodies", "cutters", "extend"])?;
             let op: usize = opts.get("index")?;
             let (targets, cutters, extend_infinite) = parse_slice_op_args(&opts)?;
             unsafe {
@@ -3015,20 +3100,33 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "drawing_view",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(&opts, "drawing_view", &["drawing", "body", "sketch", "orientation"])?;
             let drawing: usize = opts.get("drawing")?;
-            let body: usize = opts.get("body")?;
             let orientation = match opts.get::<Option<String>>("orientation")? {
                 Some(name) => crate::model::DrawingOrientation::from_name(&name).ok_or_else(|| {
                     mlua::Error::external(format!("unknown drawing orientation '{name}'"))
                 })?,
                 None => crate::model::DrawingOrientation::default(),
             };
+            // A view projects either a body or a sketch (#278/#403).
+            let body: Option<usize> = opts.get("body")?;
+            let sketch: Option<usize> = opts.get("sketch")?;
             unsafe {
-                tick.exec(Instruction::AddDrawingView {
-                    drawing,
-                    body,
-                    orientation,
-                })
+                match (body, sketch) {
+                    (Some(body), None) => tick.exec(Instruction::AddDrawingView {
+                        drawing,
+                        body,
+                        orientation,
+                    }),
+                    (None, Some(sketch)) => tick.exec(Instruction::AddDrawingSketchView {
+                        drawing,
+                        sketch,
+                        orientation,
+                    }),
+                    _ => Err(mlua::Error::external(
+                        "drawing_view requires exactly one of `body` or `sketch`",
+                    )),
+                }
             }
         })?,
     )?;
@@ -3248,6 +3346,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "edit_extrusion",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(&opts, "edit_extrusion", &["extrusion", "distance", "by", "to"])?;
             let extrusion: usize = opts.get("extrusion")?;
             // `distance` accepts a plain number or a parameter expression string (#402).
             let (mut distance, expression) = match scalar_arg(lua, &opts, "distance")? {
@@ -5044,6 +5143,47 @@ mod tests {
             "extrusion depth follows the parameter, got {}",
             state.doc.extrusions[0].distance
         );
+    }
+
+    /// #403: unknown table keys are an error naming the accepted keys, `gap` works as
+    /// the Repeat pane's alias for `spacing`, `count("image")` is a valid kind, and
+    /// `drawing_view{ sketch = i }` projects a sketch.
+    #[test]
+    fn lua_api_polish_key_checks_aliases_and_sketch_views() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 20, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+
+            -- A typo'd key errors immediately, naming the accepted keys.
+            local ok, err = pcall(function()
+                bearcad.combine{ kind = "cut", a = {0}, b = {0} }
+            end)
+            assert(not ok, "combine{kind=} should error")
+            assert(tostring(err):find("unknown key `kind`"), tostring(err))
+            assert(tostring(err):find("op"), "error should list accepted keys: " .. tostring(err))
+            local ok2, err2 = pcall(function()
+                bearcad.rect{ width = 10, height = 10, witdh = 3 }
+            end)
+            assert(not ok2 and tostring(err2):find("witdh"), tostring(err2))
+
+            -- `gap` = the Repeat pane's name for `spacing`.
+            bearcad.repeat_bodies{ bodies = {0}, axis = "x", count = 3, gap = 5 }
+
+            -- Images count (zero here, but the kind is valid).
+            assert(bearcad.count("image") == 0)
+
+            -- A drawing view of a sketch, not a body.
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, sketch = 0, orientation = "top" }
+            local ok3 = pcall(function()
+                bearcad.drawing_view{ drawing = d }
+            end)
+            assert(not ok3, "drawing_view without body or sketch should error")
+            "#,
+        );
+        assert_eq!(state.doc.repeat_ops.len(), 1);
+        assert_eq!(state.doc.drawings[0].views.len(), 1);
     }
 
     /// #402: an expression that doesn't evaluate is a script error, not silence.

@@ -1151,6 +1151,8 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   from the Elements pane's right-click **Add to drawing** while the drawing is open; a
   **sketch** view (`DrawingView::sketch`, #278) projects that sketch's line/circle geometry
   instead of a body's mesh edges (both editor and export share `drawing_view_world_edges`).
+  Scriptable too (#403): `bearcad.drawing_view{ drawing, sketch = i, orientation? }` — the
+  call takes exactly one of `body` or `sketch`.
 - **Projection elements (#254/#281):** each placed view shows in the Elements pane as a
   **projection** node (`HierarchyNode::DrawingProjection`, its own icon) nested **under its
   drawing**. In the Graph view it also draws a dashed **dependency edge** to its source body —
@@ -1739,11 +1741,16 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   that doesn't join exactly two lines or whose corner is within ~1° of straight (§3.1), an
   out-of-range 3D edge, … — the call raises a Lua error (catchable with `pcall`) instead of
   silently succeeding with nothing created. The GUI surfaces the same rejection message
-  through the status bar.
+  through the status bar. Options tables also **reject unrecognized keys (#403)** — a typo
+  like `combine{ kind = … }` (the key is `op`) or `repeat_bodies{ gap = … }` errors
+  immediately, naming the accepted keys, instead of being ignored and failing confusingly
+  downstream. `gap` is in fact accepted everywhere `spacing` is (it's the Repeat pane's name
+  for the field; passing both errors).
 - **Read-back / introspection (#107):** the API is not write-only — pure read getters (never
   recorded as instructions) let scripts assert what they built: `bearcad.count(kind)` /
   `bearcad.get{ kind, index }` over lines, circles, sketches, constraints, construction
-  planes, extrusions, bodies, and parameters; `bearcad.body_stats(i)` (mesh
+  planes, extrusions, bodies, and parameters (`count` also takes `drawing`, `sketch_text`,
+  and `image`); `bearcad.body_stats(i)` (mesh
   volume/triangles/bbox); `bearcad.status()`; `bearcad.selection()`; and
   `bearcad.parameter("get"|"get_expression", name)`.
 - **Absolute camera control (#108):** `bearcad.ui.camera{}` reads the pose

@@ -84,6 +84,15 @@ bearcad.parameter("value", 0, "30")                    -- everything above re-si
 An expression that doesn't evaluate (unknown parameter, bad syntax) fails the call with an
 error naming it.
 
+Calls that take an options table also **reject unrecognized keys**, so a typo fails
+immediately with the accepted keys listed (catchable with `pcall`) instead of being silently
+ignored and confusing a later step:
+
+```lua
+bearcad.combine{ kind = "cut", a = {0}, b = {1} }
+-- error: combine: unknown key `kind` (accepted keys: op, a, b, keep_b, name)
+```
+
 To sketch on a specific plane instead of the default ground plane:
 
 ```lua
@@ -224,6 +233,8 @@ bearcad.rect{ width = 40, height = 30 }
 bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
 
 assert(bearcad.count("line") == 4)             -- non-deleted entities per kind
+-- kinds: line, circle, sketch, constraint, construction_plane, extrusion,
+--        body, drawing, parameter, sketch_text, image
 local l = bearcad.get{ kind = "line", index = 0 }
 assert(l.x0 == 0 and math.abs(l.length - 40) < 1e-3)
 

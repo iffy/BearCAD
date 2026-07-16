@@ -73,7 +73,8 @@ bearcad.edit_sketch_repeat{ index = 0, circles = {0}, angle = 0,
 ```
 
 The direction is an `angle` in degrees (0 = the sketch's +X/u), or an explicit `dir = {du, dv}`.
-`mode`, `count`, `spacing`, and `length` work exactly like the 3D repeat above.
+`mode`, `count`, `spacing`, and `length` work exactly like the 3D repeat above. `gap` is
+accepted as an alias for `spacing` in every repeat call — it's the name the Repeat pane uses.
 
 ## Repeating a cut (drilling a row of holes)
 

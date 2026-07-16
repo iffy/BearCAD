@@ -129,6 +129,7 @@ bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 10 }
 local d = bearcad.drawing{ name = "Plate" }
 bearcad.drawing_view{ drawing = d, body = 0, orientation = "top" }
 bearcad.drawing_view{ drawing = d, body = 0, orientation = "iso" }
+bearcad.drawing_view{ drawing = d, sketch = 0 }  -- a sketch projects too
 
 -- Dimension an edge of view 0 by its two world endpoints.
 bearcad.drawing_dimension{ drawing = d, view = 0, a = {0, 0, 0}, b = {40, 0, 0} }

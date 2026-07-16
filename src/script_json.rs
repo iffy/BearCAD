@@ -635,11 +635,17 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
                     .ok_or_else(|| format!("unknown drawing orientation '{name}'"))?,
                 None => DrawingOrientation::default(),
             };
-            Ok(Instruction::AddDrawingView {
-                drawing: req_usize(o, "drawing", "drawing_view")?,
-                body: req_usize(o, "body", "drawing_view")?,
-                orientation,
-            })
+            let drawing = req_usize(o, "drawing", "drawing_view")?;
+            // A view projects either a body or a sketch (#278/#403).
+            match (opt_usize(o, "body")?, opt_usize(o, "sketch")?) {
+                (Some(body), None) => {
+                    Ok(Instruction::AddDrawingView { drawing, body, orientation })
+                }
+                (None, Some(sketch)) => {
+                    Ok(Instruction::AddDrawingSketchView { drawing, sketch, orientation })
+                }
+                _ => Err("drawing_view requires exactly one of `body` or `sketch`".into()),
+            }
         }
         "export_drawing_svg" => Ok(Instruction::ExportDrawingSvg {
             drawing: req_usize(o, "drawing", "export_drawing_svg")?,
