@@ -6490,7 +6490,11 @@ fn resolve_viewport_hover_highlight(
             let (world_loop, _) = extrude::face_profile_world(doc, &section.face)?;
             Some(gpu_viewport::ViewportHoverHighlight::ClosedLoop { world_loop })
         }
-        Tool::Rectangle | Tool::Line | Tool::Circle if sketch_session.is_none() => {
+        // The Text tool joins the draw tools (#383): outside a sketch it clicks a face to
+        // begin sketching there, so it hover-highlights faces the same way.
+        Tool::Rectangle | Tool::Line | Tool::Circle | Tool::Text
+            if sketch_session.is_none() =>
+        {
             pick_sketch_face(pp, project, doc, cam.eye())
                 .map(gpu_viewport::ViewportHoverHighlight::SketchFace)
         }
@@ -11350,7 +11354,37 @@ impl App {
         }
 
         if self.state.tool == Tool::Text {
-            self.handle_text_tool(ui, pointer_screen, &cam, viewport, &vp);
+            // Outside a sketch, the Text tool clicks a face to begin sketching there (#383),
+            // exactly like the Rectangle/Line/Circle draw tools; the text placement then
+            // starts on the next press inside the new sketch.
+            if self.state.sketch_session.is_none() {
+                if let Some(pp) = pointer_screen {
+                    if ui.input(|i| i.pointer.primary_pressed()) {
+                        if let Some(face) =
+                            pick_sketch_face(pp, &project, &self.state.doc, self.state.cam.eye())
+                        {
+                            self.state.apply(Action::BeginSketch {
+                                face,
+                                viewport: Some(viewport),
+                            });
+                        }
+                    } else if !self.gpu_viewport && !suppress_hover_highlight {
+                        if let Some(face) =
+                            pick_sketch_face(pp, &project, &self.state.doc, self.state.cam.eye())
+                        {
+                            draw_face_highlight(
+                                &painter,
+                                &project,
+                                &self.state.doc,
+                                face,
+                                construction::PICK_HOVER_RGBA,
+                            );
+                        }
+                    }
+                }
+            } else {
+                self.handle_text_tool(ui, pointer_screen, &cam, viewport, &vp);
+            }
         }
 
         if matches!(self.state.tool, Tool::Chamfer | Tool::Fillet) {
@@ -13259,7 +13293,7 @@ impl App {
                 } else if self.state.sketch_session.is_some() {
                     "Text — click in the sketch to place text • edit it in the context pane"
                 } else {
-                    "Text — open a sketch first"
+                    "Text — click a face or plane to sketch text on"
                 }
             }
             Tool::DrawingAdd => {

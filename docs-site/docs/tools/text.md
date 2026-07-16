@@ -85,6 +85,8 @@ bearcad.extrude{ text = 0, distance = 1, body = "cut" }
 bearcad.pin_text{ text = 0, anchor = "center", line = 2, endpoint = "start" }
 ```
 
-Like `rect` and `circle`, `text` begins a ground sketch when none is open. `size` accepts an
+Like `rect` and `circle`, `text` begins a ground sketch when none is open. In the app the
+Text tool works the same way: with no sketch open, click any face or plane to start a
+sketch there and place text right away. `size` accepts an
 expression; `rotation` is degrees about the text's start point at `(x, y)`; optional `wrap`
 sets a wrap width in mm. `font` defaults to a standard system font.

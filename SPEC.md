@@ -95,6 +95,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 
 ### 3.1 Sketching (2D)
 - Sketches are created on a datum plane or a planar face.
+- **Draw tools begin sketches:** with no sketch open, the Rectangle, Line, Circle, and Text
+  (#383) tools hover-highlight sketchable faces and a click begins a sketch on the clicked
+  face — the tool then draws there immediately, no separate Sketch-tool step needed.
 - **Sketching on body faces:** the planar cap faces of an extruded body (the base and
   offset ends of each extruded profile) are selectable sketch faces. Clicking one with the
   Sketch tool starts a sketch on that face — its frame inherits the profile's in-plane axes,
