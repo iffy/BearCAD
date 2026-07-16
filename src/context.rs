@@ -2677,17 +2677,20 @@ pub fn show_pane(
             });
         }
         // Dimensions are off by default (#331); these flip the whole set on or off at once.
-        ui.horizontal(|ui| {
-            if ui.button("Show all dimensions").clicked() {
+        // Laid out as label-left / buttons-right rows like every other field (#396).
+        labeled_row(ui, "Dimensions", |ui| {
+            if ui.button("Show all").clicked() {
                 on_drawing_view_edit(DrawingViewEdit::SetAllDimensions(true));
             }
-            if ui.button("Hide all dimensions").clicked() {
+            if ui.button("Hide all").clicked() {
                 on_drawing_view_edit(DrawingViewEdit::SetAllDimensions(false));
             }
         });
-        if ui.button("Remove view").clicked() {
-            on_drawing_view_edit(DrawingViewEdit::Remove);
-        }
+        labeled_row(ui, "", |ui| {
+            if ui.button("Remove view").clicked() {
+                on_drawing_view_edit(DrawingViewEdit::Remove);
+            }
+        });
     } else if content.drawing_add_active {
         any_control = true;
         ui.separator();
