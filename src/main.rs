@@ -596,6 +596,10 @@ struct App {
     /// Ephemeral view state; reset (fit) by the Zoom tool / `Z`.
     drawing_zoom: f32,
     drawing_pan: egui::Vec2,
+    /// Whether the Parameters pane was visible before entering the Drawing workbench (#398):
+    /// it hides by default there (still re-showable from the View menu) and this restores it
+    /// on the way back to the model.
+    params_visible_before_drawing: bool,
     /// A drawing popped out into its own OS window (#276), so it can sit beside the 3D view.
     drawing_window: Option<usize>,
     /// Set just before closing on an uncaught script error with `--exit` (#125), so
@@ -711,6 +715,7 @@ impl App {
             element_filter_drawing_workbench: false,
             drawing_zoom: 1.0,
             drawing_pan: egui::Vec2::ZERO,
+            params_visible_before_drawing: false,
             drawing_window: None,
             script_failed,
         }
@@ -4416,6 +4421,16 @@ impl eframe::App for App {
                 } else {
                     hierarchy::ElementFilter::default()
                 };
+                // The Parameters pane hides by default in the Drawing workbench (#398) — the
+                // View menu can still show it (#378) — and its visibility restores on the
+                // way back to the model.
+                if drawing_workbench {
+                    self.params_visible_before_drawing =
+                        self.state.panes.is_visible(Pane::Parameters);
+                    self.state.panes.set(Pane::Parameters, false);
+                } else if self.params_visible_before_drawing {
+                    self.state.panes.set(Pane::Parameters, true);
+                }
                 // Open each drawing fit-to-pane (#273).
                 self.drawing_zoom = 1.0;
                 self.drawing_pan = egui::Vec2::ZERO;

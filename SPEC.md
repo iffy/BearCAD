@@ -1096,9 +1096,10 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   exactly that size in the editor and both exports, and shows in the card caption
   (`Body 0 — Front (1:20)`). `Action::SetDrawingViewScale`;
   `crate::model::parse_drawing_scale`. The Parameters
-  pane can be shown in the Drawing workbench like anywhere else (#378) — its View-menu
-  toggle applies in every workbench, so parameters can be edited (rebuilding the model and
-  the open drawing's views) without leaving the drawing.
+  pane **hides by default on entering the Drawing workbench** (#398) but can be re-shown
+  from the View menu like anywhere else (#378) — so parameters can be edited (rebuilding the
+  model and the open drawing's views) without leaving the drawing — and its pre-drawing
+  visibility restores on returning to the model.
 - **Aligned projection lines (#377):** an aligned child can draw **two dashed, lightweight
   lines** connecting its silhouette extremes to its base view's across the gap — at the far
   left/right of the pair for an above/below child, the top/bottom for a left/right one —
