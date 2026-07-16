@@ -9177,6 +9177,7 @@ impl App {
         let mut pop_out = false;
         let mut remove_view: Option<usize> = None;
         let mut toggle_dim: Option<(usize, [i32; 3], [i32; 3])> = None;
+        let mut toggle_circle_dim: Option<(usize, [i32; 3])> = None;
         let mut toggle_angle: Option<(usize, model::DrawingEdgeKey, model::DrawingEdgeKey)> = None;
         // First edge of an in-progress angle pick (Shift+click), kept across frames per drawing.
         let pending_angle_id = ui.make_persistent_id(("drawing_angle_pending", drawing));
@@ -9499,25 +9500,62 @@ impl App {
                 // On the Dimension tool, the edge nearest the cursor previews so it's clear a
                 // click toggles it (#294). The dimension's own line/label counts as the edge too
                 // (#324), so an already-shown dimension can be toggled off by hovering its line.
-                let hovered_edge = (self.state.tool == Tool::Dimension)
+                // Detected circles are pickable the same way (#373) — their outline (round
+                // face-on, the foreshortened line edge-on) toggles the Ø dimension — so their
+                // tessellation segments are excluded from the edge candidates.
+                let (hovered_edge, hovered_circle) = (self.state.tool == Tool::Dimension)
                     .then(|| {
                         let pp = pointer_screen?;
                         if !draw_area.contains(pp) {
                             return None;
                         }
-                        let mut best: Option<(f32, usize)> = None;
+                        let mut best_edge: Option<(f32, usize)> = None;
                         for (i, (a, b)) in proj.iter().enumerate() {
+                            if on_circle(*a, *b) {
+                                continue;
+                            }
                             let mut d = dist_point_to_segment(pp, to_screen(*a), to_screen(*b));
                             if let Some((la, lb)) = dim_line_screen(i) {
                                 d = d.min(dist_point_to_segment(pp, la, lb));
                             }
-                            if best.is_none_or(|(bd, _)| d < bd) {
-                                best = Some((d, i));
+                            if best_edge.is_none_or(|(bd, _)| d < bd) {
+                                best_edge = Some((d, i));
                             }
                         }
-                        best.filter(|(d, _)| *d <= 8.0).map(|(_, i)| i)
+                        let mut best_circle: Option<(f32, usize)> = None;
+                        for (ci, pc) in pcircles.iter().enumerate() {
+                            let d = match pc {
+                                crate::drawing::ProjectedCircle::Round { center, radius } => {
+                                    let sc = to_screen(egui::vec2(center.x, center.y));
+                                    ((pp - sc).length() - radius * scale).abs()
+                                }
+                                crate::drawing::ProjectedCircle::EdgeOn { a, b } => {
+                                    dist_point_to_segment(
+                                        pp,
+                                        to_screen(egui::vec2(a.x, a.y)),
+                                        to_screen(egui::vec2(b.x, b.y)),
+                                    )
+                                }
+                            };
+                            if best_circle.is_none_or(|(bd, _)| d < bd) {
+                                best_circle = Some((d, ci));
+                            }
+                        }
+                        let best_edge = best_edge.filter(|(d, _)| *d <= 8.0);
+                        let best_circle = best_circle.filter(|(d, _)| *d <= 8.0);
+                        Some(match (best_edge, best_circle) {
+                            (Some((de, i)), Some((dc, ci))) => {
+                                if dc <= de {
+                                    (None, Some(ci))
+                                } else {
+                                    (Some(i), None)
+                                }
+                            }
+                            (e, c) => (e.map(|(_, i)| i), c.map(|(_, ci)| ci)),
+                        })
                     })
-                    .flatten();
+                    .flatten()
+                    .unwrap_or((None, None));
 
                 // Click near an edge to toggle its length dimension; Shift+click two edges to
                 // toggle the angle between them (#180). Only the Dimension tool picks edges
@@ -9553,6 +9591,12 @@ impl App {
                                 hierarchy::quantize_body_point(wb),
                             ));
                         }
+                    } else if let Some(ci) = hovered_circle {
+                        // A detected circle toggles its diameter dimension (#373).
+                        toggle_circle_dim = Some((
+                            vi,
+                            hierarchy::quantize_body_point(world_circles[ci].center),
+                        ));
                     }
                 }
 
@@ -9600,17 +9644,23 @@ impl App {
                 // Detected circles (#313): a smooth circle face-on or a diameter line edge-on
                 // (#319), each with one diameter dimension. Edge-on uses a full linear
                 // dimension (extension lines + arrows), like a regular length (#320).
-                for (wc, pc) in world_circles.iter().zip(&pcircles) {
+                for (ci, (wc, pc)) in world_circles.iter().zip(&pcircles).enumerate() {
                     // The circle outline always draws; its diameter dimension only when shown (#342).
                     let show_dim = view
                         .dimensioned_circles
                         .contains(&hierarchy::quantize_body_point(wc.center));
+                    // On the Dimension tool the hovered circle previews (#373), like edges do.
+                    let outline = if hovered_circle == Some(ci) {
+                        egui::Stroke::new(2.4, egui::Color32::from_rgb(90, 150, 230))
+                    } else {
+                        egui::Stroke::new(crate::drawing::MODEL_STROKE, INK)
+                    };
                     let label =
                         format!("Ø{}", crate::value::format_length_display_in(wc.radius * 2.0, unit));
                     match pc {
                         crate::drawing::ProjectedCircle::Round { center, radius } => {
                             let sc = to_screen(egui::vec2(center.x, center.y));
-                            painter.circle_stroke(sc, radius * scale, egui::Stroke::new(crate::drawing::MODEL_STROKE, INK));
+                            painter.circle_stroke(sc, radius * scale, outline);
                             if !show_dim {
                                 continue;
                             }
@@ -9628,10 +9678,7 @@ impl App {
                         }
                         crate::drawing::ProjectedCircle::EdgeOn { a, b } => {
                             let (av, bv) = (egui::vec2(a.x, a.y), egui::vec2(b.x, b.y));
-                            painter.line_segment(
-                                [to_screen(av), to_screen(bv)],
-                                egui::Stroke::new(crate::drawing::MODEL_STROKE, INK),
-                            );
+                            painter.line_segment([to_screen(av), to_screen(bv)], outline);
                             if !show_dim {
                                 continue;
                             }
@@ -10175,6 +10222,10 @@ impl App {
         if let Some((view, a, b)) = toggle_dim {
             self.state
                 .apply(Action::ToggleDrawingDimension { drawing, view, a, b });
+        }
+        if let Some((view, center)) = toggle_circle_dim {
+            self.state
+                .apply(Action::ToggleDrawingCircleDimension { drawing, view, center });
         }
         if let Some((view, edge1, edge2)) = toggle_angle {
             self.state

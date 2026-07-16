@@ -88,7 +88,9 @@ single diameter dimension (Ø); a cylinder can also be dimensioned along its **l
 its side wall.
 
 With the **Dimension tool** active, the edge under the cursor highlights — click it to show or hide
-that one dimension (hover either the model edge or the dimension line itself). **Shift+click** two
+that one dimension (hover either the model edge or the dimension line itself). Circles work the
+same way: hover a circle's outline — round face-on, or the line it appears as when viewed from the
+side — and click to toggle its diameter. **Shift+click** two
 edges to show the angle between them. **Drag a dimension's label** (with the Select or Dimension
 tool) to push its line nearer or further from the edge. Coincident edges share one dimension, and
 parallel dimensions that would overlap are stacked onto separate lines so no label covers another.
@@ -119,6 +121,9 @@ bearcad.drawing_view{ drawing = d, body = 0, orientation = "iso" }
 
 -- Dimension an edge of view 0 by its two world endpoints.
 bearcad.drawing_dimension{ drawing = d, view = 0, a = {0, 0, 0}, b = {40, 0, 0} }
+
+-- Toggle a circle's diameter dimension by its world centre.
+bearcad.drawing_circle_dimension{ drawing = d, view = 0, center = {20, 10, 10} }
 
 -- Show the angle between two edges of a view.
 bearcad.drawing_angle{ drawing = d, view = 0,

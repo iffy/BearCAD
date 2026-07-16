@@ -1144,7 +1144,12 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   starts hidden like the rest, *Show all* reveals every circle's Ø and *Hide all* clears them —
   the circle **outline** always draws, only its Ø dimension is gated. User-added angle dimensions
   are left untouched by both. Individual edges
-  are still toggled with the Dimension tool (or `bearcad.drawing_dimension`). Length dimensions
+  are still toggled with the Dimension tool (or `bearcad.drawing_dimension`), and so are
+  individual circles (#373): with the Dimension tool, hovering a detected circle's outline —
+  the round outline face-on, or the foreshortened line of a side-viewed circle — highlights
+  it, and a click toggles its Ø (`Action::ToggleDrawingCircleDimension`, scriptable as
+  `bearcad.drawing_circle_dimension{ drawing, view, center = {x,y,z} }`; circle-tessellation
+  segments are excluded from the edge pick so the circle itself is the target). Length dimensions
   render as proper **architectural
   dimension lines** (#294): two extension lines off the edge, a dimension line offset outward
   (on the side away from the geometry centroid) with **arrowheads** at each end, and the
@@ -1211,7 +1216,9 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   `bearcad.drawing_view{ drawing, body, orientation? }` adds a view (`orientation` is
   `"front"`/`"top"`/`"iso"`/…, default front),
   `bearcad.drawing_dimension{ drawing, view, a = {x,y,z}, b = {x,y,z} }` toggles an edge's
-  length dimension, `bearcad.drawing_angle{ drawing, view, edge1 = { a, b }, edge2 = { a, b } }`
+  length dimension, `bearcad.drawing_circle_dimension{ drawing, view, center = {x,y,z} }`
+  toggles a detected circle's diameter dimension (#373),
+  `bearcad.drawing_angle{ drawing, view, edge1 = { a, b }, edge2 = { a, b } }`
   toggles the angle between two edges, and `bearcad.export_drawing_pdf{ drawing, path }` /
   `bearcad.export_drawing_svg{ drawing, path }` write the PDF/SVG. `bearcad.count("drawing")`
   counts drawings.

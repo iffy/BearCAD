@@ -179,6 +179,12 @@ pub enum Instruction {
         a: (f32, f32, f32),
         b: (f32, f32, f32),
     },
+    /// Toggle a detected circle's diameter dimension, named by its world centre (#373).
+    ToggleDrawingCircleDimension {
+        drawing: usize,
+        view: usize,
+        center: (f32, f32, f32),
+    },
     /// Toggle the angle dimension between two of a view's edges, each named by its endpoints.
     ToggleDrawingAngle {
         drawing: usize,
@@ -671,6 +677,11 @@ impl Instruction {
                 "bearcad.drawing_dimension{{ drawing = {drawing}, view = {view}, \
                  a = {{ {}, {}, {} }}, b = {{ {}, {}, {} }} }}",
                 a.0, a.1, a.2, b.0, b.1, b.2
+            ),
+            Instruction::ToggleDrawingCircleDimension { drawing, view, center } => format!(
+                "bearcad.drawing_circle_dimension{{ drawing = {drawing}, view = {view}, \
+                 center = {{ {}, {}, {} }} }}",
+                center.0, center.1, center.2
             ),
             Instruction::ToggleDrawingAngle {
                 drawing,
@@ -3347,6 +3358,17 @@ impl ScriptRunner {
                     view,
                     a: q(a),
                     b: q(b),
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::ToggleDrawingCircleDimension { drawing, view, center } => {
+                let result = state.apply(Action::ToggleDrawingCircleDimension {
+                    drawing,
+                    view,
+                    center: crate::hierarchy::quantize_body_point(glam::Vec3::new(
+                        center.0, center.1, center.2,
+                    )),
                 });
                 self.record_action_error(result);
                 StepResult::Continue

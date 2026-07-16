@@ -1,0 +1,1 @@
+Drawings: the Dimension tool can toggle a circle's diameter dimension by hovering and clicking its outline — including side-viewed circles that appear as a line. Scriptable as bearcad.drawing_circle_dimension.

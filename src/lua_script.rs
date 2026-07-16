@@ -3112,6 +3112,30 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Toggle a detected circle's diameter dimension in a view (#373): keyed by the circle's
+    // world centre. `bearcad.drawing_circle_dimension{ drawing, view, center = {x, y, z} }`.
+    api.set(
+        "drawing_circle_dimension",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let drawing: usize = opts.get("drawing")?;
+            let view: usize = opts.get("view")?;
+            let v: Vec<f32> = opts.get("center")?;
+            if v.len() != 3 {
+                return Err(mlua::Error::external(
+                    "drawing_circle_dimension `center` must be a {x, y, z} point",
+                ));
+            }
+            unsafe {
+                tick.exec(Instruction::ToggleDrawingCircleDimension {
+                    drawing,
+                    view,
+                    center: (v[0], v[1], v[2]),
+                })
+            }
+        })?,
+    )?;
+
     // Toggle a view's angle dimension between two edges (#180): `edge1`/`edge2` are each
     // `{ a = {x,y,z}, b = {x,y,z} }` (the edge's world endpoints).
     api.set(
@@ -5455,6 +5479,37 @@ mod tests {
         assert!(
             hidden.doc.drawings[0].views[0].dimensioned_edges.is_empty(),
             "toggling the same edge twice hides it again"
+        );
+    }
+
+    /// #373: `bearcad.drawing_circle_dimension{}` toggles a detected circle's diameter
+    /// dimension, keyed by the circle's world centre; a second toggle hides it again.
+    #[test]
+    fn lua_drawing_circle_dimension_toggles_a_circle() {
+        let base_script = r#"
+            bearcad.new()
+            bearcad.circle{ x = 10, y = 5, r = 8 }
+            bearcad.exit_sketch()
+            bearcad.extrude{ circle = 0, distance = 20 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front-right" }
+        "#;
+        // The cylinder's base rim circle is centred at the sketch origin offset (10, 5, 0).
+        let toggle = "bearcad.drawing_circle_dimension{ drawing = d, view = 0, center = {10, 5, 0} }\n";
+        let baseline = run_lua(base_script);
+        assert!(baseline.doc.drawings[0].views[0].dimensioned_circles.is_empty());
+
+        let shown = run_lua(&format!("{base_script}\n{toggle}"));
+        assert_eq!(
+            shown.doc.drawings[0].views[0].dimensioned_circles,
+            vec![crate::hierarchy::quantize_body_point(glam::Vec3::new(10.0, 5.0, 0.0))],
+            "one toggle shows the circle's diameter dimension"
+        );
+
+        let hidden = run_lua(&format!("{base_script}\n{toggle}{toggle}"));
+        assert!(
+            hidden.doc.drawings[0].views[0].dimensioned_circles.is_empty(),
+            "toggling the same circle twice hides it again"
         );
     }
 

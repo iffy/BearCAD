@@ -1328,6 +1328,13 @@ pub enum Action {
         a: [i32; 3],
         b: [i32; 3],
     },
+    /// Toggle a detected circle's diameter dimension (by quantized world centre) in a
+    /// drawing view (#373) — the per-circle analogue of [`Self::ToggleDrawingDimension`].
+    ToggleDrawingCircleDimension {
+        drawing: usize,
+        view: usize,
+        center: [i32; 3],
+    },
     /// Show every length/diameter dimension for a view (`show = true`, populating the deduped,
     /// staggered default set) or hide them all (`show = false`, clearing the set), #331.
     SetAllDrawingDimensions {
@@ -6842,6 +6849,25 @@ impl AppState {
                 } else {
                     v.dimensioned_edges.push(key);
                     self.status = "Showed edge dimension".to_string();
+                }
+                ActionResult::Ok
+            }
+            Action::ToggleDrawingCircleDimension { drawing, view, center } => {
+                let Some(v) = self
+                    .doc
+                    .drawings
+                    .get_mut(drawing)
+                    .filter(|d| !d.deleted)
+                    .and_then(|d| d.views.get_mut(view))
+                else {
+                    return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
+                };
+                if let Some(pos) = v.dimensioned_circles.iter().position(|c| *c == center) {
+                    v.dimensioned_circles.remove(pos);
+                    self.status = "Hid diameter dimension".to_string();
+                } else {
+                    v.dimensioned_circles.push(center);
+                    self.status = "Showed diameter dimension".to_string();
                 }
                 ActionResult::Ok
             }

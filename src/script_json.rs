@@ -645,6 +645,11 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             a: xyz(o, "a")?,
             b: xyz(o, "b")?,
         }),
+        "drawing_circle_dimension" => Ok(Instruction::ToggleDrawingCircleDimension {
+            drawing: req_usize(o, "drawing", "drawing_circle_dimension")?,
+            view: req_usize(o, "view", "drawing_circle_dimension")?,
+            center: xyz(o, "center")?,
+        }),
         "drawing_angle" => {
             let edge = |key: &str| -> Result<((f32, f32, f32), (f32, f32, f32)), String> {
                 let t = o
