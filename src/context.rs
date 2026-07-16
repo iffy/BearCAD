@@ -1234,23 +1234,45 @@ pub fn toggle_construction_for_targets(
 /// and isn't retried.
 fn preview_font_family(ctx: &egui::Context, family: &str) -> Option<egui::FontFamily> {
     use std::collections::HashMap;
+    // `None` = the face failed to load (never retried); `Some(pass)` = registered via
+    // `set_fonts` during that pass. The family only becomes *usable* on a later pass —
+    // laying out text in a family the atlas doesn't know yet panics inside egui (#392), so
+    // the first frame renders the default font and repaints.
     thread_local! {
-        static REGISTRY: std::cell::RefCell<(egui::FontDefinitions, HashMap<String, bool>)> =
+        static REGISTRY: std::cell::RefCell<(egui::FontDefinitions, HashMap<String, Option<u64>>)> =
             std::cell::RefCell::new((egui::FontDefinitions::default(), HashMap::new()));
     }
     REGISTRY.with(|reg| {
         let mut reg = reg.borrow_mut();
-        if let Some(loaded) = reg.1.get(family) {
-            return loaded.then(|| egui::FontFamily::Name(family.into()));
+        let pass = ctx.cumulative_pass_nr();
+        if let Some(state) = reg.1.get(family) {
+            return match state {
+                Some(registered) if pass > *registered => {
+                    Some(egui::FontFamily::Name(family.into()))
+                }
+                Some(_) => {
+                    ctx.request_repaint();
+                    None
+                }
+                None => None,
+            };
         }
-        let Some(bytes) = crate::text::font_bytes(family, false, false) else {
-            reg.1.insert(family.to_string(), false);
+        let Some((bytes, index)) = crate::text::font_bytes_indexed(family, false, false) else {
+            reg.1.insert(family.to_string(), None);
             return None;
         };
+        // Only register faces egui's own parser accepts (#392): an unparseable face would
+        // panic inside the glyph-atlas build, taking the app down on the next frame.
+        if ab_glyph::FontRef::try_from_slice_and_index(&bytes, index).is_err() {
+            reg.1.insert(family.to_string(), None);
+            return None;
+        }
+        // Carry the face index (#392): many macOS families live in .ttc collections, and
+        // registering the collection as face 0 renders (or fails on) the wrong face.
         let key = format!("preview:{family}");
-        reg.0
-            .font_data
-            .insert(key.clone(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+        let mut data = egui::FontData::from_owned(bytes);
+        data.index = index;
+        reg.0.font_data.insert(key.clone(), std::sync::Arc::new(data));
         // The family's own face first, then the default proportional stack so glyphs the
         // face lacks still render.
         let mut stack = vec![key];
@@ -1259,8 +1281,9 @@ fn preview_font_family(ctx: &egui::Context, family: &str) -> Option<egui::FontFa
         }
         reg.0.families.insert(egui::FontFamily::Name(family.into()), stack);
         ctx.set_fonts(reg.0.clone());
-        reg.1.insert(family.to_string(), true);
-        Some(egui::FontFamily::Name(family.into()))
+        reg.1.insert(family.to_string(), Some(pass));
+        ctx.request_repaint();
+        None
     })
 }
 
@@ -3134,6 +3157,36 @@ fn orientation_pick_to_drawing(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #392: registering system fonts for the chooser preview must never crash — every face
+    /// handed to egui parses (ab_glyph-validated, correct .ttc index), and the family is only
+    /// used on a pass after its atlas rebuild. Runs real passes over a sample of the
+    /// installed fonts; a bad face panics right here instead of in the running app.
+    #[test]
+    fn font_preview_registration_never_panics() {
+        let ctx = egui::Context::default();
+        let families = crate::text::system_font_families();
+        for fam in families.iter().take(40) {
+            let _ = ctx.run(Default::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    if let Some(ff) = preview_font_family(ui.ctx(), fam) {
+                        ui.label(egui::RichText::new(fam).family(ff));
+                    }
+                });
+            });
+        }
+        // One more pass so every family registered on the last iteration builds its atlas
+        // (the #392 panic site) and lays out in its own face.
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                for fam in families.iter().take(40) {
+                    if let Some(ff) = preview_font_family(ui.ctx(), fam) {
+                        ui.label(egui::RichText::new(fam).family(ff));
+                    }
+                }
+            });
+        });
+    }
 
     /// #315: the bear orientation picker's StandardView ↔ DrawingOrientation mapping round-trips
     /// for the six straight-on views, and isometric picks map to Isometric.

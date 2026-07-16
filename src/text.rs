@@ -49,6 +49,13 @@ pub fn system_font_families() -> Vec<String> {
 /// The raw bytes of the installed font best matching `family` + weight/italic, or `None` if no
 /// font matches. These bytes are what the document embeds for portability.
 pub fn font_bytes(family: &str, bold: bool, italic: bool) -> Option<Vec<u8>> {
+    font_bytes_indexed(family, bold, italic).map(|(bytes, _)| bytes)
+}
+
+/// [`font_bytes`] plus the **face index** within the file (#392): macOS fonts are often
+/// `.ttc` collections, and a consumer that assumes face 0 (like egui's atlas) picks — or
+/// fails on — the wrong face without it.
+pub fn font_bytes_indexed(family: &str, bold: bool, italic: bool) -> Option<(Vec<u8>, u32)> {
     let db = font_db().lock().unwrap();
     let query = fontdb::Query {
         families: &[fontdb::Family::Name(family)],
@@ -57,7 +64,7 @@ pub fn font_bytes(family: &str, bold: bool, italic: bool) -> Option<Vec<u8>> {
         style: if italic { fontdb::Style::Italic } else { fontdb::Style::Normal },
     };
     let id = db.query(&query)?;
-    db.with_face_data(id, |data, _index| data.to_vec())
+    db.with_face_data(id, |data, index| (data.to_vec(), index))
 }
 
 /// The nine anchor points of a sketch text (#356/#359) in the text's **baseline space** (pre

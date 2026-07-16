@@ -31,6 +31,10 @@ winres = "0.1"
 cc = "1"
 
 [dependencies]
+# Pre-validates font faces before they're handed to egui's glyph atlas (#392): egui panics
+# on a face it can't parse, so the font-chooser preview only registers faces ab_glyph (the
+# same parser egui uses) accepts. Already in the tree via epaint.
+ab_glyph = "0.2"
 # wgpu backend (Metal on macOS) per SPEC §1; the default glow/OpenGL backend
 # crashes with a bus error on some macOS setups.
 eframe = { version = "0.32", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }
