@@ -23,8 +23,8 @@ you like, and each one collects **views** — a body shown from a chosen directi
    place it exactly where you drop it. Set
    its direction in the context pane: one of the six straight-on directions (Front, Back,
    Left, Right, Top, Bottom) or **Isometric**. Each view draws the source as a black
-   wireframe, scaled to fit its card. Drag the card wherever it should sit on the page, and
-   repeat for more views. Clicking any placed view selects it and reopens the same editor —
+   wireframe, scaled to fit its card. With the **Select** tool, drag the card wherever it
+   should sit on the page, and repeat for more views. Clicking any placed view selects it and reopens the same editor —
    change its orientation, set its scale, or **Remove view** there. The orientation is set with
    an interactive **navigation bear** (like the one in the 3D view): spin it by dragging, click
    a face to look from that side or a corner for the isometric view, or click the bear and

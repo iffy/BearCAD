@@ -9252,7 +9252,10 @@ impl App {
                     ui.make_persistent_id(("drawing_view_drag", drawing, vi)),
                     egui::Sense::click_and_drag(),
                 );
-                if drag.dragged() {
+                // Only the Select tool moves views (#374): with e.g. the Dimension tool a
+                // drag across a card must not relocate it (the interact still swallows the
+                // drag so it doesn't fall through and pan the page).
+                if drag.dragged() && self.state.tool == Tool::Select {
                     // Relative drag: keep the grab point under the cursor instead of snapping
                     // the card's centre to it. An aligned child (#296) only slides along its
                     // free axis — the shared axis stays locked to its parent.
@@ -9270,7 +9273,7 @@ impl App {
                         move_view = Some((vi, nx, ny));
                     }
                 }
-                if drag.hovered() {
+                if drag.hovered() && self.state.tool == Tool::Select {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                 }
                 // Clicking a card selects it (#289): the context pane opens its view editor.

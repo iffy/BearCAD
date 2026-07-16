@@ -959,7 +959,9 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   visible at once. Closing the window (or `Esc`) dismisses it. Native only.
 - **Workbenches (#254/#271/#272):** opening a drawing switches to the **Drawing workbench**,
   whose toolbar shows **Back, Select, Add view, Aligned view, Dimension, Text** (#295: no Move
-  tool; the Select tool drags projections directly, #293). Entering the workbench with any
+  tool; the Select tool drags projections directly, #293 — and **only** the Select tool: with
+  any other tool, e.g. Dimension, dragging across a card moves nothing, #374). Entering the
+  workbench with any
   other tool active drops back to Select. A **Back button** (left of Select, #318) returns to
   the model; **Escape no longer exits** the workbench (it cancels in-progress tool actions).
   Clicking anywhere on a projection card selects it (not just the caption, #316), and a
