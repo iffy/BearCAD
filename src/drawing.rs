@@ -288,6 +288,48 @@ pub fn view_render_center(doc: &Document, views: &[DrawingView], view: usize) ->
     center
 }
 
+/// The two dashed projection lines connecting an aligned child to its base view (#377):
+/// endpoints in each view's **own projected 2D space** — `(parent_point, child_point)` per
+/// line — which the renderers map through the owning view's own to-device transform. The
+/// lines sit at the silhouette extremes of the shared axis (far left/right for an
+/// above/below child, top/bottom for a left/right one) and connect the facing edges of the
+/// two views. `None` if the view isn't a valid aligned child or either view has no geometry.
+pub fn aligned_projection_lines(
+    doc: &Document,
+    views: &[DrawingView],
+    child: usize,
+) -> Option<[(glam::Vec2, glam::Vec2); 2]> {
+    use crate::model::AlignDir;
+    let v = views.get(child)?;
+    let (p, dir) = (v.aligned_parent?, v.aligned_dir?);
+    if p == child {
+        return None;
+    }
+    views.get(p)?;
+    let (pmin, pmax) = view_projected_bbox(doc, views, p)?;
+    let (cmin, cmax) = view_projected_bbox(doc, views, child)?;
+    // The shared-axis coordinates coincide between the two views (#364), so each line's two
+    // endpoints land on one page-space vertical/horizontal.
+    Some(match dir {
+        AlignDir::Below => [
+            (glam::Vec2::new(pmin.x, pmin.y), glam::Vec2::new(cmin.x, cmax.y)),
+            (glam::Vec2::new(pmax.x, pmin.y), glam::Vec2::new(cmax.x, cmax.y)),
+        ],
+        AlignDir::Above => [
+            (glam::Vec2::new(pmin.x, pmax.y), glam::Vec2::new(cmin.x, cmin.y)),
+            (glam::Vec2::new(pmax.x, pmax.y), glam::Vec2::new(cmax.x, cmin.y)),
+        ],
+        AlignDir::Right => [
+            (glam::Vec2::new(pmax.x, pmin.y), glam::Vec2::new(cmin.x, cmin.y)),
+            (glam::Vec2::new(pmax.x, pmax.y), glam::Vec2::new(cmin.x, cmax.y)),
+        ],
+        AlignDir::Left => [
+            (glam::Vec2::new(pmin.x, pmin.y), glam::Vec2::new(cmax.x, cmin.y)),
+            (glam::Vec2::new(pmin.x, pmax.y), glam::Vec2::new(cmax.x, cmax.y)),
+        ],
+    })
+}
+
 /// Match a `(right, up)` axis pair back to one of the six orthographic [`DrawingOrientation`]s.
 fn orientation_from_axes(right: Vec3, up: Vec3) -> Option<DrawingOrientation> {
     use DrawingOrientation as O;
@@ -868,6 +910,11 @@ enum Anchor {
 trait Canvas {
     fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, fill: Option<Rgb>, stroke: Option<Rgb>, stroke_w: f32);
     fn line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, color: Rgb, width: f32);
+    /// A dashed line — aligned-view projection lines (#377). Backends override; the default
+    /// falls back to a solid stroke.
+    fn line_dashed(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, color: Rgb, width: f32) {
+        self.line(x1, y1, x2, y2, color, width);
+    }
     /// A filled polygon (shaded view faces, #301).
     fn poly(&mut self, pts: &[(f32, f32)], fill: Rgb);
     /// A stroked (unfilled) circle outline — a smooth detected curve (#313).
@@ -990,6 +1037,45 @@ fn render_drawing<C: Canvas>(doc: &Document, index: usize, canvas: &mut C) -> Op
         );
     }
 
+    // Aligned projection lines (#377): dashed, lightweight lines connecting each toggled
+    // aligned child's silhouette extremes to its base view's, each endpoint mapped through
+    // its own view's transform so the lines land exactly on the rendered geometry.
+    for (vi, view) in drawing.views.iter().enumerate() {
+        if !view.align_lines {
+            continue;
+        }
+        let Some(lines) = aligned_projection_lines(doc, &drawing.views, vi) else {
+            continue;
+        };
+        let to_screen_for = |v: usize| {
+            let (px, py) = resolved_view_pos(doc, index, v);
+            let cell_x = px * width - cell_w * 0.5;
+            let cell_y = py * height - cell_h * 0.5;
+            let scale_text = resolved_view_scale(doc, index, v);
+            let (scale, bbox_center, area_center) = export_view_transform(
+                doc,
+                &drawing.views,
+                v,
+                scale_text.as_deref(),
+                cell_x,
+                cell_y,
+                cell_w,
+                cell_h,
+            );
+            move |p: glam::Vec2| {
+                let d = (p - bbox_center) * scale;
+                glam::Vec2::new(area_center.x + d.x, area_center.y - d.y)
+            }
+        };
+        let parent_ts = to_screen_for(view.aligned_parent.unwrap_or(vi));
+        let child_ts = to_screen_for(vi);
+        for (ppt, cpt) in lines {
+            let a = parent_ts(ppt);
+            let b = child_ts(cpt);
+            canvas.line_dashed(a.x, a.y, b.x, b.y, Rgb(110, 110, 110), 0.6);
+        }
+    }
+
     // Free text annotations (#312): wrapped to their box, positioned by page fraction.
     for ann in &drawing.annotations {
         if ann.deleted {
@@ -1038,6 +1124,40 @@ fn wrap_text_lines(text: &str, font: f32, wrap_width: Option<f32>) -> Vec<String
     out
 }
 
+/// The export-canvas transform a view's geometry renders through: `(scale, bbox_center,
+/// area_center)`, where a projected point maps to
+/// `area_center + ((p - bbox_center) * scale)` with y flipped. Shared by
+/// [`render_view_geometry`] and the aligned projection-line pass (#377) so the dashed lines
+/// land exactly on the rendered silhouettes.
+#[allow(clippy::too_many_arguments)]
+fn export_view_transform(
+    doc: &Document,
+    views: &[DrawingView],
+    view_index: usize,
+    scale_text: Option<&str>,
+    cell_x: f32,
+    cell_y: f32,
+    cell_w: f32,
+    cell_h: f32,
+) -> (f32, glam::Vec2, glam::Vec2) {
+    // The caption strip takes the top of the card; geometry fits below it.
+    let caption_h = 26.0;
+    let area_w = cell_w - 2.0 * CELL_PAD;
+    let area_h = cell_h - caption_h - 2.0 * CELL_PAD;
+    // A set print scale (#300) draws at exactly `factor` page-mm per model-mm (points on the
+    // export canvas); otherwise auto-fit to the card.
+    let scale = match scale_text.and_then(crate::model::parse_drawing_scale) {
+        Some(factor) => factor * PT_PER_MM,
+        // Aligned children share their parent's auto-fit scale so edges line up (#364).
+        None => view_autofit_scale(doc, views, view_index, area_w, area_h, 0.9),
+    };
+    // Aligned children align to their parent along the shared edge (#364), not just their card.
+    let bbox_center = view_render_center(doc, views, view_index);
+    let area_center =
+        glam::Vec2::new(cell_x + cell_w * 0.5, cell_y + caption_h + CELL_PAD + area_h * 0.5);
+    (scale, bbox_center, area_center)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_view_geometry<C: Canvas>(
     canvas: &mut C,
@@ -1072,22 +1192,9 @@ fn render_view_geometry<C: Canvas>(
         max = max.max(*a).max(*b);
     }
     let extent = (max - min).max(glam::Vec2::splat(1e-3));
-    // The caption strip takes the top of the card; geometry fits below it.
-    let caption_h = 26.0;
-    let area_w = cell_w - 2.0 * CELL_PAD;
-    let area_h = cell_h - caption_h - 2.0 * CELL_PAD;
-    // A set print scale (#300) draws at exactly `factor` page-mm per model-mm (points on the
-    // export canvas); otherwise auto-fit to the card.
     let _ = extent;
-    let scale = match scale_text.and_then(crate::model::parse_drawing_scale) {
-        Some(factor) => factor * PT_PER_MM,
-        // Aligned children share their parent's auto-fit scale so edges line up (#364).
-        None => view_autofit_scale(doc, views, view_index, area_w, area_h, 0.9),
-    };
-    // Aligned children align to their parent along the shared edge (#364), not just their card.
-    let bbox_center = view_render_center(doc, views, view_index);
-    let area_center =
-        glam::Vec2::new(cell_x + cell_w * 0.5, cell_y + caption_h + CELL_PAD + area_h * 0.5);
+    let (scale, bbox_center, area_center) =
+        export_view_transform(doc, views, view_index, scale_text, cell_x, cell_y, cell_w, cell_h);
     // Model +up maps to screen -y (y grows downward).
     let to_screen = |p: glam::Vec2| {
         let d = (p - bbox_center) * scale;
@@ -1298,6 +1405,14 @@ impl Canvas for SvgCanvas {
         ));
     }
 
+    fn line_dashed(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, color: Rgb, width: f32) {
+        self.body.push_str(&format!(
+            "<line x1=\"{x1:.1}\" y1=\"{y1:.1}\" x2=\"{x2:.1}\" y2=\"{y2:.1}\" stroke=\"{}\" \
+             stroke-width=\"{width}\" stroke-dasharray=\"4 3\"/>\n",
+            svg_color(color)
+        ));
+    }
+
     fn poly(&mut self, pts: &[(f32, f32)], fill: Rgb) {
         // Stroked with its own fill so adjacent shaded triangles don't show hairline seams.
         let points: Vec<String> = pts.iter().map(|(x, y)| format!("{x:.1},{y:.1}")).collect();
@@ -1430,6 +1545,15 @@ impl Canvas for PdfCanvas {
         let (py1, py2) = (self.height - y1, self.height - y2);
         self.set_stroke(color);
         self.push(&format!("{width:.2} w\n{x1:.2} {py1:.2} m {x2:.2} {py2:.2} l S\n"));
+    }
+
+    fn line_dashed(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, color: Rgb, width: f32) {
+        let (py1, py2) = (self.height - y1, self.height - y2);
+        self.set_stroke(color);
+        // `[4 3] 0 d` sets the dash pattern; `[] 0 d` restores solid strokes after.
+        self.push(&format!(
+            "[4 3] 0 d\n{width:.2} w\n{x1:.2} {py1:.2} m {x2:.2} {py2:.2} l S\n[] 0 d\n"
+        ));
     }
 
     fn poly(&mut self, pts: &[(f32, f32)], fill: Rgb) {
@@ -1608,7 +1732,8 @@ mod tests {
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
             dimensioned_circles: Vec::new(), aligned_parent: None, aligned_dir: None,
             scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
-            label_hidden: false, label_pos: Default::default(), label_text: None,
+            align_lines: false,
+label_hidden: false, label_pos: Default::default(), label_text: None,
         };
         let child = |dir| DrawingView {
             aligned_parent: Some(0), aligned_dir: Some(dir),
@@ -1669,7 +1794,8 @@ mod tests {
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
             dimensioned_circles: Vec::new(), aligned_parent: None, aligned_dir: None,
             scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
-            label_hidden: false, label_pos: Default::default(), label_text: None,
+            align_lines: false,
+label_hidden: false, label_pos: Default::default(), label_text: None,
         };
         for dir in [AlignDir::Right, AlignDir::Left, AlignDir::Above, AlignDir::Below] {
             for o in aligned_inline_orientations(O::Front, dir) {
@@ -1891,7 +2017,8 @@ mod tests {
                 style: Default::default(),
                 pos_x: 0.5,
                 pos_y: 0.5,
-                label_hidden: false,
+                align_lines: false,
+label_hidden: false,
                 label_pos: Default::default(),
                 label_text: None,
             }],

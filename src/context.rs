@@ -306,6 +306,9 @@ pub struct DrawingViewControl {
     /// True when this view is an aligned child (#296): its scale is inherited from the parent, so
     /// it's read-only here.
     pub aligned: bool,
+    /// Whether the aligned child draws dashed projection lines to its base view (#377); only
+    /// meaningful while `aligned` is true.
+    pub align_lines: bool,
     /// For an aligned child (#332): the orthographic orientations it may take while staying in
     /// line with its base. Empty for a non-aligned view (or a child of an Isometric parent), which
     /// keeps the full orientation bear/picker.
@@ -375,6 +378,8 @@ pub enum DrawingViewEdit {
     SetAllDimensions(bool),
     /// Set the projection to the current 3D viewport angle (#366).
     UseCurrentView,
+    /// Show or hide an aligned child's dashed projection lines to its base view (#377).
+    AlignLines(bool),
     /// Show or hide the view's caption label (#372).
     LabelHidden(bool),
     /// Move the caption label within the card (#372).
@@ -2425,6 +2430,13 @@ pub fn show_pane(
                 }
             }
         });
+        // Aligned children can draw dashed projection lines to their base view (#377).
+        if control.aligned {
+            let mut lines = control.align_lines;
+            if ui.checkbox(&mut lines, "Projection lines").changed() {
+                on_drawing_view_edit(DrawingViewEdit::AlignLines(lines));
+            }
+        }
         // Caption label (#372): show/hide, custom text (with {expr} interpolation like any
         // label, #338), and a 2×3 position grid for where it sits on the card.
         ui.horizontal(|ui| {
@@ -3077,6 +3089,7 @@ mod tests {
             orientation: crate::model::DrawingOrientation::Front,
             scale: String::new(),
             aligned: false,
+            align_lines: false,
             inline_orientations: Vec::new(),
             style: crate::model::DrawingViewStyle::default(),
             label_hidden: false,

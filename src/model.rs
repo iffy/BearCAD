@@ -2183,6 +2183,11 @@ pub struct DrawingView {
     pub aligned_parent: Option<usize>,
     #[serde(default)]
     pub aligned_dir: Option<AlignDir>,
+    /// Draw dashed projection lines from the base view to this aligned child (#377): two
+    /// lightweight lines connecting the outer silhouette extremes of the two views across
+    /// the gap between them. Only meaningful while `aligned_parent` is set.
+    #[serde(default)]
+    pub align_lines: bool,
     /// Hide the view's caption label on the page and in exports (#372).
     #[serde(default)]
     pub label_hidden: bool,

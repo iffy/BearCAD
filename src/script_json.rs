@@ -650,6 +650,11 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             view: req_usize(o, "view", "drawing_circle_dimension")?,
             center: xyz(o, "center")?,
         }),
+        "drawing_view_align_lines" => Ok(Instruction::SetDrawingViewAlignLines {
+            drawing: req_usize(o, "drawing", "drawing_view_align_lines")?,
+            view: req_usize(o, "view", "drawing_view_align_lines")?,
+            show: opt_bool(o, "show")?.ok_or("drawing_view_align_lines requires `show`")?,
+        }),
         "drawing_view_label" => Ok(Instruction::SetDrawingViewLabel {
             drawing: req_usize(o, "drawing", "drawing_view_label")?,
             view: req_usize(o, "view", "drawing_view_label")?,

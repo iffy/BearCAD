@@ -185,6 +185,12 @@ pub enum Instruction {
         view: usize,
         center: (f32, f32, f32),
     },
+    /// Show/hide an aligned child's dashed projection lines to its base view (#377).
+    SetDrawingViewAlignLines {
+        drawing: usize,
+        view: usize,
+        show: bool,
+    },
     /// Edit a view's caption label (#372): each `Some` overrides that aspect; an empty
     /// `text` returns to the automatic caption.
     SetDrawingViewLabel {
@@ -691,6 +697,10 @@ impl Instruction {
                 "bearcad.drawing_circle_dimension{{ drawing = {drawing}, view = {view}, \
                  center = {{ {}, {}, {} }} }}",
                 center.0, center.1, center.2
+            ),
+            Instruction::SetDrawingViewAlignLines { drawing, view, show } => format!(
+                "bearcad.drawing_view_align_lines{{ drawing = {drawing}, view = {view}, \
+                 show = {show} }}"
             ),
             Instruction::SetDrawingViewLabel { drawing, view, hidden, pos, text } => {
                 let mut args = format!("drawing = {drawing}, view = {view}");
@@ -3392,6 +3402,12 @@ impl ScriptRunner {
                         center.0, center.1, center.2,
                     )),
                 });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::SetDrawingViewAlignLines { drawing, view, show } => {
+                let result =
+                    state.apply(Action::SetDrawingViewAlignLines { drawing, view, show });
                 self.record_action_error(result);
                 StepResult::Continue
             }

@@ -3112,6 +3112,21 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Show/hide an aligned child's dashed projection lines to its base view (#377):
+    // `bearcad.drawing_view_align_lines{ drawing, view, show }`.
+    api.set(
+        "drawing_view_align_lines",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let drawing: usize = opts.get("drawing")?;
+            let view: usize = opts.get("view")?;
+            let show: bool = opts.get("show")?;
+            unsafe {
+                tick.exec(Instruction::SetDrawingViewAlignLines { drawing, view, show })
+            }
+        })?,
+    )?;
+
     // Edit a view's caption label (#372): `bearcad.drawing_view_label{ drawing, view,
     // hidden?, pos?, text? }` — `pos` is "top-left"/"top-center"/…/"bottom-right"; an empty
     // `text` returns to the automatic caption ("Body 0 — Front (1:20)").
@@ -5542,6 +5557,39 @@ mod tests {
         );
     }
 
+    /// #377: `bearcad.drawing_view_align_lines{}` toggles an aligned child's dashed
+    /// projection lines; a non-aligned view rejects the toggle.
+    #[test]
+    fn lua_drawing_view_align_lines_toggles_on_aligned_children() {
+        let base = r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 40, height = 25 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+            bearcad.drawing_align_view{ drawing = d, parent = 0, dir = "below", pos = 0.7 }
+        "#;
+        let on = run_lua(&format!(
+            "{base}\nbearcad.drawing_view_align_lines{{ drawing = d, view = 1, show = true }}"
+        ));
+        assert!(on.doc.drawings[0].views[1].align_lines);
+
+        let off = run_lua(&format!(
+            "{base}\nbearcad.drawing_view_align_lines{{ drawing = d, view = 1, show = true }}\n\
+             bearcad.drawing_view_align_lines{{ drawing = d, view = 1, show = false }}"
+        ));
+        assert!(!off.doc.drawings[0].views[1].align_lines);
+
+        // The base view isn't aligned, so the toggle is rejected (raising a Lua error) and
+        // the flag stays off.
+        let rejected = run_lua(&format!(
+            "{base}\nlocal ok = pcall(function()\n\
+             bearcad.drawing_view_align_lines{{ drawing = d, view = 0, show = true }}\n\
+             end)\nassert(not ok, \"toggling a non-aligned view must fail\")"
+        ));
+        assert!(!rejected.doc.drawings[0].views[0].align_lines);
+    }
+
     /// #372: `bearcad.drawing_view_label{}` edits a view's caption — visibility, position
     /// (grid name), and custom text; an empty text returns to the automatic caption.
     #[test]
@@ -5825,6 +5873,45 @@ mod tests {
         ));
         let content = std::fs::read_to_string(&path).expect("svg file was written");
         assert!(content.contains("<svg"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// #377: toggled projection lines export as dashed strokes connecting the aligned pair.
+    #[test]
+    fn lua_align_lines_export_as_dashed_strokes() {
+        let path = std::env::temp_dir()
+            .join(format!("bearcad_align_lines_{}.svg", std::process::id()));
+        let p = path.to_string_lossy().replace('\\', "/");
+        run_lua(&format!(
+            r#"
+            bearcad.new()
+            bearcad.rect{{ width = 20, height = 20 }}
+            bearcad.extrude{{ polygon = {{0, 1, 2, 3}}, distance = 10 }}
+            local d = bearcad.drawing{{}}
+            bearcad.drawing_view{{ drawing = d, body = 0, orientation = "front" }}
+            bearcad.drawing_align_view{{ drawing = d, parent = 0, dir = "below", pos = 0.75 }}
+            bearcad.drawing_view_align_lines{{ drawing = d, view = 1, show = true }}
+            bearcad.export_drawing_svg{{ drawing = d, path = "{p}" }}
+        "#
+        ));
+        let content = std::fs::read_to_string(&path).expect("svg file was written");
+        assert_eq!(
+            content.matches("stroke-dasharray").count(),
+            2,
+            "two dashed projection lines"
+        );
+        // Both lines are vertical (the child is below): x1 == x2 on each.
+        for line in content.lines().filter(|l| l.contains("stroke-dasharray")) {
+            let attr = |k: &str| {
+                let s = line.split(&format!("{k}=\"")).nth(1).unwrap();
+                s.split('"').next().unwrap().parse::<f32>().unwrap()
+            };
+            assert!(
+                (attr("x1") - attr("x2")).abs() < 0.2,
+                "below-aligned projection lines are vertical: {line}"
+            );
+            assert!(attr("y2") > attr("y1"), "lines run from parent down to child: {line}");
+        }
         let _ = std::fs::remove_file(&path);
     }
 

@@ -1,0 +1,1 @@
+Drawings: aligned views can show dashed projection lines connecting their silhouette edges to the base view, toggled per view and included in PDF/SVG exports. Scriptable as bearcad.drawing_view_align_lines.

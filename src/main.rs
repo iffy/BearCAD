@@ -5102,6 +5102,7 @@ impl eframe::App for App {
                                 orientation: view.orientation,
                                 scale,
                                 aligned,
+                                align_lines: view.align_lines,
                                 inline_orientations,
                                 style: view.style,
                                 label_hidden: view.label_hidden,
@@ -5752,6 +5753,13 @@ impl eframe::App for App {
                                 drawing,
                                 view,
                                 orientation: model::DrawingOrientation::Free { right, up },
+                            });
+                        }
+                        context::DrawingViewEdit::AlignLines(show) => {
+                            self.state.apply(Action::SetDrawingViewAlignLines {
+                                drawing,
+                                view,
+                                show,
                             });
                         }
                         context::DrawingViewEdit::LabelHidden(hidden) => {
@@ -9277,6 +9285,10 @@ impl App {
         // True when the Aligned-view tool picked its parent this frame (#296), so the same
         // click doesn't also commit the child.
         let mut align_parent_set_this_frame = false;
+        // Each rendered view's (scale, bbox_center, area_center) transform, for the aligned
+        // projection-line pass (#377) after the card loop.
+        let mut view_transforms: Vec<Option<(f32, egui::Vec2, egui::Pos2)>> =
+            vec![None; views.len()];
         if let Some(page) = page_rect {
             let cell_w = (page.width() * 0.42).clamp(120.0, 320.0);
             let cell_h = (page.height() * 0.42).clamp(90.0, 260.0);
@@ -9498,6 +9510,8 @@ impl App {
                     let d = (p - bbox_center) * scale;
                     draw_area.center() + egui::vec2(d.x, -d.y)
                 };
+                // Remember this view's transform for the aligned projection-line pass (#377).
+                view_transforms[vi] = Some((scale, bbox_center, draw_area.center()));
                 let edge_key = |wa: Vec3, wb: Vec3| {
                     let (qa, qb) = (
                         hierarchy::quantize_body_point(wa),
@@ -10132,6 +10146,41 @@ impl App {
                     pos_y: py,
                     wrap_frac: wrap,
                 });
+            }
+        }
+
+        // Aligned projection lines (#377): dashed, lightweight lines connecting each toggled
+        // aligned child's silhouette extremes to its base view's, each endpoint mapped through
+        // its own view's transform so the lines land on the rendered geometry.
+        for (vi, view) in views.iter().enumerate() {
+            if !view.align_lines {
+                continue;
+            }
+            let (Some(lines), Some(parent)) = (
+                crate::drawing::aligned_projection_lines(&self.state.doc, &views, vi),
+                view.aligned_parent,
+            ) else {
+                continue;
+            };
+            let (Some((ps, pb, pc)), Some((cs, cb, cc))) = (
+                view_transforms.get(parent).copied().flatten(),
+                view_transforms.get(vi).copied().flatten(),
+            ) else {
+                continue;
+            };
+            let map = |p: glam::Vec2, scale: f32, bbox: egui::Vec2, center: egui::Pos2| {
+                let d = (egui::vec2(p.x, p.y) - bbox) * scale;
+                center + egui::vec2(d.x, -d.y)
+            };
+            for (ppt, cpt) in lines {
+                let a = map(ppt, ps, pb, pc);
+                let b = map(cpt, cs, cb, cc);
+                ui.painter().add(egui::Shape::dashed_line(
+                    &[a, b],
+                    egui::Stroke::new(0.8, egui::Color32::from_gray(150)),
+                    4.0,
+                    3.0,
+                ));
             }
         }
 

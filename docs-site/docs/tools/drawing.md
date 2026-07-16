@@ -79,7 +79,10 @@ along. Each child inherits the base's scale and takes the orientation implied by
 a few clicks build a full orthographic layout around any base view. You can also **adjust an aligned
 view's angle** from its context pane: it offers a dropdown of the orientations that keep the shared
 edge (for a right-of-front view: right, back, left, and the diagonal edge views between them — never
-top or bottom), so you can spin the projection while it stays lined up.
+top or bottom), so you can spin the projection while it stays lined up. Selecting an aligned view
+also offers a **Projection lines** checkbox: two dashed, lightweight lines connect the outer
+silhouette edges of the pair across the gap — at the far left and right for a view below or above
+its base, at the top and bottom for one beside it — in the editor and in the exported PDF/SVG.
 
 ![A Top view with a Right view aligned beside it and a Front view aligned below](/img/screenshots/aligned-views.png)
 

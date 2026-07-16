@@ -1335,6 +1335,12 @@ pub enum Action {
         view: usize,
         center: [i32; 3],
     },
+    /// Show or hide the dashed projection lines from an aligned child to its base view (#377).
+    SetDrawingViewAlignLines {
+        drawing: usize,
+        view: usize,
+        show: bool,
+    },
     /// Edit a drawing view's caption label (#372): each `Some` overrides that aspect —
     /// visibility, position within the card, or the custom text template
     /// (`Some(None)` resets the text to the automatic caption).
@@ -6591,7 +6597,8 @@ impl AppState {
                 dimensioned_circles: Vec::new(),
                 aligned_parent: None,
                 aligned_dir: None,
-                label_hidden: false,
+                align_lines: false,
+label_hidden: false,
                 label_pos: Default::default(),
                 label_text: None,
                     pos_x: (0.35 + step).min(0.9),
@@ -6627,7 +6634,8 @@ impl AppState {
                 dimensioned_circles: Vec::new(),
                 aligned_parent: None,
                 aligned_dir: None,
-                label_hidden: false,
+                align_lines: false,
+label_hidden: false,
                 label_pos: Default::default(),
                 label_text: None,
                     pos_x: (0.35 + step).min(0.9),
@@ -6680,7 +6688,8 @@ impl AppState {
                     style: pv.style,
                     aligned_parent: Some(parent),
                     aligned_dir: Some(dir),
-                    label_hidden: false,
+                    align_lines: false,
+label_hidden: false,
                     label_pos: Default::default(),
                     label_text: None,
                 };
@@ -6888,6 +6897,29 @@ impl AppState {
                     v.dimensioned_circles.push(center);
                     self.status = "Showed diameter dimension".to_string();
                 }
+                ActionResult::Ok
+            }
+            Action::SetDrawingViewAlignLines { drawing, view, show } => {
+                let Some(v) = self
+                    .doc
+                    .drawings
+                    .get_mut(drawing)
+                    .filter(|d| !d.deleted)
+                    .and_then(|d| d.views.get_mut(view))
+                else {
+                    return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
+                };
+                if v.aligned_parent.is_none() {
+                    return ActionResult::Err(
+                        "Projection lines need an aligned view".to_string(),
+                    );
+                }
+                v.align_lines = show;
+                self.status = if show {
+                    "Showed projection lines".to_string()
+                } else {
+                    "Hid projection lines".to_string()
+                };
                 ActionResult::Ok
             }
             Action::SetDrawingViewLabel { drawing, view, hidden, pos, text } => {

@@ -1078,6 +1078,16 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   pane can be shown in the Drawing workbench like anywhere else (#378) — its View-menu
   toggle applies in every workbench, so parameters can be edited (rebuilding the model and
   the open drawing's views) without leaving the drawing.
+- **Aligned projection lines (#377):** an aligned child can draw **two dashed, lightweight
+  lines** connecting its silhouette extremes to its base view's across the gap — at the far
+  left/right of the pair for an above/below child, the top/bottom for a left/right one —
+  toggled by a **Projection lines** checkbox in the child's view editor (stored as
+  `DrawingView::align_lines`, `Action::SetDrawingViewAlignLines`; rejected for non-aligned
+  views). `drawing::aligned_projection_lines` computes the endpoints in each view's own
+  projected space and the editor and both exports map them through the owning view's
+  transform, so the lines land exactly on the rendered silhouettes (dashed strokes:
+  `stroke-dasharray` in SVG, a `d` dash pattern in PDF). Scriptable:
+  `bearcad.drawing_view_align_lines{ drawing, view, show }`.
 - **View labels (#372):** each view's caption label ("Body 0 — Front (1:20)") is editable from
   the Select tool's context pane: a **Label checkbox** shows/hides it, a **2×3 position grid**
   places it (top/bottom × left/center/right of the card, `DrawingLabelPos`, default top-left),
@@ -1235,6 +1245,8 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   toggles a detected circle's diameter dimension (#373),
   `bearcad.drawing_view_label{ drawing, view, hidden?, pos?, text? }` edits a view's caption
   label (#372),
+  `bearcad.drawing_view_align_lines{ drawing, view, show }` toggles an aligned child's dashed
+  projection lines (#377),
   `bearcad.drawing_angle{ drawing, view, edge1 = { a, b }, edge2 = { a, b } }`
   toggles the angle between two edges, and `bearcad.export_drawing_pdf{ drawing, path }` /
   `bearcad.export_drawing_svg{ drawing, path }` write the PDF/SVG. `bearcad.count("drawing")`
