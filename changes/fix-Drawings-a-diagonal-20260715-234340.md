@@ -1,0 +1,1 @@
+Drawings: a diagonal edge view of a cylinder no longer draws floating circles at its caps — edge-on circle detection now uses the true projected-ellipse minor axis, so those caps render as foreshortened lines.

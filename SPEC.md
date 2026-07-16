@@ -1117,7 +1117,9 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   are **detected in world space** (`drawing::classify_world_circles`: clean degree-2 cycles
   that fit a planar circle) and **projected per view** (`project_world_circle`): **round** when
   the circle faces the viewer (a real SVG `<circle>` / PDF Bézier-arc, not a polygon), or a
-  **foreshortened diameter line** when edge-on. Either way it carries a **single diameter
+  **foreshortened diameter line** when edge-on. Edge-on is decided from the true projected
+  ellipse — minor semi-axis `r·|normal·view|` — so a diagonal edge view (e.g. Front-Right) of a
+  cylinder correctly draws its caps as lines, not floating circles (#369). Either way it carries a **single diameter
   dimension** (`Ø…`, using the WinAnsi-safe Ø glyph, #320), and its segments are excluded from
   the straight-edge strokes and the length-dimension set. A **face-on** circle gets a diameter
   line across it with the value; an **edge-on** circle (which looks like a plain line) gets a

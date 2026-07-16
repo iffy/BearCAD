@@ -333,6 +333,7 @@ pub struct WorldCircle {
 }
 
 /// How a [`WorldCircle`] appears in a particular orthographic view (#313/#319).
+#[derive(Debug)]
 pub enum ProjectedCircle {
     /// The circle faces the viewer (roughly): a round outline.
     Round { center: glam::Vec2, radius: f32 },
@@ -446,21 +447,23 @@ pub fn classify_world_circles(edges: &[(Vec3, Vec3)]) -> Vec<WorldCircle> {
 }
 
 /// Project a world circle into a view's 2D space (#313/#319): round when it faces the viewer,
-/// a foreshortened line when edge-on.
+/// a foreshortened line when edge-on. An orthographic projection turns a circle into an
+/// ellipse whose **minor** semi-axis is `r·|n·d|` (`d` = view direction) and whose major is
+/// always `r`, along the projection of `d × n` — computed from those, not by projecting two
+/// arbitrary in-plane axes: at a 45° edge view both such axes foreshorten equally (~0.7·r),
+/// which used to miss the edge-on case and draw a smaller round circle floating at each cap
+/// of a side-viewed cylinder (#369).
 pub fn project_world_circle(c: &WorldCircle, right: Vec3, up: Vec3) -> ProjectedCircle {
     let project = |p: Vec3| glam::Vec2::new(p.dot(right), p.dot(up));
     let c2 = project(c.center);
-    // Two orthonormal in-plane axes.
-    let seed = if c.normal.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
-    let u = (seed - c.normal * seed.dot(c.normal)).normalize();
-    let v = c.normal.cross(u);
-    let pu = project(c.center + u * c.radius) - c2;
-    let pv = project(c.center + v * c.radius) - c2;
-    let (major, minor) = if pu.length() >= pv.length() { (pu, pv) } else { (pv, pu) };
-    if minor.length() < 0.15 * c.radius {
+    let d = right.cross(up).normalize_or_zero();
+    if c.normal.dot(d).abs() < 0.15 {
+        // Edge-on: the major axis is the in-plane direction perpendicular to the view.
+        let w = d.cross(c.normal).normalize_or_zero();
+        let major = glam::Vec2::new(w.dot(right), w.dot(up)) * c.radius;
         ProjectedCircle::EdgeOn { a: c2 - major, b: c2 + major }
     } else {
-        ProjectedCircle::Round { center: c2, radius: major.length() }
+        ProjectedCircle::Round { center: c2, radius: c.radius }
     }
 }
 
@@ -1802,6 +1805,23 @@ mod tests {
         match project_world_circle(&circles[0], Vec3::X, Vec3::Z) {
             ProjectedCircle::EdgeOn { a, b } => assert!(((a - b).length() - 2.0 * r).abs() < 0.5),
             _ => panic!("edge-on circle should project EdgeOn"),
+        }
+        // A 45° horizontal edge view (#369) is still edge-on for a Z-normal circle: it must
+        // project to a full-width line, not a smaller floating round circle.
+        let (right, up) = view_axes(DrawingOrientation::Edge(crate::model::EdgeView::FrontRight));
+        match project_world_circle(&circles[0], right, up) {
+            ProjectedCircle::EdgeOn { a, b } => {
+                assert!(
+                    ((a - b).length() - 2.0 * r).abs() < 0.5,
+                    "the edge-on line spans the full diameter, got {}",
+                    (a - b).length()
+                );
+                assert!(
+                    (a.y - b.y).abs() < 1e-3,
+                    "a horizontal cap circle projects to a horizontal line, got {a:?}..{b:?}"
+                );
+            }
+            other => panic!("45° edge view of a flat circle should be EdgeOn, got {other:?}"),
         }
     }
 
