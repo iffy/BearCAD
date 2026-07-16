@@ -185,6 +185,15 @@ pub enum Instruction {
         view: usize,
         center: (f32, f32, f32),
     },
+    /// Edit a view's caption label (#372): each `Some` overrides that aspect; an empty
+    /// `text` returns to the automatic caption.
+    SetDrawingViewLabel {
+        drawing: usize,
+        view: usize,
+        hidden: Option<bool>,
+        pos: Option<String>,
+        text: Option<String>,
+    },
     /// Toggle the angle dimension between two of a view's edges, each named by its endpoints.
     ToggleDrawingAngle {
         drawing: usize,
@@ -683,6 +692,19 @@ impl Instruction {
                  center = {{ {}, {}, {} }} }}",
                 center.0, center.1, center.2
             ),
+            Instruction::SetDrawingViewLabel { drawing, view, hidden, pos, text } => {
+                let mut args = format!("drawing = {drawing}, view = {view}");
+                if let Some(h) = hidden {
+                    args.push_str(&format!(", hidden = {h}"));
+                }
+                if let Some(p) = pos {
+                    args.push_str(&format!(", pos = {p:?}"));
+                }
+                if let Some(t) = text {
+                    args.push_str(&format!(", text = {t:?}"));
+                }
+                format!("bearcad.drawing_view_label{{ {args} }}")
+            }
             Instruction::ToggleDrawingAngle {
                 drawing,
                 view,
@@ -3369,6 +3391,29 @@ impl ScriptRunner {
                     center: crate::hierarchy::quantize_body_point(glam::Vec3::new(
                         center.0, center.1, center.2,
                     )),
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::SetDrawingViewLabel { drawing, view, hidden, pos, text } => {
+                let pos = match pos.as_deref() {
+                    Some(name) => match crate::model::DrawingLabelPos::from_name(name) {
+                        Some(p) => Some(p),
+                        None => {
+                            self.record_action_error(ActionResult::Err(format!(
+                                "unknown label position '{name}'"
+                            )));
+                            return StepResult::Continue;
+                        }
+                    },
+                    None => None,
+                };
+                let result = state.apply(Action::SetDrawingViewLabel {
+                    drawing,
+                    view,
+                    hidden,
+                    pos,
+                    text: text.map(Some),
                 });
                 self.record_action_error(result);
                 StepResult::Continue

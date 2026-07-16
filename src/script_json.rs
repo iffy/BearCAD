@@ -650,6 +650,13 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             view: req_usize(o, "view", "drawing_circle_dimension")?,
             center: xyz(o, "center")?,
         }),
+        "drawing_view_label" => Ok(Instruction::SetDrawingViewLabel {
+            drawing: req_usize(o, "drawing", "drawing_view_label")?,
+            view: req_usize(o, "view", "drawing_view_label")?,
+            hidden: o.get("hidden").and_then(|v| v.as_bool()),
+            pos: opt_str(o, "pos")?,
+            text: opt_str(o, "text")?,
+        }),
         "drawing_angle" => {
             let edge = |key: &str| -> Result<((f32, f32, f32), (f32, f32, f32)), String> {
                 let t = o

@@ -859,6 +859,7 @@ const WHITE: Rgb = Rgb(255, 255, 255);
 enum Anchor {
     Start,
     Middle,
+    End,
 }
 
 /// A 2D vector-drawing sink in top-left (SVG-style) coordinates: `y` grows downward and text
@@ -952,8 +953,28 @@ fn render_drawing<C: Canvas>(doc: &Document, index: usize, canvas: &mut C) -> Op
             .as_deref()
             .map(|s| format!(" ({s})"))
             .unwrap_or_default();
-        let label = format!("{source} — {}{scale_suffix}", view.orientation.label());
-        canvas.text(cell_x + CELL_PAD, cell_y + 20.0, 11.0, Anchor::Start, &label);
+        // The caption is toggleable, positionable, and its text overridable (#372); custom
+        // templates interpolate {expr} fields (#338), same as the editor.
+        if !view.label_hidden {
+            let label = match &view.label_text {
+                Some(t) => crate::value::interpolate_text(t, doc),
+                None => format!("{source} — {}{scale_suffix}", view.orientation.label()),
+            };
+            use crate::model::DrawingLabelPos as LP;
+            let (lx, ly, anchor) = match view.label_pos {
+                LP::TopLeft => (cell_x + CELL_PAD, cell_y + 20.0, Anchor::Start),
+                LP::TopCenter => (cell_x + cell_w * 0.5, cell_y + 20.0, Anchor::Middle),
+                LP::TopRight => (cell_x + cell_w - CELL_PAD, cell_y + 20.0, Anchor::End),
+                LP::BottomLeft => (cell_x + CELL_PAD, cell_y + cell_h - 8.0, Anchor::Start),
+                LP::BottomCenter => {
+                    (cell_x + cell_w * 0.5, cell_y + cell_h - 8.0, Anchor::Middle)
+                }
+                LP::BottomRight => {
+                    (cell_x + cell_w - CELL_PAD, cell_y + cell_h - 8.0, Anchor::End)
+                }
+            };
+            canvas.text(lx, ly, 11.0, anchor, &label);
+        }
         render_view_geometry(
             canvas,
             doc,
@@ -1299,6 +1320,7 @@ impl Canvas for SvgCanvas {
         let anchor = match anchor {
             Anchor::Start => "start",
             Anchor::Middle => "middle",
+            Anchor::End => "end",
         };
         self.body.push_str(&format!(
             "<text x=\"{x:.1}\" y=\"{y:.1}\" font-family=\"sans-serif\" font-size=\"{size}\" \
@@ -1311,6 +1333,7 @@ impl Canvas for SvgCanvas {
         let anchor = match anchor {
             Anchor::Start => "start",
             Anchor::Middle => "middle",
+            Anchor::End => "end",
         };
         let deg = angle.to_degrees();
         self.body.push_str(&format!(
@@ -1446,6 +1469,7 @@ impl Canvas for PdfCanvas {
         let tx = match anchor {
             Anchor::Start => x,
             Anchor::Middle => x - width * 0.5,
+            Anchor::End => x - width,
         };
         let py = self.height - y;
         self.set_fill(BLACK);
@@ -1462,6 +1486,7 @@ impl Canvas for PdfCanvas {
         let half = match anchor {
             Anchor::Middle => width * 0.5,
             Anchor::Start => 0.0,
+            Anchor::End => width,
         };
         let a = -angle;
         let (c, s) = (a.cos(), a.sin());
@@ -1583,6 +1608,7 @@ mod tests {
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
             dimensioned_circles: Vec::new(), aligned_parent: None, aligned_dir: None,
             scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
+            label_hidden: false, label_pos: Default::default(), label_text: None,
         };
         let child = |dir| DrawingView {
             aligned_parent: Some(0), aligned_dir: Some(dir),
@@ -1643,6 +1669,7 @@ mod tests {
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
             dimensioned_circles: Vec::new(), aligned_parent: None, aligned_dir: None,
             scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
+            label_hidden: false, label_pos: Default::default(), label_text: None,
         };
         for dir in [AlignDir::Right, AlignDir::Left, AlignDir::Above, AlignDir::Below] {
             for o in aligned_inline_orientations(O::Front, dir) {
@@ -1864,6 +1891,9 @@ mod tests {
                 style: Default::default(),
                 pos_x: 0.5,
                 pos_y: 0.5,
+                label_hidden: false,
+                label_pos: Default::default(),
+                label_text: None,
             }],
             // The title now renders as a normal text annotation, added with the drawing (#335),
             // not a baked-in export stamp — mirror that here.
@@ -2000,5 +2030,46 @@ mod tests {
         let doc = Document::default();
         assert!(drawing_to_svg(&doc, 0).is_none());
         assert!(drawing_to_pdf(&doc, 0).is_none());
+    }
+
+    /// #372: the caption label is toggleable, positionable, and its text overridable — a
+    /// hidden label exports no caption, a custom template interpolates `{param}` fields
+    /// (#338), and a bottom-right label anchors at the card's far corner.
+    #[test]
+    fn svg_view_label_hides_moves_and_customizes() {
+        let mut doc = doc_with_drawing();
+        let auto_caption = "Body 0 — Front";
+        let svg = drawing_to_svg(&doc, 0).unwrap();
+        assert!(svg.contains(auto_caption), "default: the automatic caption exports");
+
+        doc.drawings[0].views[0].label_hidden = true;
+        let svg = drawing_to_svg(&doc, 0).unwrap();
+        assert!(!svg.contains(auto_caption), "hidden: no caption in the export");
+
+        doc.drawings[0].views[0].label_hidden = false;
+        doc.parameters.push(crate::model::Parameter {
+            name: "w".to_string(),
+            expression: "40mm".to_string(),
+            deleted: false,
+            source: None,
+        });
+        doc.drawings[0].views[0].label_text = Some("Width {w}".to_string());
+        doc.drawings[0].views[0].label_pos = crate::model::DrawingLabelPos::BottomRight;
+        let svg = drawing_to_svg(&doc, 0).unwrap();
+        assert!(!svg.contains(auto_caption), "a custom template replaces the auto caption");
+        assert!(
+            svg.contains("Width 40.0 mm"),
+            "custom template interpolates {{param}} fields"
+        );
+        // Bottom-right: anchored at (cell_x + cell_w - CELL_PAD, cell_y + cell_h - 8).
+        let (page_w, page_h) = page_dims(&doc, 0).unwrap();
+        let view = &doc.drawings[0].views[0];
+        let x = view.pos_x * page_w + page_w * CELL_FRAC * 0.5 - CELL_PAD;
+        let y = view.pos_y * page_h + page_h * CELL_FRAC * 0.5 - 8.0;
+        let needle = format!("<text x=\"{x:.1}\" y=\"{y:.1}\"");
+        assert!(
+            svg.contains(&needle) && svg.contains("text-anchor=\"end\""),
+            "bottom-right label anchors at the card corner ({needle})"
+        );
     }
 }

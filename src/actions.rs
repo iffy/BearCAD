@@ -1335,6 +1335,16 @@ pub enum Action {
         view: usize,
         center: [i32; 3],
     },
+    /// Edit a drawing view's caption label (#372): each `Some` overrides that aspect —
+    /// visibility, position within the card, or the custom text template
+    /// (`Some(None)` resets the text to the automatic caption).
+    SetDrawingViewLabel {
+        drawing: usize,
+        view: usize,
+        hidden: Option<bool>,
+        pos: Option<crate::model::DrawingLabelPos>,
+        text: Option<Option<String>>,
+    },
     /// Show every length/diameter dimension for a view (`show = true`, populating the deduped,
     /// staggered default set) or hide them all (`show = false`, clearing the set), #331.
     SetAllDrawingDimensions {
@@ -6581,6 +6591,9 @@ impl AppState {
                 dimensioned_circles: Vec::new(),
                 aligned_parent: None,
                 aligned_dir: None,
+                label_hidden: false,
+                label_pos: Default::default(),
+                label_text: None,
                     pos_x: (0.35 + step).min(0.9),
                     pos_y: (0.35 + step).min(0.9),
                     scale: None,
@@ -6614,6 +6627,9 @@ impl AppState {
                 dimensioned_circles: Vec::new(),
                 aligned_parent: None,
                 aligned_dir: None,
+                label_hidden: false,
+                label_pos: Default::default(),
+                label_text: None,
                     pos_x: (0.35 + step).min(0.9),
                     pos_y: (0.35 + step).min(0.9),
                     scale: None,
@@ -6664,6 +6680,9 @@ impl AppState {
                     style: pv.style,
                     aligned_parent: Some(parent),
                     aligned_dir: Some(dir),
+                    label_hidden: false,
+                    label_pos: Default::default(),
+                    label_text: None,
                 };
                 self.doc.drawings[drawing].views.push(view);
                 let vi = self.doc.drawings[drawing].views.len() - 1;
@@ -6869,6 +6888,29 @@ impl AppState {
                     v.dimensioned_circles.push(center);
                     self.status = "Showed diameter dimension".to_string();
                 }
+                ActionResult::Ok
+            }
+            Action::SetDrawingViewLabel { drawing, view, hidden, pos, text } => {
+                let Some(v) = self
+                    .doc
+                    .drawings
+                    .get_mut(drawing)
+                    .filter(|d| !d.deleted)
+                    .and_then(|d| d.views.get_mut(view))
+                else {
+                    return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
+                };
+                if let Some(hidden) = hidden {
+                    v.label_hidden = hidden;
+                }
+                if let Some(pos) = pos {
+                    v.label_pos = pos;
+                }
+                if let Some(text) = text {
+                    // An empty custom template means "back to the automatic caption".
+                    v.label_text = text.filter(|t| !t.is_empty());
+                }
+                self.status = "Updated view label".to_string();
                 ActionResult::Ok
             }
             Action::SetAllDrawingDimensions { drawing, view, show } => {

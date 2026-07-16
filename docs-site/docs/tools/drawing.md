@@ -24,7 +24,11 @@ you like, and each one collects **views** — a body shown from a chosen directi
    its direction in the context pane: one of the six straight-on directions (Front, Back,
    Left, Right, Top, Bottom) or **Isometric**. Each view draws the source as a black
    wireframe, scaled to fit its card. With the **Select** tool, drag the card wherever it
-   should sit on the page, and repeat for more views. Clicking any placed view selects it and reopens the same editor —
+   should sit on the page, and repeat for more views. Each view carries a **label**
+   ("Body 0 — Front"): the view editor's **Label** checkbox shows or hides it, the small
+   position grid places it in any corner or center of the card's top or bottom, and the text
+   field replaces the automatic caption with your own — including `{parameter}` fields that
+   update with the model (clear the field to get the automatic caption back). Clicking any placed view selects it and reopens the same editor —
    change its orientation, set its scale, or **Remove view** there. The orientation is set with
    an interactive **navigation bear** (like the one in the 3D view): spin it by dragging, click
    a face to look from that side or a corner for the isometric view, or click the bear and
@@ -126,6 +130,9 @@ bearcad.drawing_dimension{ drawing = d, view = 0, a = {0, 0, 0}, b = {40, 0, 0} 
 
 -- Toggle a circle's diameter dimension by its world centre.
 bearcad.drawing_circle_dimension{ drawing = d, view = 0, center = {20, 10, 10} }
+
+-- Edit a view's caption label: hide it, move it, or set custom text ("" = automatic).
+bearcad.drawing_view_label{ drawing = d, view = 0, pos = "bottom-center", text = "Plate {w}" }
 
 -- Show the angle between two edges of a view.
 bearcad.drawing_angle{ drawing = d, view = 0,

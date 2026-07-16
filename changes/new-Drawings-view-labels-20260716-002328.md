@@ -1,0 +1,1 @@
+Drawings: view labels are editable — toggle visibility, place the label in any of six positions on the card via a grid input, and override the text (with {parameter} interpolation). Scriptable as bearcad.drawing_view_label.

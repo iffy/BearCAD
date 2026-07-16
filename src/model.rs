@@ -2183,6 +2183,68 @@ pub struct DrawingView {
     pub aligned_parent: Option<usize>,
     #[serde(default)]
     pub aligned_dir: Option<AlignDir>,
+    /// Hide the view's caption label on the page and in exports (#372).
+    #[serde(default)]
+    pub label_hidden: bool,
+    /// Where the caption label sits within the view's card (#372).
+    #[serde(default)]
+    pub label_pos: DrawingLabelPos,
+    /// Custom caption template (#372): `None` uses the automatic
+    /// "Source — Orientation (scale)" text. Like any label it may embed `{expression}`
+    /// interpolation fields (#338), resolved against the document's parameters.
+    #[serde(default)]
+    pub label_text: Option<String>,
+}
+
+/// Where a drawing view's caption label sits within its card (#372).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DrawingLabelPos {
+    #[default]
+    TopLeft,
+    TopCenter,
+    TopRight,
+    BottomLeft,
+    BottomCenter,
+    BottomRight,
+}
+
+impl DrawingLabelPos {
+    /// All positions in grid order: the top row, then the bottom row.
+    pub const ALL: [DrawingLabelPos; 6] = [
+        DrawingLabelPos::TopLeft,
+        DrawingLabelPos::TopCenter,
+        DrawingLabelPos::TopRight,
+        DrawingLabelPos::BottomLeft,
+        DrawingLabelPos::BottomCenter,
+        DrawingLabelPos::BottomRight,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::TopLeft => "Top left",
+            Self::TopCenter => "Top center",
+            Self::TopRight => "Top right",
+            Self::BottomLeft => "Bottom left",
+            Self::BottomCenter => "Bottom center",
+            Self::BottomRight => "Bottom right",
+        }
+    }
+
+    /// Stable scripting name (`bearcad.drawing_view_label{ pos = … }`).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::TopLeft => "top-left",
+            Self::TopCenter => "top-center",
+            Self::TopRight => "top-right",
+            Self::BottomLeft => "bottom-left",
+            Self::BottomCenter => "bottom-center",
+            Self::BottomRight => "bottom-right",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|p| p.name() == name)
+    }
 }
 
 /// Where an aligned child projection sits relative to its parent (#296). The name is the

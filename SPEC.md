@@ -1078,6 +1078,15 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   pane can be shown in the Drawing workbench like anywhere else (#378) — its View-menu
   toggle applies in every workbench, so parameters can be edited (rebuilding the model and
   the open drawing's views) without leaving the drawing.
+- **View labels (#372):** each view's caption label ("Body 0 — Front (1:20)") is editable from
+  the Select tool's context pane: a **Label checkbox** shows/hides it, a **2×3 position grid**
+  places it (top/bottom × left/center/right of the card, `DrawingLabelPos`, default top-left),
+  and a **text field** overrides the caption — like any label it may embed `{expression}`
+  interpolation fields (#338); clearing the field returns to the automatic caption (the
+  field's hint). Stored per view (`label_hidden`/`label_pos`/`label_text`,
+  `Action::SetDrawingViewLabel`), honored identically by the editor and both exports.
+  Scriptable: `bearcad.drawing_view_label{ drawing, view, hidden?, pos?, text? }` (`pos` is
+  `"top-left"`…`"bottom-right"`; `text = ""` resets to automatic).
 - **Elements-pane filter (#254/#275):** a **Filter** button (funnel icon, #291) at the bottom
   of the Elements pane expands into per-type show/hide toggles (planes, sketches, sketch geometry, bodies,
   operations, images, drawings). Hiding a type prunes those nodes but promotes their kept
@@ -1224,6 +1233,8 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   `bearcad.drawing_dimension{ drawing, view, a = {x,y,z}, b = {x,y,z} }` toggles an edge's
   length dimension, `bearcad.drawing_circle_dimension{ drawing, view, center = {x,y,z} }`
   toggles a detected circle's diameter dimension (#373),
+  `bearcad.drawing_view_label{ drawing, view, hidden?, pos?, text? }` edits a view's caption
+  label (#372),
   `bearcad.drawing_angle{ drawing, view, edge1 = { a, b }, edge2 = { a, b } }`
   toggles the angle between two edges, and `bearcad.export_drawing_pdf{ drawing, path }` /
   `bearcad.export_drawing_svg{ drawing, path }` write the PDF/SVG. `bearcad.count("drawing")`

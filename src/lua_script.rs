@@ -3112,6 +3112,35 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Edit a view's caption label (#372): `bearcad.drawing_view_label{ drawing, view,
+    // hidden?, pos?, text? }` — `pos` is "top-left"/"top-center"/…/"bottom-right"; an empty
+    // `text` returns to the automatic caption ("Body 0 — Front (1:20)").
+    api.set(
+        "drawing_view_label",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let drawing: usize = opts.get("drawing")?;
+            let view: usize = opts.get("view")?;
+            let hidden: Option<bool> = opts.get("hidden")?;
+            let pos: Option<String> = opts.get("pos")?;
+            let text: Option<String> = opts.get("text")?;
+            if hidden.is_none() && pos.is_none() && text.is_none() {
+                return Err(mlua::Error::external(
+                    "drawing_view_label needs at least one of `hidden`, `pos`, `text`",
+                ));
+            }
+            unsafe {
+                tick.exec(Instruction::SetDrawingViewLabel {
+                    drawing,
+                    view,
+                    hidden,
+                    pos,
+                    text,
+                })
+            }
+        })?,
+    )?;
+
     // Toggle a detected circle's diameter dimension in a view (#373): keyed by the circle's
     // world centre. `bearcad.drawing_circle_dimension{ drawing, view, center = {x, y, z} }`.
     api.set(
@@ -5511,6 +5540,35 @@ mod tests {
             hidden.doc.drawings[0].views[0].dimensioned_circles.is_empty(),
             "toggling the same circle twice hides it again"
         );
+    }
+
+    /// #372: `bearcad.drawing_view_label{}` edits a view's caption — visibility, position
+    /// (grid name), and custom text; an empty text returns to the automatic caption.
+    #[test]
+    fn lua_drawing_view_label_edits_the_caption() {
+        let base = r#"
+            bearcad.new()
+            bearcad.rect{ x = 0, y = 0, width = 40, height = 25 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 15 }
+            local d = bearcad.drawing{}
+            bearcad.drawing_view{ drawing = d, body = 0, orientation = "front" }
+        "#;
+        let state = run_lua(&format!(
+            "{base}\nbearcad.drawing_view_label{{ drawing = d, view = 0, hidden = true, \
+             pos = \"bottom-center\", text = \"Plate {{w}}\" }}"
+        ));
+        let view = &state.doc.drawings[0].views[0];
+        assert!(view.label_hidden);
+        assert_eq!(view.label_pos, crate::model::DrawingLabelPos::BottomCenter);
+        assert_eq!(view.label_text.as_deref(), Some("Plate {w}"));
+
+        let reset = run_lua(&format!(
+            "{base}\nbearcad.drawing_view_label{{ drawing = d, view = 0, text = \"custom\" }}\n\
+             bearcad.drawing_view_label{{ drawing = d, view = 0, text = \"\" }}"
+        ));
+        let view = &reset.doc.drawings[0].views[0];
+        assert_eq!(view.label_text, None, "empty text returns to the automatic caption");
+        assert!(!view.label_hidden, "untouched aspects keep their values");
     }
 
     /// #334: a smooth extrusion (cylinder) has no crease edge down its side, so its **length**

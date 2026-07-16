@@ -5085,6 +5085,17 @@ impl eframe::App for App {
                                     .unwrap_or_default(),
                                 _ => Vec::new(),
                             };
+                            let scale_suffix = crate::drawing::resolved_view_scale(
+                                &self.state.doc,
+                                d,
+                                v,
+                            )
+                            .map(|s| format!(" ({s})"))
+                            .unwrap_or_default();
+                            let auto_label = format!(
+                                "{source} — {}{scale_suffix}",
+                                view.orientation.label()
+                            );
                             Some(context::DrawingViewControl {
                                 view: v,
                                 source,
@@ -5093,6 +5104,10 @@ impl eframe::App for App {
                                 aligned,
                                 inline_orientations,
                                 style: view.style,
+                                label_hidden: view.label_hidden,
+                                label_pos: view.label_pos,
+                                label_text: view.label_text.clone().unwrap_or_default(),
+                                auto_label,
                             })
                         })
                 },
@@ -5737,6 +5752,33 @@ impl eframe::App for App {
                                 drawing,
                                 view,
                                 orientation: model::DrawingOrientation::Free { right, up },
+                            });
+                        }
+                        context::DrawingViewEdit::LabelHidden(hidden) => {
+                            self.state.apply(Action::SetDrawingViewLabel {
+                                drawing,
+                                view,
+                                hidden: Some(hidden),
+                                pos: None,
+                                text: None,
+                            });
+                        }
+                        context::DrawingViewEdit::LabelPos(pos) => {
+                            self.state.apply(Action::SetDrawingViewLabel {
+                                drawing,
+                                view,
+                                hidden: None,
+                                pos: Some(pos),
+                                text: None,
+                            });
+                        }
+                        context::DrawingViewEdit::LabelText(text) => {
+                            self.state.apply(Action::SetDrawingViewLabel {
+                                drawing,
+                                view,
+                                hidden: None,
+                                pos: None,
+                                text: Some(text),
                             });
                         }
                         context::DrawingViewEdit::Remove => {
@@ -9338,15 +9380,43 @@ impl App {
                     crate::drawing::resolved_view_scale(&self.state.doc, drawing, vi)
                         .map(|s| format!(" ({s})"))
                         .unwrap_or_default();
-                let caption =
-                    format!("{source_label} — {}{scale_suffix}", view.orientation.label());
-                painter.text(
-                    cell.min + egui::vec2(8.0, 6.0),
-                    egui::Align2::LEFT_TOP,
-                    caption,
-                    egui::FontId::proportional(12.0),
-                    INK,
-                );
+                // The caption label is toggleable, positionable within the card, and its text
+                // overridable (#372); a custom template interpolates {expr} fields (#338).
+                if !view.label_hidden {
+                    let caption = match &view.label_text {
+                        Some(t) => crate::value::interpolate_text(t, &self.state.doc),
+                        None => format!(
+                            "{source_label} — {}{scale_suffix}",
+                            view.orientation.label()
+                        ),
+                    };
+                    use crate::model::DrawingLabelPos as LP;
+                    // Top-right dodges the Remove ✕ in the card's corner.
+                    let (pos, align) = match view.label_pos {
+                        LP::TopLeft => (cell.min + egui::vec2(8.0, 6.0), egui::Align2::LEFT_TOP),
+                        LP::TopCenter => (
+                            egui::pos2(cell.center().x, cell.min.y + 6.0),
+                            egui::Align2::CENTER_TOP,
+                        ),
+                        LP::TopRight => (
+                            egui::pos2(cell.max.x - 28.0, cell.min.y + 6.0),
+                            egui::Align2::RIGHT_TOP,
+                        ),
+                        LP::BottomLeft => (
+                            egui::pos2(cell.min.x + 8.0, cell.max.y - 6.0),
+                            egui::Align2::LEFT_BOTTOM,
+                        ),
+                        LP::BottomCenter => (
+                            egui::pos2(cell.center().x, cell.max.y - 6.0),
+                            egui::Align2::CENTER_BOTTOM,
+                        ),
+                        LP::BottomRight => (
+                            egui::pos2(cell.max.x - 8.0, cell.max.y - 6.0),
+                            egui::Align2::RIGHT_BOTTOM,
+                        ),
+                    };
+                    painter.text(pos, align, caption, egui::FontId::proportional(12.0), INK);
+                }
                 // Remove button in the cell's top-right corner.
                 let x_rect = egui::Rect::from_min_size(
                     egui::pos2(cell.max.x - 24.0, cell.min.y + 4.0),

@@ -312,6 +312,13 @@ pub struct DrawingViewControl {
     pub inline_orientations: Vec<crate::model::DrawingOrientation>,
     /// How the projection renders (#301).
     pub style: crate::model::DrawingViewStyle,
+    /// Caption label state (#372): visibility, position in the card, and the custom text
+    /// template (empty = the automatic caption, shown as the field's hint).
+    pub label_hidden: bool,
+    pub label_pos: crate::model::DrawingLabelPos,
+    pub label_text: String,
+    /// The automatic caption ("Body 0 — Front (1:20)"), hinted in the empty text field.
+    pub auto_label: String,
 }
 
 /// Editor for a selected drawing text annotation (#312).
@@ -368,6 +375,12 @@ pub enum DrawingViewEdit {
     SetAllDimensions(bool),
     /// Set the projection to the current 3D viewport angle (#366).
     UseCurrentView,
+    /// Show or hide the view's caption label (#372).
+    LabelHidden(bool),
+    /// Move the caption label within the card (#372).
+    LabelPos(crate::model::DrawingLabelPos),
+    /// Override the caption text (#372); `None` returns to the automatic caption.
+    LabelText(Option<String>),
     Remove,
 }
 
@@ -2412,6 +2425,48 @@ pub fn show_pane(
                 }
             }
         });
+        // Caption label (#372): show/hide, custom text (with {expr} interpolation like any
+        // label, #338), and a 2×3 position grid for where it sits on the card.
+        ui.horizontal(|ui| {
+            let mut shown = !control.label_hidden;
+            if ui.checkbox(&mut shown, "Label").changed() {
+                on_drawing_view_edit(DrawingViewEdit::LabelHidden(!shown));
+            }
+        });
+        if !control.label_hidden {
+            let mut label_draft = control.label_text.clone();
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut label_draft)
+                    .hint_text(control.auto_label.clone())
+                    .desired_width(f32::INFINITY),
+            );
+            if resp.changed() {
+                let trimmed = label_draft.trim();
+                on_drawing_view_edit(DrawingViewEdit::LabelText(
+                    (!trimmed.is_empty()).then(|| label_draft.clone()),
+                ));
+            }
+            egui::Grid::new("drawing_view_label_pos")
+                .spacing(egui::vec2(2.0, 2.0))
+                .show(ui, |ui| {
+                    for (i, pos) in crate::model::DrawingLabelPos::ALL.into_iter().enumerate() {
+                        let selected = control.label_pos == pos;
+                        if ui
+                            .add_sized(
+                                egui::vec2(22.0, 16.0),
+                                egui::Button::selectable(selected, "▪"),
+                            )
+                            .on_hover_text(pos.label())
+                            .clicked()
+                        {
+                            on_drawing_view_edit(DrawingViewEdit::LabelPos(pos));
+                        }
+                        if i == 2 {
+                            ui.end_row();
+                        }
+                    }
+                });
+        }
         // Dimensions are off by default (#331); these flip the whole set on or off at once.
         ui.horizontal(|ui| {
             if ui.button("Show all dimensions").clicked() {
@@ -3024,6 +3079,10 @@ mod tests {
             aligned: false,
             inline_orientations: Vec::new(),
             style: crate::model::DrawingViewStyle::default(),
+            label_hidden: false,
+            label_pos: Default::default(),
+            label_text: String::new(),
+            auto_label: "Body 0 — Front".to_string(),
         };
         // Dimension tool: projection editor and units both present.
         let dim = context_pane_content(&ContextInput {
