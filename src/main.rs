@@ -418,6 +418,9 @@ struct DrawingDimLabelDrag {
     drawing: usize,
     view: usize,
     key: ([i32; 3], [i32; 3]),
+    /// A circle Ø-label drag (#397): `key.0` is the circle's quantized centre and the offset
+    /// writes through `SetDrawingCircleDimOffset` instead of the edge-keyed action.
+    circle: bool,
     start_offset: f32,
     start_pointer: egui::Pos2,
     /// Outward unit direction in screen space (pixels), for projecting the drag delta.
@@ -9798,17 +9801,65 @@ impl App {
                             if !show_dim {
                                 continue;
                             }
-                            let dir = egui::vec2(0.70710677, -0.70710677);
+                            // Horizontal diameter line by default (#397); the label can be
+                            // dragged up/down off the line (a circle_dim_offsets override).
+                            let dir = egui::vec2(1.0, 0.0);
                             let cv = egui::vec2(center.x, center.y);
                             let (sa, sb) = (to_screen(cv - dir * *radius), to_screen(cv + dir * *radius));
                             painter.line_segment([sa, sb], egui::Stroke::new(crate::drawing::DIM_STROKE, INK));
-                            let d = sb - sa;
-                            draw_rot_label(
-                                &painter,
-                                label,
-                                (sa + sb.to_vec2()) * 0.5,
-                                crate::drawing::readable_text_angle(glam::Vec2::new(d.x, d.y)),
-                            );
+                            let circle_key = hierarchy::quantize_body_point(wc.center);
+                            let extra = view
+                                .circle_dim_offsets
+                                .iter()
+                                .find(|(k, _)| *k == circle_key)
+                                .map(|(_, o)| *o)
+                                .unwrap_or(0.0);
+                            let label_screen = to_screen(cv + egui::vec2(0.0, extra));
+                            draw_rot_label(&painter, label, label_screen, 0.0);
+                            // The label drags up/down with Select or Dimension (#397),
+                            // mirroring the edge dims' label drag.
+                            if matches!(self.state.tool, Tool::Select | Tool::Dimension) {
+                                let label_rect = egui::Rect::from_center_size(
+                                    label_screen,
+                                    egui::vec2(46.0, 18.0),
+                                );
+                                let lr = ui.interact(
+                                    label_rect,
+                                    ui.make_persistent_id((
+                                        "drawing_circle_dim_label",
+                                        drawing,
+                                        vi,
+                                        circle_key,
+                                    )),
+                                    egui::Sense::click_and_drag(),
+                                );
+                                if lr.hovered()
+                                    || self
+                                        .drawing_dim_label_drag
+                                        .is_some_and(|d| d.circle && d.key.0 == circle_key)
+                                {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                                }
+                                if lr.drag_started() {
+                                    if let Some(pp) = lr.interact_pointer_pos() {
+                                        // Screen up = +offset (projected +v maps to −y).
+                                        self.drawing_dim_label_drag = Some(DrawingDimLabelDrag {
+                                            drawing,
+                                            view: vi,
+                                            key: (circle_key, circle_key),
+                                            circle: true,
+                                            start_offset: extra,
+                                            start_pointer: pp,
+                                            outward_screen: egui::vec2(0.0, -1.0),
+                                            mm_per_px: if scale.abs() > 1e-6 {
+                                                1.0 / scale
+                                            } else {
+                                                0.0
+                                            },
+                                        });
+                                    }
+                                }
+                            }
                         }
                         crate::drawing::ProjectedCircle::EdgeOn { a, b } => {
                             let (av, bv) = (egui::vec2(a.x, a.y), egui::vec2(b.x, b.y));
@@ -9823,11 +9874,20 @@ impl App {
                                 let mid = (av + bv) * 0.5;
                                 if p.dot(mid - bbox_center_v) < 0.0 { -p } else { p }
                             };
+                            // An offset override (#397) pushes the whole linear dim further
+                            // out, like the edge dims' dimension_offsets.
+                            let circle_key = hierarchy::quantize_body_point(wc.center);
+                            let extra = view
+                                .circle_dim_offsets
+                                .iter()
+                                .find(|(k, _)| *k == circle_key)
+                                .map(|(_, o)| *o)
+                                .unwrap_or(0.0);
                             let g = crate::drawing::dimension_line_geometry(
                                 glam::Vec2::new(av.x, av.y),
                                 glam::Vec2::new(bv.x, bv.y),
                                 glam::Vec2::new(outward.x, outward.y),
-                                default_gap,
+                                default_gap + extra,
                                 arrow,
                             );
                             let sp = |p: glam::Vec2| to_screen(egui::vec2(p.x, p.y));
@@ -9854,7 +9914,51 @@ impl App {
                                 crate::drawing::text_device_width(dim_font, &label),
                                 5.0 * px_per_pt,
                             );
-                            draw_rot_label(&painter, label, egui::pos2(lp.x, lp.y), ang);
+                            let label_screen = egui::pos2(lp.x, lp.y);
+                            draw_rot_label(&painter, label, label_screen, ang);
+                            // Draggable like the edge dims (#397): slides the linear dim
+                            // nearer/further via the circle's offset override.
+                            if matches!(self.state.tool, Tool::Select | Tool::Dimension) {
+                                let label_rect = egui::Rect::from_center_size(
+                                    label_screen,
+                                    egui::vec2(46.0, 18.0),
+                                );
+                                let lr = ui.interact(
+                                    label_rect,
+                                    ui.make_persistent_id((
+                                        "drawing_circle_dim_label",
+                                        drawing,
+                                        vi,
+                                        circle_key,
+                                    )),
+                                    egui::Sense::click_and_drag(),
+                                );
+                                if lr.hovered()
+                                    || self
+                                        .drawing_dim_label_drag
+                                        .is_some_and(|d| d.circle && d.key.0 == circle_key)
+                                {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                                }
+                                if lr.drag_started() {
+                                    if let Some(pp) = lr.interact_pointer_pos() {
+                                        self.drawing_dim_label_drag = Some(DrawingDimLabelDrag {
+                                            drawing,
+                                            view: vi,
+                                            key: (circle_key, circle_key),
+                                            circle: true,
+                                            start_offset: extra,
+                                            start_pointer: pp,
+                                            outward_screen: egui::vec2(out_screen.x, out_screen.y),
+                                            mm_per_px: if scale.abs() > 1e-6 {
+                                                1.0 / scale
+                                            } else {
+                                                0.0
+                                            },
+                                        });
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -10023,6 +10127,7 @@ impl App {
                                         drawing,
                                         view: vi,
                                         key,
+                                        circle: false,
                                         start_offset: extra,
                                         start_pointer: pp,
                                         outward_screen: om.normalized(),
@@ -10331,13 +10436,22 @@ impl App {
                 if let Some(pp) = pointer_screen {
                     let delta_px = (pp - d.start_pointer).dot(d.outward_screen);
                     let offset = d.start_offset + delta_px * d.mm_per_px;
-                    self.state.apply(Action::SetDrawingDimensionOffset {
-                        drawing: d.drawing,
-                        view: d.view,
-                        a: d.key.0,
-                        b: d.key.1,
-                        offset: Some(offset),
-                    });
+                    if d.circle {
+                        self.state.apply(Action::SetDrawingCircleDimOffset {
+                            drawing: d.drawing,
+                            view: d.view,
+                            center: d.key.0,
+                            offset: Some(offset),
+                        });
+                    } else {
+                        self.state.apply(Action::SetDrawingDimensionOffset {
+                            drawing: d.drawing,
+                            view: d.view,
+                            a: d.key.0,
+                            b: d.key.1,
+                            offset: Some(offset),
+                        });
+                    }
                 }
             } else {
                 self.drawing_dim_label_drag = None;

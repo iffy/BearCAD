@@ -1279,21 +1279,29 @@ fn render_view_geometry<C: Canvas>(
             continue;
         }
         let label = format!("Ø{}", crate::value::format_length_display_in(wc.radius * 2.0, unit));
+        let circle_key = crate::hierarchy::quantize_body_point(wc.center);
+        let extra = view
+            .circle_dim_offsets
+            .iter()
+            .find(|(k, _)| *k == circle_key)
+            .map(|(_, o)| *o)
+            .unwrap_or(0.0);
         match pc {
-            // Face-on: a diameter line across the circle with the value beside it.
+            // Face-on (#397): a horizontal diameter line, the label offset off it by the
+            // per-circle override (dragged up/down in the editor).
             ProjectedCircle::Round { center, radius } => {
-                let dir = glam::Vec2::new(0.70710677, -0.70710677);
+                let dir = glam::Vec2::new(1.0, 0.0);
                 let (a, b) = (*center - dir * *radius, *center + dir * *radius);
                 let (sa, sb) = (to_screen(a), to_screen(b));
                 canvas.line(sa.x, sa.y, sb.x, sb.y, BLACK, DIM_STROKE);
-                let mid = (sa + sb) * 0.5;
-                canvas.text_rot(mid.x, mid.y, 11.0, Anchor::Middle, &label, readable_text_angle(sb - sa));
+                let lp = to_screen(*center + glam::Vec2::new(0.0, extra));
+                canvas.text_rot(lp.x, lp.y, 11.0, Anchor::Middle, &label, 0.0);
             }
             // Edge-on (looks like a line, #320): a normal linear dimension — extension lines,
             // an offset dimension line with arrowheads, and the value running along it.
             ProjectedCircle::EdgeOn { a, b } => {
                 let outward = dimension_outward(*a, *b, bbox_center);
-                let geom = dimension_line_geometry(*a, *b, outward, default_gap, arrow);
+                let geom = dimension_line_geometry(*a, *b, outward, default_gap + extra, arrow);
                 let sl = |canvas: &mut C, p: glam::Vec2, q: glam::Vec2| {
                     let (sp, sq) = (to_screen(p), to_screen(q));
                     canvas.line(sp.x, sp.y, sq.x, sq.y, BLACK, DIM_STROKE);
@@ -1745,7 +1753,8 @@ mod tests {
         let parent = DrawingView {
             body: 0, sketch: None, orientation: O::Top,
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
-            dimensioned_circles: Vec::new(), aligned_parent: None, aligned_dir: None,
+            dimensioned_circles: Vec::new(),
+circle_dim_offsets: Vec::new(), aligned_parent: None, aligned_dir: None,
             scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
             align_lines: false,
 label_hidden: false, label_pos: Default::default(), label_text: None,
@@ -1807,7 +1816,8 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
         let parent = DrawingView {
             body: 0, sketch: None, orientation: O::Front,
             dimensioned_edges: Vec::new(), angle_dims: Vec::new(), dimension_offsets: Vec::new(),
-            dimensioned_circles: Vec::new(), aligned_parent: None, aligned_dir: None,
+            dimensioned_circles: Vec::new(),
+circle_dim_offsets: Vec::new(), aligned_parent: None, aligned_dir: None,
             scale: None, style: Default::default(), pos_x: 0.5, pos_y: 0.5,
             align_lines: false,
 label_hidden: false, label_pos: Default::default(), label_text: None,
@@ -2026,6 +2036,7 @@ label_hidden: false, label_pos: Default::default(), label_text: None,
                 angle_dims: Vec::new(),
                 dimension_offsets: Vec::new(),
                 dimensioned_circles: Vec::new(),
+circle_dim_offsets: Vec::new(),
                 aligned_parent: None,
                 aligned_dir: None,
                 scale: None,

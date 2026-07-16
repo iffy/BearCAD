@@ -1298,6 +1298,14 @@ pub enum Action {
         b: [i32; 3],
         offset: Option<f32>,
     },
+    /// Set (or clear) a circle Ø-label offset override (#397), keyed by the circle's
+    /// quantized world centre — the circle analogue of [`Self::SetDrawingDimensionOffset`].
+    SetDrawingCircleDimOffset {
+        drawing: usize,
+        view: usize,
+        center: [i32; 3],
+        offset: Option<f32>,
+    },
     /// Add an aligned child projection of an existing view (#296): a new view of the same
     /// body, oriented per the glass-box unfolding for `dir`, placed adjacent to `parent` and
     /// kept lined up with it. `pos` is the free-axis fraction (the shared axis follows parent).
@@ -6648,6 +6656,7 @@ impl AppState {
                     angle_dims: Vec::new(),
                 dimension_offsets: Vec::new(),
                 dimensioned_circles: Vec::new(),
+circle_dim_offsets: Vec::new(),
                 aligned_parent: None,
                 aligned_dir: None,
                 align_lines: false,
@@ -6685,6 +6694,7 @@ label_hidden: false,
                     angle_dims: Vec::new(),
                 dimension_offsets: Vec::new(),
                 dimensioned_circles: Vec::new(),
+circle_dim_offsets: Vec::new(),
                 aligned_parent: None,
                 aligned_dir: None,
                 align_lines: false,
@@ -6735,6 +6745,7 @@ label_hidden: false,
                     angle_dims: Vec::new(),
                     dimension_offsets: Vec::new(),
                     dimensioned_circles: Vec::new(),
+circle_dim_offsets: Vec::new(),
                     pos_x,
                     pos_y,
                     scale: pv.scale.clone(),
@@ -7054,6 +7065,22 @@ label_hidden: false,
                 v.dimension_offsets.retain(|(k, _)| *k != key);
                 if let Some(o) = offset {
                     v.dimension_offsets.push((key, o));
+                }
+                ActionResult::Ok
+            }
+            Action::SetDrawingCircleDimOffset { drawing, view, center, offset } => {
+                let Some(v) = self
+                    .doc
+                    .drawings
+                    .get_mut(drawing)
+                    .filter(|d| !d.deleted)
+                    .and_then(|d| d.views.get_mut(view))
+                else {
+                    return ActionResult::Err(format!("No view {view} in drawing {drawing}"));
+                };
+                v.circle_dim_offsets.retain(|(k, _)| *k != center);
+                if let Some(o) = offset {
+                    v.circle_dim_offsets.push((center, o));
                 }
                 ActionResult::Ok
             }
@@ -14025,6 +14052,40 @@ mod tests {
         assert!((new_circle.r - 6.0).abs() < 1e-3, "should mirror the source radius exactly");
         let ce = state.creating_extrusion.as_ref().unwrap();
         assert!(matches!(ce.faces[0], ExtrudeFace::Circle(_)));
+    }
+
+    /// #397: a circle's Ø-label offset override stores per centre key and clears with `None`.
+    #[test]
+    fn circle_dim_offset_stores_and_clears() {
+        let mut state = box_extrusion_state();
+        state.apply(Action::CreateDrawing { name: None });
+        state.apply(Action::AddDrawingView {
+            drawing: 0,
+            body: 0,
+            orientation: crate::model::DrawingOrientation::Top,
+        });
+        let center = [100, 200, 300];
+        state.apply(Action::SetDrawingCircleDimOffset {
+            drawing: 0,
+            view: 0,
+            center,
+            offset: Some(4.5),
+        });
+        assert_eq!(state.doc.drawings[0].views[0].circle_dim_offsets, vec![(center, 4.5)]);
+        state.apply(Action::SetDrawingCircleDimOffset {
+            drawing: 0,
+            view: 0,
+            center,
+            offset: Some(-2.0),
+        });
+        assert_eq!(state.doc.drawings[0].views[0].circle_dim_offsets, vec![(center, -2.0)]);
+        state.apply(Action::SetDrawingCircleDimOffset {
+            drawing: 0,
+            view: 0,
+            center,
+            offset: None,
+        });
+        assert!(state.doc.drawings[0].views[0].circle_dim_offsets.is_empty());
     }
 
     /// #380: a committed cut must actually remove material. A scripted cut whose distance

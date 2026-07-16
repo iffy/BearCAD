@@ -93,7 +93,8 @@ A new view arrives with **no dimensions shown**. Select it and click **Show all 
 the context pane to add them all at once (**Hide all dimensions** clears them). They draw as proper
 dimension lines — extension lines, an offset line with arrowheads, and the measurement centred on
 it — in a lighter, thinner stroke than the model edges. Round features (holes, cylinders) get a
-single diameter dimension (Ø); a cylinder can also be dimensioned along its **length** by clicking
+single diameter dimension (Ø), drawn horizontally across the circle — drag its label up or down
+to reposition it; a cylinder can also be dimensioned along its **length** by clicking
 its side wall.
 
 With the **Dimension tool** active, the edge under the cursor highlights — click it to show or hide

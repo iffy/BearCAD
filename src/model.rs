@@ -2168,6 +2168,12 @@ pub struct DrawingView {
     /// toggleable rather than always drawn.
     #[serde(default)]
     pub dimensioned_circles: Vec<[i32; 3]>,
+    /// Per-circle Ø-label offset overrides (#397), keyed like `dimensioned_circles`. For a
+    /// face-on circle the offset slides the label off the diameter line along its
+    /// perpendicular (up/down for the default horizontal line); for an edge-on circle it
+    /// pushes the linear dimension further out, like `dimension_offsets`. Projected mm.
+    #[serde(default)]
+    pub circle_dim_offsets: Vec<([i32; 3], f32)>,
     /// Print scale as `"page:model"` text, e.g. `"1:20"` (#300). Always stored validated
     /// (see [`parse_drawing_scale`]); `None` auto-fits the projection to its card.
     #[serde(default)]
