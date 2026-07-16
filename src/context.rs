@@ -1287,6 +1287,16 @@ fn preview_font_family(ctx: &egui::Context, family: &str) -> Option<egui::FontFa
     })
 }
 
+/// A faint section heading (#393): quieter than the field labels beneath it, so sections
+/// read as grouping rather than competing with the label column.
+fn section_label(ui: &mut egui::Ui, text: impl Into<String>) {
+    ui.label(
+        egui::RichText::new(text.into())
+            .color(egui::Color32::from_gray(130))
+            .size(11.5),
+    );
+}
+
 /// Width of the context pane's label column (#371): every label+input pair renders as a
 /// two-column row — the label left-aligned in this fixed column, the input in the aligned
 /// right column — so inputs line up down the whole pane.
@@ -1432,7 +1442,7 @@ pub fn show_pane(
     // Pickers render as label-left / picker-right rows (#371), like every other field.
     if let Some(picker) = &content.selection_picker {
         any_control = true;
-        labeled_row_top(ui, egui::RichText::new("Selection").strong(), |ui| {
+        labeled_row_top(ui, "Selection", |ui| {
         ui.add_enabled_ui(controls_enabled, |ui| {
             if let Some(event) = crate::element_picker::show(ui, picker, doc, "selection_picker") {
                 match event {
@@ -1462,7 +1472,7 @@ pub fn show_pane(
             .iter()
             .map(|(_, element, label)| (drawing_element_icon(*element), label.clone()))
             .collect();
-        labeled_row_top(ui, egui::RichText::new("Selection").strong(), |ui| {
+        labeled_row_top(ui, "Selection", |ui| {
         ui.add_enabled_ui(controls_enabled, |ui| {
             if let Some(event) = crate::element_picker::show_rows(
                 ui,
@@ -1503,7 +1513,7 @@ pub fn show_pane(
             .iter()
             .map(|(_, label)| (crate::icons::IconId::Projection, label.clone()))
             .collect();
-        labeled_row_top(ui, egui::RichText::new("Base view").strong(), |ui| {
+        labeled_row_top(ui, "Base view", |ui| {
         ui.add_enabled_ui(controls_enabled, |ui| {
             if let Some(event) = crate::element_picker::show_rows(
                 ui,
@@ -1571,7 +1581,7 @@ pub fn show_pane(
 
     if let Some(rows) = &content.constraints {
         any_control = true;
-        ui.label("Constraints");
+        section_label(ui, "Constraints");
         for row in rows {
             ui.horizontal(|ui| {
                 let enabled = controls_enabled && row.enabled;
@@ -1679,7 +1689,7 @@ pub fn show_pane(
     for view in &content.tool_pickers {
         any_control = true;
         ui.separator();
-        labeled_row_top(ui, egui::RichText::new(view.heading).strong(), |ui| {
+        labeled_row_top(ui, view.heading, |ui| {
         ui.add_enabled_ui(controls_enabled, |ui| {
             if let Some(event) = crate::element_picker::show(ui, &view.picker, doc, view.heading) {
                 match event {
@@ -1702,7 +1712,7 @@ pub fn show_pane(
     if let Some(control) = &content.revolve {
         any_control = true;
         ui.separator();
-        ui.label(egui::RichText::new("Revolve").strong());
+        section_label(ui, "Revolve");
 
         // Face element picker (#261): the picked profile faces, click one's ✕ to drop it. Faces
         // are still added by clicking them in the viewport.
@@ -1791,13 +1801,9 @@ pub fn show_pane(
     if let Some(control) = &content.boolean_op {
         any_control = true;
         ui.separator();
-        ui.label(
-            egui::RichText::new(if control.editing {
-                "Edit boolean operation"
-            } else {
-                "Combine"
-            })
-            .strong(),
+        section_label(
+            ui,
+            if control.editing { "Edit boolean operation" } else { "Combine" },
         );
         // A segmented icon group (#267): two-circle boolean icons with kept regions solid and
         // removed regions faint red.
@@ -1869,9 +1875,7 @@ pub fn show_pane(
     if let Some(control) = &content.move_op {
         any_control = true;
         ui.separator();
-        ui.label(
-            egui::RichText::new(if control.editing { "Edit move" } else { "Move" }).strong(),
-        );
+        section_label(ui, if control.editing { "Edit move" } else { "Move" });
         // The picked bodies render through the unified element picker (see `tool_pickers`).
         let mut pending: Option<MoveEdit> = None;
         {
@@ -1952,10 +1956,7 @@ pub fn show_pane(
     if let Some(control) = &content.repeat_op {
         any_control = true;
         ui.separator();
-        ui.label(
-            egui::RichText::new(if control.editing { "Edit repeat" } else { "Linear repeat" })
-                .strong(),
-        );
+        section_label(ui, if control.editing { "Edit repeat" } else { "Linear repeat" });
         // The picked bodies render through the unified element picker (see `tool_pickers`).
         // Construction-plane targets (#221) are picked via the Elements pane / viewport, like the
         // Move tool's planes — surfaced here as a count so the picked set is visible.
@@ -2133,7 +2134,7 @@ pub fn show_pane(
         use crate::model::RepeatVar;
         any_control = true;
         ui.separator();
-        ui.label(egui::RichText::new("Repeat (in sketch)").strong());
+        section_label(ui, "Repeat (in sketch)");
         ui.label(
             egui::RichText::new(format!(
                 "{} entities · direction: {} (Shift+click an edge)",
@@ -2238,13 +2239,11 @@ pub fn show_pane(
     if let Some(control) = &content.slice_op {
         any_control = true;
         ui.separator();
-        ui.label(
-            egui::RichText::new(if control.editing { "Edit slice" } else { "Slice" }).strong(),
-        );
+        section_label(ui, if control.editing { "Edit slice" } else { "Slice" });
         let mut pending: Option<SliceEdit> = None;
         // Two element pickers; the focused one is the side the next viewport click lands on
         // (clicking a picker makes it active, replacing the old Bodies/Cutters toggle).
-        labeled_row_top(ui, egui::RichText::new("Bodies").strong(), |ui| {
+        labeled_row_top(ui, "Bodies", |ui| {
         if let Some(event) = crate::element_picker::show_labeled(
             ui,
             "slice_targets",
@@ -2260,7 +2259,7 @@ pub fn show_pane(
             });
         }
         });
-        labeled_row_top(ui, egui::RichText::new("Cutters").strong(), |ui| {
+        labeled_row_top(ui, "Cutters", |ui| {
         if let Some(event) = crate::element_picker::show_labeled(
             ui,
             "slice_cutters",
@@ -2304,12 +2303,9 @@ pub fn show_pane(
     if let Some(control) = &content.sketch_slice {
         any_control = true;
         ui.separator();
-        ui.label(
-            egui::RichText::new(if control.editing { "Edit slice" } else { "Slice (in sketch)" })
-                .strong(),
-        );
+        section_label(ui, if control.editing { "Edit slice" } else { "Slice (in sketch)" });
         let mut pending: Option<SketchSliceEdit> = None;
-        labeled_row_top(ui, egui::RichText::new("Targets").strong(), |ui| {
+        labeled_row_top(ui, "Targets", |ui| {
         if let Some(event) = crate::element_picker::show_labeled(
             ui,
             "sketch_slice_targets",
@@ -2325,7 +2321,7 @@ pub fn show_pane(
             });
         }
         });
-        labeled_row_top(ui, egui::RichText::new("Cutters").strong(), |ui| {
+        labeled_row_top(ui, "Cutters", |ui| {
         if let Some(event) = crate::element_picker::show_labeled(
             ui,
             "sketch_slice_cutters",
@@ -2522,7 +2518,7 @@ pub fn show_pane(
     if let Some(control) = &content.drawing_view {
         any_control = true;
         ui.separator();
-        ui.label(egui::RichText::new("View").strong());
+        section_label(ui, "View");
         labeled_row(ui, "Source", |ui| {
             ui.label(&control.source);
         });
@@ -2694,7 +2690,7 @@ pub fn show_pane(
     } else if content.drawing_add_active {
         any_control = true;
         ui.separator();
-        ui.label(egui::RichText::new("Add view").strong());
+        section_label(ui, "Add view");
         ui.label(
             egui::RichText::new(
                 "Click a body or sketch in the Elements pane to place it on the page",
@@ -2718,7 +2714,7 @@ pub fn show_pane(
         {
             on_drawing_annotation_edit(DrawingAnnotationEdit::Text(edit_text.clone()));
         }
-        let text_resp = labeled_row_top(ui, egui::RichText::new("Text").strong(), |ui| {
+        let text_resp = labeled_row_top(ui, "Text", |ui| {
             ui.add(
                 egui::TextEdit::multiline(&mut edit_text)
                     .id(text_id)
@@ -2801,7 +2797,7 @@ pub fn show_pane(
     if let Some(placed) = content.calibrate_pending {
         any_control = true;
         ui.separator();
-        ui.label(egui::RichText::new("Calibrate scale").strong());
+        section_label(ui, "Calibrate scale");
         ui.label(
             egui::RichText::new(format!(
                 "Click two points on the image over a feature of known size ({placed} of 2 placed)"
@@ -2814,7 +2810,7 @@ pub fn show_pane(
     if let Some(control) = content.calibrate_image {
         any_control = true;
         ui.separator();
-        ui.label(egui::RichText::new("Calibrate scale").strong());
+        section_label(ui, "Calibrate scale");
         ui.label(
             egui::RichText::new("Real length of the marked span on the image")
                 .color(egui::Color32::from_gray(140))
@@ -2837,7 +2833,7 @@ pub fn show_pane(
     if let Some(picker) = &content.edge_picker {
         any_control = true;
         ui.separator();
-        labeled_row_top(ui, egui::RichText::new(picker.heading).strong(), |ui| {
+        labeled_row_top(ui, picker.heading, |ui| {
         ui.add_enabled_ui(controls_enabled, |ui| {
             // The active tool's picker is focused (its viewport clicks feed this set).
             if let Some(event) = crate::element_picker::show_labeled(
@@ -2923,11 +2919,10 @@ pub fn show_pane(
 
     if let Some(control) = &content.units {
         any_control = true;
-        ui.label(if control.sketch.is_some() {
-            "Sketch units"
-        } else {
-            "Default units"
-        });
+        section_label(
+            ui,
+            if control.sketch.is_some() { "Sketch units" } else { "Default units" },
+        );
         ui.add_enabled_ui(controls_enabled, |ui| {
             labeled_row(ui, "Length", |ui| {
                 let follow_document_label =
