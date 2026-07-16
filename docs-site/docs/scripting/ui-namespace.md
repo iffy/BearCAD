@@ -91,21 +91,7 @@ behind BearCAD's visual regression testing: an instruction script can drive an e
 flow (e.g. the rectangle tool's click → move → type → enter sequence) and emit a screenshot to
 compare against a golden image in CI.
 
-## A worked example
-
-Recreating the same 80×50&nbsp;mm rectangle two ways — the declarative call, and the equivalent
-simulated interaction:
-
-```lua
--- Declarative (one call):
-bearcad.rect{ width = 80, height = 50, name = "Main box" }
-
--- Simulated interaction (bearcad.ui.*):
-bearcad.ui.tool("rectangle")
-bearcad.ui.click_ground(0, 0)
-bearcad.ui.move_ground(80, 50)
-bearcad.ui.key("enter")
-```
-
-Both produce the identical committed rectangle in the document — the namespace split is about
-*how* you describe the action, not about a different underlying model.
+Whether an action arrives declaratively or through `bearcad.ui.*`, it lands as the same
+committed document change — the namespace split is about *how* you describe the action, not
+a different underlying model ([Scripting](/docs/scripting#namespace-split) shows the same
+rectangle built both ways).

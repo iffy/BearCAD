@@ -63,7 +63,7 @@ act on the page instead of the model. Everything these tools do is covered in
 
 - **Click to start, move to preview, click or type to finish.** Rectangle, Line, and Circle
   all work this way. While drawing, just type a number (or a
-  [parameter](/docs/quickstart#1-set-up-parameters) name) to make that dimension exact —
+  [parameter](/docs/parameters) name) to make that dimension exact —
   **Tab** switches between fields, **Enter** commits.
 - **Esc backs out.** It cancels whatever is in progress; pressed again, it returns to
   Select.

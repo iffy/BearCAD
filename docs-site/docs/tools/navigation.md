@@ -20,6 +20,12 @@ which is why the camera bindings live on the *right* mouse button.
 **Zoom to fit** (in the command palette and the View menu) frames your selection — or the
 whole model — in one step.
 
+## Command palette
+
+**⌘/Ctrl+P** opens the command palette: a searchable list of context-pertinent commands —
+tools, views, document actions — filtered as you type. Arrow keys move the highlight and
+**Enter** runs it. Any action without a visible button is reachable here.
+
 ## The view bear
 
 The bear-shaped cube in the corner — the **view bear** — snaps to standard views: click a

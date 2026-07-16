@@ -44,6 +44,8 @@ Click it to expand a popup that lists each picked element by name, with a remove
 every row and a **Clear all** at the bottom.
 
 It's the same control every tool that gathers elements uses (Loft, Fillet, and the rest), so
-reviewing and pruning a selection works the same way everywhere. Each tool configures its own
-picker — which kinds of element it will accept and how many — but the look and the interaction
-are always the same.
+reviewing and pruning a selection works the same way everywhere.
+
+With nothing selected, the context pane also holds the document's
+[**Default units**](/docs/parameters#display-units) pickers. **Delete**/**Backspace** removes
+the selection, and **N** jumps to the selected element's name field for renaming.

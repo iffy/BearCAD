@@ -108,14 +108,6 @@ REPL semantics match the standalone `lua` interpreter's:
 `--repl` and `--script` are mutually exclusive. Piping works too — `echo 'bearcad.rect{ width =
 30, height = 20 }' | bearcad --repl --exit` behaves like a one-off script.
 
-:::note CLI scope
-`SPEC.md` §9 describes a longer-term `bearcad run script.lua`-style subcommand surface (`export`,
-`run`, `render`, `set`, `import`/`convert`) as the CLI grows toward full GUI parity. As of this
-writing the implemented CLI is the flag-based form shown above (`--script`, `--exit`,
-`--show-commands`, `--timeout`, plus `install-cli`/`uninstall-cli`) — these docs describe what's
-actually implemented today, per `src/script.rs`'s argument parser.
-:::
-
 ## Import shorthand
 
 Call `bearcad.import()` once at the top of a script to copy the top-level modeling functions into

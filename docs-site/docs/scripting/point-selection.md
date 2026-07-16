@@ -124,9 +124,8 @@ bearcad.select({ kind = "line", index = 1 }, true)
 
 ## Worked example: closing a polygon loop purely from a script
 
-This is the motivating case the feature was built for (#68) — joining two line endpoints with a
-`Coincident` constraint, needed to test closed-loop polygon-face detection end to end without
-simulating any mouse clicks:
+Joining two line endpoints with a `Coincident` constraint — enough to close a polygon loop
+without simulating any mouse clicks:
 
 ```lua
 bearcad.new()
@@ -139,6 +138,6 @@ bearcad.add_geometric_constraint("coincident")
 ```
 
 After this, line `0`'s end and line `1`'s start are coincident — exactly as if you'd clicked both
-endpoints in the viewport with the Constraint tool active and pressed `I`. Combine this with
+endpoints in the viewport with the Constraint tool active and pressed `4`. Combine this with
 [`bearcad.extrude{ polygon = {...} }`](./declarative-modeling#a-closed-polygon-from-plain-lines-extruded)
 to build and extrude an arbitrary closed profile without any GUI interaction at all.

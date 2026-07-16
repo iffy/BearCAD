@@ -5,9 +5,9 @@ title: First-person mode
 
 # First-person mode
 
-FPS mode (#91) walks around (and inside) a model like a first-person game instead of orbiting a
-camera around it. It's driven by the same `bearcad.ui.fps_*` functions whether you're scripting a
-walkthrough, writing a physics-timing test, or just toggling it from the command palette.
+FPS mode walks around (and inside) a model like a first-person game instead of orbiting a
+camera around it. The same `bearcad.ui.fps_*` functions drive a scripted walkthrough, a
+physics-timing test, or a quick toggle from the command palette.
 
 ```lua
 bearcad.ui.fps()          -- toggle; bearcad.ui.fps(true) / bearcad.ui.fps(false) forces it
@@ -56,7 +56,7 @@ bearcad.ui.fps_advance(3)   -- enough time for gravity to bring the jump back do
 
 ## Scale
 
-`[`/`]` shrink/grow the player interactively (#120), for working comfortably at mm-detail scale
+`[`/`]` shrink/grow the player interactively, for working comfortably at mm-detail scale
 or covering a building-sized model quickly. Eye height, walk/fly speed, jump speed, and gravity
 all scale together — an intentionally smaller/larger person, not a world zoom. Look sensitivity
 and `fps_move`'s explicit millimetre offsets are unaffected.

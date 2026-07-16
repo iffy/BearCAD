@@ -39,7 +39,8 @@ Open the **Parameters** pane and click **+** to add each of these:
 Any dimension field in BearCAD accepts these names — and arithmetic like `leg - thick` — in
 place of a number. Angle fields understand `deg` and `rad` suffixes (a bare number means
 degrees). You can also invent a parameter on the spot by typing `name=value` (e.g.
-`bend_angle=120`) directly into any dimension field.
+`bend_angle=120`) directly into any dimension field. More in
+[Parameters & units](/docs/parameters).
 
 ![The Parameters pane with the bracket's six parameters](/img/screenshots/quickstart-params.png)
 
@@ -62,17 +63,18 @@ the next step. When the loop closes, the profile fills in: it's now a face you c
 ## 3. Square it up with constraints
 
 Now tell BearCAD what you *meant*. Press **C** for the Constraint tool, then for each
-constraint select the line(s) and press the constraint's key (or click it in the pane):
+constraint select the line(s) and press the constraint's number key (or click its button in
+the pane — the number is shown beside each one):
 
 First, pin the profile down: select the **bend corner** (where the base meets the leg) and the
-**origin**, then press **I** — **Coincident**. That anchors one corner to `(0, 0)` so the
+**origin**, then press **4** — **Coincident**. That anchors one corner to `(0, 0)` so the
 sketch is located, not free to slide around. Then square up the rest:
 
-1. Select the bottom base line, press **H** — **Horizontal**.
-2. Select the bottom base line and the inner base line, press **A** — **Parallel**.
-3. Select the two tilted leg lines, press **A** — **Parallel**.
-4. Select the base's end cap and the bottom base line, press **T** — **Perpendicular**.
-5. Select the leg's end cap and the outer leg line, press **T** — **Perpendicular**.
+1. Select the bottom base line, press **7** — **Horizontal**.
+2. Select the bottom base line and the inner base line, press **1** — **Parallel**.
+3. Select the two tilted leg lines, press **1** — **Parallel**.
+4. Select the base's end cap and the bottom base line, press **2** — **Perpendicular**.
+5. Select the leg's end cap and the outer leg line, press **2** — **Perpendicular**.
 
 The sketch straightens as each constraint lands. Then give it exact sizes with the
 **Dimension** tool (**D**): click a line, type the value, press **Enter**:

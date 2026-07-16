@@ -15,13 +15,9 @@ glyph outlines you can edit, rotate, and extrude or cut like any other sketch pr
 1. Open a sketch and pick the **Text** tool (or press **T**).
 2. **Click** where the text should start for a box that grows to fit, or **drag a rectangle**
    to make a box that wraps the text to that width and grows downward. Either way a text
-   element appears, selected, so its editor opens in the context pane immediately.
-3. In the context pane, type your text (multi-line works — press Enter for a new line),
-   choose a **font** (each name in the chooser previews in that font), toggle **B**/**I**/**U**,
-   and set the **size** and **rotation**.
-
-Every change re-bakes the letter outlines right away, so the sketch always shows exactly
-what you'll get.
+   element appears, selected, with its editor open in the context pane.
+3. Type your text and style it in the editor (below). Every change re-bakes the letter
+   outlines right away, so the sketch always shows exactly what you'll get.
 
 ## The text editor
 
@@ -34,7 +30,8 @@ its editor in the context pane:
   inside the braces (`{d / 2}`), the value prints in the document's unit, and an unknown name
   shows `#NA`. Double a brace (`{{`) to print a literal one. While typing a name inside braces,
   a completion list of your parameters appears — press **Tab** to accept the highlighted one.
-- **Font** — a chooser listing every font family installed on your computer.
+- **Font** — a chooser listing every font family installed on your computer, each name
+  previewed in its own font.
 - **B / I / U** — bold, italic, and underline toggles. Bold and italic select the matching
   face of the family.
 - **Size** — the font size in mm. This is an expression field: numbers, units (`1cm`),

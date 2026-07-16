@@ -18,33 +18,28 @@ you like, and each one collects **views** — a body shown from a chosen directi
    its own icon and opens in the drawing pane, which takes over the central area with a white
    sheet.
 2. **Add view:** pick the **Add view** tool (the ＋ in the toolbar), then click a body or
-   sketch in the Elements pane — a projection of it lands on the page, already selected. You
-   can also **drag a body or sketch row** from the Elements pane straight onto the page to
-   place it exactly where you drop it. Set
-   its direction in the context pane: one of the six straight-on directions (Front, Back,
-   Left, Right, Top, Bottom) or **Isometric**. Each view draws the source as a black
-   wireframe, scaled to fit its card. With the **Select** tool, drag the card wherever it
-   should sit on the page, and repeat for more views. Each view carries a **label**
-   ("Body 0 — Front"): the view editor's **Label** checkbox shows or hides it, the small
-   position grid places it in any corner or center of the card's top or bottom, and the text
-   field replaces the automatic caption with your own — including `{parameter}` fields that
-   update with the model (clear the field to get the automatic caption back). Clicking any placed view selects it and reopens the same editor —
-   change its orientation, set its scale, or **Remove view** there. The orientation is set with
-   an interactive **navigation bear** (like the one in the 3D view): spin it by dragging, click
-   a face to look from that side or a corner for the isometric view, or click the bear and
-   press the numpad (4 left, 5 front, 6 right, 8 top, 2 bottom, 0 back). The view's current
-   direction is shown as a **blue highlight** on the bear — a face, an edge, or a corner (for an
-   isometric view) — so you can tell at a glance which way it's looking. The highlight stays
-   visible even when that face has turned to the back of the bear. For an arbitrary angle, orbit
-   the 3D model to the view you want, open the drawing, and click **Use this view** (just below the
-   bear) — the projection snaps to whatever the 3D viewport is currently showing.
+   sketch in the Elements pane — or **drag its row** straight onto the page to place it where
+   you drop it. The projection lands already selected; with the **Select** tool, drag its card
+   anywhere on the page, and click any placed view later to reopen the same editor (which also
+   holds **Remove view**). The editor's options:
+   - **Direction:** set with an interactive **navigation bear** (like the 3D view's) — spin it
+     by dragging, click a face for a straight-on view (Front, Back, Left, Right, Top, Bottom)
+     or a corner for **Isometric**, or click the bear and use the numpad (4 left, 5 front,
+     6 right, 8 top, 2 bottom, 0 back). The view's current direction shows as a **blue
+     highlight** on the bear — a face, edge, or corner — even when it has turned to the bear's
+     back. For an arbitrary angle, orbit the 3D model to the view you want, then click **Use
+     this view** just below the bear.
+   - **Label:** each view carries a caption ("Body 0 — Front"). The **Label** checkbox shows or
+     hides it, the position grid places it in any corner or center of the card's top or bottom,
+     and the text field replaces the automatic caption — `{parameter}` fields update with the
+     model, and clearing the field restores the automatic caption.
    - **Scale:** type a print scale like `1:20` (one page millimetre represents twenty model
-     millimetres) and the view draws at exactly that size on the page and in exports — the
-     caption shows it, e.g. `Body 0 — Front (1:20)`. Any positive ratio works (`2:3`,
-     `10:1`); clear the field to return to auto-fit.
-   - **Style:** choose how the projection draws — **Visible edges** (hidden lines removed),
-     **Wireframe** (every edge, the default), or **Shaded** (grey-shaded faces under the
-     visible edges). The editor and both exports render the same style.
+     millimetres) and the view draws at exactly that size on the page and in exports; the
+     caption shows it, e.g. `Body 0 — Front (1:20)`. Any positive ratio works (`2:3`, `10:1`);
+     clear the field to return to auto-fit.
+   - **Style:** **Visible edges** (hidden lines removed), **Wireframe** (every edge, the
+     default), or **Shaded** (grey-shaded faces under the visible edges). The editor and both
+     exports render the same style.
 
 ## Text notes
 
@@ -117,8 +112,13 @@ drawing**), where its projections, text notes, and dimensions are listed nested 
 
 Use the **Export** button in the toolbar to save a single-page vector **PDF** or an **SVG** you can
 open in any browser. Both are black-on-white, scale losslessly, and are WYSIWYG: the page is the
-drawing's configured size (landscape 8.5×11 by default) with every view where you placed it. The
-grey card outline in the editor is just a selection handle — it isn't printed.
+drawing's configured size with every view where you placed it. The grey card outline in the editor
+is just a selection handle — it isn't printed.
+
+**Page size and margins:** right-click the sheet background to open the page editor — set the
+size in inches (Landscape/Portrait Letter presets included) and the margin. The default is a
+landscape 11 × 8.5 in sheet with 0.5 in margins. Scripts set it in millimetres with
+`bearcad.drawing_page{}` (below).
 
 ## Scripting
 

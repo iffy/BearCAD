@@ -224,9 +224,7 @@ bearcad.set_dim("height", "50")
 bearcad.ui.key("enter")
 ```
 
-To change a dimension on an **already-committed** shape, re-open its label, then commit —
-`edit_dim` accepts `"width"`/`"height"`/`"length"` (a rectangle's own width/height dimensions
-aren't independently re-editable this way, only a plain line's length):
+`edit_dim("length")` re-opens a committed plain line's length label; set it and commit:
 
 ```lua
 bearcad.edit_dim("length")
@@ -263,11 +261,9 @@ assert(bearcad.parameter("get", "A") == 5)     -- evaluated value (mm / radians)
 assert(bearcad.parameter("get_expression", "A") == "5mm")
 ```
 
-`bearcad.count`/`bearcad.get` accept the kinds `line`, `circle`, `sketch`, `constraint`,
-`construction_plane`, `extrusion`, `body`, and `parameter`; `get` returns `nil` for an index
-that is out of range or deleted. See also `bearcad.sketch_dof()` and `bearcad.sketch_conflicts()`
-for constraint-solver introspection, and [`bearcad.ui.camera{}`](./ui-namespace#camera) for
-reading the camera pose.
+`get` returns `nil` for an index that is out of range or deleted. See also
+`bearcad.sketch_dof()` / `bearcad.sketch_conflicts()` for constraint-solver introspection, and
+[`bearcad.ui.camera{}`](./ui-namespace#camera) for reading the camera pose.
 
 ## Visibility and construction geometry
 
@@ -294,14 +290,11 @@ bearcad.import_image{ path = "drawing.png", plane = 1 }
 bearcad.calibrate_image{ image = 0, from = { -100, -120 }, to = { 100, -120 }, length = 50 }
 ```
 
-With the OCCT kernel compiled in (`--features occt`), STEP export writes **real BREP** (planar
-and curved surfaces) from a body's OCCT solid, and STEP import reads **real BREP including
-curved/NURBS surfaces**, tessellating it into a new body — so files from other CAD tools round-trip.
-
-Without the kernel (the default build), export/import use the hand-rolled faceted path: export
-writes a triangulated `FACETED_BREP`, and import only round-trips that same subset
-(`POLY_LOOP`-bounded planar `FACE_SURFACE`s) — files using curved/NURBS `ADVANCED_FACE`
-geometry are rejected with a clear error rather than approximated.
+With the OCCT kernel compiled in (the standard build), STEP export writes **real BREP** (planar
+and curved surfaces) and STEP import reads it back, curved/NURBS surfaces included — files from
+other CAD tools round-trip. A `--no-default-features` build uses a faceted STEP path instead:
+triangulated export, and import of that same planar subset (curved `ADVANCED_FACE` files are
+rejected with a clear error rather than approximated).
 
 ## Document lifecycle
 

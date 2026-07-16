@@ -1,0 +1,1 @@
+Docs review: quickstart and point-selection now teach the 1-7 constraint keys; new Parameters & units and Files/import/export pages; command palette, page-size editor, sketch projection (Y), and Default units documented; duplicated and stale passages trimmed across the site.

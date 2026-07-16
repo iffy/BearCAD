@@ -76,8 +76,6 @@ bearcad.slice_sketch{ sketch = 0, circles = {0}, cutters = {1} }
 ```
 
 `lines`/`circles` are the targets; `cutters` are the lines that divide them. Curved (bezier)
-targets stay curved when split, and a sliced circle becomes arc pieces.
-
-`lines` are the targets to cut; `cutters` are the lines that divide them. A shadowed original no
+targets stay curved when split, and a sliced circle becomes arc pieces. A shadowed original no
 longer forms a face — its fragments do — so you can carve a profile into pieces that extrude
 independently.
