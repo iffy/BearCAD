@@ -112,7 +112,10 @@ face with the Extrude tool and pulling it. Give the face the same way `begin_ske
 body face, then a `distance` (or a `to` target to snap onto another surface). `body = "cut"`
 subtracts instead of adding; `body = "merge"` joins the face's body. Both require the sketch
 to be on a body face — if there's no body to cut or merge into, the call errors instead of
-quietly making a separate new body. A side wall's `edge` is the profile **line index** (line
+quietly making a separate new body. A positive `distance` extrudes **along the face's
+outward normal** (away from the body); a cut whose tool would miss the body entirely is
+automatically flipped inward, and a cut that can't remove material in either direction
+commits with a status warning. A side wall's `edge` is the profile **line index** (line
 `0` of the loop is `edge = 0`), so every flat wall is reachable by a stable number even when
 the profile has curved (filleted) edges between walls.
 

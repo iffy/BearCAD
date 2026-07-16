@@ -371,7 +371,14 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     extrusion — **New body**, **Add to `<body>`**, and **Cut `<body>`** — to override the choice
     (editing can also split a merged/cut extrusion back out into its own body). The **Cut** option
     is only offered when the OCCT kernel is compiled in, since a non-kernel build can't perform
-    the subtraction (see §3.3). **Auto-cut on backward drag (#141):** when the sketch sits on a
+    the subtraction (see §3.3). **A cut must bite (#380):** committing a cut first checks
+    (kernel builds, `extrude::cut_tool_bites`) that the tool solid actually overlaps the
+    target body — a positive distance on a side face points *out* of the solid, which used to
+    commit a silent no-op cut. An outward cut whose flipped direction would bite is
+    **auto-flipped inward** (the commit-time analogue of the backward-drag auto-cut) with a
+    status note; one that can't remove material in either direction commits as given with a
+    **status warning**. Target-driven or expression-bound depths are never flipped, only
+    warned. **Auto-cut on backward drag (#141):** when the sketch sits on a
     face of a body, that body lies on the negative-normal side, so dragging the extrude gizmo
     *backward* (negative distance) drives the profile into it — the mode auto-switches to **Cut**
     of that body; pulling forward again reverts to **Add to**. This only flips the cut toggle

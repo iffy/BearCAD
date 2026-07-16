@@ -1,0 +1,1 @@
+Committing a cut extrusion now verifies the tool overlaps the target body: an outward-pointing cut is automatically flipped into the body, and a cut that can't remove material in either direction warns in the status line instead of silently doing nothing.

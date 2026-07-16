@@ -2125,6 +2125,31 @@ pub fn preview_extrusion_mesh(doc: &Document, extrusion: &Extrusion) -> Option<S
     })
 }
 
+/// Does `cut`'s tool solid (built **without** the cut overshoot) actually overlap
+/// `body_index`'s solid (#380)? A cut whose tool misses the body — e.g. a scripted positive
+/// distance on a side face, which extrudes along the outward normal — used to commit as a
+/// silent no-op. `None` when the kernel can't answer (non-`occt` build, unbuildable tool or
+/// body), in which case callers skip the check.
+pub fn cut_tool_bites(doc: &Document, body_index: usize, cut: &Extrusion) -> Option<bool> {
+    #[cfg(feature = "occt")]
+    {
+        let distance = effective_distance(doc, cut);
+        if cut.faces.is_empty() || distance.abs() < 1e-4 {
+            return None;
+        }
+        let tool = occt_extrusion_shape(doc, cut, distance)?;
+        let body = occt_body_shape(doc, body_index)?;
+        let common = body.boolean(&tool, crate::kernel::BoolOp::Common)?;
+        let mesh = SolidMesh { triangles: common.tessellate(OCCT_DEFLECTION as f64) };
+        Some(mesh_signed_volume(&mesh).abs() > 1e-3)
+    }
+    #[cfg(not(feature = "occt"))]
+    {
+        let _ = (doc, body_index, cut);
+        None
+    }
+}
+
 /// Live preview mesh of `body_index`'s solid with `cut` additionally subtracted — what the
 /// body will look like once an in-progress cut extrusion is committed (#142). Clones the
 /// document to splice `cut` in as one more cut extrusion without mutating the real doc, so the

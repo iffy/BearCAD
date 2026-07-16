@@ -2361,6 +2361,36 @@ impl AppState {
 
     /// Attach freshly-created extrusion `ei` (just pushed, owned by no body yet) to a body
     /// per `mode`, creating a new body if needed. Returns the resulting body's index.
+    /// #380: before committing a **cut** extrusion, verify its tool actually overlaps the
+    /// target body — a cut whose tool misses the body entirely used to succeed silently
+    /// (e.g. a scripted positive distance on a body face, which points *out* of the solid).
+    /// If flipping the distance makes the cut bite, flip it in place (the commit-time
+    /// analogue of the GUI's backward-drag auto-cut, #141); if neither direction bites,
+    /// keep the cut as given. Either way a status note is returned for the caller to show
+    /// after its usual commit message. `None` = nothing to note (the cut bites as given,
+    /// or the kernel can't answer).
+    fn resolve_cut_direction(
+        &self,
+        ext: &mut Extrusion,
+        bi: usize,
+    ) -> Option<&'static str> {
+        match crate::extrude::cut_tool_bites(&self.doc, bi, ext) {
+            Some(false) => {
+                // A target-driven depth or expression-bound distance has no sign to flip.
+                if ext.target.is_none() && ext.expression.is_empty() {
+                    let mut flipped = ext.clone();
+                    flipped.distance = -flipped.distance;
+                    if crate::extrude::cut_tool_bites(&self.doc, bi, &flipped) == Some(true) {
+                        *ext = flipped;
+                        return Some("Cut pointed out of the body — flipped it inward");
+                    }
+                }
+                Some("Warning: the cut removed no material")
+            }
+            _ => None,
+        }
+    }
+
     fn attach_new_extrusion_to_body(&mut self, ei: usize, mode: ExtrudeBodyMode) -> usize {
         match mode {
             ExtrudeBodyMode::MergeInto(bi) => {
@@ -6125,7 +6155,7 @@ impl AppState {
                         return ActionResult::Err(e);
                     }
                 };
-                self.doc.extrusions.push(Extrusion {
+                let mut ext = Extrusion {
                     sketch,
                     faces,
                     distance,
@@ -6134,18 +6164,28 @@ impl AppState {
                     name: None,
                     deleted: false,
                     edge_treatments: Vec::new(),
-                });
+                };
+                // #380: a cut must actually bite — flip an outward cut inward, or warn.
+                let cut_note = match body_mode {
+                    ExtrudeBodyMode::Cut(bi) => self.resolve_cut_direction(&mut ext, bi),
+                    _ => None,
+                };
+                let distance = ext.distance;
+                self.doc.extrusions.push(ext);
                 self.doc.shape_order.push(ShapeKind::Extrusion);
                 let extrusion_index = self.doc.extrusions.len() - 1;
                 self.attach_new_extrusion_to_body(extrusion_index, body_mode);
                 self.refresh_document_health();
-                self.status = format!(
-                    "Added extrusion ({})",
-                    crate::value::format_length_display_in(
-                        distance,
-                        crate::model::effective_length_unit(&self.doc, sketch)
-                    )
-                );
+                self.status = match cut_note {
+                    Some(note) => note.to_string(),
+                    None => format!(
+                        "Added extrusion ({})",
+                        crate::value::format_length_display_in(
+                            distance,
+                            crate::model::effective_length_unit(&self.doc, sketch)
+                        )
+                    ),
+                };
                 ActionResult::Ok
             }
             Action::UpdateExtrusion {
@@ -6444,7 +6484,7 @@ impl AppState {
                     );
                 } else {
                     let unit = crate::model::effective_length_unit(&self.doc, ce.sketch);
-                    self.doc.extrusions.push(Extrusion {
+                    let mut ext = Extrusion {
                         sketch: ce.sketch,
                         faces: ce.faces.clone(),
                         distance,
@@ -6453,14 +6493,24 @@ impl AppState {
                         name: None,
                         deleted: false,
                         edge_treatments: Vec::new(),
-                    });
+                    };
+                    // #380: a cut must actually bite — flip an outward cut inward, or warn.
+                    let cut_note = match ce.body_mode {
+                        ExtrudeBodyMode::Cut(bi) => self.resolve_cut_direction(&mut ext, bi),
+                        _ => None,
+                    };
+                    let distance = ext.distance;
+                    self.doc.extrusions.push(ext);
                     self.doc.shape_order.push(ShapeKind::Extrusion);
                     let ei = self.doc.extrusions.len() - 1;
                     self.attach_new_extrusion_to_body(ei, ce.body_mode);
-                    self.status = format!(
-                        "Added extrusion ({})",
-                        crate::value::format_length_display_in(distance, unit)
-                    );
+                    self.status = match cut_note {
+                        Some(note) => note.to_string(),
+                        None => format!(
+                            "Added extrusion ({})",
+                            crate::value::format_length_display_in(distance, unit)
+                        ),
+                    };
                 }
                 self.refresh_document_health();
                 ActionResult::Ok
@@ -13960,6 +14010,66 @@ mod tests {
         assert!((new_circle.r - 6.0).abs() < 1e-3, "should mirror the source radius exactly");
         let ce = state.creating_extrusion.as_ref().unwrap();
         assert!(matches!(ce.faces[0], ExtrudeFace::Circle(_)));
+    }
+
+    /// #380: a committed cut must actually remove material. A scripted cut whose distance
+    /// points *out* of the body (positive along the side face's outward normal) is flipped
+    /// inward at commit; one that can't bite in either direction warns and stays as given.
+    #[test]
+    #[cfg(feature = "occt")]
+    fn cut_that_misses_the_body_flips_inward_or_warns() {
+        use crate::model::FaceId;
+        // Box 10×10×5 (body 0); its y=0 side wall's frame points out of the solid (−Y).
+        let mut state = box_extrusion_state();
+        let profile = state.doc.extrusions[0].faces[0].clone();
+        let side = FaceId::ExtrudeSide { extrusion: 0, profile, edge: 0 };
+        let s2 = state.doc.add_sketch(side);
+        state.doc.circles.push(crate::model::Circle::from_local_center_radius(
+            s2, 5.0, 2.5, 2.0, 0.0,
+        ));
+        let before = crate::extrude::body_solid_mesh(&state.doc, 0)
+            .map(|m| crate::extrude::mesh_signed_volume(&m).abs())
+            .unwrap();
+        // Positive distance = along the outward normal = away from the body.
+        let result = state.apply(Action::CreateExtrusion {
+            sketch: s2,
+            faces: vec![ExtrudeFace::Circle(0)],
+            distance: 4.0,
+            body: crate::actions::ExtrudeBodyChoice::Cut,
+            target: None,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        let cut = state.doc.extrusions.last().unwrap();
+        assert!(cut.distance < 0.0, "outward cut flips inward, got {}", cut.distance);
+        let after = crate::extrude::body_solid_mesh(&state.doc, 0)
+            .map(|m| crate::extrude::mesh_signed_volume(&m).abs())
+            .unwrap();
+        assert!(after < before - 1.0, "the flipped cut removes material: {before} -> {after}");
+        assert!(state.status.contains("flipped"), "status says so: {}", state.status);
+
+        // A circle far off the wall (v = 20, way above the 5mm-tall box) can't bite in
+        // either direction: the distance stays as given and the status warns.
+        let mut state = box_extrusion_state();
+        let profile = state.doc.extrusions[0].faces[0].clone();
+        let side = FaceId::ExtrudeSide { extrusion: 0, profile, edge: 0 };
+        let s2 = state.doc.add_sketch(side);
+        state.doc.circles.push(crate::model::Circle::from_local_center_radius(
+            s2, 5.0, 20.0, 2.0, 0.0,
+        ));
+        state.apply(Action::CreateExtrusion {
+            sketch: s2,
+            faces: vec![ExtrudeFace::Circle(0)],
+            distance: 4.0,
+            body: crate::actions::ExtrudeBodyChoice::Cut,
+            target: None,
+        });
+        let cut = state.doc.extrusions.last().unwrap();
+        assert!((cut.distance - 4.0).abs() < 1e-6, "a hopeless cut keeps its distance");
+        assert!(
+            state.status.contains("removed no material"),
+            "status warns: {}",
+            state.status
+        );
     }
 
     /// #141: dragging a body-face extrusion backward (negative distance, into the body it sits
