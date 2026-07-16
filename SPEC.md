@@ -1037,7 +1037,8 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
 - **Drag from the pane (#290):** with a drawing open, **dragging a body or sketch row** from
   the Elements pane onto the page places a projection at the drop point (the page shows an
   accent border while a compatible drag hovers), selected and ready to configure — the same
-  result as the Add-view tool. Plain clicks on those rows still select as usual.
+  result as the Add-view tool. The row's **name and its type icon** are both grab handles
+  (#368). Plain clicks on those rows still select as usual.
 - **Orientation bear (#315):** a selected view's orientation is chosen with an **interactive
   navigation bear** in the context pane (the same widget as the viewport's HUD bear, replacing
   the dropdown; `view_cube::show_orientation_picker`): drag it to spin, click a face for that

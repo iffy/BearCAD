@@ -2819,12 +2819,12 @@ fn show_row(
             on_toggle_visibility(element.clone(), next);
         }
 
-        if let Some(icon) = icon_for_hierarchy_node(doc, node) {
+        let icon_response = icon_for_hierarchy_node(doc, node).map(|icon| {
             ui.add(
                 egui::Image::new(sized_texture(ui.ctx(), icon))
                     .tint(icon_tint_for_row_style(style)),
-            );
-        }
+            )
+        });
 
         let label = node_label(doc, node);
         let response = ui.selectable_label(
@@ -2836,14 +2836,20 @@ fn show_row(
             on_hover_element(element.clone());
         }
         // With a drawing open, body and sketch rows drag onto the page (#290): the drop
-        // places a projection at the pointer. Re-sensed for drag so the payload arms; plain
-        // clicks still select as usual.
+        // places a projection at the pointer. Both the name label and the type icon are
+        // grab handles (#368). Re-sensed for drag so the payload arms; plain clicks still
+        // select as usual.
         if active_drawing.is_some()
             && matches!(node, HierarchyNode::Body(_) | HierarchyNode::Sketch(_))
         {
             response
                 .interact(egui::Sense::drag())
                 .dnd_set_drag_payload(DrawingDragPayload(element.clone()));
+            if let Some(icon_resp) = icon_response {
+                icon_resp
+                    .interact(egui::Sense::drag())
+                    .dnd_set_drag_payload(DrawingDragPayload(element.clone()));
+            }
         }
         // Clicks: double-click edits (where applicable), single-click selects.
         match node {
