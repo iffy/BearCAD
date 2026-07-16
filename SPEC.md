@@ -809,7 +809,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   the `.bearcad` file (`sketch_text` nodes). Editing (`EditSketchText`) re-bakes from the font,
   falling back to the stored outlines when only the transform/style changed and the font is gone.
 - **Context editor (#286):** selecting exactly one text opens its editor in the context pane: a
-  multi-line textarea, a font-family chooser listing the installed families (`fontdb`),
+  multi-line textarea, a font-family chooser listing the installed families (`fontdb`) with
+  **each name rendered in its own face** (#384 — faces register with egui lazily as the
+  chooser's virtualized rows scroll into view, so unbrowsed fonts never load),
   **B**/**I**/**U** style toggles, a **Size** field accepting length expressions (parameters
   work: `w / 2`) with **± stepper buttons** that bump the evaluated size by 1 mm (#385,
   replacing any expression with the stepped literal, floored at 1 mm), a **Rotation°** field

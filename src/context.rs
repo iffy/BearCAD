@@ -1238,6 +1238,43 @@ pub fn toggle_construction_for_targets(
     Ok(updated)
 }
 
+/// Lazily register `family`'s regular face with egui so its name can render **in that font**
+/// in the font chooser (#384), returning the egui family to use. Fonts load on first sight
+/// (the chooser virtualizes its rows, so only families scrolled into view load) and stay
+/// registered for the session; a family whose face can't load renders in the default font
+/// and isn't retried.
+fn preview_font_family(ctx: &egui::Context, family: &str) -> Option<egui::FontFamily> {
+    use std::collections::HashMap;
+    thread_local! {
+        static REGISTRY: std::cell::RefCell<(egui::FontDefinitions, HashMap<String, bool>)> =
+            std::cell::RefCell::new((egui::FontDefinitions::default(), HashMap::new()));
+    }
+    REGISTRY.with(|reg| {
+        let mut reg = reg.borrow_mut();
+        if let Some(loaded) = reg.1.get(family) {
+            return loaded.then(|| egui::FontFamily::Name(family.into()));
+        }
+        let Some(bytes) = crate::text::font_bytes(family, false, false) else {
+            reg.1.insert(family.to_string(), false);
+            return None;
+        };
+        let key = format!("preview:{family}");
+        reg.0
+            .font_data
+            .insert(key.clone(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+        // The family's own face first, then the default proportional stack so glyphs the
+        // face lacks still render.
+        let mut stack = vec![key];
+        if let Some(default) = reg.0.families.get(&egui::FontFamily::Proportional) {
+            stack.extend(default.iter().cloned());
+        }
+        reg.0.families.insert(egui::FontFamily::Name(family.into()), stack);
+        ctx.set_fonts(reg.0.clone());
+        reg.1.insert(family.to_string(), true);
+        Some(egui::FontFamily::Name(family.into()))
+    })
+}
+
 /// Width of the context pane's label column (#371): every label+input pair renders as a
 /// two-column row — the label left-aligned in this fixed column, the input in the aligned
 /// right column — so inputs line up down the whole pane.
@@ -2328,19 +2365,38 @@ pub fn show_pane(
                 on_sketch_text_edit(SketchTextEdit::Text(edit_text.clone()));
             }
         }
-        // Font family chooser.
+        // Font family chooser: each name renders in its own font (#384). Rows are
+        // virtualized so only the families scrolled into view load their face.
         labeled_row(ui, "Font", |ui| {
             egui::ComboBox::from_id_salt("sketch_text_font")
                 .selected_text(control.font_family.clone())
                 .show_ui(ui, |ui| {
-                    for fam in &control.families {
-                        if ui
-                            .selectable_label(fam == &control.font_family, fam)
-                            .clicked()
-                        {
-                            on_sketch_text_edit(SketchTextEdit::Font(fam.clone()));
-                        }
-                    }
+                    let row_h = 20.0;
+                    egui::ScrollArea::vertical().max_height(260.0).show_rows(
+                        ui,
+                        row_h,
+                        control.families.len(),
+                        |ui, range| {
+                            for fam in &control.families[range] {
+                                let label = match preview_font_family(ui.ctx(), fam) {
+                                    Some(ff) => egui::RichText::new(fam)
+                                        .family(ff)
+                                        .size(14.0),
+                                    None => egui::RichText::new(fam),
+                                };
+                                let resp = ui.add_sized(
+                                    egui::vec2(ui.available_width(), row_h),
+                                    egui::Button::selectable(
+                                        fam == &control.font_family,
+                                        label,
+                                    ),
+                                );
+                                if resp.clicked() {
+                                    on_sketch_text_edit(SketchTextEdit::Font(fam.clone()));
+                                }
+                            }
+                        },
+                    );
                 });
         });
         labeled_row(ui, "", |ui| {

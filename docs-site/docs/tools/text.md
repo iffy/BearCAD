@@ -17,7 +17,8 @@ glyph outlines you can edit, rotate, and extrude or cut like any other sketch pr
    to make a box that wraps the text to that width and grows downward. Either way a text
    element appears, selected, so its editor opens in the context pane immediately.
 3. In the context pane, type your text (multi-line works — press Enter for a new line),
-   choose a **font**, toggle **B**/**I**/**U**, and set the **size** and **rotation**.
+   choose a **font** (each name in the chooser previews in that font), toggle **B**/**I**/**U**,
+   and set the **size** and **rotation**.
 
 Every change re-bakes the letter outlines right away, so the sketch always shows exactly
 what you'll get.
