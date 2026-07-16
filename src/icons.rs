@@ -87,11 +87,17 @@ pub enum IconId {
     Export,
     /// Import toolbar action (#352): an arrow dropping into a tray; opens an STL/STEP/Image picker.
     Import,
+    /// A tracing image (#389): a framed picture.
+    Image,
+    /// A sketch's child components (#389): the sketch pencil with a tree of child geometry.
+    SketchComponents,
+    /// A drawing's child components (#389): the drawing sheet with a tree of child elements.
+    DrawingComponents,
 }
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 62] = [
+    pub const ALL: [Self; 65] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -154,6 +160,9 @@ impl IconId {
         Self::Back,
         Self::Export,
         Self::Import,
+        Self::Image,
+        Self::SketchComponents,
+        Self::DrawingComponents,
     ];
 
     pub fn svg_source(self) -> &'static str {
@@ -220,6 +229,9 @@ impl IconId {
             Self::Back => include_str!("assets/icons/back.svg"),
             Self::Export => include_str!("assets/icons/export.svg"),
             Self::Import => include_str!("assets/icons/import.svg"),
+            Self::Image => include_str!("assets/icons/image.svg"),
+            Self::SketchComponents => include_str!("assets/icons/sketch-components.svg"),
+            Self::DrawingComponents => include_str!("assets/icons/drawing-components.svg"),
         }
     }
 
@@ -287,6 +299,9 @@ impl IconId {
             Self::Back => "Back",
             Self::Export => "Export",
             Self::Import => "Import",
+            Self::Image => "Image",
+            Self::SketchComponents => "Sketch components",
+            Self::DrawingComponents => "Drawing components",
         }
     }
 }

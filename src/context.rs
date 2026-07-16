@@ -1302,7 +1302,9 @@ fn labeled_row<R>(
 }
 
 /// [`labeled_row`] for tall inputs (pickers, multiline text): the label top-aligns with the
-/// input instead of centring against it.
+/// input, centred against its **first row** — 26 px, the height of an element picker's
+/// collapsed strip (frame margins + one text row), so the label lines up with the picker's
+/// own text (#387) and with a text area's first line.
 fn labeled_row_top<R>(
     ui: &mut egui::Ui,
     label: impl Into<egui::WidgetText>,
@@ -1311,7 +1313,7 @@ fn labeled_row_top<R>(
     let label = label.into();
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(
-            egui::vec2(FIELD_LABEL_W, 18.0),
+            egui::vec2(FIELD_LABEL_W, 26.0),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
                 ui.label(label);

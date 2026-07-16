@@ -2340,9 +2340,9 @@ pub fn show_pane(
         .show_inside(ui, |ui| {
             if *filter_expanded {
                 let all_on = filter.rows().iter().all(|(_, e)| **e);
-                // Icon-group toggles (#382): each category is a toggleable button showing the
-                // icons of the element types it covers (hover for the name); a category
-                // without icons falls back to a text toggle.
+                // Icon-group toggles (#382), stacked vertically (#389): each category is a
+                // toggleable button showing the icons of the element types it covers (hover
+                // for the name).
                 {
                     use crate::icons::IconId as I;
                     let ElementFilter {
@@ -2355,33 +2355,23 @@ pub fn show_pane(
                         drawings,
                         drawing_components,
                     } = filter;
-                    let groups: [(&str, &[I], &mut bool); 7] = [
+                    let groups: [(&str, &[I], &mut bool); 8] = [
                         ("Planes", &[I::Plane], planes),
                         ("Sketches", &[I::Sketch], sketches),
-                        ("Sketch geometry", &[I::Line, I::Circle, I::Constraint], sketch_geometry),
+                        ("Sketch components", &[I::SketchComponents], sketch_geometry),
                         ("Bodies", &[I::Body], bodies),
                         ("Operations", &[I::Extrude, I::Revolve, I::Combine], operations),
+                        ("Images", &[I::Image], images),
                         ("Drawings", &[I::Drawing], drawings),
-                        (
-                            "Drawing components",
-                            &[I::Projection, I::Text, I::Dimension],
-                            drawing_components,
-                        ),
+                        ("Drawing components", &[I::DrawingComponents], drawing_components),
                     ];
-                    ui.horizontal_wrapped(|ui| {
+                    ui.vertical(|ui| {
                         for (label, icons, enabled) in groups {
                             if crate::icons::selectable_icon_group(ui, icons, *enabled, label)
                                 .clicked()
                             {
                                 *enabled = !*enabled;
                             }
-                        }
-                        // No icon for images yet — a text toggle (#382).
-                        if ui
-                            .add(egui::Button::selectable(*images, "Images"))
-                            .clicked()
-                        {
-                            *images = !*images;
                         }
                     });
                 }

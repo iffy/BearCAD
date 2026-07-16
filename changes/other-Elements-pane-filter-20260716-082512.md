@@ -1,0 +1,1 @@
+Elements pane filter buttons stack vertically with new icons: Images gets a picture icon, and Sketch/Drawing components each show their parent icon beside a shared child motif. Element picker labels align with the picker's text in the context pane.
