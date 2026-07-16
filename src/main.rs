@@ -1749,10 +1749,7 @@ impl App {
         if self.state.tool != Tool::ConstructionPlane {
             self.state.creating_plane = None;
         }
-        if !matches!(
-            self.state.tool,
-            Tool::Select | Tool::Dimension | Tool::Constraint
-        ) {
+        if !matches!(self.state.tool, Tool::Select | Tool::Dimension) {
             self.state.editing_committed_dim = None;
         }
     }

@@ -4333,7 +4333,10 @@ impl AppState {
                     );
                     self.creating_loft = Some(CreatingLoft { sections });
                 }
-                if !matches!(tool, Tool::Select | Tool::Dimension | Tool::Constraint) {
+                // The floating dimension editor only makes sense under the tools that
+                // can interact with it (Select drags labels, Dimension edits values);
+                // any other tool cancels an in-progress edit (#400).
+                if !matches!(tool, Tool::Select | Tool::Dimension) {
                     self.editing_committed_dim = None;
                 }
                 if tool != Tool::Dimension {
@@ -15084,6 +15087,28 @@ mod tests {
             state.editing_committed_dim.as_ref().unwrap().target,
             DimEditTarget::New(DimensionTarget::Distance(DistanceTarget::LineLength(0)))
         );
+    }
+
+    /// #400: the floating dimension editor must not linger into tools that can't
+    /// interact with it — switching to any tool other than Select/Dimension cancels it.
+    #[test]
+    fn switching_tools_cancels_in_progress_dimension_edit() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state.doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 8.0, 0.0));
+        state.doc.shape_order.push(ShapeKind::Line);
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Line(0),
+            additive: false,
+        });
+        state.apply(Action::SetTool(Tool::Dimension));
+        assert!(state.editing_committed_dim.is_some());
+        // Select can still drag/edit dimension labels, so the edit survives it.
+        state.apply(Action::SetTool(Tool::Select));
+        assert!(state.editing_committed_dim.is_some());
+        state.apply(Action::SetTool(Tool::Constraint));
+        assert!(state.editing_committed_dim.is_none());
     }
 
     #[test]
