@@ -14,17 +14,17 @@ stay parallel, these endpoints stay attached, this line stays horizontal. Where 
 [Dimension](./dimension.md) tool pins *sizes*, constraints pin *relationships*.
 
 Select the geometry first, then click a constraint button in the Context pane — or press
-its shortcut letter:
+its number key (active while the Constraint tool is selected):
 
 | Constraint | Select first | Key |
 |---|---|---|
-| Parallel | two lines | `A` |
-| Perpendicular | two lines | `T` |
-| Equal | two lines | `Q` |
-| Coincident | two points; a point + a line, circle, or the origin; or two lines (made collinear) | `I` |
-| Midpoint | a point + a line | `M` |
-| Vertical | a line | `V` |
-| Horizontal | a line | `H` |
+| Parallel | two lines | `1` |
+| Perpendicular | two lines | `2` |
+| Equal | two lines | `3` |
+| Coincident | two points; a point + a line, circle, or the origin; or two lines (made collinear) | `4` |
+| Midpoint | a point + a line | `5` |
+| Vertical | a line | `6` |
+| Horizontal | a line | `7` |
 
 The pane always lists every constraint; ones the current selection can't satisfy are shown
 faded, with a hint about what they need. Many constraints also happen automatically while

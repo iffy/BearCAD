@@ -1719,15 +1719,16 @@ impl App {
             }
 
             if self.state.tool == Tool::Constraint {
-                // Mnemonic letter shortcuts for the constraint pane (see
-                // GeometricConstraintType::shortcut_label). `C` is reserved for the tool itself.
+                // Digit shortcuts 1–7 for the constraint pane rows (#401, see
+                // GeometricConstraintType::shortcut_label) — Constraint tool only.
                 for (key, egui_key) in [
-                    ('A', egui::Key::A),
-                    ('T', egui::Key::T),
-                    ('I', egui::Key::I),
-                    ('M', egui::Key::M),
-                    ('V', egui::Key::V),
-                    ('H', egui::Key::H),
+                    ('1', egui::Key::Num1),
+                    ('2', egui::Key::Num2),
+                    ('3', egui::Key::Num3),
+                    ('4', egui::Key::Num4),
+                    ('5', egui::Key::Num5),
+                    ('6', egui::Key::Num6),
+                    ('7', egui::Key::Num7),
                 ] {
                     if ctx.input(|i| i.key_pressed(egui_key)) {
                         self.state.apply(Action::ApplyConstraintShortcut(key));
@@ -13480,7 +13481,7 @@ impl App {
                 if self.state.sketch_session.is_none() {
                     "c: constraint  •  Open a sketch to add geometric constraints"
                 } else {
-                    "c: constraint  •  Shift+click or ⌘/Ctrl+click multi-select • A/E/I/M/V/H apply constraint • context pane shows options"
+                    "c: constraint  •  Shift+click or ⌘/Ctrl+click multi-select • 1–7 apply constraint • context pane shows options"
                 }
             }
             Tool::Dimension => {

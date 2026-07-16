@@ -1545,10 +1545,11 @@ modeled on SolveSpace (https://solvespace.com).
     **disabled/faded**, with a hint beside the button describing what must be selected
     (e.g. `line, line` for Parallel). Buttons are **enabled** only when the selection
     satisfies that constraint.
-  - **Shortcuts:** each type has a fixed **mnemonic letter** shown left of its button —
-    Parallel `A`, Perpendicular `T`, Equal `Q`, Coincident `I`, Midpoint `M`, Vertical `V`,
-    Horizontal `H` (chosen to avoid the global tool keys). Pressing the letter while the
-    constraint tool is active applies that constraint if it is currently enabled.
+  - **Shortcuts (#401):** each type has a fixed **digit** shown left of its button, in pane
+    order — Parallel `1`, Perpendicular `2`, Equal `3`, Coincident `4`, Midpoint `5`,
+    Vertical `6`, Horizontal `7`. Pressing the digit **while the Constraint tool is active**
+    applies that constraint if it is currently enabled; the digits do nothing on other tools,
+    so they can't collide with global tool keys.
 - **Geometric types (v1):**
   - **Parallel** — `line`, `line`
   - **Perpendicular** — `line`, `line`

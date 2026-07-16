@@ -46,29 +46,30 @@ impl GeometricConstraintType {
         }
     }
 
-    /// Fixed context-pane shortcut (shown left of the constraint button). Mnemonic letters
-    /// rather than numbers; chosen to avoid the global tool keys (S/R/L/C/O/P/D/E/X/N).
+    /// Fixed context-pane shortcut (shown left of the constraint button): the digits 1–7 in
+    /// the pane's display order, only active while the Constraint tool is (#401) — numbers
+    /// can't collide with the global tool keys the old mnemonic letters had to dodge.
     pub fn shortcut_label(self) -> &'static str {
         match self {
-            Self::Parallel => "A",      // p-A-rallel
-            Self::Perpendicular => "T", // a "T" is a right angle
-            Self::Equal => "Q",         // e-Q-ual
-            Self::Coincident => "I",    // co-I-ncident
-            Self::Midpoint => "M",      // Midpoint
-            Self::Vertical => "V",      // Vertical
-            Self::Horizontal => "H",    // Horizontal
+            Self::Parallel => "1",
+            Self::Perpendicular => "2",
+            Self::Equal => "3",
+            Self::Coincident => "4",
+            Self::Midpoint => "5",
+            Self::Vertical => "6",
+            Self::Horizontal => "7",
         }
     }
 
     pub fn from_shortcut_key(key: char) -> Option<Self> {
-        match key.to_ascii_uppercase() {
-            'A' => Some(Self::Parallel),
-            'T' => Some(Self::Perpendicular),
-            'Q' => Some(Self::Equal),
-            'I' => Some(Self::Coincident),
-            'M' => Some(Self::Midpoint),
-            'V' => Some(Self::Vertical),
-            'H' => Some(Self::Horizontal),
+        match key {
+            '1' => Some(Self::Parallel),
+            '2' => Some(Self::Perpendicular),
+            '3' => Some(Self::Equal),
+            '4' => Some(Self::Coincident),
+            '5' => Some(Self::Midpoint),
+            '6' => Some(Self::Vertical),
+            '7' => Some(Self::Horizontal),
             _ => None,
         }
     }
@@ -919,14 +920,13 @@ mod tests {
 
     #[test]
     fn constraint_shortcut_keys_are_fixed_per_type() {
-        assert_eq!(GeometricConstraintType::Parallel.shortcut_label(), "A");
+        assert_eq!(GeometricConstraintType::Parallel.shortcut_label(), "1");
         assert_eq!(
-            GeometricConstraintType::from_shortcut_key('A'),
+            GeometricConstraintType::from_shortcut_key('1'),
             Some(GeometricConstraintType::Parallel)
         );
-        // Case-insensitive.
         assert_eq!(
-            GeometricConstraintType::from_shortcut_key('h'),
+            GeometricConstraintType::from_shortcut_key('7'),
             Some(GeometricConstraintType::Horizontal)
         );
         // No constraint uses a global tool key, so they never collide.
@@ -956,15 +956,15 @@ mod tests {
         assert!(by_kind[&GeometricConstraintType::Vertical].enabled);
         assert!(by_kind[&GeometricConstraintType::Horizontal].enabled);
         assert_eq!(
-            enabled_constraint_for_key(&rows, 'V'),
+            enabled_constraint_for_key(&rows, '6'),
             Some(GeometricConstraintType::Vertical)
         );
         assert_eq!(
-            enabled_constraint_for_key(&rows, 'H'),
+            enabled_constraint_for_key(&rows, '7'),
             Some(GeometricConstraintType::Horizontal)
         );
         // A non-applicable type (Parallel) is present but disabled, not hidden.
-        assert_eq!(enabled_constraint_for_key(&rows, 'A'), None);
+        assert_eq!(enabled_constraint_for_key(&rows, '1'), None);
         assert_eq!(sole_enabled_constraint_type(&rows), None);
         let _ = doc;
     }
@@ -994,11 +994,11 @@ mod tests {
         assert!(!by_kind[&GeometricConstraintType::Parallel].enabled);
         assert!(!by_kind[&GeometricConstraintType::Vertical].enabled);
         assert_eq!(
-            enabled_constraint_for_key(&rows, 'I'),
+            enabled_constraint_for_key(&rows, '4'),
             Some(GeometricConstraintType::Coincident)
         );
         assert_eq!(
-            enabled_constraint_for_key(&rows, 'M'),
+            enabled_constraint_for_key(&rows, '5'),
             Some(GeometricConstraintType::Midpoint)
         );
         assert_eq!(sole_enabled_constraint_type(&rows), None);
@@ -1030,7 +1030,7 @@ mod tests {
         assert_eq!(rows.iter().filter(|r| r.enabled).count(), 1);
         assert_eq!(sole_enabled_constraint_type(&rows), Some(GeometricConstraintType::Coincident));
         assert_eq!(
-            enabled_constraint_for_key(&rows, 'I'),
+            enabled_constraint_for_key(&rows, '4'),
             Some(GeometricConstraintType::Coincident)
         );
         let _ = doc;

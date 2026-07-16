@@ -11721,7 +11721,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_constraint_shortcut_a_adds_parallel() {
+    fn apply_constraint_shortcut_1_adds_parallel() {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
         state.tool = Tool::Constraint;
@@ -11741,7 +11741,7 @@ mod tests {
             element: SceneElement::Line(1),
             additive: true,
         });
-        state.apply(Action::ApplyConstraintShortcut('A'));
+        state.apply(Action::ApplyConstraintShortcut('1'));
         assert_eq!(state.doc.constraints.len(), 1);
         assert!(matches!(
             state.doc.constraints[0].kind,

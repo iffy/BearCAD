@@ -1,0 +1,1 @@
+Constraint shortcuts are now the digits 1-7 (in pane order), active only while the Constraint tool is selected; the sketch hint bar and docs list the new keys. Previously the mnemonic letters were partially wired (Equal's Q was never bound) and the hint bar advertised the wrong letters.
