@@ -9857,10 +9857,18 @@ impl App {
                             if active {
                                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                             }
-                            // With the Select tool, highlight the dimension being hovered so it's
-                            // obvious which one a drag will move (#326); a selected dimension stays
-                            // highlighted so it's clear what Delete will remove (#336).
-                            if (active || is_selected_dim) && self.state.tool == Tool::Select {
+                            // Highlight the dimension being hovered so it's obvious which one a
+                            // drag will move (#326) — with the Dimension tool too (#375), where
+                            // hovering the dimension's line or its edge also marks it (a click
+                            // there toggles it, a label drag repositions it). A selected
+                            // dimension stays highlighted so it's clear what Delete will
+                            // remove (#336).
+                            let dim_tool_hover =
+                                self.state.tool == Tool::Dimension && hovered_edge == Some(i);
+                            if active
+                                || dim_tool_hover
+                                || (is_selected_dim && self.state.tool == Tool::Select)
+                            {
                                 let accent = egui::Color32::from_rgb(90, 150, 230);
                                 painter.line_segment(
                                     [sp(g.line.0), sp(g.line.1)],

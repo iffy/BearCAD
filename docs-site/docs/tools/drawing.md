@@ -91,7 +91,8 @@ With the **Dimension tool** active, the edge under the cursor highlights — cli
 that one dimension (hover either the model edge or the dimension line itself). Circles work the
 same way: hover a circle's outline — round face-on, or the line it appears as when viewed from the
 side — and click to toggle its diameter. **Shift+click** two
-edges to show the angle between them. **Drag a dimension's label** (with the Select or Dimension
+edges to show the angle between them. Existing dimensions highlight on hover too, so it's clear
+which one a click or drag will affect. **Drag a dimension's label** (with the Select or Dimension
 tool) to push its line nearer or further from the edge. Coincident edges share one dimension, and
 parallel dimensions that would overlap are stacked onto separate lines so no label covers another.
 

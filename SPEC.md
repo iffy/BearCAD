@@ -1174,9 +1174,11 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   toggles the **angle** between them (drawn at their corner). A dimension **label is draggable** (Select or Dimension tool) to slide the whole
   dimension line further from or closer to the edge; the offset is stored per view as a
   `dimension_offsets` override (`Action::SetDrawingDimensionOffset`), cleared when the
-  dimension is hidden. With the **Select tool**, hovering a dimension **highlights** it — the
+  dimension is hidden. Hovering a dimension **highlights** it — the
   dimension line is accented and its label outlined (#326) — so it's obvious which dimension a
-  drag will move; **clicking** a dimension selects it (`AppState::selected_drawing_dimension`,
+  drag will move: with the **Select tool** via its label, and with the **Dimension tool** also
+  when hovering its line or its model edge (#375, where a click toggles it). With the Select
+  tool, **clicking** a dimension selects it (`AppState::selected_drawing_dimension`,
   staying highlighted). **Delete/Backspace** removes the selected drawing element (#336): a
   projection (`RemoveDrawingView`), a text note (`RemoveDrawingAnnotation`), or a dimension
   (hidden via `ToggleDrawingDimension`); the handler skips when a text field wants keyboard input
