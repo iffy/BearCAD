@@ -329,7 +329,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     it's the target body *with the cut already subtracted*, rendered semi-transparently in
     place of the intact body, so the ghost looks like the finished cut. This needs the kernel
     to build the subtraction; if it can't, the intact body and the additive-block preview are
-    kept. While an extrusion is being edited its committed body is hidden, so only the
+    kept. **Preview performance (#386):** both live previews are cached per
+    (document, in-progress extrusion) so unchanged frames rebuild nothing, and **text**
+    extrusions preview through the fast tessellated mesher instead of the kernel — a
+    per-glyph boolean chain per frame made dragging an engraving's gizmo unusably laggy (a
+    text *cut* previews as the additive block; the committed result still builds the real
+    kernel solid). While an extrusion is being edited its committed body is hidden, so only the
     semi-transparent ghost preview is shown (the preview, not the old solid, reflects the
     in-progress edit). The gizmo handle floats a little above the solid's top face (rather than
     sitting on it), and typing a digit while the tool is active focuses the distance field and

@@ -1,0 +1,1 @@
+Extruding text is no longer laggy: the live extrusion preview is cached between frames and text previews use the fast tessellated mesher instead of per-glyph kernel booleans (text cuts preview as the additive block; committed geometry is unchanged).

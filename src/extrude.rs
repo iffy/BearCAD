@@ -112,6 +112,17 @@ pub fn extrusion_mesh(doc: &Document, extrusion: &Extrusion) -> Option<SolidMesh
     if let Some(mesh) = occt_extrusion_mesh(doc, extrusion, distance) {
         return Some(mesh);
     }
+    extrusion_mesh_tessellated(doc, extrusion, distance)
+}
+
+/// The hand-rolled (non-kernel) mesher for an extrusion — caps, walls, hole-aware regions,
+/// polygon-vertex bevels. The kernel path falls back here; the live text preview (#386) uses
+/// it directly because it's orders of magnitude faster than per-glyph kernel booleans.
+fn extrusion_mesh_tessellated(
+    doc: &Document,
+    extrusion: &Extrusion,
+    distance: f32,
+) -> Option<SolidMesh> {
     let mut mesh = SolidMesh::default();
     for (face_index, face) in extrusion.faces.iter().enumerate() {
         if let Some((profile, normal)) = face_profile_world(doc, face) {
@@ -2058,12 +2069,71 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
     (!mesh.is_empty()).then_some(mesh)
 }
 
+/// Cache key for an in-progress extrusion preview (#386): the document's mesh fingerprint plus
+/// a hash of the preview extrusion itself (and the target body, for cuts). One entry suffices —
+/// there is at most one live preview at a time — and it makes idle frames free: the expensive
+/// kernel rebuild only reruns when the drag actually changes something.
+fn preview_cache_key(doc: &Document, extrusion: &Extrusion, body_index: usize) -> (u64, u64) {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    format!("{extrusion:?}").hash(&mut h);
+    body_index.hash(&mut h);
+    (document_mesh_fingerprint(doc), h.finish())
+}
+
+thread_local! {
+    static PREVIEW_MESH_CACHE: std::cell::RefCell<Option<((u64, u64), Option<SolidMesh>)>> =
+        const { std::cell::RefCell::new(None) };
+    static PREVIEW_CUT_MESH_CACHE: std::cell::RefCell<Option<((u64, u64), Option<SolidMesh>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// True when the extrusion contains text-glyph faces (#386): its kernel build is one solid per
+/// glyph plus a boolean per counter — far too slow to rebuild every frame of a gizmo drag.
+fn has_text_faces(extrusion: &Extrusion) -> bool {
+    extrusion
+        .faces
+        .iter()
+        .any(|f| matches!(f, ExtrudeFace::TextGlyph { .. }))
+}
+
+/// Preview-quality mesh for the in-progress extrusion (#386): the same geometry
+/// [`extrusion_mesh`] builds, but cached per (document, preview) so idle frames don't rebuild,
+/// and routed to the fast tessellated mesher for **text** — dragging an engraving's gizmo
+/// through per-glyph kernel booleans every frame was unusably laggy. The commit still builds
+/// the real kernel solid.
+pub fn preview_extrusion_mesh(doc: &Document, extrusion: &Extrusion) -> Option<SolidMesh> {
+    let key = preview_cache_key(doc, extrusion, usize::MAX);
+    PREVIEW_MESH_CACHE.with(|cache| {
+        if let Some((cached_key, mesh)) = cache.borrow().as_ref() {
+            if *cached_key == key {
+                return mesh.clone();
+            }
+        }
+        let mesh = if has_text_faces(extrusion) {
+            let distance = effective_distance(doc, extrusion);
+            if extrusion.faces.is_empty() || distance.abs() < 1e-4 {
+                None
+            } else {
+                extrusion_mesh_tessellated(doc, extrusion, distance)
+            }
+        } else {
+            extrusion_mesh(doc, extrusion)
+        };
+        *cache.borrow_mut() = Some((key, mesh.clone()));
+        mesh
+    })
+}
+
 /// Live preview mesh of `body_index`'s solid with `cut` additionally subtracted — what the
 /// body will look like once an in-progress cut extrusion is committed (#142). Clones the
 /// document to splice `cut` in as one more cut extrusion without mutating the real doc, so the
 /// caller can render the finished-cut shape translucently in place of the intact body. `None`
 /// (caller keeps the intact body and its additive-block preview) when the kernel is absent,
-/// the body is imported/deleted, the cut is degenerate, or the kernel can't build the result.
+/// the body is imported/deleted, the cut is degenerate, the cut is **text** (#386 — a
+/// per-glyph boolean chain per frame made the drag unusably laggy; text cuts preview as the
+/// additive block instead), or the kernel can't build the result. Cached per
+/// (document, cut, body) so unchanged frames are free.
 pub fn preview_cut_body_mesh(doc: &Document, body_index: usize, cut: &Extrusion) -> Option<SolidMesh> {
     #[cfg(feature = "occt")]
     {
@@ -2074,12 +2144,25 @@ pub fn preview_cut_body_mesh(doc: &Document, body_index: usize, cut: &Extrusion)
         if cut.faces.is_empty() || effective_distance(doc, cut).abs() < 1e-4 {
             return None;
         }
-        let mut clone = doc.clone();
-        let cut_index = clone.extrusions.len();
-        clone.extrusions.push(cut.clone());
-        let mut cut_indices = body.source.cut_extrusion_indices().to_vec();
-        cut_indices.push(cut_index);
-        occt_body_mesh(&clone, body.source.extrusion_indices(), &cut_indices)
+        if has_text_faces(cut) {
+            return None;
+        }
+        let key = preview_cache_key(doc, cut, body_index);
+        PREVIEW_CUT_MESH_CACHE.with(|cache| {
+            if let Some((cached_key, mesh)) = cache.borrow().as_ref() {
+                if *cached_key == key {
+                    return mesh.clone();
+                }
+            }
+            let mut clone = doc.clone();
+            let cut_index = clone.extrusions.len();
+            clone.extrusions.push(cut.clone());
+            let mut cut_indices = body.source.cut_extrusion_indices().to_vec();
+            cut_indices.push(cut_index);
+            let mesh = occt_body_mesh(&clone, body.source.extrusion_indices(), &cut_indices);
+            *cache.borrow_mut() = Some((key, mesh.clone()));
+            mesh
+        })
     }
     #[cfg(not(feature = "occt"))]
     {

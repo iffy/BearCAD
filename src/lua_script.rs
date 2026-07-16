@@ -5753,6 +5753,22 @@ mod tests {
             "extruded faces are the text's glyphs"
         );
         assert!(!ex.faces.is_empty(), "a 4-letter word has glyph faces");
+
+        // #386: the live drag preview of a text extrusion routes through the fast
+        // tessellated mesher (cached, kernel-free) and still produces geometry — keeping the
+        // gizmo drag responsive (the kernel per-glyph boolean chain ran every frame before).
+        let preview =
+            crate::extrude::preview_extrusion_mesh(&state.doc, ex).expect("text previews a mesh");
+        assert!(!preview.triangles.is_empty());
+        // Cached second call is effectively free; assert it stays far from the
+        // seconds-per-frame territory the kernel path hit (250ms is generous for CI).
+        let t = std::time::Instant::now();
+        let _ = crate::extrude::preview_extrusion_mesh(&state.doc, ex);
+        assert!(
+            t.elapsed() < std::time::Duration::from_millis(250),
+            "cached text preview must be fast, took {:?}",
+            t.elapsed()
+        );
     }
 
     /// #331: "Show all dimensions" populates the deduped, staggered default set and "Hide all"

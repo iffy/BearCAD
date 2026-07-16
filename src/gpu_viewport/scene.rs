@@ -767,7 +767,9 @@ impl ViewportScene {
         if let Some((_, solid)) = &preview_cut {
             mesh.push_solid_translucent(solid, SOLID_PREVIEW_FILL, SOLID_PREVIEW_OPACITY);
         } else if let Some(preview) = input.preview_extrusion.as_ref() {
-            if let Some(solid) = crate::extrude::extrusion_mesh(input.doc, preview) {
+            // Cached, text-aware preview mesher (#386): rebuilding a text extrusion's
+            // per-glyph kernel solids every frame made the drag unusably laggy.
+            if let Some(solid) = crate::extrude::preview_extrusion_mesh(input.doc, preview) {
                 mesh.push_solid_translucent(&solid, SOLID_PREVIEW_FILL, SOLID_PREVIEW_OPACITY);
             }
         }
