@@ -151,6 +151,14 @@ pub enum Instruction {
     Loft { faces: Vec<crate::model::ExtrudeFace> },
     /// Create a technical drawing (#180), optionally named.
     CreateDrawing { name: Option<String> },
+    /// Set a drawing's page size and margin, in millimetres (#273/#406). `None` keeps the
+    /// drawing's current value.
+    SetDrawingPage {
+        drawing: usize,
+        width_mm: Option<f32>,
+        height_mm: Option<f32>,
+        margin_mm: Option<f32>,
+    },
     /// Export a technical drawing to a vector SVG file.
     ExportDrawingSvg { drawing: usize, path: String },
     /// Export a technical drawing to a single-page vector PDF file.
@@ -690,6 +698,17 @@ impl Instruction {
                     ));
                 }
                 format!("bearcad.loft{{ {} }}", parts.join(", "))
+            }
+            Instruction::SetDrawingPage { drawing, width_mm, height_mm, margin_mm } => {
+                let field = |name: &str, v: &Option<f32>| {
+                    v.map(|v| format!(", {name} = {v}")).unwrap_or_default()
+                };
+                format!(
+                    "bearcad.drawing_page{{ drawing = {drawing}{}{}{} }}",
+                    field("width", width_mm),
+                    field("height", height_mm),
+                    field("margin", margin_mm),
+                )
             }
             Instruction::CreateDrawing { name } => match name {
                 Some(n) => format!("bearcad.drawing{{ name = {:?} }}", n),
@@ -2325,10 +2344,12 @@ fn extrude_face_profile_lua_fields(profile: &ExtrudeFace) -> String {
             "profile = \"polygon\", profile_index = {}",
             lines.first().copied().unwrap_or(0)
         ),
-        // Not round-trippable at all (no `parse_face_id_table` support for boolean profiles)
-        // — falls back to `a`'s fields as a best-effort reference, same tradeoff as
-        // `ExtrudeFace::face_id()`'s recursion into `a`.
-        ExtrudeFace::Boolean { a, .. } => extrude_face_profile_lua_fields(a),
+        // Round-trippable since #406: `parse_face_id_table` accepts
+        // `profile = "boolean", boolean = {...}`.
+        ExtrudeFace::Boolean { op, a, b } => format!(
+            "profile = \"boolean\", boolean = {}",
+            boolean_face_lua_table(*op, a, b)
+        ),
         ExtrudeFace::TextGlyph { text, glyph } => {
             format!("profile = \"text_glyph\", profile_index = {text}, glyph = {glyph}")
         }
@@ -3464,6 +3485,16 @@ impl ScriptRunner {
                     self.record_action_error(result);
                 }
                 let result = state.apply(Action::CommitLoft);
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::SetDrawingPage { drawing, width_mm, height_mm, margin_mm } => {
+                let result = state.apply(Action::SetDrawingPage {
+                    drawing,
+                    width_mm,
+                    height_mm,
+                    margin_mm,
+                });
                 self.record_action_error(result);
                 StepResult::Continue
             }

@@ -1254,12 +1254,13 @@ pub enum Action {
     CreateDrawing { name: Option<String> },
     /// Rename a technical drawing (#255): empty clears back to the default label.
     RenameDrawing { drawing: usize, name: String },
-    /// Set a drawing's page size and margin, in millimetres (#273).
+    /// Set a drawing's page size and margin, in millimetres (#273). `None` keeps the
+    /// drawing's current value, so partial updates work (#406).
     SetDrawingPage {
         drawing: usize,
-        width_mm: f32,
-        height_mm: f32,
-        margin_mm: f32,
+        width_mm: Option<f32>,
+        height_mm: Option<f32>,
+        margin_mm: Option<f32>,
     },
     /// Add a body view (in a given orientation) to a drawing.
     AddDrawingView {
@@ -6650,9 +6651,9 @@ impl AppState {
                     return ActionResult::Err(format!("No drawing {drawing}"));
                 };
                 // Clamp to sane positive sizes; the margin can't exceed half the smaller side.
-                let w = width_mm.max(10.0);
-                let h = height_mm.max(10.0);
-                let m = margin_mm.clamp(0.0, w.min(h) / 2.0 - 1.0);
+                let w = width_mm.unwrap_or(d.page_width_mm).max(10.0);
+                let h = height_mm.unwrap_or(d.page_height_mm).max(10.0);
+                let m = margin_mm.unwrap_or(d.margin_mm).clamp(0.0, w.min(h) / 2.0 - 1.0);
                 d.page_width_mm = w;
                 d.page_height_mm = h;
                 d.margin_mm = m;
@@ -13511,9 +13512,9 @@ mod tests {
 
         state.apply(Action::SetDrawingPage {
             drawing: 0,
-            width_mm: 210.0,
-            height_mm: 297.0,
-            margin_mm: 10.0,
+            width_mm: Some(210.0),
+            height_mm: Some(297.0),
+            margin_mm: Some(10.0),
         });
         let d = &state.doc.drawings[0];
         assert_eq!((d.page_width_mm, d.page_height_mm, d.margin_mm), (210.0, 297.0, 10.0));
@@ -13521,9 +13522,9 @@ mod tests {
         // A too-large margin is clamped to just under half the smaller side.
         state.apply(Action::SetDrawingPage {
             drawing: 0,
-            width_mm: 100.0,
-            height_mm: 200.0,
-            margin_mm: 999.0,
+            width_mm: Some(100.0),
+            height_mm: Some(200.0),
+            margin_mm: Some(999.0),
         });
         assert!(state.doc.drawings[0].margin_mm <= 49.0, "margin clamped to fit");
     }

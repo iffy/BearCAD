@@ -284,9 +284,16 @@ fn parse_face_id_table(table: Table) -> mlua::Result<FaceId> {
                         .or_else(|_| table.get("lines"))?;
                     crate::model::ExtrudeFace::Polygon(lines)
                 }
+                // A boolean-combined profile's cap (#406): `profile = "boolean",
+                // boolean = { op, a = <face spec>, b = <face spec> }` — the same
+                // descriptor `extrude`'s `boolean =` takes.
+                "boolean" => {
+                    let spec: Table = table.get("boolean")?;
+                    parse_boolean_face_table(&spec)?
+                }
                 other => {
                     return Err(mlua::Error::external(format!(
-                        "unknown extrude profile kind '{other}'"
+                        "unknown extrude profile kind '{other}' (circle|polygon|boolean)"
                     )))
                 }
             };
@@ -3131,6 +3138,25 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Set a drawing's page size and margin in millimetres (#406) — the scripted page-settings
+    // editor. Omitted keys keep the drawing's current value, so partial updates work.
+    api.set(
+        "drawing_page",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(&opts, "drawing_page", &["drawing", "width", "height", "margin"])?;
+            let drawing: usize = opts.get("drawing")?;
+            unsafe {
+                tick.exec(Instruction::SetDrawingPage {
+                    drawing,
+                    width_mm: opts.get::<Option<f32>>("width")?,
+                    height_mm: opts.get::<Option<f32>>("height")?,
+                    margin_mm: opts.get::<Option<f32>>("margin")?,
+                })
+            }
+        })?,
+    )?;
+
     // Export a technical drawing to a vector SVG file (#180) — prints to PDF via any print
     // dialog. `bearcad.export_drawing_svg{ drawing, path }`.
     api.set(
@@ -5184,6 +5210,41 @@ mod tests {
         );
         assert_eq!(state.doc.repeat_ops.len(), 1);
         assert_eq!(state.doc.drawings[0].views.len(), 1);
+    }
+
+    /// #406: a boolean-profiled extrusion's cap hosts a scripted sketch, and a drawing's
+    /// page size/margin are scriptable (omitted keys keep the current value).
+    #[test]
+    fn lua_boolean_cap_sketch_and_drawing_page() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 30, height = 30 }
+            bearcad.circle{ x = 30, y = 15, r = 10 }
+            bearcad.extrude{
+                boolean = { op = "difference", a = { polygon = {0, 1, 2, 3} }, b = { circle = 0 } },
+                distance = 8,
+            }
+            -- Sketch on the boolean profile's top cap, like clicking it in the GUI.
+            bearcad.begin_sketch{
+                kind = "extrude_cap", extrusion = 0, top = true,
+                profile = "boolean",
+                boolean = { op = "difference", a = { polygon = {0, 1, 2, 3} }, b = { circle = 0 } },
+            }
+            bearcad.circle{ x = 5, y = 5, r = 2 }
+            bearcad.exit_sketch()
+
+            local d = bearcad.drawing{}
+            bearcad.drawing_page{ drawing = d, width = 297, height = 210, margin = 12 }
+            bearcad.drawing_page{ drawing = d, margin = 8 } -- partial update keeps the size
+            "#,
+        );
+        assert_eq!(state.doc.sketches.len(), 2, "cap sketch created: {}", state.status);
+        assert_eq!(state.doc.circles.len(), 2);
+        let d = &state.doc.drawings[0];
+        assert_eq!(
+            (d.page_width_mm, d.page_height_mm, d.margin_mm),
+            (297.0, 210.0, 8.0)
+        );
     }
 
     /// #402: an expression that doesn't evaluate is a script error, not silence.

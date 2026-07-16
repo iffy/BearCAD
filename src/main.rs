@@ -10548,7 +10548,12 @@ impl App {
         }
 
         if let Some((width_mm, height_mm, margin_mm)) = set_page {
-            self.state.apply(Action::SetDrawingPage { drawing, width_mm, height_mm, margin_mm });
+            self.state.apply(Action::SetDrawingPage {
+                drawing,
+                width_mm: Some(width_mm),
+                height_mm: Some(height_mm),
+                margin_mm: Some(margin_mm),
+            });
         }
         if pop_out {
             // Move the drawing into its own window and hand the central area back to the 3D view.

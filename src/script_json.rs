@@ -647,6 +647,12 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
                 _ => Err("drawing_view requires exactly one of `body` or `sketch`".into()),
             }
         }
+        "drawing_page" => Ok(Instruction::SetDrawingPage {
+            drawing: req_usize(o, "drawing", "drawing_page")?,
+            width_mm: opt_f32(o, "width")?,
+            height_mm: opt_f32(o, "height")?,
+            margin_mm: opt_f32(o, "margin")?,
+        }),
         "export_drawing_svg" => Ok(Instruction::ExportDrawingSvg {
             drawing: req_usize(o, "drawing", "export_drawing_svg")?,
             path: req_str(o, "path", "export_drawing_svg")?,
@@ -1118,7 +1124,16 @@ fn face_id_from_json(v: &Value) -> Result<FaceId, String> {
                     };
                     ExtrudeFace::Polygon(lines)
                 }
-                other => return Err(format!("unknown extrude profile kind '{other}'")),
+                // A boolean-combined profile's cap (#406): same descriptor as `extrude`'s
+                // `boolean =`.
+                "boolean" => boolean_face_from_json(
+                    t.get("boolean").ok_or("boolean profile requires a `boolean` table")?,
+                )?,
+                other => {
+                    return Err(format!(
+                        "unknown extrude profile kind '{other}' (circle|polygon|boolean)"
+                    ))
+                }
             };
             if kind.eq_ignore_ascii_case("extrude_cap") {
                 Ok(FaceId::ExtrudeCap {

@@ -145,6 +145,9 @@ bearcad.drawing_angle{ drawing = d, view = 0,
   edge1 = { a = {0, 0, 0}, b = {40, 0, 0} },
   edge2 = { a = {0, 0, 0}, b = {0, 0, 15} } }
 
+-- Page size and margin, in millimetres; omitted keys keep their current value.
+bearcad.drawing_page{ drawing = d, width = 297, height = 210, margin = 12 }
+
 -- Export the drawing as a vector PDF, or as an SVG.
 bearcad.export_drawing_pdf{ drawing = d, path = "plate.pdf" }
 bearcad.export_drawing_svg{ drawing = d, path = "plate.svg" }

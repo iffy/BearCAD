@@ -110,6 +110,18 @@ bearcad.begin_sketch{
 }
 ```
 
+`profile` is `"circle"` (with `profile_index`), `"polygon"` (with `profile_lines`), or
+`"boolean"` with the same descriptor `extrude`'s `boolean =` takes — so the cap of a
+boolean-combined extrusion hosts a sketch too:
+
+```lua
+bearcad.begin_sketch{
+  kind = "extrude_cap", extrusion = 0, top = true,
+  profile = "boolean",
+  boolean = { op = "difference", a = { polygon = {0, 1, 2, 3} }, b = { circle = 0 } },
+}
+```
+
 Re-open an existing sketch, or leave the active one, without drawing anything:
 
 ```lua
