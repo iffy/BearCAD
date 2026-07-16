@@ -4609,6 +4609,7 @@ mod tests {
             [false; 4],
         );
         state.apply(Action::CreateExtrusion {
+            expression: None,
             sketch,
             faces: vec![ExtrudeFace::Polygon(rect_lines.to_vec())],
             distance: 7.0,
@@ -5734,6 +5735,7 @@ mod tests {
         let before = build_scene_for_doc(&state).vertices.len();
 
         state.apply(crate::actions::Action::CreateExtrusion {
+            expression: None,
             sketch,
             faces: vec![crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
             distance: 8.0,
@@ -5765,6 +5767,7 @@ mod tests {
         state.doc.construction_planes.push(slanted);
 
         state.apply(crate::actions::Action::CreateExtrusion {
+            expression: None,
             sketch,
             faces: vec![crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3])],
             distance: 6.0,

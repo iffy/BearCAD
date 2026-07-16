@@ -68,6 +68,22 @@ bearcad.line{ x = 0, y = 0, x1 = 50, y1 = 0, dimension = 50 }    -- plain number
 bearcad.line{ x = 0, y = 0, x1 = 50, y1 = 0, dimension = true }  -- lock at the as-drawn length
 ```
 
+Sizes accept **parameter expressions** anywhere the GUI's dimension fields do: pass a string
+instead of a number and the expression is stored, so the model rebuilds when the parameter
+changes — exactly like typing it into the field:
+
+```lua
+bearcad.parameter("add", "w", "24")
+bearcad.rect{ width = "w", height = "w / 3" }
+bearcad.circle{ x = 40, y = 0, diameter = "w" }        -- `r`/`radius` take expressions too
+bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = "w / 2" }
+bearcad.edit_extrusion{ extrusion = 0, distance = "w" }
+bearcad.parameter("value", 0, "30")                    -- everything above re-sizes
+```
+
+An expression that doesn't evaluate (unknown parameter, bad syntax) fails the call with an
+error naming it.
+
 To sketch on a specific plane instead of the default ground plane:
 
 ```lua

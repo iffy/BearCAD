@@ -345,6 +345,7 @@ mod tests {
         let mut log = CommandLog::new_recording(false);
         log.emit(Instruction::New);
         log.emit(Instruction::CreateRect {
+            width_expr: None, height_expr: None,
             x: 0.0,
             y: 0.0,
             width: 80.0,

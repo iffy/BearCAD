@@ -1,0 +1,1 @@
+Scripting sizes accept parameter expressions anywhere the GUI does: rect width/height, circle r/radius/diameter, and extrude/edit_extrusion distance take expression strings, stored so the model rebuilds when parameters change.

@@ -1168,6 +1168,10 @@ pub enum Action {
         y: f32,
         width: f32,
         height: f32,
+        /// Expressions for the width/height dimension constraints (#402): what a GUI user
+        /// types into the size fields (e.g. `w / 2`). `None` locks the plain number.
+        width_expr: Option<String>,
+        height_expr: Option<String>,
     },
     /// Create a line directly in the active sketch (face-local mm). Unconstrained like a
     /// click-drawn line ([`Action::CommitLine`] without a typed length); `dimension` locks
@@ -1186,6 +1190,8 @@ pub enum Action {
         cx: f32,
         cy: f32,
         r: f32,
+        /// Expression for the diameter constraint (#402); `None` locks `r * 2`.
+        diameter_expr: Option<String>,
     },
     /// Create an extrusion solid from coplanar sketch faces.
     CreateExtrusion {
@@ -1199,6 +1205,9 @@ pub enum Action {
         /// the scripted equivalent of pulling the gizmo and snapping to a surface
         /// (#114). `distance` becomes the cached/fallback value.
         target: Option<crate::model::ExtrudeTarget>,
+        /// Distance expression stored on the extrusion (#251/#402) so a parameter-driven
+        /// depth re-bakes when the parameter changes; `distance` is its evaluated value.
+        expression: Option<String>,
     },
     /// Semantic push/pull of an existing extrusion (#114): set a new fixed distance
     /// (clears any snap target — a plain typed distance is a blind extrude) and/or
@@ -1207,6 +1216,9 @@ pub enum Action {
         extrusion: usize,
         distance: Option<f32>,
         target: Option<crate::model::ExtrudeTarget>,
+        /// Distance expression to store alongside `distance` (#402); `None` with a
+        /// `distance` clears any stored expression (a plain number is a literal depth).
+        expression: Option<String>,
     },
     /// Add/remove a face from the in-progress extrusion (starts one if needed).
     ToggleExtrudeFace { face: ExtrudeFace },
@@ -5991,6 +6003,8 @@ impl AppState {
                 y,
                 width,
                 height,
+                width_expr,
+                height_expr,
             } => {
                 let Some(session) = self.sketch_session else {
                     return ActionResult::Err("Not in sketch mode".to_string());
@@ -6014,16 +6028,16 @@ impl AppState {
                     height,
                     [false; 4],
                 );
-                let mut add_dim = |line: usize, value: f32| {
+                let mut add_dim = |line: usize, value: f32, expr: Option<String>| {
                     add_distance_constraint(
                         &mut self.doc,
                         session.sketch,
                         DistanceTarget::LineLength(line),
-                        value.to_string(),
+                        expr.unwrap_or_else(|| value.to_string()),
                     )
                 };
-                if let Err(e) = add_dim(lines[0], width)
-                    .and_then(|_| add_dim(lines[1], height))
+                if let Err(e) = add_dim(lines[0], width, width_expr)
+                    .and_then(|_| add_dim(lines[1], height, height_expr))
                 {
                     self.doc.constraints.truncate(constraints_before);
                     self.doc.lines.truncate(lines_before);
@@ -6040,7 +6054,7 @@ impl AppState {
                 );
                 ActionResult::Ok
             }
-            Action::CreateCircle { cx, cy, r } => {
+            Action::CreateCircle { cx, cy, r, diameter_expr } => {
                 let Some(session) = self.sketch_session else {
                     return ActionResult::Err("Not in sketch mode".to_string());
                 };
@@ -6055,7 +6069,7 @@ impl AppState {
                     &mut self.doc,
                     session.sketch,
                     DistanceTarget::CircleDiameter(circle_index),
-                    (r * 2.0).to_string(),
+                    diameter_expr.unwrap_or_else(|| (r * 2.0).to_string()),
                 ) {
                     while self.doc.shape_order.last() == Some(&ShapeKind::Constraint) {
                         self.doc.shape_order.pop();
@@ -6119,6 +6133,7 @@ impl AppState {
                 distance,
                 body,
                 target,
+                expression,
             } => {
                 if faces.is_empty() {
                     return ActionResult::Err("Extrusion needs at least one face".to_string());
@@ -6174,7 +6189,7 @@ impl AppState {
                     faces,
                     distance,
                     target,
-                    expression: String::new(),
+                    expression: expression.unwrap_or_default(),
                     name: None,
                     deleted: false,
                     edge_treatments: Vec::new(),
@@ -6211,6 +6226,7 @@ impl AppState {
                 extrusion,
                 distance,
                 target,
+                expression,
             } => {
                 if distance.is_none() && target.is_none() {
                     return ActionResult::Err(
@@ -6240,7 +6256,7 @@ impl AppState {
                 };
                 if let Some(d) = distance {
                     ext.distance = d;
-                    ext.expression = String::new();
+                    ext.expression = expression.unwrap_or_default();
                     // A plain typed distance is a blind extrude: it replaces any snap
                     // target unless a new one is set in the same update.
                     if target.is_none() {
@@ -6342,6 +6358,7 @@ impl AppState {
                     distance,
                     body,
                     target,
+                    expression: None,
                 })
             }
             Action::SetExtrudeDistance { distance } => {
@@ -10383,6 +10400,7 @@ mod tests {
             .construction_planes
             .push(crate::construction::plane_from_face(7.0, Vec3::ZERO, glam::Vec3::Z));
         state.apply(Action::CreateExtrusion {
+            expression: None,
             sketch,
             faces: vec![ExtrudeFace::Polygon(lines.to_vec())],
             distance: 0.0,
@@ -10411,6 +10429,7 @@ mod tests {
         let lines =
             crate::construction::add_line_rectangle(&mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
         state.apply(Action::CreateExtrusion {
+            expression: None,
             sketch,
             faces: vec![ExtrudeFace::Polygon(lines.to_vec())],
             distance: 5.0,
@@ -12446,6 +12465,7 @@ mod tests {
             [false; 4],
         );
         state.apply(Action::CreateExtrusion {
+            expression: None,
             sketch,
             faces: vec![ExtrudeFace::Polygon(rect_lines.to_vec())],
             distance: 5.0,
@@ -12479,6 +12499,7 @@ mod tests {
             [false; 4],
         );
         state.apply(Action::CreateExtrusion {
+            expression: None,
             sketch,
             faces: vec![ExtrudeFace::Polygon(a.to_vec())],
             distance: 5.0,
@@ -12486,6 +12507,7 @@ mod tests {
             target: None,
         });
         state.apply(Action::CreateExtrusion {
+            expression: None,
             sketch,
             faces: vec![ExtrudeFace::Polygon(b.to_vec())],
             distance: 5.0,
@@ -13747,6 +13769,7 @@ mod tests {
         let rect = crate::construction::add_line_rectangle(&mut state.doc, sketch, 0.0, 0.0, 20.0, 20.0, [false; 4]);
         let profile = ExtrudeFace::Polygon(rect.to_vec());
         state.apply(Action::CreateExtrusion {
+            expression: None,
             sketch,
             faces: vec![profile.clone()],
             distance: 10.0,
@@ -14077,6 +14100,7 @@ mod tests {
         ));
         let profile = ExtrudeFace::Circle(0);
         state.apply(Action::CreateExtrusion {
+            expression: None,
             sketch,
             faces: vec![profile.clone()],
             distance: 4.0,
@@ -14153,6 +14177,7 @@ mod tests {
             .unwrap();
         // Positive distance = along the outward normal = away from the body.
         let result = state.apply(Action::CreateExtrusion {
+            expression: None,
             sketch: s2,
             faces: vec![ExtrudeFace::Circle(0)],
             distance: 4.0,
@@ -14178,6 +14203,7 @@ mod tests {
             s2, 5.0, 20.0, 2.0, 0.0,
         ));
         state.apply(Action::CreateExtrusion {
+            expression: None,
             sketch: s2,
             faces: vec![ExtrudeFace::Circle(0)],
             distance: 4.0,
@@ -14204,6 +14230,7 @@ mod tests {
             crate::construction::add_line_rectangle(&mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
         let profile = ExtrudeFace::Polygon(rect_lines.to_vec());
         state.apply(Action::CreateExtrusion {
+            expression: None,
             sketch,
             faces: vec![profile.clone()],
             distance: 5.0,
@@ -14854,6 +14881,7 @@ mod tests {
             .push(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
         state.doc.shape_order.push(ShapeKind::Circle);
         state.apply(Action::CreateExtrusion {
+            expression: None,
             sketch,
             faces: vec![ExtrudeFace::Circle(0)],
             distance: 6.0,

@@ -766,6 +766,19 @@ fn constraint_kind_name(kind: &ConstraintKind) -> &'static str {
     }
 }
 
+/// A size argument that is either a plain number or a parameter-expression string
+/// (#402) — what the GUI's dimension fields accept. Returns `(number, expression)`;
+/// the expression, when present, is evaluated at execution against the document's
+/// parameters (the number is a placeholder then).
+fn scalar_arg(lua: &Lua, opts: &Table, key: &str) -> mlua::Result<Option<(f32, Option<String>)>> {
+    use mlua::FromLua;
+    match opts.get::<Option<Value>>(key)? {
+        None => Ok(None),
+        Some(Value::String(s)) => Ok(Some((0.0, Some(s.to_str()?.to_string())))),
+        Some(v) => Ok(Some((f32::from_lua(v, lua)?, None))),
+    }
+}
+
 fn apply_optional_name(
     lua: &Lua,
     element: SceneElement,
@@ -2209,8 +2222,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "rect",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let width: f32 = opts.get("width")?;
-            let height: f32 = opts.get("height")?;
+            let (width, width_expr) = scalar_arg(lua, &opts, "width")?
+                .ok_or_else(|| mlua::Error::external("rect requires a `width`"))?;
+            let (height, height_expr) = scalar_arg(lua, &opts, "height")?
+                .ok_or_else(|| mlua::Error::external("rect requires a `height`"))?;
             let x: f32 = opts.get("x").unwrap_or(0.0);
             let y: f32 = opts.get("y").unwrap_or(0.0);
             unsafe {
@@ -2225,6 +2240,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     y,
                     width,
                     height,
+                    width_expr,
+                    height_expr,
                 })?;
             }
             // A rectangle is now four plain lines (#66 polygon); return a handle to its bottom
@@ -2303,12 +2320,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let cy: f32 = opts.get("y").unwrap_or(0.0);
             // Accept a radius (`r` or its `radius` alias, #108) or a `diameter`, in that
             // precedence order; none at all is a clear error rather than a nil-conversion one.
-            let r: f32 = if let Some(r) = opts.get::<Option<f32>>("r")? {
-                r
-            } else if let Some(radius) = opts.get::<Option<f32>>("radius")? {
-                radius
-            } else if let Some(diameter) = opts.get::<Option<f32>>("diameter")? {
-                diameter * 0.5
+            // Each accepts a parameter expression too (#402); a radius expression doubles
+            // into the diameter constraint the way the stored dimension expects.
+            let (r, diameter_expr) = if let Some((r, e)) = scalar_arg(lua, &opts, "r")? {
+                (r, e.map(|e| format!("({e}) * 2")))
+            } else if let Some((radius, e)) = scalar_arg(lua, &opts, "radius")? {
+                (radius, e.map(|e| format!("({e}) * 2")))
+            } else if let Some((d, e)) = scalar_arg(lua, &opts, "diameter")? {
+                (d * 0.5, e)
             } else {
                 return Err(mlua::Error::external(
                     "circle requires a size: one of `r`, `radius`, or `diameter`",
@@ -2320,7 +2339,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         face: FaceId::ConstructionPlane(0),
                     })?;
                 }
-                tick.exec(Instruction::CreateCircle { cx, cy, r })?;
+                tick.exec(Instruction::CreateCircle { cx, cy, r, diameter_expr })?;
             }
             let element =
                 SceneElement::Circle(unsafe { tick.state().doc.circles.len().saturating_sub(1) });
@@ -2452,9 +2471,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 Some(t) => Some(parse_extrude_target_table(&t)?),
                 None => None,
             };
-            let distance: f32 = match opts.get::<Option<f32>>("distance")? {
+            // `distance` accepts a plain number or a parameter expression string (#402).
+            let (distance, expression) = match scalar_arg(lua, &opts, "distance")? {
                 Some(d) => d,
-                None if target.is_some() => 0.0,
+                None if target.is_some() => (0.0, None),
                 None => return Err(mlua::Error::external("extrude requires a `distance` or `to`")),
             };
             // Faces: `circle` (single) and/or `circles` (array of indices), a `polygon` loop
@@ -2519,6 +2539,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     distance,
                     body,
                     target,
+                    expression,
                 })?;
             }
             let element = SceneElement::Extrusion(unsafe {
@@ -3228,7 +3249,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let extrusion: usize = opts.get("extrusion")?;
-            let mut distance: Option<f32> = opts.get("distance")?;
+            // `distance` accepts a plain number or a parameter expression string (#402).
+            let (mut distance, expression) = match scalar_arg(lua, &opts, "distance")? {
+                Some((d, e @ Some(_))) => (Some(d), e),
+                Some((d, None)) => (Some(d), None),
+                None => (None, None),
+            };
             let by: Option<f32> = opts.get("by")?;
             let target = match opts.get::<Option<Table>>("to")? {
                 Some(t) => Some(parse_extrude_target_table(&t)?),
@@ -3263,6 +3289,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     extrusion,
                     distance,
                     target,
+                    expression,
                 })
             }
         })?,
@@ -4965,6 +4992,87 @@ mod tests {
             assert(sel[1].index == 0)
         "#,
         );
+    }
+
+    /// #402: sizes accept parameter-expression strings anywhere the GUI does — rect
+    /// width/height, circle r/radius/diameter, and extrude distance — and store the
+    /// expression so the model rebuilds when the parameter changes.
+    #[test]
+    fn lua_sizes_accept_parameter_expressions() {
+        let state = run_lua(
+            r#"
+            bearcad.parameter("add", "w", "24")
+            bearcad.rect{ width = "w", height = "w / 3" }
+            bearcad.circle{ x = 40, y = 0, radius = "w / 4" }
+            bearcad.circle{ x = 60, y = 0, diameter = "w" }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = "w / 2" }
+            "#,
+        );
+        // Geometry evaluated against the parameter.
+        let l = &state.doc.lines[0];
+        let width = ((l.x1 - l.x0).powi(2) + (l.y1 - l.y0).powi(2)).sqrt();
+        assert!((width - 24.0).abs() < 1e-3, "rect width, got {width}");
+        assert!((state.doc.circles[0].r - 6.0).abs() < 1e-3, "radius expr");
+        assert!((state.doc.circles[1].r - 12.0).abs() < 1e-3, "diameter expr");
+        assert!((state.doc.extrusions[0].distance - 12.0).abs() < 1e-3);
+        // Expressions stored, not baked numbers: the dims reference the parameter…
+        assert_eq!(state.doc.extrusions[0].expression, "w / 2");
+        let exprs: Vec<&str> = state
+            .doc
+            .constraints
+            .iter()
+            .map(|c| c.expression.as_str())
+            .collect();
+        assert!(exprs.contains(&"w"), "rect width constraint: {exprs:?}");
+        assert!(exprs.contains(&"w / 3"), "rect height constraint: {exprs:?}");
+        assert!(exprs.contains(&"(w / 4) * 2"), "radius constraint: {exprs:?}");
+
+        // …so editing the parameter rebuilds the scripted model like a hand-built one.
+        let state = run_lua(
+            r#"
+            bearcad.parameter("add", "w", "24")
+            bearcad.rect{ width = "w", height = "w / 3" }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = "w / 2" }
+            bearcad.parameter("value", 0, "30")
+            "#,
+        );
+        let l = &state.doc.lines[0];
+        let width = ((l.x1 - l.x0).powi(2) + (l.y1 - l.y0).powi(2)).sqrt();
+        assert!((width - 30.0).abs() < 1e-3, "rect follows the parameter, got {width}");
+        assert!(
+            (state.doc.extrusions[0].distance - 15.0).abs() < 1e-3,
+            "extrusion depth follows the parameter, got {}",
+            state.doc.extrusions[0].distance
+        );
+    }
+
+    /// #402: an expression that doesn't evaluate is a script error, not silence.
+    #[test]
+    fn lua_bad_size_expression_raises() {
+        run_lua_expect_ok(
+            r#"
+            local ok, err = pcall(function()
+                bearcad.rect{ width = "nope + 1", height = 10 }
+            end)
+            assert(not ok, "bad expression should fail the call")
+            assert(tostring(err):find("nope"), "error should name the expression: " .. tostring(err))
+            "#,
+        );
+    }
+
+    /// #402: edit_extrusion can set a parametric distance expression.
+    #[test]
+    fn lua_edit_extrusion_accepts_expression() {
+        let state = run_lua(
+            r#"
+            bearcad.parameter("add", "d", "9")
+            bearcad.rect{ width = 20, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.edit_extrusion{ extrusion = 0, distance = "d" }
+            "#,
+        );
+        assert!((state.doc.extrusions[0].distance - 9.0).abs() < 1e-3);
+        assert_eq!(state.doc.extrusions[0].expression, "d");
     }
 
     /// #107: `bearcad.parameter("get"/"get_expression", name)` reads a parameter back.

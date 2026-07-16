@@ -221,26 +221,36 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             offset: opt_f32(o, "offset")?.unwrap_or(0.0),
             from: opt_usize(o, "from")?.unwrap_or(0),
         }),
-        "rect" => Ok(Instruction::CreateRect {
-            x: opt_f32(o, "x")?.unwrap_or(0.0),
-            y: opt_f32(o, "y")?.unwrap_or(0.0),
-            width: req_f32(o, "width", "rect")?,
-            height: req_f32(o, "height", "rect")?,
-        }),
+        "rect" => {
+            let (width, width_expr) =
+                opt_scalar(o, "width")?.ok_or("rect requires `width`")?;
+            let (height, height_expr) =
+                opt_scalar(o, "height")?.ok_or("rect requires `height`")?;
+            Ok(Instruction::CreateRect {
+                x: opt_f32(o, "x")?.unwrap_or(0.0),
+                y: opt_f32(o, "y")?.unwrap_or(0.0),
+                width,
+                height,
+                width_expr,
+                height_expr,
+            })
+        }
         "circle" => {
             let cx = opt_f32(o, "x")?.unwrap_or(0.0);
             let cy = opt_f32(o, "y")?.unwrap_or(0.0);
             // Same precedence as the mlua closure: `r`, then `radius`, then `diameter`.
-            let r = if let Some(r) = opt_f32(o, "r")? {
-                r
-            } else if let Some(radius) = opt_f32(o, "radius")? {
-                radius
-            } else if let Some(diameter) = opt_f32(o, "diameter")? {
-                diameter * 0.5
+            // Each accepts a parameter expression too (#402); a radius expression doubles
+            // into the diameter constraint.
+            let (r, diameter_expr) = if let Some((r, e)) = opt_scalar(o, "r")? {
+                (r, e.map(|e| format!("({e}) * 2")))
+            } else if let Some((radius, e)) = opt_scalar(o, "radius")? {
+                (radius, e.map(|e| format!("({e}) * 2")))
+            } else if let Some((d, e)) = opt_scalar(o, "diameter")? {
+                (d * 0.5, e)
             } else {
                 return Err("circle requires a size: one of `r`, `radius`, or `diameter`".into());
             };
-            Ok(Instruction::CreateCircle { cx, cy, r })
+            Ok(Instruction::CreateCircle { cx, cy, r, diameter_expr })
         }
         "line" => {
             let x0 = opt_f32(o, "x")?.unwrap_or(0.0);
@@ -725,9 +735,10 @@ pub fn extrude_instruction(name: &str, args: &Value, doc: &Document) -> Result<I
     match name {
         "extrude" => {
             let target = extrude_target_opt(o)?;
-            let distance = match opt_f32(o, "distance")? {
+            // `distance` accepts a plain number or a parameter expression string (#402).
+            let (distance, expression) = match opt_scalar(o, "distance")? {
                 Some(d) => d,
-                None if target.is_some() => 0.0,
+                None if target.is_some() => (0.0, None),
                 None => return Err("extrude requires a `distance` or `to`".into()),
             };
             let mut faces = Vec::new();
@@ -753,7 +764,7 @@ pub fn extrude_instruction(name: &str, args: &Value, doc: &Document) -> Result<I
             let body = body_choice(o);
             let sketch = crate::actions::extrude_face_sketch(doc, &faces[0])
                 .ok_or("extrude face does not exist")?;
-            Ok(Instruction::Extrude { sketch, faces, distance, body, target })
+            Ok(Instruction::Extrude { sketch, faces, distance, body, target, expression })
         }
         "extrude_face" => {
             let face = face_id_from_json(
@@ -769,7 +780,11 @@ pub fn extrude_instruction(name: &str, args: &Value, doc: &Document) -> Result<I
         }
         "edit_extrusion" => {
             let extrusion = req_usize(o, "extrusion", "edit_extrusion")?;
-            let mut distance = opt_f32(o, "distance")?;
+            // `distance` accepts a plain number or a parameter expression string (#402).
+            let (mut distance, expression) = match opt_scalar(o, "distance")? {
+                Some((d, e)) => (Some(d), e),
+                None => (None, None),
+            };
             let by = opt_f32(o, "by")?;
             let target = extrude_target_opt(o)?;
             if let Some(by) = by {
@@ -786,7 +801,7 @@ pub fn extrude_instruction(name: &str, args: &Value, doc: &Document) -> Result<I
             if distance.is_none() && target.is_none() {
                 return Err("edit_extrusion requires `distance`, `by`, or `to`".into());
             }
-            Ok(Instruction::UpdateExtrusion { extrusion, distance, target })
+            Ok(Instruction::UpdateExtrusion { extrusion, distance, target, expression })
         }
         other => Err(format!("unknown extrude verb '{other}'")),
     }
@@ -1373,6 +1388,22 @@ fn as_object(v: &Value) -> Result<&Map<String, Value>, String> {
     }
 }
 
+/// A size that is a plain JSON number or a parameter-expression string (#402):
+/// returns `(number, expression)`; the expression, when present, resolves at execution.
+fn opt_scalar(
+    o: &Map<String, Value>,
+    key: &str,
+) -> Result<Option<(f32, Option<String>)>, String> {
+    match o.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some((0.0, Some(s.clone())))),
+        Some(v) => v
+            .as_f64()
+            .map(|n| Some((n as f32, None)))
+            .ok_or_else(|| format!("`{key}` must be a number or an expression string")),
+    }
+}
+
 fn opt_f32(o: &Map<String, Value>, key: &str) -> Result<Option<f32>, String> {
     match o.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -1578,18 +1609,18 @@ mod tests {
         // Same as `bearcad.rect{ width = 40, height = 20 }`: x/y default to 0.
         assert_eq!(
             instruction_from_json("rect", &json!({ "width": 40, "height": 20 })),
-            Ok(Instruction::CreateRect { x: 0.0, y: 0.0, width: 40.0, height: 20.0 })
+            Ok(Instruction::CreateRect { x: 0.0, y: 0.0, width: 40.0, height: 20.0, width_expr: None, height_expr: None })
         );
         assert_eq!(
             instruction_from_json("rect", &json!({ "x": 5, "y": -3, "width": 40, "height": 20 })),
-            Ok(Instruction::CreateRect { x: 5.0, y: -3.0, width: 40.0, height: 20.0 })
+            Ok(Instruction::CreateRect { x: 5.0, y: -3.0, width: 40.0, height: 20.0, width_expr: None, height_expr: None })
         );
         assert!(instruction_from_json("rect", &json!({ "width": 40 })).is_err());
     }
 
     #[test]
     fn circle_accepts_r_radius_or_diameter() {
-        let r = Instruction::CreateCircle { cx: 0.0, cy: 0.0, r: 5.0 };
+        let r = Instruction::CreateCircle { cx: 0.0, cy: 0.0, r: 5.0, diameter_expr: None };
         assert_eq!(instruction_from_json("circle", &json!({ "r": 5 })), Ok(r.clone()));
         assert_eq!(instruction_from_json("circle", &json!({ "radius": 5 })), Ok(r.clone()));
         assert_eq!(instruction_from_json("circle", &json!({ "diameter": 10 })), Ok(r));
@@ -2336,6 +2367,7 @@ mod tests {
         assert_eq!(
             extrude_instruction("extrude", &json!({ "circle": 0, "distance": 10 }), &doc),
             Ok(Instruction::Extrude {
+                expression: None,
                 sketch: 0,
                 faces: vec![ExtrudeFace::Circle(0)],
                 distance: 10.0,

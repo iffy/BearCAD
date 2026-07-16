@@ -64,11 +64,15 @@ pub enum Instruction {
     OpenSketch { sketch: SketchId },
     ExitSketch,
     /// Create a rectangle directly in the active sketch (face-local mm) with locked dimensions.
+    /// `width_expr`/`height_expr` (#402) lock the dimension to a parameter expression instead
+    /// of the plain number — when set, they win over `width`/`height`.
     CreateRect {
         x: f32,
         y: f32,
         width: f32,
         height: f32,
+        width_expr: Option<String>,
+        height_expr: Option<String>,
     },
     /// Create a line directly in the active sketch (face-local mm endpoints). Like a
     /// click-drawn line it is unconstrained; `dimension` (an expression, e.g. "50" or "leg")
@@ -83,10 +87,12 @@ pub enum Instruction {
         dimension: Option<String>,
     },
     /// Create a circle directly in the active sketch (face-local mm) with a locked diameter.
+    /// `diameter_expr` (#402) locks the diameter to a parameter expression; it wins over `r`.
     CreateCircle {
         cx: f32,
         cy: f32,
         r: f32,
+        diameter_expr: Option<String>,
     },
     /// Place a text element in the active sketch (#282/#286): glyph outlines baked from a
     /// system font, the same as the Text tool. `size` is an expression (parameters work).
@@ -119,6 +125,9 @@ pub enum Instruction {
         /// Extrude up to this object's extended plane instead of the fixed distance —
         /// the scripted "pull the gizmo and snap to a surface" (#114).
         target: Option<crate::model::ExtrudeTarget>,
+        /// Distance as a parameter expression (#402): wins over `distance` and is stored
+        /// on the extrusion so it re-bakes when parameters change.
+        expression: Option<String>,
     },
     /// Scripted push/pull of a bare body face (#130/#122): the declarative equivalent of
     /// clicking the face with the Extrude tool and pulling it (optionally onto `target`).
@@ -129,11 +138,13 @@ pub enum Instruction {
         target: Option<crate::model::ExtrudeTarget>,
     },
     /// Semantic push/pull of an existing extrusion (#114): a new fixed distance
-    /// (clearing any snap target) and/or a new snap target.
+    /// (clearing any snap target) and/or a new snap target. `expression` (#402) sets a
+    /// parameter-expression distance, winning over `distance`.
     UpdateExtrusion {
         extrusion: usize,
         distance: Option<f32>,
         target: Option<crate::model::ExtrudeTarget>,
+        expression: Option<String>,
     },
     /// Loft a solid through two or more closed cross-section profiles (SPEC §3.5).
     /// Each face's owning sketch is inferred at execution time, like `bearcad.extrude`.
@@ -510,7 +521,19 @@ impl Instruction {
                 y,
                 width,
                 height,
-            } => format!("bearcad.rect{{ x = {x}, y = {y}, width = {width}, height = {height} }}"),
+                width_expr,
+                height_expr,
+            } => {
+                let w = match width_expr {
+                    Some(e) => format!("{e:?}"),
+                    None => width.to_string(),
+                };
+                let h = match height_expr {
+                    Some(e) => format!("{e:?}"),
+                    None => height.to_string(),
+                };
+                format!("bearcad.rect{{ x = {x}, y = {y}, width = {w}, height = {h} }}")
+            }
             Instruction::CreateLine { x0, y0, x1, y1, bezier, dimension } => {
                 let bezier_arg = match bezier {
                     Some([(c0x, c0y), (c1x, c1y)]) => format!(
@@ -526,9 +549,10 @@ impl Instruction {
                     "bearcad.line{{ x = {x0}, y = {y0}, x1 = {x1}, y1 = {y1}{bezier_arg}{dim_arg} }}"
                 )
             }
-            Instruction::CreateCircle { cx, cy, r } => {
-                format!("bearcad.circle{{ x = {cx}, y = {cy}, r = {r} }}")
-            }
+            Instruction::CreateCircle { cx, cy, r, diameter_expr } => match diameter_expr {
+                Some(e) => format!("bearcad.circle{{ x = {cx}, y = {cy}, diameter = {e:?} }}"),
+                None => format!("bearcad.circle{{ x = {cx}, y = {cy}, r = {r} }}"),
+            },
             Instruction::CreateSketchText {
                 text,
                 font,
@@ -581,6 +605,7 @@ impl Instruction {
                 distance,
                 body,
                 target,
+                expression,
                 ..
             } => {
                 let body = match body {
@@ -592,6 +617,10 @@ impl Instruction {
                     .as_ref()
                     .map(|t| format!(", to = {}", extrude_target_lua_table(t)))
                     .unwrap_or_default();
+                let distance = match expression {
+                    Some(e) => format!("{e:?}"),
+                    None => distance.to_string(),
+                };
                 format!(
                     "bearcad.extrude{{ {}, distance = {distance}{body}{to} }}",
                     extrude_face_args(faces)
@@ -612,10 +641,12 @@ impl Instruction {
                     face_id_lua_ref(face)
                 )
             }
-            Instruction::UpdateExtrusion { extrusion, distance, target } => {
-                let d = distance
-                    .map(|d| format!(", distance = {d}"))
-                    .unwrap_or_default();
+            Instruction::UpdateExtrusion { extrusion, distance, target, expression } => {
+                let d = match (expression, distance) {
+                    (Some(e), _) => format!(", distance = {e:?}"),
+                    (None, Some(d)) => format!(", distance = {d}"),
+                    (None, None) => String::new(),
+                };
                 let to = target
                     .as_ref()
                     .map(|t| format!(", to = {}", extrude_target_lua_table(t)))
@@ -1179,6 +1210,22 @@ struct ElementScriptTokens {
     point: Option<crate::model::ConstraintPoint>,
 }
 
+/// Resolve a scripted size that may be a parameter expression (#402): the expression,
+/// when present, wins over the plain number and must evaluate against the document's
+/// parameters.
+fn eval_scalar_input(
+    doc: &crate::model::Document,
+    number: f32,
+    expr: &Option<String>,
+    what: &str,
+) -> Result<f32, String> {
+    match expr {
+        None => Ok(number),
+        Some(e) => crate::value::eval_length_mm_in_doc(e, doc)
+            .ok_or_else(|| format!("{what} expression {e:?} doesn't evaluate to a length")),
+    }
+}
+
 fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
     match element {
         SceneElement::ConstructionPlane(i) => ElementScriptTokens {
@@ -1411,11 +1458,12 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             length: *length,
         }),
         Action::ImportStep { path } => Some(Instruction::ImportStep { path: path.clone() }),
-        Action::UpdateExtrusion { extrusion, distance, target } => {
+        Action::UpdateExtrusion { extrusion, distance, target, expression } => {
             Some(Instruction::UpdateExtrusion {
                 extrusion: *extrusion,
                 distance: *distance,
                 target: target.clone(),
+                expression: expression.clone(),
             })
         }
         Action::ToggleFpsMode => Some(Instruction::FpsMode { on: None }),
@@ -1444,11 +1492,24 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                         max_y = max_y.max(y);
                     }
                 }
+                // Typed width/height land as LineLength dims on the bottom (n-4) and right
+                // (n-3) edges; carry their expressions so a parametric rect replays
+                // parametrically (#402).
+                let dim_expr = |line: usize| {
+                    doc.constraints.iter().rev().find_map(|c| match &c.kind {
+                        crate::model::ConstraintKind::Distance {
+                            target: crate::model::DistanceTarget::LineLength(i),
+                        } if *i == line && !c.deleted => Some(c.expression.clone()),
+                        _ => None,
+                    })
+                };
                 Instruction::CreateRect {
                     x: min_x,
                     y: min_y,
                     width: max_x - min_x,
                     height: max_y - min_y,
+                    width_expr: dim_expr(n - 4),
+                    height_expr: dim_expr(n - 3),
                 }
             })
         }
@@ -1472,10 +1533,21 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 dimension,
             }
         }),
-        Action::CommitCircle => doc.circles.last().map(|c| Instruction::CreateCircle {
-            cx: c.cx,
-            cy: c.cy,
-            r: c.r,
+        Action::CommitCircle => doc.circles.last().map(|c| {
+            // Carry a typed diameter's expression like CommitLine does (#402).
+            let index = doc.circles.len() - 1;
+            let diameter_expr = doc.constraints.iter().rev().find_map(|c| match &c.kind {
+                crate::model::ConstraintKind::Distance {
+                    target: crate::model::DistanceTarget::CircleDiameter(i),
+                } if *i == index && !c.deleted => Some(c.expression.clone()),
+                _ => None,
+            });
+            Instruction::CreateCircle {
+                cx: c.cx,
+                cy: c.cy,
+                r: c.r,
+                diameter_expr,
+            }
         }),
         Action::SetRectDimension { axis, value } => Some(Instruction::SetDim {
             axis: *axis,
@@ -1690,6 +1762,8 @@ pub fn instruction_for_new_extrusion(doc: &crate::model::Document) -> Option<Ins
         distance: extrusion.distance,
         body,
         target: extrusion.target.clone(),
+        expression: (!extrusion.expression.trim().is_empty())
+            .then(|| extrusion.expression.clone()),
     })
 }
 
@@ -3199,12 +3273,26 @@ impl ScriptRunner {
                 y,
                 width,
                 height,
+                width_expr,
+                height_expr,
             } => {
+                let (width, height) = match (
+                    eval_scalar_input(&state.doc, width, &width_expr, "rect width"),
+                    eval_scalar_input(&state.doc, height, &height_expr, "rect height"),
+                ) {
+                    (Ok(w), Ok(h)) => (w, h),
+                    (Err(e), _) | (_, Err(e)) => {
+                        self.record_action_error(crate::actions::ActionResult::Err(e));
+                        return StepResult::Continue;
+                    }
+                };
                 let result = state.apply(Action::CreateRectangle {
                     x,
                     y,
                     width,
                     height,
+                    width_expr,
+                    height_expr,
                 });
                 self.record_action_error(result);
                 StepResult::Continue
@@ -3215,8 +3303,20 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::CreateCircle { cx, cy, r } => {
-                let result = state.apply(Action::CreateCircle { cx, cy, r });
+            Instruction::CreateCircle { cx, cy, r, diameter_expr } => {
+                let r = match &diameter_expr {
+                    Some(_) => {
+                        match eval_scalar_input(&state.doc, r, &diameter_expr, "circle diameter") {
+                            Ok(d) => d * 0.5,
+                            Err(e) => {
+                                self.record_action_error(crate::actions::ActionResult::Err(e));
+                                return StepResult::Continue;
+                            }
+                        }
+                    }
+                    None => r,
+                };
+                let result = state.apply(Action::CreateCircle { cx, cy, r, diameter_expr });
                 self.record_action_error(result);
                 StepResult::Continue
             }
@@ -3275,13 +3375,27 @@ impl ScriptRunner {
                 distance,
                 body,
                 target,
+                expression,
             } => {
+                let distance = match eval_scalar_input(
+                    &state.doc,
+                    distance,
+                    &expression,
+                    "extrude distance",
+                ) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        self.record_action_error(crate::actions::ActionResult::Err(e));
+                        return StepResult::Continue;
+                    }
+                };
                 let result = state.apply(Action::CreateExtrusion {
                     sketch,
                     faces,
                     distance,
                     body,
                     target,
+                    expression,
                 });
                 self.record_action_error(result);
                 StepResult::Continue
@@ -3296,8 +3410,25 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::UpdateExtrusion { extrusion, distance, target } => {
-                let result = state.apply(Action::UpdateExtrusion { extrusion, distance, target });
+            Instruction::UpdateExtrusion { extrusion, distance, target, expression } => {
+                let distance = match &expression {
+                    Some(e) => match crate::value::eval_length_mm_in_doc(e, &state.doc) {
+                        Some(d) => Some(d),
+                        None => {
+                            self.record_action_error(crate::actions::ActionResult::Err(format!(
+                                "extrusion distance expression {e:?} doesn't evaluate to a length"
+                            )));
+                            return StepResult::Continue;
+                        }
+                    },
+                    None => distance,
+                };
+                let result = state.apply(Action::UpdateExtrusion {
+                    extrusion,
+                    distance,
+                    target,
+                    expression,
+                });
                 self.record_action_error(result);
                 StepResult::Continue
             }

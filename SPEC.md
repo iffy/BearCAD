@@ -1717,6 +1717,16 @@ Everything achievable in the GUI must be achievable by programming, and vice ver
   the scripted equivalent of typing a length while drawing. Session-command export carries
   the typed expression through (`Export Session Commands…` replays typed-length lines
   dimensioned and click-drawn lines free).
+- **Sizes accept parameter expressions (#402)** anywhere the GUI's dimension fields do: rect
+  `width`/`height`, circle `r`/`radius`/`diameter`, and `extrude`/`edit_extrusion` `distance`
+  each take a string expression (`"w"`, `"w / 3"`, `"1in + 2mm"`) in place of a number. The
+  expression is stored the way typed input stores it — rect/circle sizes as locked dimension
+  constraints, extrude distances in the extrusion's `expression` — so the scripted model
+  rebuilds when the parameter changes. A radius expression is stored doubled
+  (`"(<expr>) * 2"`) on the diameter constraint. An expression that doesn't evaluate raises a
+  Lua error naming it. The JSON dispatcher accepts the same string-for-number forms, and
+  session-command export round-trips the expressions (rect/circle commits carry their typed
+  dimension expressions; extrudes replay `distance = "<expr>"`).
 - `bearcad.plane{ offset?, from?, name? }` (#116) declaratively adds a new construction plane
   offset along the normal of an existing one (`from`, a construction-plane index — defaults to
   plane 0 / Ground), the scripted equivalent of picking a plane in the viewport and typing an
