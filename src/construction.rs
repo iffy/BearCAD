@@ -1653,18 +1653,32 @@ pub fn nearest_sketch_line_in_sketch(
 
     // The origin axes (#189) are pickable everywhere as fixed reference lines, so a point or
     // line can be constrained onto one from the constraint tool (not only by snapping).
+    // Measured as an **infinite line in screen space** from two nearby projected points
+    // (#394): the old ±10 m segment endpoints usually fail to project (behind the camera /
+    // outside the frustum), which silently made the axes unpickable and unhoverable.
     if let Some(frame) = crate::face::sketch_geometry_frame(doc, sketch) {
-        const AXIS_HALF: f32 = 1.0e4;
-        consider(
-            ConstraintLine::OriginAxis(crate::model::SketchAxis::X),
-            frame.origin - frame.u_axis * AXIS_HALF,
-            frame.origin + frame.u_axis * AXIS_HALF,
-        );
-        consider(
-            ConstraintLine::OriginAxis(crate::model::SketchAxis::Y),
-            frame.origin - frame.v_axis * AXIS_HALF,
-            frame.origin + frame.v_axis * AXIS_HALF,
-        );
+        let mut consider_axis = |axis: crate::model::SketchAxis, dir: Vec3| {
+            let (Some(p0), Some(p1)) = (
+                project(frame.origin),
+                project(frame.origin + dir * 10.0),
+            ) else {
+                return;
+            };
+            let d = p1 - p0;
+            if d.length_sq() < 1e-6 {
+                return;
+            }
+            let dn = d / d.length();
+            let rel = screen - p0;
+            let dist = (rel.x * dn.y - rel.y * dn.x).abs();
+            if dist <= LINE_PICK_RADIUS_PX
+                && best.as_ref().is_none_or(|(_, best_d)| dist < *best_d)
+            {
+                best = Some((ConstraintLine::OriginAxis(axis), dist));
+            }
+        };
+        consider_axis(crate::model::SketchAxis::X, frame.u_axis);
+        consider_axis(crate::model::SketchAxis::Y, frame.v_axis);
     }
 
     best

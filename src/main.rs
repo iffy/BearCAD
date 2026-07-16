@@ -6554,6 +6554,24 @@ fn resolve_viewport_hover_highlight(
                         ));
                     }
                 }
+                // The sketch's fixed reference lines (#394) — the origin axes (#189) and the
+                // sketched-on face's own edges (#26/#27) — hover-highlight like they
+                // click-select (#241). Plain sketch lines fall through to the generic pick
+                // below; `nearest_sketch_line_in_sketch` already ranks them together, so an
+                // axis only wins here when it genuinely is the closest.
+                if let Some((target, _)) =
+                    nearest_sketch_line_in_sketch(pp, project, doc, session.sketch)
+                {
+                    if matches!(
+                        target,
+                        model::ConstraintLine::OriginAxis(_)
+                            | model::ConstraintLine::FaceEdge { .. }
+                    ) {
+                        return Some(gpu_viewport::ViewportHoverHighlight::Element(
+                            vertex_drag::scene_element_for_line(target),
+                        ));
+                    }
+                }
             }
             if let Some(t) = t {
                 if scene_element_from_pick(&t.kind).is_some()
@@ -14976,6 +14994,68 @@ mod tests {
                 Some(gpu_viewport::ViewportHoverHighlight::Element(SceneElement::Body(0)))
             ),
             "combine tool should hover-highlight the whole body, got {hover:?}"
+        );
+    }
+
+    #[test]
+    fn constraint_tool_hovers_origin_and_origin_axes() {
+        use super::gpu_viewport;
+        use super::resolve_viewport_hover_highlight;
+        use crate::actions::SketchSession;
+        use crate::hierarchy::SceneElement;
+        use crate::model::{ConstraintLine, SketchAxis};
+
+        // #394: with the Constraint tool, the sketch origin and the fixed origin axes are
+        // constraint targets, so they must hover-highlight like they click-select (#241).
+        let mut doc = crate::model::Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        // A line far from the origin so it never wins the pick.
+        doc.lines
+            .push(crate::model::Line::from_local_endpoints(sketch, 30.0, 30.0, 60.0, 30.0));
+
+        let cam = crate::camera::Camera::default();
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
+        let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
+        let resolve = |cursor: egui::Pos2| {
+            resolve_viewport_hover_highlight(
+                false,
+                crate::actions::Tool::Constraint,
+                Some(SketchSession { sketch }),
+                false,
+                false,
+                false,
+                false,
+                Some(cursor),
+                &cam,
+                viewport,
+                &vp,
+                &doc,
+                &project,
+                None,
+            )
+        };
+
+        let over_origin = project(glam::Vec3::ZERO).expect("origin projects");
+        let hover = resolve(over_origin);
+        assert!(
+            matches!(
+                hover,
+                Some(gpu_viewport::ViewportHoverHighlight::Element(SceneElement::Origin))
+            ),
+            "hovering the origin should highlight it, got {hover:?}"
+        );
+
+        let over_x_axis = project(glam::Vec3::new(15.0, 0.0, 0.0)).expect("axis projects");
+        let hover = resolve(over_x_axis);
+        assert!(
+            matches!(
+                &hover,
+                Some(gpu_viewport::ViewportHoverHighlight::Element(SceneElement::FaceEdge(
+                    ConstraintLine::OriginAxis(SketchAxis::X)
+                )))
+            ),
+            "hovering the X origin axis should highlight it, got {hover:?}"
         );
     }
 
