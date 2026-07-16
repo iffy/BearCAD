@@ -1236,6 +1236,54 @@ pub fn toggle_construction_for_targets(
     Ok(updated)
 }
 
+/// Width of the context pane's label column (#371): every label+input pair renders as a
+/// two-column row — the label left-aligned in this fixed column, the input in the aligned
+/// right column — so inputs line up down the whole pane.
+const FIELD_LABEL_W: f32 = 78.0;
+
+/// A two-column field row (#371): `label` in the fixed-width left column (vertically centred
+/// against the input), the input(s) from `add_input` in the aligned right column.
+fn labeled_row<R>(
+    ui: &mut egui::Ui,
+    label: impl Into<egui::WidgetText>,
+    add_input: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let label = label.into();
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(FIELD_LABEL_W, 18.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.label(label);
+            },
+        );
+        add_input(ui)
+    })
+    .inner
+}
+
+/// [`labeled_row`] for tall inputs (pickers, multiline text): the label top-aligns with the
+/// input instead of centring against it.
+fn labeled_row_top<R>(
+    ui: &mut egui::Ui,
+    label: impl Into<egui::WidgetText>,
+    add_input: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let label = label.into();
+    ui.horizontal_top(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(FIELD_LABEL_W, 18.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.label(label);
+            },
+        );
+        ui.vertical(add_input)
+    })
+    .inner
+    .inner
+}
+
 /// One row of the extrude "into" picker (#32/#35): the mode's icon followed by a radio button.
 /// Selecting the radio mutates `current`, which the caller diffs to fire the change callback.
 fn extrude_body_mode_row(
@@ -1324,9 +1372,10 @@ pub fn show_pane(
     ui.set_width(ui.available_width());
 
     // The element picker is the primary control for the Select tool, so it renders first (#246).
+    // Pickers render as label-left / picker-right rows (#371), like every other field.
     if let Some(picker) = &content.selection_picker {
         any_control = true;
-        ui.label(egui::RichText::new("Selection").strong());
+        labeled_row_top(ui, egui::RichText::new("Selection").strong(), |ui| {
         ui.add_enabled_ui(controls_enabled, |ui| {
             if let Some(event) = crate::element_picker::show(ui, picker, doc, "selection_picker") {
                 match event {
@@ -1343,6 +1392,7 @@ pub fn show_pane(
                 }
             }
         });
+        });
     }
 
     // The drawing workbench's Select tool has its own always-visible element picker (#346): a
@@ -1350,12 +1400,12 @@ pub fn show_pane(
     // Elements pane and the page.
     if let Some(rows) = &content.drawing_selection {
         any_control = true;
-        ui.label(egui::RichText::new("Selection").strong());
         // Each row carries the same icon the Elements pane uses for that element kind (#363).
         let icon_rows: Vec<(crate::icons::IconId, String)> = rows
             .iter()
             .map(|(_, element, label)| (drawing_element_icon(*element), label.clone()))
             .collect();
+        labeled_row_top(ui, egui::RichText::new("Selection").strong(), |ui| {
         ui.add_enabled_ui(controls_enabled, |ui| {
             if let Some(event) = crate::element_picker::show_rows(
                 ui,
@@ -1379,6 +1429,7 @@ pub fn show_pane(
                 }
             }
         });
+        });
     }
 
     // The Aligned-view tool's "Base view" picker (#365): the projection a new aligned view lines
@@ -1386,11 +1437,11 @@ pub fn show_pane(
     // projection (on the page or in the Elements pane). Always focused as a pick cue.
     if let Some(base) = &content.drawing_align {
         any_control = true;
-        ui.label(egui::RichText::new("Base view").strong());
         let rows: Vec<(crate::icons::IconId, String)> = base
             .iter()
             .map(|(_, label)| (crate::icons::IconId::Projection, label.clone()))
             .collect();
+        labeled_row_top(ui, egui::RichText::new("Base view").strong(), |ui| {
         ui.add_enabled_ui(controls_enabled, |ui| {
             if let Some(event) = crate::element_picker::show_rows(
                 ui,
@@ -1408,13 +1459,17 @@ pub fn show_pane(
                 }
             }
         });
+        });
     }
 
     if let Some(control) = &content.name {
         any_control = true;
-        ui.label(shortcuts::compact_label("Name", Some(shortcuts::FOCUS_ELEMENT_NAME)));
         let id = egui::Id::new(("element_name", control.element.clone()));
         let mut committed = false;
+        labeled_row(
+            ui,
+            shortcuts::compact_label("Name", Some(shortcuts::FOCUS_ELEMENT_NAME)),
+            |ui| {
         ui.add_enabled_ui(controls_enabled, |ui| {
             let output = TextEdit::singleline(&mut pane_state.name_draft)
                 .id(id)
@@ -1443,6 +1498,8 @@ pub fn show_pane(
                 }
             }
         });
+            },
+        );
         if committed {
             on_name_committed(control.element.clone(), pane_state.name_draft.clone());
         }
@@ -1559,7 +1616,7 @@ pub fn show_pane(
     for view in &content.tool_pickers {
         any_control = true;
         ui.separator();
-        ui.label(egui::RichText::new(view.heading).strong());
+        labeled_row_top(ui, egui::RichText::new(view.heading).strong(), |ui| {
         ui.add_enabled_ui(controls_enabled, |ui| {
             if let Some(event) = crate::element_picker::show(ui, &view.picker, doc, view.heading) {
                 match event {
@@ -1576,6 +1633,7 @@ pub fn show_pane(
                 }
             }
         });
+        });
     }
 
     if let Some(control) = &content.revolve {
@@ -1585,7 +1643,7 @@ pub fn show_pane(
 
         // Face element picker (#261): the picked profile faces, click one's ✕ to drop it. Faces
         // are still added by clicking them in the viewport.
-        ui.label("Profile");
+        labeled_row_top(ui, "Profile", |ui| {
         if let Some(event) = crate::element_picker::show_labeled(
             ui,
             "revolve_faces",
@@ -1604,11 +1662,12 @@ pub fn show_pane(
                 }
             }
         }
+        });
 
         // Axis element picker (#261): the picked edge/axis, click its ✕ to clear. Set it by
         // clicking a straight line or a global axis in the viewport.
-        ui.label("Axis");
         let axis_rows: Vec<String> = control.axis_label.iter().cloned().collect();
+        labeled_row_top(ui, "Axis", |ui| {
         if let Some(event) = crate::element_picker::show_labeled(
             ui,
             "revolve_axis",
@@ -1625,6 +1684,7 @@ pub fn show_pane(
                 }
             }
         }
+        });
 
         let mut symmetric = control.symmetric;
         if ui.checkbox(&mut symmetric, "Symmetric").changed() {
@@ -1756,8 +1816,7 @@ pub fn show_pane(
                              label: &str,
                              value: &str,
                              make: &dyn Fn(String) -> MoveEdit| {
-                ui.horizontal(|ui| {
-                    ui.label(label);
+                labeled_row(ui, label, |ui| {
                     let mut text = value.to_string();
                     let resp =
                         ui.add(egui::TextEdit::singleline(&mut text).desired_width(90.0));
@@ -1871,8 +1930,8 @@ pub fn show_pane(
         // Axis element picker (#257): shows the picked edge/axis. Set it by clicking a straight
         // line or a global axis in the viewport; the ✕ resets to the X axis. Quick X/Y/Z buttons
         // stay for the global axes (which are awkward to click).
-        ui.label("Axis");
         let axis_rows = vec![format!("Along {}", control.axis_label)];
+        labeled_row_top(ui, "Axis", |ui| {
         if let Some(event) = crate::element_picker::show_labeled(
             ui,
             "repeat_axis",
@@ -1899,6 +1958,7 @@ pub fn show_pane(
                 }
             }
         });
+        });
         // Count / gap / distance (#257): the user edits two, the third is computed and shown
         // read-only in its field. Gap and distance each have a picture toggle to switch how
         // they're measured.
@@ -1914,15 +1974,26 @@ pub fn show_pane(
                                make: &dyn Fn(String) -> RepeatEdit| {
                 let computed = control.computed_var == var;
                 ui.horizontal(|ui| {
-                    if let Some((icon, edit)) = toggle {
-                        // A clickable picture that toggles how this variable is measured (#257).
-                        if crate::icons::icon_button(ui, icon, "Click to toggle how this is measured")
-                            .clicked()
-                        {
-                            pending = Some(edit);
-                        }
-                    }
-                    ui.label(label);
+                    // Icon + label share the fixed label column (#371) so the inputs align.
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(FIELD_LABEL_W, 18.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            if let Some((icon, edit)) = toggle {
+                                // A clickable picture that toggles how this variable is measured (#257).
+                                if crate::icons::icon_button(
+                                    ui,
+                                    icon,
+                                    "Click to toggle how this is measured",
+                                )
+                                .clicked()
+                                {
+                                    pending = Some(edit);
+                                }
+                            }
+                            ui.label(label);
+                        },
+                    );
                     if computed {
                         let shown = control.computed_value.clone().unwrap_or_else(|| "—".to_string());
                         ui.add_enabled(
@@ -2019,12 +2090,21 @@ pub fn show_pane(
                            make: &dyn Fn(String) -> SketchRepeatEdit| {
             let computed = control.computed_var == var;
             ui.horizontal(|ui| {
-                if let Some((icon, edit)) = toggle {
-                    if crate::icons::icon_button(ui, icon, "Toggle how this is measured").clicked() {
-                        pending = Some(edit);
-                    }
-                }
-                ui.label(label);
+                // Icon + label share the fixed label column (#371) so the inputs align.
+                ui.allocate_ui_with_layout(
+                    egui::vec2(FIELD_LABEL_W, 18.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        if let Some((icon, edit)) = toggle {
+                            if crate::icons::icon_button(ui, icon, "Toggle how this is measured")
+                                .clicked()
+                            {
+                                pending = Some(edit);
+                            }
+                        }
+                        ui.label(label);
+                    },
+                );
                 if computed {
                     ui.label(egui::RichText::new("(auto)").color(egui::Color32::from_gray(130)).size(10.0));
                 } else {
@@ -2099,7 +2179,7 @@ pub fn show_pane(
         let mut pending: Option<SliceEdit> = None;
         // Two element pickers; the focused one is the side the next viewport click lands on
         // (clicking a picker makes it active, replacing the old Bodies/Cutters toggle).
-        ui.label(egui::RichText::new("Bodies").strong());
+        labeled_row_top(ui, egui::RichText::new("Bodies").strong(), |ui| {
         if let Some(event) = crate::element_picker::show_labeled(
             ui,
             "slice_targets",
@@ -2114,7 +2194,8 @@ pub fn show_pane(
                 crate::element_picker::PickerEvent::Clear => SliceEdit::RemoveTarget(None),
             });
         }
-        ui.label(egui::RichText::new("Cutters").strong());
+        });
+        labeled_row_top(ui, egui::RichText::new("Cutters").strong(), |ui| {
         if let Some(event) = crate::element_picker::show_labeled(
             ui,
             "slice_cutters",
@@ -2129,6 +2210,7 @@ pub fn show_pane(
                 crate::element_picker::PickerEvent::Clear => SliceEdit::RemoveCutter(None),
             });
         }
+        });
         let mut extend = control.extend_infinite;
         if ui
             .checkbox(&mut extend, "Extend cutters to infinity")
@@ -2162,7 +2244,7 @@ pub fn show_pane(
                 .strong(),
         );
         let mut pending: Option<SketchSliceEdit> = None;
-        ui.label(egui::RichText::new("Targets").strong());
+        labeled_row_top(ui, egui::RichText::new("Targets").strong(), |ui| {
         if let Some(event) = crate::element_picker::show_labeled(
             ui,
             "sketch_slice_targets",
@@ -2177,7 +2259,8 @@ pub fn show_pane(
                 | crate::element_picker::PickerEvent::Clear => SketchSliceEdit::ClearTargets,
             });
         }
-        ui.label(egui::RichText::new("Cutters").strong());
+        });
+        labeled_row_top(ui, egui::RichText::new("Cutters").strong(), |ui| {
         if let Some(event) = crate::element_picker::show_labeled(
             ui,
             "sketch_slice_cutters",
@@ -2192,6 +2275,7 @@ pub fn show_pane(
                 | crate::element_picker::PickerEvent::Clear => SketchSliceEdit::ClearCutters,
             });
         }
+        });
         if let Some(edit) = pending {
             on_sketch_slice_edit(edit);
         }
@@ -2211,7 +2295,6 @@ pub fn show_pane(
     if let Some(control) = &content.sketch_text {
         any_control = true;
         ui.separator();
-        ui.label(egui::RichText::new("Text").strong());
         let mut edit_text = control.text.clone();
         // {…} variable autocomplete (#338): handle Tab/arrows before the field, dropdown after.
         let text_id = ui.make_persistent_id("sketch_text_edit_field");
@@ -2223,12 +2306,14 @@ pub fn show_pane(
         {
             on_sketch_text_edit(SketchTextEdit::Text(edit_text.clone()));
         }
-        let text_resp = ui.add(
-            egui::TextEdit::multiline(&mut edit_text)
-                .id(text_id)
-                .desired_rows(2)
-                .desired_width(f32::INFINITY),
-        );
+        let text_resp = labeled_row_top(ui, "Text", |ui| {
+            ui.add(
+                egui::TextEdit::multiline(&mut edit_text)
+                    .id(text_id)
+                    .desired_rows(2)
+                    .desired_width(f32::INFINITY),
+            )
+        });
         if text_resp.changed() {
             on_sketch_text_edit(SketchTextEdit::Text(edit_text.clone()));
         }
@@ -2242,19 +2327,21 @@ pub fn show_pane(
             }
         }
         // Font family chooser.
-        egui::ComboBox::from_id_salt("sketch_text_font")
-            .selected_text(control.font_family.clone())
-            .show_ui(ui, |ui| {
-                for fam in &control.families {
-                    if ui
-                        .selectable_label(fam == &control.font_family, fam)
-                        .clicked()
-                    {
-                        on_sketch_text_edit(SketchTextEdit::Font(fam.clone()));
+        labeled_row(ui, "Font", |ui| {
+            egui::ComboBox::from_id_salt("sketch_text_font")
+                .selected_text(control.font_family.clone())
+                .show_ui(ui, |ui| {
+                    for fam in &control.families {
+                        if ui
+                            .selectable_label(fam == &control.font_family, fam)
+                            .clicked()
+                        {
+                            on_sketch_text_edit(SketchTextEdit::Font(fam.clone()));
+                        }
                     }
-                }
-            });
-        ui.horizontal(|ui| {
+                });
+        });
+        labeled_row(ui, "", |ui| {
             let mut bold = control.bold;
             if ui.selectable_label(bold, egui::RichText::new("B").strong()).clicked() {
                 bold = !bold;
@@ -2271,22 +2358,19 @@ pub fn show_pane(
                 on_sketch_text_edit(SketchTextEdit::Underline(underline));
             }
         });
-        ui.horizontal(|ui| {
-            ui.label("Size");
+        labeled_row(ui, "Size", |ui| {
             let mut size = control.size_expr.clone();
             if ui.add(egui::TextEdit::singleline(&mut size).desired_width(70.0)).changed() {
                 on_sketch_text_edit(SketchTextEdit::Size(size));
             }
         });
-        ui.horizontal(|ui| {
-            ui.label("Rotation°");
+        labeled_row(ui, "Rotation°", |ui| {
             let mut rot = control.rotation_deg.clone();
             if ui.add(egui::TextEdit::singleline(&mut rot).desired_width(70.0)).changed() {
                 on_sketch_text_edit(SketchTextEdit::Rotation(rot));
             }
         });
-        ui.horizontal(|ui| {
-            ui.label("Wrap width");
+        labeled_row(ui, "Wrap width", |ui| {
             let mut wrap = control.wrap.clone();
             if ui
                 .add(
@@ -2302,8 +2386,7 @@ pub fn show_pane(
         });
         // Position pin (#356/#359): pick an anchor and click a sketch vertex to pin the text; a
         // pinned text can be released.
-        ui.horizontal(|ui| {
-            ui.label("Pin");
+        labeled_row(ui, "Pin", |ui| {
             let anchor_id = egui::Id::new(("sketch_text_pin_anchor", control.index));
             let mut anchor = ui
                 .data(|d| d.get_temp::<crate::model::TextAnchor>(anchor_id))
@@ -2337,7 +2420,9 @@ pub fn show_pane(
         any_control = true;
         ui.separator();
         ui.label(egui::RichText::new("View").strong());
-        ui.label(&control.source);
+        labeled_row(ui, "Source", |ui| {
+            ui.label(&control.source);
+        });
         // An aligned child stays lined up with its base, but its **angle** can be adjusted within
         // the ring of orientations that keep the shared edge (#367). A child of an isometric
         // base has no such ring, so it stays read-only.
@@ -2388,17 +2473,18 @@ pub fn show_pane(
                 }
             }
         }
-        egui::ComboBox::from_id_salt("drawing_view_style")
-            .selected_text(control.style.label())
-            .show_ui(ui, |ui| {
-                for style in crate::model::DrawingViewStyle::ALL {
-                    if ui.selectable_label(control.style == style, style.label()).clicked() {
-                        on_drawing_view_edit(DrawingViewEdit::Style(style));
+        labeled_row(ui, "Style", |ui| {
+            egui::ComboBox::from_id_salt("drawing_view_style")
+                .selected_text(control.style.label())
+                .show_ui(ui, |ui| {
+                    for style in crate::model::DrawingViewStyle::ALL {
+                        if ui.selectable_label(control.style == style, style.label()).clicked() {
+                            on_drawing_view_edit(DrawingViewEdit::Style(style));
+                        }
                     }
-                }
-            });
-        ui.horizontal(|ui| {
-            ui.label("Scale");
+                });
+        });
+        labeled_row(ui, "Scale", |ui| {
             if control.aligned {
                 // An aligned child inherits the parent's scale and can't change it (#296/#300).
                 let shown = if control.scale.is_empty() { "auto (inherited)".to_string() } else { control.scale.clone() };
@@ -2432,52 +2518,60 @@ pub fn show_pane(
         });
         // Aligned children can draw dashed projection lines to their base view (#377).
         if control.aligned {
-            let mut lines = control.align_lines;
-            if ui.checkbox(&mut lines, "Projection lines").changed() {
-                on_drawing_view_edit(DrawingViewEdit::AlignLines(lines));
-            }
+            labeled_row(ui, "", |ui| {
+                let mut lines = control.align_lines;
+                if ui.checkbox(&mut lines, "Projection lines").changed() {
+                    on_drawing_view_edit(DrawingViewEdit::AlignLines(lines));
+                }
+            });
         }
         // Caption label (#372): show/hide, custom text (with {expr} interpolation like any
         // label, #338), and a 2×3 position grid for where it sits on the card.
-        ui.horizontal(|ui| {
+        labeled_row(ui, "Label", |ui| {
             let mut shown = !control.label_hidden;
-            if ui.checkbox(&mut shown, "Label").changed() {
+            if ui.checkbox(&mut shown, "").changed() {
                 on_drawing_view_edit(DrawingViewEdit::LabelHidden(!shown));
             }
         });
         if !control.label_hidden {
-            let mut label_draft = control.label_text.clone();
-            let resp = ui.add(
-                egui::TextEdit::singleline(&mut label_draft)
-                    .hint_text(control.auto_label.clone())
-                    .desired_width(f32::INFINITY),
-            );
-            if resp.changed() {
-                let trimmed = label_draft.trim();
-                on_drawing_view_edit(DrawingViewEdit::LabelText(
-                    (!trimmed.is_empty()).then(|| label_draft.clone()),
-                ));
-            }
-            egui::Grid::new("drawing_view_label_pos")
-                .spacing(egui::vec2(2.0, 2.0))
-                .show(ui, |ui| {
-                    for (i, pos) in crate::model::DrawingLabelPos::ALL.into_iter().enumerate() {
-                        let selected = control.label_pos == pos;
-                        if ui
-                            .add_sized(
-                                egui::vec2(22.0, 16.0),
-                                egui::Button::selectable(selected, "▪"),
-                            )
-                            .on_hover_text(pos.label())
-                            .clicked()
+            labeled_row(ui, "Text", |ui| {
+                let mut label_draft = control.label_text.clone();
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut label_draft)
+                        .hint_text(control.auto_label.clone())
+                        .desired_width(f32::INFINITY),
+                );
+                if resp.changed() {
+                    let trimmed = label_draft.trim();
+                    on_drawing_view_edit(DrawingViewEdit::LabelText(
+                        (!trimmed.is_empty()).then(|| label_draft.clone()),
+                    ));
+                }
+            });
+            labeled_row_top(ui, "Position", |ui| {
+                egui::Grid::new("drawing_view_label_pos")
+                    .spacing(egui::vec2(2.0, 2.0))
+                    .show(ui, |ui| {
+                        for (i, pos) in
+                            crate::model::DrawingLabelPos::ALL.into_iter().enumerate()
                         {
-                            on_drawing_view_edit(DrawingViewEdit::LabelPos(pos));
+                            let selected = control.label_pos == pos;
+                            if ui
+                                .add_sized(
+                                    egui::vec2(22.0, 16.0),
+                                    egui::Button::selectable(selected, "▪"),
+                                )
+                                .on_hover_text(pos.label())
+                                .clicked()
+                            {
+                                on_drawing_view_edit(DrawingViewEdit::LabelPos(pos));
+                            }
+                            if i == 2 {
+                                ui.end_row();
+                            }
                         }
-                        if i == 2 {
-                            ui.end_row();
-                        }
-                    }
-                });
+                    });
+            });
         }
         // Dimensions are off by default (#331); these flip the whole set on or off at once.
         ui.horizontal(|ui| {
@@ -2507,7 +2601,6 @@ pub fn show_pane(
     if let Some(control) = &content.drawing_annotation {
         any_control = true;
         ui.separator();
-        ui.label(egui::RichText::new("Text").strong());
         let mut edit_text = control.text.clone();
         // {…} variable autocomplete (#338): handle Tab/arrows before the field, dropdown after.
         let text_id = ui.make_persistent_id("drawing_annotation_edit_field");
@@ -2519,12 +2612,14 @@ pub fn show_pane(
         {
             on_drawing_annotation_edit(DrawingAnnotationEdit::Text(edit_text.clone()));
         }
-        let text_resp = ui.add(
-            egui::TextEdit::multiline(&mut edit_text)
-                .id(text_id)
-                .desired_rows(2)
-                .desired_width(f32::INFINITY),
-        );
+        let text_resp = labeled_row_top(ui, egui::RichText::new("Text").strong(), |ui| {
+            ui.add(
+                egui::TextEdit::multiline(&mut edit_text)
+                    .id(text_id)
+                    .desired_rows(2)
+                    .desired_width(f32::INFINITY),
+            )
+        });
         if text_resp.changed() {
             on_drawing_annotation_edit(DrawingAnnotationEdit::Text(edit_text.clone()));
         }
@@ -2619,7 +2714,7 @@ pub fn show_pane(
                 .color(egui::Color32::from_gray(140))
                 .size(11.0),
         );
-        ui.horizontal(|ui| {
+        labeled_row(ui, "Length", |ui| {
             ui.add(
                 TextEdit::singleline(&mut pane_state.calibrate_length_draft)
                     .desired_width(80.0)
@@ -2636,7 +2731,7 @@ pub fn show_pane(
     if let Some(picker) = &content.edge_picker {
         any_control = true;
         ui.separator();
-        ui.label(egui::RichText::new(picker.heading).strong());
+        labeled_row_top(ui, egui::RichText::new(picker.heading).strong(), |ui| {
         ui.add_enabled_ui(controls_enabled, |ui| {
             // The active tool's picker is focused (its viewport clicks feed this set).
             if let Some(event) = crate::element_picker::show_labeled(
@@ -2654,13 +2749,14 @@ pub fn show_pane(
                 }
             }
         });
+        });
     }
 
     if let Some(faces) = &content.extrude_faces {
         any_control = true;
         // Extrude face element picker (#268): the picked profile faces, each with a ✕ to drop
         // it. Faces are added by clicking them in the viewport.
-        ui.label("Faces");
+        labeled_row_top(ui, "Faces", |ui| {
         if let Some(event) = crate::element_picker::show_labeled(
             ui,
             "extrude_faces",
@@ -2675,12 +2771,13 @@ pub fn show_pane(
                 crate::element_picker::PickerEvent::Clear => on_extrude_face_remove(None),
             }
         }
+        });
     }
 
     if let Some(control) = &content.extrude_body {
         any_control = true;
-        ui.label("Extrude into");
         let mut mode = control.mode;
+        labeled_row_top(ui, "Extrude into", |ui| {
         ui.add_enabled_ui(controls_enabled, |ui| {
             extrude_body_mode_row(
                 ui,
@@ -2711,6 +2808,7 @@ pub fn show_pane(
                 );
             }
         });
+        });
         if mode != control.mode {
             on_extrude_body_mode_changed(mode);
         }
@@ -2725,8 +2823,7 @@ pub fn show_pane(
             "Default units"
         });
         ui.add_enabled_ui(controls_enabled, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Length");
+            labeled_row(ui, "Length", |ui| {
                 let follow_document_label =
                     format!("Follow document ({})", control.document_length.label());
                 let selected_text = match (control.sketch, control.length_override) {
@@ -2767,8 +2864,7 @@ pub fn show_pane(
                         }
                     });
             });
-            ui.horizontal(|ui| {
-                ui.label("Angle ");
+            labeled_row(ui, "Angle", |ui| {
                 let follow_document_label =
                     format!("Follow document ({})", control.document_angle.label());
                 let selected_text = match (control.sketch, control.angle_override) {
