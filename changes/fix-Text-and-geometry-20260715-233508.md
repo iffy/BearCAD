@@ -1,0 +1,1 @@
+Text and geometry sketched on a concave (inner) side wall of a non-convex profile no longer render mirrored: the wall's sketch frame now derives its outward normal from the profile's winding order. Existing sketches on such walls keep their (u, v) coordinates but the v axis flips, so their world position changes.

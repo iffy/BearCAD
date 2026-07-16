@@ -100,7 +100,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   Sketch tool starts a sketch on that face — its frame inherits the profile's in-plane axes,
   offset along the extrusion normal — and the geometry drawn there behaves exactly like any
   other sketch. Such a sketch (and anything built from it) nests under, and depends on, the
-  extrusion whose face it sits on. A solid cap occludes the datum plane behind it for picking.
+  extrusion whose face it sits on. A flat **side wall**'s frame runs u along its profile edge
+  and v up the extrusion, with the normal pointing **out of the solid** — derived from the
+  profile loop's winding order (not a centroid heuristic), so the frame stays right-handed as
+  seen from outside even on the concave inner walls of a non-convex (e.g. L-shaped) profile,
+  and text or geometry sketched there reads correctly rather than mirrored (#362). A solid cap
+  occludes the datum plane behind it for picking.
   When several faces project onto the cursor (e.g. the near and far faces of a solid), face
   picking resolves to the one nearest the camera, so a hover/click never selects a face hidden
   behind the body. Entering a sketch reorients the camera head-on to the face and orients the

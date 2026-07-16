@@ -98,12 +98,15 @@ shot("quickstart-bend.png")
 
 -- Step 6: two screw holes cut through the base flange, drilled from the inner
 -- face (edge 2 = the L2 side wall) — that's where the screw heads will sit.
+-- The side face's frame normal points out of the solid, so cutting into the
+-- flange is a negative distance (the GUI gesture "drag the handle into the
+-- bracket" produces the same sign).
 bearcad.begin_sketch{ kind = "extrude_side", extrusion = 0, profile = "polygon",
                       profile_lines = loop, edge = 2 }
-bearcad.circle{ x = 19, y = -10, r = 2.5 }
-bearcad.circle{ x = 19, y = -30, r = 2.5 }
+bearcad.circle{ x = 19, y = 10, r = 2.5 }
+bearcad.circle{ x = 19, y = 30, r = 2.5 }
 bearcad.exit_sketch()
-bearcad.extrude{ circles = {0, 1}, distance = 6, body = "cut" }
+bearcad.extrude{ circles = {0, 1}, distance = -6, body = "cut" }
 bearcad.ui.tool("dimension")
 bearcad.ui.view("corner", "front_left_top")
 shot("quickstart-holes.png")
@@ -128,7 +131,7 @@ bearcad.begin_sketch{ kind = "extrude_side", extrusion = 0, profile = "polygon",
                       profile_lines = loop, edge = 0 }
 bearcad.text{ text = "BearCAD", x = 6, y = 17, size = 5 }
 bearcad.exit_sketch()
-bearcad.extrude{ text = 0, distance = 1, body = "cut" }
+bearcad.extrude{ text = 0, distance = -1, body = "cut" }
 bearcad.clear_selection()
 bearcad.ui.view("corner", "front_right_bottom")
 shot("quickstart-engrave.png")

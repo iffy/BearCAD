@@ -117,21 +117,29 @@ pub fn sketch_frame(doc: &Document, face: FaceId) -> Option<SketchFrame> {
             edge,
         } => {
             let quad = crate::extrude::side_quad_world(doc, extrusion, &profile, edge as usize)?;
-            let (poly, _) = crate::extrude::face_profile_world(doc, &profile)?;
-            let centroid = poly.iter().fold(Vec3::ZERO, |acc, p| acc + *p) / poly.len() as f32;
-            let (a, b, a_top) = (quad[0], quad[1], quad[3]);
+            let (poly, plane_normal) = crate::extrude::face_profile_world(doc, &profile)?;
+            let (a, b) = (quad[0], quad[1]);
             let u_axis = (b - a).normalize_or_zero();
-            let up = (a_top - a).normalize_or_zero();
-            if u_axis.length_squared() < 1e-8 || up.length_squared() < 1e-8 {
+            if u_axis.length_squared() < 1e-8 {
                 return None;
             }
-            // Outward wall normal: perpendicular to the wall, pointing away from the solid.
-            let mut normal = u_axis.cross(up).normalize_or_zero();
+            // Outward wall normal, derived from the profile's winding: a loop winding CCW
+            // about the sketch normal keeps its interior to the left of each edge, so
+            // edge × normal points away from the solid (CW winding flips it). Unlike a
+            // centroid heuristic this is exact for non-convex profiles, whose centroid can
+            // sit on the wrong side of an inner edge — that made the frame left-handed as
+            // seen from outside, mirroring sketch content on concave walls (#362).
+            let mut normal = u_axis.cross(plane_normal).normalize_or_zero();
             if normal.length_squared() < 1e-8 {
                 return None;
             }
-            let edge_mid = (a + b) * 0.5;
-            if normal.dot(edge_mid - centroid) < 0.0 {
+            // Origin-independent polygon area vector (Σ pᵢ × pᵢ₊₁): along the sketch
+            // normal for a CCW loop, opposite for CW.
+            let mut area = Vec3::ZERO;
+            for i in 0..poly.len() {
+                area += poly[i].cross(poly[(i + 1) % poly.len()]);
+            }
+            if area.dot(plane_normal) < 0.0 {
                 normal = -normal;
             }
             // (u, v, normal) right-handed: v = normal × u keeps u × v == normal.
@@ -1276,6 +1284,183 @@ mod tests {
             Some(FaceId::Polygon(child_lines)),
             "clicking a sketch drawn on a solid's face must pick the sketch, not the bare face, got {face:?}"
         );
+    }
+
+    /// Push `vertices` as a closed loop of lines into `sketch` (with the coincident
+    /// constraints that make it a recognized loop), returning the line indices.
+    fn add_line_loop(doc: &mut Document, sketch: SketchId, vertices: &[(f32, f32)]) -> Vec<usize> {
+        use crate::model::{Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, LineEnd};
+        let base = doc.lines.len();
+        let n = vertices.len();
+        for i in 0..n {
+            let (u0, v0) = vertices[i];
+            let (u1, v1) = vertices[(i + 1) % n];
+            doc.lines
+                .push(Line::from_local_endpoints(sketch, u0, v0, u1, v1));
+        }
+        for i in 0..n {
+            doc.constraints.push(Constraint {
+                sketch,
+                kind: ConstraintKind::Coincident {
+                    a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                        line: base + i,
+                        end: LineEnd::End,
+                    }),
+                    b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                        line: base + (i + 1) % n,
+                        end: LineEnd::Start,
+                    }),
+                },
+                expression: String::new(),
+                dim_offset: None,
+                name: None,
+                deleted: false,
+            });
+        }
+        (base..doc.lines.len()).collect()
+    }
+
+    fn extrude_loop(doc: &mut Document, sketch: SketchId, lines: Vec<usize>) {
+        doc.extrusions.push(crate::model::Extrusion {
+            sketch,
+            faces: vec![crate::model::ExtrudeFace::Polygon(lines)],
+            distance: 10.0,
+            target: None,
+            expression: String::new(),
+            name: None,
+            deleted: false,
+            edge_treatments: Vec::new(),
+        });
+    }
+
+    /// Every side-wall frame's normal must point out of the solid and its (u, v, normal)
+    /// triad must be right-handed — checked by mapping the frame's outward offset back to
+    /// the profile plane and asserting it lands *outside* the profile polygon.
+    fn assert_side_frames_outward(doc: &Document, vertices: &[(f32, f32)], lines: &[usize]) {
+        let profile = crate::model::ExtrudeFace::Polygon(lines.to_vec());
+        for edge in 0..vertices.len() {
+            let frame = sketch_frame(
+                doc,
+                FaceId::ExtrudeSide {
+                    extrusion: 0,
+                    profile: profile.clone(),
+                    edge: edge as u8,
+                },
+            )
+            .unwrap_or_else(|| panic!("frame for edge {edge}"));
+            // Right-handed frame: u × v == normal.
+            assert!(
+                frame.u_axis.cross(frame.v_axis).dot(frame.normal) > 0.99,
+                "edge {edge}: (u, v, normal) must stay right-handed"
+            );
+            // Outward: nudging the wall midpoint along the normal exits the profile.
+            let (u0, v0) = vertices[edge];
+            let (u1, v1) = vertices[(edge + 1) % vertices.len()];
+            let mid = glam::Vec2::new((u0 + u1) * 0.5, (v0 + v1) * 0.5);
+            let plane = sketch_frame(doc, FaceId::ConstructionPlane(0)).unwrap();
+            let world_mid = local_to_world(&plane, mid.x, mid.y) + frame.normal * 0.1;
+            let (pu, pv) = world_to_local(&plane, world_mid);
+            assert!(
+                !point_in_polygon_2d((pu, pv), vertices),
+                "edge {edge}: normal {:?} points into the profile interior",
+                frame.normal
+            );
+        }
+    }
+
+    fn point_in_polygon_2d(p: (f32, f32), vertices: &[(f32, f32)]) -> bool {
+        let mut inside = false;
+        for i in 0..vertices.len() {
+            let a = vertices[i];
+            let b = vertices[(i + 1) % vertices.len()];
+            if (a.1 > p.1) != (b.1 > p.1)
+                && p.0 < (b.0 - a.0) * (p.1 - a.1) / (b.1 - a.1) + a.0
+            {
+                inside = !inside;
+            }
+        }
+        inside
+    }
+
+    /// #362: on a non-convex (L-shaped) profile the old centroid heuristic flipped the
+    /// frame of the inner walls (the two edges flanking the concave corner) inward,
+    /// making the frame left-handed seen from outside — sketch text on those walls
+    /// rendered mirrored. The winding-derived normal must point outward on every wall.
+    #[test]
+    fn concave_side_walls_get_outward_right_handed_frames() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        // CCW L-profile; the concave corner is at (10, 10).
+        let vertices = [
+            (0.0, 0.0),
+            (30.0, 0.0),
+            (30.0, 10.0),
+            (10.0, 10.0),
+            (10.0, 30.0),
+            (0.0, 30.0),
+        ];
+        let lines = add_line_loop(&mut doc, sketch, &vertices);
+        extrude_loop(&mut doc, sketch, lines.clone());
+        assert_side_frames_outward(&doc, &vertices, &lines);
+
+        // The two inner walls specifically: edge 2 (y = 10, material below) faces +Y and
+        // edge 3 (x = 10, material to the left) faces +X.
+        let profile = crate::model::ExtrudeFace::Polygon(lines);
+        let f2 = sketch_frame(
+            &doc,
+            FaceId::ExtrudeSide { extrusion: 0, profile: profile.clone(), edge: 2 },
+        )
+        .unwrap();
+        assert!(f2.normal.dot(Vec3::Y) > 0.99, "edge 2 outward is +Y, got {:?}", f2.normal);
+        let f3 = sketch_frame(
+            &doc,
+            FaceId::ExtrudeSide { extrusion: 0, profile, edge: 3 },
+        )
+        .unwrap();
+        assert!(f3.normal.dot(Vec3::X) > 0.99, "edge 3 outward is +X, got {:?}", f3.normal);
+    }
+
+    /// A clockwise-wound profile must get the same outward walls as a CCW one — the
+    /// winding sign feeds the normal derivation, not the result.
+    #[test]
+    fn clockwise_profiles_still_get_outward_side_frames() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let vertices = [(0.0, 0.0), (0.0, 20.0), (20.0, 20.0), (20.0, 0.0)];
+        let lines = add_line_loop(&mut doc, sketch, &vertices);
+        extrude_loop(&mut doc, sketch, lines.clone());
+        assert_side_frames_outward(&doc, &vertices, &lines);
+    }
+
+    /// Convex profiles keep the frames they always had (the box case): outward normals,
+    /// v-axis along the extrusion.
+    #[test]
+    fn convex_side_frames_unchanged_by_winding_derivation() {
+        let doc = doc_with_extruded_box();
+        let profile = crate::model::ExtrudeFace::Polygon(vec![0, 1, 2, 3]);
+        let expected = [-Vec3::Y, Vec3::X, Vec3::Y, -Vec3::X];
+        for edge in 0..4u8 {
+            let frame = sketch_frame(
+                &doc,
+                FaceId::ExtrudeSide {
+                    extrusion: 0,
+                    profile: profile.clone(),
+                    edge,
+                },
+            )
+            .unwrap();
+            assert!(
+                frame.normal.dot(expected[edge as usize]) > 0.99,
+                "edge {edge}: expected {:?}, got {:?}",
+                expected[edge as usize],
+                frame.normal
+            );
+            assert!(
+                frame.v_axis.dot(Vec3::Z) > 0.99,
+                "edge {edge}: v-axis should run up the extrusion, got {:?}",
+                frame.v_axis
+            );
+        }
     }
 
     #[test]
