@@ -161,6 +161,9 @@ impl Tool {
                 | Tool::Constraint
                 | Tool::Chamfer
                 | Tool::Fillet
+                // Text draws in sketches too (#383/#391): clicking a face with it begins a
+                // sketch and the tool must survive into it, like the other draw tools.
+                | Tool::Text
         )
     }
 }
@@ -9166,6 +9169,7 @@ label_hidden: false,
         self.status = match self.tool {
             Tool::Rectangle => format!("{name} — click to set corner"),
             Tool::Line => format!("{name} — click to set start"),
+            Tool::Text => format!("{name} — click to place text"),
             _ => format!("{name} — pick line or rectangle"),
         };
         ActionResult::Ok
@@ -10315,6 +10319,17 @@ mod tests {
     /// #218: while a body-gathering tool is active, clicking a body (Elements pane / `select`)
     /// toggles it into the tool's set instead of the persistent selection — you can pick bodies
     /// from the pane regardless of the viewport's sub-element picking.
+    /// #391: clicking a face with the Text tool begins a sketch and the tool must survive
+    /// into it (like Rectangle/Line/Circle) — it used to drop back to Select.
+    #[test]
+    fn begin_sketch_keeps_the_text_tool() {
+        let mut state = AppState::default();
+        state.apply(Action::SetTool(Tool::Text));
+        state.apply(Action::BeginSketch { face: FaceId::ConstructionPlane(0), viewport: None });
+        assert!(state.sketch_session.is_some());
+        assert_eq!(state.tool, Tool::Text, "the Text tool survives into the sketch");
+    }
+
     #[test]
     fn body_click_feeds_the_active_tool_set() {
         use crate::model::{ExtrudeFace, FaceId};
