@@ -9290,8 +9290,24 @@ impl App {
         let mut view_transforms: Vec<Option<(f32, egui::Vec2, egui::Pos2)>> =
             vec![None; views.len()];
         if let Some(page) = page_rect {
-            let cell_w = (page.width() * 0.42).clamp(120.0, 320.0);
-            let cell_h = (page.height() * 0.42).clamp(90.0, 260.0);
+            // WYSIWYG with the exports (#376): the card is exactly the export's page fraction
+            // (no pixel clamp) and text sizes scale with the on-screen page, so layout
+            // decisions — e.g. whether a dimension label fits along its line — match the PDF.
+            let cell_w = page.width() * 0.42;
+            let cell_h = page.height() * 0.42;
+            let px_per_pt = {
+                let page_w_mm = self
+                    .state
+                    .doc
+                    .drawings
+                    .get(drawing)
+                    .map(|d| d.page_width_mm)
+                    .unwrap_or(279.4)
+                    .max(1e-3);
+                page.width() / (page_w_mm * crate::drawing::PT_PER_MM)
+            };
+            // The export's 11 pt dimension/caption font, in on-screen pixels.
+            let dim_font = 11.0 * px_per_pt;
             let painter = ui.painter().clone();
             for (vi, view) in views.iter().enumerate() {
                 // Aligned children (#296) resolve their shared axis to the parent's.
@@ -9403,31 +9419,36 @@ impl App {
                         ),
                     };
                     use crate::model::DrawingLabelPos as LP;
-                    // Top-right dodges the Remove ✕ in the card's corner.
+                    // Mirror the export's anchors (#376): x insets of CELL_PAD, a top row
+                    // whose baseline sits 20 pt into the card and a bottom row 8 pt off its
+                    // edge — all scaled to on-screen pixels. egui anchors by the text box, so
+                    // the baselines are approximated with the font's ascent/descent.
+                    let pad = crate::drawing::CELL_PAD * px_per_pt;
+                    let top_y = cell.min.y + (20.0 - 0.8 * 11.0) * px_per_pt;
+                    let bottom_y = cell.max.y - (8.0 - 0.2 * 11.0) * px_per_pt;
                     let (pos, align) = match view.label_pos {
-                        LP::TopLeft => (cell.min + egui::vec2(8.0, 6.0), egui::Align2::LEFT_TOP),
-                        LP::TopCenter => (
-                            egui::pos2(cell.center().x, cell.min.y + 6.0),
-                            egui::Align2::CENTER_TOP,
-                        ),
-                        LP::TopRight => (
-                            egui::pos2(cell.max.x - 28.0, cell.min.y + 6.0),
-                            egui::Align2::RIGHT_TOP,
-                        ),
-                        LP::BottomLeft => (
-                            egui::pos2(cell.min.x + 8.0, cell.max.y - 6.0),
-                            egui::Align2::LEFT_BOTTOM,
-                        ),
+                        LP::TopLeft => {
+                            (egui::pos2(cell.min.x + pad, top_y), egui::Align2::LEFT_TOP)
+                        }
+                        LP::TopCenter => {
+                            (egui::pos2(cell.center().x, top_y), egui::Align2::CENTER_TOP)
+                        }
+                        LP::TopRight => {
+                            (egui::pos2(cell.max.x - pad, top_y), egui::Align2::RIGHT_TOP)
+                        }
+                        LP::BottomLeft => {
+                            (egui::pos2(cell.min.x + pad, bottom_y), egui::Align2::LEFT_BOTTOM)
+                        }
                         LP::BottomCenter => (
-                            egui::pos2(cell.center().x, cell.max.y - 6.0),
+                            egui::pos2(cell.center().x, bottom_y),
                             egui::Align2::CENTER_BOTTOM,
                         ),
                         LP::BottomRight => (
-                            egui::pos2(cell.max.x - 8.0, cell.max.y - 6.0),
+                            egui::pos2(cell.max.x - pad, bottom_y),
                             egui::Align2::RIGHT_BOTTOM,
                         ),
                     };
-                    painter.text(pos, align, caption, egui::FontId::proportional(12.0), INK);
+                    painter.text(pos, align, caption, egui::FontId::proportional(dim_font), INK);
                 }
                 // Remove button in the cell's top-right corner.
                 let x_rect = egui::Rect::from_min_size(
@@ -9446,11 +9467,15 @@ impl App {
                 {
                     remove_view = Some(vi);
                 }
-                // Project the body's feature edges into the cell (below the caption).
-                let draw_area = egui::Rect::from_min_max(
-                    cell.min + egui::vec2(10.0, 26.0),
-                    cell.max - egui::vec2(10.0, 10.0),
-                );
+                // Project the body's feature edges into the cell (below the caption strip),
+                // padded exactly like the export (#376) so auto-fit scales match.
+                let draw_area = {
+                    let pad = crate::drawing::CELL_PAD * px_per_pt;
+                    egui::Rect::from_min_max(
+                        cell.min + egui::vec2(pad, 26.0 * px_per_pt + pad),
+                        cell.max - egui::vec2(pad, pad),
+                    )
+                };
                 // Aligned children render with their unfolded (rotated) basis (#351).
                 let (right, up) = crate::drawing::resolved_view_axes(&views, view);
                 let project = |p: Vec3| egui::vec2(p.dot(right), p.dot(up));
@@ -9720,7 +9745,7 @@ impl App {
                 // A rotated label drawn centred at a screen point (#314/#320).
                 let draw_rot_label = |painter: &egui::Painter, text: String, at: egui::Pos2, ang: f32| {
                     let galley =
-                        painter.layout_no_wrap(text, egui::FontId::proportional(11.0), INK);
+                        painter.layout_no_wrap(text, egui::FontId::proportional(dim_font), INK);
                     let rot = egui::emath::Rot2::from_angle(ang);
                     let pos = at - rot * (galley.size() * 0.5);
                     let mut shape = egui::epaint::TextShape::new(pos, galley, INK);
@@ -9803,8 +9828,8 @@ impl App {
                                 glam::Vec2::new(sla.x, sla.y),
                                 glam::Vec2::new(slb.x, slb.y),
                                 glam::Vec2::new(out_screen.x, out_screen.y),
-                                crate::drawing::text_device_width(11.0, &label),
-                                5.0,
+                                crate::drawing::text_device_width(dim_font, &label),
+                                5.0 * px_per_pt,
                             );
                             draw_rot_label(&painter, label, egui::pos2(lp.x, lp.y), ang);
                         }
@@ -9886,13 +9911,13 @@ impl App {
                             glam::Vec2::new(sla.x, sla.y),
                             glam::Vec2::new(slb.x, slb.y),
                             glam::Vec2::new(out_screen.x, out_screen.y),
-                            crate::drawing::text_device_width(11.0, &label_text),
-                            5.0,
+                            crate::drawing::text_device_width(dim_font, &label_text),
+                            5.0 * px_per_pt,
                         );
                         let label_screen = egui::pos2(lp.x, lp.y);
                         let galley = painter.layout_no_wrap(
                             label_text,
-                            egui::FontId::proportional(11.0),
+                            egui::FontId::proportional(dim_font),
                             INK,
                         );
                         // TextShape rotates about its top-left `pos`; offset so the label's
@@ -10006,10 +10031,10 @@ impl App {
                     });
                     let sp = to_screen(project(anchor));
                     painter.text(
-                        sp + egui::vec2(0.0, -12.0),
+                        sp + egui::vec2(0.0, -12.0 * px_per_pt),
                         egui::Align2::CENTER_CENTER,
                         format!("{angle:.0}°"),
-                        egui::FontId::proportional(11.0),
+                        egui::FontId::proportional(12.0 * px_per_pt),
                         INK,
                     );
                 }
@@ -10204,8 +10229,8 @@ impl App {
                 if !parent_ok {
                     self.drawing_align_parent = None;
                 } else {
-                    let cell_w = (page.width() * 0.42).clamp(120.0, 320.0);
-                    let cell_h = (page.height() * 0.42).clamp(90.0, 260.0);
+                    let cell_w = page.width() * 0.42;
+                    let cell_h = page.height() * 0.42;
                     let (rpx, rpy) =
                         crate::drawing::resolved_view_pos(&self.state.doc, drawing, p);
                     let pcenter =

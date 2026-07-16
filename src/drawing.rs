@@ -468,14 +468,29 @@ pub fn classify_world_circles(edges: &[(Vec3, Vec3)]) -> Vec<WorldCircle> {
         if max_dev > mean_r * 0.06 {
             continue;
         }
-        // Plane normal from the summed fan cross products (consistent for a planar loop).
+        // Plane normal from the strongest pair of centre-relative spokes — order-free, since
+        // `comp_verts` is in vertex-index order (not loop order), and the index assignment
+        // follows the caller's edge order. The sign is then **canonicalized** (#376): a rim's
+        // facing is meaningless for rendering, but it decides which end of an edge-on
+        // diameter line the label hangs past, and the editor and export each rebuild this
+        // from their own pass — an arbitrary sign made the label jump sides between them.
+        let spoke0 = verts[comp_verts[0]] - center;
         let mut normal = Vec3::ZERO;
-        for w in comp_verts.windows(2) {
-            normal += (verts[w[0]] - center).cross(verts[w[1]] - center);
+        for &v in &comp_verts[1..] {
+            let cand = spoke0.cross(verts[v] - center);
+            if cand.length_squared() > normal.length_squared() {
+                normal = cand;
+            }
         }
-        let normal = normal.normalize_or_zero();
+        let mut normal = normal.normalize_or_zero();
         if normal == Vec3::ZERO {
             continue;
+        }
+        let flip = normal.z < -1e-6
+            || (normal.z.abs() <= 1e-6
+                && (normal.y < -1e-6 || (normal.y.abs() <= 1e-6 && normal.x < 0.0)));
+        if flip {
+            normal = -normal;
         }
         // Require coplanarity (all vertices near the plane).
         let coplanar = comp_verts
@@ -533,12 +548,12 @@ pub fn projected_segment_on_circle(a: glam::Vec2, b: glam::Vec2, pcs: &[Projecte
 
 /// PDF points per millimetre (1 pt = 1/72 in): exports are sized in points so the PDF page
 /// physically matches the drawing's configured mm page (#298).
-const PT_PER_MM: f32 = 72.0 / 25.4;
+pub const PT_PER_MM: f32 = 72.0 / 25.4;
 /// A placed view card's size as a fraction of the page — the same 0.42 the editor uses, so the
 /// export lays out where the editor showed it (#297).
 const CELL_FRAC: f32 = 0.42;
 /// Padding inside a view card between its border and the projected geometry.
-const CELL_PAD: f32 = 12.0;
+pub const CELL_PAD: f32 = 12.0;
 
 /// Stroke width for the model's projected edges and detected circles (#327). Kept clearly
 /// heavier than the dimension/extension lines so the part outline reads as the primary geometry.
@@ -2157,6 +2172,40 @@ label_hidden: false,
         let doc = Document::default();
         assert!(drawing_to_svg(&doc, 0).is_none());
         assert!(drawing_to_pdf(&doc, 0).is_none());
+    }
+
+    /// #376: a detected circle's normal must not depend on the edge order it was fed in —
+    /// the sign picks which end of an edge-on diameter line the label hangs past, and the
+    /// editor and export each classify from their own (differently ordered) edge pass.
+    #[test]
+    fn world_circle_normal_is_canonical_regardless_of_edge_order() {
+        let n = 32;
+        let c = Vec3::new(5.0, 3.0, 0.0);
+        let pts: Vec<Vec3> = (0..n)
+            .map(|i| {
+                let a = std::f32::consts::TAU * i as f32 / n as f32;
+                c + Vec3::new(a.cos(), a.sin(), 0.0) * 10.0
+            })
+            .collect();
+        let forward: Vec<(Vec3, Vec3)> = (0..n).map(|i| (pts[i], pts[(i + 1) % n])).collect();
+        // The same loop traversed backwards, starting elsewhere, with each edge reversed.
+        let scrambled: Vec<(Vec3, Vec3)> = (0..n)
+            .map(|i| {
+                let j = (n + 7 - i) % n;
+                (pts[(j + 1) % n], pts[j])
+            })
+            .collect();
+        let a = classify_world_circles(&forward);
+        let b = classify_world_circles(&scrambled);
+        assert_eq!(a.len(), 1);
+        assert_eq!(b.len(), 1);
+        assert!(
+            (a[0].normal - b[0].normal).length() < 1e-4,
+            "same circle, same normal: {:?} vs {:?}",
+            a[0].normal,
+            b[0].normal
+        );
+        assert!(a[0].normal.z > 0.99, "canonical sign points +Z, got {:?}", a[0].normal);
     }
 
     /// #372: the caption label is toggleable, positionable, and its text overridable — a

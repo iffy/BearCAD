@@ -1235,7 +1235,15 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   affordance for selecting and dragging a view. Exports are **WYSIWYG**
   (#297): each view lands at its placed page position, and the exported page **is the
   drawing's configured page** (#298) — the PDF MediaBox is `page_width_mm × page_height_mm`
-  in points, landscape US-Letter (792 × 612 pt) by default. Both backends share the same
+  in points, landscape US-Letter (792 × 612 pt) by default. The editor lays out
+  **proportionally to the export** (#376): cards are the exact page fraction (no pixel
+  clamp), card padding and text sizes scale with the on-screen page (11 pt dimension/caption
+  text mapped through the page's px-per-point), and the same width estimate drives the
+  "does the label fit along its line" decision — so a dimension label that runs along its
+  line in the editor does in the PDF too. A detected circle's plane normal is
+  **sign-canonicalized** in `classify_world_circles`, since an arbitrary sign flipped which
+  end of an edge-on diameter line the label hung past between the editor's and the export's
+  own classification passes. Both backends share the same
   layout through a `Canvas` trait in `src/drawing.rs`; the PDF is hand-rolled (no dependency),
   so it works identically on native and web (download in the browser). Export is a single
   **Export icon** in the drawing workbench toolbar (#348) whose popup picks **SVG** or **PDF**.

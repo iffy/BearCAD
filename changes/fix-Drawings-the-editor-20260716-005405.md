@@ -1,0 +1,1 @@
+Drawings: the editor now lays out proportionally to the PDF/SVG export — matching card sizes, padding, and text scaling — so dimension-label placement (like whether a label fits along its line) is identical on screen and in the export. Detected circles' plane normals are sign-canonicalized so edge-on diameter labels sit at the same end in both.
