@@ -1294,6 +1294,10 @@ pub struct ElementFilter {
     pub operations: bool,
     pub images: bool,
     pub drawings: bool,
+    /// A drawing's **components** — its projections, text notes, and dimensions — separately
+    /// from the drawing rows themselves (#381): page details are noise while modeling, so
+    /// the Model workbench hides them by default (the Drawing workbench shows them).
+    pub drawing_components: bool,
 }
 
 impl Default for ElementFilter {
@@ -1306,6 +1310,7 @@ impl Default for ElementFilter {
             operations: true,
             images: true,
             drawings: true,
+            drawing_components: false,
         }
     }
 }
@@ -1323,11 +1328,12 @@ impl ElementFilter {
             operations: false,
             images: false,
             drawings: true,
+            drawing_components: true,
         }
     }
 
     /// The toggles in display order: `(label, &mut enabled)` pairs the filter UI iterates.
-    pub fn rows(&mut self) -> [(&'static str, &mut bool); 7] {
+    pub fn rows(&mut self) -> [(&'static str, &mut bool); 8] {
         [
             ("Planes", &mut self.planes),
             ("Sketches", &mut self.sketches),
@@ -1336,6 +1342,7 @@ impl ElementFilter {
             ("Operations", &mut self.operations),
             ("Images", &mut self.images),
             ("Drawings", &mut self.drawings),
+            ("Drawing components", &mut self.drawing_components),
         ]
     }
 
@@ -1361,10 +1368,12 @@ impl ElementFilter {
             | HierarchyNode::Revolution(_)
             | HierarchyNode::Loft(_) => self.operations,
             HierarchyNode::Image(_) => self.images,
-            HierarchyNode::Drawing(_)
-            | HierarchyNode::DrawingProjection { .. }
+            HierarchyNode::Drawing(_) => self.drawings,
+            HierarchyNode::DrawingProjection { .. }
             | HierarchyNode::DrawingAnnotation { .. }
-            | HierarchyNode::DrawingDimension { .. } => self.drawings,
+            | HierarchyNode::DrawingDimension { .. } => {
+                self.drawings && self.drawing_components
+            }
         }
     }
 }
@@ -3182,6 +3191,25 @@ label_hidden: false,
         assert!(f.shows(HierarchyNode::DrawingAnnotation { drawing: 0, annotation: 0 }));
         assert!(!f.shows(HierarchyNode::ConstructionPlane(0)));
         assert!(!f.shows(HierarchyNode::Extrusion(0)));
+    }
+
+    /// #381: the Model workbench default keeps drawing rows but hides their **components**
+    /// (projections, notes, dimensions) — page details are noise while modeling. The
+    /// "Drawing components" toggle brings them back.
+    #[test]
+    fn model_workbench_default_hides_drawing_components() {
+        let f = ElementFilter::default();
+        assert!(f.shows(HierarchyNode::Drawing(0)), "the drawing row itself stays");
+        assert!(!f.shows(HierarchyNode::DrawingProjection { drawing: 0, view: 0 }));
+        assert!(!f.shows(HierarchyNode::DrawingAnnotation { drawing: 0, annotation: 0 }));
+        assert!(!f.shows(HierarchyNode::DrawingDimension {
+            drawing: 0,
+            view: 0,
+            a: [0; 3],
+            b: [0; 3]
+        }));
+        let f = ElementFilter { drawing_components: true, ..ElementFilter::default() };
+        assert!(f.shows(HierarchyNode::DrawingProjection { drawing: 0, view: 0 }));
     }
 
     #[test]

@@ -1113,10 +1113,12 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   `"top-left"`…`"bottom-right"`; `text = ""` resets to automatic).
 - **Elements-pane filter (#254/#275):** a **Filter** button (funnel icon, #291) at the bottom
   of the Elements pane expands into per-type show/hide toggles (planes, sketches, sketch geometry, bodies,
-  operations, images, drawings). Hiding a type prunes those nodes but promotes their kept
+  operations, images, drawings, **drawing components** #381). Hiding a type prunes those nodes but promotes their kept
   children (hiding "Operations" still shows the result bodies, un-nested). The Drawing
   workbench defaults the filter to sketches + bodies + **drawings** (#333), so the open drawing's
-  **projections, text notes, and dimensions** appear in the pane. Each drawing's text notes are
+  **projections, text notes, and dimensions** appear in the pane. In the **Model** workbench
+  those drawing components are hidden by default (#381) — the drawing rows themselves stay,
+  and the "Drawing components" toggle brings the page details back. Each drawing's text notes are
   `HierarchyNode::DrawingAnnotation` children (Text icon) alongside its `DrawingProjection`
   children, and each projection's shown dimensions are `DrawingDimension` children nested under it
   (Dimension icon, labelled by their length, #341); all are display-only leaves whose row click
