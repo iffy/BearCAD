@@ -3678,12 +3678,20 @@ impl ScriptRunner {
             }
             Instruction::AddDistanceConstraint { target, expression } => {
                 if let Some(session) = state.sketch_session {
-                    let _ = add_distance_constraint(
+                    match add_distance_constraint(
                         &mut state.doc,
                         session.sketch,
                         target,
-                        expression,
-                    );
+                        expression.clone(),
+                    ) {
+                        Ok(_) => {
+                            state.status = format!("Added dimension ({expression})");
+                        }
+                        Err(e) => {
+                            state.status = e.clone();
+                            self.record_action_error(crate::actions::ActionResult::Err(e));
+                        }
+                    }
                 }
                 StepResult::Continue
             }
@@ -4359,6 +4367,46 @@ mod tests {
             }
         }
         panic!("REPL never handed the prompt back");
+    }
+
+    /// #404: `add_constraint` sets a status of its own (it used to leave the previous
+    /// message lingering), and a creation call's `name=` doesn't clobber the creation
+    /// status with "Renamed to …".
+    #[test]
+    fn scripted_calls_leave_an_accurate_status() {
+        let (mut runner, lines_tx, ready_rx) = repl_session();
+        let mut state = AppState::default();
+        let mut synthetic = SyntheticInput::default();
+        let ctx = egui::Context::default();
+
+        lines_tx
+            .send("bearcad.rect{ width = 40, height = 20 }\n".to_string())
+            .unwrap();
+        drive_to_prompt(&mut runner, &mut state, &mut synthetic, &ctx, &ready_rx);
+        lines_tx
+            .send("bearcad.line{ x = 0, y = 30, x1 = 25, y1 = 30 }\n".to_string())
+            .unwrap();
+        drive_to_prompt(&mut runner, &mut state, &mut synthetic, &ctx, &ready_rx);
+        lines_tx
+            .send("bearcad.add_constraint({ kind = \"line\", index = 4 }, \"25mm\")\n".to_string())
+            .unwrap();
+        drive_to_prompt(&mut runner, &mut state, &mut synthetic, &ctx, &ready_rx);
+        assert_eq!(state.status, "Added dimension (25mm)");
+
+        lines_tx
+            .send(
+                "bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 12, name = \"Base\" }\n"
+                    .to_string(),
+            )
+            .unwrap();
+        drive_to_prompt(&mut runner, &mut state, &mut synthetic, &ctx, &ready_rx);
+        assert_eq!(state.doc.extrusions.len(), 1);
+        assert_eq!(state.doc.extrusions[0].name.as_deref(), Some("Base"));
+        assert!(
+            state.status.starts_with("Added extrusion ("),
+            "name= must not clobber the creation status, got: {}",
+            state.status
+        );
     }
 
     #[test]

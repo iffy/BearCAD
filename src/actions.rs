@@ -6184,12 +6184,17 @@ impl AppState {
                     ExtrudeBodyMode::Cut(bi) => self.resolve_cut_direction(&mut ext, bi),
                     _ => None,
                 };
-                let distance = ext.distance;
                 self.doc.extrusions.push(ext);
                 self.doc.shape_order.push(ShapeKind::Extrusion);
                 let extrusion_index = self.doc.extrusions.len() - 1;
                 self.attach_new_extrusion_to_body(extrusion_index, body_mode);
                 self.refresh_document_health();
+                // A target-snapped extrusion stores a placeholder distance; report the
+                // depth the target actually resolves to (#404).
+                let distance = crate::extrude::effective_distance(
+                    &self.doc,
+                    &self.doc.extrusions[extrusion_index],
+                );
                 self.status = match cut_note {
                     Some(note) => note.to_string(),
                     None => format!(
@@ -6513,11 +6518,13 @@ impl AppState {
                         ExtrudeBodyMode::Cut(bi) => self.resolve_cut_direction(&mut ext, bi),
                         _ => None,
                     };
-                    let distance = ext.distance;
                     self.doc.extrusions.push(ext);
                     self.doc.shape_order.push(ShapeKind::Extrusion);
                     let ei = self.doc.extrusions.len() - 1;
                     self.attach_new_extrusion_to_body(ei, ce.body_mode);
+                    // Report the target-resolved depth, not the stored placeholder (#404).
+                    let distance =
+                        crate::extrude::effective_distance(&self.doc, &self.doc.extrusions[ei]);
                     self.status = match cut_note {
                         Some(note) => note.to_string(),
                         None => format!(
@@ -10358,6 +10365,41 @@ mod tests {
         state.apply(Action::BeginSketch { face: FaceId::ConstructionPlane(0), viewport: None });
         assert!(state.sketch_session.is_some());
         assert_eq!(state.tool, Tool::Text, "the Text tool survives into the sketch");
+    }
+
+    /// #404: an extrusion snapped to a target must report the depth the target
+    /// resolves to, not the stored placeholder distance ("Added extrusion (0 mm)").
+    #[test]
+    fn target_snapped_extrusion_status_reports_resolved_depth() {
+        use crate::model::{ExtrudeFace, ExtrudeTarget, FaceId};
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch { face: FaceId::ConstructionPlane(0), viewport: None });
+        let sketch = state.sketch_session.unwrap().sketch;
+        let lines = crate::construction::add_line_rectangle(
+            &mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4],
+        );
+        state
+            .doc
+            .construction_planes
+            .push(crate::construction::plane_from_face(7.0, Vec3::ZERO, glam::Vec3::Z));
+        state.apply(Action::CreateExtrusion {
+            sketch,
+            faces: vec![ExtrudeFace::Polygon(lines.to_vec())],
+            distance: 0.0,
+            body: ExtrudeBodyChoice::New,
+            target: Some(ExtrudeTarget::Plane(1)),
+        });
+        assert_eq!(state.doc.extrusions.len(), 1, "extrude failed: {}", state.status);
+        assert_eq!(
+            state.status,
+            format!(
+                "Added extrusion ({})",
+                crate::value::format_length_display_in(
+                    7.0,
+                    crate::model::effective_length_unit(&state.doc, sketch)
+                )
+            )
+        );
     }
 
     #[test]

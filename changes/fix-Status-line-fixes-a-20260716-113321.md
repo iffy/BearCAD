@@ -1,0 +1,1 @@
+Status-line fixes: a scripted creation call's name= no longer overwrites the creation status with 'Renamed to …'; a target-snapped extrusion reports the resolved depth instead of '(0 mm)'; add_constraint sets its own status and raises errors (e.g. duplicate constraint) instead of silently doing nothing.

@@ -778,7 +778,12 @@ fn apply_optional_name(
     let tick = lua
         .app_data_ref::<ScriptTickData>()
         .ok_or_else(|| mlua::Error::external("script tick context missing"))?;
-    unsafe { tick.exec(Instruction::SetElementName { element, name }) }
+    // The rename rides along on a creation call: keep the creation's status
+    // ("Added extrusion (12.0 mm)") instead of clobbering it with "Renamed to …".
+    let creation_status = unsafe { tick.state().status.clone() };
+    unsafe { tick.exec(Instruction::SetElementName { element, name })? };
+    unsafe { tick.state().status = creation_status };
+    Ok(())
 }
 
 /// Register the global `bearcad` API table on a Lua state.
