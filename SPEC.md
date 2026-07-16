@@ -1454,8 +1454,11 @@ modeled on SolveSpace (https://solvespace.com).
 - **Element picker for the Select tool (#202/#213):** while the Select tool is active the
   context pane shows the unified **element picker** — a focusable, combo-box-style input that
   is the single, consistent way every tool gathers the elements it operates on. Collapsed it
-  reads like a text input: a "Nothing selected" placeholder when empty, otherwise a compact
-  `N ⟨icon⟩` summary per element kind (e.g. `2 ⟨line⟩ · 1 ⟨body⟩`). Clicking it opens a popup
+  reads like a text input: a **generic empty state** (#388) — the count (`0`, or `0/1` for a
+  single-select picker) beside dimmed icons of the element kinds this picker can take (no
+  per-tool placeholder prose) — otherwise a compact
+  `N ⟨icon⟩` summary per element kind (e.g. `2 ⟨line⟩ · 1 ⟨body⟩`; a single-select picker
+  reads `1/1`). Clicking it opens a popup
   listing each picked element (kind icon + name) with a per-row remove button and a clear-all.
   The Select tool's instance is configured to accept **every** element kind and is
   **always shown and always focused** (it never blurs). Suppressed only while a draw

@@ -590,8 +590,6 @@ pub struct ContextPaneContent {
 pub struct EdgePickerControl {
     /// Set-count heading, e.g. "Edges" or "Sections".
     pub heading: &'static str,
-    /// Hint shown while the set is empty (the picker's placeholder).
-    pub hint: &'static str,
     /// Icon shown for every row/summary chip (these sets are single-kind).
     pub icon: crate::icons::IconId,
     pub rows: Vec<String>,
@@ -729,8 +727,7 @@ fn selection_picker_for(tool: Tool, selection: &SceneSelection) -> Option<Elemen
                     ElementKind::Edge,
                 ]),
                 PickLimit::Infinite,
-            )
-            .with_placeholder("Pick geometry to constrain");
+            );
             p.set_focused(true);
             p
         }
@@ -749,12 +746,11 @@ fn body_tool_picker(
     heading: &'static str,
     target: PickerTarget,
     bodies: &[usize],
-    placeholder: &str,
     selected_color: Option<eframe::egui::Color32>,
     focused: bool,
 ) -> ToolPickerView {
-    let mut picker = ElementPicker::new(ElementFilter::kind(ElementKind::Body), PickLimit::Infinite)
-        .with_placeholder(placeholder.to_string());
+    let mut picker =
+        ElementPicker::new(ElementFilter::kind(ElementKind::Body), PickLimit::Infinite);
     if let Some(color) = selected_color {
         picker = picker.with_selected_color(color);
     }
@@ -793,14 +789,12 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         .clone()
         .map(|rows| EdgePickerControl {
             heading: "Edges",
-            hint: "Click an edge — Shift+click adds more",
             icon: crate::icons::IconId::Line,
             rows,
         })
         .or_else(|| {
             input.loft_rows.clone().map(|rows| EdgePickerControl {
                 heading: "Sections",
-                hint: "Click a closed profile (circle or loop)",
                 icon: crate::icons::IconId::Circle,
                 rows,
             })
@@ -828,8 +822,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
                 "Cut bodies",
                 PickerTarget::RevolveCut,
                 &r.cut_bodies,
-                "Click a body to cut",
-                Some(crate::theme::CUT_ACCENT),
+                    Some(crate::theme::CUT_ACCENT),
                 true,
             ));
         }
@@ -839,7 +832,6 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             "Bodies",
             PickerTarget::MoveTargets,
             &m.targets,
-            "Click bodies in the viewport",
             None,
             true,
         ));
@@ -849,7 +841,6 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             "Bodies",
             PickerTarget::RepeatTargets,
             &r.targets,
-            "Click bodies in the viewport",
             None,
             true,
         ));
@@ -863,7 +854,6 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             if two_sided { "Side A" } else { "Bodies" },
             PickerTarget::CombineA,
             &b.a,
-            "Click bodies in the viewport",
             None,
             !b.picking_b,
         ));
@@ -872,8 +862,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
                 "Side B",
                 PickerTarget::CombineB,
                 &b.b,
-                "Click bodies in the viewport",
-                (b.kind == crate::model::BooleanOpKind::Cut).then_some(crate::theme::CUT_ACCENT),
+                    (b.kind == crate::model::BooleanOpKind::Cut).then_some(crate::theme::CUT_ACCENT),
                 b.picking_b,
             ));
         }
@@ -1452,7 +1441,12 @@ pub fn show_pane(
                 ui,
                 "drawing_selection_picker",
                 true,
-                "Nothing selected",
+                &[
+                    crate::icons::IconId::Projection,
+                    crate::icons::IconId::Text,
+                    crate::icons::IconId::Dimension,
+                ],
+                false,
                 &icon_rows,
             ) {
                 match event {
@@ -1488,7 +1482,8 @@ pub fn show_pane(
                 ui,
                 "drawing_align_base_picker",
                 true,
-                "Click a projection to align to",
+                &[crate::icons::IconId::Projection],
+                true,
                 &rows,
             ) {
                 if matches!(
@@ -1689,7 +1684,7 @@ pub fn show_pane(
             ui,
             "revolve_faces",
             !control.axis_focused,
-            "Click a profile face",
+            false,
             crate::icons::IconId::Sketch,
             &control.face_rows,
         ) {
@@ -1713,7 +1708,7 @@ pub fn show_pane(
             ui,
             "revolve_axis",
             control.axis_focused,
-            "Click an axis line",
+            true,
             crate::icons::IconId::Line,
             &axis_rows,
         ) {
@@ -1977,7 +1972,7 @@ pub fn show_pane(
             ui,
             "repeat_axis",
             true,
-            "Click an axis line",
+            true,
             crate::icons::IconId::Line,
             &axis_rows,
         ) {
@@ -2225,7 +2220,7 @@ pub fn show_pane(
             ui,
             "slice_targets",
             !control.picking_cutter,
-            "Click bodies in the viewport",
+            false,
             crate::icons::IconId::Body,
             &control.target_rows,
         ) {
@@ -2241,7 +2236,7 @@ pub fn show_pane(
             ui,
             "slice_cutters",
             control.picking_cutter,
-            "Click planes or faces to cut with",
+            false,
             crate::icons::IconId::Plane,
             &control.cutter_rows,
         ) {
@@ -2290,7 +2285,7 @@ pub fn show_pane(
             ui,
             "sketch_slice_targets",
             !control.picking_cutter,
-            "Click sketch lines, circles, or faces",
+            false,
             crate::icons::IconId::Line,
             &control.target_rows,
         ) {
@@ -2306,7 +2301,7 @@ pub fn show_pane(
             ui,
             "sketch_slice_cutters",
             control.picking_cutter,
-            "Click sketch lines to cut with",
+            false,
             crate::icons::IconId::Line,
             &control.cutter_rows,
         ) {
@@ -2817,7 +2812,7 @@ pub fn show_pane(
                 ui,
                 picker.heading,
                 true,
-                picker.hint,
+                false,
                 picker.icon,
                 &picker.rows,
             ) {
@@ -2840,7 +2835,7 @@ pub fn show_pane(
             ui,
             "extrude_faces",
             true,
-            "Click a face to extrude",
+            false,
             crate::icons::IconId::Sketch,
             faces,
         ) {
@@ -3359,7 +3354,6 @@ mod tests {
         let content = context_pane_content(&base);
         let edges_picker = |rows: Vec<String>| EdgePickerControl {
             heading: "Edges",
-            hint: "Click an edge — Shift+click adds more",
             icon: crate::icons::IconId::Line,
             rows,
         };

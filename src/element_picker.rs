@@ -9,7 +9,8 @@
 //! - it accepts a configurable **subset of element kinds** (planes, lines, bodies, operations,
 //!   …), and can further restrict the [`OperationKind`]s it will take;
 //! - it enforces a **pick limit** (a whole number, or [`PickLimit::Infinite`]);
-//! - it renders like a focusable combo-box input with a "no selection" placeholder, a collapsed
+//! - it renders like a focusable combo-box input with a generic empty state (the count plus
+//!   the pickable kinds' icons, #388), a collapsed
 //!   `N ⟨icon⟩` summary per kind, and an expandable popup with a remove button per row (the
 //!   rendering lives in the context pane; this module is the state + rules it drives);
 //! - it carries a **selected-highlight color** that defaults to the theme's selection color but
@@ -206,6 +207,23 @@ impl ElementFilter {
 
     /// Whether a whole kind is (potentially) acceptable — drives hover styling of every element
     /// of that category while the picker is focused.
+    /// The icons of the kinds this filter accepts, in canonical order, for the picker's
+    /// generic empty state (#388). An accept-everything filter returns none — a bare count
+    /// reads better than every icon at once.
+    pub fn pickable_icons(&self) -> Vec<IconId> {
+        if self.everything {
+            return Vec::new();
+        }
+        let mut icons = Vec::new();
+        for kind in &self.kinds {
+            let icon = kind.icon();
+            if !icons.contains(&icon) {
+                icons.push(icon);
+            }
+        }
+        icons
+    }
+
     pub fn accepts_kind(&self, kind: ElementKind) -> bool {
         if self.everything {
             return true;
@@ -272,13 +290,11 @@ pub enum PickOutcome {
 }
 
 /// A configurable, focusable element-selection control. Holds both the configuration (filter,
-/// limit, placeholder, highlight color, focus stickiness) and the live picked set + focus state.
+/// limit, highlight color, focus stickiness) and the live picked set + focus state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ElementPicker {
     filter: ElementFilter,
     limit: PickLimit,
-    /// Shown, greyed, when the picker is empty ("no selection").
-    placeholder: String,
     /// Overrides the theme selection color for this picker's highlights (e.g. Slice cutters red).
     selected_color: Option<Color32>,
     /// The Select tool's picker is always focused and cannot lose focus; `set_focused(false)` is
@@ -296,7 +312,6 @@ impl ElementPicker {
         ElementPicker {
             filter,
             limit,
-            placeholder: "No selection".to_string(),
             selected_color: None,
             sticky_focus: false,
             picked: Vec::new(),
@@ -309,16 +324,10 @@ impl ElementPicker {
         let mut picker = ElementPicker::new(ElementFilter::everything(), PickLimit::Infinite);
         picker.sticky_focus = true;
         picker.focused = true;
-        picker.placeholder = "Nothing selected".to_string();
         picker
     }
 
     // ---- builders -------------------------------------------------------------------------
-
-    pub fn with_placeholder(mut self, placeholder: impl Into<String>) -> ElementPicker {
-        self.placeholder = placeholder.into();
-        self
-    }
 
     pub fn with_selected_color(mut self, color: Color32) -> ElementPicker {
         self.selected_color = Some(color);
@@ -333,10 +342,6 @@ impl ElementPicker {
 
     pub fn limit(&self) -> PickLimit {
         self.limit
-    }
-
-    pub fn placeholder(&self) -> &str {
-        &self.placeholder
     }
 
     /// The highlight color for this picker's selected elements, resolving the per-picker override
@@ -499,7 +504,8 @@ fn render_combo(
     ui: &mut egui::Ui,
     id_source: impl std::hash::Hash,
     focused: bool,
-    placeholder: &str,
+    single: bool,
+    empty_icons: &[IconId],
     summary: &[(IconId, usize)],
     rows: &[(IconId, String)],
 ) -> Option<PickerEvent> {
@@ -521,18 +527,30 @@ fn render_combo(
         ui.horizontal(|ui| {
             ui.set_min_width(ui.available_width().max(120.0));
             if rows.is_empty() {
+                // Generic empty state (#388): the count ("0", or "0/1" for single-select)
+                // plus dimmed icons of what this picker can take.
+                let empty_count = if single { "0/1" } else { "0" };
                 ui.add(
                     egui::Label::new(
-                        egui::RichText::new(placeholder)
+                        egui::RichText::new(empty_count)
                             .color(Color32::from_gray(130))
-                            .italics(),
+                            .strong(),
                     )
                     .selectable(false),
                 );
+                for &icon in empty_icons {
+                    ui.add(
+                        egui::Image::new(crate::icons::sized_texture(ui.ctx(), icon))
+                            .fit_to_exact_size(egui::vec2(ROW_ICON_SIZE, ROW_ICON_SIZE))
+                            .tint(Color32::from_gray(120)),
+                    );
+                }
             } else {
                 for &(icon, count) in summary {
+                    // A single-select picker reads "1/1" (#388); the rest just count.
+                    let text = if single { format!("{count}/1") } else { count.to_string() };
                     ui.add(
-                        egui::Label::new(egui::RichText::new(count.to_string()).strong())
+                        egui::Label::new(egui::RichText::new(text).strong())
                             .selectable(false),
                     );
                     row_icon(ui, icon);
@@ -626,7 +644,8 @@ pub fn show(
         ui,
         id_source,
         picker.is_focused(),
-        picker.placeholder(),
+        picker.limit().is_single(),
+        &picker.filter().pickable_icons(),
         &picker.summary(),
         &rows,
     )
@@ -639,7 +658,8 @@ pub fn show_rows(
     ui: &mut egui::Ui,
     id_source: impl std::hash::Hash,
     focused: bool,
-    placeholder: &str,
+    pickable: &[IconId],
+    single: bool,
     rows: &[(IconId, String)],
 ) -> Option<PickerEvent> {
     let mut summary: Vec<(IconId, usize)> = Vec::new();
@@ -650,7 +670,7 @@ pub fn show_rows(
             summary.push((*icon, 1));
         }
     }
-    render_combo(ui, id_source, focused, placeholder, &summary, rows)
+    render_combo(ui, id_source, focused, single, pickable, &summary, rows)
 }
 
 /// Render a label-only picker (#213) with the same combo-box look as [`show`], for tool sets
@@ -660,7 +680,7 @@ pub fn show_labeled(
     ui: &mut egui::Ui,
     id_source: impl std::hash::Hash,
     focused: bool,
-    placeholder: &str,
+    single: bool,
     icon: IconId,
     labels: &[String],
 ) -> Option<PickerEvent> {
@@ -670,7 +690,7 @@ pub fn show_labeled(
         vec![(icon, labels.len())]
     };
     let rows: Vec<(IconId, String)> = labels.iter().map(|l| (icon, l.clone())).collect();
-    render_combo(ui, id_source, focused, placeholder, &summary, &rows)
+    render_combo(ui, id_source, focused, single, &[icon], &summary, &rows)
 }
 
 /// Apply a widget [`PickerEvent`] to a picker's own state. Focus is handled by the caller (it

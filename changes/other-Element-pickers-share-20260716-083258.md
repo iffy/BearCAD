@@ -1,0 +1,1 @@
+Element pickers share one generic empty state: the count (0, or 0/1 for single-select) plus dimmed icons of what the picker can take, replacing per-tool placeholder text; a filled single-select picker reads 1/1.
