@@ -2339,9 +2339,51 @@ pub fn show_pane(
         .frame(egui::Frame::default().inner_margin(egui::Margin::symmetric(4, 3)))
         .show_inside(ui, |ui| {
             if *filter_expanded {
-                let all_on = *filter == ElementFilter::default();
-                for (label, enabled) in filter.rows() {
-                    ui.checkbox(enabled, label);
+                let all_on = filter.rows().iter().all(|(_, e)| **e);
+                // Icon-group toggles (#382): each category is a toggleable button showing the
+                // icons of the element types it covers (hover for the name); a category
+                // without icons falls back to a text toggle.
+                {
+                    use crate::icons::IconId as I;
+                    let ElementFilter {
+                        planes,
+                        sketches,
+                        sketch_geometry,
+                        bodies,
+                        operations,
+                        images,
+                        drawings,
+                        drawing_components,
+                    } = filter;
+                    let groups: [(&str, &[I], &mut bool); 7] = [
+                        ("Planes", &[I::Plane], planes),
+                        ("Sketches", &[I::Sketch], sketches),
+                        ("Sketch geometry", &[I::Line, I::Circle, I::Constraint], sketch_geometry),
+                        ("Bodies", &[I::Body], bodies),
+                        ("Operations", &[I::Extrude, I::Revolve, I::Combine], operations),
+                        ("Drawings", &[I::Drawing], drawings),
+                        (
+                            "Drawing components",
+                            &[I::Projection, I::Text, I::Dimension],
+                            drawing_components,
+                        ),
+                    ];
+                    ui.horizontal_wrapped(|ui| {
+                        for (label, icons, enabled) in groups {
+                            if crate::icons::selectable_icon_group(ui, icons, *enabled, label)
+                                .clicked()
+                            {
+                                *enabled = !*enabled;
+                            }
+                        }
+                        // No icon for images yet — a text toggle (#382).
+                        if ui
+                            .add(egui::Button::selectable(*images, "Images"))
+                            .clicked()
+                        {
+                            *images = !*images;
+                        }
+                    });
                 }
                 ui.horizontal(|ui| {
                     if ui.small_button(if all_on { "Hide all" } else { "Show all" }).clicked() {

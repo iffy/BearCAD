@@ -432,6 +432,50 @@ pub fn selectable_icon_button(
     response.on_hover_text(tooltip)
 }
 
+/// A toggle button showing a **group of icons** (#382) — the Elements-pane filter renders one
+/// per element category (e.g. Extrude+Revolve+Combine for "Operations"). Draws like a
+/// selectable `ImageButton`; the icons dim while the toggle is off.
+pub fn selectable_icon_group(
+    ui: &mut Ui,
+    icons: &[IconId],
+    selected: bool,
+    tooltip: impl Into<WidgetText>,
+) -> egui::Response {
+    let pad = 4.0;
+    let gap = 2.0;
+    let n = icons.len() as f32;
+    let size = egui::vec2(
+        pad * 2.0 + n * ICON_DISPLAY_SIZE + (n - 1.0).max(0.0) * gap,
+        pad * 2.0 + ICON_DISPLAY_SIZE,
+    );
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact_selectable(&response, selected);
+        ui.painter().rect(
+            rect,
+            visuals.corner_radius,
+            visuals.weak_bg_fill,
+            visuals.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
+        let tint = if selected {
+            Color32::WHITE
+    } else {
+        Color32::from_gray(110)
+    };
+    let ctx = ui.ctx().clone();
+        for (i, icon) in icons.iter().enumerate() {
+            let x = rect.min.x + pad + i as f32 * (ICON_DISPLAY_SIZE + gap);
+            let r = Rect::from_min_size(
+                egui::pos2(x, rect.min.y + pad),
+                egui::vec2(ICON_DISPLAY_SIZE, ICON_DISPLAY_SIZE),
+            );
+            paint_icon(ui.painter(), &ctx, *icon, r, tint);
+        }
+    }
+    response.on_hover_text(tooltip)
+}
+
 pub fn icon_button(ui: &mut Ui, id: IconId, tooltip: impl Into<WidgetText>) -> egui::Response {
     ui.add(
         egui::ImageButton::new(sized_texture(ui.ctx(), id)).frame(false),

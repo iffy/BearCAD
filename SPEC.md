@@ -1120,7 +1120,11 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   `"top-left"`…`"bottom-right"`; `text = ""` resets to automatic).
 - **Elements-pane filter (#254/#275):** a **Filter** button (funnel icon, #291) at the bottom
   of the Elements pane expands into per-type show/hide toggles (planes, sketches, sketch geometry, bodies,
-  operations, images, drawings, **drawing components** #381). Hiding a type prunes those nodes but promotes their kept
+  operations, images, drawings, **drawing components** #381). The toggles render as
+  **icon-group buttons** (#382, `icons::selectable_icon_group`): each category shows the
+  icons of the element types it covers (Operations = Extrude+Revolve+Combine; hover for the
+  category name), dimmed while off; a category without icons (Images) falls back to a text
+  toggle. Hiding a type prunes those nodes but promotes their kept
   children (hiding "Operations" still shows the result bodies, un-nested). The Drawing
   workbench defaults the filter to sketches + bodies + **drawings** (#333), so the open drawing's
   **projections, text notes, and dimensions** appear in the pane. In the **Model** workbench
