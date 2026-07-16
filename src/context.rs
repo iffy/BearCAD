@@ -1282,6 +1282,8 @@ fn labeled_row<R>(
             egui::vec2(FIELD_LABEL_W, 18.0),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
+                // The parent advances by the *used* rect, so pin the column width.
+                ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
                 ui.label(label);
             },
         );
@@ -1305,6 +1307,8 @@ fn labeled_row_top<R>(
             egui::vec2(FIELD_LABEL_W, 26.0),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
+                // The parent advances by the *used* rect, so pin the column width.
+                ui.set_min_size(egui::vec2(FIELD_LABEL_W, 26.0));
                 ui.label(label);
             },
         );
@@ -2015,6 +2019,7 @@ pub fn show_pane(
                         egui::vec2(FIELD_LABEL_W, 18.0),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
+                            ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
                             if let Some((icon, edit)) = toggle {
                                 // A clickable picture that toggles how this variable is measured (#257).
                                 if crate::icons::icon_button(
@@ -2131,6 +2136,7 @@ pub fn show_pane(
                     egui::vec2(FIELD_LABEL_W, 18.0),
                     egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
+                        ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
                         if let Some((icon, edit)) = toggle {
                             if crate::icons::icon_button(ui, icon, "Toggle how this is measured")
                                 .clicked()
