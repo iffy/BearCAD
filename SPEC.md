@@ -1072,8 +1072,9 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   exactly that size in the editor and both exports, and shows in the card caption
   (`Body 0 — Front (1:20)`). `Action::SetDrawingViewScale`;
   `crate::model::parse_drawing_scale`. The Parameters
-  pane is hidden in the Drawing workbench, and there's no "Back to model" button — press
-  **Esc** to return to the model.
+  pane can be shown in the Drawing workbench like anywhere else (#378) — its View-menu
+  toggle applies in every workbench, so parameters can be edited (rebuilding the model and
+  the open drawing's views) without leaving the drawing.
 - **Elements-pane filter (#254/#275):** a **Filter** button (funnel icon, #291) at the bottom
   of the Elements pane expands into per-type show/hide toggles (planes, sketches, sketch geometry, bodies,
   operations, images, drawings). Hiding a type prunes those nodes but promotes their kept

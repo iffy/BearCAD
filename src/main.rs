@@ -4645,8 +4645,10 @@ impl eframe::App for App {
             }
         }
 
-        // The Parameters pane is hidden in the Drawing workbench (#254/#272).
-        if self.state.panes.is_visible(Pane::Parameters) && self.state.editing_drawing.is_none() {
+        // The Parameters pane follows its View-menu visibility in every workbench — including
+        // Drawings (#378), where editing a parameter rebuilds the model and the open drawing's
+        // views update live.
+        if self.state.panes.is_visible(Pane::Parameters) {
             egui::SidePanel::right("parameters")
                 .resizable(true)
                 .default_width(240.0)
