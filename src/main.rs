@@ -4441,6 +4441,19 @@ impl eframe::App for App {
                 {
                     self.state.apply(Action::SetTool(Tool::Text));
                 }
+                // Project (#140, made discoverable): sketch mode only — click outside
+                // edges/bodies to bring them in as dashed associative references.
+                if self.state.sketch_session.is_some()
+                    && icons::selectable_icon_button(
+                        ui,
+                        icons::IconId::Projection,
+                        self.state.tool == Tool::Project,
+                        "Project — click an outside edge or body to reference it in this sketch (or select edges and press Y)",
+                    )
+                    .clicked()
+                {
+                    self.state.apply(Action::SetTool(Tool::Project));
+                }
                 if icons::selectable_icon_button(
                     ui,
                     icons::IconId::Plane,
@@ -6784,6 +6797,17 @@ fn resolve_viewport_hover_highlight(
             let gp = cam.ground_point(pp, viewport, vp);
             resolve_pick_target(pp, project, gp, doc, occlusion)
                 .map(|t| gpu_viewport::ViewportHoverHighlight::PickTarget(t.kind))
+        }
+        // Project tool (#140): glow the outside edge or body face a click would project.
+        Tool::Project if sketch_session.is_some() => {
+            let gp = cam.ground_point(pp, viewport, vp);
+            let target = resolve_pick_target(pp, project, gp, doc, occlusion)?;
+            matches!(
+                target.kind,
+                construction::PickTargetKind::BodyEdge { .. }
+                    | construction::PickTargetKind::BodyFace { .. }
+            )
+            .then_some(gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind))
         }
         // Dimension tool (#190): glow the dimensionable segment under the cursor — the same
         // thing a click would dimension — so hover has feedback like every other pick tool.
@@ -11947,6 +11971,50 @@ impl App {
             }
         }
 
+        // Project tool (#140): click an outside body edge to project it into the open
+        // sketch; a body face or vertex projects the whole body's edges.
+        if self.state.tool == Tool::Project && self.state.sketch_session.is_some() {
+            if let Some(pp) = pointer_screen {
+                if ui.input(|i| i.pointer.primary_pressed()) {
+                    let body_vertex =
+                        construction::nearest_body_vertex(pp, &project, &self.state.doc)
+                            .and_then(|(kind, _)| match kind {
+                                construction::PickTargetKind::BodyVertex { body, .. } => {
+                                    Some(SceneElement::Body(body))
+                                }
+                                _ => None,
+                            });
+                    let gp = cam.ground_point(pp, viewport, &vp);
+                    let picked = body_vertex.or_else(|| {
+                        resolve_pick_target(pp, &project, gp, &self.state.doc, pick_occlusion)
+                            .and_then(|target| match target.kind {
+                                construction::PickTargetKind::BodyEdge { body, a, b } => {
+                                    Some(SceneElement::BodyEdge {
+                                        body,
+                                        a: hierarchy::quantize_body_point(a),
+                                        b: hierarchy::quantize_body_point(b),
+                                    })
+                                }
+                                construction::PickTargetKind::BodyFace { body, .. } => {
+                                    Some(SceneElement::Body(body))
+                                }
+                                _ => None,
+                            })
+                    });
+                    match picked {
+                        Some(element) => {
+                            self.state.apply(Action::ProjectElement { element });
+                        }
+                        None => {
+                            self.state.status =
+                                "Project: click an outside body edge, face, or vertex"
+                                    .to_string();
+                        }
+                    }
+                }
+            }
+        }
+
         if matches!(self.state.tool, Tool::Chamfer | Tool::Fillet) {
             self.handle_vertex_treatment_tool(ui, &project, pointer_screen);
             self.show_vertex_treatment_amount_input(ui, &project);
@@ -13789,6 +13857,9 @@ impl App {
             }
             Tool::Sketch => {
                 "s: sketch  •  Click a rectangle or construction plane face  •  Esc: cancel"
+            }
+            Tool::Project => {
+                "Project — click an outside edge or body to bring it in as a dashed reference • Esc: done"
             }
             Tool::Loft => {
                 if self

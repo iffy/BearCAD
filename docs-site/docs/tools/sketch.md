@@ -21,10 +21,10 @@ you're in sketch mode. Press **Esc** (with nothing in progress) to leave the ske
 
 - Sketching on a body's own face ties the sketch to that body: it moves with it, and the
   face's corners and edges can be dimensioned against directly.
-- **Project outside geometry in:** select a body's edges (or a whole body) and press **Y**
-  (or run "Project Selection into Sketch" from the palette) — each edge lands on the sketch
-  plane as a dashed [projected line](/docs/styles#lines) that follows its source, ready to
-  snap and constrain against.
+- **Project outside geometry in:** in sketch mode a **Project** tool appears in the
+  toolbar — click an outside body edge (or a face/vertex to take the whole body) and it
+  lands on the sketch plane as a dashed [projected line](/docs/styles#lines) that follows
+  its source, ready to snap and constrain against. Or select edges and press **Y**.
 - When faces overlap under the cursor, the one nearest the camera wins — you never pick a
   hidden face by accident.
 - Click an existing sketch's face with the Sketch tool to reopen it for editing.

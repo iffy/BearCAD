@@ -178,7 +178,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 - **Projections (#140):** with a sketch open, selecting external 3D geometry (a body's
   edges via 3D selection, #156 — or a whole body/extrusion, which projects all of its
   feature edges) and pressing **Y** (or "Project Selection into Sketch" in the palette)
-  projects it onto the sketch plane, along the plane normal. Each projected edge becomes a
+  projects it onto the sketch plane, along the plane normal. Discoverable via
+  **`Tool::Project`**: a toolbar button that appears only in sketch mode — with it
+  active, outside body edges/faces hover-glow and a click projects the edge (a face or
+  vertex projects the whole body) through `Action::ProjectElement`; both entry points
+  share `Action::ProjectSources`. Lua tool name `"project"`. Each projected edge becomes a
   construction-style line drawn dashed in its own **projection color** (teal, distinct from
   construction's color) and usable like construction geometry (snapping, constraints).
   Projections are **associative**: each geometry recompute re-resolves the source edge and

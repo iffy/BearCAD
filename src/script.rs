@@ -2288,6 +2288,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
         Tool::ConstructionPlane => "construction_plane",
         Tool::Sketch => "sketch",
         Tool::Dimension => "dimension",
+        Tool::Project => "project",
         Tool::Constraint => "constraint",
         Tool::Extrude => "extrude",
         Tool::Chamfer => "chamfer",

@@ -90,6 +90,7 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
         Tool::Text => Some(ShortcutHint::plain("T")),
         // No plain-letter shortcut yet; toolbar/palette only.
         Tool::Loft
+        | Tool::Project
         | Tool::Revolve
         | Tool::Combine
         | Tool::Move

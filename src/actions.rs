@@ -88,6 +88,10 @@ pub enum Tool {
     /// Same vertex-selection flow as [`Tool::Chamfer`], but bridges the truncated lines with a
     /// rounded single-cubic-bezier arc instead of a straight cut (#38).
     Fillet,
+    /// Sketch mode only: click an outside body edge (or a body) to project it into the
+    /// open sketch as an associative dashed reference line (#140's Y shortcut, as a
+    /// discoverable toolbar tool).
+    Project,
     /// Pick two or more closed sketch profiles (circles or line loops) as cross sections,
     /// then Enter blends them into a lofted solid (SPEC §3.5 Loft).
     Loft,
@@ -145,6 +149,7 @@ impl Tool {
             "repeat" | "linear_repeat" | "pattern" => Some(Tool::Repeat),
             "slice" | "split" => Some(Tool::Slice),
             "text" => Some(Tool::Text),
+            "project" | "projection" => Some(Tool::Project),
             "drawing_add" | "add_view" => Some(Tool::DrawingAdd),
             "drawing_align" | "aligned_view" | "align_view" => Some(Tool::DrawingAlign),
             _ => None,
@@ -164,6 +169,8 @@ impl Tool {
                 // Text draws in sketches too (#383/#391): clicking a face with it begins a
                 // sketch and the tool must survive into it, like the other draw tools.
                 | Tool::Text
+                // Project only means anything inside a sketch (#140).
+                | Tool::Project
         )
     }
 }
@@ -1038,6 +1045,10 @@ pub enum Action {
     /// Project the selected body edges (or whole bodies/extrusions) into the open sketch as
     /// associative construction-style lines (#140; the `Y` shortcut).
     ProjectSelection,
+    /// Project a single clicked element's edges into the open sketch (#140, Project tool).
+    ProjectElement { element: crate::hierarchy::SceneElement },
+    /// Project resolved sources (the shared tail of the two entry points above).
+    ProjectSources { sources: Vec<crate::model::ProjectionSource> },
     /// Choose how the ground plane renders (#159; gear menu).
     SetGroundDisplay(crate::camera::GroundDisplay),
     /// Switch the Elements pane's layout (List/Tree/Graph, #34/#108).
@@ -4539,6 +4550,9 @@ impl AppState {
                         "Slice tool — pick bodies, then cutting planes/faces, Enter commits"
                             .to_string()
                     }
+                    Tool::Project => {
+                        "Project tool — click an outside edge (or a body) to bring it into the sketch as a reference".to_string()
+                    }
                     Tool::Text if self.sketch_session.is_some() => {
                         "Text tool — click to place text, or drag a box to set its width".to_string()
                     }
@@ -5400,12 +5414,26 @@ impl AppState {
                 self.status = format!("Projection: {:?}", self.cam.projection_mode());
                 ActionResult::Ok
             }
+            Action::ProjectElement { element } => {
+                let mut selection = crate::selection::SceneSelection::default();
+                selection.insert(element);
+                return self.apply_inner(Action::ProjectSources {
+                    sources: crate::projection::projection_sources_from_selection(
+                        &self.doc, &selection,
+                    ),
+                });
+            }
             Action::ProjectSelection => {
+                let sources = crate::projection::projection_sources_from_selection(
+                    &self.doc,
+                    &self.scene_selection,
+                );
+                return self.apply_inner(Action::ProjectSources { sources });
+            }
+            Action::ProjectSources { sources } => {
                 let Some(session) = self.sketch_session else {
                     return ActionResult::Err("Open a sketch to project into".to_string());
                 };
-                let sources =
-                    crate::projection::projection_sources_from_selection(&self.doc, &self.scene_selection);
                 if sources.is_empty() {
                     return ActionResult::Err(
                         "Select body edges (or a body) to project".to_string(),
@@ -14785,6 +14813,32 @@ mod tests {
 
     /// #140: pressing Y with a body edge selected projects it into the open sketch as an
     /// associative construction-style line, and editing the source geometry re-resolves it.
+    #[test]
+    fn project_element_projects_a_clicked_body() {
+        use crate::hierarchy::SceneElement;
+        let mut state = box_extrusion_state();
+        state.apply(Action::ExitSketch);
+        assert_eq!(state.doc.bodies.iter().filter(|b| !b.deleted).count(), 1);
+
+        // A second sketch on the ground plane; project the whole body with one click.
+        state.apply(Action::BeginSketch {
+            face: crate::model::FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        let before = state.doc.lines.len();
+        let result = state.apply(Action::ProjectElement { element: SceneElement::Body(0) });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        let projected = state.doc.lines[before..]
+            .iter()
+            .filter(|l| l.projection.is_some())
+            .count();
+        assert!(projected > 0, "clicking a body projects its edges");
+
+        // The Project tool is a sketch-edit tool with a lua name.
+        assert!(Tool::Project.is_sketch_edit_tool());
+        assert_eq!(Tool::from_name("project"), Some(Tool::Project));
+    }
+
     #[test]
     fn project_selection_creates_associative_line() {
         use crate::hierarchy::{quantize_body_point, SceneElement};
