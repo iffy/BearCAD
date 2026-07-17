@@ -32,11 +32,11 @@ function HomepageHeader() {
         <p className={styles.heroBlurb}>
           BearCAD is a free, parametric CAD app for designing real parts —
           sketch, dimension, extrude, and export for 3D printing. The whole
-          app is a single-digit-megabyte download that launches in about half
-          a second — where mainstream CAD wants 8–16&nbsp;GB and a splash
-          screen. Run it in your browser, or download it for macOS, Windows,
-          or Linux. It's also an experiment to see what AI can do: the app is
-          built almost entirely by an AI from plain-English requests.
+          app is a tiny download that launches in about half a second — where
+          mainstream CAD wants 8–16&nbsp;GB and a splash screen. Run it in
+          your browser, or download it for macOS, Windows, or Linux. It's
+          also an experiment to see what AI can do: the app is built almost
+          entirely by an AI from plain-English requests.
         </p>
         <div className={styles.buttons}>
           <Link
