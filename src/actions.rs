@@ -1530,6 +1530,14 @@ pub enum Action {
         rotation: f32,
         wrap_width: Option<f32>,
     },
+    /// Resize a wrapped text box (#409): set the wrap width (and, when dragging the left
+    /// handle, the shifted origin) and re-wrap the glyphs. Only meaningful for a text that
+    /// already has a wrap width.
+    ResizeSketchText {
+        index: usize,
+        origin: (f32, f32),
+        wrap_width: f32,
+    },
     /// Re-bake / re-point an existing sketch text (#282): string, font, size, style, position.
     EditSketchText {
         index: usize,
@@ -7582,6 +7590,30 @@ label_hidden: false,
                 self.status = "Added text".to_string();
                 ActionResult::Ok
             }
+            Action::ResizeSketchText { index, origin, wrap_width } => {
+                let Some(t) = self.doc.sketch_texts.get(index).filter(|t| !t.deleted) else {
+                    let e = format!("Sketch text {index} not found");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                let wrap = wrap_width.max(MIN_TEXT_WRAP_MM);
+                let baked = crate::value::interpolate_text(&t.text, &self.doc);
+                // Re-wrap from the embedded font bytes (no system lookup — the document is
+                // self-contained); a text whose bytes are missing keeps its outlines.
+                let contours =
+                    crate::text::outline_text_wrapped(&t.font_bytes, t.size, &baked, Some(wrap))
+                        .map(|shaped| shaped.contours);
+                let t = &mut self.doc.sketch_texts[index];
+                t.origin = origin;
+                t.wrap_width = Some(wrap);
+                if let Some(contours) = contours {
+                    t.contours = contours;
+                }
+                // Anchor constraints keep holding through the new box (#408).
+                let _ = crate::constraints::solve_document_constraints(&mut self.doc);
+                self.status = "Resized text".to_string();
+                ActionResult::Ok
+            }
             Action::EditSketchText {
                 index,
                 text,
@@ -10215,6 +10247,21 @@ pub struct GizmoInfo {
     pub value: f32,
 }
 
+/// Minimum wrap width (mm) a text box can be resized down to (#409).
+pub const MIN_TEXT_WRAP_MM: f32 = 2.0;
+
+/// The single selected sketch text, if the selection is exactly one text (#286/#409).
+pub fn single_selected_sketch_text(state: &AppState) -> Option<usize> {
+    let mut only = None;
+    for element in state.scene_selection.iter() {
+        match element {
+            crate::hierarchy::SceneElement::SketchText(i) if only.is_none() => only = Some(i),
+            _ => return None,
+        }
+    }
+    only.filter(|&i| state.doc.sketch_texts.get(i).is_some_and(|t| !t.deleted))
+}
+
 /// The script handle for a chamfer/fillet amount gizmo, named for the actual treatment kind.
 fn treatment_gizmo_name(kind: crate::model::VertexTreatmentKind) -> &'static str {
     match kind {
@@ -10262,6 +10309,13 @@ pub fn available_gizmos(state: &AppState) -> Vec<GizmoInfo> {
         if cm.axis.is_some() {
             let rad = crate::value::eval_angle_rad_in_doc(&cm.angle, &state.doc).unwrap_or(0.0);
             gizmos.push(GizmoInfo { kind: "rotate", name: "move_angle", value: rad });
+        }
+    }
+    // A selected wrapped text exposes its box width (#409) — the value the edge drag
+    // handles control.
+    if let Some(i) = single_selected_sketch_text(state) {
+        if let Some(wrap) = state.doc.sketch_texts[i].wrap_width {
+            gizmos.push(GizmoInfo { kind: "offset", name: "text_width", value: wrap });
         }
     }
     gizmos
@@ -10349,6 +10403,26 @@ pub fn set_gizmo(state: &mut AppState, name: &str, value: f32) -> bool {
             } else {
                 false
             }
+        }
+        // Wrapped-text box width (#409): resize the selected text's wrap, keeping its origin.
+        "text_width" => {
+            if let Some(i) = single_selected_sketch_text(state) {
+                if let Some(origin) = state
+                    .doc
+                    .sketch_texts
+                    .get(i)
+                    .filter(|t| t.wrap_width.is_some())
+                    .map(|t| t.origin)
+                {
+                    state.apply(Action::ResizeSketchText {
+                        index: i,
+                        origin,
+                        wrap_width: value,
+                    });
+                    return true;
+                }
+            }
+            false
         }
         _ => false,
     }
@@ -10627,6 +10701,65 @@ mod tests {
             "translations add up to +30, got {:?}",
             state.doc.tracing_images[0].origin
         );
+    }
+
+    /// #409: a selected wrapped text exposes a `text_width` gizmo; driving it re-wraps the
+    /// glyphs to the new width (narrower box → outlines never wider than the wrap).
+    #[test]
+    fn text_width_gizmo_resizes_a_wrapped_text_box() {
+        let family = ["Helvetica", "Arial", "DejaVu Sans", "Liberation Sans"]
+            .into_iter()
+            .find(|f| crate::text::font_bytes(f, false, false).is_some());
+        let Some(family) = family else {
+            eprintln!("no usable system font; skipping");
+            return;
+        };
+        let mut state = AppState::default();
+        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        state.apply(Action::CreateSketchText {
+            sketch,
+            text: "several words that wrap".to_string(),
+            font_family: family.to_string(),
+            bold: false,
+            italic: false,
+            underline: false,
+            size: 8.0,
+            size_expr: "8".to_string(),
+            origin: (0.0, 0.0),
+            rotation: 0.0,
+            wrap_width: Some(60.0),
+        });
+        // No gizmo until the text is selected.
+        assert!(available_gizmos(&state).is_empty());
+        state.apply(Action::ClickSceneElement {
+            element: crate::hierarchy::SceneElement::SketchText(0),
+            additive: false,
+        });
+        let gizmos = available_gizmos(&state);
+        assert_eq!(gizmos.len(), 1);
+        assert_eq!(gizmos[0].name, "text_width");
+        assert!((gizmos[0].value - 60.0).abs() < 1e-3);
+
+        let min_y_before = state.doc.sketch_texts[0]
+            .contours
+            .iter()
+            .flatten()
+            .map(|&(_, y)| y)
+            .fold(f32::MAX, f32::min);
+        assert!(set_gizmo(&mut state, "text_width", 20.0));
+        let t = &state.doc.sketch_texts[0];
+        assert_eq!(t.wrap_width, Some(20.0));
+        // Narrower box → more wrapped lines → the block grows downward (single words may
+        // still overflow the width: word wrap never splits a word).
+        let min_y_after = t.contours.iter().flatten().map(|&(_, y)| y).fold(f32::MAX, f32::min);
+        assert!(
+            min_y_after < min_y_before - 1e-3,
+            "outlines re-wrap taller: {min_y_after} vs {min_y_before}"
+        );
+
+        // The minimum width clamps.
+        assert!(set_gizmo(&mut state, "text_width", 0.1));
+        assert_eq!(state.doc.sketch_texts[0].wrap_width, Some(MIN_TEXT_WRAP_MM));
     }
 
     /// #214: the extrude tool's in-progress push/pull depth is exposed as a gizmo and driven by

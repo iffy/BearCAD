@@ -109,6 +109,51 @@ pub fn sketch_text_anchor_offset(
     (min.0 + fx * (max.0 - min.0), min.1 + fy * (max.1 - min.1))
 }
 
+/// A wrapped text's box in baseline space (#409): `(x0, y0, x1, y1)` spanning the full wrap
+/// width horizontally and the glyph bounding box vertically (a nominal `size`-tall band for a
+/// text with no outlines). `None` for an unwrapped text.
+pub fn wrap_box_baseline(text: &crate::model::SketchText) -> Option<(f32, f32, f32, f32)> {
+    let wrap = text.wrap_width?;
+    let (mut min_y, mut max_y) = (f32::MAX, f32::MIN);
+    for c in &text.contours {
+        for &(_, y) in c {
+            min_y = min_y.min(y);
+            max_y = max_y.max(y);
+        }
+    }
+    if min_y > max_y {
+        (min_y, max_y) = (-text.size, text.size);
+    }
+    Some((0.0, min_y, wrap, max_y))
+}
+
+/// Map a baseline-space point through a text's rotation and origin into sketch-local uv.
+pub fn baseline_to_local(text: &crate::model::SketchText, x: f32, y: f32) -> (f32, f32) {
+    let (sin, cos) = text.rotation.sin_cos();
+    (
+        text.origin.0 + x * cos - y * sin,
+        text.origin.1 + x * sin + y * cos,
+    )
+}
+
+/// Map a sketch-local uv into a text's baseline space (inverse of [`baseline_to_local`]).
+pub fn local_to_baseline(text: &crate::model::SketchText, u: f32, v: f32) -> (f32, f32) {
+    let (sin, cos) = text.rotation.sin_cos();
+    let (du, dv) = (u - text.origin.0, v - text.origin.1);
+    (du * cos + dv * sin, -du * sin + dv * cos)
+}
+
+/// The two width drag handles of a wrapped text box (#409), in sketch-local uv:
+/// `[left, right]`, each at mid-height of its box edge. `None` for an unwrapped text.
+pub fn wrap_width_handles_local(text: &crate::model::SketchText) -> Option<[(f32, f32); 2]> {
+    let (x0, y0, x1, y1) = wrap_box_baseline(text)?;
+    let mid = (y0 + y1) * 0.5;
+    Some([
+        baseline_to_local(text, x0, mid),
+        baseline_to_local(text, x1, mid),
+    ])
+}
+
 /// The sketch-local position of one of a text's nine anchor points (#408): the baseline-space
 /// anchor offset rotated by the text's rotation, translated by its origin.
 pub fn sketch_text_anchor_uv(

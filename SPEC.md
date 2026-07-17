@@ -844,6 +844,14 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   then `bearcad.add_geometric_constraint("coincident")`. Legacy documents with a
   `SketchText::pin` migrate on load (`storage::migrate_text_pins`) to an equivalent
   `Coincident` constraint; the pin field is never written back.
+- **Width drag handles (#409):** a **selected** wrapped text draws its box (full wrap width ×
+  glyph-bbox height, `text::wrap_box_baseline`) as a dashed outline with a handle at the
+  mid-height of each vertical edge. With the Select tool, dragging a handle resizes the wrap
+  width live (`Action::ResizeSketchText`, re-wrapping from the **embedded** font bytes and
+  re-solving anchor constraints); the right handle keeps the origin, the left handle shifts
+  the origin so the right edge stays put. Width clamps at `MIN_TEXT_WRAP_MM` (2 mm).
+  Scriptable as the `"text_width"` gizmo (`available_gizmos`/`set_gizmo`), exposed whenever
+  the selection is exactly one wrapped text.
 - **Text-on-curve groundwork (#286):** `SketchText` carries an optional `baseline_line`
   reference (default none = straight baseline). Baking currently advances a pen along a
   straight baseline (`text::outline_text`); curve support later resolves the reference into a

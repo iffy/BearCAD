@@ -118,8 +118,9 @@ bearcad.drag_gizmo{ name = "extrude", by = 5 }      -- nudge it (mirrors a drag 
 ```
 
 Lengths are in millimetres, angles in radians. Gizmos today: `"extrude"`,
-`"chamfer"`/`"fillet"`, `"revolve"`, `"offset"` (construction plane), and the Move tool's
-`"move_x"`/`"move_y"`/`"move_z"` and `"move_angle"`.
+`"chamfer"`/`"fillet"`, `"revolve"`, `"offset"` (construction plane), the Move tool's
+`"move_x"`/`"move_y"`/`"move_z"` and `"move_angle"`, and `"text_width"` (a selected
+wrapped text's box width).
 
 ## Where to go next
 

@@ -901,6 +901,39 @@ impl ViewportScene {
                     };
                     mesh.push_point_marker(world, anchor_color, 4.5, input.cam, input.viewport, &vp);
                 }
+                // A wrapped text also shows its box as a dashed outline with a width drag
+                // handle on each vertical edge (#409).
+                if let Some((x0, y0, x1, y1)) = crate::text::wrap_box_baseline(text) {
+                    let corner = |x: f32, y: f32| {
+                        let (u, v) = crate::text::baseline_to_local(text, x, y);
+                        crate::face::local_to_world(&frame, u, v)
+                    };
+                    let corners =
+                        [corner(x0, y0), corner(x1, y0), corner(x1, y1), corner(x0, y1)];
+                    for i in 0..4 {
+                        mesh.push_dashed_line_segment(
+                            corners[i],
+                            corners[(i + 1) % 4],
+                            anchor_color,
+                            1.2,
+                            input.cam,
+                            input.viewport,
+                            &vp,
+                        );
+                    }
+                    if let Some(handles) = crate::text::wrap_width_handles_local(text) {
+                        for (u, v) in handles {
+                            mesh.push_point_marker(
+                                crate::face::local_to_world(&frame, u, v),
+                                anchor_color,
+                                6.5,
+                                input.cam,
+                                input.viewport,
+                                &vp,
+                            );
+                        }
+                    }
+                }
             }
         }
 

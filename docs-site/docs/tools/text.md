@@ -25,7 +25,9 @@ face or plane to start a sketch there.
 - **Font** — any installed font family. **B / I / U** toggle bold, italic, underline.
 - **Size** — font size in mm; an expression field, so lettering scales with the model.
 - **Rotation°** — turns the text about its start point.
-- **Wrap width** — empty grows to fit; a width in mm word-wraps.
+- **Wrap width** — empty grows to fit; a width in mm word-wraps. A selected wrapped text
+  shows its box dashed with a **drag handle** on each vertical edge — drag to resize the
+  width (the opposite edge stays put).
 
 ## Constraining text
 

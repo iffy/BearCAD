@@ -478,6 +478,13 @@ struct VertexDrag {
 
 /// A bezier control-point handle being dragged: `near_start` selects `line.bezier`'s handle
 /// nearest `(x0,y0)` vs. nearest `(x1,y1)`.
+/// An in-progress drag of a wrapped text box's width handle (#409).
+struct TextWidthDrag {
+    text: usize,
+    /// True when the left edge handle is held (the origin shifts); false for the right.
+    left: bool,
+}
+
 struct BezierHandleDrag {
     line: usize,
     near_start: bool,
@@ -558,6 +565,7 @@ struct App {
     angle_gizmo_drag: Option<AngleGizmoDrag>,
     vertex_drag: Option<VertexDrag>,
     bezier_handle_drag: Option<BezierHandleDrag>,
+    text_width_drag: Option<TextWidthDrag>,
     /// Bezier handle selected by a plain click (persists past the click, unlike
     /// `bezier_handle_drag`), so Delete/Backspace can remove it (#75). `(line, near_start)`.
     selected_bezier_handle: Option<(usize, bool)>,
@@ -704,6 +712,7 @@ impl App {
             sketch_move_drag: None,
             vertex_drag: None,
             bezier_handle_drag: None,
+            text_width_drag: None,
             selected_bezier_handle: None,
             viewport_context_menu: None,
             launch_maximize_frames_remaining: initial_launch_maximize_frames(),
@@ -8743,6 +8752,97 @@ fn handle_line_drag(
 
 /// Drag one of a curved [`Line`]'s two tangent handles (rendered only for lines whose
 /// `bezier` field is set — the drag-to-curve gesture or right-click-to-curve conversion).
+/// Width drag handles of a selected wrapped text box (#409): press on an edge handle grabs
+/// it; while held, the pointer's baseline-space x resizes the wrap width (the left handle
+/// also shifts the origin so the right edge stays put). Same press/drag/release shape as
+/// `handle_bezier_handle_drag`.
+#[allow(clippy::too_many_arguments)]
+fn handle_text_width_drag(
+    ui: &egui::Ui,
+    drag: &mut Option<TextWidthDrag>,
+    state: &mut AppState,
+    selected_text: Option<usize>,
+    session: SketchSession,
+    viewport: egui::Rect,
+    vp: &glam::Mat4,
+    cam: &camera::Camera,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    pointer_screen: Option<egui::Pos2>,
+) -> bool {
+    let primary_down = ui.input(|i| i.pointer.primary_down());
+    let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+    let primary_released = ui.input(|i| i.pointer.primary_released());
+
+    if let Some(active) = drag.as_ref() {
+        if primary_released || !primary_down {
+            *drag = None;
+            return false;
+        }
+        if let Some(pp) = pointer_screen {
+            if let Some(world) = sketch_plane_point(cam, viewport, vp, &state.doc, session, pp) {
+                if let Some(text) = state
+                    .doc
+                    .sketch_texts
+                    .get(active.text)
+                    .filter(|t| !t.deleted && t.wrap_width.is_some())
+                {
+                    let frame = sketch_geometry_frame(&state.doc, session.sketch).unwrap();
+                    let (u, v) = world_to_local(&frame, world);
+                    let (bx, _) = crate::text::local_to_baseline(text, u, v);
+                    let wrap = text.wrap_width.unwrap();
+                    let (origin, new_wrap) = if active.left {
+                        // Keep the right edge fixed: the origin slides with the handle.
+                        let shift = bx.min(wrap - actions::MIN_TEXT_WRAP_MM);
+                        let (ou, ov) = crate::text::baseline_to_local(text, shift, 0.0);
+                        ((ou, ov), wrap - shift)
+                    } else {
+                        (text.origin, bx.max(actions::MIN_TEXT_WRAP_MM))
+                    };
+                    let _ = state.apply(Action::ResizeSketchText {
+                        index: active.text,
+                        origin,
+                        wrap_width: new_wrap,
+                    });
+                }
+            }
+        }
+        return true;
+    }
+
+    if primary_pressed {
+        if let (Some(pp), Some(ti)) = (pointer_screen, selected_text) {
+            let handle = state
+                .doc
+                .sketch_texts
+                .get(ti)
+                .filter(|t| !t.deleted && t.sketch == session.sketch)
+                .and_then(crate::text::wrap_width_handles_local)
+                .and_then(|handles| {
+                    let frame = sketch_geometry_frame(&state.doc, session.sketch)?;
+                    let mut best: Option<(bool, f32)> = None;
+                    for (left, (u, v)) in [(true, handles[0]), (false, handles[1])] {
+                        let Some(sp) = project(face::local_to_world(&frame, u, v)) else {
+                            continue;
+                        };
+                        let dist = (pp - sp).length();
+                        if dist <= construction::POINT_PICK_RADIUS_PX
+                            && best.is_none_or(|(_, d)| dist < d)
+                        {
+                            best = Some((left, dist));
+                        }
+                    }
+                    best
+                });
+            if let Some((left, _)) = handle {
+                *drag = Some(TextWidthDrag { text: ti, left });
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 fn handle_bezier_handle_drag(
     ui: &egui::Ui,
     drag: &mut Option<BezierHandleDrag>,
@@ -10845,6 +10945,7 @@ impl App {
         let mut vertex_dragging = false;
         let mut line_dragging = false;
         let mut bezier_handle_dragging = false;
+        let mut text_width_dragging = false;
         // Guided image calibration (#163): while placing reference points, viewport
         // clicks land points on the image's host plane (and are not selection clicks).
         if let Some(cal) = self.state.creating_calibration.clone() {
@@ -10919,6 +11020,20 @@ impl App {
             && self.angle_gizmo_drag.is_none()
         {
             if let Some(session) = sketch_session {
+                let selected_text = self.single_selected_sketch_text();
+                text_width_dragging = handle_text_width_drag(
+                    ui,
+                    &mut self.text_width_drag,
+                    &mut self.state,
+                    selected_text,
+                    session,
+                    viewport,
+                    &vp,
+                    &cam,
+                    &project,
+                    pointer_screen,
+                );
+                if !text_width_dragging {
                 bezier_handle_dragging = handle_bezier_handle_drag(
                     ui,
                     &mut self.bezier_handle_drag,
@@ -10930,6 +11045,7 @@ impl App {
                     &project,
                     pointer_screen,
                 );
+                }
                 if let Some(active) = &self.bezier_handle_drag {
                     // Persists past this frame (unlike `bezier_handle_drag`, which clears on
                     // release) so a plain click — not just a drag — selects the handle (#75).
@@ -10947,7 +11063,10 @@ impl App {
                         pointer_screen,
                     );
                 }
-                if !bezier_handle_dragging && !line_dragging && self.state.line_drag_session.is_none()
+                if !text_width_dragging
+                    && !bezier_handle_dragging
+                    && !line_dragging
+                    && self.state.line_drag_session.is_none()
                 {
                     vertex_dragging = handle_vertex_drag(
                         ui,
@@ -10961,7 +11080,8 @@ impl App {
                         pointer_screen,
                     );
                 }
-                if bezier_handle_dragging
+                if text_width_dragging
+                    || bezier_handle_dragging
                     || vertex_dragging
                     || line_dragging
                     || self.state.line_drag_session.is_some()
@@ -11065,9 +11185,11 @@ impl App {
             && !vertex_dragging
             && !line_dragging
             && !bezier_handle_dragging
+            && !text_width_dragging
             && self.vertex_drag.is_none()
             && self.state.line_drag_session.is_none()
             && self.bezier_handle_drag.is_none()
+            && self.text_width_drag.is_none()
         {
             if let Some(pp) = pointer_screen {
                 let gp = cam.ground_point(pp, viewport, &vp);
