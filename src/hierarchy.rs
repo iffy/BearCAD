@@ -351,6 +351,9 @@ fn point_effective_visible(
                 visibility.effective_visible(doc, SceneElement::Sketch(entity.sketch))
             })
         }
+        ConstraintPoint::ImageCalibrationPoint { image, .. } => {
+            visibility.effective_visible(doc, SceneElement::Image(image))
+        }
     }
 }
 
@@ -1763,6 +1766,7 @@ fn point_parent_element(doc: &Document, point: ConstraintPoint) -> Option<SceneE
             .map(|_| SceneElement::Line(line)),
         ConstraintPoint::CircleCenter(circle) => Some(SceneElement::Circle(circle)),
         ConstraintPoint::TextAnchor { text, .. } => Some(SceneElement::SketchText(text)),
+        ConstraintPoint::ImageCalibrationPoint { image, .. } => Some(SceneElement::Image(image)),
         // A face's own vertex nests under the extrusion that produced its face.
         ConstraintPoint::FaceVertex { face, .. } => {
             face.extrusion_index().map(SceneElement::Extrusion)

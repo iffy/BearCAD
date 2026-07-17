@@ -3199,6 +3199,22 @@ impl App {
             return;
         }
         let Some(bi) = self.pick_whole_body(pp, project, cam, &target.kind) else {
+            // No body under the cursor: a click on a tracing image's quad toggles the
+            // image into the move set (#425) — images previously joined only from the
+            // Elements pane.
+            if let Some(ii) = self.pick_tracing_image(pp, viewport, vp, cam) {
+                let cm = self
+                    .state
+                    .creating_move
+                    .get_or_insert_with(actions::CreatingMove::default);
+                if let Some(pos) = cm.image_targets.iter().position(|i| *i == ii) {
+                    cm.image_targets.remove(pos);
+                } else {
+                    cm.image_targets.push(ii);
+                }
+                self.state.status =
+                    format!("Move: {} image(s) picked", cm.image_targets.len());
+            }
             return;
         };
         if self.state.doc.bodies.get(bi).is_some_and(|b| b.shadow) {
@@ -3216,6 +3232,47 @@ impl App {
             cm.targets.push(bi);
         }
         self.state.status = format!("Move: {} body(ies) picked", cm.targets.len());
+    }
+
+    /// The visible tracing image whose quad is under the cursor (#425), nearest plane hit
+    /// first.
+    fn pick_tracing_image(
+        &self,
+        pp: egui::Pos2,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+        cam: &camera::Camera,
+    ) -> Option<usize> {
+        let mut best: Option<(f32, usize)> = None;
+        for (ii, img) in self.state.doc.tracing_images.iter().enumerate() {
+            if img.deleted
+                || !self
+                    .state
+                    .element_visibility
+                    .effective_visible(&self.state.doc, SceneElement::Image(ii))
+            {
+                continue;
+            }
+            let Some(frame) =
+                face::sketch_frame(&self.state.doc, model::FaceId::ConstructionPlane(img.plane))
+            else {
+                continue;
+            };
+            let Some(hit) = cam.ray_plane_hit(pp, viewport, vp, frame.origin, frame.normal)
+            else {
+                continue;
+            };
+            let d = hit - frame.origin;
+            let (u, v) = (d.dot(frame.u_axis), d.dot(frame.v_axis));
+            let (ox, oy) = img.origin;
+            if u >= ox && u <= ox + img.width_mm && v >= oy && v <= oy + img.height_mm {
+                let dist = (hit - cam.eye()).length();
+                if best.is_none_or(|(b, _)| dist < b) {
+                    best = Some((dist, ii));
+                }
+            }
+        }
+        best.map(|(_, ii)| ii)
     }
 
     /// Repeat tool (#182): click bodies to toggle them into the repeat set; clicking a

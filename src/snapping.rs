@@ -220,7 +220,8 @@ fn owning_lines(point: &ConstraintPoint) -> Vec<ConstraintLine> {
         ConstraintPoint::LineEndpoint { line, .. } => vec![ConstraintLine::Line(*line)],
         ConstraintPoint::CircleCenter(_)
         | ConstraintPoint::FaceVertex { .. }
-        | ConstraintPoint::TextAnchor { .. } => Vec::new(),
+        | ConstraintPoint::TextAnchor { .. }
+        | ConstraintPoint::ImageCalibrationPoint { .. } => Vec::new(),
     }
 }
 
@@ -287,6 +288,20 @@ pub fn sketch_vertices(doc: &Document, sketch: SketchId) -> Vec<ConstraintPoint>
         }
         for anchor in crate::model::TextAnchor::ALL {
             points.push(ConstraintPoint::TextAnchor { text: index, anchor });
+        }
+    }
+    // A calibrated image's reference points (#425), for images on this sketch's plane.
+    for (index, img) in doc.tracing_images.iter().enumerate() {
+        if img.deleted
+            || doc.sketch_face(sketch)
+                != Some(crate::model::FaceId::ConstructionPlane(img.plane))
+        {
+            continue;
+        }
+        for i in 0..2 {
+            if crate::model::image_calibration_point_uv(img, i).is_some() {
+                points.push(ConstraintPoint::ImageCalibrationPoint { image: index, index: i });
+            }
         }
     }
     // Corners of the body face the sketch sits on (#26/#27, #139): a sketch drawn on an

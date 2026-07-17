@@ -164,6 +164,7 @@ pub fn scene_element_for_point(point: ConstraintPoint) -> SceneElement {
         ConstraintPoint::LineEndpoint { line, .. } => SceneElement::Line(line),
         ConstraintPoint::CircleCenter(circle) => SceneElement::Circle(circle),
         ConstraintPoint::TextAnchor { text, .. } => SceneElement::SketchText(text),
+        ConstraintPoint::ImageCalibrationPoint { image, .. } => SceneElement::Image(image),
         // A face's own vertex tracks the extrusion that produced its face, same convention
         // as `document_health`/`hierarchy`'s owner mappings for `FaceVertex`/`FaceEdge`.
         ConstraintPoint::FaceVertex { face, .. } => {
@@ -359,6 +360,7 @@ fn constraint_point_sort_key(point: ConstraintPoint) -> (u8, usize, u8, u8) {
         ConstraintPoint::CircleCenter(circle) => (2, circle, 0, 0),
         ConstraintPoint::FaceVertex { index, .. } => (3, index, 0, 0),
         ConstraintPoint::TextAnchor { text, anchor } => (4, text, anchor as u8, 0),
+        ConstraintPoint::ImageCalibrationPoint { image, index } => (5, image, index as u8, 0),
     }
 }
 

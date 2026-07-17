@@ -341,6 +341,9 @@ fn constraint_ref_sort_key(reference: ConstraintRef) -> (u8, usize, u8, u8) {
         ConstraintRef::Point(ConstraintPoint::TextAnchor { text, anchor }) => {
             (8, text, anchor as u8, 0)
         }
+        ConstraintRef::Point(ConstraintPoint::ImageCalibrationPoint { image, index }) => {
+            (9, image, index as u8, 0)
+        }
         ConstraintRef::Line(ConstraintLine::OriginAxis(axis)) => (8, axis as usize, 0, 0),
         ConstraintRef::Origin => (9, 0, 0, 0),
     }
@@ -634,6 +637,21 @@ fn validate_point_ref(doc: &Document, sketch: SketchId, point: &ConstraintPoint)
                 return Err(format!("Text {text} is not in sketch {sketch}"));
             }
         }
+        // Valid only in sketches hosted on the image's own plane (#425).
+        ConstraintPoint::ImageCalibrationPoint { image, index } => {
+            let img = doc
+                .tracing_images
+                .get(*image)
+                .filter(|i| !i.deleted)
+                .ok_or_else(|| format!("Image {image} not found"))?;
+            if crate::model::image_calibration_point_uv(img, *index).is_none() {
+                return Err(format!("Image {image} has no calibration point {index}"));
+            }
+            if doc.sketch_face(sketch) != Some(crate::model::FaceId::ConstructionPlane(img.plane))
+            {
+                return Err(format!("Image {image} is not on sketch {sketch}'s plane"));
+            }
+        }
     }
     Ok(())
 }
@@ -666,8 +684,9 @@ fn coincident_point_mobility(point: &ConstraintPoint) -> u8 {
     match point {
         ConstraintPoint::LineEndpoint { .. } | ConstraintPoint::CircleCenter(_) => 2,
         // A text translates rigidly to follow its anchor (#408): prefer moving the text over
-        // reshaping lines/circles, so constraining a text to geometry moves the text.
-        ConstraintPoint::TextAnchor { .. } => 3,
+        // reshaping lines/circles, so constraining a text to geometry moves the text. An
+        // image behaves the same through its calibration points (#425).
+        ConstraintPoint::TextAnchor { .. } | ConstraintPoint::ImageCalibrationPoint { .. } => 3,
         // Fixed by the body's own geometry: never the mover, so it always ranks below every
         // draggable sketch-native point (mirrors `ConstraintEntity::Origin`'s fixed treatment).
         ConstraintPoint::FaceVertex { .. } => 0,
@@ -828,6 +847,17 @@ pub fn point_uv(doc: &Document, sketch: SketchId, point: ConstraintPoint) -> Res
                 .ok_or_else(|| "Sketch frame not available".to_string())?;
             Ok(crate::face::world_to_local(&frame, world))
         }
+        // A calibration reference point is derived from the image's origin + stored uv
+        // (#425).
+        ConstraintPoint::ImageCalibrationPoint { image, index } => {
+            let img = doc
+                .tracing_images
+                .get(image)
+                .filter(|i| !i.deleted)
+                .ok_or_else(|| format!("Image {image} not found"))?;
+            crate::model::image_calibration_point_uv(img, index)
+                .ok_or_else(|| format!("Image {image} has no calibration point {index}"))
+        }
         // A text anchor is derived from the text's origin + its baked bounding box (#408).
         ConstraintPoint::TextAnchor { text, anchor } => {
             let entity = doc
@@ -878,6 +908,22 @@ pub fn set_point_uv(
         // Fixed by the body's own geometry, not by the sketch — mirrors how
         // `ConstraintEntity::Origin` is treated as a fixed, undraggable reference.
         ConstraintPoint::FaceVertex { .. } => Err("Face vertices are fixed and cannot be moved".to_string()),
+        // Moving a calibration point translates the whole image (#425): the scale never
+        // changes from constraints.
+        ConstraintPoint::ImageCalibrationPoint { image, index } => {
+            let img = doc
+                .tracing_images
+                .get_mut(image)
+                .filter(|i| !i.deleted)
+                .ok_or_else(|| format!("Image {image} not found"))?;
+            let (px, py) = crate::model::image_calibration_point_uv(img, index)
+                .ok_or_else(|| format!("Image {image} has no calibration point {index}"))?;
+            img.origin = (img.origin.0 + u - px, img.origin.1 + v - py);
+            if let Some((bx, by)) = img.base_origin {
+                img.base_origin = Some((bx + u - px, by + v - py));
+            }
+            Ok(())
+        }
         // Moving an anchor translates the whole text: origin = target − rotated anchor
         // offset (#408). Rotation and size are untouched.
         ConstraintPoint::TextAnchor { text, anchor } => {

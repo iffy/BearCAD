@@ -122,6 +122,11 @@ fn point_owner_alive(
         ConstraintPoint::TextAnchor { text, .. } => {
             doc.sketch_texts.get(*text).is_some_and(|t| !t.deleted)
         }
+        ConstraintPoint::ImageCalibrationPoint { image, index } => doc
+            .tracing_images
+            .get(*image)
+            .filter(|i| !i.deleted)
+            .is_some_and(|i| crate::model::image_calibration_point_uv(i, *index).is_some()),
     }
 }
 
@@ -144,6 +149,7 @@ fn point_owner_element(point: &crate::model::ConstraintPoint) -> Option<SceneEle
         ConstraintPoint::LineEndpoint { line, .. } => SceneElement::Line(*line),
         ConstraintPoint::CircleCenter(circle) => SceneElement::Circle(*circle),
         ConstraintPoint::TextAnchor { text, .. } => SceneElement::SketchText(*text),
+        ConstraintPoint::ImageCalibrationPoint { image, .. } => SceneElement::Image(*image),
         ConstraintPoint::FaceVertex { .. } => return None,
     })
 }
@@ -648,6 +654,11 @@ pub fn constraint_point_alive(doc: &Document, point: &ConstraintPoint) -> bool {
         ConstraintPoint::TextAnchor { text, .. } => {
             doc.sketch_texts.get(*text).is_some_and(|t| !t.deleted)
         }
+        ConstraintPoint::ImageCalibrationPoint { image, index } => doc
+            .tracing_images
+            .get(*image)
+            .filter(|i| !i.deleted)
+            .is_some_and(|i| crate::model::image_calibration_point_uv(i, *index).is_some()),
     }
 }
 

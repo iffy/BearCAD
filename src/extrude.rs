@@ -2367,6 +2367,16 @@ pub fn constraint_point_world(doc: &Document, point: crate::model::ConstraintPoi
         crate::model::ConstraintPoint::TextAnchor { text, .. } => {
             doc.sketch_texts.get(*text)?.sketch
         }
+        crate::model::ConstraintPoint::ImageCalibrationPoint { image, index } => {
+            // The image lives on a plane, not in a sketch: resolve directly in world space.
+            let img = doc.tracing_images.get(*image).filter(|i| !i.deleted)?;
+            let (u, v) = crate::model::image_calibration_point_uv(img, *index)?;
+            let frame = crate::face::sketch_frame(
+                doc,
+                crate::model::FaceId::ConstructionPlane(img.plane),
+            )?;
+            return Some(frame.origin + frame.u_axis * u + frame.v_axis * v);
+        }
         crate::model::ConstraintPoint::FaceVertex { .. } => unreachable!("handled above"),
     };
     let frame = sketch_geometry_frame(doc, sketch)?;

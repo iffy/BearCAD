@@ -468,6 +468,9 @@ pub fn point_sketch(doc: &Document, point: ConstraintPoint) -> Option<SketchId> 
         ConstraintPoint::TextAnchor { text, .. } => {
             doc.sketch_texts.get(text).map(|t| t.sketch)
         }
+        // A calibration point belongs to whichever sketch references it (the image sits on
+        // a plane, not in a sketch) — no owning sketch, like a face vertex.
+        ConstraintPoint::ImageCalibrationPoint { .. } => None,
         // A face's own vertex has no owning sketch of its own — it's referenced *from*
         // whichever sketch a constraint projects it into, not owned by one.
         ConstraintPoint::FaceVertex { .. } => None,
@@ -979,9 +982,9 @@ impl PickOcclusion {
                     ConstraintPoint::CircleCenter(c) => {
                         doc.circles.get(*c).is_some_and(|c| c.shadow)
                     }
-                    ConstraintPoint::FaceVertex { .. } | ConstraintPoint::TextAnchor { .. } => {
-                        false
-                    }
+                    ConstraintPoint::FaceVertex { .. }
+                    | ConstraintPoint::TextAnchor { .. }
+                    | ConstraintPoint::ImageCalibrationPoint { .. } => false,
                 };
                 !shadow && vis.effective_visible(doc, SceneElement::Point(point.clone()))
             }
@@ -1528,6 +1531,13 @@ pub fn point_world_position(doc: &Document, point: ConstraintPoint) -> Option<Ve
             let (u, v) = crate::text::sketch_text_anchor_uv(entity, anchor);
             Some(local_to_world(&frame, u, v))
         }
+        ConstraintPoint::ImageCalibrationPoint { image, index } => {
+            let img = doc.tracing_images.get(image).filter(|i| !i.deleted)?;
+            let (u, v) = crate::model::image_calibration_point_uv(img, index)?;
+            let frame =
+                crate::face::sketch_frame(doc, crate::model::FaceId::ConstructionPlane(img.plane))?;
+            Some(frame.origin + frame.u_axis * u + frame.v_axis * v)
+        }
     }
 }
 
@@ -1597,6 +1607,24 @@ pub fn nearest_sketch_point_in_sketch(
                     ConstraintPoint::TextAnchor { text: ti, anchor },
                     crate::face::local_to_world(&frame, u, v),
                 );
+            }
+        }
+    }
+    // A calibrated image's two reference points (#425), for images on this sketch's plane.
+    for (ii, img) in doc.tracing_images.iter().enumerate() {
+        if img.deleted
+            || doc.sketch_face(sketch) != Some(FaceId::ConstructionPlane(img.plane))
+        {
+            continue;
+        }
+        if let Some(frame) = crate::face::sketch_geometry_frame(doc, sketch) {
+            for index in 0..2 {
+                if let Some((u, v)) = crate::model::image_calibration_point_uv(img, index) {
+                    consider(
+                        ConstraintPoint::ImageCalibrationPoint { image: ii, index },
+                        crate::face::local_to_world(&frame, u, v),
+                    );
+                }
             }
         }
     }
@@ -1783,6 +1811,25 @@ fn nearest_sketch_point(
                 ConstraintPoint::TextAnchor { text: ti, anchor },
                 crate::face::local_to_world(&frame, u, v),
             );
+        }
+    }
+    // A calibrated image's two reference points (#425).
+    for (ii, img) in doc.tracing_images.iter().enumerate() {
+        if img.deleted {
+            continue;
+        }
+        let Some(frame) =
+            crate::face::sketch_frame(doc, FaceId::ConstructionPlane(img.plane))
+        else {
+            continue;
+        };
+        for index in 0..2 {
+            if let Some((u, v)) = crate::model::image_calibration_point_uv(img, index) {
+                consider(
+                    ConstraintPoint::ImageCalibrationPoint { image: ii, index },
+                    frame.origin + frame.u_axis * u + frame.v_axis * v,
+                );
+            }
         }
     }
 

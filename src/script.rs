@@ -2362,6 +2362,10 @@ fn point_lua_fields(point: &ConstraintPoint) -> String {
             let anchor = anchor.lua_name();
             format!("kind = \"sketch_text\", index = {text}, anchor = \"{anchor}\"")
         }
+        // #425: mirrors the `"image"` + `point` shape.
+        ConstraintPoint::ImageCalibrationPoint { image, index } => {
+            format!("kind = \"image\", index = {image}, point = {index}")
+        }
     }
 }
 

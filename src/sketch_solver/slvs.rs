@@ -896,6 +896,15 @@ fn line_endpoints_uv(
 
 /// Build the system for `sketch`, solve group 2 with libslvs, and return the outcome.
 /// Nothing is written back; call [`SlvsOutcome::apply_to_document`] for that.
+/// Whether a point moves by translating its owner (text/image) rather than being sketch
+/// geometry itself (#408/#425) — the side a coincidence lets move.
+fn follower_point(p: &ConstraintPoint) -> bool {
+    matches!(
+        p,
+        ConstraintPoint::TextAnchor { .. } | ConstraintPoint::ImageCalibrationPoint { .. }
+    )
+}
+
 pub fn solve_sketch(
     doc: &Document,
     sketch: SketchId,
@@ -1047,18 +1056,13 @@ pub fn solve_sketch(
                             hold_line(&b, l, &mut dragged, &mut hold_point)
                         }
                     }
-                    // A text anchor coincident with a sketch point (#408): the text follows
-                    // the point, not the other way around — hold the non-text side, matching
-                    // the old pin semantics.
+                    // A text anchor (#408) or image calibration point (#425) coincident with
+                    // a sketch point: the text/image follows the point, not the other way
+                    // around — hold the non-follower side.
                     (E::Point(p1), E::Point(p2))
-                        if matches!(p1, ConstraintPoint::TextAnchor { .. })
-                            != matches!(p2, ConstraintPoint::TextAnchor { .. }) =>
+                        if follower_point(p1) != follower_point(p2) =>
                     {
-                        let target = if matches!(p1, ConstraintPoint::TextAnchor { .. }) {
-                            p2
-                        } else {
-                            p1
-                        };
+                        let target = if follower_point(p1) { p2 } else { p1 };
                         if !point_pinned(target) {
                             hold_point(&b, target, &mut dragged);
                         }

@@ -124,6 +124,7 @@ fn pane_element_for_constraint_point(
         ConstraintPoint::LineEndpoint { line, .. } => SceneElement::Line(line),
         ConstraintPoint::CircleCenter(circle) => SceneElement::Circle(circle),
         ConstraintPoint::TextAnchor { text, .. } => SceneElement::SketchText(text),
+        ConstraintPoint::ImageCalibrationPoint { image, .. } => SceneElement::Image(image),
         ConstraintPoint::FaceVertex { face, .. } => {
             SceneElement::Extrusion(face.extrusion_index().unwrap_or(usize::MAX))
         }

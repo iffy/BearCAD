@@ -650,6 +650,21 @@ fn validate_point_in_sketch(
             }
             Ok(())
         }
+        ConstraintPoint::ImageCalibrationPoint { image, index } => {
+            let img = doc
+                .tracing_images
+                .get(image)
+                .filter(|i| !i.deleted)
+                .ok_or_else(|| format!("Image {image} not found"))?;
+            if crate::model::image_calibration_point_uv(img, index).is_none() {
+                return Err(format!("Image {image} has no calibration point {index}"));
+            }
+            if doc.sketch_face(sketch) != Some(crate::model::FaceId::ConstructionPlane(img.plane))
+            {
+                return Err(format!("Image {image} is not on sketch {sketch}'s plane"));
+            }
+            Ok(())
+        }
     }
 }
 

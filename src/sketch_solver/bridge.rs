@@ -561,7 +561,11 @@ impl SketchBridge {
         }
         // A text anchor (#408) is likewise absent from `seed_entities`' line/circle walk —
         // seeded lazily on first reference, but **free** (the text translates to follow it).
-        if let ConstraintPoint::TextAnchor { .. } = &point {
+        // An image calibration point (#425) behaves identically.
+        if matches!(
+            &point,
+            ConstraintPoint::TextAnchor { .. } | ConstraintPoint::ImageCalibrationPoint { .. }
+        ) {
             let (u, v) = point_uv(doc, self.sketch, point.clone())?;
             let vars = self.system.add_point(u as f64, v as f64, false);
             self.point_vars.insert(point, vars);
@@ -850,6 +854,9 @@ fn point_sketch(doc: &Document, point: ConstraintPoint) -> Option<SketchId> {
         ConstraintPoint::LineEndpoint { line, .. } => doc.lines.get(line).map(|l| l.sketch),
         ConstraintPoint::CircleCenter(circle) => doc.circles.get(circle).map(|c| c.sketch),
         ConstraintPoint::TextAnchor { text, .. } => doc.sketch_texts.get(text).map(|t| t.sketch),
+        // A calibration point has no owning sketch (the image sits on a plane) — mirrors
+        // `construction::point_sketch` (#425).
+        ConstraintPoint::ImageCalibrationPoint { .. } => None,
         // A face's own vertex has no owning sketch — it's referenced *from* whichever sketch a
         // constraint projects it into, not owned by one (mirrors `construction::point_sketch`).
         ConstraintPoint::FaceVertex { .. } => None,

@@ -37,6 +37,22 @@ measured span — apply the real length again to rescale), or **click** a point 
 
 ![A calibrated tracing image on the ground plane with sketch lines traced over the plate outline](/img/screenshots/tracing.png)
 
+## Moving and constraining
+
+The [Move](/docs/tools/move) tool moves an image: click its quad in the viewport (or its
+Elements pane row) to pick it, then set the translation.
+
+A calibrated image's two reference points are regular sketch points: with the
+[Constraint](/docs/tools/constraint) tool in a sketch on the image's plane, hold one
+coincident to a vertex, a line, or the origin/axes — the whole image translates to
+follow (scale never changes). From scripts:
+
+```lua
+bearcad.select{ kind = "image", index = 0, point = 0 }   -- calibration point 0 or 1
+bearcad.select({ kind = "line", index = 2, ["end"] = "start" }, true)
+bearcad.add_geometric_constraint("coincident")
+```
+
 ## Tracing
 
 Sketch on the image's plane as usual and trace what you need. Because the image is

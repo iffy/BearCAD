@@ -726,6 +726,22 @@ pub enum ConstraintPoint {
     /// midpoints, or centre. Solving moves the text's `origin` (the whole text translates
     /// rigidly); its rotation and size never change from constraints.
     TextAnchor { text: usize, anchor: TextAnchor },
+    /// One of a tracing image's two calibration reference points (#425). Solving moves the
+    /// image's `origin` (the whole image translates rigidly); its scale never changes from
+    /// constraints. Only valid in sketches hosted on the image's plane.
+    ImageCalibrationPoint { image: usize, index: usize },
+}
+
+/// A calibration reference point's host-plane-local position (#425).
+pub fn image_calibration_point_uv(img: &TracingImage, index: usize) -> Option<(f32, f32)> {
+    let cal = img.calibration.as_ref()?;
+    let (ox, oy) = img.origin;
+    let (w, h) = (img.width_mm.max(1e-6), img.height_mm.max(1e-6));
+    match index {
+        0 => Some((ox + cal.u0 * w, oy + cal.v0 * h)),
+        1 => Some((ox + cal.u1 * w, oy + cal.v1 * h)),
+        _ => None,
+    }
 }
 
 /// A line-like sketch entity for parallel, perpendicular, and orientation constraints.

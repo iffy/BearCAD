@@ -251,10 +251,13 @@ fn parse_element_table(lua: &Lua, table: Table) -> mlua::Result<SceneElement> {
     // Point-level selector (#68): a line endpoint (`end = "start"|"end"`), or an explicit
     // `point = true` (e.g. a circle's center) — otherwise
     // `kind`/`index` alone resolve to the whole element as before.
+    // `point` is `true` for a circle's centre (#68) or a calibration point index for an
+    // image (#425); `false`/absent resolves to the whole element.
+    let point_flagged = !matches!(table.get::<Value>("point")?, Value::Nil | Value::Boolean(false));
     if table.contains_key("end")?
         || table.contains_key("corner")?
         || table.contains_key("anchor")?
-        || table.get::<Option<bool>>("point")?.unwrap_or(false)
+        || point_flagged
     {
         return Ok(SceneElement::Point(parse_constraint_point_table(table)?));
     }
@@ -469,6 +472,15 @@ fn parse_constraint_point_table(table: Table) -> mlua::Result<ConstraintPoint> {
             Ok(ConstraintPoint::LineEndpoint { line: index, end })
         }
         "circle" => Ok(ConstraintPoint::CircleCenter(index)),
+        // A calibrated image's reference point (#425): `{ kind = "image", index = i,
+        // point = 0|1 }`.
+        "image" => {
+            let point: usize = table.get("point")?;
+            Ok(ConstraintPoint::ImageCalibrationPoint {
+                image: index,
+                index: point,
+            })
+        }
         // One of a sketch text's nine anchor points (#408): `{ kind = "sketch_text",
         // index = i, anchor = "center" }` (anchor defaults to center).
         "text" | "sketch_text" => {

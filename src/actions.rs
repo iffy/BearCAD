@@ -14848,6 +14848,76 @@ mod tests {
         assert_eq!(state.creating_calibration.as_ref().unwrap().points.len(), 2);
     }
 
+    /// #425: a calibrated image's reference points are constraint points — coincident to a
+    /// sketch vertex or the origin, the whole image translates (never rescales) to follow.
+    #[test]
+    fn image_calibration_points_constrain_and_translate_the_image() {
+        use crate::model::{ConstraintEntity, ConstraintKind, ConstraintPoint};
+        let mut state = AppState::default();
+        state.doc.tracing_images.push(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "grid".to_string(),
+            plane: 0,
+            origin: (-50.0, -30.0),
+            width_mm: 100.0,
+            height_mm: 60.0,
+            name: None,
+            deleted: false,
+            calibration: Some(crate::model::ImageCalibration {
+                u0: 0.25,
+                v0: 0.5,
+                u1: 0.75,
+                v1: 0.5,
+                length_mm: 50.0,
+            }),
+            base_origin: None,
+        });
+        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        state
+            .doc
+            .lines
+            .push(crate::model::Line::from_local_endpoints(sketch, 30.0, 40.0, 60.0, 40.0));
+        state.doc.constraints.push(crate::model::Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(ConstraintPoint::ImageCalibrationPoint {
+                    image: 0,
+                    index: 0,
+                }),
+                b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                    line: 0,
+                    end: crate::model::LineEnd::Start,
+                }),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+        crate::constraints::solve_document_constraints(&mut state.doc).unwrap();
+        let img = &state.doc.tracing_images[0];
+        // Point 0 sits at origin + (0.25, 0.5) * size; it must land on (30, 40).
+        let (u, v) = crate::model::image_calibration_point_uv(img, 0).unwrap();
+        assert!((u - 30.0).abs() < 1e-2 && (v - 40.0).abs() < 1e-2, "point at ({u}, {v})");
+        // Translation only: the size is untouched and the line stayed put.
+        assert_eq!(img.width_mm, 100.0);
+        assert_eq!(img.height_mm, 60.0);
+        assert_eq!(state.doc.lines[0].x0, 30.0);
+
+        // Origin coincidence works the same way through the generic entity.
+        state.doc.constraints[0].kind = ConstraintKind::Coincident {
+            a: ConstraintEntity::Point(ConstraintPoint::ImageCalibrationPoint {
+                image: 0,
+                index: 1,
+            }),
+            b: ConstraintEntity::Origin,
+        };
+        crate::constraints::solve_document_constraints(&mut state.doc).unwrap();
+        let img = &state.doc.tracing_images[0];
+        let (u, v) = crate::model::image_calibration_point_uv(img, 1).unwrap();
+        assert!(u.abs() < 1e-2 && v.abs() < 1e-2, "point 1 at ({u}, {v})");
+    }
+
     #[test]
     fn calibrate_image_rescales_about_the_reference_segment() {
         let mut state = AppState::default();

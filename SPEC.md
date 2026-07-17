@@ -827,7 +827,16 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   stored uv, never rescales) or **clicked + Deleted**
   (`Action::RemoveCalibrationPoint` — the guided flow re-opens holding the other point,
   so the next click re-places it). Scriptable: `bearcad.calibration_point{ image, index,
-  x, y }` / `bearcad.remove_calibration_point{ image, index }`. Alternative segment source: a **line** drawn on the
+  x, y }` / `bearcad.remove_calibration_point{ image, index }`.
+- **Image constraints & viewport move-pick (#425):** a calibrated image's two reference
+  points are first-class constraint points (`ConstraintPoint::ImageCalibrationPoint`),
+  pickable/snappable in sketches hosted on the image's plane and usable in
+  coincident/midpoint/distance constraints against vertices, lines, and the
+  origin/axes. Solving **translates** the whole image (`set_point_uv` shifts `origin`
+  and `base_origin`; scale never changes), and the solver holds the non-image side of a
+  point-point coincidence so the image follows its target. The Move tool also picks an
+  image by clicking its quad in the viewport (`App::pick_tracing_image`), not only from
+  the Elements pane. Scriptable: `bearcad.select{ kind = "image", index, point = 0|1 }`. Alternative segment source: a **line** drawn on the
   image's plane, selected together with the image, feeds the same length field. Scriptable
   via `bearcad.calibrate_image{ image =, from = {x, y}, to = {x, y}, length = }`
   (plane-local coordinates). *Known limitation:* calibration mutates the image in place and
