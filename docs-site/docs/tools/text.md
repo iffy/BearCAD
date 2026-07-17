@@ -7,64 +7,46 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 
 # <img src={useBaseUrl("/img/icons/text.svg")} width="30" /> Text
 
-Text places real, engraving-ready lettering in a sketch — part numbers, labels, logos — as
-glyph outlines you can edit, rotate, and extrude or cut like any other sketch profile.
+Text places engraving-ready lettering in a sketch as glyph outlines you can edit, rotate,
+and extrude or cut like any other profile.
 
 ## How to use it
 
-1. Open a sketch and pick the **Text** tool (or press **T**).
-2. **Click** where the text should start for a box that grows to fit, or **drag a rectangle**
-   to make a box that wraps the text to that width and grows downward. Either way a text
-   element appears, selected, with its editor open in the context pane.
-3. Type your text and style it in the editor (below). Every change re-bakes the letter
-   outlines right away, so the sketch always shows exactly what you'll get.
+With the **Text** tool (**T**) in a sketch, **click** where the text should start for a
+box that grows to fit, or **drag a rectangle** for one that wraps text to that width. Type
+in the editor that opens; the outlines re-bake as you type. With no sketch open, click any
+face or plane to start a sketch there.
 
 ## The text editor
 
-Selecting a single text element (click it in the Elements pane, or place a new one) shows
-its editor in the context pane:
-
-- **Text** — a multi-line box; newlines stack lines below each other with the font's
-  natural line spacing. You can embed **variables** in curly braces — `Bore {d}` prints the
-  current value of the `d` parameter and re-bakes whenever `d` changes. Any expression works
-  inside the braces (`{d / 2}`), the value prints in the document's unit, and an unknown name
-  shows `#NA`. Double a brace (`{{`) to print a literal one. While typing a name inside braces,
-  a completion list of your parameters appears — press **Tab** to accept the highlighted one.
-- **Font** — a chooser listing every font family installed on your computer, each name
-  previewed in its own font.
-- **B / I / U** — bold, italic, and underline toggles. Bold and italic select the matching
-  face of the family.
-- **Size** — the font size in mm. This is an expression field: numbers, units (`1cm`),
-  parameters, and arithmetic (`w / 2`) all work, so lettering scales with your model. The
-  **+**/**−** buttons beside it nudge the size by 1 mm.
-- **Rotation°** — turns the text about its start point, in degrees.
-- **Wrap width** — leave empty to grow the box to fit the text, or enter a width in mm to
-  word-wrap the text to that width (it grows downward). Dragging a rectangle with the Text
-  tool sets this for you.
+- **Text** — multi-line. Embed parameters in curly braces: `Bore {d}` re-bakes whenever
+  `d` changes. Any expression works (`{d / 2}`); `{{` prints a literal brace; **Tab**
+  accepts the completion popup.
+- **Font** — any installed font family. **B / I / U** toggle bold, italic, underline.
+- **Size** — font size in mm; an expression field, so lettering scales with the model.
+- **Rotation°** — turns the text about its start point.
+- **Wrap width** — empty grows to fit; a width in mm word-wraps.
 
 ## Pinning text to a point
 
-Select a text and it shows **nine anchor dots** (corners, edge midpoints, centre). In the context
-pane's **Pin** row, choose an anchor and click **to point…**, then click a sketch vertex — the text
-snaps so that anchor sits on the vertex and **stays there** as the model changes. **Unpin** releases
-it. (Press **Esc** to cancel picking.)
+A selected text shows nine anchor dots. In the **Pin** row, choose an anchor, click
+**to point…**, then click a sketch vertex — the anchor stays on that vertex as the model
+changes. **Unpin** releases it.
 
 ## Rotating with the Move tool
 
-With the **Move** tool active and a text selected, a rotation ring appears around the text.
-Drag the ring to turn the text in place — the context pane's **Rotation°** field follows
-live, and typing in the field turns the text the same way.
+With the **Move** tool, drag the rotation ring around a selected text to turn it in place.
 
 ## Fonts travel with the file
 
-Like a PDF, the document embeds the font data and the baked letter outlines. Open the file
-on a machine that doesn't have the font and it still renders exactly as you made it.
+The document embeds the font data and baked outlines, so the file renders identically on
+machines without the font.
 
 ## Extruding and cutting text
 
-The [Extrude](/docs/tools/extrude) tool treats text as a face set: click the text and the
-whole string highlights as one selection, then pull it out (or push it in to **cut** —
-engraving). Letter counters — the holes in `o`, `a`, `e` — stay holes in the solid.
+The [Extrude](/docs/tools/extrude) tool treats a text as one face set: click it, then pull
+it out or push it in to **cut** (engraving). Letter counters — the holes in `o`, `a` —
+stay holes.
 
 ## Scripting
 
@@ -82,8 +64,6 @@ bearcad.extrude{ text = 0, distance = 1, body = "cut" }
 bearcad.pin_text{ text = 0, anchor = "center", line = 2, endpoint = "start" }
 ```
 
-Like `rect` and `circle`, `text` begins a ground sketch when none is open. In the app the
-Text tool works the same way: with no sketch open, click any face or plane to start a
-sketch there and place text right away. `size` accepts an
-expression; `rotation` is degrees about the text's start point at `(x, y)`; optional `wrap`
-sets a wrap width in mm. `font` defaults to a standard system font.
+Like `rect` and `circle`, `text` begins a ground sketch when none is open. `size` accepts
+an expression; `rotation` is degrees about `(x, y)`; optional `wrap` sets a wrap width in
+mm; `font` defaults to a standard system font.

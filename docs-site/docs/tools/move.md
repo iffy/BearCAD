@@ -7,65 +7,47 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 
 # <img src={useBaseUrl("/img/icons/move.svg")} width="30" /> Move
 
-Move translates and/or rotates whole bodies, producing moved copies — position an imported
-part, space out duplicates, or angle a bracket into place.
+Move translates and/or rotates whole bodies, producing moved copies.
 
 ![A box moved and rotated into a second position](/img/screenshots/move.png)
 
 ## How to use it
 
-1. Pick the **Move** tool and click one or more bodies. Re-clicking removes one; the
-   picked set shows in the context pane's **Bodies** element picker (the same combo-box
-   control the other tools use), where you can review and remove them.
-2. Type the translation **X / Y / Z** amounts. These are expressions — numbers,
-   parameters, arithmetic — so the move stays parametric.
-3. To rotate, pick an **axis** (the X/Y/Z buttons, or click any line in the viewport) and
-   type the **Angle** (degrees by default; `rad` works; parameters work).
-4. Press **Enter** (or the **Move** button) to commit.
+1. Pick the **Move** tool and click one or more bodies. Re-clicking removes one.
+2. Type the translation **X / Y / Z** amounts — expressions, so the move stays parametric.
+3. To rotate, pick an **axis** (X/Y/Z buttons, or click any line in the viewport) and type
+   the **Angle** (degrees by default; `rad` and parameters work).
+4. Press **Enter**.
 
-## What you get
-
-The inputs become [shadow bodies](/docs/tools/combine#shadow-bodies) and each one gains a
-moved copy — a real body you can extrude against, cut, combine, or move again. The move
-itself is an element in the pane with the copies nested under it: select it and choose
-**Edit move** to change the amounts, axis, or picked set; delete it to restore the
-originals.
-
-Because the amounts are expressions, editing a parameter re-places every body moved by it.
+The inputs become [shadow bodies](/docs/tools/combine#shadow-bodies) and each gains a
+moved copy — a real body for further operations. **Edit move** changes anything later;
+deleting the move restores the originals. Editing a parameter re-places every body moved
+by it.
 
 ## Moving geometry inside a sketch
 
-Inside an open sketch, the Move tool works differently — it moves sketch geometry, not whole
-bodies. Select the lines, circles, or text you want to move (with the Select tool), then
-switch to Move: a gizmo appears at the centre of your selection.
+Inside a sketch, Move moves sketch geometry. Select lines, circles, or text, then switch
+to Move: a gizmo appears at the selection's centre. Drag the centre disc to slide freely,
+or an arrow to move along one axis only.
 
-- **Drag the centre disc** to slide the whole selection anywhere on the sketch plane.
-- **Drag the red horizontal arrow** to move it left/right only, or the **green vertical
-  arrow** to move it up/down only.
-
-Constraints keep holding as you drag — coincident corners stay joined, and if a fixed point
-would force an edge to stretch, that move is refused instead (lengths never change).
+Constraints keep holding as you drag; a move that would force an edge to stretch is
+refused (lengths never change).
 
 ## Moving construction planes and tracing images
 
-The Move tool also moves **construction planes** and **tracing images** — pick one from the
-Elements pane (or select it) with the Move tool active, then set the translation and rotation
-just like a body.
+Pick a construction plane or tracing image from the Elements pane with the Move tool
+active, then set translation/rotation like a body.
 
-- A **construction plane** moves in place: its frame shifts, and everything anchored to it —
-  sketches built on the plane, images hosted on it, extrusions grown from those sketches —
-  moves with it. Move a plane and the whole feature tree that lives on it follows.
-- A **tracing image** slides in place on its host plane. In-plane translation repositions the
-  image over your model; it stays flush on its plane. (An image sitting on a plane you move
-  follows the plane, and can then be nudged on its own on top of that.)
+- A **construction plane** moves in place, carrying everything anchored to it — sketches,
+  images, extrusions grown from them.
+- A **tracing image** slides on its host plane (and follows the plane if the plane moves).
 
-Editing the move back to zero, or removing the plane/image from the move, returns it home.
+Editing the move back to zero returns it home.
 
 ## Rotating sketch text
 
-With the Move tool active and a single [sketch text](/docs/tools/text) selected, a rotation
-ring appears around the text in its sketch plane. Drag the ring to turn the text about its
-start point; the text's **Rotation°** field in the context pane stays in sync.
+With a single [sketch text](/docs/tools/text) selected, drag the rotation ring to turn it
+about its start point.
 
 ## Scripting
 

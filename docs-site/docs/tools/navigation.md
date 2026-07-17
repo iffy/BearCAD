@@ -43,11 +43,5 @@ These change how you *see* the model, never the model itself.
 
 ## Sketch mode
 
-While a sketch is open the viewport has an **orange border** as a reminder. The camera
-still works normally; press **Esc** to leave the sketch.
-
-## Hover feedback
-
-Anything you can click highlights as the cursor approaches — lines and points within a
-comfortable distance, not just pixel-perfect hits. What highlights is exactly what a click
-will do.
+While a sketch is open the viewport has an **orange border**. The camera still works
+normally; **Esc** leaves the sketch.

@@ -5,16 +5,13 @@ title: Parameters & units
 
 # Parameters & units
 
-Parameters are what make a BearCAD design *parametric*: named values like `leg = 50mm` that
-dimensions, extrude depths, text sizes — any value field — can reference. Change the value and
-everything built on it rebuilds.
+Parameters are named values like `leg = 50mm` that any value field can reference. Change
+the value and everything built on it rebuilds.
 
 ## The Parameters pane
 
-The **Parameters** pane (right side) lists every parameter with its name and expression.
-Click **+** to add one, edit either field in place, and remove one with its **✕**. While a
-row's field is focused, the Elements pane highlights everything that uses that parameter —
-the dimensions referencing it and the geometry they drive.
+The **Parameters** pane lists every parameter. While a row's field is focused, the
+Elements pane highlights everything that uses that parameter.
 
 ## Expressions
 
@@ -25,12 +22,10 @@ the dimensions referencing it and the geometry they drive.
 - **Mixed units**: `3mm + 2in` evaluates correctly. Lengths take `mm`, `cm`, `m`, `in`,
   `ft`; angles take `deg`, `rad`. A bare number is millimetres (degrees in angle fields).
 
-The text you type is stored verbatim — reopen the field later and `3mm + 2in` is still
-there, not its decimal result.
+The text you type is stored verbatim — reopen the field and `3mm + 2in` is still there.
 
-While typing a name, an **autocomplete** dropdown offers matching parameters: arrow keys move
-the highlight, **Space**/**Tab** completes it, and **Enter** completes *and* commits in one
-keystroke.
+While typing a name, autocomplete offers matching parameters: **Space**/**Tab** completes,
+**Enter** completes *and* commits.
 
 ## Creating parameters inline
 

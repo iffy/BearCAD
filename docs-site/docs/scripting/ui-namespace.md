@@ -5,11 +5,9 @@ title: The bearcad.ui.* namespace
 
 # The `bearcad.ui.*` namespace
 
-Everything under `bearcad.ui` simulates a real user driving the GUI — mouse motion and clicks,
-keyboard input, camera drags, tool selection, showing/hiding panes, and running palette commands.
-Reach for it when the UI interaction itself is what you're testing or automating (e.g. "does
-click-dragging the Line tool produce a curve"), not for ordinary modeling — use the
-[declarative API](./declarative-modeling) for that.
+Everything under `bearcad.ui` simulates a real user driving the GUI — mouse, keyboard,
+camera, tools, panes, palette. Use it when the UI interaction itself is what you're
+testing; for ordinary modeling use the [declarative API](./declarative-modeling).
 
 ## Tools and synthetic input
 
@@ -85,13 +83,10 @@ bearcad.ui.screenshot("out.png")
 bearcad.ui.screenshot("out.png", true)        -- whole_window = true: capture the entire window
 ```
 
-By default, `screenshot` captures the 3D viewport only (the view bear is suppressed for that
-frame); pass `whole_window = true` to capture the entire window instead. This is the mechanism
-behind BearCAD's visual regression testing: an instruction script can drive an exact interactive
-flow (e.g. the rectangle tool's click → move → type → enter sequence) and emit a screenshot to
-compare against a golden image in CI.
+By default, `screenshot` captures the 3D viewport only (the view bear is suppressed for
+that frame). This is the mechanism behind BearCAD's visual regression testing: a script
+drives an exact interactive flow and emits a screenshot to compare against a golden image
+in CI.
 
 Whether an action arrives declaratively or through `bearcad.ui.*`, it lands as the same
-committed document change — the namespace split is about *how* you describe the action, not
-a different underlying model ([Scripting](/docs/scripting#namespace-split) shows the same
-rectangle built both ways).
+committed document change.

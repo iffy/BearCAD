@@ -6,32 +6,23 @@ title: Scripting
 
 # Scripting
 
-BearCAD's Lua API is a first-class front end: everything achievable in the GUI is achievable by
-scripting, and vice versa. Scripted actions create the same underlying document changes as GUI
-actions — there is one model, two front ends.
+BearCAD's Lua API is a first-class front end: everything achievable in the GUI is
+achievable by scripting, and vice versa — one model, two front ends.
 
-The interpreter is **sandboxed**: no arbitrary filesystem/network access beyond the explicit
+The interpreter is **sandboxed**: no filesystem/network access beyond the explicit
 document/import/export/screenshot operations the API exposes.
 
 ## Namespace split
 
-This is the single most important thing to know about the API's shape:
+- The **primary API is declarative modeling**, OpenSCAD-style, at the top level:
+  `bearcad.new`, `bearcad.rect`, `bearcad.extrude`, `bearcad.add_constraint`,
+  `bearcad.parameter`, `bearcad.select`, ….
+- **All GUI manipulation** — simulated mouse/keyboard, camera, tools, panes, the
+  palette — lives under **`bearcad.ui.*`**: `bearcad.ui.click`, `bearcad.ui.key`,
+  `bearcad.ui.orbit`, `bearcad.ui.tool`, `bearcad.ui.screenshot`, ….
 
-- The **primary API is declarative modeling**, in the spirit of OpenSCAD: geometry and document
-  operations live at the top level — `bearcad.new`, `bearcad.rect`, `bearcad.extrude`,
-  `bearcad.add_constraint`, `bearcad.parameter`, `bearcad.select`, and so on. You describe
-  geometry directly instead of simulating clicks.
-- **All GUI/UI manipulation** — simulated mouse/keyboard, camera motion, tool selection, panes,
-  the command palette, and viewport drags — lives under the **`bearcad.ui.*`** sub-namespace:
-  `bearcad.ui.move`, `bearcad.ui.click`, `bearcad.ui.key`, `bearcad.ui.type`, `bearcad.ui.orbit`,
-  `bearcad.ui.pan`, `bearcad.ui.wheel`, `bearcad.ui.view`, `bearcad.ui.tool`, `bearcad.ui.pane`,
-  `bearcad.ui.palette`, `bearcad.ui.drag_vertex`, `bearcad.ui.wait`, `bearcad.ui.screenshot`, and
-  more.
-
-**Prefer the declarative top-level API**, and reach for `bearcad.ui.*` only when the UI
-interaction itself is the point — for example, testing that a click-drag on the Line tool
-produces a curve, or capturing a screenshot of an in-progress draw. Most modeling scripts never
-touch `bearcad.ui.*` at all.
+Prefer the declarative API; reach for `bearcad.ui.*` only when the UI interaction itself
+is the point.
 
 ```lua
 -- Declarative (preferred): describe the geometry directly.
@@ -47,8 +38,8 @@ bearcad.ui.key("enter")
 
 ## Running a script
 
-The current CLI runs a script with the `--script` flag (or a bare `.lua` path) and, for headless
-runs, `--exit` to close the app once the script finishes:
+`--script` (or a bare `.lua` path) runs a script; `--exit` closes the app when it
+finishes:
 
 ```sh
 cargo run -- --script examples/rectangle.lua --exit
@@ -56,33 +47,27 @@ cargo run -- --script examples/rectangle.lua --exit
 cargo run -- examples/rectangle.lua --exit
 ```
 
-Once installed as `bearcad` on your `PATH` (**Help → Install "bearcad" Command in PATH**, or
-`bearcad install-cli`):
+Once installed as `bearcad` on your `PATH` (**Help → Install "bearcad" Command in PATH**,
+or `bearcad install-cli`):
 
 ```sh
 bearcad --script examples/rectangle.lua --exit
 ```
 
-Both the desktop and browser apps also run a script interactively through **File → Load
-Script…** — pick a `.lua` file and it executes against the current document, reporting completion
-or the error in the status line. Browser Load Script runs the full modeling API (geometry,
-constraints, drawings, queries, camera); the GUI-simulation verbs under `bearcad.ui.*`
-(`move`/`click`/`key`/`type`/`wait`/`screenshot`, the semantic drags) run in the desktop app,
-where a script plays out across frames.
+Both the desktop and browser apps run a script interactively through **File → Load
+Script…**. The browser runs the full modeling API; the `bearcad.ui.*` simulation verbs run
+in the desktop app.
 
-Other useful flags:
+Other flags:
 
-- `--timeout <seconds>` — force-exit (non-zero) if the app hasn't closed on its own within the
-  given duration, so an unattended/CI launch can't hang forever.
-- `--show-commands` — echo GUI actions as `bearcad.*` calls on stdout as you interact with the
-  app, useful for turning an interactive session into a script. The GUI's **Help → Export Session
-  Commands…** does the same thing into a timestamped, replayable `.lua` file.
+- `--timeout <seconds>` — force-exit (non-zero) if the app hasn't closed in time.
+- `--show-commands` — echo GUI actions as `bearcad.*` calls on stdout. **Help → Export
+  Session Commands…** does the same into a replayable `.lua` file.
 
 ## Interactive REPL
 
-`bearcad --repl` runs the same Lua API as an interactive session on stdin, against the live app —
-the GUI stays fully usable while you type, so you can mix commands with mouse work and watch each
-entry take effect in the viewport:
+`bearcad --repl` runs the same Lua API on stdin against the live app — the GUI stays
+usable while you type:
 
 ```
 $ bearcad --repl
@@ -93,26 +78,18 @@ bearcad> 1 + 2
 bearcad> bearcad.save("drawing.bearcad")
 ```
 
-REPL semantics match the standalone `lua` interpreter's:
+Semantics match the standalone `lua` interpreter: globals persist between entries, bare
+expressions echo their value, errors print and the session continues, multi-line
+constructs buffer under a `...>` prompt, and yielding calls (`bearcad.ui.wait`,
+screenshots) work. **Ctrl-D** ends the session; with `--exit` it also closes the app.
 
-- **Globals persist between entries** (one Lua state for the whole session; `local`s are
-  entry-scoped as usual).
-- **Bare expressions echo their value** (rendered with `tostring`).
-- **Errors print and the session continues** — a typo doesn't end the REPL.
-- **Multi-line constructs** (an unclosed `function`, `do`, `if`…) buffer under a `...>`
-  continuation prompt until the entry is syntactically complete.
-- **Yielding calls work**: `bearcad.ui.wait`, camera transitions, and `bearcad.ui.screenshot`
-  behave exactly as in scripts.
-- **Ctrl-D** (EOF) ends the session; with `--exit` it also closes the app.
-
-`--repl` and `--script` are mutually exclusive. Piping works too — `echo 'bearcad.rect{ width =
-30, height = 20 }' | bearcad --repl --exit` behaves like a one-off script.
+`--repl` and `--script` are mutually exclusive. Piping works:
+`echo '...' | bearcad --repl --exit`.
 
 ## Import shorthand
 
-Call `bearcad.import()` once at the top of a script to copy the top-level modeling functions into
-the global namespace, so you can write `rect{}` instead of `bearcad.rect{}` (the `bearcad.ui.*`
-functions stay namespaced under `bearcad.ui`):
+`bearcad.import()` copies the top-level modeling functions into the global namespace
+(`bearcad.ui.*` stays namespaced):
 
 ```lua
 bearcad.import()
@@ -120,19 +97,15 @@ new()
 rect{ width = 80, height = 50 }
 ```
 
-You can also bind individual functions locally: `local new, rect = bearcad.new, bearcad.rect`.
-
 ## Coroutines and waiting
 
-Scripts run in a coroutine. Calls that need to wait for a frame or an animation — `bearcad.ui.wait`,
-`bearcad.ui.wait_ms`, `bearcad.ui.screenshot`, and the `bearcad.ui.view(...)` camera commands —
+Scripts run in a coroutine. Calls that wait for a frame or animation —
+`bearcad.ui.wait`, `bearcad.ui.wait_ms`, `bearcad.ui.screenshot`, `bearcad.ui.view` —
 yield until the next frame rather than blocking.
 
 ## Gizmos
 
-Viewport gizmos — the drag handles a tool shows for its live value, like the extrude tool's
-push/pull depth — are scriptable, so gizmo-driven tools can be automated and tested without a
-mouse. Each gizmo is one scalar you can enumerate and drive:
+Viewport drag handles are scriptable — each gizmo is one scalar:
 
 ```lua
 -- What gizmos does the current tool state expose?
@@ -144,20 +117,17 @@ bearcad.set_gizmo{ name = "extrude", value = 15 }   -- set the depth outright
 bearcad.drag_gizmo{ name = "extrude", by = 5 }      -- nudge it (mirrors a drag delta)
 ```
 
-`bearcad.gizmos()` returns only the gizmos available right now (an entry per handle, with its
-`kind`, `name`, and live `value`). Push/pull and offset values are in millimetres; rotate values
-are in radians. Covered today: `"extrude"` (push/pull depth), `"chamfer"`/`"fillet"` (the
-chamfer/fillet amount, named for the active kind), `"revolve"` (sweep angle, radians),
-`"offset"` (construction-plane offset), and the Move tool's `"move_x"` / `"move_y"` / `"move_z"`
-(translation, mm) and `"move_angle"` (rotation, radians, once an axis is picked).
+Lengths are in millimetres, angles in radians. Gizmos today: `"extrude"`,
+`"chamfer"`/`"fillet"`, `"revolve"`, `"offset"` (construction plane), and the Move tool's
+`"move_x"`/`"move_y"`/`"move_z"` and `"move_angle"`.
 
 ## Where to go next
 
-- **[Declarative modeling](/docs/scripting/declarative-modeling)** — worked examples: sketch, draw,
-  extrude, export.
-- **[The `bearcad.ui.*` namespace](/docs/scripting/ui-namespace)** — camera, panes, the palette, and
-  synthetic input.
-- **[Point-level selection](/docs/scripting/point-selection)** — selecting a single vertex instead of a
-  whole element, for scripted constraint authoring.
-- **[First-person mode](/docs/scripting/first-person-mode)** — walking, flying, and scale, from a
-  script.
+- **[Declarative modeling](/docs/scripting/declarative-modeling)** — worked examples:
+  sketch, draw, extrude, export.
+- **[The `bearcad.ui.*` namespace](/docs/scripting/ui-namespace)** — camera, panes, the
+  palette, synthetic input.
+- **[Point-level selection](/docs/scripting/point-selection)** — selecting a single
+  vertex, for scripted constraint authoring.
+- **[First-person mode](/docs/scripting/first-person-mode)** — walking, flying, and
+  scale, from a script.

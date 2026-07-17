@@ -27,13 +27,9 @@ can be removed before committing.
 
 ## Good to know
 
-- The radius field takes numbers, parameters, and expressions.
-- A radius that can't physically fit (too big for the part) is rejected at commit rather
-  than producing broken geometry.
+- The radius field takes expressions.
+- A radius that can't physically fit is rejected at commit rather than producing broken
+  geometry.
 - Rounding solid edges works on bodies made from sketch profiles.
-- A fillet undoes as a single step, and shows up in the Elements pane nested under the line
-  it rounds.
-- **Edit the amount later:** a solid-edge fillet (or chamfer) appears in the Elements pane as
-  a row under its extrusion. Double-click the row (or right-click → **Edit fillet**) to bring
-  back its push/pull gizmo and amount input, then drag or type a new radius — the fillet
-  updates in place, no need to re-pick the edge.
+- **Edit the amount later:** double-click the fillet's Elements pane row (or right-click →
+  **Edit fillet**) to bring back its gizmo and amount input.

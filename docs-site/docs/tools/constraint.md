@@ -9,12 +9,11 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 
 **Shortcut:** `C`
 
-Constraints state facts about your sketch that BearCAD then keeps true: these two lines
-stay parallel, these endpoints stay attached, this line stays horizontal. Where the
-[Dimension](./dimension.md) tool pins *sizes*, constraints pin *relationships*.
+Constraints state facts about your sketch that BearCAD keeps true: these lines stay
+parallel, these endpoints stay attached. Where [Dimension](./dimension.md) pins *sizes*,
+constraints pin *relationships*.
 
-Select the geometry first, then click a constraint button in the Context pane — or press
-its number key (active while the Constraint tool is selected):
+Select the geometry, then click a constraint button or press its number key:
 
 | Constraint | Select first | Key |
 |---|---|---|
@@ -26,23 +25,13 @@ its number key (active while the Constraint tool is selected):
 | Vertical | a line | `6` |
 | Horizontal | a line | `7` |
 
-The pane always lists every constraint; ones the current selection can't satisfy are shown
-faded, with a hint about what they need. Many constraints also happen automatically while
-you draw — snapping a line's end onto a point keeps them attached.
-
-Below the buttons, the context pane shows the **element picker** for the geometry you're
-constraining — the same combo-box control the [Select](./select.md) tool uses, but limited to
-what's constrainable (points, lines, circles, and body/face edges). It reads out what you've
-picked as a summary by kind; click it to review each item and remove any you didn't mean to
-include.
+Many constraints also happen automatically while drawing — snapping a line's end onto a
+point keeps them attached.
 
 When a sketch is drawn on a body's face, the face's own corners and edges can be
-constrained against too — pin a point to the face's corner, or keep a line on its edge.
+constrained against too.
 
 ## The origin and its axes
 
-The **origin** and the two **origin axes** are selectable just like any other geometry. Click
-the origin (the marker where the axes cross) and a point to pin that point to the origin, or
-click an axis and a point to hold the point on that axis (which fixes one of its coordinates).
-A selected origin brightens and a selected axis highlights along its full length, so you can
-see exactly what you picked.
+The **origin** and the two **origin axes** are selectable like any other geometry: pin a
+point to the origin, or hold a point on an axis (which fixes one of its coordinates).

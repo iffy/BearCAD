@@ -11,41 +11,33 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 to Select.
 
 Select is for looking and picking, never for creating. Right-drag orbits, Shift+right-drag
-pans, the wheel zooms, and clicking picks whatever is under the cursor.
+pans, the wheel zooms, clicking picks.
 
 ## What you can pick
 
-- **Sketch points** — line endpoints, corners, circle centers. Points win over the edges
-  they sit on when you click near a corner.
-- **Lines and edges** — in sketches and on solid bodies.
+- **Sketch points** — endpoints, corners, circle centers. Points win over the edges they
+  sit on.
+- **Lines and edges** — in sketches and on bodies.
 - **Faces** — of bodies and construction planes.
-- **Whole bodies** — in the viewport or in the Elements pane.
+- **Whole bodies** — in the viewport or the Elements pane.
 
-Anything pickable highlights as you hover it, and what highlights is exactly what a click
-will select. You can't select things hidden behind a body.
+You can't select things hidden behind a body.
 
 ## Selection feeds the other tools
 
-Most tools act on what you've selected: select two lines and the
-[Constraint](./constraint.md) tool's Parallel button lights up; select a line and press
-**D** to dimension it; select edges and press **F** to fillet them. Shift+click (or
-⌘/Ctrl+click) adds to a selection.
+Most tools act on the selection: select two lines and Constraint's Parallel lights up;
+select a line and press **D** to dimension it; select edges and press **F** to fillet.
+Shift+click (or ⌘/Ctrl+click) adds to a selection.
 
-The **Elements pane** mirrors your selection and offers three views — a flat list, an
-indented tree, and a graph of what depends on what. Hovering a row highlights that element
-in the viewport.
+The **Elements pane** mirrors the selection and offers three views — list, tree, and a
+dependency graph.
 
 ## Reviewing the selection
 
-The **context pane** shows your selection in the **element picker** — a combo-box-style input
-that looks and focuses like any other field. Empty, it reads "Nothing selected"; once you've
-picked things it shows a compact summary of counts by kind (for example `2 ⟨line⟩ · 1 ⟨body⟩`).
-Click it to expand a popup that lists each picked element by name, with a remove button on
-every row and a **Clear all** at the bottom.
+The context pane's **element picker** summarizes the selection by kind (e.g.
+`2 ⟨line⟩ · 1 ⟨body⟩`); click it to list each element, remove any, or **Clear all**. Every
+tool that gathers elements uses this same control.
 
-It's the same control every tool that gathers elements uses (Loft, Fillet, and the rest), so
-reviewing and pruning a selection works the same way everywhere.
-
-With nothing selected, the context pane also holds the document's
-[**Default units**](/docs/parameters#display-units) pickers. **Delete**/**Backspace** removes
-the selection, and **N** jumps to the selected element's name field for renaming.
+With nothing selected, the context pane holds the document's
+[**Default units**](/docs/parameters#display-units). **Delete** removes the selection;
+**N** jumps to the name field for renaming.

@@ -14,16 +14,14 @@ wall, teeth on a rack.
 
 ## How to use it
 
-1. Pick the **Repeat** tool and click one or more bodies. The picked set shows in the context
-   pane's **Bodies** element picker — the same combo-box control the other tools use — where
-   you can review and remove them.
-2. Pick the **axis**: the X/Y/Z buttons in the context pane, or click any line in the
-   viewport.
-3. Choose how to space the copies (see the modes below) and fill in the values — every
-   value is an expression, so parameters work. The context pane shows the live instance
-   count as you type, and the viewport shows translucent ghosts of the copies so you can see
-   the pattern before committing.
-4. Press **Enter** (or the **Repeat** button).
+1. Pick the **Repeat** tool and click one or more bodies.
+2. Pick the **axis**: the X/Y/Z buttons, or click any line in the viewport.
+3. Choose a spacing mode and fill in the values — every value is an expression, so
+   parameters work. Ghost previews show the pattern.
+4. Press **Enter**.
+
+The originals stay put as the first instance; every copy is a real body nested under the
+repeat element. **Edit repeat** on the element changes anything later.
 
 ## Spacing modes
 
@@ -36,28 +34,16 @@ wall, teeth on a rack.
 | **Fill length, pitch** | L, D | As many instances as fit in L at start-to-start pitch D. |
 | **Fill length, max pitch** | L, D | An instance lands exactly at the end of L, spaced evenly, never farther apart than D — stud spacing. |
 
-## What you get
-
-The original bodies stay put as the first instance. Every further instance is a real body,
-nested under the repeat element in the pane. Select the element and choose **Edit repeat**
-to change anything — the copies re-space, and the set grows or shrinks with the count.
-Because the values are expressions, editing a parameter re-spaces the whole pattern.
-
 ## Repeating construction planes
 
-Repeat also copies **construction planes** along the axis. With the Repeat tool active, click a
-construction plane in the Elements pane (or select it) — the context pane shows how many planes
-are picked, and each copy steps along the axis by the gap or pitch you set. The copies nest under
-the repeat element, and a copy follows its source: move the original plane and its repeats move
-with it, each keeping its own offset on top. You can repeat bodies and planes in the same
-operation.
+With the Repeat tool active, click a construction plane in the Elements pane. Copies step
+along the axis, nest under the repeat element, and follow the original plane if it moves.
+Bodies and planes can repeat in the same operation.
 
 ## Repeating sketch geometry in 2D
 
-You can also repeat geometry **inside a sketch**: pick lines and circles and duplicate them along
-an in-plane direction, using the same spacing modes. The copies are new entities in the same
-sketch, spaced by the count/gap (or fill) you choose — a bolt-hole row, gear teeth, a comb of
-slots. This is available from scripts today:
+Repeat lines and circles inside a sketch along an in-plane direction, with the same
+spacing modes. From scripts:
 
 ```lua
 -- Four circles in a row, 10mm gap, along the sketch's +X:
@@ -72,38 +58,30 @@ bearcad.edit_sketch_repeat{ index = 0, circles = {0}, angle = 0,
                             mode = "count_gap", count = 6, spacing = 10 }
 ```
 
-The direction is an `angle` in degrees (0 = the sketch's +X/u), or an explicit `dir = {du, dv}`.
-`mode`, `count`, `spacing`, and `length` work exactly like the 3D repeat above. `gap` is
-accepted as an alias for `spacing` in every repeat call — it's the name the Repeat pane uses.
+Direction is an `angle` in degrees (0 = the sketch's +X/u) or an explicit
+`dir = {du, dv}`. `gap` is accepted as an alias for `spacing` in every repeat call.
 
 ## Repeating a cut (drilling a row of holes)
 
-Instead of copying a solid, a repeat can replay a **cut** along the axis — punch the same hole
-through a body N times. Point it at the cutting extrusion and it subtracts that tool at every
-instance position, so one hole becomes a row of holes. Available from scripts:
+A repeat can replay a **cut** along the axis — one hole becomes a row of holes. Spacing is
+centre-to-centre. From scripts:
 
 ```lua
 -- extrusion 1 is a hole cut through a plate; drill it 4 times, 12mm apart along X:
 bearcad.repeat_cut{ cuts = {1}, axis = "x", mode = "count_gap", count = 4, spacing = 12 }
 ```
 
-Spacing is centre-to-centre. The same `mode`/`count`/`spacing`/`length` options apply.
-
 ## Repeating a whole sketch along an axis
 
-You can copy an entire sketch along an axis — each copy lands on its own construction plane,
-parallel to the original and offset down the axis, carrying copies of all the sketch's lines and
-circles. Handy for stacking a profile at intervals. With the Repeat tool active, click a sketch
-(in the Elements pane or the viewport) to add it — the context pane shows how many sketches are
-picked — then set the axis and spacing and commit. The source sketch can sit on a construction
-plane or a body face. From scripts:
+Copy an entire sketch along an axis — each copy lands on its own parallel construction
+plane with copies of the sketch's lines and circles. With the Repeat tool active, click a
+sketch, set the axis and spacing, and commit. Delete the repeat element and the copies go
+away. From scripts:
 
 ```lua
 -- Copy sketch 0 three times, 10mm apart up the Z axis:
 bearcad.repeat_sketches{ sketches = {0}, axis = "z", mode = "count_gap", count = 3, spacing = 10 }
 ```
-
-The copies (and their planes) are tied to the repeat element — delete it and they go away.
 
 ## Scripting
 

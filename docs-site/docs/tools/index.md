@@ -8,17 +8,12 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 
 # Tools & Navigation
 
-The viewport always has one active **tool**. **Select** is the default — it only looks
-around and picks things, so moving the camera never accidentally creates geometry. Switch to
-a drawing tool when you want to draw.
-
-BearCAD has two workbenches, each with its own toolbar: the **3D modeling** workbench (the
-default), and the **technical drawings** workbench you enter by opening a drawing. A few tools —
-Select, Dimension, Text — appear in both but do a different job in each.
+The viewport always has one active **tool**; **Select** is the default. BearCAD has two
+workbenches, each with its own toolbar: **3D modeling** (the default) and **technical
+drawings**, entered by opening a drawing. Select, Dimension, and Text appear in both but
+do a different job in each.
 
 ## Modeling tools
-
-These make up the toolbar in the 3D modeling workbench.
 
 | | Tool | Shortcut | What it does |
 |---|---|---|---|
@@ -46,9 +41,7 @@ Reference images for tracing over (import, scale calibration) are covered in
 
 ## Technical drawing tools
 
-Opening a drawing switches to the **technical drawings** workbench, whose toolbar carries a
-smaller, drawing-specific set. Select, Dimension, and Text share a name with a modeling tool but
-act on the page instead of the model. Everything these tools do is covered in
+These act on the drawing page instead of the model; details in
 [Drawings](/docs/tools/drawing).
 
 | | Tool | Shortcut | What it does on a drawing |
@@ -61,15 +54,12 @@ act on the page instead of the model. Everything these tools do is covered in
 
 ## Habits that apply everywhere
 
-- **Click to start, move to preview, click or type to finish.** Rectangle, Line, and Circle
-  all work this way. While drawing, just type a number (or a
-  [parameter](/docs/parameters) name) to make that dimension exact —
-  **Tab** switches between fields, **Enter** commits.
-- **Esc backs out.** It cancels whatever is in progress; pressed again, it returns to
-  Select.
-- **X toggles construction geometry** — dashed reference shapes that guide your sketch but
-  never become part of the solid.
-- **The Context pane follows you.** Whatever tool or selection is active, its options appear
-  in the pane on the right.
+- **Click to start, move to preview, click or type to finish.** While drawing, type a
+  number or [parameter](/docs/parameters) name to make that dimension exact — **Tab**
+  switches fields, **Enter** commits.
+- **Esc backs out**; pressed again, it returns to Select.
+- **X toggles construction geometry** — dashed reference shapes that never become part of
+  the solid.
+- **The Context pane** (right) shows the active tool's or selection's options.
 
 See [Navigation](/docs/tools/navigation) for camera controls and the view bear.

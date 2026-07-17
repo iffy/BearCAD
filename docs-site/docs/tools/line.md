@@ -23,20 +23,17 @@ Press **Esc** to stop chaining and keep what you've drawn.
 
 ## Snapping
 
-While drawing, the cursor snaps to nearby endpoints, midpoints, and lines — a ring marks
-the active snap, and finishing a point on a snap keeps that relationship (the sketch stays
-attached there even as things move). Touching a corner also arms dashed **guide lines**
-along its edges, so you can line a new point up with existing geometry at a distance.
-Snapping can be toggled in the Context pane.
+The cursor snaps to nearby endpoints, midpoints, and lines; finishing a point on a snap
+keeps that relationship as things move. Touching a corner arms dashed **guide lines**
+along its edges, for lining a new point up with existing geometry at a distance. Snapping
+can be toggled in the Context pane.
 
 ## Curves
 
-Lines can bend. While drawing, tick **Curve mode** in the Context pane (or press
-**⌘/Ctrl+B**) and the next point becomes a smooth curve point instead of a corner. On a
-finished sketch, a curved line shows two round **handles** — drag them to reshape the
-curve, or right-click a corner where two lines meet and choose **Convert to bezier curve**
-to smooth it (and **Straighten curve** to undo that). Deleting a curve's handle straightens
-it.
+While drawing, tick **Curve mode** (**⌘/Ctrl+B**) and the next point becomes a smooth
+curve point instead of a corner. On a finished sketch, drag a curve's two round handles to
+reshape it; right-click a corner → **Convert to bezier curve** to smooth it
+(**Straighten curve** undoes). Deleting a handle straightens the curve.
 
-Curved lines behave like straight ones everywhere else: they close loops, extrude, and take
-dimensions (a length dimension controls the straight-line distance between the endpoints).
+Curved lines close loops, extrude, and take dimensions like straight ones (a length
+dimension controls the endpoint-to-endpoint distance).
