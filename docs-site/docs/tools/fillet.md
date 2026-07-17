@@ -15,6 +15,8 @@ Fillet rounds corners. It works in two places:
 radius; **Enter** commits. A live preview shows the rounded corner as you adjust it. This
 is how you round a profile *before* extruding.
 
+![A rectangle profile with its top-right corner rounded](/img/screenshots/fillet-sketch.png)
+
 **On a solid:** with no sketch open, click an edge of a body — a vertical corner edge, an
 edge where a wall meets the top or bottom face, or the **round rim** of a cylinder or a
 drilled hole. Shift+click more edges to round several with one radius, then drag or type

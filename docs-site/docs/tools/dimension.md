@@ -13,6 +13,8 @@ Dimensions make geometry exact — and keep it that way. Click a line (or a rect
 or a circle) to set its length or diameter; select two lines that cross and press **D** for
 the angle between them. Type the value, press **Enter**.
 
+![Two lines with length dimensions and the angle between them dimensioned](/img/screenshots/dimension.png)
+
 - Value fields accept **expressions**: `25`, `2.5in`, `leg/2 + 5`, or a new parameter
   created on the spot by typing `name=value` — see [Parameters & units](/docs/parameters).
 - Dimension labels are draggable, and double-clicking one reopens it for editing.

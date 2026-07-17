@@ -15,6 +15,8 @@ constraints pin *relationships*.
 
 Select the geometry, then click a constraint button or press its number key:
 
+![A profile squared up by parallel, perpendicular, and horizontal constraints, with the constraint pane open](/img/screenshots/constraint.png)
+
 | Constraint | Select first | Key |
 |---|---|---|
 | Parallel | two lines | `1` |

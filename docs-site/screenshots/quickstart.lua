@@ -111,12 +111,20 @@ bearcad.ui.tool("dimension")
 bearcad.ui.view("corner", "front_left_top")
 shot("quickstart-holes.png")
 
--- Step 7: countersink the holes — chamfer each hole's outer rim.
+-- Step 7: countersink the holes — chamfer each hole's outer rim. Frame the two
+-- countersunk holes up close, looking at the inner base face from above (#421),
+-- so the cone-shaped seats actually read in the capture.
 for face = 0, 1 do
   bearcad.chamfer_edge{ extrusion = 1,
     edge = { kind = "cap", face = face, edge = 0, top = false }, distance = 1.2 }
 end
-shot("quickstart-countersink.png")
+bearcad.ui.view("corner", "back_right_top")
+bearcad.ui.wait(1)
+bearcad.ui.camera{ target = {28, 5, 20}, distance = 90 }
+bearcad.ui.wait(1)
+bearcad.ui.screenshot(dir .. "/quickstart-countersink.png")
+bearcad.ui.view("corner", "front_left_top")
+bearcad.ui.wait(1)
 
 -- Step 8: round the flange tip corners (the four remaining sharp junctions).
 for _, k in ipairs({0, 1, 3, 4}) do

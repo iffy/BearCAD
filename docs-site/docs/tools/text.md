@@ -10,6 +10,8 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 Text places engraving-ready lettering in a sketch as glyph outlines you can edit, rotate,
 and extrude or cut like any other profile.
 
+![A selected wrapped text in a sketch: glyph outlines, the dashed wrap box with width handles, and anchor points](/img/screenshots/text.png)
+
 ## How to use it
 
 With the **Text** tool (**T**) in a sketch, **click** where the text should start for a

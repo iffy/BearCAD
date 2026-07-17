@@ -12,6 +12,8 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 Construction planes are invisible flat surfaces to sketch on — for building at an offset
 from a face, or at an angle. Click a reference, position the plane, press **Enter**:
 
+![A construction plane offset above a block, holding a circle sketch](/img/screenshots/construction-plane.png)
+
 - **Click a face** (the ground, another plane, or a body's face): the new plane sits
   parallel to it. Drag the arrow handle or type an offset.
 - **Click an edge or axis** (a sketch line, a body edge, or one of the origin's X/Y/Z

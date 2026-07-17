@@ -7,9 +7,14 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 
 # <img src={useBaseUrl("/img/icons/combine.svg")} width="30" /> Combine
 
-Combine performs boolean operations on whole bodies.
+Combine performs boolean operations on whole bodies. Before a **Cut** — the block and
+the overlapping cutting body:
 
-![Two overlapping bodies cut into a notched result](/img/screenshots/combine.png)
+![Two overlapping bodies before the cut](/img/screenshots/combine-before.png)
+
+After — the cutting body is carved away:
+
+![The notched result after the cut](/img/screenshots/combine.png)
 
 ## The four operations
 

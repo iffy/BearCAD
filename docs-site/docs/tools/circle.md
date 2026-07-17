@@ -12,6 +12,8 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 Click to place the center, move the mouse to size it, then click — or type a **diameter**
 and press **Enter**.
 
+![A plate with a construction bolt circle and a dimensioned bolt hole](/img/screenshots/circle.png)
+
 A circle is a face: extrude it to get a cylinder, or extrude it **into** a body as a
 [cut](./extrude.md#adding-to-or-cutting-a-body) to drill a round hole.
 

@@ -1,12 +1,13 @@
--- Documentation screenshot: the Combine tool.
+-- Documentation screenshots: the Combine tool, before and after a Cut.
 --
--- Cuts one overlapping box out of another, leaving a notched result body — the two
--- inputs live on as shadow bodies in the Elements pane.
+-- combine-before.png: two overlapping boxes — the block and the bite that will be
+-- carved out of it. combine.png: the notched result after the Cut; the inputs live
+-- on as shadow bodies in the Elements pane.
 --
 -- Output dir: $BEARCAD_SCREENSHOT_OUT (set by scripts/gen-doc-screenshots.sh),
--- falling back to ".". The PNG is only written where a real GPU frame renders.
+-- falling back to ".". The PNGs are only written where a real GPU frame renders.
 
-local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/combine.png"
+local dir = os.getenv("BEARCAD_SCREENSHOT_OUT") or "."
 
 bearcad.new()
 bearcad.ui.pane("context", "hide")
@@ -21,14 +22,20 @@ bearcad.rect{ x = 18, y = 6, width = 24, height = 8, name = "Bite" }
 bearcad.exit_sketch()
 bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 20, name = "Bite" }
 
-bearcad.combine{ op = "cut", a = {0}, b = {1}, name = "Notched block" }
-
 bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
 bearcad.ui.tool("dimension")
 bearcad.ui.view("corner", "front_left_top")
 bearcad.ui.wait(2)
 bearcad.ui.zoom_fit()
 bearcad.ui.wait(1)
-bearcad.ui.screenshot(out)
+-- Before: the block and the overlapping cutting body.
+bearcad.ui.screenshot(dir .. "/combine-before.png")
+
+bearcad.combine{ op = "cut", a = {0}, b = {1}, name = "Notched block" }
+bearcad.ui.wait(2)
+bearcad.ui.zoom_fit()
+bearcad.ui.wait(1)
+-- After: the notched result.
+bearcad.ui.screenshot(dir .. "/combine.png")
 
 bearcad.quit()
