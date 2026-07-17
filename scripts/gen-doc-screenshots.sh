@@ -21,6 +21,9 @@
 # failed and exits non-zero.
 set -uo pipefail
 
+# Deterministic captures: never show the update badge (#427) in doc screenshots.
+export BEARCAD_NO_UPDATE_CHECK=1
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 

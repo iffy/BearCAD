@@ -12,6 +12,7 @@ pub fn download_url(artifact: &str) -> String {
     format!("{RELEASES_BASE}/{artifact}")
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub const ALL_ARTIFACTS: &[&str] = &[LINUX_ARTIFACT, MACOS_ARTIFACT, WINDOWS_ARTIFACT];
 
 #[cfg(test)]

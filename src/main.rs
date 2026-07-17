@@ -57,8 +57,10 @@ mod web_menu;
 mod web_lua;
 #[cfg(not(target_arch = "wasm32"))]
 mod lua_script;
-#[cfg(test)]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 mod release_artifacts;
+#[cfg(not(target_arch = "wasm32"))]
+mod updater;
 mod script;
 // The JSON command dispatcher (todoer #179) is the web build's scripting hook: on wasm it
 // backs `web_lua`'s bearcad_call dispatch; on native it's exercised by its own tests.
@@ -603,6 +605,12 @@ struct App {
     selected_calibration_point: Option<(usize, usize)>,
     /// An in-progress drag of a calibration reference point (#424).
     calibration_point_drag: Option<(usize, usize)>,
+    /// Auto-update state (#427): background release check + staged update progress.
+    #[cfg(not(target_arch = "wasm32"))]
+    update_state: updater::SharedUpdateState,
+    /// Whether the browser fallback already opened for a failed staged update (#427).
+    #[cfg(not(target_arch = "wasm32"))]
+    update_fallback_opened: bool,
     /// Elements-pane type filter (#275) and whether its toggle panel is expanded. Ephemeral UI
     /// state; reset to the workbench default when the Model/Drawing workbench changes.
     element_filter: hierarchy::ElementFilter,
@@ -641,6 +649,74 @@ enum WebIoEvent {
 type WebIoQueue = std::rc::Rc<std::cell::RefCell<Vec<WebIoEvent>>>;
 
 impl App {
+    /// The status bar's update badge (#427): appears only when a newer release exists;
+    /// clicking stages the update (Windows/Linux) or auto-downloads the installer in the
+    /// browser (macOS), falling back to the releases page on failure.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn show_update_badge(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let snapshot = self.update_state.lock().map(|s| s.clone()).ok();
+        let Some(snapshot) = snapshot else { return };
+        match (&snapshot.outcome, snapshot.in_progress, &snapshot.available) {
+            (Some(Ok(updater::UpdateOutcome::StagedRestartToFinish)), _, _) => {
+                ui.colored_label(
+                    egui::Color32::from_rgb(90, 200, 120),
+                    "Update downloaded — restart BearCAD to finish",
+                );
+            }
+            (Some(Ok(updater::UpdateOutcome::OpenedInBrowser)), _, _) => {
+                ui.colored_label(
+                    egui::Color32::from_rgb(90, 200, 120),
+                    "Update downloading in your browser",
+                );
+            }
+            (Some(Err(_)), _, Some(version)) => {
+                // The staged update failed; the browser fallback already opened. Keep the
+                // badge so the user can retry.
+                if self.update_badge(ui, version) {
+                    updater::spawn_update(self.update_state.clone(), ctx.clone());
+                }
+            }
+            (None, true, _) => {
+                ui.add(egui::Spinner::new().size(12.0));
+                ui.colored_label(egui::Color32::from_gray(170), "Downloading update…");
+            }
+            (None, false, Some(version)) => {
+                if self.update_badge(ui, version) {
+                    if cfg!(target_os = "macos") {
+                        // Auto-download the installer artifact in the browser.
+                        ctx.open_url(egui::OpenUrl::new_tab(updater::platform_artifact_url()));
+                    }
+                    updater::spawn_update(self.update_state.clone(), ctx.clone());
+                }
+            }
+            _ => {}
+        }
+        // A failed staged update falls back to the browser download once.
+        if let Some(Err(err)) = &snapshot.outcome {
+            if !self.update_fallback_opened {
+                self.update_fallback_opened = true;
+                self.state.status = format!("Update failed ({err}) — opening the releases page");
+                ctx.open_url(egui::OpenUrl::new_tab(updater::releases_page_url()));
+            }
+        }
+    }
+
+    /// The bright badge button itself; returns true when clicked.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn update_badge(&self, ui: &mut egui::Ui, version: &str) -> bool {
+        ui.add(
+            egui::Button::new(
+                egui::RichText::new(format!("⬆ Update to v{version}"))
+                    .color(egui::Color32::BLACK)
+                    .size(12.0),
+            )
+            .fill(egui::Color32::from_rgb(90, 200, 120))
+            .corner_radius(4.0),
+        )
+        .on_hover_text("A new BearCAD release is available — click to update")
+        .clicked()
+    }
+
     fn new(
         cc: &eframe::CreationContext<'_>,
         script: Option<ScriptRunner>,
@@ -729,6 +805,14 @@ impl App {
             collapsed_components: std::collections::HashSet::new(),
             selected_calibration_point: None,
             calibration_point_drag: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            update_state: {
+                let state = updater::SharedUpdateState::default();
+                updater::spawn_check(state.clone());
+                state
+            },
+            #[cfg(not(target_arch = "wasm32"))]
+            update_fallback_opened: false,
             element_filter: hierarchy::ElementFilter::default(),
             element_filter_expanded: false,
             element_filter_drawing_workbench: false,
@@ -4521,11 +4605,22 @@ impl eframe::App for App {
         egui::TopBottomPanel::bottom("status")
             .frame(theme::panel_frame())
             .show(ctx, |ui| {
-            let name = self.state.path.as_deref().unwrap_or("(unsaved)");
+            let name = self
+                .state
+                .path
+                .clone()
+                .unwrap_or_else(|| "(unsaved)".to_string());
+            let status = self.state.status.clone();
             ui.horizontal(|ui| {
                 ui.label(name);
                 ui.separator();
-                ui.label(&self.state.status);
+                ui.label(status);
+                // Update badge (#427): a bright button in the bottom-right corner when a
+                // newer release exists; unobtrusive — no popup, no interruption.
+                #[cfg(not(target_arch = "wasm32"))]
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    self.show_update_badge(ui, ctx);
+                });
             });
         });
 
