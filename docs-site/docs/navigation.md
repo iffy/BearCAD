@@ -21,6 +21,11 @@ which is why the camera bindings live on the *right* mouse button.
 **Zoom to fit** (in the command palette and the View menu) frames your selection — or the
 whole model — in one step.
 
+## Keyboard shortcuts
+
+**View → Keyboard Shortcuts** (also under Help) lists every binding in the app, grouped
+by where it applies.
+
 ## Command palette
 
 **⌘/Ctrl+P** opens the command palette: a searchable list of context-pertinent commands —

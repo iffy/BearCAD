@@ -611,6 +611,8 @@ struct App {
     /// Whether the browser fallback already opened for a failed staged update (#427).
     #[cfg(not(target_arch = "wasm32"))]
     update_fallback_opened: bool,
+    /// The Keyboard Shortcuts window (#434), toggled from the View/Help menus.
+    shortcuts_open: bool,
     /// Elements-pane type filter (#275) and whether its toggle panel is expanded. Ephemeral UI
     /// state; reset to the workbench default when the Model/Drawing workbench changes.
     element_filter: hierarchy::ElementFilter,
@@ -831,6 +833,7 @@ impl App {
             },
             #[cfg(not(target_arch = "wasm32"))]
             update_fallback_opened: false,
+            shortcuts_open: false,
             element_filter: hierarchy::ElementFilter::default(),
             element_filter_expanded: false,
             element_filter_drawing_workbench: false,
@@ -1409,6 +1412,9 @@ impl App {
                     "https://github.com/iffy/BearCAD/blob/master/LICENSES-THIRD-PARTY.md",
                 ));
             }
+            MenuCommand::ShowShortcuts => {
+                self.shortcuts_open = true;
+            }
             MenuCommand::InstallCli => {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
@@ -1447,6 +1453,7 @@ impl App {
             PaletteOutcome::Action(action) => {
                 self.state.apply(action);
             }
+            PaletteOutcome::ShowShortcuts => self.shortcuts_open = true,
             PaletteOutcome::OpenFile => self.open(),
             PaletteOutcome::SaveFile => self.save(),
             PaletteOutcome::SaveFileAs => self.save_as(),
@@ -4631,6 +4638,55 @@ impl eframe::App for App {
             if let Some(chosen) = outcome {
                 self.dispatch_palette_outcome(chosen);
             }
+        }
+
+        // Keyboard Shortcuts window (#434): a closable, scrollable list of every binding,
+        // grouped by where it applies, rendered from shortcuts::all_shortcuts().
+        if self.shortcuts_open {
+            let mut open = true;
+            egui::Window::new("Keyboard shortcuts")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(true)
+                .default_width(430.0)
+                .default_height(520.0)
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for section in shortcuts::all_shortcuts() {
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(section.title).strong().size(14.0),
+                                );
+                                if let Some(scope) = section.scope {
+                                    ui.label(
+                                        egui::RichText::new(format!("— {scope}"))
+                                            .color(egui::Color32::from_gray(140))
+                                            .size(11.0),
+                                    );
+                                }
+                            });
+                            ui.separator();
+                            egui::Grid::new(("shortcut_section", section.title))
+                                .num_columns(2)
+                                .spacing([18.0, 3.0])
+                                .min_col_width(110.0)
+                                .show(ui, |ui| {
+                                    for (keys, what) in &section.entries {
+                                        ui.label(
+                                            egui::RichText::new(keys)
+                                                .monospace()
+                                                .color(egui::Color32::from_gray(220)),
+                                        );
+                                        ui.label(what);
+                                        ui.end_row();
+                                    }
+                                });
+                            ui.add_space(4.0);
+                        }
+                    });
+                });
+            self.shortcuts_open = open;
         }
 
         egui::TopBottomPanel::bottom("status")

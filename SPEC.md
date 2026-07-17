@@ -2330,6 +2330,22 @@ Leftover `.old` binaries/bundles are cleaned on the next startup. Fallbacks: a
 non-bundle macOS run (dev build) auto-downloads the artifact in the browser; a failed
 stage rolls back and opens the releases page.
 
+### 11.y Keyboard Shortcuts window (#434)
+
+**View → Keyboard Shortcuts** / **Help → Keyboard Shortcuts** (and the palette entry
+"Keyboard Shortcuts") opens a closable window listing **every** binding in the app,
+grouped by scope: Everywhere, Tools (3D modeling workbench), Sketch mode, Constraints
+(Constraint tool), Expression fields, First-person mode, and Technical drawings —
+sections whose shortcuts only apply in a certain state carry a scope note.
+
+The single source is **`shortcuts::all_shortcuts()`**. Maintenance contract: any new or
+changed key binding MUST be reflected there in the same change. Two sections are derived
+so they cannot go stale — Tools from `tool_shortcut()` (the same table the toolbar
+labels use) and Constraints from `GeometricConstraintType::ALL` — with tests
+(`shortcut_list_covers_every_tool_shortcut`,
+`shortcut_list_covers_every_constraint_mnemonic`) enforcing the coverage; everything
+else is listed explicitly in that function.
+
 ## 12. Technical drawings & printable schematics
 
 BearCAD supports **2D technical drawings** derived from 3D models — dimensioned, annotated

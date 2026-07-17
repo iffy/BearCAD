@@ -94,6 +94,10 @@ pub fn bar(ctx: &egui::Context, pane_visible: impl Fn(Pane) -> bool) -> Option<M
                     picked = Some(MenuCommand::ToggleFpsMode);
                     ui.close();
                 }
+                if ui.button("Keyboard shortcuts").clicked() {
+                    picked = Some(MenuCommand::ShowShortcuts);
+                    ui.close();
+                }
                 ui.separator();
                 for &pane in Pane::ALL {
                     let label = pane.label();
@@ -107,6 +111,10 @@ pub fn bar(ctx: &egui::Context, pane_visible: impl Fn(Pane) -> bool) -> Option<M
             ui.menu_button("Help", |ui| {
                 if ui.button("Documentation").clicked() {
                     ctx.open_url(egui::OpenUrl::new_tab("https://www.iffycan.com/BearCAD/docs/intro"));
+                    ui.close();
+                }
+                if ui.button("Keyboard shortcuts").clicked() {
+                    picked = Some(MenuCommand::ShowShortcuts);
                     ui.close();
                 }
                 if ui.button("About").clicked() {

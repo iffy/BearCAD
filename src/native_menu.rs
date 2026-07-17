@@ -40,6 +40,8 @@ pub struct MenuIds {
     pub command_palette: MenuId,
     pub fps_mode: MenuId,
     pub zoom_to_fit: MenuId,
+    pub shortcuts_view: MenuId,
+    pub shortcuts_help: MenuId,
     pub pane_checks: Vec<(Pane, MenuId)>,
 }
 
@@ -122,6 +124,9 @@ pub fn command_for_id(
     }
     if ids.about == id {
         return Some(MenuCommand::About);
+    }
+    if ids.shortcuts_view == id || ids.shortcuts_help == id {
+        return Some(MenuCommand::ShowShortcuts);
     }
     if ids.licenses == id {
         return Some(MenuCommand::Licenses);
@@ -264,6 +269,10 @@ impl NativeMenu {
         let fps_mode = CheckMenuItem::with_id("fps_mode", "FPS Mode", true, false, None);
         let zoom_to_fit = MenuItem::with_id("zoom_to_fit", "Zoom to Fit", true, None);
         let about = MenuItem::with_id("about", "About BearCAD", true, None);
+        let shortcuts_view =
+            MenuItem::with_id("shortcuts_view", "Keyboard Shortcuts", true, None);
+        let shortcuts_help =
+            MenuItem::with_id("shortcuts_help", "Keyboard Shortcuts", true, None);
         let licenses = MenuItem::with_id("licenses", "Licenses", true, None);
         let install_cli = MenuItem::with_id(
             "install_cli",
@@ -327,8 +336,10 @@ impl NativeMenu {
         view_menu.append(&command_palette)?;
         view_menu.append(&zoom_to_fit)?;
         view_menu.append(&fps_mode)?;
+        view_menu.append(&shortcuts_view)?;
         view_menu.append(&PredefinedMenuItem::separator())?;
         view_menu.append(&panes_menu)?;
+        help_menu.append(&shortcuts_help)?;
         help_menu.append(&export_session_commands)?;
         help_menu.append(&install_cli)?;
         help_menu.append(&PredefinedMenuItem::separator())?;
@@ -365,6 +376,8 @@ impl NativeMenu {
             command_palette: command_palette.id().clone(),
             fps_mode: fps_mode.id().clone(),
             zoom_to_fit: zoom_to_fit.id().clone(),
+            shortcuts_view: shortcuts_view.id().clone(),
+            shortcuts_help: shortcuts_help.id().clone(),
             pane_checks: pane_ids,
         };
 
@@ -469,6 +482,8 @@ mod tests {
             command_palette: MenuId::new("command_palette"),
             fps_mode: MenuId::new("fps_mode"),
             zoom_to_fit: MenuId::new("zoom_to_fit"),
+            shortcuts_view: MenuId::new("shortcuts_view"),
+            shortcuts_help: MenuId::new("shortcuts_help"),
             pane_checks: vec![(Pane::ViewCube, pane_menu_id.clone())],
         };
         (ids, pane_menu_id)

@@ -55,12 +55,15 @@ pub enum PaletteCommandId {
     ToggleFpsMode,
     ZoomToFit,
     ProjectSelection,
+    ShowShortcuts,
 }
 
 /// What happens when a palette entry is chosen.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PaletteOutcome {
     Action(Action),
+    /// Open the Keyboard Shortcuts window (#434).
+    ShowShortcuts,
     OpenFile,
     SaveFile,
     SaveFileAs,
@@ -144,6 +147,7 @@ impl PaletteCommand {
             PaletteCommandId::ToggleFpsMode => PaletteOutcome::Action(Action::ToggleFpsMode),
             PaletteCommandId::ZoomToFit => PaletteOutcome::Action(Action::ZoomToFit),
             PaletteCommandId::ProjectSelection => PaletteOutcome::Action(Action::ProjectSelection),
+            PaletteCommandId::ShowShortcuts => PaletteOutcome::ShowShortcuts,
             PaletteCommandId::ShowPaneHierarchy => PaletteOutcome::Action(Action::SetPaneVisible {
                 pane: Pane::Hierarchy,
                 visible: true,
@@ -456,6 +460,11 @@ const BASE_COMMANDS: &[PaletteCommand] = &[
         PaletteCommandId::ProjectSelection,
         "Project Selection into Sketch",
         "project edges body sketch reference associative Y",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::ShowShortcuts,
+        "Keyboard Shortcuts",
+        "keyboard shortcuts keys hotkeys bindings help",
     ),
 ];
 

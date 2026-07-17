@@ -10,6 +10,8 @@ We're in pre-alpha right now, so don't worry about defining schema migrations at
 
 For every completed task/feature/fix, record the change with `changer add ...` (see `changer add --help` for more info)
 
+When adding or changing a keyboard shortcut, update `shortcuts::all_shortcuts()` in the same change — it renders the Keyboard Shortcuts window (View/Help menus) and is the single source for the app's binding list (see SPEC §11).
+
 When writing docs, I really *really* **REALLY** prefer brevity. Be as succinct as possible in the docs, but also thorough. Follow the "Writing style" principles in `docs-site/README.md` — the app is the documentation; docs only cover what the app can't show. Don't reference todoer issue numbers in the docs, but please reference them in the Git Commits.
 
 Always work directly on the `master` branch. Do not create feature branches unless I specifically tell you to — commit your work straight to `master` and push to `origin` when a task is complete.

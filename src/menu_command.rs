@@ -36,6 +36,8 @@ pub enum MenuCommand {
     /// Toggle first-person (FPS) mode (#91, #118).
     ToggleFpsMode,
     ZoomToFit,
+    /// Open the Keyboard Shortcuts window (View/Help menus, #434).
+    ShowShortcuts,
     SetPaneVisible { pane: Pane, visible: bool },
 }
 
@@ -66,6 +68,8 @@ impl MenuCommand {
             MenuCommand::ToggleCommandPalette => Some(Action::ToggleCommandPalette),
             MenuCommand::ToggleFpsMode => Some(Action::ToggleFpsMode),
             MenuCommand::ZoomToFit => Some(Action::ZoomToFit),
+            // Toggles UI-only window state; handled in the app frame loop.
+            MenuCommand::ShowShortcuts => None,
             MenuCommand::SetPaneVisible { pane, visible } => {
                 Some(Action::SetPaneVisible { pane, visible })
             }
