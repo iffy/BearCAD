@@ -1,13 +1,16 @@
 //! Auto-update (#427): check GitHub for a newer release in the background and, when one
-//! exists, surface an unobtrusive badge in the status bar. Clicking it does the best thing
-//! the platform allows — download and stage the new binary so a restart finishes the
-//! update (Windows/Linux), or auto-download the installer artifact in the browser (macOS)
-//! — falling back to opening the releases page.
+//! exists, surface an unobtrusive badge in the status bar. Clicking it downloads and
+//! stages the new version in place on every desktop OS — Windows/Linux swap the bare
+//! binary; macOS mounts the release dmg and rename-swaps the `.app` bundle, the same
+//! trick Electron's Squirrel.Mac uses — then the badge becomes a **Restart** button that
+//! relaunches into the new version. Falls back to a browser auto-download (dev builds,
+//! failures), then the releases page.
 //!
 //! Network access uses the system `curl` (present on stock macOS, Windows 10+, and
 //! virtually all Linux desktops) so the app gains no TLS dependency; if `curl` is missing
 //! the check silently does nothing. Native builds only — the web app is always current.
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::release_artifacts::{GITHUB_REPO, LINUX_ARTIFACT, MACOS_ARTIFACT, WINDOWS_ARTIFACT};
@@ -15,8 +18,9 @@ use crate::release_artifacts::{GITHUB_REPO, LINUX_ARTIFACT, MACOS_ARTIFACT, WIND
 /// Result of a completed update attempt, surfaced in the status bar.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UpdateOutcome {
-    /// The new binary is staged in place — restarting the app finishes the update.
-    StagedRestartToFinish,
+    /// The new version is staged in place — `launch` is what a restart should run (the
+    /// `.app` bundle on macOS, the executable elsewhere).
+    StagedRestartToFinish { launch: PathBuf },
     /// The platform artifact was handed to the browser (auto-download); install manually.
     OpenedInBrowser,
 }
@@ -41,6 +45,7 @@ pub fn spawn_check(state: SharedUpdateState) {
         return;
     }
     std::thread::spawn(move || {
+        cleanup_leftovers();
         if let Some(latest) = fetch_latest_version() {
             if is_newer(&latest, env!("CARGO_PKG_VERSION")) {
                 if let Ok(mut s) = state.lock() {
@@ -69,6 +74,21 @@ pub fn spawn_update(state: SharedUpdateState, ctx: egui::Context) {
         }
         ctx.request_repaint();
     });
+}
+
+/// Remove what a previous staged update left behind (#427): the renamed-aside old
+/// binary/bundle. Best-effort; runs on the background check thread at startup.
+fn cleanup_leftovers() {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let _ = std::fs::remove_file(exe.with_extension("old"));
+    if let Some(bundle) = app_bundle_of(&exe) {
+        if let Some(parent) = bundle.parent() {
+            let old = parent.join("BearCAD-old.app");
+            if old.is_dir() {
+                let _ = std::fs::remove_dir_all(&old);
+            }
+        }
+    }
 }
 
 /// The latest release's version from the GitHub API, via system curl. `None` on any
@@ -130,16 +150,18 @@ pub fn releases_page_url() -> String {
     format!("{GITHUB_REPO}/releases/latest")
 }
 
-/// Download and stage the update where the platform allows a clean binary swap.
+/// Download and stage the update where the platform allows a clean swap.
 ///
 /// - **Windows** (bare `bearcad.exe` artifact) and **Linux** (binary inside a tar.gz):
 ///   download to a temp dir, then swap the running executable via the rename trick (the
 ///   old binary moves aside to `bearcad-old…`; the OS keeps running it until restart).
-/// - **macOS** (a `.dmg`): no clean in-place swap — signal the caller to auto-download in
-///   the browser instead.
+/// - **macOS** (a `.dmg`): the same trick Electron's Squirrel.Mac uses — a running `.app`
+///   bundle can be renamed, so mount the dmg (`hdiutil attach`), copy the new bundle next
+///   to the installed one, and rename-swap. Falls back to a browser auto-download when the
+///   app isn't running from a bundle (e.g. a dev build).
 fn perform_update() -> Result<UpdateOutcome, String> {
     if cfg!(target_os = "macos") {
-        return Ok(UpdateOutcome::OpenedInBrowser);
+        return perform_macos_update();
     }
     let exe = std::env::current_exe().map_err(|e| format!("current exe: {e}"))?;
     let dir = std::env::temp_dir().join("bearcad-update");
@@ -186,7 +208,109 @@ fn perform_update() -> Result<UpdateOutcome, String> {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755));
     }
-    Ok(UpdateOutcome::StagedRestartToFinish)
+    Ok(UpdateOutcome::StagedRestartToFinish { launch: exe })
+}
+
+/// The `.app` bundle a macOS executable runs from (`…/BearCAD.app/Contents/MacOS/bearcad`
+/// → `…/BearCAD.app`), if it is inside one.
+pub fn app_bundle_of(exe: &Path) -> Option<PathBuf> {
+    let macos_dir = exe.parent()?;
+    let contents = macos_dir.parent()?;
+    let bundle = contents.parent()?;
+    (macos_dir.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && bundle.extension()? == "app")
+    .then(|| bundle.to_path_buf())
+}
+
+/// macOS staged update (#427, Squirrel.Mac-style): mount the release dmg, copy the new
+/// `.app` beside the installed bundle, rename the old aside, rename the new into place.
+/// The running app keeps executing from the renamed bundle until restart.
+fn perform_macos_update() -> Result<UpdateOutcome, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("current exe: {e}"))?;
+    let Some(bundle) = app_bundle_of(&exe) else {
+        // Not running from an .app bundle (dev build / bare binary): auto-download in the
+        // browser instead of guessing at an install layout.
+        return Ok(UpdateOutcome::OpenedInBrowser);
+    };
+    let parent = bundle.parent().ok_or("app bundle has no parent")?;
+
+    let dir = std::env::temp_dir().join("bearcad-update");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("temp dir: {e}"))?;
+    let dmg = dir.join("bearcad.dmg");
+    curl_download(&platform_artifact_url(), &dmg)?;
+
+    let mount = dir.join("mnt");
+    let status = std::process::Command::new("hdiutil")
+        .args([
+            "attach",
+            "-nobrowse",
+            "-quiet",
+            "-mountpoint",
+            &mount.to_string_lossy(),
+            &dmg.to_string_lossy(),
+        ])
+        .status()
+        .map_err(|e| format!("hdiutil: {e}"))?;
+    if !status.success() {
+        return Err("mounting the update dmg failed".to_string());
+    }
+    // Everything after the mount must detach it, success or not.
+    let result = (|| -> Result<UpdateOutcome, String> {
+        let new_app = find_app_bundle(&mount).ok_or("no .app in the update dmg")?;
+        // Copy to the same directory as the installed bundle so the final rename is
+        // same-volume (atomic). `ditto` preserves the bundle's signatures/permissions.
+        let staged = parent.join(".bearcad-update.app");
+        let _ = std::process::Command::new("rm").args(["-rf", &staged.to_string_lossy()]).status();
+        let status = std::process::Command::new("ditto")
+            .args([&new_app.to_string_lossy()[..], &staged.to_string_lossy()[..]])
+            .status()
+            .map_err(|e| format!("ditto: {e}"))?;
+        if !status.success() {
+            return Err("copying the new app failed".to_string());
+        }
+        // Rename-swap: the running bundle moves aside (macOS keeps executing it), the new
+        // bundle takes its name.
+        let old = parent.join("BearCAD-old.app");
+        let _ = std::process::Command::new("rm").args(["-rf", &old.to_string_lossy()]).status();
+        std::fs::rename(&bundle, &old).map_err(|e| format!("stage old app: {e}"))?;
+        if let Err(e) = std::fs::rename(&staged, &bundle) {
+            let _ = std::fs::rename(&old, &bundle); // roll back
+            return Err(format!("install new app: {e}"));
+        }
+        Ok(UpdateOutcome::StagedRestartToFinish { launch: bundle.clone() })
+    })();
+    let _ = std::process::Command::new("hdiutil")
+        .args(["detach", "-quiet", &mount.to_string_lossy()])
+        .status();
+    result
+}
+
+/// The first `.app` bundle directly inside `dir` (the dmg root).
+fn find_app_bundle(dir: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(dir).ok()?.flatten().find_map(|entry| {
+        let path = entry.path();
+        (path.is_dir() && path.extension().is_some_and(|e| e == "app")).then_some(path)
+    })
+}
+
+/// Relaunch the staged version and quit this process (#427): `open -n` for a macOS `.app`
+/// bundle, a plain spawn for a bare executable.
+pub fn restart_into(launch: &Path) -> Result<(), String> {
+    if launch.extension().is_some_and(|e| e == "app") {
+        std::process::Command::new("open")
+            .args(["-n", &launch.to_string_lossy()])
+            .spawn()
+            .map_err(|e| format!("open: {e}"))?;
+    } else {
+        std::process::Command::new(launch)
+            .spawn()
+            .map_err(|e| format!("spawn: {e}"))?;
+    }
+    // Give the spawn a moment to take, then exit; the new instance carries on.
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    std::process::exit(0);
 }
 
 fn curl_download(url: &str, to: &std::path::Path) -> Result<(), String> {
@@ -239,6 +363,16 @@ mod tests {
         let url = platform_artifact_url();
         assert!(url.starts_with(crate::release_artifacts::RELEASES_BASE));
         assert!(releases_page_url().starts_with(GITHUB_REPO));
+    }
+
+    #[test]
+    fn app_bundle_of_detects_bundles_and_bare_binaries() {
+        assert_eq!(
+            app_bundle_of(Path::new("/Applications/BearCAD.app/Contents/MacOS/bearcad")),
+            Some(PathBuf::from("/Applications/BearCAD.app"))
+        );
+        assert_eq!(app_bundle_of(Path::new("/usr/local/bin/bearcad")), None);
+        assert_eq!(app_bundle_of(Path::new("/tmp/target/debug/bearcad")), None);
     }
 
     #[test]

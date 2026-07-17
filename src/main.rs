@@ -657,11 +657,24 @@ impl App {
         let snapshot = self.update_state.lock().map(|s| s.clone()).ok();
         let Some(snapshot) = snapshot else { return };
         match (&snapshot.outcome, snapshot.in_progress, &snapshot.available) {
-            (Some(Ok(updater::UpdateOutcome::StagedRestartToFinish)), _, _) => {
-                ui.colored_label(
-                    egui::Color32::from_rgb(90, 200, 120),
-                    "Update downloaded — restart BearCAD to finish",
-                );
+            (Some(Ok(updater::UpdateOutcome::StagedRestartToFinish { launch })), _, _) => {
+                // The new version is in place — one click relaunches into it (#427).
+                let restart = ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new("⟳ Restart BearCAD")
+                                .color(egui::Color32::BLACK)
+                                .size(12.0),
+                        )
+                        .fill(egui::Color32::from_rgb(90, 200, 120))
+                        .corner_radius(4.0),
+                    )
+                    .on_hover_text("The update is installed — restart to run the new version");
+                if restart.clicked() {
+                    if let Err(e) = updater::restart_into(launch) {
+                        self.state.status = format!("Restart failed: {e}");
+                    }
+                }
             }
             (Some(Ok(updater::UpdateOutcome::OpenedInBrowser)), _, _) => {
                 ui.colored_label(
@@ -682,14 +695,19 @@ impl App {
             }
             (None, false, Some(version)) => {
                 if self.update_badge(ui, version) {
-                    if cfg!(target_os = "macos") {
-                        // Auto-download the installer artifact in the browser.
-                        ctx.open_url(egui::OpenUrl::new_tab(updater::platform_artifact_url()));
-                    }
                     updater::spawn_update(self.update_state.clone(), ctx.clone());
                 }
             }
             _ => {}
+        }
+        // A dev/non-bundle run can't stage in place: auto-download in the browser once.
+        if matches!(
+            &snapshot.outcome,
+            Some(Ok(updater::UpdateOutcome::OpenedInBrowser))
+        ) && !self.update_fallback_opened
+        {
+            self.update_fallback_opened = true;
+            ctx.open_url(egui::OpenUrl::new_tab(updater::platform_artifact_url()));
         }
         // A failed staged update falls back to the browser download once.
         if let Some(Err(err)) = &snapshot.outcome {

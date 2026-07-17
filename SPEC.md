@@ -2275,13 +2275,18 @@ Native builds check GitHub's latest release once at startup in a background thre
 check is best-effort and silent on failure; `BEARCAD_NO_UPDATE_CHECK` disables it, and
 the doc-screenshot harness sets it). When a strictly newer version exists
 (`updater::is_newer`, dotted numeric compare), a **bright green badge** appears in the
-status bar's bottom-right corner — no popup, no interruption. Clicking it does the best
-thing per platform: **Windows** (bare exe artifact) and **Linux** (tar.gz) download to a
-temp dir and **stage the new binary over the running executable** via the rename trick
-(old binary moves to `.old`; restart finishes the update; failures roll back and fall
-back to opening the releases page in the browser); **macOS** (.dmg) auto-downloads the
-installer in the browser. The badge reports progress and the outcome ("restart to
-finish" / "downloading in your browser").
+status bar's bottom-right corner — no popup, no interruption. Clicking it stages the
+update **in place on every desktop OS**: **Windows** (bare exe artifact) and **Linux**
+(tar.gz) download to a temp dir and swap the running executable via the rename trick
+(old binary moves to `.old`); **macOS** (.dmg) uses the Squirrel.Mac trick — a running
+`.app` bundle can be renamed — so it mounts the dmg (`hdiutil attach`), `ditto`-copies
+the new bundle beside the installed one (same volume, so the final rename is atomic),
+and rename-swaps (`BearCAD-old.app` aside; roll back on failure; dmg detached either
+way). Once staged the badge becomes a **⟳ Restart BearCAD** button
+(`updater::restart_into`: `open -n` for a bundle, plain spawn otherwise, then exit).
+Leftover `.old` binaries/bundles are cleaned on the next startup. Fallbacks: a
+non-bundle macOS run (dev build) auto-downloads the artifact in the browser; a failed
+stage rolls back and opens the releases page.
 
 ## 12. Technical drawings & printable schematics
 
