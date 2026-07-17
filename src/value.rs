@@ -638,6 +638,33 @@ impl LengthUnit {
     }
 }
 
+/// Builtin expression functions (#431).
+fn is_builtin_function(name: &str) -> bool {
+    matches!(name, "max" | "min" | "abs")
+}
+
+/// Apply a builtin function (#431). `max`/`min` take one or more values (arrays flatten
+/// into the list); `abs` takes exactly one.
+fn apply_builtin_function(name: &str, args: &[f32]) -> Result<f32, ()> {
+    match name {
+        "max" => args
+            .iter()
+            .copied()
+            .reduce(f32::max)
+            .ok_or(()),
+        "min" => args
+            .iter()
+            .copied()
+            .reduce(f32::min)
+            .ok_or(()),
+        "abs" => match args {
+            [v] => Ok(v.abs()),
+            _ => Err(()),
+        },
+        _ => Err(()),
+    }
+}
+
 struct Parser<'a> {
     chars: std::iter::Peekable<std::str::Chars<'a>>,
     params: Option<&'a [(&'a str, &'a str)]>,
@@ -746,9 +773,67 @@ impl<'a> Parser<'a> {
             return Ok(v);
         }
         if let Some(name) = self.try_parse_identifier() {
+            // Builtin functions (#431): an identifier directly followed by `(` is a call.
+            self.skip_ws();
+            if self.peek() == Some('(') && is_builtin_function(&name) {
+                let args = self.parse_call_args()?;
+                return apply_builtin_function(&name, &args);
+            }
             return self.resolve_identifier(name);
         }
         self.parse_quantity()
+    }
+
+
+    /// Parse a builtin function call's arguments after the name (#431): `(a, b, …)`,
+    /// where any argument may also be a square-bracket array `[a, b, …]` whose elements
+    /// flatten into the list.
+    fn parse_call_args(&mut self) -> Result<Vec<f32>, ()> {
+        self.skip_ws();
+        if self.peek() != Some('(') {
+            return Err(());
+        }
+        self.bump();
+        let mut args = Vec::new();
+        self.skip_ws();
+        if self.peek() == Some(')') {
+            self.bump();
+            return Ok(args);
+        }
+        loop {
+            self.skip_ws();
+            if self.peek() == Some('[') {
+                self.bump();
+                loop {
+                    args.push(self.parse_expr()?);
+                    self.skip_ws();
+                    match self.peek() {
+                        Some(',') => {
+                            self.bump();
+                        }
+                        Some(']') => {
+                            self.bump();
+                            break;
+                        }
+                        _ => return Err(()),
+                    }
+                }
+            } else {
+                args.push(self.parse_expr()?);
+            }
+            self.skip_ws();
+            match self.peek() {
+                Some(',') => {
+                    self.bump();
+                }
+                Some(')') => {
+                    self.bump();
+                    break;
+                }
+                _ => return Err(()),
+            }
+        }
+        Ok(args)
     }
 
     fn try_parse_identifier(&mut self) -> Option<String> {
@@ -996,9 +1081,67 @@ impl<'a> AngleParser<'a> {
             return Ok(v);
         }
         if let Some(name) = self.try_parse_identifier() {
+            // Builtin functions (#431): an identifier directly followed by `(` is a call.
+            self.skip_ws();
+            if self.peek() == Some('(') && is_builtin_function(&name) {
+                let args = self.parse_call_args()?;
+                return apply_builtin_function(&name, &args);
+            }
             return self.resolve_identifier(name);
         }
         self.parse_quantity()
+    }
+
+
+    /// Parse a builtin function call's arguments after the name (#431): `(a, b, …)`,
+    /// where any argument may also be a square-bracket array `[a, b, …]` whose elements
+    /// flatten into the list.
+    fn parse_call_args(&mut self) -> Result<Vec<f32>, ()> {
+        self.skip_ws();
+        if self.peek() != Some('(') {
+            return Err(());
+        }
+        self.bump();
+        let mut args = Vec::new();
+        self.skip_ws();
+        if self.peek() == Some(')') {
+            self.bump();
+            return Ok(args);
+        }
+        loop {
+            self.skip_ws();
+            if self.peek() == Some('[') {
+                self.bump();
+                loop {
+                    args.push(self.parse_expr()?);
+                    self.skip_ws();
+                    match self.peek() {
+                        Some(',') => {
+                            self.bump();
+                        }
+                        Some(']') => {
+                            self.bump();
+                            break;
+                        }
+                        _ => return Err(()),
+                    }
+                }
+            } else {
+                args.push(self.parse_expr()?);
+            }
+            self.skip_ws();
+            match self.peek() {
+                Some(',') => {
+                    self.bump();
+                }
+                Some(')') => {
+                    self.bump();
+                    break;
+                }
+                _ => return Err(()),
+            }
+        }
+        Ok(args)
     }
 
     fn try_parse_identifier(&mut self) -> Option<String> {
@@ -1085,6 +1228,35 @@ impl<'a> AngleParser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #431: `max`/`min`/`abs` work in expressions — multiple args or one square-bracket
+    /// array — in both the length and angle parsers, composing with units and parameters.
+    #[test]
+    fn expression_functions_max_min_abs() {
+        assert_eq!(eval_length_mm("max(3, 7, 5)").unwrap(), 7.0);
+        assert_eq!(eval_length_mm("min(3, 7, 5)").unwrap(), 3.0);
+        assert_eq!(eval_length_mm("max([3, 7, 5])").unwrap(), 7.0);
+        assert_eq!(eval_length_mm("min([4])").unwrap(), 4.0);
+        assert_eq!(eval_length_mm("abs(-12)").unwrap(), 12.0);
+        // Compose with units, arithmetic, and nesting.
+        assert!((eval_length_mm("max(1in, 20)").unwrap() - 25.4).abs() < 1e-3);
+        assert_eq!(eval_length_mm("2 * min(5, abs(-3))").unwrap(), 6.0);
+        assert_eq!(eval_length_mm("max([1, 2], 10)").unwrap(), 10.0);
+        // Parameters resolve inside arguments.
+        assert_eq!(
+            eval_length_mm_with_params("max(w, 5)", &[("w", "9")]).unwrap(),
+            9.0
+        );
+        // Angles too.
+        assert!((eval_angle_rad("max(30deg, 10deg)").unwrap() - 30f32.to_radians()).abs() < 1e-5);
+        assert!((eval_angle_rad("abs(-45deg)").unwrap() - 45f32.to_radians()).abs() < 1e-5);
+        // Malformed calls fail instead of half-parsing.
+        assert!(eval_length_mm("max()").is_none());
+        assert!(eval_length_mm("abs(1, 2)").is_none());
+        assert!(eval_length_mm("max(3, ").is_none());
+        assert!(eval_length_mm("max[3, 4]").is_none());
+        assert!(eval_length_mm("nope(3)").is_none());
+    }
 
     #[test]
     fn bare_number_is_mm() {
