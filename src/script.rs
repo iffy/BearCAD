@@ -335,6 +335,22 @@ pub enum Instruction {
         length: Option<LengthUnit>,
         angle: Option<AngleUnit>,
     },
+    /// Create a component (#423).
+    CreateComponent {
+        name: Option<String>,
+        parent: Option<usize>,
+    },
+    /// Move an element (or component) into a component, or with `None` to the root (#423).
+    MoveToComponent {
+        element: SceneElement,
+        component: Option<usize>,
+    },
+    /// Set a component's unit overrides (#423).
+    SetComponentUnits {
+        component: usize,
+        length: Option<LengthUnit>,
+        angle: Option<AngleUnit>,
+    },
     SetDim { axis: RectAxis, value: String },
     SetDimLabelOffset { axis: DimLabelAxis, offset: f32 },
     BeginEditCommittedDim { axis: DimLabelAxis },
@@ -892,6 +908,40 @@ impl Instruction {
                     angle.script_name()
                 )
             }
+            Instruction::CreateComponent { name, parent } => {
+                let mut args = String::new();
+                if let Some(n) = name {
+                    args.push_str(&format!("name = {n:?}"));
+                }
+                if let Some(p) = parent {
+                    if !args.is_empty() {
+                        args.push_str(", ");
+                    }
+                    args.push_str(&format!("parent = {p}"));
+                }
+                format!("bearcad.component{{ {args} }}")
+            }
+            Instruction::MoveToComponent { element, component } => {
+                let target = match component {
+                    Some(c) => c.to_string(),
+                    None => "false".to_string(),
+                };
+                let tokens = element_script_tokens(element.clone());
+                format!(
+                    "bearcad.move_to_component{{ kind = {:?}, index = {}, component = {target} }}",
+                    tokens.kind, tokens.index
+                )
+            }
+            Instruction::SetComponentUnits { component, length, angle } => {
+                let mut args = format!("component = {component}");
+                if let Some(l) = length {
+                    args.push_str(&format!(", length = {:?}", l.script_name()));
+                }
+                if let Some(a) = angle {
+                    args.push_str(&format!(", angle = {:?}", a.script_name()));
+                }
+                format!("bearcad.set_units{{ {args} }}")
+            }
             Instruction::SetSketchUnits { sketch, length, angle } => {
                 let length_arg = match length {
                     Some(length) => format!(", length = {:?}", length.script_name()),
@@ -1342,6 +1392,11 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        SceneElement::Component(i) => ElementScriptTokens {
+            kind: "component",
+            index: i,
+            point: None,
+        },
         SceneElement::Origin => ElementScriptTokens {
             kind: "origin",
             index: 0,
@@ -1676,6 +1731,21 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         Action::FocusElementName => Some(Instruction::FocusElementName),
         Action::SetDocumentUnits { length, angle } => {
             Some(Instruction::SetDocumentUnits { length: *length, angle: *angle })
+        }
+        Action::CreateComponent { name, parent } => Some(Instruction::CreateComponent {
+            name: name.clone(),
+            parent: *parent,
+        }),
+        Action::MoveToComponent { element, component } => Some(Instruction::MoveToComponent {
+            element: element.clone(),
+            component: *component,
+        }),
+        Action::SetComponentUnits { component, length, angle } => {
+            Some(Instruction::SetComponentUnits {
+                component: *component,
+                length: *length,
+                angle: *angle,
+            })
         }
         Action::SetSketchUnits { sketch, length, angle } => Some(Instruction::SetSketchUnits {
             sketch: *sketch,
@@ -3783,6 +3853,21 @@ impl ScriptRunner {
             }
             Instruction::SetDocumentUnits { length, angle } => {
                 let _ = state.apply(Action::SetDocumentUnits { length, angle });
+                StepResult::Continue
+            }
+            Instruction::CreateComponent { name, parent } => {
+                let result = state.apply(Action::CreateComponent { name, parent });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::MoveToComponent { element, component } => {
+                let result = state.apply(Action::MoveToComponent { element, component });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::SetComponentUnits { component, length, angle } => {
+                let result = state.apply(Action::SetComponentUnits { component, length, angle });
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::SetSketchUnits { sketch, length, angle } => {

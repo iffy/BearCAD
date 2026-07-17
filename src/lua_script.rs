@@ -105,6 +105,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::SketchText(_) => "sketch_text",
         SceneElement::SliceOp(_) => "slice_op",
         SceneElement::Revolution(_) => "revolution",
+        SceneElement::Component(_) => "component",
     }
 }
 
@@ -125,7 +126,8 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::SketchSliceOp(i)
         | SceneElement::SketchText(i)
         | SceneElement::SliceOp(i)
-        | SceneElement::Revolution(i) => i,
+        | SceneElement::Revolution(i)
+        | SceneElement::Component(i) => i,
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::Origin
@@ -146,6 +148,7 @@ pub fn scene_element_from_kind(kind: &str, index: usize) -> Option<SceneElement>
         "extrusion" => Some(SceneElement::Extrusion(index)),
         "body" => Some(SceneElement::Body(index)),
         "sketch_text" | "text" => Some(SceneElement::SketchText(index)),
+        "component" => Some(SceneElement::Component(index)),
         _ => None,
     }
 }
@@ -1128,7 +1131,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                         .ok_or_else(|| mlua::Error::external(format!("unknown angle unit '{name}'")))
                 })
                 .transpose()?;
-            if let Some(sketch) = opts.get::<Option<SketchId>>("sketch")? {
+            if let Some(component) = opts.get::<Option<usize>>("component")? {
+                unsafe {
+                    tick.exec(Instruction::SetComponentUnits { component, length, angle })
+                }
+            } else if let Some(sketch) = opts.get::<Option<SketchId>>("sketch")? {
                 unsafe { tick.exec(Instruction::SetSketchUnits { sketch, length, angle }) }
             } else {
                 let doc = unsafe { &tick.state().doc };
@@ -1136,6 +1143,49 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 let angle = angle.unwrap_or(doc.default_angle_unit);
                 unsafe { tick.exec(Instruction::SetDocumentUnits { length, angle }) }
             }
+        })?,
+    )?;
+
+    // Components (#423): `bearcad.component{ name = "Frame", parent = 0 }` creates one and
+    // returns its index; `bearcad.move_to_component{ kind = "body", index = 0,
+    // component = 1 }` files an element into it (`component = false` moves it back out).
+    api.set(
+        "component",
+        lua.create_function(|lua, opts: Option<Table>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let (name, parent) = match &opts {
+                Some(t) => {
+                    check_keys(t, "component", &["name", "parent"])?;
+                    (t.get::<Option<String>>("name")?, t.get::<Option<usize>>("parent")?)
+                }
+                None => (None, None),
+            };
+            unsafe { tick.exec(Instruction::CreateComponent { name, parent }) }?;
+            Ok(unsafe { tick.state().doc.components.len().saturating_sub(1) })
+        })?,
+    )?;
+
+    api.set(
+        "move_to_component",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(&opts, "move_to_component", &["kind", "index", "component"])?;
+            let kind: String = opts.get("kind")?;
+            let index: usize = opts.get("index")?;
+            let element = scene_element_from_kind(&kind, index).ok_or_else(|| {
+                mlua::Error::external(format!("unknown element kind '{kind}'"))
+            })?;
+            let component = match opts.get::<Value>("component")? {
+                Value::Boolean(false) | Value::Nil => None,
+                Value::Integer(i) => Some(i as usize),
+                Value::Number(n) => Some(n as usize),
+                other => {
+                    return Err(mlua::Error::external(format!(
+                        "component must be an index or false, got {other:?}"
+                    )))
+                }
+            };
+            unsafe { tick.exec(Instruction::MoveToComponent { element, component }) }
         })?,
     )?;
 
@@ -1344,6 +1394,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 "sketch_text" | "text" => {
                     doc.sketch_texts.iter().filter(|e| !e.deleted).count()
                 }
+                "component" => doc.components.iter().filter(|e| !e.deleted).count(),
                 "image" => doc.tracing_images.iter().filter(|e| !e.deleted).count(),
                 other => {
                     return Err(mlua::Error::external(format!(

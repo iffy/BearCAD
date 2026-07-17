@@ -78,6 +78,7 @@ impl ElementKind {
             SceneElement::FaceEdge(_) | SceneElement::BodyEdge { .. } => ElementKind::Edge,
             SceneElement::Constraint(_) => ElementKind::Constraint,
             SceneElement::Body(_) => ElementKind::Body,
+            SceneElement::Component(_) => ElementKind::Operation,
             SceneElement::Extrusion(_)
             | SceneElement::BooleanOp(_)
             | SceneElement::MoveOp(_)

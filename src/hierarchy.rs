@@ -73,6 +73,9 @@ pub enum HierarchyNode {
     /// no [`SceneElement`] (not selectable/hideable through the scene graph); its source
     /// body/sketch is a second input, surfaced once the element graph (#252) lands.
     DrawingProjection { drawing: usize, view: usize },
+    /// A component (#423): a named group row whose member roots nest beneath it; components
+    /// nest inside each other via their `parent` link.
+    Component(usize),
     /// A text note on a drawing page (#333), nested under its [`HierarchyNode::Drawing`].
     /// `annotation` indexes the drawing's `annotations`. Like a projection it's a display-only
     /// leaf with no [`SceneElement`]; clicking it opens the drawing.
@@ -136,6 +139,9 @@ pub enum SceneElement {
     /// The origin, selectable in a sketch so a point can be constrained coincident to it from
     /// the constraint tool (#189). Fixed geometry with no owning entity, like `FaceEdge`.
     Origin,
+    /// A component (#423): a named, nestable group of top-level elements. Hiding one hides
+    /// everything inside it.
+    Component(usize),
 }
 
 /// Quantize a world position (mm) to the 0.01 mm grid used for body edge/vertex selection
@@ -183,6 +189,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::SketchText(i) => SceneElement::SketchText(i),
         HierarchyNode::SliceOp(i) => SceneElement::SliceOp(i),
         HierarchyNode::Revolution(i) => SceneElement::Revolution(i),
+        HierarchyNode::Component(i) => SceneElement::Component(i),
     })
 }
 
@@ -190,6 +197,11 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
 /// the dragged body/sketch becomes a projection at the drop point.
 #[derive(Clone, Debug)]
 pub struct DrawingDragPayload(pub SceneElement);
+
+/// Drag-and-drop payload for dragging an Elements-pane row onto a component row (#423):
+/// the dragged element moves into that component.
+#[derive(Clone, Debug)]
+pub struct ComponentDragPayload(pub SceneElement);
 
 /// User-toggled visibility for scene elements. Absent entries are visible.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -216,11 +228,31 @@ impl ElementVisibility {
         next
     }
 
+    /// Whether `component` and all its ancestors are individually visible (#423).
+    fn component_chain_visible(&self, doc: &Document, component: usize) -> bool {
+        doc.component_chain(component)
+            .into_iter()
+            .all(|c| self.is_visible(SceneElement::Component(c)))
+    }
+
     pub fn effective_visible(&self, doc: &Document, element: SceneElement) -> bool {
         if !self.is_visible(element.clone()) {
             return false;
         }
+        // A hidden component hides everything inside it (#423): resolve the element's
+        // owning component (directly, or through the root element it nests under) and
+        // require the whole chain visible.
+        if let Some(c) = owning_component(doc, &element) {
+            if !self.component_chain_visible(doc, c) {
+                return false;
+            }
+        }
         match element {
+            SceneElement::Component(index) => doc
+                .components
+                .get(index)
+                .and_then(|c| c.parent)
+                .is_none_or(|p| self.effective_visible(doc, SceneElement::Component(p))),
             SceneElement::ConstructionPlane(index) => doc
                 .construction_planes
                 .get(index)
@@ -403,6 +435,14 @@ pub fn graph_node_positions(tree: &[HierarchyEntry]) -> Vec<GraphNodePosition> {
         next_row_in_column: &mut HashMap<usize, usize>,
         out: &mut Vec<GraphNodePosition>,
     ) {
+        // Components (#423) are drawn as areas encompassing their members, not as nodes:
+        // pass through to the children at the same depth, keeping the outer parent.
+        if matches!(entry.node, HierarchyNode::Component(_)) {
+            for child in &entry.children {
+                walk(child, depth, parent, next_row_in_column, out);
+            }
+            return;
+        }
         let row = next_row_in_column.entry(depth).or_insert(0);
         let this_row = *row;
         *row += 1;
@@ -424,6 +464,36 @@ pub fn graph_node_positions(tree: &[HierarchyEntry]) -> Vec<GraphNodePosition> {
         walk(entry, 0, None, &mut next_row_in_column, &mut positions);
     }
     positions
+}
+
+/// Per-component sets of graph nodes inside that component's subtree (#423), nested
+/// components included in their ancestors' sets — the areas the Graph view shades.
+pub fn component_node_sets(tree: &[HierarchyEntry]) -> Vec<(usize, HashSet<HierarchyNode>)> {
+    fn collect_nodes(entry: &HierarchyEntry, out: &mut HashSet<HierarchyNode>) {
+        if !matches!(entry.node, HierarchyNode::Component(_)) {
+            out.insert(entry.node);
+        }
+        for child in &entry.children {
+            collect_nodes(child, out);
+        }
+    }
+    fn walk(entry: &HierarchyEntry, out: &mut Vec<(usize, HashSet<HierarchyNode>)>) {
+        if let HierarchyNode::Component(ci) = entry.node {
+            let mut nodes = HashSet::new();
+            for child in &entry.children {
+                collect_nodes(child, &mut nodes);
+            }
+            out.push((ci, nodes));
+        }
+        for child in &entry.children {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    for entry in tree {
+        walk(entry, &mut out);
+    }
+    out
 }
 
 /// `(input, consumer)` dependency pairs for the Graph view (#266/#281): relationships beyond the
@@ -936,6 +1006,8 @@ fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
         HierarchyNode::Body(i) => *ranks.bodies.get(&i).unwrap_or(&i),
         // Tracing images list after ranked nodes (#169).
         HierarchyNode::Image(_) => usize::MAX,
+        // Components group their contents; their own order is by index.
+        HierarchyNode::Component(i) => i,
         // Boolean/move operations likewise list after ranked nodes.
         HierarchyNode::BooleanOp(_) => usize::MAX,
         HierarchyNode::MoveOp(_) => usize::MAX,
@@ -1256,10 +1328,104 @@ pub fn build_hierarchy(
             });
         }
     }
+    // Components (#423): move member roots under their component's entry, then nest
+    // component entries by their parent links. Unassigned roots stay at the top level.
+    let roots = group_roots_into_components(doc, roots);
     vec![HierarchyEntry {
         node: HierarchyNode::Document,
         children: roots,
     }]
+}
+
+/// Group top-level entries into their components' entries (#423). Components render even
+/// when empty; a component whose parent chain is broken surfaces at the top level.
+fn group_roots_into_components(doc: &Document, roots: Vec<HierarchyEntry>) -> Vec<HierarchyEntry> {
+    use crate::model::ComponentMember as CM;
+    if doc.components.iter().all(|c| c.deleted) {
+        return roots;
+    }
+    let member_of = |node: &HierarchyNode| -> Option<usize> {
+        let (kind, index) = match node {
+            HierarchyNode::ConstructionPlane(i) => (CM::ConstructionPlane, *i),
+            HierarchyNode::Extrusion(i) => (CM::Extrusion, *i),
+            HierarchyNode::Body(i) => (CM::Body, *i),
+            HierarchyNode::Loft(i) => (CM::Loft, *i),
+            HierarchyNode::BooleanOp(i) => (CM::BooleanOp, *i),
+            HierarchyNode::MoveOp(i) => (CM::MoveOp, *i),
+            HierarchyNode::RepeatOp(i) => (CM::RepeatOp, *i),
+            HierarchyNode::SliceOp(i) => (CM::SliceOp, *i),
+            HierarchyNode::Revolution(i) => (CM::Revolution, *i),
+            HierarchyNode::Drawing(i) => (CM::Drawing, *i),
+            _ => return None,
+        };
+        doc.component_of(kind, index)
+    };
+    // component index -> its (initially childless) entry.
+    let mut comp_children: HashMap<usize, Vec<HierarchyEntry>> = HashMap::new();
+    for (ci, c) in doc.components.iter().enumerate() {
+        if !c.deleted {
+            comp_children.insert(ci, Vec::new());
+        }
+    }
+    // Extract assigned entries wherever they sit (#423): an assigned element that nests
+    // inside another entry's subtree (an extrusion under its sketch's plane, a body under
+    // an op) moves — with its own subtree — into the component's entry.
+    fn extract_members(
+        entries: &mut Vec<HierarchyEntry>,
+        member_of: &impl Fn(&HierarchyNode) -> Option<usize>,
+        comp_children: &mut HashMap<usize, Vec<HierarchyEntry>>,
+    ) {
+        let mut i = 0;
+        while i < entries.len() {
+            match member_of(&entries[i].node) {
+                Some(c) if comp_children.contains_key(&c) => {
+                    let e = entries.remove(i);
+                    comp_children.get_mut(&c).unwrap().push(e);
+                }
+                _ => {
+                    extract_members(&mut entries[i].children, member_of, comp_children);
+                    i += 1;
+                }
+            }
+        }
+    }
+    let mut top = roots;
+    extract_members(&mut top, &member_of, &mut comp_children);
+    // Assigned entries may themselves contain nested assigned entries; extract within the
+    // component buckets too (one pass per bucket is enough for direct nesting).
+    let keys: Vec<usize> = comp_children.keys().copied().collect();
+    for c in keys {
+        let mut bucket = comp_children.remove(&c).unwrap();
+        extract_members(&mut bucket, &member_of, &mut comp_children);
+        match comp_children.entry(c) {
+            std::collections::hash_map::Entry::Occupied(mut e) => e.get_mut().extend(bucket),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(bucket);
+            }
+        }
+    }
+    // Attach child components to their parents, deepest-first so nested chains assemble.
+    // Order components by index; children append after member elements.
+    let mut order: Vec<usize> = comp_children.keys().copied().collect();
+    order.sort_unstable();
+    // Depth of each component (root = 0), cycles cut by component_chain.
+    let depth = |c: usize| doc.component_chain(c).len();
+    order.sort_by_key(|&c| std::cmp::Reverse(depth(c)));
+    for c in order {
+        let children = comp_children.remove(&c).unwrap();
+        let entry = HierarchyEntry {
+            node: HierarchyNode::Component(c),
+            children,
+        };
+        let parent = doc.components[c]
+            .parent
+            .filter(|p| comp_children.contains_key(p));
+        match parent {
+            Some(p) => comp_children.get_mut(&p).unwrap().push(entry),
+            None => top.push(entry),
+        }
+    }
+    top
 }
 
 /// Flat element list: parents always above descendants; newer elements after older ones when possible.
@@ -1355,6 +1521,7 @@ impl ElementFilter {
     fn shows(&self, node: HierarchyNode) -> bool {
         match node {
             HierarchyNode::Document => true,
+            HierarchyNode::Component(_) => true,
             HierarchyNode::ConstructionPlane(_) => self.planes,
             HierarchyNode::Sketch(_) => self.sketches,
             HierarchyNode::Line(_)
@@ -1446,8 +1613,88 @@ fn topological_flat_sort(
     result
 }
 
+/// The [`SceneElement`] a component member reference points at (#423). Drawings and lofts
+/// are display-only (no scene element).
+pub fn component_member_element(
+    kind: crate::model::ComponentMember,
+    index: usize,
+) -> Option<SceneElement> {
+    use crate::model::ComponentMember as CM;
+    Some(match kind {
+        CM::ConstructionPlane => SceneElement::ConstructionPlane(index),
+        CM::Extrusion => SceneElement::Extrusion(index),
+        CM::Body => SceneElement::Body(index),
+        CM::BooleanOp => SceneElement::BooleanOp(index),
+        CM::MoveOp => SceneElement::MoveOp(index),
+        CM::RepeatOp => SceneElement::RepeatOp(index),
+        CM::SliceOp => SceneElement::SliceOp(index),
+        CM::Revolution => SceneElement::Revolution(index),
+        CM::Loft | CM::Drawing => return None,
+    })
+}
+
+/// The component a scene element belongs to (#423): a direct membership for top-level
+/// kinds, or the membership of the root it nests under (a body via its producing
+/// operation/extrusion, an extrusion or image via its sketch's host plane).
+pub fn owning_component(doc: &Document, element: &SceneElement) -> Option<usize> {
+    use crate::model::ComponentMember as CM;
+    match element {
+        SceneElement::Component(i) => doc.components.get(*i).and_then(|c| c.parent),
+        SceneElement::ConstructionPlane(i) => {
+            doc.component_of(CM::ConstructionPlane, *i).or_else(|| {
+                match doc.construction_planes.get(*i)?.parent {
+                    ConstructionPlaneParent::Root => None,
+                    ConstructionPlaneParent::Sketch(s) => crate::model::sketch_component(doc, s),
+                }
+            })
+        }
+        SceneElement::Sketch(s) => crate::model::sketch_component(doc, *s),
+        SceneElement::Extrusion(i) => doc.component_of(CM::Extrusion, *i).or_else(|| {
+            doc.extrusions
+                .get(*i)
+                .and_then(|e| crate::model::sketch_component(doc, e.sketch))
+        }),
+        SceneElement::Body(i) => doc.component_of(CM::Body, *i).or_else(|| {
+            use crate::model::BodySource;
+            match &doc.bodies.get(*i)?.source {
+                BodySource::Extrusion(e) => {
+                    owning_component(doc, &SceneElement::Extrusion(*e))
+                }
+                BodySource::Extrusions(es) => es
+                    .iter()
+                    .find_map(|e| owning_component(doc, &SceneElement::Extrusion(*e))),
+                BodySource::Imported(_) => None,
+                BodySource::Loft(l) => doc.component_of(CM::Loft, *l),
+                BodySource::Revolve(r) => doc.component_of(CM::Revolution, *r),
+                BodySource::Repeated { op, .. } => doc.component_of(CM::RepeatOp, *op),
+                BodySource::Moved { op, .. } => doc.component_of(CM::MoveOp, *op),
+                BodySource::Boolean { op, .. } => doc.component_of(CM::BooleanOp, *op),
+                BodySource::Sliced { op, .. } => doc.component_of(CM::SliceOp, *op),
+                BodySource::Solid { .. } => None,
+            }
+        }),
+        SceneElement::Image(i) => doc
+            .tracing_images
+            .get(*i)
+            .and_then(|img| owning_component(doc, &SceneElement::ConstructionPlane(img.plane))),
+        SceneElement::BooleanOp(i) => doc.component_of(CM::BooleanOp, *i),
+        SceneElement::MoveOp(i) => doc.component_of(CM::MoveOp, *i),
+        SceneElement::RepeatOp(i) => doc.component_of(CM::RepeatOp, *i),
+        SceneElement::SliceOp(i) => doc.component_of(CM::SliceOp, *i),
+        SceneElement::Revolution(i) => doc.component_of(CM::Revolution, *i),
+        // In-sketch geometry cascades through its sketch's plane (handled by the sketch's
+        // own effective-visibility recursion); everything else has no owning component.
+        _ => None,
+    }
+}
+
 fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement> {
     match element {
+        SceneElement::Component(index) => doc
+            .components
+            .get(index)
+            .and_then(|c| c.parent)
+            .map(SceneElement::Component),
         SceneElement::ConstructionPlane(index) => doc.construction_planes.get(index).and_then(
             |plane| match plane.parent {
                 ConstructionPlaneParent::Root => None,
@@ -1533,6 +1780,23 @@ fn collect_ancestors(doc: &Document, element: SceneElement, out: &mut HashSet<Sc
 
 fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<SceneElement>) {
     match element {
+        SceneElement::Component(index) => {
+            for (k, i, c) in doc.component_members.iter() {
+                if *c != index {
+                    continue;
+                }
+                if let Some(e) = component_member_element(*k, *i) {
+                    out.insert(e.clone());
+                    collect_descendants(doc, e, out);
+                }
+            }
+            for (ci, comp) in doc.components.iter().enumerate() {
+                if !comp.deleted && comp.parent == Some(index) {
+                    out.insert(SceneElement::Component(ci));
+                    collect_descendants(doc, SceneElement::Component(ci), out);
+                }
+            }
+        }
         SceneElement::ConstructionPlane(index) => {
             let face = FaceId::ConstructionPlane(index);
             for sketch in doc.sketches_on_face(face) {
@@ -1912,6 +2176,7 @@ fn icon_tint_for_row_style(style: RowStyle) -> Color32 {
 fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId> {
     Some(match node {
         HierarchyNode::Document => return None,
+        HierarchyNode::Component(_) => IconId::Component,
         HierarchyNode::ConstructionPlane(_) => IconId::Plane,
         HierarchyNode::Sketch(_) => IconId::Sketch,
         HierarchyNode::Line(_) => IconId::Line,
@@ -2233,6 +2498,9 @@ pub fn show_pane(
     active_drawing: Option<usize>,
     on_add_to_drawing: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
+    collapsed_components: &mut HashSet<usize>,
+    on_add_component: &mut impl FnMut(Option<usize>),
+    on_move_to_component: &mut impl FnMut(SceneElement, Option<usize>),
 ) {
     ui.horizontal(|ui| {
         ui.heading(PANE_TITLE);
@@ -2251,6 +2519,14 @@ pub fn show_pane(
                     *view_mode = mode;
                 }
             }
+            // Add menu (#423): the + opens a popup with creatable containers.
+            let add = selectable_icon_button(ui, IconId::Plus, false, "Add…");
+            egui::Popup::menu(&add).show(|ui| {
+                if ui.button("New component").clicked() {
+                    on_add_component(None);
+                    ui.close();
+                }
+            });
         });
     });
     ui.separator();
@@ -2262,30 +2538,56 @@ pub fn show_pane(
         // `Tree` is retired (#252); a lingering script-set Tree mode falls back to List.
         HierarchyViewMode::List | HierarchyViewMode::Tree => {
             let tree = filter_hierarchy(&build_hierarchy(doc, sketch_session), filter);
-            let elements = element_list_from_tree(&tree, doc);
+            let rows = component_list_rows(&tree, doc, collapsed_components);
+            let elements: Vec<HierarchyNode> = rows.iter().map(|(n, _)| *n).collect();
             let style_selection = selection_styles_visible_list(&elements, selection);
             egui::ScrollArea::vertical().show(ui, |ui| {
-                for node in elements {
+                for (node, base_depth) in rows {
+                    // Component rows render inline (#423): triangle, eye, icon, name; they
+                    // collapse their contents and accept row drops.
+                    if let HierarchyNode::Component(ci) = node {
+                        show_component_row(
+                            ui,
+                            doc,
+                            ci,
+                            base_depth,
+                            visibility,
+                            selection,
+                            health,
+                            &context,
+                            &related_constraints,
+                            style_selection,
+                            highlight_elements,
+                            collapsed_components,
+                            on_toggle_visibility,
+                            on_click_element,
+                            on_delete_element,
+                            on_add_component,
+                            on_move_to_component,
+                        );
+                        continue;
+                    }
                     // When editing a sketch, indent that sketch's own components one level so they
                     // read as belonging to it (#244).
-                    let row_depth = match (sketch_session, node) {
-                        (Some(s), HierarchyNode::Line(i))
-                            if doc.lines.get(i).is_some_and(|l| l.sketch == s.sketch) =>
-                        {
-                            2
-                        }
-                        (Some(s), HierarchyNode::Circle(i))
-                            if doc.circles.get(i).is_some_and(|c| c.sketch == s.sketch) =>
-                        {
-                            2
-                        }
-                        (Some(s), HierarchyNode::Constraint(i))
-                            if doc.constraints.get(i).is_some_and(|c| c.sketch == s.sketch) =>
-                        {
-                            2
-                        }
-                        _ => 1,
-                    };
+                    let row_depth = base_depth
+                        + match (sketch_session, node) {
+                            (Some(s), HierarchyNode::Line(i))
+                                if doc.lines.get(i).is_some_and(|l| l.sketch == s.sketch) =>
+                            {
+                                1
+                            }
+                            (Some(s), HierarchyNode::Circle(i))
+                                if doc.circles.get(i).is_some_and(|c| c.sketch == s.sketch) =>
+                            {
+                                1
+                            }
+                            (Some(s), HierarchyNode::Constraint(i))
+                                if doc.constraints.get(i).is_some_and(|c| c.sketch == s.sketch) =>
+                            {
+                                1
+                            }
+                            _ => 0,
+                        };
                     show_row(
                         ui,
                         doc,
@@ -2316,6 +2618,7 @@ pub fn show_pane(
                         active_drawing,
                         on_add_to_drawing,
                         highlight_elements,
+                        on_move_to_component,
                     );
                 }
             });
@@ -2425,6 +2728,59 @@ const GRAPH_DEPENDENCY_EDGE: Color32 = Color32::from_rgb(224, 168, 96);
 /// frame ("bounce around") until its kinetic energy decays below a threshold, then settles and
 /// stops requesting repaints. x is contained to the pane width; height scrolls vertically (#34).
 #[allow(clippy::too_many_arguments)]
+/// Whether a node is present in the current graph positions (#423).
+fn present_in(positions: &[GraphNodePosition], node: &HierarchyNode) -> bool {
+    positions.iter().any(|p| p.node == *node)
+}
+
+/// A smooth convex outline around `pts`, padded by `pad` px (#423): each point is expanded
+/// into a small circle of sample points and the convex hull of the expansion is returned,
+/// which rounds the corners without a curve primitive.
+fn rounded_hull(pts: &[egui::Pos2], pad: f32) -> Vec<egui::Pos2> {
+    let mut cloud: Vec<egui::Pos2> = Vec::with_capacity(pts.len() * 8);
+    for p in pts {
+        for k in 0..8 {
+            let a = k as f32 * std::f32::consts::TAU / 8.0;
+            cloud.push(*p + egui::vec2(a.cos(), a.sin()) * pad);
+        }
+    }
+    convex_hull(&mut cloud)
+}
+
+/// Andrew's monotone chain convex hull.
+fn convex_hull(points: &mut Vec<egui::Pos2>) -> Vec<egui::Pos2> {
+    points.sort_by(|a, b| {
+        a.x.partial_cmp(&b.x)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    points.dedup_by(|a, b| (*a - *b).length_sq() < 1e-6);
+    if points.len() < 3 {
+        return points.clone();
+    }
+    let cross = |o: egui::Pos2, a: egui::Pos2, b: egui::Pos2| {
+        (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+    };
+    let mut lower: Vec<egui::Pos2> = Vec::new();
+    for &p in points.iter() {
+        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], p) <= 0.0 {
+            lower.pop();
+        }
+        lower.push(p);
+    }
+    let mut upper: Vec<egui::Pos2> = Vec::new();
+    for &p in points.iter().rev() {
+        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], p) <= 0.0 {
+            upper.pop();
+        }
+        upper.push(p);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
+}
+
 fn show_graph_view(
     ui: &mut egui::Ui,
     doc: &Document,
@@ -2539,6 +2895,40 @@ fn show_graph_view(
                 let x = display.get(&node).map(|(x, _)| *x).unwrap_or(GRAPH_MARGIN);
                 egui::pos2(rect.left() + x, rect.top() + TOP_PADDING + node_y(&node))
             };
+
+            // Component areas first, beneath everything (#423): each component shades a
+            // smooth convex region encompassing its member nodes. Outer components paint
+            // before nested ones so the nesting reads as layered tints.
+            let mut comp_sets = component_node_sets(tree);
+            comp_sets.sort_by_key(|(ci, _)| doc.component_chain(*ci).len());
+            for (ci, nodes) in &comp_sets {
+                let pts: Vec<egui::Pos2> =
+                    nodes.iter().filter(|n| present_in(&positions, n)).map(|n| pos_of(*n)).collect();
+                if pts.is_empty() {
+                    continue;
+                }
+                let hull = rounded_hull(&pts, 18.0);
+                if hull.len() >= 3 {
+                    painter.add(egui::Shape::convex_polygon(
+                        hull.clone(),
+                        Color32::from_rgba_unmultiplied(140, 160, 200, 18),
+                        egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(150, 170, 210, 60)),
+                    ));
+                    // Label the area at its top edge.
+                    let top = hull
+                        .iter()
+                        .copied()
+                        .min_by(|a, b| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))
+                        .unwrap_or(egui::Pos2::ZERO);
+                    painter.text(
+                        top + egui::vec2(0.0, -2.0),
+                        egui::Align2::CENTER_BOTTOM,
+                        node_label(doc, HierarchyNode::Component(*ci)),
+                        egui::FontId::proportional(11.0),
+                        Color32::from_rgba_unmultiplied(170, 190, 230, 160),
+                    );
+                }
+            }
 
             // Edges first, so node dots paint over the line endpoints.
             for position in &positions {
@@ -2680,6 +3070,168 @@ fn truncate_label(label: &str, max_width: f32, painter: &egui::Painter) -> Strin
     format!("{truncated}…")
 }
 
+/// Flatten the tree into List-view rows with component nesting (#423): loose elements
+/// first (flat, topologically sorted, depth `base`), then each component row with its
+/// contents indented one level; collapsed components skip their contents.
+fn component_list_rows(
+    tree: &[HierarchyEntry],
+    doc: &Document,
+    collapsed: &HashSet<usize>,
+) -> Vec<(HierarchyNode, usize)> {
+    fn level(
+        entries: &[HierarchyEntry],
+        doc: &Document,
+        collapsed: &HashSet<usize>,
+        base: usize,
+        out: &mut Vec<(HierarchyNode, usize)>,
+    ) {
+        let (components, loose): (Vec<&HierarchyEntry>, Vec<&HierarchyEntry>) = entries
+            .iter()
+            .partition(|e| matches!(e.node, HierarchyNode::Component(_)));
+        let loose_owned: Vec<HierarchyEntry> = loose.into_iter().cloned().collect();
+        for node in element_list_from_tree(&loose_owned, doc) {
+            out.push((node, base));
+        }
+        for entry in components {
+            let HierarchyNode::Component(ci) = entry.node else { unreachable!() };
+            out.push((entry.node, base));
+            if !collapsed.contains(&ci) {
+                level(&entry.children, doc, collapsed, base + 1, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    // The tree is the single synthetic Document root; its children are the real entries.
+    for root in tree {
+        level(&root.children, doc, collapsed, 1, &mut out);
+    }
+    out
+}
+
+/// One component row in the List view (#423): collapse triangle, eye toggle, icon, name;
+/// click selects, right-click offers a nested component / delete; rows dropped on it move
+/// into the component.
+#[allow(clippy::too_many_arguments)]
+fn show_component_row(
+    ui: &mut egui::Ui,
+    doc: &Document,
+    ci: usize,
+    depth: usize,
+    visibility: &mut ElementVisibility,
+    selection: &SceneSelection,
+    health: &DocumentHealth,
+    context: &HashSet<SceneElement>,
+    related_constraints: &HashSet<usize>,
+    style_selection: bool,
+    highlight_elements: &HashSet<SceneElement>,
+    collapsed_components: &mut HashSet<usize>,
+    on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
+    on_click_element: &mut impl FnMut(SceneElement, bool),
+    on_delete_element: &mut impl FnMut(SceneElement),
+    on_add_component: &mut impl FnMut(Option<usize>),
+    on_move_to_component: &mut impl FnMut(SceneElement, Option<usize>),
+) {
+    let element = SceneElement::Component(ci);
+    let visible = visibility.effective_visible(doc, element.clone());
+    let style = row_style(
+        element.clone(),
+        selection,
+        context,
+        related_constraints,
+        style_selection,
+        health,
+        highlight_elements,
+    );
+    let row = ui.horizontal(|ui| {
+        ui.add_space(depth as f32 * 18.0);
+        let collapsed = collapsed_components.contains(&ci);
+        let (tri_rect, tri_resp) =
+            ui.allocate_exact_size(egui::vec2(12.0, 14.0), egui::Sense::click());
+        let c = tri_rect.center();
+        let r = 4.0;
+        let pts = if collapsed {
+            vec![
+                egui::pos2(c.x - r * 0.5, c.y - r),
+                egui::pos2(c.x + r, c.y),
+                egui::pos2(c.x - r * 0.5, c.y + r),
+            ]
+        } else {
+            vec![
+                egui::pos2(c.x - r, c.y - r * 0.5),
+                egui::pos2(c.x + r, c.y - r * 0.5),
+                egui::pos2(c.x, c.y + r),
+            ]
+        };
+        ui.painter().add(egui::Shape::convex_polygon(
+            pts,
+            Color32::from_gray(170),
+            egui::Stroke::NONE,
+        ));
+        if tri_resp
+            .on_hover_text(if collapsed { "Expand" } else { "Collapse" })
+            .clicked()
+        {
+            if collapsed {
+                collapsed_components.remove(&ci);
+            } else {
+                collapsed_components.insert(ci);
+            }
+        }
+        if icon_button(
+            ui,
+            icon_for_visibility(visible),
+            if visible { "Hide" } else { "Show" },
+        )
+        .clicked()
+        {
+            let next = visibility.toggle(element.clone());
+            on_toggle_visibility(element.clone(), next);
+        }
+        ui.add(
+            egui::Image::new(sized_texture(ui.ctx(), IconId::Component))
+                .tint(icon_tint_for_row_style(style)),
+        );
+        let label = node_label(doc, HierarchyNode::Component(ci));
+        let response = ui.selectable_label(style == RowStyle::Selected, styled_label(&label, style));
+        if response.clicked() {
+            let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+            on_click_element(element.clone(), additive);
+        }
+        // Component rows drag too, to re-parent into another component (#423).
+        response
+            .interact(egui::Sense::drag())
+            .dnd_set_drag_payload(ComponentDragPayload(element.clone()));
+        response.context_menu(|ui| {
+            if ui.button("New component inside").clicked() {
+                on_add_component(Some(ci));
+                ui.close();
+            }
+            if ui.button("Move to document root").clicked() {
+                on_move_to_component(element.clone(), None);
+                ui.close();
+            }
+            if ui.button("Delete").clicked() {
+                on_delete_element(element.clone());
+                ui.close();
+            }
+        });
+    });
+    // Whole-row drop target: release a dragged row here to move it into this component.
+    let row_response = row.response.interact(egui::Sense::hover());
+    if let Some(payload) = row_response.dnd_release_payload::<ComponentDragPayload>() {
+        if payload.0 != element {
+            on_move_to_component(payload.0.clone(), Some(ci));
+        }
+    } else if row_response.dnd_hover_payload::<ComponentDragPayload>().is_some() {
+        ui.painter().rect_stroke(
+            row_response.rect,
+            2.0,
+            egui::Stroke::new(1.0, Color32::from_rgb(120, 170, 240)),
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
 fn show_row(
     ui: &mut egui::Ui,
     doc: &Document,
@@ -2710,6 +3262,7 @@ fn show_row(
     active_drawing: Option<usize>,
     on_add_to_drawing: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
+    on_move_to_component: &mut impl FnMut(SceneElement, Option<usize>),
 ) {
     // The synthetic Document root has no SceneElement — it isn't selectable, hideable, or
     // otherwise dispatched through the scene graph — so it gets a minimal, always-shown row
@@ -2717,12 +3270,24 @@ fn show_row(
     // indented `depth` levels (List always passes 1, matching #87's original single level;
     // Tree passes the node's real depth in the nested hierarchy, #34).
     if matches!(node, HierarchyNode::Document) {
-        ui.horizontal(|ui| {
+        let row = ui.horizontal(|ui| {
             if let Some(icon) = icon_for_hierarchy_node(doc, node) {
                 ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
             }
             ui.label(RichText::new(node_label(doc, node)).strong());
         });
+        // Dropping a dragged row on the Document root moves it out of any component (#423).
+        let row_response = row.response.interact(egui::Sense::hover());
+        if let Some(payload) = row_response.dnd_release_payload::<ComponentDragPayload>() {
+            on_move_to_component(payload.0.clone(), None);
+        } else if row_response.dnd_hover_payload::<ComponentDragPayload>().is_some() {
+            ui.painter().rect_stroke(
+                row_response.rect,
+                2.0,
+                egui::Stroke::new(1.0, Color32::from_rgb(120, 170, 240)),
+                egui::StrokeKind::Inside,
+            );
+        }
         return;
     }
 
@@ -2898,6 +3463,12 @@ fn show_row(
                     .dnd_set_drag_payload(DrawingDragPayload(element.clone()));
             }
         }
+        // Top-level rows drag onto component rows to move into them (#423).
+        if component_member_node(node) && active_drawing.is_none() {
+            response
+                .interact(egui::Sense::drag())
+                .dnd_set_drag_payload(ComponentDragPayload(element.clone()));
+        }
         // Clicks: double-click edits (where applicable), single-click selects.
         match node {
             HierarchyNode::Document => unreachable!("handled by the early return above"),
@@ -2980,6 +3551,30 @@ fn show_row(
                 }
                 _ => {}
             }
+            // Move to component (#423): every top-level row can be filed into a component
+            // (or back to the document root) from its context menu; dragging works too.
+            if component_member_node(node)
+                && doc.components.iter().any(|c| !c.deleted)
+            {
+                ui.menu_button("Move to", |ui| {
+                    if ui.button("Document").clicked() {
+                        on_move_to_component(element.clone(), None);
+                        ui.close();
+                    }
+                    for (ci, c) in doc.components.iter().enumerate() {
+                        if c.deleted {
+                            continue;
+                        }
+                        if ui
+                            .button(node_label(doc, HierarchyNode::Component(ci)))
+                            .clicked()
+                        {
+                            on_move_to_component(element.clone(), Some(ci));
+                            ui.close();
+                        }
+                    }
+                });
+            }
             if ui.button("Delete").clicked() {
                 on_delete_element(element.clone());
                 ui.close();
@@ -2988,9 +3583,74 @@ fn show_row(
     });
 }
 
+/// Whether a hierarchy node is a top-level kind a component can hold (#423).
+fn component_member_node(node: HierarchyNode) -> bool {
+    matches!(
+        node,
+        HierarchyNode::ConstructionPlane(_)
+            | HierarchyNode::Extrusion(_)
+            | HierarchyNode::Body(_)
+            | HierarchyNode::BooleanOp(_)
+            | HierarchyNode::MoveOp(_)
+            | HierarchyNode::RepeatOp(_)
+            | HierarchyNode::SliceOp(_)
+            | HierarchyNode::Revolution(_)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #423: assigned roots nest under their component entry in the built hierarchy, and the
+    /// List rows indent them one level (skipping contents when collapsed).
+    #[test]
+    fn components_group_roots_in_hierarchy_and_list() {
+        use crate::model::ComponentMember as CM;
+        let mut doc = Document::default();
+        doc.components.push(crate::model::Component {
+            name: Some("Frame".to_string()),
+            parent: None,
+            length_unit: None,
+            angle_unit: None,
+            deleted: false,
+        });
+        let plane = doc.construction_planes.len();
+        doc.construction_planes.push(crate::face::default_xy_plane());
+        doc.set_component_member(CM::ConstructionPlane, plane, Some(0));
+
+        let tree = build_hierarchy(&doc, None);
+        let root = &tree[0];
+        let comp = root
+            .children
+            .iter()
+            .find(|e| e.node == HierarchyNode::Component(0))
+            .expect("component entry present");
+        assert!(
+            comp.children.iter().any(|e| e.node == HierarchyNode::ConstructionPlane(plane)),
+            "assigned plane nests under the component"
+        );
+        assert!(
+            !root.children.iter().any(|e| e.node == HierarchyNode::ConstructionPlane(plane)),
+            "assigned plane no longer sits at the top level"
+        );
+
+        // List rows: the component at depth 1, its plane at depth 2; collapsing hides it.
+        let rows = component_list_rows(&tree, &doc, &HashSet::new());
+        let comp_row = rows.iter().find(|(n, _)| *n == HierarchyNode::Component(0)).unwrap();
+        assert_eq!(comp_row.1, 1);
+        let plane_row = rows
+            .iter()
+            .find(|(n, _)| *n == HierarchyNode::ConstructionPlane(plane))
+            .unwrap();
+        assert_eq!(plane_row.1, 2, "component contents indent one level");
+        let collapsed: HashSet<usize> = [0].into_iter().collect();
+        let rows = component_list_rows(&tree, &doc, &collapsed);
+        assert!(
+            !rows.iter().any(|(n, _)| *n == HierarchyNode::ConstructionPlane(plane)),
+            "collapsed component hides its contents"
+        );
+    }
     use crate::construction::{definition_from_reference, plane_from_definition};
     use crate::face::default_xy_plane;
     use crate::construction::PlaneReference;

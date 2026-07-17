@@ -105,6 +105,9 @@ const SHAPE_ORDER_META_KEY: &str = "shape_order";
 /// Undo-group sizes (#105); files saved before this key existed load with none and
 /// are reconciled into per-entry groups on the first action.
 const UNDO_GROUPS_META_KEY: &str = "undo_groups";
+/// Components (#423) and their membership, stored as meta JSON like construction planes.
+const COMPONENTS_META_KEY: &str = "components";
+const COMPONENT_MEMBERS_META_KEY: &str = "component_members";
 /// Document-level default length unit (#52); missing for files saved before this change,
 /// which fall back to [`LengthUnit::default`] (mm), matching their pre-existing behaviour.
 const DEFAULT_LENGTH_UNIT_META_KEY: &str = "default_length_unit";
@@ -199,6 +202,21 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     )
     .map_err(|e| e.to_string())?;
 
+    let components_payload = serde_json::to_string(&doc.components).map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+        rusqlite::params![COMPONENTS_META_KEY, components_payload],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let component_members_payload =
+        serde_json::to_string(&doc.component_members).map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+        rusqlite::params![COMPONENT_MEMBERS_META_KEY, component_members_payload],
+    )
+    .map_err(|e| e.to_string())?;
+
     tx.execute(
         "DELETE FROM dag_nodes WHERE kind IN ('sketch', 'line', 'circle', 'parameter', 'constraint', 'construction_plane', 'extrusion', 'body', 'imported_mesh', 'tracing_image', 'loft', 'revolution')",
         [],
@@ -270,6 +288,15 @@ fn load_shape_order_meta(conn: &Connection) -> Option<Vec<ShapeKind>> {
 
 /// Undo-group sizes (#105); empty for files saved before the key existed (legacy
 /// content reconciles into per-entry groups).
+/// Load a meta row's JSON payload, `None` if absent or unparsable.
+fn load_meta_json<T: serde::de::DeserializeOwned>(conn: &Connection, key: &str) -> Option<T> {
+    conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| {
+        row.get::<_, String>(0)
+    })
+    .ok()
+    .and_then(|payload| serde_json::from_str(&payload).ok())
+}
+
 fn load_undo_groups_meta(conn: &Connection) -> Vec<usize> {
     conn.query_row(
         "SELECT value FROM meta WHERE key = ?1",
@@ -499,6 +526,9 @@ pub fn open(path: &str) -> Result<Document> {
     let default_angle_unit = load_default_angle_unit_meta(&conn);
     let undo_groups = load_undo_groups_meta(&conn);
 
+    let components = load_meta_json(&conn, COMPONENTS_META_KEY).unwrap_or_default();
+    let component_members = load_meta_json(&conn, COMPONENT_MEMBERS_META_KEY).unwrap_or_default();
+
     let mut doc = Document {
         parameters,
         sketches,
@@ -524,6 +554,8 @@ pub fn open(path: &str) -> Result<Document> {
         undo_groups,
         default_length_unit,
         default_angle_unit,
+        components,
+        component_members,
     };
     super::fixup_loaded_document(&mut doc)?;
     Ok(doc)
@@ -651,6 +683,39 @@ mod tests {
         assert_eq!(loaded.lines, doc.lines);
         assert_eq!(loaded.constraints, doc.constraints);
         assert_eq!(loaded.shape_order, doc.shape_order);
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// #423: components and their membership survive a save/load round trip.
+    #[test]
+    fn round_trips_components_and_membership() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("bearcad_component_roundtrip_test.bearcad");
+        let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = Document::default();
+        doc.components.push(crate::model::Component {
+            name: Some("Frame".to_string()),
+            parent: None,
+            length_unit: Some(crate::value::LengthUnit::In),
+            angle_unit: None,
+            deleted: false,
+        });
+        doc.components.push(crate::model::Component {
+            name: None,
+            parent: Some(0),
+            length_unit: None,
+            angle_unit: None,
+            deleted: false,
+        });
+        doc.set_component_member(crate::model::ComponentMember::ConstructionPlane, 0, Some(1));
+
+        save(&path, &doc).unwrap();
+        let loaded = open(&path).unwrap();
+        assert_eq!(loaded.components, doc.components);
+        assert_eq!(loaded.component_members, doc.component_members);
 
         std::fs::remove_file(&path).unwrap();
     }

@@ -596,6 +596,8 @@ struct App {
     /// Persistent physics state for the Elements pane's force-directed Graph view (#94).
     /// Ephemeral view state (never persisted), like `AppState::hierarchy_view_mode`.
     graph_layout: hierarchy::GraphLayout,
+    /// Collapsed component rows in the Elements pane (#423); UI-only state.
+    collapsed_components: std::collections::HashSet<usize>,
     /// Elements-pane type filter (#275) and whether its toggle panel is expanded. Ephemeral UI
     /// state; reset to the workbench default when the Model/Drawing workbench changes.
     element_filter: hierarchy::ElementFilter,
@@ -719,6 +721,7 @@ impl App {
             gpu_viewport: gpu_viewport::install(cc),
             gpu_view_cube: gpu_view_cube::install(cc),
             graph_layout: hierarchy::GraphLayout::default(),
+            collapsed_components: std::collections::HashSet::new(),
             element_filter: hierarchy::ElementFilter::default(),
             element_filter_expanded: false,
             element_filter_drawing_workbench: false,
@@ -4500,6 +4503,8 @@ impl eframe::App for App {
             let mut add_to_drawing: Option<SceneElement> = None;
             let mut rename_drawing: Option<(usize, String)> = None;
             let mut pane_hovered_element: Option<SceneElement> = None;
+            let mut add_component: Option<Option<usize>> = None;
+            let mut move_to_component: Option<(SceneElement, Option<usize>)> = None;
             egui::SidePanel::left("tree")
                 .resizable(true)
                 .default_width(220.0)
@@ -4558,6 +4563,13 @@ impl eframe::App for App {
                     let highlight_elements = parameters::focused_parameter_name(ctx, &self.state.doc)
                         .map(|name| parameters::elements_using_parameter(&self.state.doc, &name))
                         .unwrap_or_default();
+                    let mut queue_add_component = |parent: Option<usize>| {
+                        add_component = Some(parent);
+                    };
+                    let mut queue_move_to_component =
+                        |element: SceneElement, component: Option<usize>| {
+                            move_to_component = Some((element, component));
+                        };
                     hierarchy::show_pane(
                         ui,
                         &self.state.doc,
@@ -4588,9 +4600,18 @@ impl eframe::App for App {
                         self.state.editing_drawing,
                         &mut queue_add_to_drawing,
                         &highlight_elements,
+                        &mut self.collapsed_components,
+                        &mut queue_add_component,
+                        &mut queue_move_to_component,
                     );
                 });
             self.pane_hovered_element = pane_hovered_element;
+            if let Some(parent) = add_component {
+                self.state.apply(Action::CreateComponent { name: None, parent });
+            }
+            if let Some((element, component)) = move_to_component {
+                self.state.apply(Action::MoveToComponent { element, component });
+            }
             if let Some(element) = delete_element {
                 self.state.apply(Action::DeleteElement { element });
             }
@@ -6106,6 +6127,10 @@ impl eframe::App for App {
                     context::UnitsChoice::Sketch { sketch, length, angle } => {
                         self.state
                             .apply(Action::SetSketchUnits { sketch, length, angle });
+                    }
+                    context::UnitsChoice::Component { component, length, angle } => {
+                        self.state
+                            .apply(Action::SetComponentUnits { component, length, angle });
                     }
                 }
             }

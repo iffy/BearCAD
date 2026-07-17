@@ -982,6 +982,23 @@ pub enum Action {
         viewport: Option<egui::Rect>,
     },
     ExitSketch,
+    /// Create a component (#423), optionally nested under a parent component.
+    CreateComponent {
+        name: Option<String>,
+        parent: Option<usize>,
+    },
+    /// Move a top-level element (or a component) into a component — or with `None`, back to
+    /// the document root (#423).
+    MoveToComponent {
+        element: crate::hierarchy::SceneElement,
+        component: Option<usize>,
+    },
+    /// Set a component's unit overrides (#423); `None` inherits from the parent chain.
+    SetComponentUnits {
+        component: usize,
+        length: Option<crate::value::LengthUnit>,
+        angle: Option<crate::value::AngleUnit>,
+    },
     SetElementVisible {
         element: SceneElement,
         visible: bool,
@@ -3552,6 +3569,7 @@ fn validate_slice_inputs(
 
 fn element_label(element: SceneElement) -> String {
     match element {
+        SceneElement::Component(i) => format!("Component {i}"),
         SceneElement::ConstructionPlane(i) => format!("Construction plane {i}"),
         SceneElement::Sketch(i) => format!("Sketch {i}"),
         SceneElement::Line(i) => format!("Line {i}"),
@@ -8746,6 +8764,92 @@ label_hidden: false,
                 self.status = "Made handles independent".to_string();
                 ActionResult::Ok
             }
+            Action::CreateComponent { name, parent } => {
+                if let Some(p) = parent {
+                    if self.doc.components.get(p).is_none_or(|c| c.deleted) {
+                        let e = format!("Component {p} not found");
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                }
+                self.doc.components.push(crate::model::Component {
+                    name: name.filter(|n| !n.trim().is_empty()),
+                    parent,
+                    length_unit: None,
+                    angle_unit: None,
+                    deleted: false,
+                });
+                self.status = "Added component".to_string();
+                ActionResult::Ok
+            }
+            Action::MoveToComponent { element, component } => {
+                use crate::hierarchy::SceneElement;
+                use crate::model::ComponentMember as CM;
+                if let Some(c) = component {
+                    if self.doc.components.get(c).is_none_or(|comp| comp.deleted) {
+                        let e = format!("Component {c} not found");
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                }
+                // A component moves by reparenting (cycles refused); anything else moves by
+                // membership, resolved to a top-level member kind.
+                if let SceneElement::Component(i) = element {
+                    if self.doc.components.get(i).is_none_or(|c| c.deleted) {
+                        let e = format!("Component {i} not found");
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                    if let Some(c) = component {
+                        if self.doc.component_chain(c).contains(&i) {
+                            let e = "A component can't be moved into itself".to_string();
+                            self.status = e.clone();
+                            return ActionResult::Err(e);
+                        }
+                    }
+                    self.doc.components[i].parent = component;
+                    self.status = "Moved component".to_string();
+                    return ActionResult::Ok;
+                }
+                let member = match &element {
+                    SceneElement::ConstructionPlane(i) => Some((CM::ConstructionPlane, *i)),
+                    SceneElement::Extrusion(i) => Some((CM::Extrusion, *i)),
+                    SceneElement::Body(i) => Some((CM::Body, *i)),
+                    SceneElement::BooleanOp(i) => Some((CM::BooleanOp, *i)),
+                    SceneElement::MoveOp(i) => Some((CM::MoveOp, *i)),
+                    SceneElement::RepeatOp(i) => Some((CM::RepeatOp, *i)),
+                    SceneElement::SliceOp(i) => Some((CM::SliceOp, *i)),
+                    SceneElement::Revolution(i) => Some((CM::Revolution, *i)),
+                    _ => None,
+                };
+                let Some((kind, index)) = member else {
+                    let e = "This element can't be moved into a component".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                self.doc.set_component_member(kind, index, component);
+                self.status = match component {
+                    Some(_) => "Moved into component".to_string(),
+                    None => "Moved out of component".to_string(),
+                };
+                ActionResult::Ok
+            }
+            Action::SetComponentUnits { component, length, angle } => {
+                let Some(c) = self
+                    .doc
+                    .components
+                    .get_mut(component)
+                    .filter(|c| !c.deleted)
+                else {
+                    let e = format!("Component {component} not found");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                c.length_unit = length;
+                c.angle_unit = angle;
+                self.status = "Set component units".to_string();
+                ActionResult::Ok
+            }
             Action::SetElementVisible { element, visible } => {
                 self.element_visibility.set_visible(element.clone(), visible);
                 self.status = format!(
@@ -10435,6 +10539,81 @@ mod tests {
     /// #218: while a body-gathering tool is active, clicking a body (Elements pane / `select`)
     /// toggles it into the tool's set instead of the persistent selection — you can pick bodies
     /// from the pane regardless of the viewport's sub-element picking.
+    /// #423: components group elements; membership, nesting, visibility cascade, and
+    /// unit inheritance all flow through the component chain.
+    #[test]
+    fn components_group_hide_and_inherit_units() {
+        use crate::hierarchy::SceneElement;
+        use crate::model::ComponentMember as CM;
+        let mut state = AppState::default();
+
+        state.apply(Action::CreateComponent { name: Some("Frame".to_string()), parent: None });
+        state.apply(Action::CreateComponent { name: None, parent: Some(0) });
+        assert_eq!(state.doc.components.len(), 2);
+        assert_eq!(state.doc.components[1].parent, Some(0));
+
+        // A cycle is refused.
+        let r = state.apply(Action::MoveToComponent {
+            element: SceneElement::Component(0),
+            component: Some(1),
+        });
+        assert!(matches!(r, ActionResult::Err(_)), "cycle must be refused");
+
+        // File a plane (and thus its sketch) into the nested component.
+        let plane = state.doc.construction_planes.len();
+        state.doc.construction_planes.push(crate::face::default_xy_plane());
+        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(plane));
+        state.apply(Action::MoveToComponent {
+            element: SceneElement::ConstructionPlane(plane),
+            component: Some(1),
+        });
+        assert_eq!(state.doc.component_of(CM::ConstructionPlane, plane), Some(1));
+
+        // Hiding the OUTER component hides the plane and sketch inside the inner one.
+        assert!(state
+            .element_visibility
+            .effective_visible(&state.doc, SceneElement::ConstructionPlane(plane)));
+        state.element_visibility.set_visible(SceneElement::Component(0), false);
+        assert!(!state
+            .element_visibility
+            .effective_visible(&state.doc, SceneElement::ConstructionPlane(plane)));
+        assert!(!state
+            .element_visibility
+            .effective_visible(&state.doc, SceneElement::Sketch(sketch)));
+        state.element_visibility.set_visible(SceneElement::Component(0), true);
+
+        // Units: the sketch inherits the outer component's override through the chain.
+        state.apply(Action::SetComponentUnits {
+            component: 0,
+            length: Some(crate::value::LengthUnit::In),
+            angle: None,
+        });
+        assert_eq!(
+            crate::model::effective_length_unit(&state.doc, sketch),
+            crate::value::LengthUnit::In
+        );
+        // The inner component's own override wins over the outer's.
+        state.apply(Action::SetComponentUnits {
+            component: 1,
+            length: Some(crate::value::LengthUnit::Cm),
+            angle: None,
+        });
+        assert_eq!(
+            crate::model::effective_length_unit(&state.doc, sketch),
+            crate::value::LengthUnit::Cm
+        );
+
+        // Deleting the inner component re-homes its member to the outer one.
+        state.apply(Action::DeleteElement { element: SceneElement::Component(1) });
+        assert!(state.doc.components[1].deleted);
+        assert_eq!(state.doc.component_of(CM::ConstructionPlane, plane), Some(0));
+        assert_eq!(
+            crate::model::effective_length_unit(&state.doc, sketch),
+            crate::value::LengthUnit::In,
+            "after the inner component is gone the outer override applies"
+        );
+    }
+
     /// #391: clicking a face with the Text tool begins a sketch and the tool must survive
     /// into it (like Rectangle/Line/Circle) — it used to drop back to Select.
     #[test]

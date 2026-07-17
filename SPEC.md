@@ -60,6 +60,42 @@ action DAG (see §4.2). A component may **reference** other components; such a r
 creates a dependency edge in the DAG, and the referenced component's geometry/parameters
 become inputs to the referencing component.
 
+**Implemented today (#423) — components as organizational groups:** `model::Component`
+(`name`, `parent`, per-component `length_unit`/`angle_unit` overrides, tombstoned) plus
+`Document::component_members` mapping top-level elements
+(`model::ComponentMember`: planes, extrusions, bodies, lofts, boolean/move/repeat/slice
+ops, revolutions, drawings) to a component; the document acts as the root component.
+Grouping never changes geometry.
+
+- **Elements pane:** the header **+** (icon button) opens an add menu with **New
+  component**; component rows show a painted collapse **triangle**, an eye, the
+  `component.svg` icon, and nest their contents one indent level
+  (`hierarchy::component_list_rows`; nested assigned entries are extracted from wherever
+  they sit into their component's entry, `group_roots_into_components`). Rows **drag**
+  onto a component row (`ComponentDragPayload`) or use right-click → **Move to**; the
+  Document root row is the drop target for un-filing. Right-click a component: **New
+  component inside**, **Move to document root**, **Delete** (deleting re-homes contents
+  to the parent, `document_lifecycle::tombstone_element`).
+- **Visibility:** hiding a component hides everything inside it — members resolve
+  through `hierarchy::owning_component` (a body via its producing op/extrusion, an
+  extrusion or image via its sketch's host plane) and every ancestor component must be
+  visible (`ElementVisibility::effective_visible`).
+- **Units:** each component may override length/angle units; contents inherit sketch
+  override → component chain → document default (`effective_length_unit`,
+  `effective_component_length_unit`). The context pane shows **Component units** pickers
+  (with an **Inherit** entry) for a selected component.
+- **Graph view:** components are not nodes but **areas** — smooth, lightly shaded convex
+  hulls (`rounded_hull`) drawn beneath the member nodes, labeled at the top edge; nested
+  components layer their tints.
+- **Persistence:** `components`/`component_members` meta JSON in the SQLite format, serde
+  fields in the JSON format.
+- **Scripting:** `bearcad.component{ name =, parent = }` (returns the index),
+  `bearcad.move_to_component{ kind =, index =, component = i|false }`,
+  `bearcad.set_units{ component = i, … }`, `bearcad.select{ kind = "component" }`,
+  `bearcad.count("component")`.
+
+The full referenced-component/assembly model above remains future work.
+
 ### 2.3 Assembly
 
 Components can be placed into an **assembly**: instances of components positioned in

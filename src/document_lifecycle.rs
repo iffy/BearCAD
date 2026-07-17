@@ -55,6 +55,10 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         SceneElement::BodyEdge { body, .. } | SceneElement::BodyVertex { body, .. } => {
             body_alive(doc, body)
         }
+        SceneElement::Component(index) => doc
+            .components
+            .get(index)
+            .is_some_and(|c| !c.deleted),
         SceneElement::BooleanOp(index) => doc
             .boolean_ops
             .get(index)
@@ -161,6 +165,29 @@ pub fn delete_targets_from_selection(selection: &SceneSelection) -> Vec<SceneEle
 pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
     let mut changed = false;
     match element {
+        // Deleting a component re-homes its members and child components to its parent
+        // (#423) — grouping is organizational, so nothing inside is deleted.
+        SceneElement::Component(index) => {
+            if doc.components.get(index).is_some_and(|c| !c.deleted) {
+                let parent = doc.components[index].parent;
+                doc.components[index].deleted = true;
+                for m in doc.component_members.iter_mut() {
+                    if m.2 == index {
+                        match parent {
+                            Some(p) => m.2 = p,
+                            None => m.2 = usize::MAX, // pruned below
+                        }
+                    }
+                }
+                doc.component_members.retain(|m| m.2 != usize::MAX);
+                for c in doc.components.iter_mut() {
+                    if c.parent == Some(index) {
+                        c.parent = parent;
+                    }
+                }
+                changed = true;
+            }
+        }
         SceneElement::ConstructionPlane(index) => {
             if tombstone_construction_plane(doc, index) {
                 changed = true;

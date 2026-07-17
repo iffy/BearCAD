@@ -2487,6 +2487,144 @@ pub struct Document {
     /// caveat as [`default_length_unit`](Document::default_length_unit).
     #[serde(default)]
     pub default_angle_unit: AngleUnit,
+    /// Components (#423): named groups of top-level elements, nestable. The document itself
+    /// acts as the root component (its defaults are the top of the unit-inheritance chain).
+    #[serde(default)]
+    pub components: Vec<Component>,
+    /// Component membership (#423): which component each assigned top-level element belongs
+    /// to, as `(member kind, element index, component index)`. Elements without an entry sit
+    /// directly under the document root. Tombstoned elements may leave stale entries; lookups
+    /// go through live elements only.
+    #[serde(default)]
+    pub component_members: Vec<(ComponentMember, usize, usize)>,
+}
+
+/// A component (#423): a named, nestable group of top-level elements in the Elements pane.
+/// Purely organizational — grouping never changes geometry. Carries optional unit overrides
+/// that its contents inherit (falling back through parent components to the document).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Component {
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Parent component; `None` = directly under the document root.
+    #[serde(default)]
+    pub parent: Option<usize>,
+    /// Length-unit override; `None` inherits from the parent chain, then the document.
+    #[serde(default)]
+    pub length_unit: Option<LengthUnit>,
+    /// Angle-unit override; `None` inherits like `length_unit`.
+    #[serde(default)]
+    pub angle_unit: Option<AngleUnit>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+/// The kinds of top-level element a component can hold (#423) — the Elements pane's root
+/// rows. Nested elements (sketches on a plane, bodies under an op) follow their root.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComponentMember {
+    ConstructionPlane,
+    Extrusion,
+    Body,
+    Loft,
+    BooleanOp,
+    MoveOp,
+    RepeatOp,
+    SliceOp,
+    Revolution,
+    Drawing,
+}
+
+impl Document {
+    /// The component an assigned top-level element belongs to, if any (#423).
+    pub fn component_of(&self, kind: ComponentMember, index: usize) -> Option<usize> {
+        self.component_members
+            .iter()
+            .find(|(k, i, _)| *k == kind && *i == index)
+            .map(|(_, _, c)| *c)
+            .filter(|&c| self.components.get(c).is_some_and(|comp| !comp.deleted))
+    }
+
+    /// Assign (or with `None`, unassign) a top-level element to a component (#423).
+    pub fn set_component_member(
+        &mut self,
+        kind: ComponentMember,
+        index: usize,
+        component: Option<usize>,
+    ) {
+        self.component_members
+            .retain(|(k, i, _)| !(*k == kind && *i == index));
+        if let Some(c) = component {
+            self.component_members.push((kind, index, c));
+        }
+    }
+
+    /// Walk a component's parent chain (self first). Cycles are cut off defensively.
+    pub fn component_chain(&self, component: usize) -> Vec<usize> {
+        let mut chain = Vec::new();
+        let mut cur = Some(component);
+        while let Some(c) = cur {
+            if chain.contains(&c) || self.components.get(c).is_none_or(|comp| comp.deleted) {
+                break;
+            }
+            chain.push(c);
+            cur = self.components[c].parent;
+        }
+        chain
+    }
+}
+
+/// Effective length unit for a component (#423): its own override, else the nearest
+/// ancestor's, else the document default.
+pub fn effective_component_length_unit(doc: &Document, component: usize) -> LengthUnit {
+    doc.component_chain(component)
+        .into_iter()
+        .find_map(|c| doc.components[c].length_unit)
+        .unwrap_or(doc.default_length_unit)
+}
+
+/// Effective angle unit for a component (#423), like [`effective_component_length_unit`].
+pub fn effective_component_angle_unit(doc: &Document, component: usize) -> AngleUnit {
+    doc.component_chain(component)
+        .into_iter()
+        .find_map(|c| doc.components[c].angle_unit)
+        .unwrap_or(doc.default_angle_unit)
+}
+
+/// The component a sketch's geometry belongs to (#423): resolved through the sketch's host
+/// face — a construction plane's own assignment (or, for a face-anchored plane, the host
+/// sketch's component), or the owning extrusion's assignment for a body-face sketch.
+pub fn sketch_component(doc: &Document, sketch: SketchId) -> Option<usize> {
+    fn plane_component(doc: &Document, plane: usize, depth: u8) -> Option<usize> {
+        if depth > 8 {
+            return None;
+        }
+        if let Some(c) = doc.component_of(ComponentMember::ConstructionPlane, plane) {
+            return Some(c);
+        }
+        match doc.construction_planes.get(plane)?.parent {
+            ConstructionPlaneParent::Root => None,
+            ConstructionPlaneParent::Sketch(s) => sketch_component_inner(doc, s, depth + 1),
+        }
+    }
+    fn sketch_component_inner(doc: &Document, sketch: SketchId, depth: u8) -> Option<usize> {
+        if depth > 8 {
+            return None;
+        }
+        match doc.sketch_face(sketch)? {
+            FaceId::ConstructionPlane(p) => plane_component(doc, p, depth + 1),
+            FaceId::ExtrudeCap { extrusion, .. } | FaceId::ExtrudeSide { extrusion, .. } => {
+                doc.component_of(ComponentMember::Extrusion, extrusion).or_else(|| {
+                    doc.extrusions
+                        .get(extrusion)
+                        .and_then(|e| sketch_component_inner(doc, e.sketch, depth + 1))
+                })
+            }
+            _ => None,
+        }
+    }
+    sketch_component_inner(doc, sketch, 0)
 }
 
 impl Default for Document {
@@ -2516,6 +2654,8 @@ impl Default for Document {
             undo_groups: Vec::new(),
             default_length_unit: LengthUnit::default(),
             default_angle_unit: AngleUnit::default(),
+            components: Vec::new(),
+            component_members: Vec::new(),
         }
     }
 }
@@ -2563,6 +2703,14 @@ pub fn effective_length_unit(doc: &Document, sketch: SketchId) -> LengthUnit {
     doc.sketches
         .get(sketch)
         .and_then(|s| s.length_unit)
+        .or_else(|| {
+            // Component units (#423): a sketch with no override inherits its component chain.
+            sketch_component(doc, sketch).and_then(|c| {
+                doc.component_chain(c)
+                    .into_iter()
+                    .find_map(|c| doc.components[c].length_unit)
+            })
+        })
         .unwrap_or(doc.default_length_unit)
 }
 
@@ -2572,6 +2720,13 @@ pub fn effective_angle_unit(doc: &Document, sketch: SketchId) -> AngleUnit {
     doc.sketches
         .get(sketch)
         .and_then(|s| s.angle_unit)
+        .or_else(|| {
+            sketch_component(doc, sketch).and_then(|c| {
+                doc.component_chain(c)
+                    .into_iter()
+                    .find_map(|c| doc.components[c].angle_unit)
+            })
+        })
         .unwrap_or(doc.default_angle_unit)
 }
 

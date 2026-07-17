@@ -23,7 +23,8 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::SketchSliceOp(_)
         | SceneElement::SketchText(_)
         | SceneElement::SliceOp(_)
-        | SceneElement::Revolution(_) => Some(element),
+        | SceneElement::Revolution(_)
+        | SceneElement::Component(_) => Some(element),
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::Origin
@@ -115,6 +116,7 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         SceneElement::SketchText(index) => doc.sketch_texts.get(index)?.name.as_deref(),
         SceneElement::SliceOp(index) => doc.slice_ops.get(index)?.name.as_deref(),
         SceneElement::Revolution(index) => doc.revolutions.get(index)?.name.as_deref(),
+        SceneElement::Component(index) => doc.components.get(index)?.name.as_deref(),
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
         | SceneElement::Origin
@@ -237,6 +239,13 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 .ok_or_else(|| format!("slice operation {index} not found"))?;
             op.name = stored;
         }
+        SceneElement::Component(index) => {
+            let component = doc
+                .components
+                .get_mut(index)
+                .ok_or_else(|| format!("component {index} not found"))?;
+            component.name = stored;
+        }
         SceneElement::Revolution(index) => {
             let rev = doc
                 .revolutions
@@ -272,6 +281,7 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
         // The synthetic root has no stored filename/title to draw on (#87) — `Document`
         // doesn't carry one — so it always gets this fixed label.
         HierarchyNode::Document => "Document".to_string(),
+        HierarchyNode::Component(i) => format!("Component {i}"),
         HierarchyNode::ConstructionPlane(i) => {
             if i == 0 {
                 "Construction plane (XY)".to_string()
@@ -433,6 +443,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
                 format!("Construction plane {i}")
             }
         }
+        SceneElement::Component(i) => format!("Component {i}"),
         SceneElement::Sketch(i) => format!("Sketch {i}"),
         SceneElement::Line(i) => format!("Line {i}"),
         SceneElement::Circle(i) => format!("Circle {i}"),

@@ -598,6 +598,8 @@ pub struct EdgePickerControl {
 pub struct UnitsControl {
     /// Sketch this control edits; `None` for the document-level default (nothing selected).
     pub sketch: Option<SketchId>,
+    /// Component this control edits (#423); mutually exclusive with `sketch`.
+    pub component: Option<usize>,
     /// Effective length unit: `length_override` if set, else the document default.
     pub effective_length: LengthUnit,
     /// Effective angle unit: `angle_override` if set, else the document default.
@@ -619,6 +621,12 @@ pub enum UnitsChoice {
     Sketch {
         sketch: SketchId,
         /// `None` means "follow the document default".
+        length: Option<LengthUnit>,
+        angle: Option<AngleUnit>,
+    },
+    /// A component's overrides (#423); `None` inherits from the parent chain.
+    Component {
+        component: usize,
         length: Option<LengthUnit>,
         angle: Option<AngleUnit>,
     },
@@ -1059,10 +1067,26 @@ fn units_control_from_selection(doc: &Document, selection: &SceneSelection) -> O
     if selection.is_empty() {
         return Some(UnitsControl {
             sketch: None,
+            component: None,
             effective_length: doc.default_length_unit,
             effective_angle: doc.default_angle_unit,
             length_override: None,
             angle_override: None,
+            document_length: doc.default_length_unit,
+            document_angle: doc.default_angle_unit,
+        });
+    }
+    // A selected component gets its own units picker (#423): overrides inherit through the
+    // parent chain to the document.
+    if let Some(SceneElement::Component(ci)) = selection.single() {
+        let component = doc.components.get(ci).filter(|c| !c.deleted)?;
+        return Some(UnitsControl {
+            sketch: None,
+            component: Some(ci),
+            effective_length: crate::model::effective_component_length_unit(doc, ci),
+            effective_angle: crate::model::effective_component_angle_unit(doc, ci),
+            length_override: component.length_unit,
+            angle_override: component.angle_unit,
             document_length: doc.default_length_unit,
             document_angle: doc.default_angle_unit,
         });
@@ -1073,6 +1097,7 @@ fn units_control_from_selection(doc: &Document, selection: &SceneSelection) -> O
     let sketch = doc.sketches.get(id)?;
     Some(UnitsControl {
         sketch: Some(id),
+                component: None,
         effective_length: crate::model::effective_length_unit(doc, id),
         effective_angle: crate::model::effective_angle_unit(doc, id),
         length_override: sketch.length_unit,
@@ -2887,24 +2912,42 @@ pub fn show_pane(
         any_control = true;
         section_label(
             ui,
-            if control.sketch.is_some() { "Sketch units" } else { "Default units" },
+            if control.component.is_some() {
+                "Component units"
+            } else if control.sketch.is_some() {
+                "Sketch units"
+            } else {
+                "Default units"
+            },
         );
         ui.add_enabled_ui(controls_enabled, |ui| {
             labeled_row(ui, "Length", |ui| {
-                let follow_document_label =
-                    format!("Follow document ({})", control.document_length.label());
-                let selected_text = match (control.sketch, control.length_override) {
-                    (Some(_), None) => follow_document_label.clone(),
-                    _ => control.effective_length.label().to_string(),
+                let has_override_slot = control.sketch.is_some() || control.component.is_some();
+                let follow_label = if control.component.is_some() {
+                    format!("Inherit ({})", control.effective_length.label())
+                } else {
+                    format!("Follow document ({})", control.document_length.label())
+                };
+                let selected_text = if has_override_slot && control.length_override.is_none() {
+                    follow_label.clone()
+                } else {
+                    control.effective_length.label().to_string()
                 };
                 egui::ComboBox::from_id_salt("context_length_unit")
                     .selected_text(selected_text)
                     .show_ui(ui, |ui| {
-                        if let Some(sketch) = control.sketch {
-                            if ui
-                                .selectable_label(control.length_override.is_none(), follow_document_label)
+                        if has_override_slot
+                            && ui
+                                .selectable_label(control.length_override.is_none(), follow_label)
                                 .clicked()
-                            {
+                        {
+                            if let Some(component) = control.component {
+                                on_units_changed(UnitsChoice::Component {
+                                    component,
+                                    length: None,
+                                    angle: control.angle_override,
+                                });
+                            } else if let Some(sketch) = control.sketch {
                                 on_units_changed(UnitsChoice::Sketch {
                                     sketch,
                                     length: None,
@@ -2914,38 +2957,57 @@ pub fn show_pane(
                         }
                         for unit in LengthUnit::ALL {
                             let selected = control.length_override == Some(unit)
-                                || (control.sketch.is_none() && control.effective_length == unit);
+                                || (!has_override_slot && control.effective_length == unit);
                             if ui.selectable_label(selected, unit.label()).clicked() {
-                                match control.sketch {
-                                    Some(sketch) => on_units_changed(UnitsChoice::Sketch {
+                                if let Some(component) = control.component {
+                                    on_units_changed(UnitsChoice::Component {
+                                        component,
+                                        length: Some(unit),
+                                        angle: control.angle_override,
+                                    });
+                                } else if let Some(sketch) = control.sketch {
+                                    on_units_changed(UnitsChoice::Sketch {
                                         sketch,
                                         length: Some(unit),
                                         angle: control.angle_override,
-                                    }),
-                                    None => on_units_changed(UnitsChoice::Document {
+                                    });
+                                } else {
+                                    on_units_changed(UnitsChoice::Document {
                                         length: unit,
                                         angle: control.effective_angle,
-                                    }),
+                                    });
                                 }
                             }
                         }
                     });
             });
             labeled_row(ui, "Angle", |ui| {
-                let follow_document_label =
-                    format!("Follow document ({})", control.document_angle.label());
-                let selected_text = match (control.sketch, control.angle_override) {
-                    (Some(_), None) => follow_document_label.clone(),
-                    _ => control.effective_angle.label().to_string(),
+                let has_override_slot = control.sketch.is_some() || control.component.is_some();
+                let follow_label = if control.component.is_some() {
+                    format!("Inherit ({})", control.effective_angle.label())
+                } else {
+                    format!("Follow document ({})", control.document_angle.label())
+                };
+                let selected_text = if has_override_slot && control.angle_override.is_none() {
+                    follow_label.clone()
+                } else {
+                    control.effective_angle.label().to_string()
                 };
                 egui::ComboBox::from_id_salt("context_angle_unit")
                     .selected_text(selected_text)
                     .show_ui(ui, |ui| {
-                        if let Some(sketch) = control.sketch {
-                            if ui
-                                .selectable_label(control.angle_override.is_none(), follow_document_label)
+                        if has_override_slot
+                            && ui
+                                .selectable_label(control.angle_override.is_none(), follow_label)
                                 .clicked()
-                            {
+                        {
+                            if let Some(component) = control.component {
+                                on_units_changed(UnitsChoice::Component {
+                                    component,
+                                    length: control.length_override,
+                                    angle: None,
+                                });
+                            } else if let Some(sketch) = control.sketch {
                                 on_units_changed(UnitsChoice::Sketch {
                                     sketch,
                                     length: control.length_override,
@@ -2955,18 +3017,25 @@ pub fn show_pane(
                         }
                         for unit in AngleUnit::ALL {
                             let selected = control.angle_override == Some(unit)
-                                || (control.sketch.is_none() && control.effective_angle == unit);
+                                || (!has_override_slot && control.effective_angle == unit);
                             if ui.selectable_label(selected, unit.label()).clicked() {
-                                match control.sketch {
-                                    Some(sketch) => on_units_changed(UnitsChoice::Sketch {
+                                if let Some(component) = control.component {
+                                    on_units_changed(UnitsChoice::Component {
+                                        component,
+                                        length: control.length_override,
+                                        angle: Some(unit),
+                                    });
+                                } else if let Some(sketch) = control.sketch {
+                                    on_units_changed(UnitsChoice::Sketch {
                                         sketch,
                                         length: control.length_override,
                                         angle: Some(unit),
-                                    }),
-                                    None => on_units_changed(UnitsChoice::Document {
+                                    });
+                                } else {
+                                    on_units_changed(UnitsChoice::Document {
                                         length: control.effective_length,
                                         angle: unit,
-                                    }),
+                                    });
                                 }
                             }
                         }
@@ -3700,6 +3769,7 @@ mod tests {
                 calibrate_pending: None,
                 units: Some(UnitsControl {
                     sketch: None,
+                    component: None,
                     effective_length: LengthUnit::Mm,
                     effective_angle: AngleUnit::Deg,
                     length_override: None,
@@ -3794,6 +3864,7 @@ mod tests {
                 calibrate_pending: None,
                 units: Some(UnitsControl {
                     sketch: None,
+                    component: None,
                     effective_length: LengthUnit::Mm,
                     effective_angle: AngleUnit::Deg,
                     length_override: None,
@@ -3922,6 +3993,7 @@ mod tests {
             content.units,
             Some(UnitsControl {
                 sketch: Some(sketch),
+                component: None,
                 effective_length: LengthUnit::In,
                 effective_angle: AngleUnit::Rad,
                 length_override: None,
@@ -3944,6 +4016,7 @@ mod tests {
             content.units,
             Some(UnitsControl {
                 sketch: Some(sketch),
+                component: None,
                 effective_length: LengthUnit::Cm,
                 effective_angle: AngleUnit::Deg,
                 length_override: Some(LengthUnit::Cm),
