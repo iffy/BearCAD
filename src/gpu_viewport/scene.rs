@@ -84,6 +84,8 @@ pub const SOLID_FILL: Color32 = Color32::from_rgb(150, 168, 196);
 /// Ghost fill for a shadow body (a boolean operation's consumed input) while it's hovered
 /// or selected in the Elements pane — the only time shadows render at all.
 pub const SHADOW_BODY_FILL: Color32 = Color32::from_rgb(120, 140, 170);
+/// How much body fills dim while a sketch is open (#433), so sketch geometry reads on top.
+const SKETCH_MODE_BODY_DIM: f32 = 0.45;
 const SHADOW_BODY_OPACITY: f32 = 0.30;
 /// Fill for a **selected** body (#174): a more saturated blue than the neutral body grey,
 /// so selection reads on the body itself, not just its aura outline.
@@ -718,6 +720,13 @@ impl ViewportScene {
                 SOLID_FILL_SELECTED
             } else {
                 SOLID_FILL
+            };
+            // Sketch mode dims every body (#433): the bright face shading otherwise
+            // fights the sketch lines and dimension labels drawn over it.
+            let fill = if input.sketch_session.is_some() {
+                scale_color(fill, SKETCH_MODE_BODY_DIM)
+            } else {
+                fill
             };
             let cap_plane = body
                 .source
