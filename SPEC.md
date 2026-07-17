@@ -795,7 +795,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   selected, or in the Constraint tool) places a `SketchText`
   element. **Clicking** drops a textbox that grows in width to fit the text; **dragging a
   rectangle** (#282) drops one that **word-wraps** to the dragged width and grows downward (the
-  drag width becomes the `wrap_width`). Its glyph outlines are **baked** at create/edit time
+  drag width becomes the `wrap_width`). While the drag is held, a **dashed rubber-band
+  rectangle** previews the box (#407; drawn once the drag passes `TEXT_DRAG_MIN_WIDTH_MM`,
+  3 mm, the same threshold that separates a drag from a click), and the status line
+  advertises the gesture. Its glyph outlines are **baked** at create/edit time
   from a system font into sketch-local mm contours (`src/text.rs`: `fontdb` selects the font by
   family+weight/italic and yields its bytes; `ttf-parser` walks each glyph's outline, flattened to
   polylines and laid out along the baseline by each glyph's advance, multi-line stacking by

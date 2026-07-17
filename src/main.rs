@@ -378,6 +378,10 @@ mod cli_tests {
 
 const DIM_LABEL_DRAG_THRESHOLD_PX: f32 = 4.0;
 
+/// Minimum horizontal drag (sketch mm) for the Text tool to treat a press-release as a
+/// box-drag that sets a wrap width instead of a plain click (#282/#407).
+const TEXT_DRAG_MIN_WIDTH_MM: f32 = 3.0;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct DimLabelDrag {
     target: DimLabelTarget,
@@ -3569,9 +3573,12 @@ impl App {
     /// Text tool (#282): click in a sketch to drop a text element. Its glyph outlines are baked
     /// from a default system font; the string, font, size, and style are then editable in the
     /// context pane (#286). The new element is selected so its context control opens immediately.
+    /// A drag narrower than `TEXT_DRAG_MIN_WIDTH_MM` counts as a click.
     fn handle_text_tool(
         &mut self,
         ui: &egui::Ui,
+        painter: &egui::Painter,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         pointer_screen: Option<egui::Pos2>,
         cam: &camera::Camera,
         viewport: egui::Rect,
@@ -3596,6 +3603,29 @@ impl App {
             return;
         }
         if !ui.input(|i| i.pointer.primary_released()) {
+            // While the press is held, rubber-band the dragged text box as a dashed
+            // rectangle so the drag-to-wrap gesture is visible (#407).
+            if let (true, Some((au, av)), Some((ru, rv))) = (
+                ui.input(|i| i.pointer.primary_down()),
+                self.text_tool_anchor,
+                pointer_screen.and_then(|pp| uv_at(pp, self)),
+            ) {
+                if (ru - au).abs() >= TEXT_DRAG_MIN_WIDTH_MM {
+                    let corners = [(au, av), (ru, av), (ru, rv), (au, rv)];
+                    for i in 0..4 {
+                        let (u0, v0) = corners[i];
+                        let (u1, v1) = corners[(i + 1) % 4];
+                        draw_world_segment_dashed(
+                            painter,
+                            project,
+                            local_to_world(&frame, u0, v0),
+                            local_to_world(&frame, u1, v1),
+                            construction::PICK_HOVER_RGBA,
+                            1.2,
+                        );
+                    }
+                }
+            }
             return;
         }
         let Some((au, av)) = self.text_tool_anchor.take() else {
@@ -3604,7 +3634,7 @@ impl App {
         let (u, v, wrap_width) = match pointer_screen.and_then(|pp| uv_at(pp, self)) {
             // A drag wide enough (in mm) wraps to that width; the origin is the left edge and
             // the top of the dragged box (text grows downward from the baseline of line 1).
-            Some((ru, rv)) if (ru - au).abs() >= 3.0 => {
+            Some((ru, rv)) if (ru - au).abs() >= TEXT_DRAG_MIN_WIDTH_MM => {
                 (au.min(ru), av.max(rv), Some((ru - au).abs()))
             }
             _ => (au, av, None),
@@ -11533,7 +11563,7 @@ impl App {
                     }
                 }
             } else {
-                self.handle_text_tool(ui, pointer_screen, &cam, viewport, &vp);
+                self.handle_text_tool(ui, &painter, &project, pointer_screen, &cam, viewport, &vp);
             }
         }
 

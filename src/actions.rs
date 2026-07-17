@@ -4412,7 +4412,7 @@ impl AppState {
                             .to_string()
                     }
                     Tool::Text if self.sketch_session.is_some() => {
-                        "Text tool — click to place text".to_string()
+                        "Text tool — click to place text, or drag a box to set its width".to_string()
                     }
                     Tool::Text => "Text tool — open a sketch first".to_string(),
                     Tool::DrawingAdd => {
@@ -9224,7 +9224,7 @@ label_hidden: false,
         self.status = match self.tool {
             Tool::Rectangle => format!("{name} — click to set corner"),
             Tool::Line => format!("{name} — click to set start"),
-            Tool::Text => format!("{name} — click to place text"),
+            Tool::Text => format!("{name} — click to place text, or drag a box to set its width"),
             _ => format!("{name} — pick line or rectangle"),
         };
         ActionResult::Ok
