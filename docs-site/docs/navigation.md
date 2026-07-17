@@ -1,5 +1,6 @@
 ---
-sidebar_position: 14
+sidebar_position: 6
+slug: /tools/navigation
 title: Navigation
 ---
 

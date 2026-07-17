@@ -1,5 +1,6 @@
 ---
-sidebar_position: 18
+sidebar_position: 2
+slug: /tools/drawing
 title: Drawings
 ---
 

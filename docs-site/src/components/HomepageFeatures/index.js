@@ -15,13 +15,13 @@ const FeatureList = [
     ),
   },
   {
-    title: 'Tools & Navigation',
+    title: 'Modeling Tools',
     to: '/docs/tools',
     description: (
       <>
         Tool-by-tool reference for Select, Sketch, Rectangle, Line, Circle, Fillet, Chamfer,
-        Construction Plane, Extrude, Revolve, Combine, Move, Dimension, and Constraint — plus orbit/pan/zoom,
-        the view bear, and sketch mode.
+        Construction Plane, Extrude, Revolve, Combine, Move, Dimension, and Constraint — plus
+        the drawing workbench's tools and navigation.
       </>
     ),
   },
