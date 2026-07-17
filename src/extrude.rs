@@ -2360,9 +2360,12 @@ pub fn constraint_point_world(doc: &Document, point: crate::model::ConstraintPoi
     if let crate::model::ConstraintPoint::FaceVertex { face, index } = &point {
         return face_boundary_loop_world(doc, face)?.get(*index).copied();
     }
-    let sketch = match point {
-        crate::model::ConstraintPoint::LineEndpoint { line, .. } => doc.lines.get(line)?.sketch,
-        crate::model::ConstraintPoint::CircleCenter(circle) => doc.circles.get(circle)?.sketch,
+    let sketch = match &point {
+        crate::model::ConstraintPoint::LineEndpoint { line, .. } => doc.lines.get(*line)?.sketch,
+        crate::model::ConstraintPoint::CircleCenter(circle) => doc.circles.get(*circle)?.sketch,
+        crate::model::ConstraintPoint::TextAnchor { text, .. } => {
+            doc.sketch_texts.get(*text)?.sketch
+        }
         crate::model::ConstraintPoint::FaceVertex { .. } => unreachable!("handled above"),
     };
     let frame = sketch_geometry_frame(doc, sketch)?;

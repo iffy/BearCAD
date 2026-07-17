@@ -1543,12 +1543,6 @@ pub enum Action {
         rotation: f32,
         wrap_width: Option<f32>,
     },
-    /// Pin (or unpin, with `pin = None`) a sketch text's anchor to a sketch point (#356), so the
-    /// text follows that point on every rebuild.
-    SetSketchTextPin {
-        index: usize,
-        pin: Option<(crate::model::ConstraintPoint, crate::model::TextAnchor)>,
-    },
     /// Re-point an existing in-sketch slice (#224).
     EditSketchSliceOperation {
         op: usize,
@@ -7645,17 +7639,10 @@ label_hidden: false,
                 t.wrap_width = wrap_width;
                 t.contours = contours;
                 t.font_bytes = font_bytes;
+                // Re-solve so anchor constraints keep holding through the new bounding box
+                // (#408) — a resized text translates to keep its constrained anchor in place.
+                let _ = crate::constraints::solve_document_constraints(&mut self.doc);
                 self.status = "Edited text".to_string();
-                ActionResult::Ok
-            }
-            Action::SetSketchTextPin { index, pin } => {
-                let Some(t) = self.doc.sketch_texts.get_mut(index).filter(|t| !t.deleted) else {
-                    return ActionResult::Err(format!("Sketch text {index} not found"));
-                };
-                t.pin = pin;
-                // Immediately re-place the text so the pin takes effect (#356).
-                let _ = crate::parameters::recompute_document_geometry(&mut self.doc);
-                self.status = "Pinned text".to_string();
                 ActionResult::Ok
             }
             Action::CreateSketchSliceOperation { sketch, line_targets, circle_targets, face_targets, cutter_lines } => {
@@ -13087,10 +13074,10 @@ mod tests {
         );
     }
 
-    /// #356: a sketch text pinned by one of its nine anchors follows that point — rebuilding moves
-    /// the text so the anchor stays coincident with the target.
+    /// #408: a sketch text constrained by one of its nine anchors follows that point — solving
+    /// translates the text so the anchor stays coincident with the target.
     #[test]
-    fn pinned_sketch_text_follows_its_anchor_point() {
+    fn constrained_sketch_text_follows_its_anchor_point() {
         let family = ["Helvetica", "Arial", "DejaVu Sans", "Liberation Sans"]
             .into_iter()
             .find(|f| crate::text::font_bytes(f, false, false).is_some());
@@ -13118,16 +13105,29 @@ mod tests {
             rotation: 0.0,
             wrap_width: None,
         });
-        // Pin the text's centre to the line's start endpoint, then rebuild.
-        state.doc.sketch_texts[0].pin = Some((
-            crate::model::ConstraintPoint::LineEndpoint {
-                line: 0,
-                end: crate::model::LineEnd::Start,
+        // Constrain the text's centre anchor coincident with the line's start (#408), then
+        // solve: the text translates so its anchor sits on the point.
+        state.doc.constraints.push(crate::model::Constraint {
+            sketch,
+            kind: crate::model::ConstraintKind::Coincident {
+                a: crate::model::ConstraintEntity::Point(crate::model::ConstraintPoint::TextAnchor {
+                    text: 0,
+                    anchor: crate::model::TextAnchor::Center,
+                }),
+                b: crate::model::ConstraintEntity::Point(crate::model::ConstraintPoint::LineEndpoint {
+                    line: 0,
+                    end: crate::model::LineEnd::Start,
+                }),
             },
-            crate::model::TextAnchor::Center,
-        ));
-        crate::parameters::recompute_document_geometry(&mut state.doc).unwrap();
-        // The text's centre anchor now sits on (30, 40).
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+        crate::constraints::solve_document_constraints(&mut state.doc).unwrap();
+        // The text's centre anchor now sits on (30, 40) and the line did not move.
+        assert_eq!(state.doc.lines[0].x0, 30.0);
+        assert_eq!(state.doc.lines[0].y0, 40.0);
         let t = &state.doc.sketch_texts[0];
         let (mut min, mut max) = ((f32::MAX, f32::MAX), (f32::MIN, f32::MIN));
         for c in &t.contours {
@@ -13142,7 +13142,7 @@ mod tests {
         );
         assert!(
             (center.0 - 30.0).abs() < 1e-2 && (center.1 - 40.0).abs() < 1e-2,
-            "text centre {center:?} should sit on the pinned point (30, 40)"
+            "text centre {center:?} should sit on the constrained point (30, 40)"
         );
     }
 

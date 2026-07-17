@@ -175,6 +175,7 @@ fn scene_element_for_point(point: &ConstraintPoint) -> SceneElement {
         ConstraintPoint::LineEndpoint { line, .. } => SceneElement::Line(*line),
         ConstraintPoint::CircleCenter(circle) => SceneElement::Circle(*circle),
         ConstraintPoint::FaceVertex { face, .. } => scene_element_for_face(face),
+        ConstraintPoint::TextAnchor { text, .. } => SceneElement::SketchText(*text),
     }
 }
 
@@ -471,6 +472,7 @@ fn point_owner_element(point: &ConstraintPoint) -> SceneElement {
         ConstraintPoint::LineEndpoint { line, .. } => SceneElement::Line(*line),
         ConstraintPoint::CircleCenter(circle) => SceneElement::Circle(*circle),
         ConstraintPoint::FaceVertex { face, .. } => scene_element_for_face(face),
+        ConstraintPoint::TextAnchor { text, .. } => SceneElement::SketchText(*text),
     }
 }
 

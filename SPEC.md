@@ -829,18 +829,21 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   rotation-ring gizmo (#216's ring) appears in the sketch plane around the text's baseline
   origin, sized to the glyph outlines; dragging the ring turns the text about its origin, live.
   The ring and the context **Rotation°** field read the same model value, so they stay in sync.
-- **Anchor pin (#356):** a `SketchText` can be **pinned** by one of its nine bounding-box anchors
-  (`model::TextAnchor` — four corners, four edge midpoints, centre) to a sketch point
-  (`SketchText::pin = (ConstraintPoint, TextAnchor)`). On every rebuild the text's `origin` is
-  recomputed (`parameters::apply_sketch_text_pin`, resolving the target with
-  `geometric_constraints::point_uv`) so the chosen anchor stays coincident with that point — so a
-  text constrained to a vertex follows it as the model changes. Scriptable:
-  `bearcad.pin_text{ text, anchor = "center"|"top_left"|…, line = i, endpoint = "start"|"end" }`
-  (or `circle = i`; `pin = false` unpins). Interactively (#359): a **selected** sketch text shows
-  its nine anchor points as dots in the viewport (`text::sketch_text_anchor_points`); the text
-  editor's **Pin** row picks an anchor and, on **to point…**, arms `App::pending_text_pin` so the
-  next sketch **vertex** clicked (resolved through the existing `find_snap`) becomes the pin target
-  (Escape cancels). An **Unpin** button releases it.
+- **Constrainable anchors (#408, replacing #356/#359's bespoke pin):** each of a text's nine
+  bounding-box anchors (`model::TextAnchor` — four corners, four edge midpoints, centre) is a
+  first-class sketch point: `ConstraintPoint::TextAnchor { text, anchor }`. Anchors are
+  pickable with the Constraint tool (a **selected** text draws them as dots,
+  `text::sketch_text_anchor_points`), are snap targets for dragged vertices, and plug into
+  `Coincident`/`Midpoint`/distance constraints like any vertex. Solving **translates** the
+  whole text (`set_point_uv` writes `origin = solved − rotated anchor offset`); rotation and
+  size never change from constraints, and the solver **holds the non-text side** of a
+  point-point coincidence so the text follows the target, matching the old pin semantics.
+  Texts re-bake *before* the solve (`recompute_document_geometry`), so anchors are computed
+  from current contours, and `EditSketchText` re-solves so a resized text keeps its anchor in
+  place. Scriptable: `bearcad.select{ kind = "sketch_text", index = i, anchor = "center" }`
+  then `bearcad.add_geometric_constraint("coincident")`. Legacy documents with a
+  `SketchText::pin` migrate on load (`storage::migrate_text_pins`) to an equivalent
+  `Coincident` constraint; the pin field is never written back.
 - **Text-on-curve groundwork (#286):** `SketchText` carries an optional `baseline_line`
   reference (default none = straight baseline). Baking currently advances a pen along a
   straight baseline (`text::outline_text`); curve support later resolves the reference into a

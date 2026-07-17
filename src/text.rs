@@ -89,6 +89,40 @@ pub fn sketch_text_anchor_points(text: &crate::model::SketchText) -> [(f32, f32)
     out
 }
 
+/// A single anchor's position in a text's baseline space (pre origin/rotation), from the
+/// baked contours' bounding box. An empty text yields the origin.
+pub fn sketch_text_anchor_offset(
+    contours: &[Vec<(f32, f32)>],
+    anchor: crate::model::TextAnchor,
+) -> (f32, f32) {
+    let (mut min, mut max) = ((f32::MAX, f32::MAX), (f32::MIN, f32::MIN));
+    for c in contours {
+        for &(x, y) in c {
+            min = (min.0.min(x), min.1.min(y));
+            max = (max.0.max(x), max.1.max(y));
+        }
+    }
+    if min.0 > max.0 {
+        return (0.0, 0.0);
+    }
+    let (fx, fy) = anchor.fractions();
+    (min.0 + fx * (max.0 - min.0), min.1 + fy * (max.1 - min.1))
+}
+
+/// The sketch-local position of one of a text's nine anchor points (#408): the baseline-space
+/// anchor offset rotated by the text's rotation, translated by its origin.
+pub fn sketch_text_anchor_uv(
+    text: &crate::model::SketchText,
+    anchor: crate::model::TextAnchor,
+) -> (f32, f32) {
+    let (ax, ay) = sketch_text_anchor_offset(&text.contours, anchor);
+    let (sin, cos) = text.rotation.sin_cos();
+    (
+        text.origin.0 + ax * cos - ay * sin,
+        text.origin.1 + ax * sin + ay * cos,
+    )
+}
+
 /// Extract the outline of `text` set in the given font bytes at `size_mm` (cap-to-baseline scale
 /// follows the font's units-per-em). Returns every glyph contour in millimetres, positioned along
 /// the baseline (newlines start a new line below). `None` if the bytes aren't a parseable face.

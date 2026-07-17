@@ -33,6 +33,18 @@ bearcad.select{ kind = "line", index = 2, ["end"] = "start" }  -- the third corn
 bearcad.select{ kind = "circle", index = 0, point = true }
 ```
 
+## Selecting a text's anchor
+
+A sketch text has nine anchor points — box corners, edge midpoints, center. Pass `anchor`
+to select one (without it, `sketch_text` selects the whole text):
+
+```lua
+bearcad.select{ kind = "sketch_text", index = 0, anchor = "center" }  -- or "top_left", …
+```
+
+Constraining an anchor translates the whole text to satisfy it; rotation and size never
+change.
+
 ## Selecting a face's own vertex or edge
 
 While a sketch is open directly on a body's face (an extrusion cap or side wall), that

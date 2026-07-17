@@ -1,0 +1,1 @@
+Text anchors are constraint points: constrain any of a text's 9 anchors (corners, midpoints, center) with the normal Constraint tool; the bespoke Pin function is removed and old pins migrate to coincident constraints

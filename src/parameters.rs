@@ -123,6 +123,7 @@ fn pane_element_for_constraint_point(
     match point {
         ConstraintPoint::LineEndpoint { line, .. } => SceneElement::Line(line),
         ConstraintPoint::CircleCenter(circle) => SceneElement::Circle(circle),
+        ConstraintPoint::TextAnchor { text, .. } => SceneElement::SketchText(text),
         ConstraintPoint::FaceVertex { face, .. } => {
             SceneElement::Extrusion(face.extrusion_index().unwrap_or(usize::MAX))
         }
@@ -436,10 +437,11 @@ pub fn propagate_parameter_rename(doc: &mut Document, old: &str, new: &str) {
 /// Re-evaluate sketch constraints and apply solved geometry, then re-resolve associative
 /// projections (#140) so they track their source bodies through the change.
 pub fn recompute_document_geometry(doc: &mut Document) -> Result<(), String> {
+    // Texts re-bake first so anchor constraints solve against current contours (#408).
+    rebake_sketch_texts(doc);
     let result = solve_document_constraints(doc);
     crate::projection::refresh_projections(doc);
     rebake_extrusion_distances(doc);
-    rebake_sketch_texts(doc);
     result
 }
 
@@ -479,51 +481,7 @@ pub fn rebake_sketch_texts(doc: &mut Document) {
             t.contours = shaped.contours;
             t.font_bytes = bytes;
         }
-        // Position pin (#356): move the text so its pinned anchor sits on the target point. Done
-        // after re-baking so the anchor is computed from the current (possibly resized) contours.
-        apply_sketch_text_pin(doc, i);
     }
-}
-
-/// Re-place a pinned sketch text (#356) so its anchor point coincides with its target sketch
-/// point. No-op for an unpinned text or an unresolvable/deleted target.
-fn apply_sketch_text_pin(doc: &mut Document, i: usize) {
-    let Some((point, anchor, sketch, rotation)) = doc.sketch_texts.get(i).and_then(|t| {
-        t.pin
-            .clone()
-            .map(|(p, a)| (p, a, t.sketch, t.rotation))
-    }) else {
-        return;
-    };
-    // Where the target point currently sits, in the text's sketch-local frame.
-    let Ok((tu, tv)) = crate::geometric_constraints::point_uv(doc, sketch, point) else {
-        return;
-    };
-    // The anchor's offset from the text origin in baseline space, then rotated into local space.
-    let (ax, ay) = sketch_text_anchor_offset(&doc.sketch_texts[i].contours, anchor);
-    let (sin, cos) = rotation.sin_cos();
-    let (rax, ray) = (ax * cos - ay * sin, ax * sin + ay * cos);
-    // origin + rotated_anchor_offset == (tu, tv)  ⇒  origin == target − rotated offset.
-    doc.sketch_texts[i].origin = (tu - rax, tv - ray);
-}
-
-/// The `anchor`'s position in a text's baseline space (y up), from its contours' bounding box.
-fn sketch_text_anchor_offset(
-    contours: &[Vec<(f32, f32)>],
-    anchor: crate::model::TextAnchor,
-) -> (f32, f32) {
-    let (mut min, mut max) = ((f32::MAX, f32::MAX), (f32::MIN, f32::MIN));
-    for c in contours {
-        for &(x, y) in c {
-            min = (min.0.min(x), min.1.min(y));
-            max = (max.0.max(x), max.1.max(y));
-        }
-    }
-    if min.0 > max.0 {
-        return (0.0, 0.0); // empty text
-    }
-    let (fx, fy) = anchor.fractions();
-    (min.0 + fx * (max.0 - min.0), min.1 + fy * (max.1 - min.1))
 }
 
 /// Re-evaluate each extrusion's stored `distance` from its `expression` (#251), so an extrusion

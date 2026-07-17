@@ -555,9 +555,6 @@ struct App {
     /// Text tool press anchor on the drawing page as a page fraction (#312), for the same
     /// click-vs-drag placement of a page annotation.
     drawing_text_anchor: Option<(f32, f32)>,
-    /// A sketch-text pin being created (#359): `(text index, anchor)`. While set, the next sketch
-    /// point the user clicks (that snaps to a vertex) becomes the pin target.
-    pending_text_pin: Option<(usize, model::TextAnchor)>,
     angle_gizmo_drag: Option<AngleGizmoDrag>,
     vertex_drag: Option<VertexDrag>,
     bezier_handle_drag: Option<BezierHandleDrag>,
@@ -695,7 +692,6 @@ impl App {
             prev_tool: Tool::Select,
             text_tool_anchor: None,
             drawing_text_anchor: None,
-            pending_text_pin: None,
             angle_gizmo_drag: None,
             extrude_gizmo_drag: None,
             pending_extrude_target: None,
@@ -5080,7 +5076,6 @@ impl eframe::App for App {
                             size_mm: t.size,
                             rotation_deg: format!("{:.0}", t.rotation.to_degrees()),
                             wrap: t.wrap_width.map(|w| format!("{w:.0}")).unwrap_or_default(),
-                            pinned: t.pin.is_some(),
                         })
                 },
                 drawing_view: {
@@ -5705,11 +5700,7 @@ impl eframe::App for App {
                     let mut rotation = existing.rotation;
                     let mut wrap_width = existing.wrap_width;
                     let mut valid = true;
-                    let mut unpin = false;
-                    let mut begin_pin: Option<model::TextAnchor> = None;
                     match edit {
-                        context::SketchTextEdit::Unpin => unpin = true,
-                        context::SketchTextEdit::BeginPin(anchor) => begin_pin = Some(anchor),
                         context::SketchTextEdit::Text(v) => text = v,
                         context::SketchTextEdit::Font(v) => font_family = v,
                         context::SketchTextEdit::Bold(v) => bold = v,
@@ -5744,14 +5735,7 @@ impl eframe::App for App {
                             }
                         }
                     }
-                    if let Some(anchor) = begin_pin {
-                        // Arm pin-creation: the next clicked sketch vertex becomes the target.
-                        self.pending_text_pin = Some((index, anchor));
-                        self.state.status =
-                            "Click a sketch vertex to pin the text to it".to_string();
-                    } else if unpin {
-                        self.state.apply(Action::SetSketchTextPin { index, pin: None });
-                    } else if valid && !text.trim().is_empty() {
+                    if valid && !text.trim().is_empty() {
                         self.state.apply(Action::EditSketchText {
                             index,
                             text,
@@ -10770,45 +10754,6 @@ impl App {
             || self.angle_gizmo_drag.is_some()
             || response.dragged_by(egui::PointerButton::Secondary);
         let pointer_screen = viewport_pointer_pos(&response, viewport_owns_pointer);
-        // Text-pin creation (#359): while armed, the next click on a sketch vertex pins the text.
-        if self.pending_text_pin.is_some() {
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                self.pending_text_pin = None;
-            } else if response.clicked() {
-                if let (Some((index, anchor)), Some(session), Some(pp)) =
-                    (self.pending_text_pin, sketch_session, pointer_screen)
-                {
-                    if let Some(world) =
-                        sketch_plane_point(&cam, viewport, &vp, &self.state.doc, session, pp)
-                    {
-                        if let Some(frame) =
-                            sketch_geometry_frame(&self.state.doc, session.sketch)
-                        {
-                            let (u, v) = world_to_local(&frame, world);
-                            let radius = snap_radius_uv(
-                                &|w: Vec3| cam.project(w, viewport, &vp),
-                                &frame,
-                                world,
-                            );
-                            if let Some(snapping::Snap {
-                                target: snapping::SnapTarget::Vertex(point),
-                                ..
-                            }) = snapping::find_snap(
-                                &self.state.doc,
-                                session.sketch,
-                                (u, v),
-                                radius,
-                                &[],
-                            ) {
-                                self.state
-                                    .apply(Action::SetSketchTextPin { index, pin: Some((point, anchor)) });
-                                self.pending_text_pin = None;
-                            }
-                        }
-                    }
-                }
-            }
-        }
         let layouts_slice = committed_dim_layouts.as_deref().unwrap_or(&[]);
         let angle_gizmo_constraint = angle_gizmo_constraint_for_edit(
             self.state.editing_committed_dim.as_ref(),

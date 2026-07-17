@@ -1047,6 +1047,22 @@ pub fn solve_sketch(
                             hold_line(&b, l, &mut dragged, &mut hold_point)
                         }
                     }
+                    // A text anchor coincident with a sketch point (#408): the text follows
+                    // the point, not the other way around — hold the non-text side, matching
+                    // the old pin semantics.
+                    (E::Point(p1), E::Point(p2))
+                        if matches!(p1, ConstraintPoint::TextAnchor { .. })
+                            != matches!(p2, ConstraintPoint::TextAnchor { .. }) =>
+                    {
+                        let target = if matches!(p1, ConstraintPoint::TextAnchor { .. }) {
+                            p2
+                        } else {
+                            p1
+                        };
+                        if !point_pinned(target) {
+                            hold_point(&b, target, &mut dragged);
+                        }
+                    }
                     (E::Point(_), E::Circle(c)) | (E::Circle(c), E::Point(_)) => {
                         if !dragging {
                             hold_point(&b, &ConstraintPoint::CircleCenter(*c), &mut dragged);

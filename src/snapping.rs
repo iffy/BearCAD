@@ -218,9 +218,9 @@ fn entity_eq(a: &ConstraintEntity, b: &ConstraintEntity) -> bool {
 fn owning_lines(point: &ConstraintPoint) -> Vec<ConstraintLine> {
     match point {
         ConstraintPoint::LineEndpoint { line, .. } => vec![ConstraintLine::Line(*line)],
-        // Fixed by the body's own geometry, so it's never the dragged endpoint of anything —
-        // there's nothing to exclude on its behalf.
-        ConstraintPoint::CircleCenter(_) | ConstraintPoint::FaceVertex { .. } => Vec::new(),
+        ConstraintPoint::CircleCenter(_)
+        | ConstraintPoint::FaceVertex { .. }
+        | ConstraintPoint::TextAnchor { .. } => Vec::new(),
     }
 }
 
@@ -246,6 +246,14 @@ pub fn all_sketch_vertices(doc: &Document) -> Vec<ConstraintPoint> {
         }
         points.push(ConstraintPoint::CircleCenter(index));
     }
+    for (index, text) in doc.sketch_texts.iter().enumerate() {
+        if text.deleted {
+            continue;
+        }
+        for anchor in crate::model::TextAnchor::ALL {
+            points.push(ConstraintPoint::TextAnchor { text: index, anchor });
+        }
+    }
     points
 }
 
@@ -270,6 +278,16 @@ pub fn sketch_vertices(doc: &Document, sketch: SketchId) -> Vec<ConstraintPoint>
             continue;
         }
         points.push(ConstraintPoint::CircleCenter(index));
+    }
+    // A text's nine anchor points (#408): snapping a dragged vertex onto one holds it there
+    // with a coincident constraint, like any other vertex.
+    for (index, text) in doc.sketch_texts.iter().enumerate() {
+        if text.deleted || text.sketch != sketch {
+            continue;
+        }
+        for anchor in crate::model::TextAnchor::ALL {
+            points.push(ConstraintPoint::TextAnchor { text: index, anchor });
+        }
     }
     // Corners of the body face the sketch sits on (#26/#27, #139): a sketch drawn on an
     // extrusion cap/side wall can snap to and constrain against that face's own vertices.

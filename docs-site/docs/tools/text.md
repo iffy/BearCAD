@@ -27,11 +27,13 @@ face or plane to start a sketch there.
 - **Rotation°** — turns the text about its start point.
 - **Wrap width** — empty grows to fit; a width in mm word-wraps.
 
-## Pinning text to a point
+## Constraining text
 
-A selected text shows nine anchor dots. In the **Pin** row, choose an anchor, click
-**to point…**, then click a sketch vertex — the anchor stays on that vertex as the model
-changes. **Unpin** releases it.
+A selected text shows nine anchor dots — the box corners, edge midpoints, and center.
+Each is a regular sketch point: with the [Constraint](/docs/tools/constraint) tool, click
+an anchor and another point and press **4** (Coincident) to hold the text there as the
+model changes. The text translates to follow; other geometry stays put. Dragged points
+also snap onto anchors.
 
 ## Rotating with the Move tool
 
@@ -60,8 +62,10 @@ bearcad.count("sketch_text")
 -- Engrave a text: extrude/cut the whole word (all its glyphs) in one call.
 bearcad.extrude{ text = 0, distance = 1, body = "cut" }
 
--- Pin a text's anchor to a sketch point so it follows it as the model changes.
-bearcad.pin_text{ text = 0, anchor = "center", line = 2, endpoint = "start" }
+-- Constrain a text's anchor coincident to a sketch point so it follows it.
+bearcad.select{ kind = "sketch_text", index = 0, anchor = "center" }
+bearcad.select({ kind = "line", index = 2, ["end"] = "start" }, true)
+bearcad.add_geometric_constraint("coincident")
 ```
 
 Like `rect` and `circle`, `text` begins a ground sketch when none is open. `size` accepts

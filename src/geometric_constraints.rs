@@ -338,6 +338,9 @@ fn constraint_ref_sort_key(reference: ConstraintRef) -> (u8, usize, u8, u8) {
         ConstraintRef::Circle(i) => (5, i, 0, 0),
         ConstraintRef::Point(ConstraintPoint::FaceVertex { index, .. }) => (6, index, 0, 0),
         ConstraintRef::Line(ConstraintLine::FaceEdge { index, .. }) => (7, index, 0, 0),
+        ConstraintRef::Point(ConstraintPoint::TextAnchor { text, anchor }) => {
+            (8, text, anchor as u8, 0)
+        }
         ConstraintRef::Line(ConstraintLine::OriginAxis(axis)) => (8, axis as usize, 0, 0),
         ConstraintRef::Origin => (9, 0, 0, 0),
     }
@@ -621,6 +624,16 @@ fn validate_point_ref(doc: &Document, sketch: SketchId, point: &ConstraintPoint)
                 return Err(format!("Face vertex {index} no longer resolves"));
             }
         }
+        ConstraintPoint::TextAnchor { text, .. } => {
+            let entity = doc
+                .sketch_texts
+                .get(*text)
+                .filter(|t| !t.deleted)
+                .ok_or_else(|| format!("Text {text} not found"))?;
+            if entity.sketch != sketch {
+                return Err(format!("Text {text} is not in sketch {sketch}"));
+            }
+        }
     }
     Ok(())
 }
@@ -652,6 +665,9 @@ pub fn coincident_mover_and_anchor(
 fn coincident_point_mobility(point: &ConstraintPoint) -> u8 {
     match point {
         ConstraintPoint::LineEndpoint { .. } | ConstraintPoint::CircleCenter(_) => 2,
+        // A text translates rigidly to follow its anchor (#408): prefer moving the text over
+        // reshaping lines/circles, so constraining a text to geometry moves the text.
+        ConstraintPoint::TextAnchor { .. } => 3,
         // Fixed by the body's own geometry: never the mover, so it always ranks below every
         // draggable sketch-native point (mirrors `ConstraintEntity::Origin`'s fixed treatment).
         ConstraintPoint::FaceVertex { .. } => 0,
@@ -812,6 +828,15 @@ pub fn point_uv(doc: &Document, sketch: SketchId, point: ConstraintPoint) -> Res
                 .ok_or_else(|| "Sketch frame not available".to_string())?;
             Ok(crate::face::world_to_local(&frame, world))
         }
+        // A text anchor is derived from the text's origin + its baked bounding box (#408).
+        ConstraintPoint::TextAnchor { text, anchor } => {
+            let entity = doc
+                .sketch_texts
+                .get(text)
+                .filter(|t| !t.deleted)
+                .ok_or_else(|| format!("Text {text} not found"))?;
+            Ok(crate::text::sketch_text_anchor_uv(entity, anchor))
+        }
     }
 }
 
@@ -853,6 +878,19 @@ pub fn set_point_uv(
         // Fixed by the body's own geometry, not by the sketch — mirrors how
         // `ConstraintEntity::Origin` is treated as a fixed, undraggable reference.
         ConstraintPoint::FaceVertex { .. } => Err("Face vertices are fixed and cannot be moved".to_string()),
+        // Moving an anchor translates the whole text: origin = target − rotated anchor
+        // offset (#408). Rotation and size are untouched.
+        ConstraintPoint::TextAnchor { text, anchor } => {
+            let entity = doc
+                .sketch_texts
+                .get_mut(text)
+                .filter(|t| !t.deleted)
+                .ok_or_else(|| format!("Text {text} not found"))?;
+            let (ax, ay) = crate::text::sketch_text_anchor_offset(&entity.contours, anchor);
+            let (sin, cos) = entity.rotation.sin_cos();
+            entity.origin = (u - (ax * cos - ay * sin), v - (ax * sin + ay * cos));
+            Ok(())
+        }
     }
 }
 

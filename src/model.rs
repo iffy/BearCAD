@@ -663,6 +663,22 @@ pub enum TextAnchor {
 }
 
 impl TextAnchor {
+    /// The scripting name for this anchor (`bearcad.select{ anchor = ... }`), matching
+    /// `lua_script::parse_text_anchor`'s canonical spellings.
+    pub fn lua_name(self) -> &'static str {
+        match self {
+            TextAnchor::TopLeft => "top_left",
+            TextAnchor::TopCenter => "top_center",
+            TextAnchor::TopRight => "top_right",
+            TextAnchor::MiddleLeft => "middle_left",
+            TextAnchor::Center => "center",
+            TextAnchor::MiddleRight => "middle_right",
+            TextAnchor::BottomLeft => "bottom_left",
+            TextAnchor::BottomCenter => "bottom_center",
+            TextAnchor::BottomRight => "bottom_right",
+        }
+    }
+
     /// All nine anchors, in reading order (top-left → bottom-right).
     pub const ALL: [TextAnchor; 9] = [
         TextAnchor::TopLeft,
@@ -706,6 +722,10 @@ pub enum ConstraintPoint {
     /// `FaceId::ExtrudeCap`/`FaceId::ExtrudeSide`; other face kinds never resolve. Fixed by
     /// the body's geometry, not draggable — mirrors [`ConstraintEntity::Origin`].
     FaceVertex { face: FaceId, index: usize },
+    /// One of a sketch text's nine anchor points (#408): the bounding-box corners, edge
+    /// midpoints, or centre. Solving moves the text's `origin` (the whole text translates
+    /// rigidly); its rotation and size never change from constraints.
+    TextAnchor { text: usize, anchor: TextAnchor },
 }
 
 /// A line-like sketch entity for parallel, perpendicular, and orientation constraints.
@@ -1738,11 +1758,9 @@ pub struct SketchText {
     /// Embedded source font bytes (base64 in JSON) for reproducible rendering.
     #[serde(default, with = "font_bytes_base64")]
     pub font_bytes: Vec<u8>,
-    /// Position pin (#356): one of the text's nine anchor points held coincident with a sketch
-    /// point (a line endpoint, circle centre, or face vertex). When set, `origin` is recomputed on
-    /// every rebuild so the anchor stays on that point — so constraining the text somewhere keeps
-    /// it there as the model changes.
-    #[serde(default)]
+    /// Legacy position pin (#356, removed by #408): retained only so old documents
+    /// deserialize; converted to a `Coincident` constraint on load and never written back.
+    #[serde(default, skip_serializing)]
     pub pin: Option<(ConstraintPoint, TextAnchor)>,
     #[serde(default)]
     pub name: Option<String>,

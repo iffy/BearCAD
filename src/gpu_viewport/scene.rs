@@ -888,8 +888,9 @@ impl ViewportScene {
                 }
                 mesh.push_polyline_segment(&pts, color, 2.0, input.cam, input.viewport, &vp);
             }
-            // A selected text shows its nine anchor points (#356/#359) — the corners, edge
-            // midpoints, and centre — so they can be picked to pin the text to a sketch point.
+            // A selected text shows its nine anchor points (#356/#408) — the corners, edge
+            // midpoints, and centre — pickable with the Constraint tool to hold the text to
+            // other geometry.
             if selected {
                 let anchor_color = input.palette.preview;
                 for &pt in &crate::text::sketch_text_anchor_points(text) {

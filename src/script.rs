@@ -109,11 +109,6 @@ pub enum Instruction {
         rotation_deg: f32,
         wrap: Option<f32>,
     },
-    /// Pin a sketch text's anchor to a sketch point so it follows it (#356).
-    SetSketchTextPin {
-        index: usize,
-        pin: Option<(crate::model::ConstraintPoint, crate::model::TextAnchor)>,
-    },
     /// Extrude coplanar sketch faces into a solid.
     Extrude {
         sketch: SketchId,
@@ -596,24 +591,6 @@ impl Instruction {
                 }
                 format!("bearcad.text{{ {args} }}")
             }
-            Instruction::SetSketchTextPin { index, pin } => match pin {
-                None => format!("bearcad.pin_text{{ text = {index}, pin = false }}"),
-                Some((point, anchor)) => {
-                    let anchor = format!("{anchor:?}").to_ascii_lowercase();
-                    let target = match point {
-                        crate::model::ConstraintPoint::LineEndpoint { line, end } => {
-                            let end = match end {
-                                crate::model::LineEnd::Start => "start",
-                                crate::model::LineEnd::End => "end",
-                            };
-                            format!("line = {line}, end = {end:?}")
-                        }
-                        crate::model::ConstraintPoint::CircleCenter(c) => format!("circle = {c}"),
-                        crate::model::ConstraintPoint::FaceVertex { .. } => "--[[face vertex]]".to_string(),
-                    };
-                    format!("bearcad.pin_text{{ text = {index}, anchor = {anchor:?}, {target} }}")
-                }
-            },
             Instruction::Extrude {
                 faces,
                 distance,
@@ -2284,6 +2261,11 @@ fn point_lua_fields(point: &ConstraintPoint) -> String {
         ConstraintPoint::FaceVertex { face, index } => {
             format!("kind = \"face\", face = {}, index = {index}", face_id_lua_ref(face))
         }
+        // #408: mirrors `lua_script::parse_constraint_point_table`'s `"sketch_text"` shape.
+        ConstraintPoint::TextAnchor { text, anchor } => {
+            let anchor = anchor.lua_name();
+            format!("kind = \"sketch_text\", index = {text}, anchor = \"{anchor}\"")
+        }
     }
 }
 
@@ -3396,11 +3378,6 @@ impl ScriptRunner {
                     rotation: rotation_deg.to_radians(),
                     wrap_width: wrap,
                 });
-                self.record_action_error(result);
-                StepResult::Continue
-            }
-            Instruction::SetSketchTextPin { index, pin } => {
-                let result = state.apply(Action::SetSketchTextPin { index, pin });
                 self.record_action_error(result);
                 StepResult::Continue
             }

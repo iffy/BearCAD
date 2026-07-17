@@ -639,6 +639,17 @@ fn validate_point_in_sketch(
             }
             Ok(())
         }
+        ConstraintPoint::TextAnchor { text, .. } => {
+            let entity = doc
+                .sketch_texts
+                .get(text)
+                .filter(|t| !t.deleted)
+                .ok_or_else(|| format!("Text {text} not found"))?;
+            if entity.sketch != sketch {
+                return Err(format!("Text {text} is not in sketch {sketch}"));
+            }
+            Ok(())
+        }
     }
 }
 

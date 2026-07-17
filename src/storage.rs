@@ -32,8 +32,37 @@ pub fn from_json_bytes(bytes: &[u8]) -> Result<Document> {
 pub(crate) fn fixup_loaded_document(doc: &mut Document) -> Result<()> {
     ensure_construction_plane_indices(doc);
     crate::constraints::migrate_legacy_dimensions(doc);
+    migrate_text_pins(doc);
     crate::constraints::solve_document_constraints(doc).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Convert legacy text position pins (#356) into `Coincident` constraints between the text's
+/// anchor point and the pin target (#408), so old documents keep their behaviour under the
+/// constraint solver. The pin field is cleared and never written back.
+fn migrate_text_pins(doc: &mut Document) {
+    for i in 0..doc.sketch_texts.len() {
+        let Some((point, anchor)) = doc.sketch_texts[i].pin.take() else {
+            continue;
+        };
+        if doc.sketch_texts[i].deleted {
+            continue;
+        }
+        doc.constraints.push(crate::model::Constraint {
+            sketch: doc.sketch_texts[i].sketch,
+            kind: crate::model::ConstraintKind::Coincident {
+                a: crate::model::ConstraintEntity::Point(
+                    crate::model::ConstraintPoint::TextAnchor { text: i, anchor },
+                ),
+                b: crate::model::ConstraintEntity::Point(point),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+        doc.shape_order.push(crate::model::ShapeKind::Constraint);
+    }
 }
 
 
@@ -507,6 +536,65 @@ mod tests {
 
     fn plane_sketch(doc: &mut Document) -> usize {
         doc.add_sketch(FaceId::ConstructionPlane(0))
+    }
+
+    /// #408: a legacy text pin loads as a `Coincident` constraint on the text's anchor point,
+    /// and the pin field is cleared (never written back).
+    #[test]
+    fn legacy_text_pin_migrates_to_coincident_constraint() {
+        let mut doc = Document::default();
+        let sketch = plane_sketch(&mut doc);
+        doc.lines
+            .push(crate::model::Line::from_local_endpoints(sketch, 30.0, 40.0, 60.0, 40.0));
+        doc.sketch_texts.push(crate::model::SketchText {
+            sketch,
+            text: "Hi".to_string(),
+            font_family: String::new(),
+            bold: false,
+            italic: false,
+            underline: false,
+            size: 10.0,
+            size_expr: "10".to_string(),
+            origin: (0.0, 0.0),
+            rotation: 0.0,
+            wrap_width: None,
+            baseline_line: None,
+            contours: vec![vec![(0.0, 0.0), (4.0, 0.0), (4.0, 6.0), (0.0, 6.0)]],
+            font_bytes: Vec::new(),
+            pin: Some((
+                crate::model::ConstraintPoint::LineEndpoint {
+                    line: 0,
+                    end: crate::model::LineEnd::Start,
+                },
+                crate::model::TextAnchor::Center,
+            )),
+            name: None,
+            deleted: false,
+        });
+        doc.shape_order.push(crate::model::ShapeKind::SketchText);
+        crate::storage::fixup_loaded_document(&mut doc).expect("fixup");
+        assert!(doc.sketch_texts[0].pin.is_none(), "the pin is cleared");
+        let migrated = doc.constraints.iter().any(|c| {
+            matches!(
+                &c.kind,
+                crate::model::ConstraintKind::Coincident {
+                    a: crate::model::ConstraintEntity::Point(
+                        crate::model::ConstraintPoint::TextAnchor {
+                            text: 0,
+                            anchor: crate::model::TextAnchor::Center,
+                        }
+                    ),
+                    ..
+                }
+            )
+        });
+        assert!(migrated, "a coincident constraint replaces the pin");
+        // The solve ran as part of load: the centre anchor sits on the line start.
+        let (cx, cy) = crate::text::sketch_text_anchor_uv(
+            &doc.sketch_texts[0],
+            crate::model::TextAnchor::Center,
+        );
+        assert!((cx - 30.0).abs() < 1e-2 && (cy - 40.0).abs() < 1e-2, "centre at ({cx}, {cy})");
     }
 
     fn assert_world_anchors_match(before: &[glam::Vec3], after: &[glam::Vec3]) {

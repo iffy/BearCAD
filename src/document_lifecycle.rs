@@ -115,6 +115,9 @@ fn point_owner_alive(
         ConstraintPoint::FaceVertex { face, index } => {
             crate::extrude::face_boundary_loop_world(doc, face).is_some_and(|l| *index < l.len())
         }
+        ConstraintPoint::TextAnchor { text, .. } => {
+            doc.sketch_texts.get(*text).is_some_and(|t| !t.deleted)
+        }
     }
 }
 
@@ -136,6 +139,7 @@ fn point_owner_element(point: &crate::model::ConstraintPoint) -> Option<SceneEle
     Some(match point {
         ConstraintPoint::LineEndpoint { line, .. } => SceneElement::Line(*line),
         ConstraintPoint::CircleCenter(circle) => SceneElement::Circle(*circle),
+        ConstraintPoint::TextAnchor { text, .. } => SceneElement::SketchText(*text),
         ConstraintPoint::FaceVertex { .. } => return None,
     })
 }
@@ -613,6 +617,9 @@ pub fn constraint_point_alive(doc: &Document, point: &ConstraintPoint) -> bool {
         ConstraintPoint::CircleCenter(circle) => circle_alive(doc, *circle),
         ConstraintPoint::FaceVertex { face, index } => {
             crate::extrude::face_boundary_loop_world(doc, face).is_some_and(|l| *index < l.len())
+        }
+        ConstraintPoint::TextAnchor { text, .. } => {
+            doc.sketch_texts.get(*text).is_some_and(|t| !t.deleted)
         }
     }
 }

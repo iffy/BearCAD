@@ -465,6 +465,9 @@ pub fn point_sketch(doc: &Document, point: ConstraintPoint) -> Option<SketchId> 
     match point {
         ConstraintPoint::LineEndpoint { line, .. } => doc.lines.get(line).map(|l| l.sketch),
         ConstraintPoint::CircleCenter(circle) => doc.circles.get(circle).map(|c| c.sketch),
+        ConstraintPoint::TextAnchor { text, .. } => {
+            doc.sketch_texts.get(text).map(|t| t.sketch)
+        }
         // A face's own vertex has no owning sketch of its own — it's referenced *from*
         // whichever sketch a constraint projects it into, not owned by one.
         ConstraintPoint::FaceVertex { .. } => None,
@@ -976,7 +979,9 @@ impl PickOcclusion {
                     ConstraintPoint::CircleCenter(c) => {
                         doc.circles.get(*c).is_some_and(|c| c.shadow)
                     }
-                    ConstraintPoint::FaceVertex { .. } => false,
+                    ConstraintPoint::FaceVertex { .. } | ConstraintPoint::TextAnchor { .. } => {
+                        false
+                    }
                 };
                 !shadow && vis.effective_visible(doc, SceneElement::Point(point.clone()))
             }
@@ -1517,6 +1522,12 @@ pub fn point_world_position(doc: &Document, point: ConstraintPoint) -> Option<Ve
         ConstraintPoint::FaceVertex { face, index } => {
             crate::extrude::face_boundary_loop_world(doc, &face)?.get(index).copied()
         }
+        ConstraintPoint::TextAnchor { text, anchor } => {
+            let entity = doc.sketch_texts.get(text).filter(|t| !t.deleted)?;
+            let frame = sketch_geometry_frame(doc, entity.sketch)?;
+            let (u, v) = crate::text::sketch_text_anchor_uv(entity, anchor);
+            Some(local_to_world(&frame, u, v))
+        }
     }
 }
 
@@ -1571,6 +1582,22 @@ pub fn nearest_sketch_point_in_sketch(
         }
         if let Some(center) = crate::face::circle_world_center(doc, circle) {
             consider(ConstraintPoint::CircleCenter(ci), center);
+        }
+    }
+
+    // A text's nine anchor points (#408) are constrainable vertices too.
+    for (ti, text) in doc.sketch_texts.iter().enumerate() {
+        if text.deleted || text.sketch != sketch {
+            continue;
+        }
+        if let Some(frame) = crate::face::sketch_geometry_frame(doc, text.sketch) {
+            for anchor in crate::model::TextAnchor::ALL {
+                let (u, v) = crate::text::sketch_text_anchor_uv(text, anchor);
+                consider(
+                    ConstraintPoint::TextAnchor { text: ti, anchor },
+                    crate::face::local_to_world(&frame, u, v),
+                );
+            }
         }
     }
 
@@ -1738,6 +1765,24 @@ fn nearest_sketch_point(
         }
         if let Some(center) = crate::face::circle_world_center(doc, circle) {
             consider(ConstraintPoint::CircleCenter(ci), center);
+        }
+    }
+
+    // A text's nine anchor points (#408): pickable like any vertex, so the constraint tool
+    // can hold a text's corner or centre to other geometry.
+    for (ti, text) in doc.sketch_texts.iter().enumerate() {
+        if text.deleted {
+            continue;
+        }
+        let Some(frame) = crate::face::sketch_geometry_frame(doc, text.sketch) else {
+            continue;
+        };
+        for anchor in crate::model::TextAnchor::ALL {
+            let (u, v) = crate::text::sketch_text_anchor_uv(text, anchor);
+            consider(
+                ConstraintPoint::TextAnchor { text: ti, anchor },
+                crate::face::local_to_world(&frame, u, v),
+            );
         }
     }
 
