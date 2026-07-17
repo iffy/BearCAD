@@ -1470,6 +1470,26 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   bare `name=`, redefine on `name=value`, with a clear indicator). Reject names that
   collide with reserved words or that would create an expression cycle (§4.1).
 
+#### 5.1.2 Derived parameters (#432)
+- A parameter may be **driven by a measurement** (`Parameter::source`,
+  `model::ParameterSource`): a line's length (`LineLength`, the original #measured flow),
+  the world-space distance between two points (`PointDistance`, any two
+  `ConstraintPoint`s — 2D or 3D), the distance between two **parallel** lines
+  (`LineDistance`), or the angle between two non-parallel **same-sketch** lines
+  (`LineAngle`, stored in degrees).
+- The Parameters pane classifies the current selection
+  (`parameters::derived_source_from_selection`) and, when it measures something, shows
+  the value it would capture beside a **Derive from selection** button
+  (`Action::CreateDerivedParameter` → `parameters::add_derived_parameter`; duplicate
+  measurements are refused).
+- Derived expressions are **read-only** (names stay editable) and re-sync from geometry
+  on every rebuild (`sync_computed_parameters` → `derived_source_value`; lengths format
+  in the document length unit, angles in the document angle unit).
+- Focusing a derived parameter's row highlights its defining elements
+  (`derived_source_elements` feeds `elements_using_parameter`).
+- Scriptable: `bearcad.derive_parameter{ kind = "line_length"|"point_distance"|
+  "line_distance"|"line_angle", a =, b =, name = }`.
+
 ### 5.2 Expressions
 - **Any input that accepts a value accepts an expression**, e.g. `1 + 2 + lengthOfThing / 2`.
 - Expressions may reference parameters and other values by name.

@@ -1185,6 +1185,35 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // Components (#423): `bearcad.component{ name = "Frame", parent = 0 }` creates one and
     // returns its index; `bearcad.move_to_component{ kind = "body", index = 0,
     // component = 1 }` files an element into it (`component = false` moves it back out).
+    // Derived (measured) parameters (#432): `bearcad.derive_parameter{ kind =
+    // "line_length"|"point_distance"|"line_distance"|"line_angle", a =, b =, name = }`.
+    // Point kinds take constraint-point tables for a/b; line kinds take line indices.
+    api.set(
+        "derive_parameter",
+        lua.create_function(|lua, opts: Table| {
+            use crate::model::ParameterSource as PS;
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(&opts, "derive_parameter", &["kind", "a", "b", "name"])?;
+            let kind: String = opts.get("kind")?;
+            let source = match kind.as_str() {
+                "line_length" => PS::LineLength(opts.get("a")?),
+                "point_distance" => PS::PointDistance(
+                    parse_constraint_point_table(opts.get("a")?)?,
+                    parse_constraint_point_table(opts.get("b")?)?,
+                ),
+                "line_distance" => PS::LineDistance(opts.get("a")?, opts.get("b")?),
+                "line_angle" => PS::LineAngle(opts.get("a")?, opts.get("b")?),
+                other => {
+                    return Err(mlua::Error::external(format!(
+                        "unknown derive kind '{other}'"
+                    )))
+                }
+            };
+            let name: Option<String> = opts.get("name")?;
+            unsafe { tick.exec(Instruction::CreateDerivedParameter { source, name }) }
+        })?,
+    )?;
+
     api.set(
         "component",
         lua.create_function(|lua, opts: Option<Table>| {

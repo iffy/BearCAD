@@ -35,11 +35,30 @@ Typing `name=value` in any value field — `width=20mm` in an extrude-distance f
 creates that parameter on the spot and binds the field to it. A bare `name=` reuses an
 existing parameter; `name=value` redefines it.
 
-## Measuring geometry into a parameter
+## Derived parameters
 
-Right-click in the viewport with a single undimensioned line selected and choose **Create
-parameter from length**: a read-only parameter appears that always equals that line's current
-length, so other features can reference a measured size.
+A **derived** parameter's value comes from measuring geometry. Make a selection and the
+Parameters pane shows the measured value next to a **Derive from selection** button.
+Valid selections:
+
+- **One line or edge** — its length (also on right-click: **Create parameter from
+  length**).
+- **Two points** — the distance between them (2D or 3D).
+- **Two parallel lines** — the distance between them.
+- **Two non-parallel lines in the same plane** — the angle between them.
+
+Derived values are read-only in the pane (the name stays editable) and re-measure as the
+geometry changes. Focusing a derived parameter's row highlights the geometry that defines
+it.
+
+```lua
+bearcad.derive_parameter{ kind = "line_length", a = 0, name = "leg" }
+bearcad.derive_parameter{ kind = "line_distance", a = 0, b = 1 }
+bearcad.derive_parameter{ kind = "line_angle", a = 0, b = 2 }
+bearcad.derive_parameter{ kind = "point_distance",
+  a = { kind = "line", index = 0, ["end"] = "start" },
+  b = { kind = "line", index = 0, ["end"] = "end" } }
+```
 
 ## Display units
 

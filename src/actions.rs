@@ -1047,6 +1047,12 @@ pub enum Action {
     AddParameter { name: String, expression: String },
     /// Create a read-only parameter synced to an unconstrained line's length.
     CreateParameterFromLineLength { line_index: usize, name: Option<String> },
+    /// Create a read-only parameter measuring the current selection (#432): a line's
+    /// length, two points' distance, two parallel lines' distance, or two lines' angle.
+    CreateDerivedParameter {
+        source: crate::model::ParameterSource,
+        name: Option<String>,
+    },
     CommitParameterName { index: usize, name: String },
     CommitParameterExpression { index: usize, expression: String },
     DeleteParameter { index: usize },
@@ -5483,6 +5489,20 @@ impl AppState {
                 match add_parameter(&mut self.doc, name.clone(), expression.clone()) {
                     Ok(_) => {
                         self.status = format!("Added parameter {name}");
+                        ActionResult::Ok
+                    }
+                    Err(e) => {
+                        self.status = e.clone();
+                        ActionResult::Err(e)
+                    }
+                }
+            }
+            Action::CreateDerivedParameter { source, name } => {
+                match crate::parameters::add_derived_parameter(&mut self.doc, source, name) {
+                    Ok(index) => {
+                        let param_name = self.doc.parameters[index].name.clone();
+                        self.refresh_document_health();
+                        self.status = format!("Added derived parameter {param_name}");
                         ActionResult::Ok
                     }
                     Err(e) => {

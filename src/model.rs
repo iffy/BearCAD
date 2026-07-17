@@ -74,6 +74,12 @@ pub type SketchId = usize;
 #[serde(rename_all = "snake_case")]
 pub enum ParameterSource {
     LineLength(usize),
+    /// Distance between two points (#432), measured in world space (2D or 3D).
+    PointDistance(ConstraintPoint, ConstraintPoint),
+    /// Distance between two parallel lines (#432).
+    LineDistance(usize, usize),
+    /// Angle between two non-parallel lines in the same sketch (#432), stored in degrees.
+    LineAngle(usize, usize),
 }
 
 /// A named length or angle parameter (expression stored verbatim, evaluated on demand).

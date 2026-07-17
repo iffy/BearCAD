@@ -140,6 +140,12 @@ pub fn elements_using_parameter(
     use crate::model::{ConstraintKind, DistanceTarget};
     let mut elements = std::collections::HashSet::new();
     let known = [name];
+    // A derived parameter highlights the geometry that defines its value (#432).
+    for param in doc.parameters.iter().filter(|p| !p.deleted && p.name == name) {
+        if let Some(source) = &param.source {
+            elements.extend(derived_source_elements(source));
+        }
+    }
     for (index, constraint) in doc.constraints.iter().enumerate() {
         if constraint.deleted {
             continue;
@@ -302,15 +308,71 @@ pub fn parameter_value_is_readonly(param: &Parameter) -> bool {
 }
 
 pub fn parameter_source_description(doc: &Document, param: &Parameter) -> Option<String> {
+    let gone = |alive: bool| if alive { "" } else { " (deleted)" };
     match param.source.as_ref()? {
+        ParameterSource::LineLength(index) => Some(format!(
+            "Driven by line {index} length{}",
+            gone(crate::document_lifecycle::line_alive(doc, *index))
+        )),
+        ParameterSource::PointDistance(..) => Some(format!(
+            "Driven by point-to-point distance{}",
+            gone(derived_source_value(doc, param.source.as_ref().unwrap()).is_some())
+        )),
+        ParameterSource::LineDistance(a, b) => Some(format!(
+            "Driven by distance between lines {a} and {b}{}",
+            gone(derived_source_value(doc, param.source.as_ref().unwrap()).is_some())
+        )),
+        ParameterSource::LineAngle(a, b) => Some(format!(
+            "Driven by angle between lines {a} and {b}{}",
+            gone(derived_source_value(doc, param.source.as_ref().unwrap()).is_some())
+        )),
+    }
+}
+
+/// Evaluate a derived parameter source's current value (#432): `(value, is_angle)` —
+/// lengths in mm, angles in degrees. `None` when the referenced geometry is gone (or,
+/// for a line pair, no longer classifies the same way).
+pub fn derived_source_value(doc: &Document, source: &ParameterSource) -> Option<(f32, bool)> {
+    match source {
         ParameterSource::LineLength(index) => {
-            if crate::document_lifecycle::line_alive(doc, *index) {
-                Some(format!("Driven by line {index} length"))
-            } else {
-                Some(format!("Driven by line {index} length (deleted)"))
+            let line = doc.lines.get(*index).filter(|l| !l.deleted)?;
+            Some((line.length(), false))
+        }
+        ParameterSource::PointDistance(a, b) => {
+            let pa = crate::construction::point_world_position(doc, a.clone())?;
+            let pb = crate::construction::point_world_position(doc, b.clone())?;
+            Some(((pb - pa).length(), false))
+        }
+        ParameterSource::LineDistance(a, b) => {
+            let (a0, a1) = line_world_segment(doc, *a)?;
+            let (b0, _) = line_world_segment(doc, *b)?;
+            let dir = (a1 - a0).normalize_or_zero();
+            if dir == glam::Vec3::ZERO {
+                return None;
             }
+            let offset = b0 - a0;
+            Some(((offset - dir * offset.dot(dir)).length(), false))
+        }
+        ParameterSource::LineAngle(a, b) => {
+            let (a0, a1) = line_world_segment(doc, *a)?;
+            let (b0, b1) = line_world_segment(doc, *b)?;
+            let da = (a1 - a0).normalize_or_zero();
+            let db = (b1 - b0).normalize_or_zero();
+            if da == glam::Vec3::ZERO || db == glam::Vec3::ZERO {
+                return None;
+            }
+            Some((da.dot(db).clamp(-1.0, 1.0).acos().to_degrees(), true))
         }
     }
+}
+
+fn line_world_segment(doc: &Document, index: usize) -> Option<(glam::Vec3, glam::Vec3)> {
+    let line = doc.lines.get(index).filter(|l| !l.deleted)?;
+    let frame = crate::face::sketch_geometry_frame(doc, line.sketch)?;
+    Some((
+        crate::face::local_to_world(&frame, line.x0, line.y0),
+        crate::face::local_to_world(&frame, line.x1, line.y1),
+    ))
 }
 
 pub fn default_computed_parameter_name_for_line(doc: &Document, line_index: usize) -> String {
@@ -319,25 +381,34 @@ pub fn default_computed_parameter_name_for_line(doc: &Document, line_index: usiz
 
 /// Update read-only parameter expressions from their geometry sources.
 pub fn sync_computed_parameters(doc: &mut Document) {
-    for param in &mut doc.parameters {
-        if param.deleted {
-            continue;
-        }
-        if let Some(ParameterSource::LineLength(index)) = param.source {
-            if let Some(line) = doc.lines.get(index) {
-                if !line.deleted {
-                    let length = line.length();
-                    // Field-disjoint access to avoid re-borrowing the whole `doc` while
-                    // `doc.parameters` is under an active mutable iterator borrow above.
-                    let unit = doc
-                        .sketches
-                        .get(line.sketch)
-                        .and_then(|s| s.length_unit)
-                        .unwrap_or(doc.default_length_unit);
-                    param.expression = format_length_display_in(length, unit);
-                }
-            }
-        }
+    // Values are computed against an immutable view first (the derived evaluators walk
+    // sketches/frames), then written back.
+    let updates: Vec<(usize, String)> = doc
+        .parameters
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| !p.deleted)
+        .filter_map(|(i, p)| {
+            let source = p.source.as_ref()?;
+            let (value, is_angle) = derived_source_value(doc, source)?;
+            let expression = if is_angle {
+                crate::value::format_angle_display_in(value.to_radians(), doc.default_angle_unit)
+            } else {
+                let unit = match source {
+                    ParameterSource::LineLength(index) => doc
+                        .lines
+                        .get(*index)
+                        .map(|l| effective_length_unit(doc, l.sketch))
+                        .unwrap_or(doc.default_length_unit),
+                    _ => doc.default_length_unit,
+                };
+                format_length_display_in(value, unit)
+            };
+            Some((i, expression))
+        })
+        .collect();
+    for (i, expression) in updates {
+        doc.parameters[i].expression = expression;
     }
 }
 
@@ -380,6 +451,109 @@ pub fn add_computed_parameter_from_line_length(
     doc.shape_order.push(crate::model::ShapeKind::Parameter);
     recompute_document_geometry(doc)?;
     Ok(index)
+}
+
+/// Classify the current selection as a derived-parameter source (#432):
+/// one line → its length; two points → their distance; two parallel lines → the distance
+/// between them; two non-parallel lines in the same sketch → the angle between them.
+pub fn derived_source_from_selection(
+    doc: &Document,
+    selection: &crate::selection::SceneSelection,
+) -> Option<ParameterSource> {
+    use crate::hierarchy::SceneElement;
+    let ordered = selection.ordered();
+    match ordered.as_slice() {
+        [SceneElement::Line(i)] => {
+            line_eligible_for_computed_length_parameter(doc, *i).then(|| {
+                ParameterSource::LineLength(*i)
+            })
+        }
+        [SceneElement::Point(a), SceneElement::Point(b)] => {
+            let source = ParameterSource::PointDistance(a.clone(), b.clone());
+            derived_source_value(doc, &source).map(|_| source)
+        }
+        [SceneElement::Line(a), SceneElement::Line(b)] if a != b => {
+            let (a0, a1) = line_world_segment(doc, *a)?;
+            let (b0, b1) = line_world_segment(doc, *b)?;
+            let da = (a1 - a0).normalize_or_zero();
+            let db = (b1 - b0).normalize_or_zero();
+            if da == glam::Vec3::ZERO || db == glam::Vec3::ZERO {
+                return None;
+            }
+            if da.cross(db).length() < 1e-3 {
+                Some(ParameterSource::LineDistance(*a, *b))
+            } else if doc.lines.get(*a)?.sketch == doc.lines.get(*b)?.sketch {
+                Some(ParameterSource::LineAngle(*a, *b))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Create a read-only parameter driven by `source` (#432). The generalization of
+/// [`add_computed_parameter_from_line_length`] to every derived-source kind.
+pub fn add_derived_parameter(
+    doc: &mut Document,
+    source: ParameterSource,
+    name: Option<String>,
+) -> Result<usize, String> {
+    if let ParameterSource::LineLength(line_index) = source {
+        return add_computed_parameter_from_line_length(doc, line_index, name);
+    }
+    let (value, is_angle) =
+        derived_source_value(doc, &source).ok_or("Selection doesn't measure anything")?;
+    if doc
+        .parameters
+        .iter()
+        .any(|p| !p.deleted && p.source.as_ref() == Some(&source))
+    {
+        return Err("A parameter already tracks this measurement".to_string());
+    }
+    let base = match &source {
+        ParameterSource::LineLength(_) => unreachable!(),
+        ParameterSource::PointDistance(..) => "distance".to_string(),
+        ParameterSource::LineDistance(a, b) => format!("line{a}_line{b}_distance"),
+        ParameterSource::LineAngle(a, b) => format!("line{a}_line{b}_angle"),
+    };
+    let name = name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| unique_parameter_name(doc, &base));
+    validate_new_parameter_name(doc, &name, None)?;
+    let expression = if is_angle {
+        crate::value::format_angle_display_in(value.to_radians(), doc.default_angle_unit)
+    } else {
+        format_length_display_in(value, doc.default_length_unit)
+    };
+    let index = doc.parameters.len();
+    doc.parameters.push(Parameter {
+        name,
+        expression,
+        deleted: false,
+        source: Some(source),
+    });
+    doc.shape_order.push(crate::model::ShapeKind::Parameter);
+    recompute_document_geometry(doc)?;
+    Ok(index)
+}
+
+/// The scene elements a derived parameter's value comes from (#432), for highlighting.
+pub fn derived_source_elements(
+    source: &ParameterSource,
+) -> Vec<crate::hierarchy::SceneElement> {
+    use crate::hierarchy::SceneElement;
+    match source {
+        ParameterSource::LineLength(i) => vec![SceneElement::Line(*i)],
+        ParameterSource::PointDistance(a, b) => vec![
+            SceneElement::Point(a.clone()),
+            SceneElement::Point(b.clone()),
+        ],
+        ParameterSource::LineDistance(a, b) | ParameterSource::LineAngle(a, b) => {
+            vec![SceneElement::Line(*a), SceneElement::Line(*b)]
+        }
+    }
 }
 
 /// Selected unconstrained line that can drive a computed length parameter.
@@ -1131,6 +1305,42 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
         apply_parameter_action(app, Action::DeleteParameter { index });
     }
 
+    // Derived parameter from the selection (#432): when the selection measures something
+    // (a line, two points, two parallel lines, two same-plane lines), show the value it
+    // would capture next to a create button.
+    if let Some(source) = derived_source_from_selection(&app.doc, &app.scene_selection) {
+        if let Some((value, is_angle)) = derived_source_value(&app.doc, &source) {
+            ui.add_space(6.0);
+            ui.separator();
+            let display = if is_angle {
+                crate::value::format_angle_display_in(
+                    value.to_radians(),
+                    app.doc.default_angle_unit,
+                )
+            } else {
+                format_length_display_in(value, app.doc.default_length_unit)
+            };
+            ui.horizontal(|ui| {
+                if ui
+                    .button("Derive from selection")
+                    .on_hover_text(
+                        "Create a read-only parameter that tracks this measurement",
+                    )
+                    .clicked()
+                {
+                    apply_parameter_action(
+                        app,
+                        Action::CreateDerivedParameter { source: source.clone(), name: None },
+                    );
+                }
+                ui.add_enabled(
+                    false,
+                    egui::TextEdit::singleline(&mut display.clone()).desired_width(80.0),
+                );
+            });
+        }
+    }
+
     if let Some(message) = &app.parameters_pane.message {
         ui.add_space(4.0);
         ui.label(
@@ -1492,6 +1702,73 @@ mod tests {
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, length, 0.0));
         doc.shape_order.push(ShapeKind::Line);
         (doc, 0)
+    }
+
+    /// #432: the selection classifies into a derived source, the derived value tracks
+    /// geometry, and the focused-parameter highlight covers the defining elements.
+    #[test]
+    fn derived_parameters_from_selection_kinds() {
+        use crate::hierarchy::SceneElement;
+        use crate::model::{ConstraintPoint, FaceId, Line, LineEnd, ParameterSource};
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 40.0, 0.0)); // 0
+        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 10.0, 40.0, 10.0)); // 1 ∥ 0
+        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 30.0, 30.0)); // 2 diagonal
+        let mut sel = crate::selection::SceneSelection::default();
+
+        // Two parallel lines → distance.
+        sel.insert(SceneElement::Line(0));
+        sel.insert(SceneElement::Line(1));
+        let source = derived_source_from_selection(&doc, &sel).expect("parallel pair");
+        assert_eq!(source, ParameterSource::LineDistance(0, 1));
+        let (value, is_angle) = derived_source_value(&doc, &source).unwrap();
+        assert!(!is_angle);
+        assert!((value - 10.0).abs() < 1e-3);
+        let index = add_derived_parameter(&mut doc, source.clone(), None).unwrap();
+        assert!(parameter_value_is_readonly(&doc.parameters[index]));
+        // A second parameter for the same measurement is refused.
+        assert!(add_derived_parameter(&mut doc, source, None).is_err());
+
+        // Two non-parallel same-sketch lines → angle (degrees).
+        sel.clear();
+        sel.insert(SceneElement::Line(0));
+        sel.insert(SceneElement::Line(2));
+        let source = derived_source_from_selection(&doc, &sel).expect("angle pair");
+        assert_eq!(source, ParameterSource::LineAngle(0, 2));
+        let (value, is_angle) = derived_source_value(&doc, &source).unwrap();
+        assert!(is_angle);
+        assert!((value - 45.0).abs() < 0.1, "angle {value}");
+        let index = add_derived_parameter(&mut doc, source, None).unwrap();
+        assert!(doc.parameters[index].expression.contains("deg"));
+
+        // Two points → distance; moving the geometry re-syncs the value.
+        sel.clear();
+        sel.insert(SceneElement::Point(ConstraintPoint::LineEndpoint {
+            line: 0,
+            end: LineEnd::Start,
+        }));
+        sel.insert(SceneElement::Point(ConstraintPoint::LineEndpoint {
+            line: 0,
+            end: LineEnd::End,
+        }));
+        let source = derived_source_from_selection(&doc, &sel).expect("point pair");
+        let _ = add_derived_parameter(&mut doc, source.clone(), Some("span".into())).unwrap();
+        assert!((crate::value::eval_length_mm_in_doc("span", &doc).unwrap() - 40.0).abs() < 1e-2);
+        doc.lines[0].x1 = 60.0;
+        sync_computed_parameters(&mut doc);
+        assert!((crate::value::eval_length_mm_in_doc("span", &doc).unwrap() - 60.0).abs() < 1e-2);
+
+        // The focused derived parameter highlights its defining elements.
+        let highlighted = elements_using_parameter(&doc, "span");
+        assert!(highlighted.contains(&SceneElement::Point(ConstraintPoint::LineEndpoint {
+            line: 0,
+            end: LineEnd::Start,
+        })));
+        assert!(highlighted.contains(&SceneElement::Point(ConstraintPoint::LineEndpoint {
+            line: 0,
+            end: LineEnd::End,
+        })));
     }
 
     #[test]

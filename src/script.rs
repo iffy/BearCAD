@@ -465,6 +465,11 @@ pub enum Instruction {
     SetPane { pane: Pane, visible: Option<bool> },
     AddParameter { name: String, expression: String },
     CreateParameterFromLineLength { line_index: usize, name: Option<String> },
+    /// Create a derived (measured) parameter from a geometry source (#432).
+    CreateDerivedParameter {
+        source: crate::model::ParameterSource,
+        name: Option<String>,
+    },
     SetParameterName { index: usize, name: String },
     SetParameterExpression { index: usize, expression: String },
     DeleteParameter { index: usize },
@@ -1149,6 +1154,27 @@ impl Instruction {
             Instruction::AddParameter { name, expression } => {
                 format!("bearcad.parameter(\"add\", {name:?}, {expression:?})")
             }
+            Instruction::CreateDerivedParameter { source, name } => {
+                use crate::model::ParameterSource as PS;
+                let src = match source {
+                    PS::LineLength(i) => format!("kind = \"line_length\", a = {i}"),
+                    PS::PointDistance(a, b) => format!(
+                        "kind = \"point_distance\", a = {{ {} }}, b = {{ {} }}",
+                        point_lua_fields(a),
+                        point_lua_fields(b)
+                    ),
+                    PS::LineDistance(a, b) => {
+                        format!("kind = \"line_distance\", a = {a}, b = {b}")
+                    }
+                    PS::LineAngle(a, b) => format!("kind = \"line_angle\", a = {a}, b = {b}"),
+                };
+                match name {
+                    Some(name) => {
+                        format!("bearcad.derive_parameter{{ {src}, name = {name:?} }}")
+                    }
+                    None => format!("bearcad.derive_parameter{{ {src} }}"),
+                }
+            }
             Instruction::CreateParameterFromLineLength { line_index, name } => match name {
                 Some(name) => format!(
                     "bearcad.parameter(\"from_line_length\", {line_index}, {name:?})"
@@ -1705,6 +1731,12 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             name: name.clone(),
             expression: expression.clone(),
         }),
+        Action::CreateDerivedParameter { source, name } => {
+            Some(Instruction::CreateDerivedParameter {
+                source: source.clone(),
+                name: name.clone(),
+            })
+        }
         Action::CreateParameterFromLineLength { line_index, name } => {
             Some(Instruction::CreateParameterFromLineLength {
                 line_index: *line_index,
@@ -4256,6 +4288,11 @@ impl ScriptRunner {
             }
             Instruction::AddParameter { name, expression } => {
                 state.apply(Action::AddParameter { name, expression });
+                StepResult::Continue
+            }
+            Instruction::CreateDerivedParameter { source, name } => {
+                let result = state.apply(Action::CreateDerivedParameter { source, name });
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::CreateParameterFromLineLength { line_index, name } => {
