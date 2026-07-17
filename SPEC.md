@@ -2281,6 +2281,12 @@ document is millimeters, so the player is person-scale: eye height
   grabbed motion delta (#121). This is because a hidden cursor on macOS decodes a GIF through
   ImageIO on first use, which has been observed to crash (#119), and `CursorGrab::Locked` there
   freezes the pointer so egui reports no motion at all — warping a visible cursor sidesteps both.
+  The offset only applies on frames where a pointer event actually arrived (#436): the warp
+  emits no egui event, so `latest_pos` goes stale off-centre after the mouse stops, and
+  re-applying that stale offset kept turning the camera slowly. **Web (#435):** the browser
+  can't be cursor-grabbed via viewport commands, so entering FPS mode requests the real
+  **Pointer Lock** and **fullscreen** on the canvas (best-effort — the browser may deny
+  either outside a user gesture) and both release on exit.
   **Space** jumps (ballistic, gravity 9.81&nbsp;m/s²); **double-tap
   Space** toggles Minecraft-style flying (no gravity; Space ascends, Shift descends; flying
   into the ground lands and resumes walking). **Esc** leaves FPS mode.

@@ -1494,6 +1494,25 @@ impl App {
                 egui::viewport::CursorGrab::None
             };
             ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(grab));
+            // Web (#435): the viewport command can't capture the mouse in a browser —
+            // request the real Pointer Lock (and fullscreen) on the canvas instead, and
+            // release both on exit. Best-effort: the browser may deny either outside a
+            // user gesture, in which case look still works while the cursor is over the
+            // canvas.
+            #[cfg(target_arch = "wasm32")]
+            {
+                if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+                    if active {
+                        if let Some(canvas) = document.get_element_by_id("bearcad_canvas") {
+                            canvas.request_pointer_lock();
+                            let _ = canvas.request_fullscreen();
+                        }
+                    } else {
+                        document.exit_pointer_lock();
+                        document.exit_fullscreen();
+                    }
+                }
+            }
             // On macOS, winit builds its hidden-cursor image by decoding a static GIF through
             // ImageIO the first time the view resets its cursor rects; that decode has been
             // observed to SIGBUS on entering FPS mode (#119). So skip `CursorVisible` there and
@@ -1578,6 +1597,18 @@ impl App {
         } else {
             #[cfg(target_os = "macos")]
             let look = self.last_viewport.and_then(|viewport| {
+                // Only when a pointer event actually arrived this frame (#436): the warp
+                // back to the crosshair generates no egui event, so `latest_pos` goes
+                // stale at the last off-centre position — re-applying that stale offset
+                // every frame kept turning the camera slowly after the mouse stopped.
+                let moved = ctx.input(|i| {
+                    i.events
+                        .iter()
+                        .any(|e| matches!(e, egui::Event::PointerMoved(_)))
+                });
+                if !moved {
+                    return None;
+                }
                 ctx.input(|i| i.pointer.latest_pos())
                     .map(|pos| pos - viewport.center())
                     .filter(|d| *d != egui::Vec2::ZERO)
