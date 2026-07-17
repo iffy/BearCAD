@@ -818,7 +818,16 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   length field: typing the feature's real length rescales the image uniformly about the
   span's midpoint so the marked span measures that length. The calibration (reference
   segment in image-UV + assigned length) is stored on the image for re-editing, and
-  re-running calibration replaces it. Alternative segment source: a **line** drawn on the
+  re-running calibration replaces it. **Marker editing (#424):** a dot under the cursor
+  previews each placement click; the length field **pre-fills** with the span's current
+  measured length (`context::sync_calibrate_draft`, re-syncing whenever the span
+  changes); with a calibrated image selected the marker line and points stay visible,
+  the context pane re-opens the editable length (Apply re-calibrates the stored span),
+  and either point can be **dragged** (`Action::SetCalibrationPoint` — updates the
+  stored uv, never rescales) or **clicked + Deleted**
+  (`Action::RemoveCalibrationPoint` — the guided flow re-opens holding the other point,
+  so the next click re-places it). Scriptable: `bearcad.calibration_point{ image, index,
+  x, y }` / `bearcad.remove_calibration_point{ image, index }`. Alternative segment source: a **line** drawn on the
   image's plane, selected together with the image, feeds the same length field. Scriptable
   via `bearcad.calibrate_image{ image =, from = {x, y}, to = {x, y}, length = }`
   (plane-local coordinates). *Known limitation:* calibration mutates the image in place and

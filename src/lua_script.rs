@@ -930,6 +930,30 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     // #171: calibrate a tracing image's scale from a plane-local reference segment.
+    // Move / delete a calibration reference point (#424).
+    api.set(
+        "calibration_point",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(&opts, "calibration_point", &["image", "index", "x", "y"])?;
+            let image: usize = opts.get("image")?;
+            let index: usize = opts.get("index")?;
+            let x: f32 = opts.get("x")?;
+            let y: f32 = opts.get("y")?;
+            unsafe { tick.exec(Instruction::SetCalibrationPoint { image, index, x, y }) }
+        })?,
+    )?;
+    api.set(
+        "remove_calibration_point",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(&opts, "remove_calibration_point", &["image", "index"])?;
+            let image: usize = opts.get("image")?;
+            let index: usize = opts.get("index")?;
+            unsafe { tick.exec(Instruction::RemoveCalibrationPoint { image, index }) }
+        })?,
+    )?;
+
     api.set(
         "calibrate_image",
         lua.create_function(|lua, opts: Table| {

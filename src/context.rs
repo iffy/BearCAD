@@ -655,6 +655,10 @@ pub struct ContextPaneState {
     pub synced_element: Option<SceneElement>,
     /// Length draft for the image scale calibration control (#171).
     pub calibrate_length_draft: String,
+    /// Which calibration span the draft was last pre-filled for (#424): the control's
+    /// image + quantized endpoints. When the span changes (a point placed or dragged) the
+    /// draft re-syncs to the span's current measured length.
+    pub calibrate_synced: Option<(usize, [i32; 4])>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1105,6 +1109,31 @@ fn units_control_from_selection(doc: &Document, selection: &SceneSelection) -> O
         document_length: doc.default_length_unit,
         document_angle: doc.default_angle_unit,
     })
+}
+
+/// Pre-fill the calibration length draft with the marked span's current measured length
+/// (#424), re-syncing whenever the span changes (a point placed, dragged, or a different
+/// image). A calibrated image's span measures its declared length, so re-opening shows it.
+pub fn sync_calibrate_draft(
+    state: &mut ContextPaneState,
+    doc: &Document,
+    content: &ContextPaneContent,
+) {
+    let Some(control) = &content.calibrate_image else {
+        state.calibrate_synced = None;
+        return;
+    };
+    let q = |v: f32| (v * 100.0).round() as i32;
+    let key = (control.image, [q(control.a.0), q(control.a.1), q(control.b.0), q(control.b.1)]);
+    if state.calibrate_synced == Some(key) {
+        return;
+    }
+    let span = ((control.b.0 - control.a.0).powi(2) + (control.b.1 - control.a.1).powi(2)).sqrt();
+    state.calibrate_length_draft = crate::value::format_length_display_in(
+        span,
+        doc.default_length_unit,
+    );
+    state.calibrate_synced = Some(key);
 }
 
 pub fn sync_name_draft(

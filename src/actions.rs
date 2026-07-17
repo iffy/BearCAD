@@ -921,6 +921,19 @@ pub enum Action {
         b: (f32, f32),
         length: f32,
     },
+    /// Move one calibration reference point (#424): during the guided flow it moves the
+    /// in-progress point; on a calibrated image it moves the stored marker (no rescale —
+    /// re-apply the length to rescale). Coordinates are host-plane-local mm.
+    SetCalibrationPoint {
+        image: usize,
+        index: usize,
+        x: f32,
+        y: f32,
+    },
+    /// Delete one calibration reference point (#424): the guided flow drops it; on a
+    /// calibrated image the calibration re-opens with only the other point, so the next
+    /// click re-places the deleted one.
+    RemoveCalibrationPoint { image: usize, index: usize },
     /// Start the guided image calibration (#163): the user will click two points on the
     /// image over a feature of known size, then type its real length.
     BeginImageCalibration { image: usize },
@@ -4067,6 +4080,73 @@ impl AppState {
                     "Calibrated image: {} (x{factor:.3})",
                     crate::value::format_length_display(length)
                 );
+                ActionResult::Ok
+            }
+            Action::SetCalibrationPoint { image, index, x, y } => {
+                if let Some(cal) = self.creating_calibration.as_mut().filter(|c| c.image == image) {
+                    let Some(p) = cal.points.get_mut(index) else {
+                        return ActionResult::Err(format!("No calibration point {index}"));
+                    };
+                    *p = (x, y);
+                    return ActionResult::Ok;
+                }
+                let Some(img) = self
+                    .doc
+                    .tracing_images
+                    .get_mut(image)
+                    .filter(|img| !img.deleted)
+                else {
+                    return ActionResult::Err(format!("Image {image} not found"));
+                };
+                let (ox, oy) = img.origin;
+                let (w, h) = (img.width_mm.max(1e-6), img.height_mm.max(1e-6));
+                let Some(cal) = img.calibration.as_mut() else {
+                    return ActionResult::Err("Image has no calibration".to_string());
+                };
+                let (u, v) = ((x - ox) / w, (y - oy) / h);
+                match index {
+                    0 => (cal.u0, cal.v0) = (u, v),
+                    1 => (cal.u1, cal.v1) = (u, v),
+                    _ => return ActionResult::Err(format!("No calibration point {index}")),
+                }
+                ActionResult::Ok
+            }
+            Action::RemoveCalibrationPoint { image, index } => {
+                if let Some(cal) = self.creating_calibration.as_mut().filter(|c| c.image == image) {
+                    if index >= cal.points.len() {
+                        return ActionResult::Err(format!("No calibration point {index}"));
+                    }
+                    cal.points.remove(index);
+                    self.status = "Calibrate: click to place the point".to_string();
+                    return ActionResult::Ok;
+                }
+                let Some(img) = self
+                    .doc
+                    .tracing_images
+                    .get_mut(image)
+                    .filter(|img| !img.deleted)
+                else {
+                    return ActionResult::Err(format!("Image {image} not found"));
+                };
+                let Some(cal) = img.calibration.take() else {
+                    return ActionResult::Err("Image has no calibration".to_string());
+                };
+                let (ox, oy) = img.origin;
+                let (w, h) = (img.width_mm.max(1e-6), img.height_mm.max(1e-6));
+                let keep = match index {
+                    0 => (ox + cal.u1 * w, oy + cal.v1 * h),
+                    1 => (ox + cal.u0 * w, oy + cal.v0 * h),
+                    _ => {
+                        img.calibration = Some(cal);
+                        return ActionResult::Err(format!("No calibration point {index}"));
+                    }
+                };
+                self.tool = Tool::Select;
+                self.creating_calibration = Some(CreatingCalibration {
+                    image,
+                    points: vec![keep],
+                });
+                self.status = "Calibrate: click to re-place the point".to_string();
                 ActionResult::Ok
             }
             Action::BeginImageCalibration { image } => {
@@ -14707,6 +14787,65 @@ mod tests {
         state.apply(Action::BeginImageCalibration { image: 0 });
         state.apply(Action::CancelOperation);
         assert!(state.creating_calibration.is_none());
+    }
+
+    /// #424: calibration marker points move by drag (stored uv updates, no rescale) and
+    /// delete/re-place — removing a point re-opens the guided flow with the other point.
+    #[test]
+    fn calibration_points_move_and_delete_then_replace() {
+        let mut state = AppState::default();
+        state.doc.tracing_images.push(crate::model::TracingImage {
+            bytes: Vec::new(),
+            source_name: "grid".to_string(),
+            plane: 0,
+            origin: (-50.0, -30.0),
+            width_mm: 100.0,
+            height_mm: 60.0,
+            name: None,
+            deleted: false,
+            calibration: None,
+            base_origin: None,
+        });
+        state.apply(Action::BeginImageCalibration { image: 0 });
+        state.apply(Action::AddCalibrationPoint { x: -20.0, y: 0.0 });
+        // Moving an in-progress point relocates it.
+        state.apply(Action::SetCalibrationPoint { image: 0, index: 0, x: -25.0, y: 0.0 });
+        assert_eq!(
+            state.creating_calibration.as_ref().unwrap().points,
+            vec![(-25.0, 0.0)]
+        );
+        state.apply(Action::AddCalibrationPoint { x: 25.0, y: 0.0 });
+        state.apply(Action::CalibrateImage {
+            image: 0,
+            a: (-25.0, 0.0),
+            b: (25.0, 0.0),
+            length: 100.0,
+        });
+        let img = &state.doc.tracing_images[0];
+        assert!((img.width_mm - 200.0).abs() < 1e-3);
+        let cal = img.calibration.clone().unwrap();
+
+        // Moving a stored marker point updates the uv and never rescales.
+        let width_before = state.doc.tracing_images[0].width_mm;
+        state.apply(Action::SetCalibrationPoint { image: 0, index: 1, x: 60.0, y: 10.0 });
+        let img = &state.doc.tracing_images[0];
+        assert_eq!(img.width_mm, width_before, "moving a marker never rescales");
+        let moved = img.calibration.clone().unwrap();
+        assert_ne!((moved.u1, moved.v1), (cal.u1, cal.v1));
+        let (ox, oy) = img.origin;
+        let (w, h) = (img.width_mm, img.height_mm);
+        assert!((ox + moved.u1 * w - 60.0).abs() < 1e-3);
+        assert!((oy + moved.v1 * h - 10.0).abs() < 1e-3);
+
+        // Deleting point 0 re-opens the guided flow holding point 1's position.
+        state.apply(Action::RemoveCalibrationPoint { image: 0, index: 0 });
+        assert!(state.doc.tracing_images[0].calibration.is_none());
+        let creating = state.creating_calibration.as_ref().expect("re-opened");
+        assert_eq!(creating.points.len(), 1);
+        assert!((creating.points[0].0 - 60.0).abs() < 1e-3);
+        // Clicking re-places the deleted point.
+        state.apply(Action::AddCalibrationPoint { x: -40.0, y: 10.0 });
+        assert_eq!(state.creating_calibration.as_ref().unwrap().points.len(), 2);
     }
 
     #[test]

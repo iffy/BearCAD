@@ -23,10 +23,17 @@ on top.
 Find a feature whose real size you know — a scale bar, a ruler, a printed dimension:
 
 1. Select the image and click **Calibrate scale**.
-2. Click two points at either end of the known feature (**Esc** cancels).
-3. Type the feature's real length, **Enter**.
+2. Click two points at either end of the known feature — a dot under the cursor previews
+   each click, and a line connects the points (**Esc** cancels).
+3. The length field pre-fills with the span's current measured length; type the real
+   length, **Enter**.
 
-The image rescales so the span measures exactly that length. Calibrate again any time.
+The image rescales so the span measures exactly that length.
+
+The marker line stays visible whenever the image is selected, and its length stays
+editable in the context pane. **Drag** either point to move it (the field re-syncs to the
+measured span — apply the real length again to rescale), or **click** a point and press
+**Delete** to remove it, then click to re-place it.
 
 ![A calibrated tracing image on the ground plane with sketch lines traced over the plate outline](/img/screenshots/tracing.png)
 

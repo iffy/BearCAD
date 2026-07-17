@@ -49,6 +49,15 @@ pub enum Instruction {
     /// Import a tracing image (#169).
     ImportImage { path: String, plane: Option<usize> },
     /// Calibrate a tracing image's scale (#171).
+    /// Move one calibration reference point (#424), plane-local mm.
+    SetCalibrationPoint {
+        image: usize,
+        index: usize,
+        x: f32,
+        y: f32,
+    },
+    /// Delete one calibration reference point (#424).
+    RemoveCalibrationPoint { image: usize, index: usize },
     CalibrateImage {
         image: usize,
         a: (f32, f32),
@@ -527,6 +536,12 @@ impl Instruction {
                 Some(p) => format!("bearcad.import_image{{ path = {path:?}, plane = {p} }}"),
                 None => format!("bearcad.import_image({path:?})"),
             },
+            Instruction::SetCalibrationPoint { image, index, x, y } => format!(
+                "bearcad.calibration_point{{ image = {image}, index = {index}, x = {x}, y = {y} }}"
+            ),
+            Instruction::RemoveCalibrationPoint { image, index } => format!(
+                "bearcad.remove_calibration_point{{ image = {image}, index = {index} }}"
+            ),
             Instruction::CalibrateImage { image, a, b, length } => format!(
                 "bearcad.calibrate_image{{ image = {image}, from = {{ {}, {} }}, to = {{ {}, {} }}, length = {length} }}",
                 a.0, a.1, b.0, b.1
@@ -1516,6 +1531,17 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             path: path.clone(),
             plane: *plane,
         }),
+        Action::SetCalibrationPoint { image, index, x, y } => {
+            Some(Instruction::SetCalibrationPoint {
+                image: *image,
+                index: *index,
+                x: *x,
+                y: *y,
+            })
+        }
+        Action::RemoveCalibrationPoint { image, index } => {
+            Some(Instruction::RemoveCalibrationPoint { image: *image, index: *index })
+        }
         Action::CalibrateImage { image, a, b, length } => Some(Instruction::CalibrateImage {
             image: *image,
             a: *a,
@@ -3313,6 +3339,16 @@ impl ScriptRunner {
             Instruction::ImportImage { path, plane } => {
                 let r = state.apply(Action::ImportImage { path, plane });
                 self.record_action_error(r);
+                StepResult::Continue
+            }
+            Instruction::SetCalibrationPoint { image, index, x, y } => {
+                let result = state.apply(Action::SetCalibrationPoint { image, index, x, y });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::RemoveCalibrationPoint { image, index } => {
+                let result = state.apply(Action::RemoveCalibrationPoint { image, index });
+                self.record_action_error(result);
                 StepResult::Continue
             }
             Instruction::CalibrateImage { image, a, b, length } => {

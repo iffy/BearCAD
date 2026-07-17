@@ -598,6 +598,11 @@ struct App {
     graph_layout: hierarchy::GraphLayout,
     /// Collapsed component rows in the Elements pane (#423); UI-only state.
     collapsed_components: std::collections::HashSet<usize>,
+    /// A selected calibration reference point (#424): `(image, point index)`; Delete
+    /// removes it so a click can re-place it.
+    selected_calibration_point: Option<(usize, usize)>,
+    /// An in-progress drag of a calibration reference point (#424).
+    calibration_point_drag: Option<(usize, usize)>,
     /// Elements-pane type filter (#275) and whether its toggle panel is expanded. Ephemeral UI
     /// state; reset to the workbench default when the Model/Drawing workbench changes.
     element_filter: hierarchy::ElementFilter,
@@ -722,6 +727,8 @@ impl App {
             gpu_view_cube: gpu_view_cube::install(cc),
             graph_layout: hierarchy::GraphLayout::default(),
             collapsed_components: std::collections::HashSet::new(),
+            selected_calibration_point: None,
+            calibration_point_drag: None,
             element_filter: hierarchy::ElementFilter::default(),
             element_filter_expanded: false,
             element_filter_drawing_workbench: false,
@@ -1681,7 +1688,13 @@ impl App {
 
             let delete_pressed = ctx.input(|i| i.key_pressed(egui::Key::Delete))
                 || ctx.input(|i| i.key_pressed(egui::Key::Backspace));
-            if delete_pressed && self.selected_bezier_handle.is_some() {
+            if delete_pressed && self.selected_calibration_point.is_some() {
+                // #424: a selected calibration point deletes; the calibration re-opens with
+                // the other point so a click re-places this one.
+                if let Some((image, index)) = self.selected_calibration_point.take() {
+                    self.state.apply(Action::RemoveCalibrationPoint { image, index });
+                }
+            } else if delete_pressed && self.selected_bezier_handle.is_some() {
                 // #75: deleting a selected bezier handle straightens its line — there's no
                 // independent per-handle state to remove (a curve is either both handles or
                 // neither, see `Line::bezier`).
@@ -2815,6 +2828,18 @@ impl App {
         let (_, dir) = extrude::axis_world(doc, axis)?;
         let dir = dir.normalize_or_zero();
         (dir != Vec3::ZERO).then_some((center, dir, radius))
+    }
+
+    /// The single selected tracing image (#424), if the selection is exactly one image.
+    fn single_selected_tracing_image(&self) -> Option<usize> {
+        let mut only = None;
+        for element in self.state.scene_selection.iter() {
+            match element {
+                SceneElement::Image(i) if only.is_none() => only = Some(i),
+                _ => return None,
+            }
+        }
+        only.filter(|&i| self.state.doc.tracing_images.get(i).is_some_and(|t| !t.deleted))
     }
 
     /// The single selected sketch text (#286), if the selection is exactly one text: what the
@@ -4832,7 +4857,20 @@ impl eframe::App for App {
                             _ => extras = true,
                         }
                     }
-                    guided.or(match (image, line, extras) {
+                    // A selected calibrated image re-opens its length for editing (#424):
+                    // the stored marker span is the reference segment.
+                    let recalibrate = self.single_selected_tracing_image().and_then(|i| {
+                        let img = self.state.doc.tracing_images.get(i)?;
+                        let cal = img.calibration.as_ref()?;
+                        let (ox, oy) = img.origin;
+                        let (w, h) = (img.width_mm.max(1e-6), img.height_mm.max(1e-6));
+                        Some(context::CalibrateImageControl {
+                            image: i,
+                            a: (ox + cal.u0 * w, oy + cal.v0 * h),
+                            b: (ox + cal.u1 * w, oy + cal.v1 * h),
+                        })
+                    });
+                    guided.or(recalibrate).or(match (image, line, extras) {
                         (Some(image), Some(li), false) => self
                             .state
                             .doc
@@ -5372,6 +5410,7 @@ impl eframe::App for App {
             };
             let content = context::context_pane_content(&context_input);
             context::sync_name_draft(&mut self.state.context_pane, &self.state.doc, &content);
+            context::sync_calibrate_draft(&mut self.state.context_pane, &self.state.doc, &content);
             let mut construction_change: Option<bool> = None;
             let mut curve_mode_change: Option<bool> = None;
             let mut tangent_constraint_change: Option<bool> = None;
@@ -10971,14 +11010,35 @@ impl App {
         let mut line_dragging = false;
         let mut bezier_handle_dragging = false;
         let mut text_width_dragging = false;
-        // Guided image calibration (#163): while placing reference points, viewport
-        // clicks land points on the image's host plane (and are not selection clicks).
-        if let Some(cal) = self.state.creating_calibration.clone() {
+        // Image calibration markers (#163/#424): while placing reference points (guided
+        // flow) or with a calibrated image selected, the reference points and their span
+        // draw on the image's host plane; points drag to move, click to select (Delete
+        // removes), and during placement a dot under the cursor previews the click.
+        let calibration_target: Option<(usize, Vec<(f32, f32)>, bool)> =
+            if let Some(cal) = self.state.creating_calibration.clone() {
+                Some((cal.image, cal.points, true))
+            } else {
+                self.single_selected_tracing_image().and_then(|i| {
+                    let img = self.state.doc.tracing_images.get(i)?;
+                    let cal = img.calibration.as_ref()?;
+                    let (ox, oy) = img.origin;
+                    let (w, h) = (img.width_mm.max(1e-6), img.height_mm.max(1e-6));
+                    Some((
+                        i,
+                        vec![
+                            (ox + cal.u0 * w, oy + cal.v0 * h),
+                            (ox + cal.u1 * w, oy + cal.v1 * h),
+                        ],
+                        false,
+                    ))
+                })
+            };
+        if let Some((image, points, placing)) = calibration_target {
             let frame = self
                 .state
                 .doc
                 .tracing_images
-                .get(cal.image)
+                .get(image)
                 .filter(|img| !img.deleted)
                 .map(|img| img.plane)
                 .and_then(|pi| face::sketch_frame(&self.state.doc, model::FaceId::ConstructionPlane(pi)));
@@ -10991,30 +11051,66 @@ impl App {
                             (d.dot(frame.u_axis), d.dot(frame.v_axis))
                         })
                 };
-                if cal.points.len() < 2 {
+                let world =
+                    |p: (f32, f32)| frame.origin + frame.u_axis * p.0 + frame.v_axis * p.1;
+                let point_under = |pp: egui::Pos2| -> Option<usize> {
+                    points.iter().enumerate().find_map(|(i, &pt)| {
+                        let sp = project(world(pt))?;
+                        ((pp - sp).length() <= 8.0).then_some(i)
+                    })
+                };
+
+                let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+                let primary_down = ui.input(|i| i.pointer.primary_down());
+                let primary_released = ui.input(|i| i.pointer.primary_released());
+
+                if primary_released {
+                    self.calibration_point_drag = None;
+                }
+                if let Some((di, idx)) = self.calibration_point_drag {
+                    // Dragging a marker point follows the cursor on the plane (#424).
+                    if di == image && primary_down {
+                        if let Some((x, y)) = pointer_screen.and_then(&local) {
+                            let _ = self.state.apply(Action::SetCalibrationPoint {
+                                image,
+                                index: idx,
+                                x,
+                                y,
+                            });
+                        }
+                    } else {
+                        self.calibration_point_drag = None;
+                    }
+                } else if primary_pressed {
                     if let Some(pp) = pointer_screen {
-                        if ui.input(|i| i.pointer.primary_pressed()) {
+                        if let Some(idx) = point_under(pp) {
+                            // Grab an existing point: select it and start dragging.
+                            self.selected_calibration_point = Some((image, idx));
+                            self.calibration_point_drag = Some((image, idx));
+                        } else if placing && points.len() < 2 {
                             if let Some((x, y)) = local(pp) {
                                 self.state.apply(Action::AddCalibrationPoint { x, y });
                             }
+                        } else {
+                            self.selected_calibration_point = None;
                         }
                     }
                 }
-                // Preview: placed points, the span between them, and a rubber band from
-                // the first point to the cursor while the second is being placed. Reads the
-                // post-click state so a just-placed point shows immediately.
+
+                // Draw with post-click state so a just-placed point shows immediately.
                 let points = self
                     .state
                     .creating_calibration
                     .as_ref()
+                    .filter(|c| c.image == image)
                     .map(|c| c.points.clone())
-                    .unwrap_or_default();
-                let world =
-                    |p: (f32, f32)| frame.origin + frame.u_axis * p.0 + frame.v_axis * p.1;
-                for &pt in &points {
+                    .unwrap_or(points);
+                for (i, &pt) in points.iter().enumerate() {
                     if let Some(sp) = project(world(pt)) {
-                        painter.circle_filled(sp, 4.0, col::PREVIEW);
-                        painter.circle_stroke(sp, 6.0, egui::Stroke::new(1.5, col::PREVIEW));
+                        let selected = self.selected_calibration_point == Some((image, i));
+                        let color = if selected { egui::Color32::WHITE } else { col::PREVIEW };
+                        painter.circle_filled(sp, 4.0, color);
+                        painter.circle_stroke(sp, 6.0, egui::Stroke::new(1.5, color));
                     }
                 }
                 match points.as_slice() {
@@ -11033,7 +11129,20 @@ impl App {
                     }
                     _ => {}
                 }
+                // Placement preview (#424): a dot under the cursor where a click would land.
+                if placing && points.len() < 2 && self.calibration_point_drag.is_none() {
+                    if let Some(sp) = pointer_screen
+                        .and_then(|pp| local(pp))
+                        .and_then(|p| project(world(p)))
+                    {
+                        painter.circle_stroke(sp, 4.0, egui::Stroke::new(1.5, col::PREVIEW));
+                        painter.circle_filled(sp, 1.5, col::PREVIEW);
+                    }
+                }
             }
+        } else {
+            self.selected_calibration_point = None;
+            self.calibration_point_drag = None;
         }
 
         if matches!(self.state.tool, Tool::Select | Tool::Constraint)
