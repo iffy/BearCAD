@@ -4700,6 +4700,7 @@ impl eframe::App for App {
             let mut pane_hovered_element: Option<SceneElement> = None;
             let mut add_component: Option<Option<usize>> = None;
             let mut move_to_component: Option<(SceneElement, Option<usize>)> = None;
+            let mut activate_component: Option<Option<usize>> = None;
             egui::SidePanel::left("tree")
                 .resizable(true)
                 .default_width(220.0)
@@ -4765,6 +4766,9 @@ impl eframe::App for App {
                         |element: SceneElement, component: Option<usize>| {
                             move_to_component = Some((element, component));
                         };
+                    let mut queue_activate_component = |component: Option<usize>| {
+                        activate_component = Some(component);
+                    };
                     hierarchy::show_pane(
                         ui,
                         &self.state.doc,
@@ -4798,11 +4802,16 @@ impl eframe::App for App {
                         &mut self.collapsed_components,
                         &mut queue_add_component,
                         &mut queue_move_to_component,
+                        self.state.active_component,
+                        &mut queue_activate_component,
                     );
                 });
             self.pane_hovered_element = pane_hovered_element;
             if let Some(parent) = add_component {
                 self.state.apply(Action::CreateComponent { name: None, parent });
+            }
+            if let Some(component) = activate_component {
+                self.state.active_component = component;
             }
             if let Some((element, component)) = move_to_component {
                 self.state.apply(Action::MoveToComponent { element, component });

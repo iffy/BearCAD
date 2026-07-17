@@ -67,13 +67,22 @@ become inputs to the referencing component.
 ops, revolutions, drawings) to a component; the document acts as the root component.
 Grouping never changes geometry.
 
+- **Active component (#429):** `AppState::active_component` (UI-only) is set when a
+  component is created (the new component is also selected) or clicked; while set, the
+  outermost `apply` files every newly created top-level element (planes, extrusions,
+  lofts, ops, revolutions — bodies derive via their source) into it
+  (`member_vec_lens`/`assign_new_members`, inside the same undo step). The active
+  component's row shows a ● accent marker (the Document row carries it when none is
+  active); clicking the Document row deactivates.
 - **Elements pane:** the header **+** (icon button) opens an add menu with **New
   component**; component rows show a painted collapse **triangle**, an eye, the
   `component.svg` icon, and nest their contents one indent level
   (`hierarchy::component_list_rows`; nested assigned entries are extracted from wherever
   they sit into their component's entry, `group_roots_into_components`). Rows **drag**
-  onto a component row (`ComponentDragPayload`) or use right-click → **Move to**; the
-  Document root row is the drop target for un-filing. Right-click a component: **New
+  onto a component row (`ComponentDragPayload`; a floating name tag follows the cursor
+  and drop targets are rect-based so releasing over a row's child widgets still lands,
+  #430) or use right-click → **Move to**; the Document root row is the drop target for
+  un-filing. Right-click a component: **New
   component inside**, **Move to document root**, **Delete** (deleting re-homes contents
   to the parent, `document_lifecycle::tombstone_element`).
 - **Visibility:** hiding a component hides everything inside it — members resolve

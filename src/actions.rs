@@ -1995,6 +1995,10 @@ impl CommandPaletteState {
 pub struct AppState {
     pub doc: Document,
     pub path: Option<String>,
+    /// The active component (#429): set when a component is created or selected; newly
+    /// created top-level elements are filed into it. `None` = the document root. UI-only
+    /// state (never persisted); cleared when the component is deleted.
+    pub active_component: Option<usize>,
     pub tool: Tool,
     pub sketch_session: Option<SketchSession>,
     pub cam: Camera,
@@ -2140,6 +2144,7 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self {
+            active_component: None,
             doc: Document::default(),
             path: None,
             tool: Tool::default(),
@@ -3790,8 +3795,25 @@ impl AppState {
             self.reconcile_undo_groups_to(before);
         }
         self.undo_group_depth += 1;
+        // Active component (#429): new top-level elements created by this action are
+        // filed into it. Counts are read only at the outermost level so a whole gesture
+        // files consistently.
+        let member_counts = (outermost && self.active_component.is_some())
+            .then(|| member_vec_lens(&self.doc));
         let result = self.apply_inner(action);
         self.undo_group_depth = self.undo_group_depth.saturating_sub(1);
+        if let (Some(before_counts), Some(active)) = (member_counts, self.active_component) {
+            if self
+                .doc
+                .components
+                .get(active)
+                .is_some_and(|c| !c.deleted)
+            {
+                assign_new_members(&mut self.doc, &before_counts, active);
+            } else {
+                self.active_component = None;
+            }
+        }
         if outermost {
             let after = self.doc.shape_order.len();
             if after > before {
@@ -8572,6 +8594,12 @@ label_hidden: false,
                     _ => false,
                 };
                 if !consumed_by_tool {
+                    // Selecting a component makes it active (#429): what you create next
+                    // lands inside it. It stays active until another component (or the
+                    // Document row) is picked, so ordinary modeling clicks don't reset it.
+                    if let SceneElement::Component(ci) = &element {
+                        self.active_component = Some(*ci);
+                    }
                     click_scene_selection(&mut self.scene_selection, element, additive);
                     if let Some((health_status, reason)) =
                         selection_frozen_summary(&self.document_health, &self.scene_selection)
@@ -8859,7 +8887,13 @@ label_hidden: false,
                     angle_unit: None,
                     deleted: false,
                 });
-                self.status = "Added component".to_string();
+                // The new component becomes selected and active (#429): what you create
+                // next lands inside it.
+                let index = self.doc.components.len() - 1;
+                self.scene_selection.clear();
+                self.scene_selection.insert(crate::hierarchy::SceneElement::Component(index));
+                self.active_component = Some(index);
+                self.status = "Added component — new elements land inside it".to_string();
                 ActionResult::Ok
             }
             Action::MoveToComponent { element, component } => {
@@ -10446,6 +10480,48 @@ pub fn single_selected_sketch_text(state: &AppState) -> Option<usize> {
     only.filter(|&i| state.doc.sketch_texts.get(i).is_some_and(|t| !t.deleted))
 }
 
+/// Element counts per component-member kind (#429), read before an action to detect what
+/// it created. Bodies are skipped: their component derives from the producing
+/// op/extrusion (`hierarchy::owning_component`), and rebuilds churn the body list.
+fn member_vec_lens(doc: &Document) -> [(crate::model::ComponentMember, usize); 8] {
+    use crate::model::ComponentMember as CM;
+    [
+        (CM::ConstructionPlane, doc.construction_planes.len()),
+        (CM::Extrusion, doc.extrusions.len()),
+        (CM::Loft, doc.lofts.len()),
+        (CM::BooleanOp, doc.boolean_ops.len()),
+        (CM::MoveOp, doc.move_ops.len()),
+        (CM::RepeatOp, doc.repeat_ops.len()),
+        (CM::SliceOp, doc.slice_ops.len()),
+        (CM::Revolution, doc.revolutions.len()),
+    ]
+}
+
+/// File every element created since `before` into `component` (#429).
+fn assign_new_members(
+    doc: &mut Document,
+    before: &[(crate::model::ComponentMember, usize)],
+    component: usize,
+) {
+    use crate::model::ComponentMember as CM;
+    for &(kind, prior) in before {
+        let now = match kind {
+            CM::ConstructionPlane => doc.construction_planes.len(),
+            CM::Extrusion => doc.extrusions.len(),
+            CM::Loft => doc.lofts.len(),
+            CM::BooleanOp => doc.boolean_ops.len(),
+            CM::MoveOp => doc.move_ops.len(),
+            CM::RepeatOp => doc.repeat_ops.len(),
+            CM::SliceOp => doc.slice_ops.len(),
+            CM::Revolution => doc.revolutions.len(),
+            CM::Body | CM::Drawing => continue,
+        };
+        for index in prior..now {
+            doc.set_component_member(kind, index, Some(component));
+        }
+    }
+}
+
 /// The script handle for a chamfer/fillet amount gizmo, named for the actual treatment kind.
 fn treatment_gizmo_name(kind: crate::model::VertexTreatmentKind) -> &'static str {
     match kind {
@@ -10619,6 +10695,29 @@ mod tests {
     /// #218: while a body-gathering tool is active, clicking a body (Elements pane / `select`)
     /// toggles it into the tool's set instead of the persistent selection — you can pick bodies
     /// from the pane regardless of the viewport's sub-element picking.
+    /// #429: creating a component selects and activates it; elements created while a
+    /// component is active are filed into it automatically.
+    #[test]
+    fn active_component_receives_new_elements() {
+        use crate::hierarchy::SceneElement;
+        use crate::model::ComponentMember as CM;
+        let mut state = AppState::default();
+        state.apply(Action::CreateComponent { name: Some("Frame".to_string()), parent: None });
+        assert_eq!(state.active_component, Some(0));
+        assert!(state.scene_selection.is_selected(SceneElement::Component(0)));
+
+        // A plane created now lands in the component.
+        state.apply(Action::AddConstructionPlane { from: 0, offset_mm: 20.0 });
+        let plane = state.doc.construction_planes.len() - 1;
+        assert_eq!(state.doc.component_of(CM::ConstructionPlane, plane), Some(0));
+
+        // Deactivating (the Document row) stops the filing.
+        state.active_component = None;
+        state.apply(Action::AddConstructionPlane { from: 0, offset_mm: 40.0 });
+        let plane2 = state.doc.construction_planes.len() - 1;
+        assert_eq!(state.doc.component_of(CM::ConstructionPlane, plane2), None);
+    }
+
     /// #423: components group elements; membership, nesting, visibility cascade, and
     /// unit inheritance all flow through the component chain.
     #[test]

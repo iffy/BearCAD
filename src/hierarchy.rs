@@ -2505,6 +2505,8 @@ pub fn show_pane(
     collapsed_components: &mut HashSet<usize>,
     on_add_component: &mut impl FnMut(Option<usize>),
     on_move_to_component: &mut impl FnMut(SceneElement, Option<usize>),
+    active_component: Option<usize>,
+    on_activate_component: &mut impl FnMut(Option<usize>),
 ) {
     ui.horizontal(|ui| {
         ui.heading(PANE_TITLE);
@@ -2538,6 +2540,29 @@ pub fn show_pane(
     let context = selection_context_elements(doc, selection);
     let related_constraints = selection_related_constraints(doc, selection);
 
+    // Drag feedback (#430): while an Elements-pane row is being dragged toward a
+    // component, a floating name tag follows the cursor and the cursor shows grabbing.
+    if let Some(payload) = egui::DragAndDrop::payload::<ComponentDragPayload>(ui.ctx()) {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        if let Some(pos) = ui.ctx().pointer_latest_pos() {
+            let painter = ui
+                .ctx()
+                .layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("component_drag_tag")));
+            let label = crate::names::scene_element_label(doc, &payload.0);
+            let galley = painter.layout_no_wrap(
+                label,
+                egui::FontId::proportional(12.0),
+                Color32::WHITE,
+            );
+            let rect = egui::Rect::from_min_size(
+                pos + egui::vec2(12.0, 8.0),
+                galley.size() + egui::vec2(10.0, 6.0),
+            );
+            painter.rect_filled(rect, 4.0, Color32::from_rgba_unmultiplied(40, 60, 90, 230));
+            painter.galley(rect.min + egui::vec2(5.0, 3.0), galley, Color32::WHITE);
+        }
+    }
+
     match view_mode {
         // `Tree` is retired (#252); a lingering script-set Tree mode falls back to List.
         HierarchyViewMode::List | HierarchyViewMode::Tree => {
@@ -2563,6 +2588,7 @@ pub fn show_pane(
                             style_selection,
                             highlight_elements,
                             collapsed_components,
+                            active_component,
                             on_toggle_visibility,
                             on_click_element,
                             on_delete_element,
@@ -2623,6 +2649,8 @@ pub fn show_pane(
                         on_add_to_drawing,
                         highlight_elements,
                         on_move_to_component,
+                        active_component,
+                        on_activate_component,
                     );
                 }
             });
@@ -3129,6 +3157,7 @@ fn show_component_row(
     style_selection: bool,
     highlight_elements: &HashSet<SceneElement>,
     collapsed_components: &mut HashSet<usize>,
+    active_component: Option<usize>,
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_delete_element: &mut impl FnMut(SceneElement),
@@ -3196,7 +3225,14 @@ fn show_component_row(
                 .tint(icon_tint_for_row_style(style)),
         );
         let label = node_label(doc, HierarchyNode::Component(ci));
-        let response = ui.selectable_label(style == RowStyle::Selected, styled_label(&label, style));
+        // The active component (#429) — where new elements land — reads in the accent
+        // colour with a dot marker.
+        let text = if active_component == Some(ci) {
+            RichText::new(format!("● {label}")).color(crate::theme::FOCUS_ACCENT)
+        } else {
+            styled_label(&label, style)
+        };
+        let response = ui.selectable_label(style == RowStyle::Selected, text);
         if response.clicked() {
             let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
             on_click_element(element.clone(), additive);
@@ -3220,19 +3256,28 @@ fn show_component_row(
             }
         });
     });
-    // Whole-row drop target: release a dragged row here to move it into this component.
-    let row_response = row.response.interact(egui::Sense::hover());
-    if let Some(payload) = row_response.dnd_release_payload::<ComponentDragPayload>() {
-        if payload.0 != element {
-            on_move_to_component(payload.0.clone(), Some(ci));
-        }
-    } else if row_response.dnd_hover_payload::<ComponentDragPayload>().is_some() {
+    // Whole-row drop target (#430): rect-based so releasing over any child widget (the
+    // name label, the icon) still lands the drop — `Response::dnd_release_payload` misses
+    // when a child covers the pointer.
+    let row_rect = row.response.rect;
+    let dragging =
+        egui::DragAndDrop::has_payload_of_type::<ComponentDragPayload>(ui.ctx());
+    if dragging && ui.rect_contains_pointer(row_rect) {
         ui.painter().rect_stroke(
-            row_response.rect,
+            row_rect,
             2.0,
-            egui::Stroke::new(1.0, Color32::from_rgb(120, 170, 240)),
+            egui::Stroke::new(1.5, crate::theme::FOCUS_ACCENT),
             egui::StrokeKind::Inside,
         );
+        if ui.input(|i| i.pointer.any_released()) {
+            if let Some(payload) =
+                egui::DragAndDrop::take_payload::<ComponentDragPayload>(ui.ctx())
+            {
+                if payload.0 != element {
+                    on_move_to_component(payload.0.clone(), Some(ci));
+                }
+            }
+        }
     }
 }
 
@@ -3267,6 +3312,8 @@ fn show_row(
     on_add_to_drawing: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
     on_move_to_component: &mut impl FnMut(SceneElement, Option<usize>),
+    active_component: Option<usize>,
+    on_activate_component: &mut impl FnMut(Option<usize>),
 ) {
     // The synthetic Document root has no SceneElement — it isn't selectable, hideable, or
     // otherwise dispatched through the scene graph — so it gets a minimal, always-shown row
@@ -3278,19 +3325,42 @@ fn show_row(
             if let Some(icon) = icon_for_hierarchy_node(doc, node) {
                 ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
             }
-            ui.label(RichText::new(node_label(doc, node)).strong());
+            let text = if active_component.is_none() && doc.components.iter().any(|c| !c.deleted)
+            {
+                // With components present, mark where new elements land (#429): the
+                // document root, unless a component is active.
+                RichText::new(format!("● {}", node_label(doc, node)))
+                    .color(crate::theme::FOCUS_ACCENT)
+                    .strong()
+            } else {
+                RichText::new(node_label(doc, node)).strong()
+            };
+            let resp = ui
+                .add(egui::Label::new(text).sense(egui::Sense::click()))
+                .on_hover_text("Click to make new elements land at the document root");
+            if resp.clicked() {
+                on_activate_component(None);
+            }
         });
-        // Dropping a dragged row on the Document root moves it out of any component (#423).
-        let row_response = row.response.interact(egui::Sense::hover());
-        if let Some(payload) = row_response.dnd_release_payload::<ComponentDragPayload>() {
-            on_move_to_component(payload.0.clone(), None);
-        } else if row_response.dnd_hover_payload::<ComponentDragPayload>().is_some() {
+        // Dropping a dragged row on the Document root moves it out of any component
+        // (#423/#430): rect-based, like the component rows.
+        let row_rect = row.response.rect;
+        if egui::DragAndDrop::has_payload_of_type::<ComponentDragPayload>(ui.ctx())
+            && ui.rect_contains_pointer(row_rect)
+        {
             ui.painter().rect_stroke(
-                row_response.rect,
+                row_rect,
                 2.0,
-                egui::Stroke::new(1.0, Color32::from_rgb(120, 170, 240)),
+                egui::Stroke::new(1.5, crate::theme::FOCUS_ACCENT),
                 egui::StrokeKind::Inside,
             );
+            if ui.input(|i| i.pointer.any_released()) {
+                if let Some(payload) =
+                    egui::DragAndDrop::take_payload::<ComponentDragPayload>(ui.ctx())
+                {
+                    on_move_to_component(payload.0.clone(), None);
+                }
+            }
         }
         return;
     }
