@@ -395,35 +395,115 @@ where
     }
 }
 
-pub fn bilinear_quad_screen(tl: Pos2, tr: Pos2, br: Pos2, bl: Pos2, u: f32, v: f32) -> Pos2 {
-    tl.lerp(tr, u).lerp(bl.lerp(br, u), v)
+/// World-space text axes parallel to the dimension line, in the dimension's plane,
+/// flipped so the projected text reads left-to-right and upright.
+pub fn planar_label_axes_world<Project>(
+    world: &LinearDimensionWorldGeom,
+    view: &PlanarLabelView,
+    project: &Project,
+) -> (Vec3, Vec3)
+where
+    Project: Fn(Vec3) -> Option<Pos2>,
+{
+    let base_along = world.along_world.normalize_or_zero();
+    if base_along.length_squared() < 1e-8 {
+        return (base_along, world.outward_world);
+    }
+
+    let to_eye = (view.eye - world.label_center).normalize_or_zero();
+    let mut plane_n = view.plane_normal.normalize_or_zero();
+    if plane_n.length_squared() < 1e-8 {
+        plane_n = base_along.cross(world.outward_world).normalize_or_zero();
+    }
+    if plane_n.dot(to_eye) < 0.0 {
+        plane_n = -plane_n;
+    }
+
+    let mut along = base_along;
+    if let Some(along_screen) = projected_axis_dir(project, world.label_center, along) {
+        if along_screen.dot(Vec2::X) < 0.0 {
+            along = -along;
+        }
+    }
+
+    let mut text_up = plane_n.cross(along).normalize_or_zero();
+    if text_up.length_squared() < 1e-8 {
+        text_up = world.outward_world.normalize_or_zero();
+    }
+    if let Some(up_screen) = projected_axis_dir(project, world.label_center, text_up) {
+        if up_screen.dot(Vec2::new(0.0, -1.0)) < 0.0 {
+            along = -along;
+            text_up = plane_n.cross(along).normalize_or_zero();
+        }
+    }
+
+    (along, text_up)
 }
 
-/// Screen corners `[tl, tr, br, bl]` of a dimension label laid out **rigidly** on
-/// screen (#454): rotated to follow the projected dimension line and kept upright,
-/// but only ever rotated + translated — never sheared or foreshortened, however far
-/// out the camera zooms or however glancing the sketch-plane angle gets.
-pub fn planar_label_corners_rigid_screen<Project>(
+/// A dimension label's text box laid out **in the dimension's plane** (#454): world
+/// top-left corner, unit in-plane axes, and **one uniform** world-units-per-layout-px
+/// scale taken at the label center. One scale for both axes keeps the layout rigid
+/// within the plane — the text foreshortens naturally with the plane under perspective
+/// but never shears (the old per-axis scales did).
+#[derive(Clone, Copy, Debug)]
+pub struct PlanarLabelFrame {
+    pub tl: Vec3,
+    pub along: Vec3,
+    pub up: Vec3,
+    pub scale: f32,
+}
+
+impl PlanarLabelFrame {
+    /// A galley-local layout point (y grows downward) in world space.
+    pub fn glyph_point(&self, local: Vec2) -> Vec3 {
+        self.tl + self.along * (local.x * self.scale) - self.up * (local.y * self.scale)
+    }
+
+    /// World corners `[tl, tr, br, bl]` of the text box.
+    pub fn corners_world(&self, galley_size: Vec2) -> [Vec3; 4] {
+        [
+            self.glyph_point(Vec2::ZERO),
+            self.glyph_point(Vec2::new(galley_size.x, 0.0)),
+            self.glyph_point(galley_size),
+            self.glyph_point(Vec2::new(0.0, galley_size.y)),
+        ]
+    }
+}
+
+pub fn planar_label_frame<Project>(
     world: &LinearDimensionWorldGeom,
+    view: &PlanarLabelView,
     galley_size: Vec2,
+    project: &Project,
+) -> Option<PlanarLabelFrame>
+where
+    Project: Fn(Vec3) -> Option<Pos2>,
+{
+    project(world.label_center)?;
+    let (along, up) = planar_label_axes_world(world, view, project);
+    if along.length_squared() < 1e-8 || up.length_squared() < 1e-8 {
+        return None;
+    }
+    let scale = pixels_to_world_distance(project, world.label_center, along, 1.0);
+    let half = galley_size * 0.5;
+    let outward = world.outward_world.normalize_or_zero();
+    let anchor = world.label_center + outward * (half.y * scale);
+    let tl = anchor - along * (half.x * scale) + up * (half.y * scale);
+    Some(PlanarLabelFrame { tl, along, up, scale })
+}
+
+pub fn planar_label_corners_screen<Project>(
+    corners_world: &[Vec3; 4],
     project: &Project,
 ) -> Option<[Pos2; 4]>
 where
     Project: Fn(Vec3) -> Option<Pos2>,
 {
-    let center = project(world.label_center)?;
-    let angle = projected_axis_dir(project, world.label_center, world.along_world)
-        .map(label_rotation_radians)
-        .unwrap_or(0.0);
-    let along = rotate_vec(Vec2::X, angle);
-    let up = Vec2::new(along.y, -along.x);
-    let half = galley_size * 0.5;
-    let anchor = projected_axis_dir(project, world.label_center, world.outward_world)
-        .map(|outward| center + outward * half.y)
-        .unwrap_or(center);
-    let tl = anchor - along * half.x + up * half.y;
-    let tr = anchor + along * half.x + up * half.y;
-    Some([tl, tr, tr - up * galley_size.y, tl - up * galley_size.y])
+    let mut corners = [Pos2::ZERO; 4];
+    for (dst, world) in corners.iter_mut().zip(corners_world) {
+        *dst = project(*world)?;
+    }
+    Some(corners)
 }
 
 fn rect_from_screen_corners(corners: &[Pos2; 4]) -> Rect {
@@ -441,7 +521,7 @@ fn rect_from_screen_corners(corners: &[Pos2; 4]) -> Rect {
 pub fn planar_dimension_label_layout<Project>(
     painter: &Painter,
     world: &LinearDimensionWorldGeom,
-    _view: &PlanarLabelView,
+    view: &PlanarLabelView,
     label: &str,
     color: Color32,
     project: &Project,
@@ -454,7 +534,11 @@ where
         FontId::proportional(LABEL_FONT_SIZE),
         color,
     );
-    let Some(corners_screen) = planar_label_corners_rigid_screen(world, galley.size(), project)
+    let Some(frame) = planar_label_frame(world, view, galley.size(), project) else {
+        return Rect::NOTHING;
+    };
+    let Some(corners_screen) =
+        planar_label_corners_screen(&frame.corners_world(galley.size()), project)
     else {
         return Rect::NOTHING;
     };
@@ -464,7 +548,7 @@ where
 fn draw_planar_dimension_label<Project>(
     painter: &Painter,
     world: &LinearDimensionWorldGeom,
-    _view: &PlanarLabelView,
+    view: &PlanarLabelView,
     label: &str,
     color: Color32,
     project: &Project,
@@ -481,7 +565,11 @@ where
     if size.x < 1e-4 || size.y < 1e-4 {
         return Rect::NOTHING;
     }
-    let Some(corners_screen) = planar_label_corners_rigid_screen(world, size, project) else {
+    let Some(frame) = planar_label_frame(world, view, size, project) else {
+        return Rect::NOTHING;
+    };
+    let Some(corners_screen) = planar_label_corners_screen(&frame.corners_world(size), project)
+    else {
         return Rect::NOTHING;
     };
 
@@ -490,19 +578,27 @@ where
         1.0 / font_tex_size[0] as f32,
         1.0 / font_tex_size[1] as f32,
     );
-    let [tl, tr, br, bl] = corners_screen;
 
     let mut mesh = Mesh::default();
     for row in &galley.rows {
         if row.visuals.mesh.is_empty() {
             continue;
         }
+        // Every vertex projects through the plane individually — a row where any vertex
+        // leaves the view is dropped whole rather than drawn torn.
+        let Some(row_screen): Option<Vec<Pos2>> = row
+            .visuals
+            .mesh
+            .vertices
+            .iter()
+            .map(|vertex| project(frame.glyph_point(vertex.pos.to_vec2())))
+            .collect()
+        else {
+            continue;
+        };
         let index_base = mesh.vertices.len() as u32;
         mesh.texture_id = row.visuals.mesh.texture_id;
-        for (i, vertex) in row.visuals.mesh.vertices.iter().enumerate() {
-            let local = vertex.pos.to_vec2();
-            let u = local.x / size.x;
-            let v = local.y / size.y;
+        for ((i, vertex), pos) in row.visuals.mesh.vertices.iter().enumerate().zip(row_screen) {
             let mut glyph_color = vertex.color;
             if glyph_color == Color32::PLACEHOLDER {
                 glyph_color = color;
@@ -510,7 +606,7 @@ where
                 glyph_color = color;
             }
             mesh.vertices.push(Vertex {
-                pos: bilinear_quad_screen(tl, tr, br, bl, u, v),
+                pos,
                 uv: (vertex.uv.to_vec2() * uv_norm).to_pos2(),
                 color: glyph_color,
             });
@@ -1236,25 +1332,27 @@ mod tests {
         );
     }
 
-    /// The rigid screen layout reads left-to-right and upright: the baseline points
-    /// rightward and the top edge sits above the bottom edge on screen.
-    fn rigid_label_upright<Project>(
+    /// The projected in-plane layout is upright: the top edge sits above the bottom
+    /// edge on screen (the reading direction yields to uprightness when the plane's
+    /// tilt makes the two conflict — same as clicking around a dimension in the GUI).
+    fn planar_label_upright<Project>(
         world: &LinearDimensionWorldGeom,
+        view: &PlanarLabelView,
         project: &Project,
     ) -> bool
     where
         Project: Fn(Vec3) -> Option<Pos2>,
     {
-        let Some([tl, tr, _, bl]) = planar_label_corners_rigid_screen(
-            world,
-            Vec2::new(56.0, 14.0),
-            project,
-        ) else {
+        let size = Vec2::new(56.0, 14.0);
+        let Some(frame) = planar_label_frame(world, view, size, project) else {
             return false;
         };
-        let baseline = tr - tl;
-        let down = bl - tl;
-        baseline.x > 0.0 && down.y > 0.0
+        let Some([tl, _, _, bl]) =
+            planar_label_corners_screen(&frame.corners_world(size), project)
+        else {
+            return false;
+        };
+        (bl - tl).y > 0.0
     }
 
     #[test]
@@ -1276,11 +1374,12 @@ mod tests {
         let mut cam = Camera::default();
         cam.pitch = -1.2;
         cam.distance = 200.0;
+        let view = PlanarLabelView::from_camera_and_plane(&cam, Vec3::Z);
         let viewport = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
         let vp = cam.view_proj(viewport);
         let project = |p: Vec3| cam.project(p, viewport, &vp);
         assert!(
-            rigid_label_upright(&world, &project),
+            planar_label_upright(&world, &view, &project),
             "label should read upright when viewed from below"
         );
     }
@@ -1304,11 +1403,12 @@ mod tests {
         let mut cam = Camera::default();
         cam.pitch = 1.2;
         cam.distance = 200.0;
+        let view = PlanarLabelView::from_camera_and_plane(&cam, Vec3::Z);
         let viewport = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
         let vp = cam.view_proj(viewport);
         let project = |p: Vec3| cam.project(p, viewport, &vp);
         assert!(
-            rigid_label_upright(&world, &project),
+            planar_label_upright(&world, &view, &project),
             "label should read upright when viewed from above"
         );
     }
@@ -1329,9 +1429,14 @@ mod tests {
         );
         let project = |p: Vec3| Some(Pos2::new(p.x, -p.y));
         let geom = project_linear_dimension_geom(&world, &project).expect("geom");
+        let mut cam = crate::camera::Camera::default();
+        cam.pitch = 1.2;
+        cam.distance = 200.0;
+        let view = PlanarLabelView::from_camera_and_plane(&cam, Vec3::Z);
         let galley_size = Vec2::new(56.0, 14.0);
-        let screen =
-            planar_label_corners_rigid_screen(&world, galley_size, &project).expect("corners");
+        let frame = planar_label_frame(&world, &view, galley_size, &project).expect("frame");
+        let screen = planar_label_corners_screen(&frame.corners_world(galley_size), &project)
+            .expect("corners");
         let rect = rect_from_screen_corners(&screen);
         assert!(
             !segment_intersects_rect(geom.dim_a, geom.dim_b, rect),
@@ -1361,12 +1466,15 @@ mod tests {
         cam.pitch = 0.6;
         cam.yaw = 0.8;
         cam.distance = 200.0;
+        let view = PlanarLabelView::from_camera_and_plane(&cam, u.cross(v));
         let viewport = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
         let vp = cam.view_proj(viewport);
         let project = |p: Vec3| cam.project(p, viewport, &vp);
-        let screen = planar_label_corners_rigid_screen(&world, Vec2::new(60.0, 14.0), &project)
+        let size = Vec2::new(60.0, 14.0);
+        let frame = planar_label_frame(&world, &view, size, &project).expect("frame");
+        let screen = planar_label_corners_screen(&frame.corners_world(size), &project)
             .expect("screen corners");
-        assert!(rigid_label_upright(&world, &project));
+        assert!(planar_label_upright(&world, &view, &project));
         let baseline = screen[1] - screen[0];
         let u_span = project(origin + u * 20.0).unwrap() - project(origin).unwrap();
         assert!(
@@ -1380,7 +1488,7 @@ mod tests {
     }
 
     #[test]
-    fn rigid_label_corners_form_exact_rectangle_at_any_zoom() {
+    fn planar_label_stays_rigid_in_plane_and_text_sized_at_any_zoom() {
         use eframe::egui::Rect;
 
         let world = linear_dimension_world_geom(
@@ -1393,35 +1501,37 @@ mod tests {
         );
         let galley_size = Vec2::new(56.0, 14.0);
         for distance in [200.0, 3000.0, 30000.0] {
+            // Face-on view of the ground plane, so apparent size is measurable.
             let mut cam = crate::camera::Camera::default();
-            cam.pitch = 0.08;
-            cam.yaw = 0.7;
+            cam.pitch = std::f32::consts::FRAC_PI_2 - 0.01;
+            cam.yaw = 0.0;
             cam.distance = distance;
+            let view = PlanarLabelView::from_camera_and_plane(&cam, Vec3::Z);
             let viewport = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
             let vp = cam.view_proj(viewport);
             let project = |p: Vec3| cam.project(p, viewport, &vp);
-            let [tl, tr, br, bl] =
-                planar_label_corners_rigid_screen(&world, galley_size, &project)
-                    .expect("corners");
-            let baseline = tr - tl;
-            let side = bl - tl;
+            let frame =
+                planar_label_frame(&world, &view, galley_size, &project).expect("frame");
+            let corners = frame.corners_world(galley_size);
+            // Rigid in the plane: orthonormal axes, one uniform scale, all on z = 0.
+            for corner in &corners {
+                assert!(corner.z.abs() < 1e-3, "corner should lie in the plane");
+            }
+            let baseline = corners[1] - corners[0];
+            let side = corners[3] - corners[0];
             assert!(
-                (baseline.length() - galley_size.x).abs() < 1e-2,
-                "width should stay {} at distance {distance}, got {}",
-                galley_size.x,
-                baseline.length()
+                (baseline.length() / side.length() - galley_size.x / galley_size.y).abs() < 1e-3,
+                "one uniform scale — the world box keeps the galley's aspect at {distance}"
             );
+            assert!(baseline.dot(side).abs() / baseline.length() / side.length() < 1e-4);
+            // Projected face-on, the label reads at text size regardless of zoom.
+            let screen = planar_label_corners_screen(&corners, &project).expect("screen");
+            let w = (screen[1] - screen[0]).length();
+            let h = (screen[3] - screen[0]).length();
             assert!(
-                (side.length() - galley_size.y).abs() < 1e-2,
-                "height should stay {} at distance {distance}, got {}",
-                galley_size.y,
-                side.length()
+                (w - galley_size.x).abs() < 1.0 && (h - galley_size.y).abs() < 1.0,
+                "face-on label should stay text-sized at distance {distance}: {w}x{h}"
             );
-            assert!(
-                baseline.dot(side).abs() < 1e-2,
-                "corners should stay perpendicular at distance {distance}"
-            );
-            assert!((br - bl - baseline).length() < 1e-2);
         }
     }
 

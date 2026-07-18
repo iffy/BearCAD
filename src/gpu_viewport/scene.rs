@@ -6251,9 +6251,6 @@ mod tests {
             &view,
             &label_text,
             Color32::WHITE,
-            &cam,
-            viewport,
-            &vp,
             &project,
         );
         let dim_label = crate::gpu_viewport::ViewportDimLabel {

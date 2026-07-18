@@ -1,13 +1,11 @@
 //! GPU mesh builders for committed sketch dimension labels.
 
-use crate::camera::Camera;
 use crate::dimensions::{
-    bilinear_quad_screen, planar_label_corners_rigid_screen, LinearDimensionWorldGeom,
-    PlanarLabelView, LABEL_FONT_SIZE,
+    planar_label_frame, LinearDimensionWorldGeom, PlanarLabelView, LABEL_FONT_SIZE,
 };
-use eframe::egui::{Color32, FontId, Pos2, Rect};
+use eframe::egui::{Color32, FontId, Pos2};
 use egui::Context;
-use glam::{Mat4, Vec3};
+use glam::Vec3;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
@@ -38,20 +36,16 @@ pub struct ViewportDimLabel {
 
 /// Tessellate a dimension label into world-space textured vertices.
 ///
-/// Glyph positions are laid out **rigidly** in screen space (matching the CPU
-/// painter, #454) and unprojected onto the camera-facing plane through the label
-/// center, so the text reprojects pixel-exact — never sheared, foreshortened, or
-/// collapsed — at any zoom or viewing angle, while still depth-testing at the
-/// label's scene depth.
+/// Glyphs are laid out **in the dimension's plane** (#454) through
+/// [`planar_label_frame`]: orthonormal in-plane axes with one uniform scale, so the
+/// text sits flat with its dimension lines and arrows, foreshortening naturally with
+/// the plane under perspective but never shearing.
 pub fn build_planar_label_mesh<Project>(
     ctx: &Context,
     world: &LinearDimensionWorldGeom,
     view: &PlanarLabelView,
     label: &str,
     color: Color32,
-    cam: &Camera,
-    viewport: Rect,
-    view_proj: &Mat4,
     project: &Project,
 ) -> (Vec<GpuTextVertex>, Vec<u32>)
 where
@@ -68,16 +62,12 @@ where
     if size.x < 1e-4 || size.y < 1e-4 {
         return (Vec::new(), Vec::new());
     }
-    let Some(corners_screen) = planar_label_corners_rigid_screen(world, size, project) else {
+    let Some(frame) = planar_label_frame(world, view, size, project) else {
         return (Vec::new(), Vec::new());
     };
-    let [tl, tr, br, bl] = corners_screen;
     let to_eye = (view.eye - world.label_center).normalize_or_zero();
-    if to_eye.length_squared() < 1e-8 {
-        return (Vec::new(), Vec::new());
-    }
-    // Billboard plane: always faces the eye, so the unprojection ray can't graze it.
-    let plane_n = to_eye;
+    // Lift the glyphs slightly toward the eye so they never z-fight the face they
+    // annotate.
     let depth_bias = to_eye * 0.25;
 
     let font_tex_size = ctx.fonts(|fonts| fonts.font_image_size());
@@ -94,19 +84,7 @@ where
         }
         let index_base = vertices.len() as u32;
         for (i, vertex) in row.visuals.mesh.vertices.iter().enumerate() {
-            let local = vertex.pos.to_vec2();
-            let u = local.x / size.x;
-            let v = local.y / size.y;
-            let screen_pos = bilinear_quad_screen(tl, tr, br, bl, u, v);
-            let Some(mut world_pos) = cam.ray_plane_hit(
-                screen_pos,
-                viewport,
-                view_proj,
-                world.label_center,
-                plane_n,
-            ) else {
-                continue;
-            };
+            let mut world_pos = frame.glyph_point(vertex.pos.to_vec2());
             world_pos += depth_bias;
             let mut glyph_color = vertex.color;
             if glyph_color == Color32::PLACEHOLDER {
@@ -135,6 +113,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::camera::Camera;
     use crate::dimensions::linear_dimension_world_geom;
     use egui::Pos2;
 
@@ -143,71 +122,65 @@ mod tests {
         move |w: Vec3| cam.project(w, viewport, &vp)
     }
 
-    #[test]
-    fn build_planar_label_mesh_emits_textured_vertices() {
-        let ctx = egui::Context::default();
-        let _ = ctx.run(egui::RawInput::default(), |_| {});
-        let cam = Camera::default();
-        let viewport = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
-        let vp = cam.view_proj(viewport);
-        let project = test_project(&cam, viewport);
-        let view = PlanarLabelView::from_camera_and_plane(&cam, Vec3::Z);
-        let world = linear_dimension_world_geom(
-            Vec3::new(-50.0, 10.0, 0.0),
-            Vec3::new(50.0, 10.0, 0.0),
-            Vec3::Y,
-            5.0,
-            1.0,
-            2.0,
-        );
-        let (vertices, indices) = build_planar_label_mesh(
-            &ctx,
-            &world,
-            &view,
-            "42.0 mm",
-            Color32::WHITE,
-            &cam,
-            viewport,
-            &vp,
-            &project,
-        );
-        assert!(!vertices.is_empty());
-        assert!(!indices.is_empty());
-        assert_eq!(indices.len() % 3, 0);
-    }
-
-    #[test]
-    fn label_mesh_reprojects_at_label_size_when_zoomed_far_out() {
-        let ctx = egui::Context::default();
-        let _ = ctx.run(egui::RawInput::default(), |_| {});
-        let mut cam = Camera::default();
-        cam.yaw = 0.7;
-        cam.pitch = 0.08;
-        cam.distance = 3000.0;
-        let viewport = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
-        let vp = cam.view_proj(viewport);
-        let project = test_project(&cam, viewport);
-        let view = PlanarLabelView::from_camera_and_plane(&cam, Vec3::Z);
-        let world = linear_dimension_world_geom(
+    fn test_world() -> LinearDimensionWorldGeom {
+        linear_dimension_world_geom(
             Vec3::new(-40.0, 10.0, 0.0),
             Vec3::new(40.0, 10.0, 0.0),
             Vec3::Y,
             5.0,
             1.0,
             2.0,
-        );
-        let (vertices, _) = build_planar_label_mesh(
-            &ctx,
-            &world,
-            &view,
-            "80.0 mm",
-            Color32::WHITE,
-            &cam,
-            viewport,
-            &vp,
-            &project,
-        );
+        )
+    }
+
+    fn build(cam: &Camera, world: &LinearDimensionWorldGeom) -> (Vec<GpuTextVertex>, Vec<u32>) {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        let viewport = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let project = test_project(cam, viewport);
+        let view = PlanarLabelView::from_camera_and_plane(cam, Vec3::Z);
+        build_planar_label_mesh(&ctx, world, &view, "80.0 mm", Color32::WHITE, &project)
+    }
+
+    #[test]
+    fn build_planar_label_mesh_emits_textured_vertices() {
+        let cam = Camera::default();
+        let (vertices, indices) = build(&cam, &test_world());
         assert!(!vertices.is_empty());
+        assert!(!indices.is_empty());
+        assert_eq!(indices.len() % 3, 0);
+    }
+
+    /// #454: the glyphs live in the dimension's plane (modulo the small toward-eye
+    /// depth lift), flat with the dimension lines and arrows.
+    #[test]
+    fn label_mesh_lies_in_dimension_plane() {
+        let mut cam = Camera::default();
+        cam.orbit(egui::vec2(120.0, 45.0));
+        let (vertices, _) = build(&cam, &test_world());
+        assert!(!vertices.is_empty());
+        for vertex in &vertices {
+            assert!(
+                vertex.position[2].abs() < 0.5,
+                "glyph vertex should sit in the z = 0 sketch plane, got z {}",
+                vertex.position[2]
+            );
+        }
+    }
+
+    /// #454: viewed face-on, the label reprojects at text size no matter how far out
+    /// the camera zooms — the in-plane layout scales with the view, it doesn't skew.
+    #[test]
+    fn label_mesh_reprojects_at_label_size_when_zoomed_far_out() {
+        let mut cam = Camera::default();
+        cam.pitch = std::f32::consts::FRAC_PI_2 - 0.01;
+        cam.yaw = 0.0;
+        cam.distance = 3000.0;
+        let world = test_world();
+        let (vertices, _) = build(&cam, &world);
+        assert!(!vertices.is_empty());
+        let viewport = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
         let mut min = egui::Vec2::splat(f32::MAX);
         let mut max = egui::Vec2::splat(f32::MIN);
         for vertex in &vertices {
@@ -218,55 +191,17 @@ mod tests {
             min = min.min(screen.to_vec2());
             max = max.max(screen.to_vec2());
         }
+        // The label follows the projected dimension line, which may run vertically at
+        // this view — compare the box's short and long extents, not screen x/y.
         let size = max - min;
+        let (short, long) = (size.x.min(size.y), size.x.max(size.y));
         assert!(
-            (8.0..=30.0).contains(&size.y),
+            (8.0..=30.0).contains(&short),
             "label should reproject at text height regardless of zoom, got {size:?}"
         );
         assert!(
-            (20.0..=120.0).contains(&size.x),
+            (20.0..=120.0).contains(&long),
             "label should reproject at text width regardless of zoom, got {size:?}"
         );
-    }
-
-    #[test]
-    fn rigid_screen_layout_round_trips_through_billboard_plane() {
-        let mut cam = Camera::default();
-        cam.orbit(egui::vec2(120.0, 45.0));
-        let viewport = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
-        let vp = cam.view_proj(viewport);
-        let project = test_project(&cam, viewport);
-        let world = linear_dimension_world_geom(
-            Vec3::new(-50.0, 10.0, 0.0),
-            Vec3::new(50.0, 10.0, 0.0),
-            Vec3::Y,
-            5.0,
-            1.0,
-            2.0,
-        );
-        let corners_screen =
-            planar_label_corners_rigid_screen(&world, egui::vec2(48.0, 14.0), &project).unwrap();
-        let plane_n = (cam.eye() - world.label_center).normalize();
-        for (u, v) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.5, 0.5)] {
-            let screen = bilinear_quad_screen(
-                corners_screen[0],
-                corners_screen[1],
-                corners_screen[2],
-                corners_screen[3],
-                u,
-                v,
-            );
-            let world_pos = cam
-                .ray_plane_hit(screen, viewport, &vp, world.label_center, plane_n)
-                .expect("screen label point should hit the billboard plane");
-            let back = cam
-                .project(world_pos, viewport, &vp)
-                .expect("plane point should project");
-            let err = (back - screen).length();
-            assert!(
-                err < 0.5,
-                "screen layout ({u}, {v}) should round-trip through the plane, error {err}px"
-            );
-        }
     }
 }
