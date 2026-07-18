@@ -519,6 +519,23 @@ impl CreatingRepeat {
         );
     }
 
+    /// Make `v` the computed variable outright (#443, the pencil-off click): it moves to
+    /// the back of the MRU so the other two stay editable.
+    pub fn set_computed(&mut self, v: crate::model::RepeatVar) {
+        if self.var_mru[2] != v {
+            let mut next = [v; 3];
+            let mut i = 0;
+            for &x in &self.var_mru {
+                if x != v {
+                    next[i] = x;
+                    i += 1;
+                }
+            }
+            self.var_mru = next;
+        }
+        self.recompute_mode();
+    }
+
     /// Record that the user edited variable `v` (moving it to the front of the MRU, so the
     /// third variable becomes the computed one), then re-derive `mode`.
     pub fn touch_var(&mut self, v: crate::model::RepeatVar) {
@@ -4622,6 +4639,21 @@ impl AppState {
                     self.status = "Cancelled revolve".to_string();
                 } else if self.creating_calibration.take().is_some() {
                     self.status = "Cancelled calibration".to_string();
+                } else if self
+                    .creating_repeat
+                    .as_ref()
+                    .is_some_and(|c| {
+                        !c.targets.is_empty()
+                            || !c.plane_targets.is_empty()
+                            || !c.sketch_targets.is_empty()
+                            || !c.extrusion_targets.is_empty()
+                            || c.axis.is_some()
+                    })
+                {
+                    // Esc drops the in-progress repeat (#450): the ghost previews follow
+                    // the picked set, so clearing it clears them.
+                    self.creating_repeat = Some(CreatingRepeat::default());
+                    self.status = "Cancelled repeat".to_string();
                 } else if self.creating_rect.take().is_some()
                     || self.discard_creating_line()
                     || self.creating_circle.take().is_some()

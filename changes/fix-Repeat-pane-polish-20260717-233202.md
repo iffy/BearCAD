@@ -1,0 +1,1 @@
+Repeat pane polish: gold-hover measure toggles, axis clear + X/Y/Z highlight, pencil toggles for which field is computed, expression inputs with computed previews, tidier layout, Esc cancels the preview

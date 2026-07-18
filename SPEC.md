@@ -586,7 +586,16 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 
 - **Linear repeat tool (#182/#257):** copies of whole bodies spaced along an axis, chosen with
   an **element picker** of one edge/axis (a global X/Y/Z axis or a clicked straight sketch
-  line; the ✕ clears it) (#257). **Selection seeding (#439):** activating the tool seeds its
+  line; the ✕ clears it) (#257). **Pane polish (#440–#447):** the Gap/Distance
+  measure-toggle icons hover **gold**; the X/Y/Z quick buttons highlight the picked axis
+  (clicking the active one clears it) and the picker's ✕ clears it too; each of
+  Count/Gap/Distance carries a **pencil toggle** — two editable (pencil lit), one
+  computed (pencil dimmed; clicking an off pencil makes that field editable via the MRU,
+  clicking an on pencil makes it the computed one, `CreatingRepeat::set_computed`);
+  editable fields are expression inputs with autocomplete/error display and a `= value`
+  computed preview beside them; the "N instances" label is gone (Count shows it) and the
+  commit button sits in the input column. **Esc** drops the in-progress repeat (clearing
+  the ghost previews, #450). **Selection seeding (#439):** activating the tool seeds its
   targets from the current selection (bodies/planes/sketches), the axis starts **unset**
   (`CreatingRepeat::axis: Option` — commit refuses without one), and exactly one picker reads
   focused: the axis while it's unset and targets exist, the bodies picker otherwise. The Default-units section is hidden while the tool is active.

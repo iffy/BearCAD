@@ -176,6 +176,8 @@ pub struct RepeatControl {
     pub extrusion_targets: Vec<usize>,
     /// Picked axis label; `None` until an axis is picked (#439).
     pub axis_label: Option<String>,
+    /// The picked axis itself, for highlighting the X/Y/Z quick buttons (#442).
+    pub axis: Option<crate::model::RevolveAxis>,
     pub mode: crate::model::RepeatMode,
     pub count: String,
     /// The gap field (start-to-start pitch when `gap_is_offset`, else clear gap).
@@ -235,6 +237,10 @@ pub enum RepeatEdit {
     Axis(crate::model::RevolveAxis),
     /// Clear the picked axis (#439): the picker's ✕ empties it instead of resetting to X.
     ClearAxis,
+    /// Pencil-on click (#443): make this variable editable (another becomes computed).
+    MakeEditable(crate::model::RepeatVar),
+    /// Pencil-off click (#443): make this variable the computed one.
+    SetComputed(crate::model::RepeatVar),
     Count(String),
     Gap(String),
     Distance(String),
@@ -2086,19 +2092,24 @@ pub fn show_pane(
                 (crate::model::RevolveAxis::Y, "Y"),
                 (crate::model::RevolveAxis::Z, "Z"),
             ] {
-                if ui.small_button(label).clicked() {
-                    pending = Some(RepeatEdit::Axis(axis));
+                // The active axis button highlights (#442) and clicking it again clears.
+                let selected = control.axis == Some(axis);
+                if ui.selectable_label(selected, label).clicked() {
+                    pending = Some(if selected {
+                        RepeatEdit::ClearAxis
+                    } else {
+                        RepeatEdit::Axis(axis)
+                    });
                 }
             }
         });
         });
-        // Count / gap / distance (#257): the user edits two, the third is computed and shown
-        // read-only in its field. Gap and distance each have a picture toggle to switch how
-        // they're measured.
+        // Count / gap / distance (#257/#443/#444): two fields are editable (pencil on),
+        // the third is computed (pencil off). Clicking a pencil toggles which; editable
+        // fields are expression inputs showing their computed value beside them; the
+        // measure toggles hover gold.
         use crate::model::RepeatVar;
         {
-            // One variable row: `label` + a text field (read-only + showing the computed value
-            // when this is the computed variable), optionally preceded by a toggle button.
             let mut var_row = |ui: &mut egui::Ui,
                                var: RepeatVar,
                                label: &str,
@@ -2114,8 +2125,8 @@ pub fn show_pane(
                         |ui| {
                             ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
                             if let Some((icon, edit)) = toggle {
-                                // A clickable picture that toggles how this variable is measured (#257).
-                                if crate::icons::icon_button(
+                                // The measure toggle hovers gold to read as clickable (#440).
+                                if crate::icons::icon_button_hover_gold(
                                     ui,
                                     icon,
                                     "Click to toggle how this is measured",
@@ -2135,15 +2146,70 @@ pub fn show_pane(
                             egui::TextEdit::singleline(&mut shown.clone()).desired_width(90.0),
                         )
                         .on_hover_text("Computed from the other two");
-                        ui.label(egui::RichText::new("auto").color(egui::Color32::from_gray(130)).size(10.0));
                     } else {
                         let mut text = value.to_string();
-                        if ui
-                            .add(egui::TextEdit::singleline(&mut text).desired_width(90.0))
-                            .changed()
-                        {
-                            pending = Some(make(text));
+                        let id = egui::Id::new(("repeat_var_field", label));
+                        let errors = crate::expression_input::length_expression_field_errors(
+                            &text, doc, None,
+                        );
+                        let resp = ui.scope(|ui| {
+                            ui.set_max_width(110.0);
+                            crate::expression_input::show_length_expression_text_edit(
+                                ui, &mut text, id, "", &errors, doc, &[],
+                            )
+                        })
+                        .inner;
+                        if resp.changed() {
+                            pending = Some(make(text.clone()));
                         }
+                        // Computed-value preview (#444), like the rectangle dimension
+                        // inputs: an expression shows what it evaluates to.
+                        if crate::value::shows_computed_length_in_doc(&text, doc) {
+                            if let Some(v) = crate::value::computed_length_in_doc(&text, doc) {
+                                let shown = if var == RepeatVar::Count {
+                                    format!("= {}", v.round() as i64)
+                                } else {
+                                    format!(
+                                        "= {}",
+                                        crate::value::format_length_display_in(
+                                            v,
+                                            doc.default_length_unit
+                                        )
+                                    )
+                                };
+                                ui.label(
+                                    egui::RichText::new(shown)
+                                        .color(egui::Color32::from_gray(140))
+                                        .size(10.0),
+                                );
+                            }
+                        }
+                    }
+                    // Pencil toggle (#443): on = editable, off = computed. Clicking an
+                    // off pencil makes this field editable (another becomes computed);
+                    // clicking an on pencil makes this the computed one.
+                    let pencil = crate::icons::icon_button_hover_gold(
+                        ui,
+                        crate::icons::IconId::Pencil,
+                        if computed {
+                            "Computed from the other two — click to edit this instead"
+                        } else {
+                            "Editable — click to compute this from the other two"
+                        },
+                    );
+                    if computed {
+                        ui.painter().rect_filled(
+                            pencil.rect,
+                            0.0,
+                            egui::Color32::from_rgba_unmultiplied(20, 20, 20, 140),
+                        );
+                    }
+                    if pencil.clicked() {
+                        pending = Some(if computed {
+                            RepeatEdit::MakeEditable(var)
+                        } else {
+                            RepeatEdit::SetComputed(var)
+                        });
                     }
                 });
             };
@@ -2175,27 +2241,31 @@ pub fn show_pane(
                 &RepeatEdit::Distance,
             );
         }
-        ui.label(
-            egui::RichText::new(match control.preview_instances {
-                Some(n) => format!("{n} instances"),
-                None => "Configuration doesn't evaluate yet".to_string(),
-            })
-            .color(egui::Color32::from_gray(140))
-            .size(11.0),
-        );
+        // The Count field already shows the instance count (#446); only surface the
+        // can't-evaluate case.
+        if control.preview_instances.is_none() {
+            ui.label(
+                egui::RichText::new("Configuration doesn't evaluate yet")
+                    .color(egui::Color32::from_gray(140))
+                    .size(11.0),
+            );
+        }
         if let Some(edit) = pending {
             on_repeat_edit(edit);
         }
         ui.add_space(2.0);
-        if ui
-            .add_enabled(
-                control.can_commit && controls_enabled,
-                egui::Button::new(if control.editing { "Apply changes" } else { "Repeat" }),
-            )
-            .clicked()
-        {
-            on_repeat_edit(RepeatEdit::Commit);
-        }
+        // The commit button sits in the input (right) column (#447), aligned with the fields.
+        labeled_row(ui, "", |ui| {
+            if ui
+                .add_enabled(
+                    control.can_commit && controls_enabled,
+                    egui::Button::new(if control.editing { "Apply changes" } else { "Repeat" }),
+                )
+                .clicked()
+            {
+                on_repeat_edit(RepeatEdit::Commit);
+            }
+        });
     }
 
     // In-sketch Repeat tool (#232): entities + direction + count/gap/distance.
@@ -3685,6 +3755,7 @@ mod tests {
                 plane_targets: Vec::new(),
                 sketch_targets: Vec::new(),
                 extrusion_targets: Vec::new(),
+                axis: Some(crate::model::RevolveAxis::X),
                 axis_label: Some("the X axis".to_string()),
                 mode: crate::model::RepeatMode::CountGap,
                 count: "3".to_string(),

@@ -42,6 +42,7 @@ pub enum IconId {
     Body,
     Component,
     AutoZoom,
+    Pencil,
     ShadowBody,
     Plus,
     Showing,
@@ -199,6 +200,7 @@ impl IconId {
             Self::Body => include_str!("assets/icons/body.svg"),
             Self::Component => include_str!("assets/icons/component.svg"),
             Self::AutoZoom => include_str!("assets/icons/auto_zoom.svg"),
+            Self::Pencil => include_str!("assets/icons/pencil.svg"),
             Self::Plus => include_str!("assets/icons/plus.svg"),
             Self::Showing => include_str!("assets/icons/showing.svg"),
             Self::Hidden => include_str!("assets/icons/hidden.svg"),
@@ -271,6 +273,7 @@ impl IconId {
             Self::Body => "Body",
             Self::Component => "Component",
             Self::AutoZoom => "Auto-zoom",
+            Self::Pencil => "Editable",
             Self::Plus => "Plus",
             Self::Showing => "Showing",
             Self::Hidden => "Hidden",
@@ -495,6 +498,24 @@ pub fn selectable_icon_group(
         }
     }
     response.on_hover_text(tooltip)
+}
+
+/// An icon button that tints **gold on hover** (#440), signalling it's clickable/toggleable.
+pub fn icon_button_hover_gold(
+    ui: &mut Ui,
+    id: IconId,
+    tooltip: impl Into<WidgetText>,
+) -> egui::Response {
+    let texture = sized_texture(ui.ctx(), id);
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ICON_DISPLAY_SIZE, ICON_DISPLAY_SIZE), egui::Sense::click());
+    let tint = if response.hovered() {
+        egui::Color32::from_rgb(255, 210, 90)
+    } else {
+        egui::Color32::WHITE
+    };
+    egui::Image::new(texture).tint(tint).paint_at(ui, rect);
+    response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tooltip)
 }
 
 pub fn icon_button(ui: &mut Ui, id: IconId, tooltip: impl Into<WidgetText>) -> egui::Response {

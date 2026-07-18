@@ -5425,6 +5425,7 @@ impl eframe::App for App {
                         plane_targets: cr.map(|c| c.plane_targets.clone()).unwrap_or_default(),
                         sketch_targets: cr.map(|c| c.sketch_targets.clone()).unwrap_or_default(),
                         extrusion_targets: cr.map(|c| c.extrusion_targets.clone()).unwrap_or_default(),
+                        axis: cr.and_then(|c| c.axis),
                         axis_label: cr.and_then(|c| c.axis).map(|axis| match axis {
                             model::RevolveAxis::Line(li) => names::element_name(
                                 &self.state.doc,
@@ -5995,6 +5996,8 @@ impl eframe::App for App {
                         match edit {
                             context::RepeatEdit::Axis(a) => cr.axis = Some(a),
                             context::RepeatEdit::ClearAxis => cr.axis = None,
+                            context::RepeatEdit::MakeEditable(v) => cr.touch_var(v),
+                            context::RepeatEdit::SetComputed(v) => cr.set_computed(v),
                             context::RepeatEdit::Count(v) => {
                                 cr.count = v;
                                 cr.touch_var(RepeatVar::Count);
