@@ -174,7 +174,8 @@ pub struct RepeatControl {
     pub sketch_targets: Vec<usize>,
     /// Picked cut/add extrusions whose effect is replayed at each offset (#220/#235).
     pub extrusion_targets: Vec<usize>,
-    pub axis_label: String,
+    /// Picked axis label; `None` until an axis is picked (#439).
+    pub axis_label: Option<String>,
     pub mode: crate::model::RepeatMode,
     pub count: String,
     /// The gap field (start-to-start pitch when `gap_is_offset`, else clear gap).
@@ -232,6 +233,8 @@ pub enum SketchRepeatEdit {
 #[derive(Clone, Debug, PartialEq)]
 pub enum RepeatEdit {
     Axis(crate::model::RevolveAxis),
+    /// Clear the picked axis (#439): the picker's ✕ empties it instead of resetting to X.
+    ClearAxis,
     Count(String),
     Gap(String),
     Distance(String),
@@ -843,12 +846,20 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         ));
     }
     if let Some(r) = input.repeat_op.as_ref() {
+        // Only one Repeat picker reads as focused (#439): the axis while it's unset and
+        // there's already something to repeat (the axis is the next pick), the bodies
+        // otherwise.
+        let has_targets = !r.targets.is_empty()
+            || !r.plane_targets.is_empty()
+            || !r.sketch_targets.is_empty()
+            || !r.extrusion_targets.is_empty();
+        let axis_is_next = r.axis_label.is_none() && has_targets;
         tool_pickers.push(body_tool_picker(
             "Bodies",
             PickerTarget::RepeatTargets,
             &r.targets,
             None,
-            true,
+            !axis_is_next,
         ));
     }
     if let Some(b) = input.boolean_op.as_ref() {
@@ -2039,15 +2050,25 @@ pub fn show_pane(
                 .size(11.0),
             );
         }
-        // Axis element picker (#257): shows the picked edge/axis. Set it by clicking a straight
-        // line or a global axis in the viewport; the ✕ resets to the X axis. Quick X/Y/Z buttons
-        // stay for the global axes (which are awkward to click).
-        let axis_rows = vec![format!("Along {}", control.axis_label)];
+        // Axis element picker (#257/#439): empty until an axis is picked (clicking a
+        // straight line or a global axis in the viewport, or the X/Y/Z buttons); the ✕
+        // clears it. It reads as the focused picker exactly while unset — once targets
+        // are seeded, the axis is the next thing to pick.
+        let axis_rows: Vec<String> = control
+            .axis_label
+            .iter()
+            .map(|l| format!("Along {l}"))
+            .collect();
+        let has_targets = !control.targets.is_empty()
+            || !control.plane_targets.is_empty()
+            || !control.sketch_targets.is_empty()
+            || !control.extrusion_targets.is_empty();
+        let axis_focused = control.axis_label.is_none() && has_targets;
         labeled_row_top(ui, "Axis", |ui| {
         if let Some(event) = crate::element_picker::show_labeled(
             ui,
             "repeat_axis",
-            true,
+            axis_focused,
             true,
             crate::icons::IconId::Line,
             &axis_rows,
@@ -2056,7 +2077,7 @@ pub fn show_pane(
                 event,
                 crate::element_picker::PickerEvent::Remove(_) | crate::element_picker::PickerEvent::Clear
             ) {
-                pending = Some(RepeatEdit::Axis(crate::model::RevolveAxis::X));
+                pending = Some(RepeatEdit::ClearAxis);
             }
         }
         ui.horizontal(|ui| {
@@ -3664,7 +3685,7 @@ mod tests {
                 plane_targets: Vec::new(),
                 sketch_targets: Vec::new(),
                 extrusion_targets: Vec::new(),
-                axis_label: "the X axis".to_string(),
+                axis_label: Some("the X axis".to_string()),
                 mode: crate::model::RepeatMode::CountGap,
                 count: "3".to_string(),
                 spacing: String::new(),

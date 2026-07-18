@@ -3477,7 +3477,7 @@ impl App {
         };
         if let construction::PickTargetKind::Line(li) = target.kind {
             if let Some(cr) = self.state.creating_repeat.as_mut() {
-                cr.axis = model::RevolveAxis::Line(li);
+                cr.axis = Some(model::RevolveAxis::Line(li));
                 self.state.status = "Repeat: axis set".to_string();
             }
             return;
@@ -5277,7 +5277,7 @@ impl eframe::App for App {
                             sketch_targets: c.sketch_targets.clone(),
                             sketch_plane_outputs: Vec::new(),
                             sketch_outputs: Vec::new(),
-                            axis: c.axis,
+                            axis: c.axis?,
                             mode: c.mode,
                             count: c.count.clone(),
                             spacing: c.spacing.clone(),
@@ -5303,7 +5303,7 @@ impl eframe::App for App {
                             sketch_targets: c.sketch_targets.clone(),
                             sketch_plane_outputs: Vec::new(),
                             sketch_outputs: Vec::new(),
-                            axis: c.axis,
+                            axis: c.axis?,
                             mode: c.mode,
                             count: c.count.clone(),
                             spacing: c.spacing.clone(),
@@ -5335,19 +5335,17 @@ impl eframe::App for App {
                         plane_targets: cr.map(|c| c.plane_targets.clone()).unwrap_or_default(),
                         sketch_targets: cr.map(|c| c.sketch_targets.clone()).unwrap_or_default(),
                         extrusion_targets: cr.map(|c| c.extrusion_targets.clone()).unwrap_or_default(),
-                        axis_label: cr
-                            .map(|c| match c.axis {
-                                model::RevolveAxis::Line(li) => names::element_name(
-                                    &self.state.doc,
-                                    SceneElement::Line(li),
-                                )
-                                .map(|n| n.to_string())
-                                .unwrap_or_else(|| format!("line {li}")),
-                                model::RevolveAxis::X => "the X axis".to_string(),
-                                model::RevolveAxis::Y => "the Y axis".to_string(),
-                                model::RevolveAxis::Z => "the Z axis".to_string(),
-                            })
-                            .unwrap_or_else(|| "the X axis".to_string()),
+                        axis_label: cr.and_then(|c| c.axis).map(|axis| match axis {
+                            model::RevolveAxis::Line(li) => names::element_name(
+                                &self.state.doc,
+                                SceneElement::Line(li),
+                            )
+                            .map(|n| n.to_string())
+                            .unwrap_or_else(|| format!("line {li}")),
+                            model::RevolveAxis::X => "the X axis".to_string(),
+                            model::RevolveAxis::Y => "the Y axis".to_string(),
+                            model::RevolveAxis::Z => "the Z axis".to_string(),
+                        }),
                         mode: cr.map(|c| c.mode).unwrap_or(model::RepeatMode::CountGap),
                         count: cr.map(|c| c.count.clone()).unwrap_or_default(),
                         spacing: cr.map(|c| c.spacing.clone()).unwrap_or_default(),
@@ -5905,7 +5903,8 @@ impl eframe::App for App {
                             .get_or_insert_with(actions::CreatingRepeat::default);
                         use model::RepeatVar;
                         match edit {
-                            context::RepeatEdit::Axis(a) => cr.axis = a,
+                            context::RepeatEdit::Axis(a) => cr.axis = Some(a),
+                            context::RepeatEdit::ClearAxis => cr.axis = None,
                             context::RepeatEdit::Count(v) => {
                                 cr.count = v;
                                 cr.touch_var(RepeatVar::Count);
@@ -6227,7 +6226,7 @@ impl eframe::App for App {
                         plane_targets: existing.plane_targets,
                         extrusion_targets: existing.extrusion_targets,
                         sketch_targets: existing.sketch_targets,
-                        axis: existing.axis,
+                        axis: Some(existing.axis),
                         mode: existing.mode,
                         count: existing.count,
                         spacing: existing.spacing,
@@ -7264,7 +7263,7 @@ fn build_viewport_scene_input<'a>(
                 sketch_targets: c.sketch_targets.clone(),
                 sketch_plane_outputs: Vec::new(),
                 sketch_outputs: Vec::new(),
-                axis: c.axis,
+                axis: c.axis?,
                 mode: c.mode,
                 count: c.count.clone(),
                 spacing: c.spacing.clone(),
@@ -7275,7 +7274,7 @@ fn build_viewport_scene_input<'a>(
                 name: None,
                 deleted: false,
             };
-            let (_, dir) = extrude::axis_world(doc, c.axis)?;
+            let (_, dir) = extrude::axis_world(doc, c.axis?)?;
             let offsets = extrude::repeat_offsets(doc, &probe)?;
             let mut ghosts = Vec::new();
             for &bi in &c.targets {
@@ -14969,7 +14968,7 @@ mod tests {
         state.tool = Tool::Repeat;
         state.creating_repeat = Some(CreatingRepeat {
             targets: vec![0],
-            axis: RevolveAxis::X,
+            axis: Some(RevolveAxis::X),
             mode: RepeatMode::CountGap,
             count: "3".to_string(),
             spacing: "10".to_string(),

@@ -462,7 +462,8 @@ pub struct CreatingRepeat {
     pub extrusion_targets: Vec<usize>,
     /// Picked source sketches to repeat as offset copies (#226).
     pub sketch_targets: Vec<usize>,
-    pub axis: crate::model::RevolveAxis,
+    /// `None` until picked (#439): the axis picker starts empty and focused.
+    pub axis: Option<crate::model::RevolveAxis>,
     pub mode: crate::model::RepeatMode,
     pub count: String,
     pub spacing: String,
@@ -485,7 +486,7 @@ impl Default for CreatingRepeat {
             plane_targets: Vec::new(),
             extrusion_targets: Vec::new(),
             sketch_targets: Vec::new(),
-            axis: crate::model::RevolveAxis::X,
+            axis: None,
             mode: crate::model::RepeatMode::CountGap,
             count: "3".to_string(),
             spacing: "10".to_string(),
@@ -4426,7 +4427,35 @@ impl AppState {
                     self.creating_sketch_repeat = None;
                 }
                 if tool == Tool::Repeat && self.creating_repeat.is_none() {
-                    self.creating_repeat = Some(CreatingRepeat::default());
+                    // Seed the target set from the current selection (#439): a body
+                    // selected before picking the tool is what you want to repeat, so
+                    // the next thing to pick is the axis.
+                    let mut cr = CreatingRepeat::default();
+                    for element in self.scene_selection.iter() {
+                        match element {
+                            crate::hierarchy::SceneElement::Body(bi)
+                                if self.doc.bodies.get(bi).is_some_and(|b| !b.deleted && !b.shadow) =>
+                            {
+                                cr.targets.push(bi);
+                            }
+                            crate::hierarchy::SceneElement::ConstructionPlane(pi)
+                                if self
+                                    .doc
+                                    .construction_planes
+                                    .get(pi)
+                                    .is_some_and(|p| !p.deleted) =>
+                            {
+                                cr.plane_targets.push(pi);
+                            }
+                            crate::hierarchy::SceneElement::Sketch(si)
+                                if self.doc.sketches.get(si).is_some_and(|s| !s.deleted) =>
+                            {
+                                cr.sketch_targets.push(si);
+                            }
+                            _ => {}
+                        }
+                    }
+                    self.creating_repeat = Some(cr);
                 }
                 if self.creating_slice.is_some() && tool != Tool::Slice {
                     self.creating_slice = None;
@@ -7359,6 +7388,12 @@ label_hidden: false,
                     self.creating_repeat = Some(cr);
                     return ActionResult::Err(e);
                 }
+                let Some(axis) = cr.axis else {
+                    let e = "Repeat: pick an axis (a line, or the X/Y/Z buttons)".to_string();
+                    self.status = e.clone();
+                    self.creating_repeat = Some(cr);
+                    return ActionResult::Err(e);
+                };
                 let result = match cr.editing {
                     Some(op) => self.apply(Action::EditRepeatOperation {
                         op,
@@ -7366,7 +7401,7 @@ label_hidden: false,
                         plane_targets: cr.plane_targets.clone(),
                         extrusion_targets: cr.extrusion_targets.clone(),
                         sketch_targets: cr.sketch_targets.clone(),
-                        axis: cr.axis,
+                        axis,
                         mode: cr.mode,
                         count: cr.count.clone(),
                         spacing: cr.spacing.clone(),
@@ -7377,7 +7412,7 @@ label_hidden: false,
                         plane_targets: cr.plane_targets.clone(),
                         extrusion_targets: cr.extrusion_targets.clone(),
                         sketch_targets: cr.sketch_targets.clone(),
-                        axis: cr.axis,
+                        axis,
                         mode: cr.mode,
                         count: cr.count.clone(),
                         spacing: cr.spacing.clone(),
@@ -14408,6 +14443,7 @@ mod tests {
         {
             let cr = state.creating_repeat.as_mut().unwrap();
             cr.targets = vec![0];
+            cr.axis = Some(crate::model::RevolveAxis::X);
             cr.count = "n = 4".to_string();
             cr.spacing = "10".to_string();
         }
@@ -14415,6 +14451,36 @@ mod tests {
         assert!(state.doc.parameters.iter().any(|p| !p.deleted && p.name == "n"));
         assert_eq!(state.doc.repeat_ops[0].count, "n", "the stored count should be the bare name");
         assert_eq!(state.doc.repeat_ops[0].outputs.len(), 3, "n = 4 → 3 extra instances");
+    }
+
+    /// #439: activating the Repeat tool seeds its targets from the selected body, the
+    /// axis starts unset, and committing without an axis is refused.
+    #[test]
+    fn repeat_tool_seeds_selection_and_requires_axis() {
+        let mut state = two_box_state(false);
+        state.apply(Action::ClickSceneElement {
+            element: crate::hierarchy::SceneElement::Body(0),
+            additive: false,
+        });
+        state.apply(Action::SetTool(Tool::Repeat));
+        let cr = state.creating_repeat.as_ref().unwrap();
+        assert_eq!(cr.targets, vec![0], "selected body seeds the repeat targets");
+        assert_eq!(cr.axis, None, "the axis starts unset");
+        {
+            let cr = state.creating_repeat.as_mut().unwrap();
+            cr.count = "3".to_string();
+            cr.spacing = "10".to_string();
+        }
+        assert!(
+            matches!(state.apply(Action::CommitRepeat), ActionResult::Err(_)),
+            "commit without an axis is refused"
+        );
+        state.creating_repeat.as_mut().unwrap().axis = Some(crate::model::RevolveAxis::X);
+        assert!(
+            matches!(state.apply(Action::CommitRepeat), ActionResult::Ok),
+            "{}",
+            state.status
+        );
     }
 
     /// #201: a move offset typed as `name = expr` defines the parameter and stays parametric.
