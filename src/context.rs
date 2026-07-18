@@ -1987,20 +1987,23 @@ pub fn show_pane(
             let mut field = |ui: &mut egui::Ui,
                              label: &str,
                              value: &str,
+                             kind: crate::expression_input::ValueKind,
                              make: &dyn Fn(String) -> MoveEdit| {
                 labeled_row(ui, label, |ui| {
                     let mut text = value.to_string();
-                    let resp =
-                        ui.add(egui::TextEdit::singleline(&mut text).desired_width(90.0));
+                    let resp = crate::expression_input::ValueInput::new(("move_field", label), kind)
+                        .width(90.0)
+                        .show(ui, &mut text, doc);
                     if resp.changed() {
                         pending = Some(make(text));
                     }
                 });
             };
-            field(ui, "X", &control.tx, &MoveEdit::Tx);
-            field(ui, "Y", &control.ty, &MoveEdit::Ty);
-            field(ui, "Z", &control.tz, &MoveEdit::Tz);
-            field(ui, "Angle", &control.angle, &MoveEdit::Angle);
+            use crate::expression_input::ValueKind;
+            field(ui, "X", &control.tx, ValueKind::Length, &MoveEdit::Tx);
+            field(ui, "Y", &control.ty, ValueKind::Length, &MoveEdit::Ty);
+            field(ui, "Z", &control.tz, ValueKind::Length, &MoveEdit::Tz);
+            field(ui, "Angle", &control.angle, ValueKind::Angle, &MoveEdit::Angle);
         }
         ui.horizontal(|ui| {
             ui.label("Axis");
@@ -2188,41 +2191,19 @@ pub fn show_pane(
                         .on_hover_text("Computed from the other two");
                     } else {
                         let mut text = value.to_string();
-                        let id = egui::Id::new(("repeat_var_field", label));
-                        let errors = crate::expression_input::length_expression_field_errors(
-                            &text, doc, None,
-                        );
-                        let resp = ui.scope(|ui| {
-                            ui.set_max_width(110.0);
-                            crate::expression_input::show_length_expression_text_edit(
-                                ui, &mut text, id, "", &errors, doc, &[],
-                            )
-                        })
-                        .inner;
+                        let kind = if var == RepeatVar::Count {
+                            crate::expression_input::ValueKind::Count
+                        } else {
+                            crate::expression_input::ValueKind::Length
+                        };
+                        let resp = crate::expression_input::ValueInput::new(
+                            ("repeat_var_field", label),
+                            kind,
+                        )
+                        .width(110.0)
+                        .show(ui, &mut text, doc);
                         if resp.changed() {
                             pending = Some(make(text.clone()));
-                        }
-                        // Computed-value preview (#444), like the rectangle dimension
-                        // inputs: an expression shows what it evaluates to.
-                        if crate::value::shows_computed_length_in_doc(&text, doc) {
-                            if let Some(v) = crate::value::computed_length_in_doc(&text, doc) {
-                                let shown = if var == RepeatVar::Count {
-                                    format!("= {}", v.round() as i64)
-                                } else {
-                                    format!(
-                                        "= {}",
-                                        crate::value::format_length_display_in(
-                                            v,
-                                            doc.default_length_unit
-                                        )
-                                    )
-                                };
-                                ui.label(
-                                    egui::RichText::new(shown)
-                                        .color(egui::Color32::from_gray(140))
-                                        .size(10.0),
-                                );
-                            }
                         }
                     }
                     // Pencil toggle (#443): on = editable, off = computed. Clicking an
@@ -2354,7 +2335,18 @@ pub fn show_pane(
                     ui.label(egui::RichText::new("(auto)").color(egui::Color32::from_gray(130)).size(10.0));
                 } else {
                     let mut text = value.to_string();
-                    if ui.add(egui::TextEdit::singleline(&mut text).desired_width(80.0)).changed() {
+                    let kind = if var == RepeatVar::Count {
+                        crate::expression_input::ValueKind::Count
+                    } else {
+                        crate::expression_input::ValueKind::Length
+                    };
+                    let resp = crate::expression_input::ValueInput::new(
+                        ("sketch_repeat_var_field", label),
+                        kind,
+                    )
+                    .width(80.0)
+                    .show(ui, &mut text, doc);
+                    if resp.changed() {
                         pending = Some(make(text));
                     }
                 }
@@ -2415,31 +2407,14 @@ pub fn show_pane(
         ui.horizontal(|ui| {
             ui.label("Distance");
             let mut text = control.distance.clone();
-            let id = egui::Id::new("sketch_offset_distance");
-            let errors =
-                crate::expression_input::length_expression_field_errors(&text, doc, None);
-            let resp = ui
-                .scope(|ui| {
-                    ui.set_max_width(110.0);
-                    crate::expression_input::show_length_expression_text_edit(
-                        ui, &mut text, id, "", &errors, doc, &[],
-                    )
-                })
-                .inner;
+            let resp = crate::expression_input::ValueInput::new(
+                "sketch_offset_distance",
+                crate::expression_input::ValueKind::Length,
+            )
+            .width(110.0)
+            .show(ui, &mut text, doc);
             if resp.changed() {
                 pending = Some(SketchOffsetEdit::Distance(text.clone()));
-            }
-            if crate::value::shows_computed_length_in_doc(&text, doc) {
-                if let Some(v) = crate::value::computed_length_in_doc(&text, doc) {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "= {}",
-                            crate::value::format_length_display_in(v, doc.default_length_unit)
-                        ))
-                        .color(egui::Color32::from_gray(140))
-                        .size(11.0),
-                    );
-                }
             }
         });
         ui.label(
@@ -2695,7 +2670,13 @@ pub fn show_pane(
         });
         labeled_row(ui, "Size", |ui| {
             let mut size = control.size_expr.clone();
-            if ui.add(egui::TextEdit::singleline(&mut size).desired_width(70.0)).changed() {
+            let resp = crate::expression_input::ValueInput::new(
+                "sketch_text_size",
+                crate::expression_input::ValueKind::Length,
+            )
+            .width(70.0)
+            .show(ui, &mut size, doc);
+            if resp.changed() {
                 on_sketch_text_edit(SketchTextEdit::Size(size));
             }
             // ± steppers (#385): bump the evaluated size by 1 mm (replacing any expression
@@ -2720,20 +2701,27 @@ pub fn show_pane(
         });
         labeled_row(ui, "Rotation°", |ui| {
             let mut rot = control.rotation_deg.clone();
-            if ui.add(egui::TextEdit::singleline(&mut rot).desired_width(70.0)).changed() {
+            let resp = crate::expression_input::ValueInput::new(
+                "sketch_text_rotation",
+                crate::expression_input::ValueKind::Angle,
+            )
+            .width(70.0)
+            .show(ui, &mut rot, doc);
+            if resp.changed() {
                 on_sketch_text_edit(SketchTextEdit::Rotation(rot));
             }
         });
         labeled_row(ui, "Wrap width", |ui| {
             let mut wrap = control.wrap.clone();
-            if ui
-                .add(
-                    egui::TextEdit::singleline(&mut wrap)
-                        .hint_text("grow")
-                        .desired_width(70.0),
-                )
-                .on_hover_text("mm to wrap to; empty grows the box to fit")
-                .changed()
+            if crate::expression_input::ValueInput::new(
+                "sketch_text_wrap",
+                crate::expression_input::ValueKind::Length,
+            )
+            .hint("grow")
+            .width(70.0)
+            .show(ui, &mut wrap, doc)
+            .on_hover_text("mm to wrap to; empty grows the box to fit")
+            .changed()
             {
                 on_sketch_text_edit(SketchTextEdit::Wrap(wrap));
             }
@@ -3044,11 +3032,15 @@ pub fn show_pane(
                 .size(11.0),
         );
         labeled_row(ui, "Length", |ui| {
-            ui.add(
-                TextEdit::singleline(&mut pane_state.calibrate_length_draft)
-                    .desired_width(80.0)
-                    .hint_text("50mm"),
-            );
+            let mut draft = pane_state.calibrate_length_draft.clone();
+            crate::expression_input::ValueInput::new(
+                "calibrate_length",
+                crate::expression_input::ValueKind::Length,
+            )
+            .hint("50mm")
+            .width(80.0)
+            .show(ui, &mut draft, doc);
+            pane_state.calibrate_length_draft = draft;
             if ui.button("Apply").clicked()
                 && !pane_state.calibrate_length_draft.trim().is_empty()
             {

@@ -2223,20 +2223,27 @@ impl App {
                 }
             }
         }
-        if let Some(ce) = self.state.creating_extrusion.as_mut() {
-            let want_focus = ce.pending_focus;
+        if let Some((mut text, want_focus)) = self
+            .state
+            .creating_extrusion
+            .as_ref()
+            .map(|ce| (ce.text.clone(), ce.pending_focus))
+        {
+            let mut edited = false;
+            let mut focus_landed = false;
             egui::Area::new(egui::Id::new("extrude_distance_area"))
                 .fixed_pos(pos)
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        let output = egui::TextEdit::singleline(&mut ce.text)
-                            .id(id)
-                            .desired_width(64.0)
-                            .show(ui);
-                        let resp = output.response;
+                        let resp = crate::expression_input::ValueInput::from_id(
+                            id,
+                            crate::expression_input::ValueKind::Length,
+                        )
+                        .width(64.0)
+                        .show(ui, &mut text, &self.state.doc);
                         if resp.changed() {
-                            ce.user_edited = true;
+                            edited = true;
                         }
                         if want_focus {
                             // Clicking a face focuses the field with the default distance
@@ -2245,8 +2252,9 @@ impl App {
                             // focus), so keep requesting until it does, then select-all.
                             resp.request_focus();
                             if resp.has_focus() {
-                                let len = ce.text.chars().count();
-                                let mut st = output.state;
+                                let len = text.chars().count();
+                                let mut st = egui::TextEdit::load_state(ctx, id)
+                                    .unwrap_or_default();
                                 st.cursor.set_char_range(Some(
                                     egui::text::CCursorRange::two(
                                         egui::text::CCursor::default(),
@@ -2254,7 +2262,7 @@ impl App {
                                     ),
                                 ));
                                 st.store(ctx, id);
-                                ce.pending_focus = false;
+                                focus_landed = true;
                             }
                         }
                         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -2271,6 +2279,15 @@ impl App {
                         }
                     });
                 });
+            if let Some(ce) = self.state.creating_extrusion.as_mut() {
+                ce.text = text;
+                if edited {
+                    ce.user_edited = true;
+                }
+                if focus_landed {
+                    ce.pending_focus = false;
+                }
+            }
         }
         if flip {
             if let Some(d) = self
@@ -2480,28 +2497,33 @@ impl App {
                 }
             }
         }
-        if let Some(cvt) = self.state.creating_vertex_treatment.as_mut() {
-            let label = match cvt.kind {
+        if let Some((mut text, want_focus, kind)) = self
+            .state
+            .creating_vertex_treatment
+            .as_ref()
+            .map(|cvt| (cvt.text.clone(), cvt.pending_focus, cvt.kind))
+        {
+            let label = match kind {
                 VertexTreatmentKind::Chamfer => "mm",
                 VertexTreatmentKind::Fillet => "mm r",
             };
-            let want_focus = cvt.pending_focus;
+            let mut edited = false;
             egui::Area::new(egui::Id::new("vertex_treatment_amount_area"))
                 .fixed_pos(pos)
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        let resp = ui.add(
-                            egui::TextEdit::singleline(&mut cvt.text)
-                                .id(id)
-                                .desired_width(64.0),
-                        );
+                        let resp = crate::expression_input::ValueInput::from_id(
+                            id,
+                            crate::expression_input::ValueKind::Length,
+                        )
+                        .width(64.0)
+                        .show(ui, &mut text, &self.state.doc);
                         if resp.changed() {
-                            cvt.user_edited = true;
+                            edited = true;
                         }
                         if want_focus {
                             resp.request_focus();
-                            cvt.pending_focus = false;
                         }
                         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             commit = true;
@@ -2509,6 +2531,15 @@ impl App {
                         ui.label(label);
                     });
                 });
+            if let Some(cvt) = self.state.creating_vertex_treatment.as_mut() {
+                cvt.text = text;
+                if edited {
+                    cvt.user_edited = true;
+                }
+                if want_focus {
+                    cvt.pending_focus = false;
+                }
+            }
         }
         if commit {
             if let Some(mut cvt) = self.state.creating_vertex_treatment.take() {
@@ -4192,33 +4223,50 @@ impl App {
             return;
         };
         let mut commit = false;
-        egui::Area::new(egui::Id::new("revolve_angle_input"))
-            .fixed_pos(pos)
-            .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        let Some(cr) = self.state.creating_revolve.as_mut() else {
-                            return;
-                        };
-                        let field = egui::TextEdit::singleline(&mut cr.text)
-                            .id(egui::Id::new(REVOLVE_ANGLE_FIELD_ID))
-                            .desired_width(64.0)
-                            .hint_text("360");
-                        let response = ui.add(field);
-                        if cr.pending_focus {
-                            response.request_focus();
-                            cr.pending_focus = false;
-                        }
-                        if response.changed() {
-                            cr.user_edited = true;
-                        }
-                        ui.label("deg");
-                        if ui.input(|i| i.key_pressed(egui::Key::Enter)) && response.lost_focus() {
-                            commit = true;
-                        }
+        if let Some((mut text, want_focus)) = self
+            .state
+            .creating_revolve
+            .as_ref()
+            .map(|cr| (cr.text.clone(), cr.pending_focus))
+        {
+            let mut edited = false;
+            egui::Area::new(egui::Id::new("revolve_angle_input"))
+                .fixed_pos(pos)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let response = crate::expression_input::ValueInput::from_id(
+                                egui::Id::new(REVOLVE_ANGLE_FIELD_ID),
+                                crate::expression_input::ValueKind::Angle,
+                            )
+                            .hint("360")
+                            .width(64.0)
+                            .show(ui, &mut text, &self.state.doc);
+                            if want_focus {
+                                response.request_focus();
+                            }
+                            if response.changed() {
+                                edited = true;
+                            }
+                            ui.label("deg");
+                            if ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                && response.lost_focus()
+                            {
+                                commit = true;
+                            }
+                        });
                     });
                 });
-            });
+            if let Some(cr) = self.state.creating_revolve.as_mut() {
+                cr.text = text;
+                if edited {
+                    cr.user_edited = true;
+                }
+                if want_focus {
+                    cr.pending_focus = false;
+                }
+            }
+        }
         if commit {
             self.state.apply(Action::CommitRevolve);
         }
@@ -4455,28 +4503,33 @@ impl App {
                 }
             }
         }
-        if let Some(cet) = self.state.creating_edge_treatment.as_mut() {
-            let label = match cet.kind {
+        if let Some((mut text, want_focus, kind)) = self
+            .state
+            .creating_edge_treatment
+            .as_ref()
+            .map(|cet| (cet.text.clone(), cet.pending_focus, cet.kind))
+        {
+            let label = match kind {
                 VertexTreatmentKind::Chamfer => "mm",
                 VertexTreatmentKind::Fillet => "mm r",
             };
-            let want_focus = cet.pending_focus;
+            let mut edited = false;
             egui::Area::new(egui::Id::new("edge_treatment_amount_area"))
                 .fixed_pos(pos)
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        let resp = ui.add(
-                            egui::TextEdit::singleline(&mut cet.text)
-                                .id(id)
-                                .desired_width(64.0),
-                        );
+                        let resp = crate::expression_input::ValueInput::from_id(
+                            id,
+                            crate::expression_input::ValueKind::Length,
+                        )
+                        .width(64.0)
+                        .show(ui, &mut text, &self.state.doc);
                         if resp.changed() {
-                            cet.user_edited = true;
+                            edited = true;
                         }
                         if want_focus {
                             resp.request_focus();
-                            cet.pending_focus = false;
                         }
                         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             commit = true;
@@ -4484,6 +4537,15 @@ impl App {
                         ui.label(label);
                     });
                 });
+            if let Some(cet) = self.state.creating_edge_treatment.as_mut() {
+                cet.text = text;
+                if edited {
+                    cet.user_edited = true;
+                }
+                if want_focus {
+                    cet.pending_focus = false;
+                }
+            }
         }
         if commit {
             if let Some(mut cet) = self.state.creating_edge_treatment.take() {

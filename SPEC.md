@@ -1545,6 +1545,20 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
 
 ### 5.2 Expressions
 - **Any input that accepts a value accepts an expression**, e.g. `1 + 2 + lengthOfThing / 2`.
+- **One standard value input (#456):** numeric fields share `expression_input::ValueInput`
+  — the styled expression field (autocomplete, error tooltips, inline `name=value`
+  definitions) plus a **computed-value label beside the field whenever it differs from
+  what was typed**, units included: a bare `10` in a length field previews `= 10.0 mm`
+  (the default unit made explicit), `1in` previews `= 25.4 mm`, while `12.5 mm` (or any
+  formatting-equivalent like `12.5mm`) previews nothing
+  (`value_input_computed_display`/`canonical_value_text`). Kinds: `Length` (document
+  length unit), `Angle` (document angle unit), `Count` (unitless). The Parameters pane's
+  value cells use it with **definitions disallowed** (the row is the definition) and
+  cycle checking; the repeat panes (3D + in-sketch), Move X/Y/Z/Angle, offset distance,
+  sketch-text size/rotation/wrap, calibration length, and the floating extrude /
+  revolve / chamfer / fillet amount popups all use it. Deliberate exceptions: the
+  drawing view **scale** field (ratio syntax `1:20`) and the page-dimensions editor
+  (inch drag-values).
 - Expressions may reference parameters and other values by name.
 - Expressions support `+ - * /`, parentheses, and a standard math function library
   (trig, sqrt, min/max, etc. — full list **TBD**). **Implemented today (#431/#445):** `max`,

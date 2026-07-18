@@ -1015,9 +1015,7 @@ pub fn parameter_edit_enter_pressed(
 }
 
 pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
-    use crate::expression_input::{
-        length_expression_field_errors, show_length_expression_text_edit, ParameterExpressionContext,
-    };
+    use crate::expression_input::ParameterExpressionContext;
     use egui::{Grid, ScrollArea, TextEdit};
 
     ui.heading(PANE_TITLE);
@@ -1134,23 +1132,21 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
 
                     ui.horizontal(|ui| {
                         if editing_value {
-                            let value_errors = length_expression_field_errors(
-                                &app.parameters_pane.draft,
-                                &app.doc,
-                                Some(&ParameterExpressionContext {
-                                    param_name: param_name.clone(),
-                                    existing_index: Some(index),
-                                }),
-                            );
-                            let response = show_length_expression_text_edit(
-                                ui,
-                                &mut app.parameters_pane.draft,
+                            let param_ctx = ParameterExpressionContext {
+                                param_name: param_name.clone(),
+                                existing_index: Some(index),
+                            };
+                            let exclude = [param_name.as_str()];
+                            let mut draft = app.parameters_pane.draft.clone();
+                            let response = crate::expression_input::ValueInput::from_id(
                                 param_value_id(index),
-                                "",
-                                &value_errors,
-                                &app.doc,
-                                &[param_name.as_str()],
-                            );
+                                crate::expression_input::ValueKind::Length,
+                            )
+                            .no_definitions()
+                            .parameter_context(&param_ctx)
+                            .exclude_names(&exclude)
+                            .show(ui, &mut draft, &app.doc);
+                            app.parameters_pane.draft = draft;
                             if app.parameters_pane.editing_focus {
                                 response.request_focus();
                                 app.parameters_pane.editing_focus = false;
@@ -1249,26 +1245,25 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                         existing_index: None,
                     }
                 });
-                let new_value_errors = length_expression_field_errors(
-                    &app.parameters_pane.new_value,
-                    &app.doc,
-                    new_param_context.as_ref(),
-                );
-                let new_name = app.parameters_pane.new_name.trim();
+                let new_name = app.parameters_pane.new_name.trim().to_string();
                 let exclude_new: Vec<&str> = if new_name.is_empty() {
                     Vec::new()
                 } else {
-                    vec![new_name]
+                    vec![new_name.as_str()]
                 };
-                let value_response = show_length_expression_text_edit(
-                    ui,
-                    &mut app.parameters_pane.new_value,
+                let mut new_value = app.parameters_pane.new_value.clone();
+                let mut input = crate::expression_input::ValueInput::from_id(
                     Id::new(NEW_VALUE_ID),
-                    "value",
-                    &new_value_errors,
-                    &app.doc,
-                    &exclude_new,
-                );
+                    crate::expression_input::ValueKind::Length,
+                )
+                .hint("value")
+                .no_definitions()
+                .exclude_names(&exclude_new);
+                if let Some(ctx) = new_param_context.as_ref() {
+                    input = input.parameter_context(ctx);
+                }
+                let value_response = input.show(ui, &mut new_value, &app.doc);
+                app.parameters_pane.new_value = new_value;
                 if app.parameters_pane.focus_new_value {
                     value_response.request_focus();
                     app.parameters_pane.focus_new_value = false;

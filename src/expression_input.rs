@@ -545,10 +545,238 @@ pub fn show_length_expression_text_edit(
     output.response
 }
 
+/// What a [`ValueInput`] measures — picks the parser, the default unit added to the
+/// computed value, and its display formatting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ValueKind {
+    /// A length in the document's default length unit.
+    Length,
+    /// An angle in the document's default angle unit.
+    Angle,
+    /// A unitless number (e.g. a count).
+    Count,
+}
+
+/// The one standard numeric input (#456): a styled expression field that accepts
+/// variables, expressions, functions, units, and inline `name=value` definitions,
+/// with autocomplete, error tooltips, and the **computed value alongside** whenever
+/// it differs from what was typed (including units — a bare number gains the default
+/// unit in the preview; retyping exactly the computed value hides it).
+pub struct ValueInput<'a> {
+    pub id: Id,
+    pub kind: ValueKind,
+    pub hint: &'a str,
+    /// Inline `name=value` parameter definitions allowed (off e.g. in the Parameters
+    /// pane's value column, where the row *is* the definition).
+    pub allow_definitions: bool,
+    /// Field width; `None` fills the available width.
+    pub width: Option<f32>,
+    /// Cycle/self-reference checking context when editing an existing parameter.
+    pub parameter_context: Option<&'a ParameterExpressionContext>,
+    /// Parameter names excluded from autocomplete (e.g. the parameter being edited).
+    pub exclude_names: &'a [&'a str],
+}
+
+impl<'a> ValueInput<'a> {
+    pub fn new(id: impl std::hash::Hash, kind: ValueKind) -> Self {
+        Self {
+            id: Id::new(id),
+            kind,
+            hint: "",
+            allow_definitions: true,
+            width: None,
+            parameter_context: None,
+            exclude_names: &[],
+        }
+    }
+
+    /// Like [`ValueInput::new`], with an already-built [`Id`].
+    pub fn from_id(id: Id, kind: ValueKind) -> Self {
+        Self { id, ..Self::new("", kind) }
+    }
+
+    pub fn exclude_names(mut self, names: &'a [&'a str]) -> Self {
+        self.exclude_names = names;
+        self
+    }
+
+    pub fn hint(mut self, hint: &'a str) -> Self {
+        self.hint = hint;
+        self
+    }
+
+    pub fn no_definitions(mut self) -> Self {
+        self.allow_definitions = false;
+        self
+    }
+
+    pub fn width(mut self, width: f32) -> Self {
+        self.width = Some(width);
+        self
+    }
+
+    pub fn parameter_context(mut self, ctx: &'a ParameterExpressionContext) -> Self {
+        self.parameter_context = Some(ctx);
+        self
+    }
+
+    /// Render the field (and the computed-value label beside it, when it differs).
+    /// Returns the field's response; `.changed()` reports edits as usual.
+    pub fn show(self, ui: &mut egui::Ui, text: &mut String, doc: &Document) -> Response {
+        let mut errors = length_expression_field_errors(text, doc, self.parameter_context);
+        if !self.allow_definitions && text.contains('=') {
+            errors.insert(0, "name=value definitions aren't allowed here".to_string());
+        }
+        let resp = match self.width {
+            Some(w) => {
+                ui.scope(|ui| {
+                    ui.set_max_width(w);
+                    show_length_expression_text_edit(
+                        ui,
+                        text,
+                        self.id,
+                        self.hint,
+                        &errors,
+                        doc,
+                        self.exclude_names,
+                    )
+                })
+                .inner
+            }
+            None => show_length_expression_text_edit(
+                ui,
+                text,
+                self.id,
+                self.hint,
+                &errors,
+                doc,
+                self.exclude_names,
+            ),
+        };
+        if let Some(computed) = value_input_computed_display(text, self.kind, doc) {
+            ui.label(
+                egui::RichText::new(format!("= {computed}"))
+                    .color(egui::Color32::from_gray(140))
+                    .size(11.0),
+            );
+        }
+        resp
+    }
+}
+
+/// The computed-value text a [`ValueInput`] shows beside the field, or `None` when the
+/// input already reads identically (ignoring whitespace and case, so `12.5mm` matches
+/// `12.5 mm`).
+pub fn value_input_computed_display(
+    text: &str,
+    kind: ValueKind,
+    doc: &Document,
+) -> Option<String> {
+    let t = text.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let display = match kind {
+        ValueKind::Length => {
+            let v = crate::value::computed_length_in_doc(t, doc)?;
+            crate::value::format_length_display_in(v, doc.default_length_unit)
+        }
+        ValueKind::Angle => {
+            let v = crate::value::computed_angle_in_doc(t, doc)?;
+            crate::value::format_angle_display_in(v, doc.default_angle_unit)
+        }
+        ValueKind::Count => {
+            let v = crate::value::computed_length_in_doc(t, doc)?;
+            let rounded = v.round();
+            if (v - rounded).abs() > 1e-4 {
+                format!("{v}")
+            } else {
+                format!("{}", rounded as i64)
+            }
+        }
+    };
+    // For inline definitions, compare the right-hand side against the value.
+    let typed = match t.split_once('=') {
+        Some((_, rhs)) => rhs,
+        None => t,
+    };
+    if canonical_value_text(typed) == canonical_value_text(&display) {
+        return None;
+    }
+    Some(display)
+}
+
+/// Canonical form for comparing a typed value against its computed display: lowercase,
+/// whitespace dropped, and the leading number normalized (`45.0 deg` == `45deg`).
+fn canonical_value_text(s: &str) -> String {
+    let squashed: String = s
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect();
+    let split = squashed
+        .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+'))
+        .unwrap_or(squashed.len());
+    let (num, rest) = squashed.split_at(split);
+    match num.parse::<f64>() {
+        Ok(v) => format!("{v}{rest}"),
+        Err(_) => squashed,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::parameters::add_parameter;
+
+    /// #456: the computed value shows exactly when it differs from the typed text —
+    /// a bare number gains the default unit, an exact match (modulo spacing/case) hides.
+    #[test]
+    fn value_input_computed_display_semantics() {
+        let mut doc = Document::default();
+        add_parameter(&mut doc, "gap".to_string(), "3mm".to_string()).unwrap();
+        // Bare number: default unit added to the preview.
+        assert_eq!(
+            value_input_computed_display("12.5", ValueKind::Length, &doc),
+            Some("12.5 mm".to_string())
+        );
+        // Identical including units (whitespace-insensitive): hidden.
+        assert_eq!(value_input_computed_display("12.5 mm", ValueKind::Length, &doc), None);
+        assert_eq!(value_input_computed_display("12.5mm", ValueKind::Length, &doc), None);
+        // Unit conversion shows.
+        assert_eq!(
+            value_input_computed_display("1in", ValueKind::Length, &doc),
+            Some("25.4 mm".to_string())
+        );
+        // Parameters and expressions show their value.
+        assert_eq!(
+            value_input_computed_display("gap", ValueKind::Length, &doc),
+            Some("3.0 mm".to_string())
+        );
+        assert_eq!(
+            value_input_computed_display("gap * 2", ValueKind::Length, &doc),
+            Some("6.0 mm".to_string())
+        );
+        // Inline definitions preview their right-hand side.
+        assert_eq!(
+            value_input_computed_display("a = 2 + 3", ValueKind::Length, &doc),
+            Some("5.0 mm".to_string())
+        );
+        // Counts stay unitless and hide when identical.
+        assert_eq!(value_input_computed_display("4", ValueKind::Count, &doc), None);
+        assert_eq!(
+            value_input_computed_display("2*2", ValueKind::Count, &doc),
+            Some("4".to_string())
+        );
+        // Angles use the angle parser and default angle unit.
+        assert_eq!(value_input_computed_display("45deg", ValueKind::Angle, &doc), None);
+        assert_eq!(
+            value_input_computed_display("45deg + 45deg", ValueKind::Angle, &doc),
+            Some("90.0 deg".to_string())
+        );
+        // Empty shows nothing.
+        assert_eq!(value_input_computed_display("", ValueKind::Length, &doc), None);
+    }
 
     #[test]
     fn length_expression_field_errors_reports_unknown_variable() {
