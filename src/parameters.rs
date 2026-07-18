@@ -492,6 +492,21 @@ pub fn derived_source_from_selection(
     }
 }
 
+/// The derived parameter a Dimension-tool click should create in 3D mode (#453).
+/// Pair measurements fire as soon as the pair completes; a lone line's length only
+/// fires on a plain click, since an additive (shift) click is building a pair.
+pub fn dimension_click_derived_source(
+    doc: &Document,
+    selection: &crate::selection::SceneSelection,
+    additive: bool,
+) -> Option<ParameterSource> {
+    let source = derived_source_from_selection(doc, selection)?;
+    if additive && matches!(source, ParameterSource::LineLength(_)) {
+        return None;
+    }
+    Some(source)
+}
+
 /// Create a read-only parameter driven by `source` (#432). The generalization of
 /// [`add_computed_parameter_from_line_length`] to every derived-source kind.
 pub fn add_derived_parameter(
@@ -1693,6 +1708,61 @@ mod tests {
         commit_new_parameter(&mut state).unwrap();
         assert_eq!(state.doc.parameters.len(), 2);
         assert_eq!(state.doc.parameters[1].expression, "A + 5mm");
+    }
+
+    /// #453: the Dimension tool measures in 3D mode — a plain click on a line captures
+    /// its length; an additive click defers (a pair is being built); completed pairs
+    /// fire regardless of the modifier.
+    #[test]
+    fn dimension_tool_click_measures_in_3d_mode() {
+        use crate::hierarchy::SceneElement;
+        use crate::model::{FaceId, Line, ParameterSource};
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 40.0, 0.0)); // 0
+        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 10.0, 40.0, 10.0)); // 1 ∥ 0
+        let mut sel = crate::selection::SceneSelection::default();
+
+        sel.insert(SceneElement::Line(0));
+        assert_eq!(
+            dimension_click_derived_source(&doc, &sel, false),
+            Some(ParameterSource::LineLength(0)),
+            "plain click on a line should capture its length"
+        );
+        assert_eq!(
+            dimension_click_derived_source(&doc, &sel, true),
+            None,
+            "shift+click on a lone line is building a pair — don't fire yet"
+        );
+
+        sel.insert(SceneElement::Line(1));
+        assert_eq!(
+            dimension_click_derived_source(&doc, &sel, true),
+            Some(ParameterSource::LineDistance(0, 1)),
+            "a completed pair fires regardless of the modifier"
+        );
+    }
+
+    /// #453: with a measuring selection already made, switching to the Dimension tool
+    /// in 3D mode captures the derived parameter immediately and clears the selection.
+    #[test]
+    fn set_dimension_tool_with_selection_creates_derived_parameter_in_3d() {
+        use crate::actions::{Action, Tool};
+        use crate::hierarchy::SceneElement;
+        use crate::model::{FaceId, Line, ParameterSource, ShapeKind};
+        let mut state = AppState::default();
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 40.0, 0.0));
+        state.doc.shape_order.push(ShapeKind::Line);
+        state.scene_selection.insert(SceneElement::Line(0));
+        state.apply(Action::SetTool(Tool::Dimension));
+        assert_eq!(state.doc.parameters.len(), 1);
+        assert_eq!(
+            state.doc.parameters[0].source,
+            Some(ParameterSource::LineLength(0))
+        );
+        assert!(state.scene_selection.is_empty());
+        assert!(state.status.contains("Added derived parameter"));
     }
 
     fn doc_with_unconstrained_line(length: f32) -> (Document, usize) {

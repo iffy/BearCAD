@@ -7048,11 +7048,23 @@ fn resolve_viewport_hover_highlight(
         Tool::Dimension
             if !editing_committed_dim && !over_committed_dim_label && !dim_label_drag =>
         {
-            let session = sketch_session?;
             let gp = cam.ground_point(pp, viewport, vp);
             let target = resolve_pick_target(pp, project, gp, doc, occlusion)?;
-            crate::constraints::distance_target_from_pick(doc, session.sketch, &target.kind)
-                .map(|_| gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind))
+            match sketch_session {
+                Some(session) => crate::constraints::distance_target_from_pick(
+                    doc,
+                    session.sketch,
+                    &target.kind,
+                )
+                .map(|_| gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind)),
+                // 3D mode (#453): glow the measurable line or point a click would capture
+                // as a derived parameter.
+                None => matches!(
+                    scene_element_from_pick(&target.kind),
+                    Some(SceneElement::Line(_) | SceneElement::Point(_))
+                )
+                .then_some(gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind)),
+            }
         }
         Tool::Select | Tool::Constraint
             if !editing_committed_dim && !over_committed_dim_label && !dim_label_drag =>
@@ -11911,7 +11923,8 @@ impl App {
             });
         }
 
-        if matches!(self.state.tool, Tool::Select | Tool::Constraint)
+        if (matches!(self.state.tool, Tool::Select | Tool::Constraint)
+            || (self.state.tool == Tool::Dimension && self.state.sketch_session.is_none()))
             && self.state.editing_committed_dim.is_none()
             && !over_committed_dim_label
             && self.dim_label_drag.is_none()
@@ -11970,6 +11983,25 @@ impl App {
                         }
                     } else if !additive {
                         self.state.apply(Action::ClearSceneSelection);
+                    }
+                    // Dimension tool in 3D mode (#453): the click above just updated the
+                    // selection — if it now measures something, capture it as a derived
+                    // parameter and clear for the next measurement.
+                    if self.state.tool == Tool::Dimension {
+                        if let Some(source) = parameters::dimension_click_derived_source(
+                            &self.state.doc,
+                            &self.state.scene_selection,
+                            additive,
+                        ) {
+                            let before = self.state.doc.parameters.len();
+                            self.state.apply(Action::CreateDerivedParameter {
+                                source,
+                                name: None,
+                            });
+                            if self.state.doc.parameters.len() > before {
+                                self.state.scene_selection.clear();
+                            }
+                        }
                     }
                 } else if !self.gpu_viewport && !suppress_hover_highlight {
                     if let Some(target) = resolve_pick_target(pp, &project, gp, &self.state.doc, pick_occlusion) {
@@ -14368,7 +14400,7 @@ impl App {
                 if self.state.editing_committed_dim.is_some() {
                     "Edit dimension • Enter to commit • Esc to cancel"
                 } else if self.state.sketch_session.is_none() {
-                    "d: dimension  •  Open a sketch to add distance constraints"
+                    "d: dimension  •  Click a line to capture its length as a parameter • Shift+click two points or lines for a distance/angle"
                 } else {
                     "d: dimension  •  Select geometry, press D, or click a segment • Enter commit"
                 }

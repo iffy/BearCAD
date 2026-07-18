@@ -26,3 +26,10 @@ the angle between them. Type the value, press **Enter**.
 A fully dimensioned shape draws in the
 [fully-constrained color](/docs/styles#lines) and can no longer be dragged out of shape —
 that's the goal: a sketch that only changes when you change a number.
+
+## In 3D mode
+
+Outside a sketch, the Dimension tool **measures**: click a line to capture its length as a
+[derived parameter](/docs/parameters#derived-parameters); Shift+click two points or two
+lines to capture the distance (or angle) between them. The parameter lands in the
+Parameters pane, re-measures as the geometry changes, and works in any expression.

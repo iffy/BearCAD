@@ -1512,6 +1512,12 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   in the document length unit, angles in the document angle unit).
 - Focusing a derived parameter's row highlights its defining elements
   (`derived_source_elements` feeds `elements_using_parameter`).
+- The **Dimension tool measures in 3D mode** (#453): outside a sketch it selects like the
+  Select tool (measurable lines/points hover-glow), and as soon as the selection measures
+  something the derived parameter is created and the selection clears
+  (`parameters::dimension_click_derived_source`). A **plain click on a line** captures its
+  length immediately; an **additive (shift) click** on a lone line defers — it's building
+  a pair — while completed pairs (two points, two lines) fire regardless of the modifier.
 - Scriptable: `bearcad.derive_parameter{ kind = "line_length"|"point_distance"|
   "line_distance"|"line_angle", a =, b =, name = }`.
 

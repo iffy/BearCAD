@@ -4566,7 +4566,10 @@ impl AppState {
                     Tool::Dimension if self.sketch_session.is_some() => {
                         "Dimension tool — select geometry, then D, or click a segment".to_string()
                     }
-                    Tool::Dimension => "Dimension tool — open a sketch first".to_string(),
+                    Tool::Dimension => {
+                        "Dimension tool — click a line to capture its length as a parameter"
+                            .to_string()
+                    }
                     Tool::Constraint if self.sketch_session.is_some() => {
                         "Constraint tool — select geometry, then pick a constraint".to_string()
                     }
@@ -4621,6 +4624,23 @@ impl AppState {
                 };
                 if tool == Tool::Dimension {
                     self.try_begin_dimension_from_selection();
+                    // 3D mode (#453): switching to the tool with a measuring selection
+                    // already made captures it as a derived parameter right away.
+                    if self.sketch_session.is_none() {
+                        if let Some(source) = crate::parameters::derived_source_from_selection(
+                            &self.doc,
+                            &self.scene_selection,
+                        ) {
+                            if let Ok(index) =
+                                crate::parameters::add_derived_parameter(&mut self.doc, source, None)
+                            {
+                                let name = self.doc.parameters[index].name.clone();
+                                self.refresh_document_health();
+                                self.status = format!("Added derived parameter {name}");
+                                self.scene_selection.clear();
+                            }
+                        }
+                    }
                 }
                 ActionResult::Ok
             }
