@@ -6452,6 +6452,9 @@ impl AppState {
                         } else {
                             ce.faces.push(face);
                         }
+                        // Re-focus the distance field (#437): the face click cleared it,
+                        // and typing an amount should work after every face pick.
+                        ce.pending_focus = true;
                     }
                     // A face on a different plane starts a fresh extrusion.
                     _ => {

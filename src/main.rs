@@ -2154,17 +2154,32 @@ impl App {
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        let resp = ui.add(
-                            egui::TextEdit::singleline(&mut ce.text)
-                                .id(id)
-                                .desired_width(64.0),
-                        );
+                        let output = egui::TextEdit::singleline(&mut ce.text)
+                            .id(id)
+                            .desired_width(64.0)
+                            .show(ui);
+                        let resp = output.response;
                         if resp.changed() {
                             ce.user_edited = true;
                         }
                         if want_focus {
+                            // Clicking a face focuses the field with the default distance
+                            // selected (#437), so typing `4ft` replaces it immediately.
+                            // Focus can take a frame to land (the face click itself clears
+                            // focus), so keep requesting until it does, then select-all.
                             resp.request_focus();
-                            ce.pending_focus = false;
+                            if resp.has_focus() {
+                                let len = ce.text.chars().count();
+                                let mut st = output.state;
+                                st.cursor.set_char_range(Some(
+                                    egui::text::CCursorRange::two(
+                                        egui::text::CCursor::default(),
+                                        egui::text::CCursor::new(len),
+                                    ),
+                                ));
+                                st.store(ctx, id);
+                                ce.pending_focus = false;
+                            }
                         }
                         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             commit = true;

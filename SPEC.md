@@ -390,7 +390,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     semi-transparent ghost preview is shown (the preview, not the old solid, reflects the
     in-progress edit). The gizmo handle floats a little above the solid's top face (rather than
     sitting on it), and typing a digit while the tool is active focuses the distance field and
-    overwrites its value. The extrusion (and its body) nests under the sketch it was built from.
+    overwrites its value. Clicking a face also **focuses the distance field with its value
+    selected** (#437) — every face pick re-focuses it — so an amount like `4ft` can be typed
+    immediately, replacing the default. The extrusion (and its body) nests under the sketch it was built from.
   - **Push/pull a bare body face directly (#122):** the Extrude tool also accepts a click
     directly on an existing body's own cap or side wall (an `ExtrudeCap`/`ExtrudeSide`), no
     separate sketch needed — "drag a face straight off a solid," like many CAD tools. This
