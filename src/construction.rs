@@ -656,7 +656,7 @@ pub fn offset_gizmo_hit(
     let Some(sp) = project(offset_handle(origin, normal, offset)) else {
         return false;
     };
-    (screen - sp).length() <= AXIS_GIZMO_HANDLE_HIT_RADIUS_PX
+    (screen - sp).length() <= crate::touch::hit(AXIS_GIZMO_HANDLE_HIT_RADIUS_PX)
 }
 
 /// Hit-test axis gizmo handles at a screen position.
@@ -674,7 +674,7 @@ pub fn axis_gizmo_hit(
     }
     let angle_pos = axis_angle_handle(origin, direction, angle_deg);
     if let Some(sp) = project(angle_pos) {
-        if (screen - sp).length() <= AXIS_GIZMO_HANDLE_HIT_RADIUS_PX {
+        if (screen - sp).length() <= crate::touch::hit(AXIS_GIZMO_HANDLE_HIT_RADIUS_PX) {
             return Some(AxisGizmoHit::Angle);
         }
     }
@@ -1493,10 +1493,12 @@ fn segment_pick_distance(
     let end_a = (screen - pa).length();
     let end_b = (screen - pb).length();
     let dist = seg_dist.min(end_a).min(end_b);
-    let threshold = if end_a <= POINT_PICK_RADIUS_PX || end_b <= POINT_PICK_RADIUS_PX {
-        POINT_PICK_RADIUS_PX
+    let threshold = if end_a <= crate::touch::hit(POINT_PICK_RADIUS_PX)
+        || end_b <= crate::touch::hit(POINT_PICK_RADIUS_PX)
+    {
+        crate::touch::hit(POINT_PICK_RADIUS_PX)
     } else {
-        LINE_PICK_RADIUS_PX
+        crate::touch::hit(LINE_PICK_RADIUS_PX)
     };
     if dist <= threshold {
         Some(dist)
@@ -1558,7 +1560,7 @@ pub fn nearest_sketch_point_in_sketch(
             return;
         };
         let dist = (screen - sp).length();
-        if dist <= POINT_PICK_RADIUS_PX && best.as_ref().is_none_or(|(_, d)| dist < *d) {
+        if dist <= crate::touch::hit(POINT_PICK_RADIUS_PX) && best.as_ref().is_none_or(|(_, d)| dist < *d) {
             best = Some((point, dist));
         }
     };
@@ -1642,7 +1644,7 @@ pub fn nearest_sketch_point_in_sketch(
                         continue;
                     };
                     let dist = (screen - sp).length();
-                    if dist <= POINT_PICK_RADIUS_PX && best.as_ref().is_none_or(|(_, d)| dist < *d) {
+                    if dist <= crate::touch::hit(POINT_PICK_RADIUS_PX) && best.as_ref().is_none_or(|(_, d)| dist < *d) {
                         best = Some((
                             ConstraintPoint::FaceVertex {
                                 face: face.clone(),
@@ -1732,7 +1734,7 @@ pub fn nearest_sketch_line_in_sketch(
             let dn = d / d.length();
             let rel = screen - p0;
             let dist = (rel.x * dn.y - rel.y * dn.x).abs();
-            if dist <= LINE_PICK_RADIUS_PX
+            if dist <= crate::touch::hit(LINE_PICK_RADIUS_PX)
                 && best.as_ref().is_none_or(|(_, best_d)| dist < *best_d)
             {
                 best = Some((ConstraintLine::OriginAxis(axis), dist));
@@ -1757,7 +1759,7 @@ fn nearest_sketch_point(
             return;
         };
         let dist = (screen - sp).length();
-        if dist <= POINT_PICK_RADIUS_PX
+        if dist <= crate::touch::hit(POINT_PICK_RADIUS_PX)
             && best.as_ref().is_none_or(|(_, d)| dist < *d)
         {
             best = Some((PickTargetKind::Point(point), dist));
@@ -1938,7 +1940,7 @@ pub fn nearest_body_vertex(
                     continue;
                 };
                 let dist = (screen - sp).length();
-                if dist <= POINT_PICK_RADIUS_PX && best.as_ref().is_none_or(|(_, d)| dist < *d) {
+                if dist <= crate::touch::hit(POINT_PICK_RADIUS_PX) && best.as_ref().is_none_or(|(_, d)| dist < *d) {
                     best = Some((PickTargetKind::BodyVertex { body: bi, position: p }, dist));
                 }
             }

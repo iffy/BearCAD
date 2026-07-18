@@ -2311,6 +2311,15 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Touch mode: force on/off (otherwise auto-detected from the first real touch).
+    api.set(
+        "touch",
+        lua.create_function(|lua, on: Option<bool>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::SetTouchMode { on: on.unwrap_or(true) }) }
+        })?,
+    )?;
+
     // Interactive tutorials: start by registry name, advance a manual step, end, or
     // read the current step index (nil when none is running).
     api.set(
@@ -3765,7 +3774,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
             "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",
             "camera", "zoom_fit", "elements_view", "auto_zoom",
-            "tutorial", "tutorial_next", "tutorial_end", "tutorial_step",
+            "tutorial", "tutorial_next", "tutorial_end", "tutorial_step", "touch",
             "move", "click", "move_ground", "click_ground",
             "drag", "right_drag", "right_drag_pan",
             "key", "keydown", "keyup", "type",

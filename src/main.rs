@@ -50,6 +50,7 @@ mod polygon_boolean;
 mod model;
 mod offset;
 mod tutorial;
+mod touch;
 mod menu_command;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_menu;
@@ -163,11 +164,21 @@ fn uses_deferred_launch_maximize() -> bool {
 const MACOS_LAUNCH_MAXIMIZE_DELAY_FRAMES: u8 = 2;
 
 fn initial_launch_maximize_frames() -> u8 {
-    if uses_deferred_launch_maximize() {
+    if window_size_override().is_some() {
+        0
+    } else if uses_deferred_launch_maximize() {
         MACOS_LAUNCH_MAXIMIZE_DELAY_FRAMES
     } else {
         0
     }
+}
+
+/// Testing override: `BEARCAD_WINDOW=390x760` opens a fixed-size window (e.g.
+/// phone-sized, to exercise the compact touch layout) instead of maximizing.
+fn window_size_override() -> Option<[f32; 2]> {
+    let spec = std::env::var("BEARCAD_WINDOW").ok()?;
+    let (w, h) = spec.split_once(['x', 'X'])?;
+    Some([w.trim().parse().ok()?, h.trim().parse().ok()?])
 }
 
 fn tick_launch_maximize(frames_remaining: &mut u8, ctx: &egui::Context) {
@@ -183,10 +194,10 @@ fn tick_launch_maximize(frames_remaining: &mut u8, ctx: &egui::Context) {
 #[cfg(not(target_arch = "wasm32"))]
 fn native_options() -> eframe::NativeOptions {
     let mut viewport = egui::ViewportBuilder::default()
-        .with_inner_size([960.0, 640.0])
+        .with_inner_size(window_size_override().unwrap_or([960.0, 640.0]))
         .with_title("BearCAD")
         .with_icon(app_icon::load_for_viewport());
-    if !uses_deferred_launch_maximize() {
+    if window_size_override().is_none() && !uses_deferred_launch_maximize() {
         viewport = viewport.with_maximized(true);
     }
 
@@ -597,6 +608,8 @@ struct App {
     /// In-flight in-sketch selection move on the Move tool's gizmo (#306).
     sketch_move_drag: Option<SketchMoveDrag>,
     launch_maximize_frames_remaining: u8,
+    /// One-shot: the compact layout has hidden the default panes.
+    compact_layout_initialized: bool,
     gpu_viewport: bool,
     gpu_view_cube: bool,
     /// Persistent physics state for the Elements pane's force-directed Graph view (#94).
@@ -1064,6 +1077,7 @@ impl App {
             selected_bezier_handle: None,
             viewport_context_menu: None,
             launch_maximize_frames_remaining: initial_launch_maximize_frames(),
+            compact_layout_initialized: false,
             gpu_viewport: gpu_viewport::install(cc),
             gpu_view_cube: gpu_view_cube::install(cc),
             graph_layout: hierarchy::GraphLayout::default(),
@@ -3202,7 +3216,7 @@ impl App {
                     .map(|c| c.evaluated_angle_deg(&self.state.doc))
                     .unwrap_or(360.0);
                 let handle = revolve_arc_handle_world(center, axis, zero_dir, radius, angle);
-                if project(handle).is_some_and(|hp| (hp - pp).length() <= REVOLVE_ARC_HANDLE_PICK_PX)
+                if project(handle).is_some_and(|hp| (hp - pp).length() <= touch::hit(REVOLVE_ARC_HANDLE_PICK_PX))
                 {
                     self.revolve_gizmo_drag = Some((pp, angle));
                     if let Some(c) = self.state.creating_revolve.as_mut() {
@@ -4795,6 +4809,15 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // Tutorial anchors are re-recorded as this frame's UI renders.
         self.state.tutorial_anchor_rects.clear();
+        touch::detect(ctx);
+        // The first time the compact (phone) layout engages, start with the panes
+        // closed — three floating windows over a 390-px viewport is all window.
+        if touch::compact(ctx) && !self.compact_layout_initialized {
+            self.compact_layout_initialized = true;
+            for pane in [Pane::Hierarchy, Pane::Context, Pane::Parameters] {
+                self.state.apply(Action::SetPaneVisible { pane, visible: false });
+            }
+        }
         tick_launch_maximize(&mut self.launch_maximize_frames_remaining, ctx);
         theme::apply(ctx);
 
@@ -4845,6 +4868,11 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("toolbar")
             .frame(theme::panel_frame())
             .show(ctx, |ui| {
+            // On phone-width screens the toolbar overflows: scroll it sideways (the
+            // pane toggles live in the always-visible status bar).
+            egui::ScrollArea::horizontal()
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .show(ui, |ui| {
             ui.horizontal(|ui| {
                 // Workbench toolbars (#254/#271): the Drawing workbench (a drawing open) shows
                 // only the tools that apply to drawings — Select and Dimension (#295: no Move;
@@ -5004,6 +5032,7 @@ impl eframe::App for App {
                     self.state.apply(Action::Clear);
                 }
             });
+            });
         });
 
         self.show_json_dialog(ctx);
@@ -5087,9 +5116,12 @@ impl eframe::App for App {
                 .unwrap_or_else(|| "(unsaved)".to_string());
             let status = self.state.status.clone();
             ui.horizontal(|ui| {
-                ui.label(name);
-                ui.separator();
-                ui.label(status);
+                // Compact: the filename gives way and the status truncates into the
+                // space the right-side cluster leaves, so nothing overlaps.
+                if !touch::compact(ctx) {
+                    ui.label(name);
+                    ui.separator();
+                }
                 // Update badge (#427): a bright button in the bottom-right corner when a
                 // newer release exists; unobtrusive — no popup, no interruption. The
                 // tutorial launcher sits just left of it.
@@ -5097,6 +5129,32 @@ impl eframe::App for App {
                     #[cfg(not(target_arch = "wasm32"))]
                     self.show_update_badge(ui, ctx);
                     self.show_tutorial_button(ui);
+                    // Compact layout: the docked panes float as windows; these always-
+                    // visible toggles open and close them.
+                    if touch::compact(ctx) {
+                        for (label, pane) in [
+                            ("Params", Pane::Parameters),
+                            ("Context", Pane::Context),
+                            ("Elements", Pane::Hierarchy),
+                        ] {
+                            if ui
+                                .selectable_label(
+                                    self.state.panes.is_visible(pane),
+                                    egui::RichText::new(label).size(11.0),
+                                )
+                                .clicked()
+                            {
+                                self.state.apply(Action::TogglePane(pane));
+                            }
+                        }
+                    }
+                    // The status message fills whatever's left, truncating as needed.
+                    ui.with_layout(
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.add(egui::Label::new(status).truncate());
+                        },
+                    );
                 });
             });
         });
@@ -5160,11 +5218,7 @@ impl eframe::App for App {
             let mut add_component: Option<Option<usize>> = None;
             let mut move_to_component: Option<(SceneElement, Option<usize>)> = None;
             let mut activate_component: Option<Option<usize>> = None;
-            egui::SidePanel::left("tree")
-                .resizable(true)
-                .default_width(220.0)
-                .frame(theme::panel_frame())
-                .show(ctx, |ui| {
+            let pane_kept_open = show_pane_shell(ctx, "tree", "Elements", false, 220.0, None, |ui| {
                     let mut queue_edit_sketch = |sketch: SketchId| {
                         edit_sketch = Some(sketch);
                     };
@@ -5297,6 +5351,9 @@ impl eframe::App for App {
             if let Some((element, additive)) = click_element {
                 self.state.apply(Action::ClickSceneElement { element, additive });
             }
+            if !pane_kept_open {
+                self.state.apply(Action::SetPaneVisible { pane: Pane::Hierarchy, visible: false });
+            }
             if let Some(sketch) = edit_sketch {
                 self.state.apply(Action::OpenSketch {
                     sketch,
@@ -5384,13 +5441,11 @@ impl eframe::App for App {
         // Drawings (#378), where editing a parameter rebuilds the model and the open drawing's
         // views update live.
         if self.state.panes.is_visible(Pane::Parameters) {
-            egui::SidePanel::right("parameters")
-                .resizable(true)
-                .default_width(240.0)
-                .frame(theme::panel_frame())
-                .show(ctx, |ui| {
-                    parameters::show_pane(ui, &mut self.state);
-                });
+            if !show_pane_shell(ctx, "parameters", "Parameters", true, 240.0, None, |ui| {
+                parameters::show_pane(ui, &mut self.state);
+            }) {
+                self.state.apply(Action::SetPaneVisible { pane: Pane::Parameters, visible: false });
+            }
         }
 
         if self.state.panes.is_visible(Pane::Context) {
@@ -6110,12 +6165,7 @@ impl eframe::App for App {
             let mut slice_edit: Option<context::SliceEdit> = None;
             let mut slice_edit_begin: Option<usize> = None;
             let mut revolve_edit_begin: Option<usize> = None;
-            egui::SidePanel::right("context")
-                .resizable(true)
-                .default_width(200.0)
-                .max_width(280.0)
-                .frame(theme::panel_frame())
-                .show(ctx, |ui| {
+            let pane_kept_open = show_pane_shell(ctx, "context", "Context", true, 200.0, Some(280.0), |ui| {
                     context::show_pane(
                         ui,
                         ctx,
@@ -6164,6 +6214,9 @@ impl eframe::App for App {
                         &mut |control, text| calibrate_apply = Some((control, text)),
                     );
                 });
+            if !pane_kept_open {
+                self.state.apply(Action::SetPaneVisible { pane: Pane::Context, visible: false });
+            }
             if let Some(edit) = revolve_edit {
                 let cr = self
                     .state
@@ -7109,6 +7162,54 @@ const DIM_INPUT_MIN_TEXT_WIDTH: f32 = 48.0;
 /// Approximate monospace glyph width at 13pt (used for layout sizing).
 const DIM_INPUT_CHAR_WIDTH: f32 = 7.8;
 
+/// Container for a side pane: a docked `SidePanel` normally, a closable floating
+/// window over the viewport in the compact (phone) layout. Returns false when the
+/// window's close button dismissed it, so the caller can hide the pane.
+fn show_pane_shell(
+    ctx: &egui::Context,
+    id: &'static str,
+    title: &'static str,
+    right: bool,
+    default_width: f32,
+    max_width: Option<f32>,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) -> bool {
+    if touch::compact(ctx) {
+        let mut open = true;
+        let screen = ctx.screen_rect();
+        let width = default_width.min(screen.width() - 24.0);
+        let pos = if right {
+            egui::pos2(screen.right() - width - 8.0, screen.top() + 44.0)
+        } else {
+            egui::pos2(screen.left() + 8.0, screen.top() + 44.0)
+        };
+        egui::Window::new(title)
+            .id(egui::Id::new(id))
+            .open(&mut open)
+            .default_pos(pos)
+            .default_width(width)
+            .max_height(screen.height() * 0.7)
+            .vscroll(true)
+            .show(ctx, |ui| add_contents(ui));
+        open
+    } else {
+        let panel = if right {
+            egui::SidePanel::right(id)
+        } else {
+            egui::SidePanel::left(id)
+        };
+        let mut panel = panel
+            .resizable(true)
+            .default_width(default_width)
+            .frame(theme::panel_frame());
+        if let Some(m) = max_width {
+            panel = panel.max_width(m);
+        }
+        panel.show(ctx, |ui| add_contents(ui));
+        true
+    }
+}
+
 fn build_gpu_dimension_labels(
     ctx: &egui::Context,
     layouts: &[CommittedDimLayout],
@@ -7433,7 +7534,7 @@ fn resolve_viewport_hover_highlight(
             if let Some(session) = sketch_session {
                 if let Some(frame) = sketch_geometry_frame(doc, session.sketch) {
                     if project(frame.origin).is_some_and(|op| {
-                        (op - pp).length() <= construction::POINT_PICK_RADIUS_PX
+                        (op - pp).length() <= touch::hit(construction::POINT_PICK_RADIUS_PX)
                     }) {
                         return Some(gpu_viewport::ViewportHoverHighlight::Element(
                             SceneElement::Origin,
@@ -9615,7 +9716,7 @@ fn handle_vertex_drag(
             // vertex is nearer (that pick returned above), so a coincident vertex still wins.
             if let Some(frame) = sketch_geometry_frame(&state.doc, session.sketch) {
                 let near_origin = project(frame.origin)
-                    .is_some_and(|op| (op - pp).length() <= construction::POINT_PICK_RADIUS_PX);
+                    .is_some_and(|op| (op - pp).length() <= touch::hit(construction::POINT_PICK_RADIUS_PX));
                 if near_origin {
                     state.apply(Action::ClickSceneElement {
                         element: SceneElement::Origin,
@@ -9801,7 +9902,7 @@ fn handle_text_width_drag(
                             continue;
                         };
                         let dist = (pp - sp).length();
-                        if dist <= construction::POINT_PICK_RADIUS_PX
+                        if dist <= touch::hit(construction::POINT_PICK_RADIUS_PX)
                             && best.is_none_or(|(_, d)| dist < d)
                         {
                             best = Some((left, dist));
@@ -9904,7 +10005,7 @@ fn nearest_bezier_handle_in_sketch(
                 continue;
             };
             let dist = (screen - sp).length();
-            if dist <= construction::POINT_PICK_RADIUS_PX
+            if dist <= touch::hit(construction::POINT_PICK_RADIUS_PX)
                 && best.as_ref().is_none_or(|(_, _, d)| dist < *d)
             {
                 best = Some((li, near_start, dist));
@@ -11814,6 +11915,58 @@ impl App {
                     log.borrow_mut().note_zoom(scroll);
                 }
             }
+            // Trackpad pinches arrive as discrete Zoom events (macOS pinch, browser
+            // ctrl+wheel): same conversion as a touch pinch.
+            let pinch: f32 = ui.input(|i| {
+                i.events
+                    .iter()
+                    .filter_map(|e| match e {
+                        egui::Event::Zoom(z) => Some(*z),
+                        _ => None,
+                    })
+                    .product()
+            });
+            if (pinch - 1.0).abs() > 1e-4 {
+                let focal = response.hover_pos().unwrap_or(viewport.center());
+                let scroll = touch::zoom_factor_to_scroll(pinch);
+                self.state.cam.zoom(scroll, focal, viewport);
+                if let Some(log) = &self.state.command_log {
+                    log.borrow_mut().note_zoom(scroll);
+                }
+            }
+        }
+        // Touch navigation: two fingers pan, a pinch zooms about the gesture centre,
+        // and with the Select tool in 3D a one-finger drag orbits — fingers have no
+        // right button.
+        let mut touch_navigating = false;
+        if !fps_active {
+            if let Some(mt) = ui.input(|i| i.multi_touch()) {
+                touch_navigating = true;
+                if mt.translation_delta != egui::Vec2::ZERO {
+                    self.state.cam.pan(mt.translation_delta, viewport.height());
+                    if let Some(log) = &self.state.command_log {
+                        log.borrow_mut().note_pan(mt.translation_delta);
+                    }
+                }
+                if (mt.zoom_delta - 1.0).abs() > 1e-4 {
+                    let scroll = touch::zoom_factor_to_scroll(mt.zoom_delta);
+                    self.state.cam.zoom(scroll, mt.center_pos, viewport);
+                    if let Some(log) = &self.state.command_log {
+                        log.borrow_mut().note_zoom(scroll);
+                    }
+                }
+            } else if touch::active()
+                && self.state.tool == Tool::Select
+                && self.state.sketch_session.is_none()
+                && response.dragged_by(egui::PointerButton::Primary)
+            {
+                touch_navigating = true;
+                let delta = response.drag_delta();
+                self.state.cam.orbit(delta);
+                if let Some(log) = &self.state.command_log {
+                    log.borrow_mut().note_orbit(delta);
+                }
+            }
         }
         if fps_active {
             draw_fps_crosshair(&painter, viewport);
@@ -11862,7 +12015,8 @@ impl App {
             || self.state.line_drag_session.is_some()
             || self.dim_label_drag.is_some()
             || self.angle_gizmo_drag.is_some()
-            || response.dragged_by(egui::PointerButton::Secondary);
+            || response.dragged_by(egui::PointerButton::Secondary)
+            || touch_navigating;
         let pointer_screen = viewport_pointer_pos(&response, viewport_owns_pointer);
         let layouts_slice = committed_dim_layouts.as_deref().unwrap_or(&[]);
         let angle_gizmo_constraint = angle_gizmo_constraint_for_edit(
@@ -13321,7 +13475,7 @@ impl App {
                 let hovered = self.revolve_gizmo_drag.is_some()
                     || pointer_screen.is_some_and(|pp| {
                         project(handle)
-                            .is_some_and(|hp| (hp - pp).length() <= REVOLVE_ARC_HANDLE_PICK_PX)
+                            .is_some_and(|hp| (hp - pp).length() <= touch::hit(REVOLVE_ARC_HANDLE_PICK_PX))
                     });
                 gpu_viewport::RevolveArcGizmo {
                     center,
@@ -14833,6 +14987,18 @@ impl App {
                     "f: fillet  •  Click a vertex where two lines meet"
                 }
             }
+        };
+        // On touch devices the mouse wording is wrong: swap the navigation clauses
+        // for the gesture equivalents at display time.
+        let hint = if touch::active() {
+            hint.replace("Right-drag: orbit", "One finger (Select) orbits")
+                .replace("Right-drag orbits", "One finger (Select) orbits")
+                .replace("Shift+right-drag pans", "two fingers pan")
+                .replace("Shift-right or middle-drag: pan", "Two fingers: pan")
+                .replace("Wheel: zoom", "Pinch: zoom")
+                .replace("wheel zooms", "pinch zooms")
+        } else {
+            hint.to_string()
         };
         painter.text(
             viewport.left_bottom() + egui::vec2(8.0, -8.0),

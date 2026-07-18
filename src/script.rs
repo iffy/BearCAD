@@ -362,6 +362,8 @@ pub enum Instruction {
     },
     /// Toggle auto-zoom (#438).
     SetAutoZoom { on: bool },
+    /// Force touch mode on/off (auto-detected from real touches otherwise).
+    SetTouchMode { on: bool },
     /// Start / advance / end an interactive tutorial.
     StartTutorial { index: usize },
     TutorialNext,
@@ -981,6 +983,9 @@ impl Instruction {
             }
             Instruction::SetAutoZoom { on } => {
                 format!("bearcad.ui.auto_zoom({on})")
+            }
+            Instruction::SetTouchMode { on } => {
+                format!("bearcad.ui.touch({on})")
             }
             Instruction::StartTutorial { index } => {
                 format!(
@@ -3976,6 +3981,10 @@ impl ScriptRunner {
             }
             Instruction::SetAutoZoom { on } => {
                 state.auto_zoom = on;
+                StepResult::Continue
+            }
+            Instruction::SetTouchMode { on } => {
+                crate::touch::set_active(on);
                 StepResult::Continue
             }
             Instruction::StartTutorial { index } => {

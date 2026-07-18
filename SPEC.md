@@ -2392,6 +2392,26 @@ document is millimeters, so the player is person-scale: eye height
 
 ---
 
+### 11.x Touch devices
+
+- **Touch mode** latches on at the first touch event (`touch::detect`; scripts force it
+  with `bearcad.ui.touch(true/false)`). It scales pick radii finger-sized
+  (`touch::hit`, ×1.7 — sketch points/lines, gizmo handles, revolve handles) and grows
+  widget interact sizes/padding (`theme::apply`).
+- **Gestures** (viewport): two-finger drag pans, pinch zooms about the gesture centre
+  (converted to the camera's scroll units by `touch::zoom_factor_to_scroll`, exact
+  round-trip), and with the **Select tool in 3D** a one-finger drag orbits — fingers
+  have no right button. Trackpad pinches (`Event::Zoom`, incl. browser ctrl+wheel) zoom
+  identically. Touch navigation owns the pointer (no hover/pick churn mid-gesture), and
+  the status-bar tool hints swap their mouse wording for gesture wording at display
+  time.
+- **Compact layout** below 700 logical px width (phones): the three side panes render
+  as **closable floating windows** over the viewport instead of docked panels
+  (`show_pane_shell`), hidden by default (one-shot on first compact frame), toggled
+  from always-visible **Elements/Context/Params** buttons in the status bar; the
+  toolbar scrolls horizontally; the status text truncates into the space the right
+  cluster leaves. `BEARCAD_WINDOW=390x760` opens a fixed-size window for testing it.
+
 ### 11.x Interactive tutorials
 
 - **Tutorial mode**: guided, in-app walkthroughs narrated by the view-cube bear. A

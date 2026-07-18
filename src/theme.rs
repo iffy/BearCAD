@@ -136,6 +136,15 @@ pub fn apply(ctx: &egui::Context) {
     ctx.set_visuals_of(Theme::Dark, v.clone());
     ctx.set_visuals_of(Theme::Light, v.clone());
     ctx.set_visuals(v);
+    // Finger-sized widgets in touch mode: taller interact targets and roomier padding,
+    // so buttons, rows, and checkboxes clear ~40 physical px on tablets and phones.
+    if crate::touch::active() {
+        ctx.style_mut(|style| {
+            style.spacing.interact_size.y = style.spacing.interact_size.y.max(28.0);
+            style.spacing.button_padding = style.spacing.button_padding.max(egui::vec2(8.0, 6.0));
+            style.spacing.item_spacing = style.spacing.item_spacing.max(egui::vec2(8.0, 6.0));
+        });
+    }
 }
 
 #[cfg(test)]

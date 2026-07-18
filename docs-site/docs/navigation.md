@@ -18,6 +18,18 @@ title: Navigation
 Only the Select tool treats plain clicks as picking — drawing tools use them to draw,
 which is why the camera bindings live on the *right* mouse button.
 
+### On a touch screen
+
+| Gesture | Action |
+|---|---|
+| One-finger drag (Select tool, 3D) | Orbit |
+| Two-finger drag | Pan |
+| Pinch | Zoom |
+
+Touch mode switches on at the first touch: pick targets grow to finger size, and on
+phone-width screens the side panes become floating windows, toggled from the bottom bar.
+A trackpad pinch zooms the same way.
+
 **Zoom to fit** (in the command palette and the View menu) frames your selection — or the
 whole model — in one step.
 
