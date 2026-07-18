@@ -4987,6 +4987,11 @@ impl AppState {
                         crate::value::format_length_display_in(w, unit),
                         crate::value::format_length_display_in(h, unit)
                     );
+                    // On a touch screen the next tap is far more likely a pick than
+                    // another rectangle — return to Select after each commit.
+                    if crate::touch::active() {
+                        self.apply(Action::SetTool(Tool::Select));
+                    }
                     ActionResult::Ok
                 } else {
                     self.rect_origin_snap = None;
@@ -5295,6 +5300,10 @@ impl AppState {
                             crate::model::effective_length_unit(&self.doc, session.sketch)
                         )
                     );
+                    // Touch: like the rectangle, one shape per tool pick — back to Select.
+                    if crate::touch::active() {
+                        self.apply(Action::SetTool(Tool::Select));
+                    }
                     ActionResult::Ok
                 } else {
                     self.circle_center_snap = None;

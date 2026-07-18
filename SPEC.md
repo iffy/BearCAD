@@ -2405,6 +2405,13 @@ document is millimeters, so the player is person-scale: eye height
   identically. Touch navigation owns the pointer (no hover/pick churn mid-gesture), and
   the status-bar tool hints swap their mouse wording for gesture wording at display
   time.
+- **Gesture vs. drawing-tool disambiguation:** a two-finger gesture's first finger lands
+  a beat early and reads as a primary press, which a drawing tool consumes as a
+  placement click — when the second finger arrives within 0.5 s of that press while a
+  rect/line/circle is in progress, the stray placement is cancelled. And since a touch
+  user's next tap after finishing a shape is almost always a pick, **committing a
+  rectangle or circle in touch mode returns to the Select tool** (desktop keeps the
+  drawing tool armed; the Line tool keeps chaining on touch too).
 - **Compact layout** below 700 logical px width (phones): the three side panes render
   as **closable floating windows** over the viewport instead of docked panels
   (`show_pane_shell`), hidden by default (one-shot on first compact frame), toggled

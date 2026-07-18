@@ -610,6 +610,11 @@ struct App {
     launch_maximize_frames_remaining: u8,
     /// One-shot: the compact layout has hidden the default panes.
     compact_layout_initialized: bool,
+    /// When the last touch-mode primary press landed (`Input::time`), to recognise a
+    /// two-finger gesture whose first finger was mistaken for a tool click.
+    last_touch_press_time: f64,
+    /// Whether a multi-touch gesture was active last frame.
+    was_multi_touch: bool,
     gpu_viewport: bool,
     gpu_view_cube: bool,
     /// Persistent physics state for the Elements pane's force-directed Graph view (#94).
@@ -1078,6 +1083,8 @@ impl App {
             viewport_context_menu: None,
             launch_maximize_frames_remaining: initial_launch_maximize_frames(),
             compact_layout_initialized: false,
+            last_touch_press_time: f64::NEG_INFINITY,
+            was_multi_touch: false,
             gpu_viewport: gpu_viewport::install(cc),
             gpu_view_cube: gpu_view_cube::install(cc),
             graph_layout: hierarchy::GraphLayout::default(),
@@ -11938,10 +11945,25 @@ impl App {
         // Touch navigation: two fingers pan, a pinch zooms about the gesture centre,
         // and with the Select tool in 3D a one-finger drag orbits — fingers have no
         // right button.
+        if touch::active() && ui.input(|i| i.pointer.primary_pressed()) {
+            self.last_touch_press_time = ui.input(|i| i.time);
+        }
         let mut touch_navigating = false;
         if !fps_active {
             if let Some(mt) = ui.input(|i| i.multi_touch()) {
                 touch_navigating = true;
+                // A two-finger gesture's first finger lands a beat early and reads as
+                // a primary press, which a drawing tool may have consumed as a
+                // placement click. When the second finger reveals this was navigation,
+                // undo that stray placement.
+                if !self.was_multi_touch
+                    && ui.input(|i| i.time) - self.last_touch_press_time < 0.5
+                    && (self.state.creating_rect.is_some()
+                        || self.state.creating_line.is_some()
+                        || self.state.creating_circle.is_some())
+                {
+                    self.state.apply(Action::CancelOperation);
+                }
                 if mt.translation_delta != egui::Vec2::ZERO {
                     self.state.cam.pan(mt.translation_delta, viewport.height());
                     if let Some(log) = &self.state.command_log {
@@ -11968,6 +11990,7 @@ impl App {
                 }
             }
         }
+        self.was_multi_touch = ui.input(|i| i.multi_touch().is_some());
         if fps_active {
             draw_fps_crosshair(&painter, viewport);
         }
