@@ -2348,6 +2348,18 @@ Leftover `.old` binaries/bundles are cleaned on the next startup. Fallbacks: a
 non-bundle macOS run (dev build) auto-downloads the artifact in the browser; a failed
 stage rolls back and opens the releases page.
 
+### 11.x2 Auto-zoom (#438)
+
+A toolbar **toggle** beside Zoom-to-fit (`AppState::auto_zoom`, off by default;
+`bearcad.ui.auto_zoom(bool)`). While on and a rectangle or extrusion is in progress,
+each frame checks the **live bounds** (document ∪ in-progress rect corners ∪ extrusion
+profile swept by its live distance): if any corner projects off-screen/behind the camera,
+or the whole thing occupies < ⅓ of the viewport (the extrusion was dragged back down),
+the camera **glides** to frame the bounds (`Camera::frame_bounds_animated`, 0.22 s, same
+destination math as the instant zoom-to-fit; orientation untouched). Triggers only
+between animations (never fights an in-flight glide) and stands down in FPS mode and the
+Drawing workbench. Decision logic is the pure `auto_zoom_should_frame` (unit-tested).
+
 ### 11.y Keyboard Shortcuts window (#434)
 
 **View → Keyboard Shortcuts** / **Help → Keyboard Shortcuts** (and the palette entry

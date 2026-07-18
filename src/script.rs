@@ -360,6 +360,8 @@ pub enum Instruction {
         length: Option<LengthUnit>,
         angle: Option<AngleUnit>,
     },
+    /// Toggle auto-zoom (#438).
+    SetAutoZoom { on: bool },
     SetDim { axis: RectAxis, value: String },
     SetDimLabelOffset { axis: DimLabelAxis, offset: f32 },
     BeginEditCommittedDim { axis: DimLabelAxis },
@@ -972,6 +974,9 @@ impl Instruction {
                     None => String::new(),
                 };
                 format!("bearcad.set_units{{ sketch = {sketch}{length_arg}{angle_arg} }}")
+            }
+            Instruction::SetAutoZoom { on } => {
+                format!("bearcad.ui.auto_zoom({on})")
             }
             Instruction::SetDim { axis, value } => {
                 format!(
@@ -3945,6 +3950,10 @@ impl ScriptRunner {
             }
             Instruction::SetSketchUnits { sketch, length, angle } => {
                 let _ = state.apply(Action::SetSketchUnits { sketch, length, angle });
+                StepResult::Continue
+            }
+            Instruction::SetAutoZoom { on } => {
+                state.auto_zoom = on;
                 StepResult::Continue
             }
             Instruction::SetDim { axis, value } => {

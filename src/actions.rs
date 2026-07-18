@@ -2013,6 +2013,9 @@ impl CommandPaletteState {
 pub struct AppState {
     pub doc: Document,
     pub path: Option<String>,
+    /// Auto-zoom (#438): when on, in-progress geometry that outgrows (or shrinks well
+    /// inside) the viewport re-frames the camera with a short animation. UI-only state.
+    pub auto_zoom: bool,
     /// The active component (#429): set when a component is created or selected; newly
     /// created top-level elements are filed into it. `None` = the document root. UI-only
     /// state (never persisted); cleared when the component is deleted.
@@ -2162,6 +2165,7 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self {
+            auto_zoom: false,
             active_component: None,
             doc: Document::default(),
             path: None,

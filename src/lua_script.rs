@@ -2265,6 +2265,15 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     api.set(
+        "auto_zoom",
+        lua.create_function(|lua, on: Option<bool>| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let on = on.unwrap_or(true);
+            unsafe { tick.exec(Instruction::SetAutoZoom { on }) }
+        })?,
+    )?;
+
+    api.set(
         "move",
         lua.create_function(|lua, (x, y): (f32, f32)| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
@@ -3620,7 +3629,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "tool", "focus_name", "focus_dim", "pane", "palette",
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
             "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",
-            "camera", "zoom_fit", "elements_view",
+            "camera", "zoom_fit", "elements_view", "auto_zoom",
             "move", "click", "move_ground", "click_ground",
             "drag", "right_drag", "right_drag_pan",
             "key", "keydown", "keyup", "type",

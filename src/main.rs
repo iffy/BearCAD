@@ -651,6 +651,78 @@ enum WebIoEvent {
 type WebIoQueue = std::rc::Rc<std::cell::RefCell<Vec<WebIoEvent>>>;
 
 impl App {
+    /// Auto-zoom (#438): while enabled and a shape/extrusion is in progress, keep its
+    /// live bounds framed — glide out when geometry leaves the viewport, glide back in
+    /// when it shrinks well inside. Runs before `tick_transition` each frame; triggers
+    /// only between animations so it never fights an in-flight glide.
+    fn tick_auto_zoom(&mut self) {
+        if !self.state.auto_zoom
+            || self.state.fps.is_some()
+            || self.state.cam.transition_active()
+            || self.state.editing_drawing.is_some()
+        {
+            return;
+        }
+        let Some(viewport) = self.last_viewport else { return };
+        let Some((min, max)) = self.auto_zoom_live_bounds() else { return };
+        if auto_zoom_should_frame(&self.state.cam, viewport, min, max) {
+            let aspect = (viewport.width() / viewport.height().max(1.0)).max(0.1);
+            self.state
+                .cam
+                .frame_bounds_animated(min, max, aspect, 0.22);
+        }
+    }
+
+    /// The world bounds auto-zoom keeps framed (#438): the document plus the in-progress
+    /// rectangle and extrusion previews. `None` when nothing relevant is in progress.
+    fn auto_zoom_live_bounds(&self) -> Option<(Vec3, Vec3)> {
+        let doc = &self.state.doc;
+        let mut bounds: Option<(Vec3, Vec3)> = None;
+        let mut extend = |p: Vec3| {
+            bounds = Some(match bounds {
+                Some((lo, hi)) => (lo.min(p), hi.max(p)),
+                None => (p, p),
+            });
+        };
+        let mut active = false;
+        if let (Some(cr), Some(session)) = (self.state.creating_rect.as_ref(), self.state.sketch_session)
+        {
+            if let Some(frame) = sketch_geometry_frame(doc, session.sketch) {
+                active = true;
+                let end = cr.end_point(&frame, doc);
+                let (ou, ov) = world_to_local(&frame, cr.origin);
+                let (eu, ev) = world_to_local(&frame, end);
+                for (u, v) in [(ou, ov), (eu, ov), (ou, ev), (eu, ev)] {
+                    extend(local_to_world(&frame, u, v));
+                }
+            }
+        }
+        if let Some(ce) = self.state.creating_extrusion.as_ref() {
+            let normal = extrude::faces_anchor(doc, &ce.faces).map(|(_, n)| n);
+            if let Some(normal) = normal {
+                active = true;
+                for face in &ce.faces {
+                    if let Some((profile, _)) = extrude::face_profile_world(doc, face) {
+                        for p in profile {
+                            extend(p);
+                            extend(p + normal * ce.distance);
+                        }
+                    }
+                }
+            }
+        }
+        if !active {
+            return None;
+        }
+        // Keep the rest of the document in frame too, so zooming to the live shape never
+        // crops committed geometry.
+        if let Some((lo, hi)) = extrude::document_world_bounds(doc) {
+            extend(lo);
+            extend(hi);
+        }
+        bounds
+    }
+
     /// The status bar's update badge (#427): appears only when a newer release exists;
     /// clicking stages the update (Windows/Linux) or auto-downloads the installer in the
     /// browser (macOS), falling back to the releases page on failure.
@@ -4303,6 +4375,7 @@ impl eframe::App for App {
         theme::apply(ctx);
 
         let dt = ctx.input(|i| i.stable_dt);
+        self.tick_auto_zoom();
         let transition_active = self.state.cam.tick_transition(dt);
         if transition_active {
             ctx.request_repaint();
@@ -4621,6 +4694,23 @@ impl eframe::App for App {
                     .clicked()
                 {
                     self.state.apply(Action::ZoomToFit);
+                }
+                // Auto-zoom toggle (#438): while on, in-progress geometry that outgrows
+                // (or shrinks well inside) the view re-frames the camera automatically.
+                if icons::selectable_icon_button(
+                    ui,
+                    icons::IconId::AutoZoom,
+                    self.state.auto_zoom,
+                    "Auto-zoom — keep in-progress geometry framed while drawing/extruding",
+                )
+                .clicked()
+                {
+                    self.state.auto_zoom = !self.state.auto_zoom;
+                    self.state.status = if self.state.auto_zoom {
+                        "Auto-zoom on".to_string()
+                    } else {
+                        "Auto-zoom off".to_string()
+                    };
                 }
                 // Import/Export toolbar buttons (#352): the same actions as the File menu, grouped
                 // under a popup on each icon.
@@ -6826,6 +6916,46 @@ fn viewport_pointer_pos(
 }
 
 /// True while orbiting/panning or dragging sketch geometry — pick hover is distracting then.
+/// Whether auto-zoom should re-frame (#438): the bounds poke outside the viewport (any
+/// corner off-screen or behind the camera), or they occupy less than a third of it (the
+/// extrusion was dragged back down). Pure so it's unit-testable.
+fn auto_zoom_should_frame(
+    cam: &camera::Camera,
+    viewport: egui::Rect,
+    min: Vec3,
+    max: Vec3,
+) -> bool {
+    let vp = cam.view_proj(viewport);
+    let corners = [
+        Vec3::new(min.x, min.y, min.z),
+        Vec3::new(max.x, min.y, min.z),
+        Vec3::new(min.x, max.y, min.z),
+        Vec3::new(max.x, max.y, min.z),
+        Vec3::new(min.x, min.y, max.z),
+        Vec3::new(max.x, min.y, max.z),
+        Vec3::new(min.x, max.y, max.z),
+        Vec3::new(max.x, max.y, max.z),
+    ];
+    let mut any_offscreen = false;
+    let mut screen_min = egui::pos2(f32::MAX, f32::MAX);
+    let mut screen_max = egui::pos2(f32::MIN, f32::MIN);
+    for c in corners {
+        match cam.project(c, viewport, &vp) {
+            Some(p) => {
+                screen_min = screen_min.min(p);
+                screen_max = screen_max.max(p);
+                if !viewport.shrink(8.0).contains(p) {
+                    any_offscreen = true;
+                }
+            }
+            None => any_offscreen = true,
+        }
+    }
+    let extent = (screen_max - screen_min).max_elem();
+    let too_small = extent > 0.0 && extent < viewport.width().min(viewport.height()) * 0.33;
+    any_offscreen || too_small
+}
+
 fn suppress_viewport_pick_hover(
     ui: &egui::Ui,
     response: &egui::Response,
@@ -14748,6 +14878,38 @@ fn draw_ground(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// #438: auto-zoom triggers when live bounds outgrow the view or shrink well
+    /// inside it, and stays quiet when they fit comfortably.
+    #[test]
+    fn auto_zoom_triggers_on_overflow_and_underfill() {
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0));
+        let mut cam = camera::Camera::default();
+        cam.frame_bounds_instant(Vec3::splat(-50.0), Vec3::splat(50.0), 1000.0 / 800.0);
+        // Fits comfortably: no trigger.
+        assert!(!auto_zoom_should_frame(
+            &cam,
+            viewport,
+            Vec3::splat(-50.0),
+            Vec3::splat(50.0)
+        ));
+        // Grew 20x: pokes off-screen, trigger.
+        assert!(auto_zoom_should_frame(
+            &cam,
+            viewport,
+            Vec3::splat(-1000.0),
+            Vec3::splat(1000.0)
+        ));
+        // Shrunk to a sliver of the view: trigger to zoom back in.
+        assert!(auto_zoom_should_frame(
+            &cam,
+            viewport,
+            Vec3::splat(-2.0),
+            Vec3::splat(2.0)
+        ));
+    }
+
     use super::actions::CreatingRect;
     use super::{
         build_viewport_scene_input, clip_segment_to_rect, col, initial_launch_maximize_frames,

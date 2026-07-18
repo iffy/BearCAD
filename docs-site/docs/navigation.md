@@ -21,6 +21,11 @@ which is why the camera bindings live on the *right* mouse button.
 **Zoom to fit** (in the command palette and the View menu) frames your selection — or the
 whole model — in one step.
 
+**Auto-zoom** (the toggle next to Zoom to fit in the toolbar) keeps in-progress geometry
+framed: type rectangle dimensions bigger than the view, or drag an extrusion past the
+edge, and the camera glides out to fit — shrink it back and the camera glides in.
+Scripts: `bearcad.ui.auto_zoom(true)`.
+
 ## Keyboard shortcuts
 
 **View → Keyboard Shortcuts** (also under Help) lists every binding in the app, grouped

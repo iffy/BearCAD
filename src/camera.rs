@@ -849,6 +849,45 @@ impl Camera {
         self.set_pose_instant(None, None, Some(distance * 1.15), Some(center));
     }
 
+    /// Frame a bounding box like [`frame_bounds_instant`](Self::frame_bounds_instant),
+    /// but as a short animation (#438, auto-zoom): orientation stays put; only the target
+    /// and distance glide over `duration` seconds.
+    pub fn frame_bounds_animated(&mut self, min: Vec3, max: Vec3, aspect: f32, duration: f32) {
+        // Compute the destination with the instant math on a scratch copy.
+        let mut probe = self.clone();
+        probe.transition = None;
+        probe.frame_bounds_instant(min, max, aspect);
+        let (to_target, to_distance) = (probe.target, probe.distance);
+        if (to_target - self.target).length() < 1e-3
+            && (to_distance - self.distance).abs() < 1e-3
+        {
+            return;
+        }
+        self.transition = Some(ViewTransition {
+            from_yaw: self.yaw,
+            from_pitch: self.pitch,
+            delta_yaw: 0.0,
+            to_pitch: self.pitch,
+            from_target: self.target,
+            to_target,
+            from_distance: self.distance,
+            to_distance,
+            from_view_up: self.view_up.unwrap_or(Vec3::Z),
+            to_view_up: self.view_up.unwrap_or(Vec3::Z),
+            animate_target: true,
+            animate_distance: true,
+            animate_view_up: false,
+            clear_view_up_on_complete: false,
+            elapsed: 0.0,
+            duration,
+        });
+    }
+
+    /// Whether a view transition is currently animating (#438).
+    pub fn transition_active(&self) -> bool {
+        self.transition.is_some()
+    }
+
     /// Advance an in-flight view transition. Returns `true` while animating.
     pub fn tick_transition(&mut self, dt: f32) -> bool {
         let Some(transition) = self.transition.take() else {
@@ -1184,6 +1223,25 @@ pub fn orbit_pivot_has_ground_drop(target: Vec3) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #438: the animated frame lands on the same pose the instant frame computes, and
+    /// reports active while gliding.
+    #[test]
+    fn frame_bounds_animated_converges_to_instant_pose() {
+        let (min, max) = (glam::Vec3::splat(-50.0), glam::Vec3::splat(50.0));
+        let mut instant = Camera::default();
+        instant.frame_bounds_instant(min, max, 1.5);
+
+        let mut animated = Camera::default();
+        animated.frame_bounds_animated(min, max, 1.5, 0.2);
+        assert!(animated.transition_active());
+        for _ in 0..60 {
+            animated.tick_transition(0.016);
+        }
+        assert!(!animated.transition_active());
+        assert!((animated.target - instant.target).length() < 1e-3);
+        assert!((animated.distance - instant.distance).abs() < 1e-2);
+    }
 
     fn test_viewport() -> Rect {
         Rect::from_min_size(Pos2::new(0.0, 80.0), egui::vec2(800.0, 600.0))
