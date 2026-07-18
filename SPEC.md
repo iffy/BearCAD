@@ -1503,8 +1503,9 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
 - **Any input that accepts a value accepts an expression**, e.g. `1 + 2 + lengthOfThing / 2`.
 - Expressions may reference parameters and other values by name.
 - Expressions support `+ - * /`, parentheses, and a standard math function library
-  (trig, sqrt, min/max, etc. — full list **TBD**). **Implemented today (#431):** `max`,
-  `min`, and `abs` in both the length and angle parsers (`value::apply_builtin_function`).
+  (trig, sqrt, min/max, etc. — full list **TBD**). **Implemented today (#431/#445):** `max`,
+  `min`, `abs`, `floor`, `ceil` (alias `ceiling`), and `round` in both the length and
+  angle parsers (`value::apply_builtin_function`).
   `max`/`min` take one or more arguments or a square-bracket array (`max([a, b, c])`,
   which flattens into the argument list — mixing works, `max([1, 2], 10)`); `abs` takes
   exactly one. Arguments are full expressions (units, parameters, nesting compose);

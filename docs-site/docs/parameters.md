@@ -18,8 +18,9 @@ Elements pane highlights everything that uses that parameter.
 **Every value input accepts an expression**, not just a number:
 
 - Arithmetic: `+ - * /` and parentheses — `leg / 2 + 5`.
-- Functions: `max`, `min` (any number of arguments, or one `[a, b, c]` array), and
-  `abs` — `max(w, 20)`, `min([leg, arm, 40])`, `abs(off - 5)`.
+- Functions: `max`, `min` (any number of arguments, or one `[a, b, c]` array), `abs`,
+  `floor`, `ceil`/`ceiling`, and `round` — `max(w, 20)`, `min([leg, arm, 40])`,
+  `ceil(span / step)`.
 - Parameter names, including inside other parameters' expressions: `A + 5in`.
 - **Mixed units**: `3mm + 2in` evaluates correctly. Lengths take `mm`, `cm`, `m`, `in`,
   `ft`; angles take `deg`, `rad`. A bare number is millimetres (degrees in angle fields).

@@ -638,29 +638,28 @@ impl LengthUnit {
     }
 }
 
-/// Builtin expression functions (#431).
+/// Builtin expression functions (#431/#445).
 fn is_builtin_function(name: &str) -> bool {
-    matches!(name, "max" | "min" | "abs")
+    matches!(
+        name,
+        "max" | "min" | "abs" | "floor" | "ceil" | "ceiling" | "round"
+    )
 }
 
-/// Apply a builtin function (#431). `max`/`min` take one or more values (arrays flatten
-/// into the list); `abs` takes exactly one.
+/// Apply a builtin function (#431/#445). `max`/`min` take one or more values (arrays
+/// flatten into the list); `abs`/`floor`/`ceil`/`round` take exactly one.
 fn apply_builtin_function(name: &str, args: &[f32]) -> Result<f32, ()> {
+    let unary = |f: fn(f32) -> f32| match args {
+        [v] => Ok(f(*v)),
+        _ => Err(()),
+    };
     match name {
-        "max" => args
-            .iter()
-            .copied()
-            .reduce(f32::max)
-            .ok_or(()),
-        "min" => args
-            .iter()
-            .copied()
-            .reduce(f32::min)
-            .ok_or(()),
-        "abs" => match args {
-            [v] => Ok(v.abs()),
-            _ => Err(()),
-        },
+        "max" => args.iter().copied().reduce(f32::max).ok_or(()),
+        "min" => args.iter().copied().reduce(f32::min).ok_or(()),
+        "abs" => unary(f32::abs),
+        "floor" => unary(f32::floor),
+        "ceil" | "ceiling" => unary(f32::ceil),
+        "round" => unary(f32::round),
         _ => Err(()),
     }
 }
@@ -1250,6 +1249,15 @@ mod tests {
         // Angles too.
         assert!((eval_angle_rad("max(30deg, 10deg)").unwrap() - 30f32.to_radians()).abs() < 1e-5);
         assert!((eval_angle_rad("abs(-45deg)").unwrap() - 45f32.to_radians()).abs() < 1e-5);
+        // Rounding (#445): floor/ceil(+ceiling)/round, unary.
+        assert_eq!(eval_length_mm("floor(7.9)").unwrap(), 7.0);
+        assert_eq!(eval_length_mm("ceil(7.1)").unwrap(), 8.0);
+        assert_eq!(eval_length_mm("ceiling(7.1)").unwrap(), 8.0);
+        assert_eq!(eval_length_mm("round(7.5)").unwrap(), 8.0);
+        assert_eq!(eval_length_mm("round(7.4)").unwrap(), 7.0);
+        // Units apply before the function: floor(1in + 2) floors millimetres.
+        assert_eq!(eval_length_mm("floor(1in)").unwrap(), 25.0);
+        assert!(eval_length_mm("floor(1, 2)").is_none());
         // Malformed calls fail instead of half-parsing.
         assert!(eval_length_mm("max()").is_none());
         assert!(eval_length_mm("abs(1, 2)").is_none());
