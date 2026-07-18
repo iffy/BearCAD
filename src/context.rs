@@ -70,6 +70,10 @@ pub struct ContextInput<'a> {
     pub repeat_op: Option<RepeatControl>,
     /// In-sketch Repeat tool control (#232).
     pub sketch_repeat: Option<SketchRepeatControl>,
+    /// In-sketch Offset tool control.
+    pub sketch_offset: Option<SketchOffsetControl>,
+    /// "Edit offset" entry point: the selected committed offset op.
+    pub sketch_offset_edit_start: Option<usize>,
     /// In-sketch Slice tool control (#238).
     pub sketch_slice: Option<SketchSliceControl>,
     /// Selected sketch-text editor (#286).
@@ -227,6 +231,27 @@ pub enum SketchRepeatEdit {
     /// Clear the picked direction edge (fall back to the U axis).
     ClearDirection,
     Commit,
+}
+
+/// The in-sketch Offset tool's context section.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SketchOffsetControl {
+    pub entity_count: usize,
+    /// Signed distance expression (positive grows a closed loop/circle).
+    pub distance: String,
+    pub construction: bool,
+    pub editing: bool,
+    pub can_commit: bool,
+}
+
+/// One edit from the in-sketch Offset context section.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SketchOffsetEdit {
+    Distance(String),
+    Construction(bool),
+    Commit,
+    /// Re-open a committed offset op for editing.
+    EditStart(usize),
 }
 
 /// One edit from the Repeat context section (#257): the three interlinked variables and the two
@@ -555,6 +580,10 @@ pub struct ContextPaneContent {
     pub repeat_op: Option<RepeatControl>,
     /// In-sketch Repeat tool control (#232).
     pub sketch_repeat: Option<SketchRepeatControl>,
+    /// In-sketch Offset tool control.
+    pub sketch_offset: Option<SketchOffsetControl>,
+    /// "Edit offset" entry point: the selected committed offset op.
+    pub sketch_offset_edit_start: Option<usize>,
     /// In-sketch Slice tool control (#238).
     pub sketch_slice: Option<SketchSliceControl>,
     /// Selected sketch-text editor (#286).
@@ -898,6 +927,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let move_edit_start = input.move_edit_start;
     let repeat_op = input.repeat_op.clone();
     let sketch_repeat = input.sketch_repeat.clone();
+    let sketch_offset = input.sketch_offset.clone();
+    let sketch_offset_edit_start = input.sketch_offset_edit_start;
     let sketch_slice = input.sketch_slice.clone();
     let sketch_text = input.sketch_text.clone();
     // With the Text tool active, the pane belongs to placing/editing text — a projection that
@@ -942,6 +973,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             move_edit_start,
             repeat_op: repeat_op.clone(),
             sketch_repeat: sketch_repeat.clone(),
+            sketch_offset: sketch_offset.clone(),
+            sketch_offset_edit_start,
             sketch_slice: sketch_slice.clone(),
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
@@ -982,6 +1015,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             move_edit_start,
             repeat_op: repeat_op.clone(),
             sketch_repeat: sketch_repeat.clone(),
+            sketch_offset: sketch_offset.clone(),
+            sketch_offset_edit_start,
             sketch_slice: sketch_slice.clone(),
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
@@ -1022,6 +1057,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             move_edit_start,
             repeat_op: repeat_op.clone(),
             sketch_repeat: sketch_repeat.clone(),
+            sketch_offset: sketch_offset.clone(),
+            sketch_offset_edit_start,
             sketch_slice: sketch_slice.clone(),
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
@@ -1065,6 +1102,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         move_edit_start,
         repeat_op,
         sketch_repeat,
+        sketch_offset,
+        sketch_offset_edit_start,
         sketch_slice,
         sketch_text,
         drawing_view,
@@ -1459,6 +1498,7 @@ pub fn show_pane(
     on_move_edit_start: &mut impl FnMut(usize),
     on_repeat_edit: &mut impl FnMut(RepeatEdit),
     on_sketch_repeat_edit: &mut impl FnMut(SketchRepeatEdit),
+    on_sketch_offset_edit: &mut impl FnMut(SketchOffsetEdit),
     on_sketch_slice_edit: &mut impl FnMut(SketchSliceEdit),
     on_sketch_text_edit: &mut impl FnMut(SketchTextEdit),
     on_drawing_view_edit: &mut impl FnMut(DrawingViewEdit),
@@ -2360,6 +2400,82 @@ pub fn show_pane(
         {
             on_sketch_repeat_edit(SketchRepeatEdit::Commit);
         }
+    }
+
+    if let Some(control) = &content.sketch_offset {
+        any_control = true;
+        ui.separator();
+        section_label(ui, if control.editing { "Edit offset" } else { "Offset" });
+        ui.label(
+            egui::RichText::new(format!("{} entities picked", control.entity_count))
+                .color(egui::Color32::from_gray(140))
+                .size(11.0),
+        );
+        let mut pending: Option<SketchOffsetEdit> = None;
+        ui.horizontal(|ui| {
+            ui.label("Distance");
+            let mut text = control.distance.clone();
+            let id = egui::Id::new("sketch_offset_distance");
+            let errors =
+                crate::expression_input::length_expression_field_errors(&text, doc, None);
+            let resp = ui
+                .scope(|ui| {
+                    ui.set_max_width(110.0);
+                    crate::expression_input::show_length_expression_text_edit(
+                        ui, &mut text, id, "", &errors, doc, &[],
+                    )
+                })
+                .inner;
+            if resp.changed() {
+                pending = Some(SketchOffsetEdit::Distance(text.clone()));
+            }
+            if crate::value::shows_computed_length_in_doc(&text, doc) {
+                if let Some(v) = crate::value::computed_length_in_doc(&text, doc) {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "= {}",
+                            crate::value::format_length_display_in(v, doc.default_length_unit)
+                        ))
+                        .color(egui::Color32::from_gray(140))
+                        .size(11.0),
+                    );
+                }
+            }
+        });
+        ui.label(
+            egui::RichText::new("Positive grows a closed loop or circle; negative shrinks")
+                .color(egui::Color32::from_gray(140))
+                .size(11.0),
+        );
+        let mut construction = control.construction;
+        if ui.checkbox(&mut construction, "Construction output").changed() {
+            pending = Some(SketchOffsetEdit::Construction(construction));
+        }
+        if let Some(edit) = pending {
+            on_sketch_offset_edit(edit);
+        }
+        if ui
+            .add_enabled(
+                control.can_commit && controls_enabled,
+                egui::Button::new(if control.editing { "Apply changes" } else { "Offset" }),
+            )
+            .clicked()
+        {
+            on_sketch_offset_edit(SketchOffsetEdit::Commit);
+        }
+    }
+
+    if let Some(op) = content.sketch_offset_edit_start {
+        any_control = true;
+        ui.separator();
+        if ui.button("Edit offset").clicked() {
+            on_sketch_offset_edit(SketchOffsetEdit::EditStart(op));
+        }
+        ui.label(
+            egui::RichText::new("Re-open the Offset tool to change this operation")
+                .color(egui::Color32::from_gray(140))
+                .size(11.0),
+        );
     }
 
     if let Some(op) = content.repeat_edit_start {
@@ -3409,6 +3525,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_offset: None,
+            sketch_offset_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
@@ -3532,6 +3650,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_offset: None,
+            sketch_offset_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
@@ -3601,6 +3721,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_offset: None,
+            sketch_offset_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
@@ -3875,6 +3997,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_offset: None,
+            sketch_offset_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
@@ -3930,6 +4054,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_offset: None,
+            sketch_offset_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
@@ -3970,6 +4096,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_offset: None,
+            sketch_offset_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
@@ -4025,6 +4153,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_offset: None,
+            sketch_offset_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
@@ -4083,6 +4213,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_offset: None,
+            sketch_offset_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
@@ -4186,6 +4318,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_offset: None,
+            sketch_offset_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
@@ -4239,6 +4373,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_offset: None,
+            sketch_offset_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
@@ -4281,6 +4417,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_offset: None,
+            sketch_offset_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
@@ -4327,6 +4465,8 @@ mod tests {
             move_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
+            sketch_offset: None,
+            sketch_offset_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,

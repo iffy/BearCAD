@@ -632,6 +632,8 @@ pub fn recompute_document_geometry(doc: &mut Document) -> Result<(), String> {
     let result = solve_document_constraints(doc);
     crate::projection::refresh_projections(doc);
     rebake_extrusion_distances(doc);
+    // Offset outputs track their sources and distance expressions.
+    crate::actions::rebuild_sketch_offsets(doc);
     result
 }
 

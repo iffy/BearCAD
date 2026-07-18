@@ -48,6 +48,7 @@ pub enum HierarchyNode {
     RepeatOp(usize),
     /// A 2D in-sketch linear repeat (#222/#228); its duplicated lines/circles nest under it.
     SketchRepeatOp(usize),
+    SketchOffsetOp(usize),
     /// A 2D in-sketch slice (#224/#229); its fragment lines nest under it.
     SketchSliceOp(usize),
     /// A sketch text element (#282/#286); nests under its sketch like a line.
@@ -128,6 +129,7 @@ pub enum SceneElement {
     RepeatOp(usize),
     /// A 2D in-sketch linear repeat (#222/#228).
     SketchRepeatOp(usize),
+    SketchOffsetOp(usize),
     /// A 2D in-sketch slice (#224/#229).
     SketchSliceOp(usize),
     /// A sketch text element (#282): selecting it selects the whole text.
@@ -185,6 +187,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::MoveOp(i) => SceneElement::MoveOp(i),
         HierarchyNode::RepeatOp(i) => SceneElement::RepeatOp(i),
         HierarchyNode::SketchRepeatOp(i) => SceneElement::SketchRepeatOp(i),
+        HierarchyNode::SketchOffsetOp(i) => SceneElement::SketchOffsetOp(i),
         HierarchyNode::SketchSliceOp(i) => SceneElement::SketchSliceOp(i),
         HierarchyNode::SketchText(i) => SceneElement::SketchText(i),
         HierarchyNode::SliceOp(i) => SceneElement::SliceOp(i),
@@ -313,6 +316,7 @@ impl ElementVisibility {
             SceneElement::MoveOp(_) => true,
             SceneElement::RepeatOp(_) => true,
             SceneElement::SketchRepeatOp(_) => true,
+            SceneElement::SketchOffsetOp(_) => true,
             SceneElement::SketchSliceOp(_) => true,
             SceneElement::SketchText(index) => doc
                 .sketch_texts
@@ -610,6 +614,17 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
         }
         for &ci in &op.circle_targets {
             edges.push((HierarchyNode::Circle(ci), HierarchyNode::SketchRepeatOp(oi)));
+        }
+    }
+    for (oi, op) in doc.sketch_offset_ops.iter().enumerate() {
+        if op.deleted {
+            continue;
+        }
+        for &li in &op.line_targets {
+            edges.push((HierarchyNode::Line(li), HierarchyNode::SketchOffsetOp(oi)));
+        }
+        for &ci in &op.circle_targets {
+            edges.push((HierarchyNode::Circle(ci), HierarchyNode::SketchOffsetOp(oi)));
         }
     }
     for (oi, op) in doc.sketch_slice_ops.iter().enumerate() {
@@ -1077,6 +1092,7 @@ fn build_creation_ranks(doc: &Document) -> CreationRanks {
             | ShapeKind::SliceOperation
             | ShapeKind::SketchRepeatOperation
             | ShapeKind::SketchSliceOperation
+            | ShapeKind::SketchOffsetOperation
             | ShapeKind::SketchText => {}
             // Edits are not created shapes; they only mark undoable in-place changes.
             ShapeKind::ConstructionPlaneEdit | ShapeKind::EdgeTreatmentEdit => {}
@@ -1105,6 +1121,7 @@ fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
         HierarchyNode::MoveOp(_) => usize::MAX,
         HierarchyNode::RepeatOp(_) => usize::MAX,
         HierarchyNode::SketchRepeatOp(_) => usize::MAX,
+        HierarchyNode::SketchOffsetOp(_) => usize::MAX,
         HierarchyNode::SketchSliceOp(_) => usize::MAX,
         HierarchyNode::SketchText(_) => usize::MAX,
         HierarchyNode::SliceOp(_) => usize::MAX,
@@ -1318,6 +1335,29 @@ pub fn build_hierarchy(
         );
         roots.push(HierarchyEntry {
             node: HierarchyNode::SketchRepeatOp(oi),
+            children,
+        });
+    }
+    // 2D in-sketch offsets: the op is its own element with its parallel lines/circles
+    // nested beneath it (they're excluded from the sketch's own listing).
+    for (oi, op) in doc.sketch_offset_ops.iter().enumerate() {
+        if op.deleted {
+            continue;
+        }
+        let mut children: Vec<HierarchyEntry> = op
+            .line_outputs
+            .iter()
+            .filter(|&&li| doc.lines.get(li).is_some_and(|l| !l.deleted))
+            .map(|&li| HierarchyEntry { node: HierarchyNode::Line(li), children: Vec::new() })
+            .collect();
+        children.extend(
+            op.circle_outputs
+                .iter()
+                .filter(|&&ci| doc.circles.get(ci).is_some_and(|c| !c.deleted))
+                .map(|&ci| HierarchyEntry { node: HierarchyNode::Circle(ci), children: Vec::new() }),
+        );
+        roots.push(HierarchyEntry {
+            node: HierarchyNode::SketchOffsetOp(oi),
             children,
         });
     }
@@ -1627,6 +1667,7 @@ impl ElementFilter {
             | HierarchyNode::MoveOp(_)
             | HierarchyNode::RepeatOp(_)
             | HierarchyNode::SketchRepeatOp(_)
+            | HierarchyNode::SketchOffsetOp(_)
             | HierarchyNode::SketchSliceOp(_)
             | HierarchyNode::SliceOp(_)
             | HierarchyNode::Revolution(_)
@@ -1836,6 +1877,7 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
         SceneElement::MoveOp(_) => None,
         SceneElement::RepeatOp(_) => None,
         SceneElement::SketchRepeatOp(_) => None,
+        SceneElement::SketchOffsetOp(_) => None,
         SceneElement::SketchSliceOp(_) => None,
         // A sketch text nests under the sketch it lives in (#282).
         SceneElement::SketchText(index) => doc
@@ -1994,6 +2036,16 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         }
         SceneElement::SketchRepeatOp(index) => {
             if let Some(op) = doc.sketch_repeat_ops.get(index) {
+                for &output in &op.line_outputs {
+                    out.insert(SceneElement::Line(output));
+                }
+                for &output in &op.circle_outputs {
+                    out.insert(SceneElement::Circle(output));
+                }
+            }
+        }
+        SceneElement::SketchOffsetOp(index) => {
+            if let Some(op) = doc.sketch_offset_ops.get(index) {
                 for &output in &op.line_outputs {
                     out.insert(SceneElement::Line(output));
                 }
@@ -2293,6 +2345,7 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         HierarchyNode::MoveOp(_) => IconId::Move,
         HierarchyNode::RepeatOp(_) => IconId::Repeat,
         HierarchyNode::SketchRepeatOp(_) => IconId::Repeat,
+        HierarchyNode::SketchOffsetOp(_) => IconId::Offset,
         HierarchyNode::SketchSliceOp(_) => IconId::Slice,
         HierarchyNode::SketchText(_) => IconId::Text,
         HierarchyNode::SliceOp(_) => IconId::Slice,
@@ -2403,12 +2456,20 @@ fn is_sketch_repeat_line_output(doc: &Document, li: usize) -> bool {
             .sketch_slice_ops
             .iter()
             .any(|op| !op.deleted && op.line_outputs.contains(&li))
+        || doc
+            .sketch_offset_ops
+            .iter()
+            .any(|op| !op.deleted && op.line_outputs.contains(&li))
 }
 
 fn is_sketch_repeat_circle_output(doc: &Document, ci: usize) -> bool {
     doc.sketch_repeat_ops
         .iter()
         .any(|op| !op.deleted && op.circle_outputs.contains(&ci))
+        || doc
+            .sketch_offset_ops
+            .iter()
+            .any(|op| !op.deleted && op.circle_outputs.contains(&ci))
 }
 
 fn build_sketch_entry(

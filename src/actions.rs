@@ -88,6 +88,10 @@ pub enum Tool {
     /// Same vertex-selection flow as [`Tool::Chamfer`], but bridges the truncated lines with a
     /// rounded single-cubic-bezier arc instead of a straight cut (#38).
     Fillet,
+    /// In a sketch: pick lines/circles, then set a signed distance (push-pull gizmo or
+    /// text input) to create parallel offset copies grouped under a
+    /// `SketchOffsetOperation`. Outside a sketch: click a face to sketch on it first.
+    Offset,
     /// Sketch mode only: click an outside body edge (or a body) to project it into the
     /// open sketch as an associative dashed reference line (#140's Y shortcut, as a
     /// discoverable toolbar tool).
@@ -147,6 +151,7 @@ impl Tool {
             "combine" | "boolean" => Some(Tool::Combine),
             "move" => Some(Tool::Move),
             "repeat" | "linear_repeat" | "pattern" => Some(Tool::Repeat),
+            "offset" => Some(Tool::Offset),
             "slice" | "split" => Some(Tool::Slice),
             "text" => Some(Tool::Text),
             "project" | "projection" => Some(Tool::Project),
@@ -558,6 +563,71 @@ impl CreatingRepeat {
 /// sketch lines/circles, with the direction taken from a picked sketch line (or the sketch's U
 /// axis by default). Shares the count/gap/distance parametrization.
 #[derive(Clone, Debug, PartialEq)]
+pub struct CreatingSketchOffset {
+    pub sketch: crate::model::SketchId,
+    pub line_targets: Vec<usize>,
+    pub circle_targets: Vec<usize>,
+    /// Signed distance expression: positive grows a closed loop/circle.
+    pub distance: String,
+    pub construction: bool,
+    /// `Some(op)` while re-editing a committed offset.
+    pub editing: Option<usize>,
+}
+
+impl CreatingSketchOffset {
+    pub fn new(sketch: crate::model::SketchId) -> Self {
+        Self {
+            sketch,
+            line_targets: Vec::new(),
+            circle_targets: Vec::new(),
+            distance: "5".to_string(),
+            construction: false,
+            editing: None,
+        }
+    }
+
+    pub fn has_targets(&self) -> bool {
+        !self.line_targets.is_empty() || !self.circle_targets.is_empty()
+    }
+
+    pub fn distance_mm(&self, doc: &crate::model::Document) -> Option<f32> {
+        crate::value::eval_length_mm_in_doc(&self.distance, doc)
+    }
+
+    /// Gizmo frame: the first picked element's anchor point and unit offset normal, in
+    /// sketch-local (u, v). Derived from the actual offset math (a probe offset of 1),
+    /// so the gizmo always pulls to the side a positive distance grows toward.
+    pub fn gizmo_frame(&self, doc: &crate::model::Document) -> Option<(glam::Vec2, glam::Vec2)> {
+        if let Some(&li) = self.line_targets.first() {
+            let sources: Vec<crate::offset::OffsetSource> = self
+                .line_targets
+                .iter()
+                .filter_map(|&i| {
+                    let l = doc.lines.get(i).filter(|l| !l.deleted)?;
+                    Some(crate::offset::OffsetSource {
+                        id: i,
+                        a: glam::Vec2::new(l.x0, l.y0),
+                        b: glam::Vec2::new(l.x1, l.y1),
+                    })
+                })
+                .collect();
+            let probe = crate::offset::offset_segments(&sources, 1.0);
+            let src = doc.lines.get(li).filter(|l| !l.deleted)?;
+            let mid = glam::Vec2::new((src.x0 + src.x1) * 0.5, (src.y0 + src.y1) * 0.5);
+            let seg = probe.iter().find(|s| s.id == li)?;
+            let normal = ((seg.a + seg.b) * 0.5 - mid).normalize_or_zero();
+            if normal == glam::Vec2::ZERO {
+                return None;
+            }
+            return Some((mid, normal));
+        }
+        let &ci = self.circle_targets.first()?;
+        let c = doc.circles.get(ci).filter(|c| !c.deleted)?;
+        let center = glam::Vec2::new(c.cx, c.cy);
+        Some((center + glam::Vec2::X * c.r, glam::Vec2::X))
+    }
+}
+
 pub struct CreatingSketchRepeat {
     pub sketch: crate::model::SketchId,
     pub line_targets: Vec<usize>,
@@ -1570,6 +1640,24 @@ pub enum Action {
         spacing: String,
         length: String,
     },
+    /// Create a 2D in-sketch offset: parallel copies of the picked lines (mitered where
+    /// they chain) and concentric copies of the picked circles at a signed distance,
+    /// grouped under a `SketchOffsetOperation`.
+    CreateSketchOffsetOperation {
+        sketch: usize,
+        line_targets: Vec<usize>,
+        circle_targets: Vec<usize>,
+        distance: String,
+        construction: bool,
+    },
+    /// Re-target / re-distance / re-style an existing in-sketch offset.
+    EditSketchOffsetOperation {
+        op: usize,
+        line_targets: Vec<usize>,
+        circle_targets: Vec<usize>,
+        distance: String,
+        construction: bool,
+    },
     /// Create a 2D in-sketch slice (#224): split the target lines where the cutter lines cross
     /// them, shadowing the originals and grouping the fragments under a `SketchSliceOperation`.
     CreateSketchSliceOperation {
@@ -2065,6 +2153,7 @@ pub struct AppState {
     /// In-progress in-sketch linear repeat (#232), active when the Repeat tool runs with a
     /// sketch open.
     pub creating_sketch_repeat: Option<CreatingSketchRepeat>,
+    pub creating_sketch_offset: Option<CreatingSketchOffset>,
     /// In-progress slice operation (Slice tool).
     pub creating_slice: Option<CreatingSlice>,
     /// In-progress in-sketch slice (#238), active when the Slice tool runs with a sketch open.
@@ -2201,6 +2290,7 @@ impl Default for AppState {
             creating_move: None,
             creating_repeat: None,
             creating_sketch_repeat: None,
+            creating_sketch_offset: None,
             creating_slice: None,
             creating_sketch_slice: None,
             editing_drawing: None,
@@ -3648,6 +3738,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::MoveOp(i) => format!("Move operation {i}"),
         SceneElement::RepeatOp(i) => format!("Repeat operation {i}"),
         SceneElement::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
+        SceneElement::SketchOffsetOp(i) => format!("Sketch offset {i}"),
         SceneElement::SketchSliceOp(i) => format!("Sketch slice {i}"),
         SceneElement::SketchText(i) => format!("Text {i}"),
         SceneElement::SliceOp(i) => format!("Slice operation {i}"),
@@ -4452,6 +4543,9 @@ impl AppState {
                 if self.creating_sketch_repeat.is_some() && tool != Tool::Repeat {
                     self.creating_sketch_repeat = None;
                 }
+                if self.creating_sketch_offset.is_some() && tool != Tool::Offset {
+                    self.creating_sketch_offset = None;
+                }
                 if tool == Tool::Repeat && self.creating_repeat.is_none() {
                     // Seed the target set from the current selection (#439): a body
                     // selected before picking the tool is what you want to repeat, so
@@ -4586,6 +4680,11 @@ impl AppState {
                         "Fillet tool — click a sketch vertex".to_string()
                     }
                     Tool::Fillet => "Fillet tool — click a body edge".to_string(),
+                    Tool::Offset if self.sketch_session.is_some() => {
+                        "Offset tool — click lines/circles, set the distance, Enter commits"
+                            .to_string()
+                    }
+                    Tool::Offset => "Offset tool — click a face to sketch on".to_string(),
                     Tool::Loft => {
                         "Loft tool — click two or more closed profiles".to_string()
                     }
@@ -4679,6 +4778,15 @@ impl AppState {
                     // the picked set, so clearing it clears them.
                     self.creating_repeat = Some(CreatingRepeat::default());
                     self.status = "Cancelled repeat".to_string();
+                } else if self
+                    .creating_sketch_offset
+                    .as_ref()
+                    .is_some_and(|c| c.has_targets())
+                {
+                    self.creating_sketch_offset = Some(CreatingSketchOffset::new(
+                        self.creating_sketch_offset.as_ref().unwrap().sketch,
+                    ));
+                    self.status = "Cancelled offset".to_string();
                 } else if self.creating_rect.take().is_some()
                     || self.discard_creating_line()
                     || self.creating_circle.take().is_some()
@@ -7795,6 +7903,82 @@ label_hidden: false,
                 self.status = "Edited sketch repeat".to_string();
                 ActionResult::Ok
             }
+            Action::CreateSketchOffsetOperation {
+                sketch,
+                line_targets,
+                circle_targets,
+                distance,
+                construction,
+            } => {
+                if let Err(e) =
+                    validate_sketch_repeat_inputs(&self.doc, sketch, &line_targets, &circle_targets)
+                {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let n = line_targets.len() + circle_targets.len();
+                let op_index = self.doc.sketch_offset_ops.len();
+                self.doc.sketch_offset_ops.push(crate::model::SketchOffsetOperation {
+                    sketch,
+                    line_targets,
+                    circle_targets,
+                    distance,
+                    construction,
+                    line_outputs: Vec::new(),
+                    circle_outputs: Vec::new(),
+                    name: None,
+                    deleted: false,
+                });
+                self.doc.shape_order.push(ShapeKind::SketchOffsetOperation);
+                if !rebuild_sketch_offset(&mut self.doc, op_index) {
+                    self.doc.sketch_offset_ops.pop();
+                    self.doc.shape_order.pop();
+                    let e = "Offset distance doesn't evaluate".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                self.refresh_document_health();
+                self.status = format!("Offset {n} sketch entity(ies)");
+                ActionResult::Ok
+            }
+            Action::EditSketchOffsetOperation {
+                op,
+                line_targets,
+                circle_targets,
+                distance,
+                construction,
+            } => {
+                let Some(sketch) =
+                    self.doc.sketch_offset_ops.get(op).filter(|o| !o.deleted).map(|o| o.sketch)
+                else {
+                    let e = format!("Sketch offset {op} not found");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                if let Err(e) =
+                    validate_sketch_repeat_inputs(&self.doc, sketch, &line_targets, &circle_targets)
+                {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let old = self.doc.sketch_offset_ops[op].clone();
+                {
+                    let entry = &mut self.doc.sketch_offset_ops[op];
+                    entry.line_targets = line_targets;
+                    entry.circle_targets = circle_targets;
+                    entry.distance = distance;
+                    entry.construction = construction;
+                }
+                if !rebuild_sketch_offset(&mut self.doc, op) {
+                    self.doc.sketch_offset_ops[op] = old;
+                    let e = "Offset distance doesn't evaluate".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                self.refresh_document_health();
+                self.status = "Edited offset".to_string();
+                ActionResult::Ok
+            }
             Action::CreateSketchText {
                 sketch,
                 text,
@@ -9465,6 +9649,7 @@ label_hidden: false,
         self.sketch_reframe_pending = false;
         self.creating_rect = None;
         self.creating_sketch_repeat = None;
+        self.creating_sketch_offset = None;
         self.creating_sketch_slice = None;
         self.discard_creating_line();
         self.editing_committed_dim = None;
@@ -10416,6 +10601,112 @@ fn rebuild_sketch_repeat(doc: &mut crate::model::Document, op_index: usize) -> b
     entry.line_outputs = line_outputs;
     entry.circle_outputs = circle_outputs;
     true
+}
+
+/// (Re)generate the parallel copies for in-sketch offset op `op_index`: every line
+/// target offsets by the op's signed distance (chains miter via
+/// [`crate::offset::offset_segments`]), every circle target's radius shifts by it.
+/// Output entries are reused in place so their indices stay stable across rebuilds.
+pub(crate) fn rebuild_sketch_offset(doc: &mut crate::model::Document, op_index: usize) -> bool {
+    let Some(op) = doc.sketch_offset_ops.get(op_index).filter(|o| !o.deleted).cloned() else {
+        return false;
+    };
+    let Some(distance) = crate::value::eval_length_mm_in_doc(&op.distance, doc) else {
+        return false;
+    };
+
+    let sources: Vec<crate::offset::OffsetSource> = op
+        .line_targets
+        .iter()
+        .filter_map(|&li| {
+            let l = doc.lines.get(li).filter(|l| !l.deleted)?;
+            Some(crate::offset::OffsetSource {
+                id: li,
+                a: glam::Vec2::new(l.x0, l.y0),
+                b: glam::Vec2::new(l.x1, l.y1),
+            })
+        })
+        .collect();
+    let segments = crate::offset::offset_segments(&sources, distance);
+
+    let mut line_outputs = op.line_outputs.clone();
+    while line_outputs.len() < segments.len() {
+        line_outputs.push(doc.lines.len());
+        let seed = doc.lines[segments[0].id].clone();
+        doc.lines.push(seed);
+        doc.shape_order.push(crate::model::ShapeKind::Line);
+    }
+    for extra in line_outputs.split_off(segments.len()) {
+        if let Some(l) = doc.lines.get_mut(extra) {
+            l.deleted = true;
+        }
+    }
+    for (seg, &out) in segments.iter().zip(&line_outputs) {
+        let src = doc.lines[seg.id].clone();
+        doc.lines[out] = crate::model::Line {
+            x0: seg.a.x,
+            y0: seg.a.y,
+            x1: seg.b.x,
+            y1: seg.b.y,
+            construction: op.construction,
+            length_locked: false,
+            length_dim_offset: None,
+            length_expr: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+            bezier: None,
+            chamfer_fillet_parent: None,
+            projection: None,
+            ..src
+        };
+    }
+
+    let want_circles: Vec<usize> = op
+        .circle_targets
+        .iter()
+        .copied()
+        .filter(|&ci| doc.circles.get(ci).is_some_and(|c| !c.deleted))
+        .collect();
+    let mut circle_outputs = op.circle_outputs.clone();
+    while circle_outputs.len() < want_circles.len() {
+        circle_outputs.push(doc.circles.len());
+        let seed = doc.circles[want_circles[0]].clone();
+        doc.circles.push(seed);
+        doc.shape_order.push(crate::model::ShapeKind::Circle);
+    }
+    for extra in circle_outputs.split_off(want_circles.len()) {
+        if let Some(c) = doc.circles.get_mut(extra) {
+            c.deleted = true;
+        }
+    }
+    for (&ci, &out) in want_circles.iter().zip(&circle_outputs) {
+        let src = doc.circles[ci].clone();
+        doc.circles[out] = crate::model::Circle {
+            r: crate::offset::offset_circle_radius(src.r, distance),
+            construction: op.construction,
+            diameter_locked: false,
+            diameter_dim_offset: None,
+            diameter_expr: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+            ..src
+        };
+    }
+
+    let entry = &mut doc.sketch_offset_ops[op_index];
+    entry.line_outputs = line_outputs;
+    entry.circle_outputs = circle_outputs;
+    true
+}
+
+/// Re-run every live offset op so outputs track their sources and distance
+/// expressions; called from `recompute_document_geometry`.
+pub fn rebuild_sketch_offsets(doc: &mut crate::model::Document) {
+    for i in 0..doc.sketch_offset_ops.len() {
+        let _ = rebuild_sketch_offset(doc, i);
+    }
 }
 
 /// (Re)generate the offset copies of sketches repeated along an axis (#226) for repeat op

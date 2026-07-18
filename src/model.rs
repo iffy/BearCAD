@@ -1705,6 +1705,39 @@ pub struct SketchRepeatOperation {
     pub deleted: bool,
 }
 
+/// A 2D in-sketch offset: parallel copies of the picked lines (mitered where they
+/// chain end-to-end) and concentric copies of the picked circles, at a signed
+/// distance. Outputs are separate `Line`/`Circle` entries grouped under the op in
+/// the Elements pane and regenerated whenever the sources or the distance change.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SketchOffsetOperation {
+    /// The sketch the sources live in; outputs land in the same sketch.
+    pub sketch: SketchId,
+    /// Source line indices to offset.
+    #[serde(default)]
+    pub line_targets: Vec<usize>,
+    /// Source circle indices to offset.
+    #[serde(default)]
+    pub circle_targets: Vec<usize>,
+    /// Signed offset distance expression (mm): positive grows a closed loop/circle,
+    /// negative shrinks (or flips an open chain's side).
+    #[serde(default)]
+    pub distance: String,
+    /// Emit the offset copies as construction geometry.
+    #[serde(default)]
+    pub construction: bool,
+    /// Generated line indices, aligned with `line_targets`.
+    #[serde(default)]
+    pub line_outputs: Vec<usize>,
+    /// Generated circle indices, aligned with `circle_targets`.
+    #[serde(default)]
+    pub circle_outputs: Vec<usize>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
 /// A 2D in-sketch slice (#224): splits the target sketch **lines** at their interior crossings
 /// with the cutter lines, shadowing each split original and emitting its fragments as new lines
 /// in the same sketch, grouped under the operation. The sketch-space analogue of the 3D
@@ -1913,6 +1946,8 @@ pub enum ShapeKind {
     SketchRepeatOperation,
     /// A 2D in-sketch slice (#224): its fragment lines are separate `Line` entries.
     SketchSliceOperation,
+    /// A 2D in-sketch offset: its parallel lines/circles are separate entries.
+    SketchOffsetOperation,
     /// A sketch text element (#282): baked glyph outlines + embedded font.
     SketchText,
     /// An in-place edit of an existing construction plane (undo restores the prior planes).
@@ -2491,6 +2526,9 @@ pub struct Document {
     /// 2D in-sketch slices (#224): split sketch entities grouped under an op.
     #[serde(default)]
     pub sketch_slice_ops: Vec<SketchSliceOperation>,
+    /// 2D in-sketch offsets: parallel sketch entities grouped under an op.
+    #[serde(default)]
+    pub sketch_offset_ops: Vec<SketchOffsetOperation>,
     /// Sketch text elements (#282): baked glyph outlines + embedded font, per sketch.
     #[serde(default)]
     pub sketch_texts: Vec<SketchText>,
@@ -2677,6 +2715,7 @@ impl Default for Document {
             repeat_ops: Vec::new(),
             slice_ops: Vec::new(),
             sketch_repeat_ops: Vec::new(),
+            sketch_offset_ops: Vec::new(),
             sketch_slice_ops: Vec::new(),
             sketch_texts: Vec::new(),
             drawings: Vec::new(),

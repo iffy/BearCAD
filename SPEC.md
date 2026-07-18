@@ -696,6 +696,28 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   leaves it whole. "Edit slice" re-opens the tool and resizes the fragment list; the whole
   slice undoes as one step. Scripting: `bearcad.slice{ bodies, cutters, extend?, name? }` /
   `bearcad.edit_slice{ index, … }`.
+  - **2D in-sketch offset:** `SketchOffsetOperation` (`Document::sketch_offset_ops`) makes
+    **parallel copies** of picked sketch lines and **concentric copies** of picked circles at a
+    signed distance expression. Lines connected end-to-end offset as one chain with **mitered
+    corners** (`offset::offset_segments`: chains walk shared endpoints, exactly-two-segment
+    joints miter via infinite-line intersection with a miter limit; T-junctions break the
+    chain); **positive grows** — a closed loop offsets outward regardless of winding (signed
+    area picks the normal side), a circle's radius increases; negative shrinks (collapsed
+    circles clamp to `MIN_CIRCLE_RADIUS`); an open chain's positive side is left of its first
+    segment. Outputs are real lines/circles (never dimension-locked, bezier flattened,
+    projection stripped) nested under the op in the Elements pane, excluded from the sketch's
+    own listing, deleted with the op, and **re-offset on every geometry recompute**
+    (`rebuild_sketch_offset` from `recompute_document_geometry`) so they track source drags
+    and parameter-driven distances. A **construction toggle** emits the copies as construction
+    geometry. **GUI**: the Offset tool (toolbar icon; outside a sketch it clicks a face to
+    begin sketching, like the draw tools) toggles lines/circles into the pick set with
+    hover glow, previews the result as dashed ghosts, and sets the distance via an in-plane
+    **push-pull handle** (dragged along the offset normal, negative flips side) or the context
+    pane's expression input with computed preview; Enter or the pane button commits; Esc
+    clears the picks. Selecting a committed op offers **Edit offset**, which re-opens the
+    tool (and the op's sketch) with the existing inputs. Scripting:
+    `bearcad.offset_sketch{ sketch, lines, circles, distance, construction }` /
+    `bearcad.edit_sketch_offset{ index, … }`; selectable as kind `sketch_offset_op`.
   - **2D in-sketch slice (#224):** `SketchSliceOperation` (`Document::sketch_slice_ops`) splits
     target sketch **lines** at their interior crossings with cutter lines. Each split original is
     flagged `shadow` (kept for editing but excluded from face detection, like a shadow body —

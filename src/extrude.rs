@@ -1838,6 +1838,7 @@ pub fn selection_world_bounds(
             // The in-sketch repeat's own bounds come from its duplicated lines/circles, which are
             // selected/framed as their own elements; the op node itself contributes nothing here.
             | SceneElement::SketchRepeatOp(_)
+            | SceneElement::SketchOffsetOp(_)
             | SceneElement::SketchSliceOp(_)
             | SceneElement::SketchText(_)
             | SceneElement::Component(_)

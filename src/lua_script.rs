@@ -101,6 +101,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::MoveOp(_) => "move_op",
         SceneElement::RepeatOp(_) => "repeat_op",
         SceneElement::SketchRepeatOp(_) => "sketch_repeat_op",
+        SceneElement::SketchOffsetOp(_) => "sketch_offset_op",
         SceneElement::SketchSliceOp(_) => "sketch_slice_op",
         SceneElement::SketchText(_) => "sketch_text",
         SceneElement::SliceOp(_) => "slice_op",
@@ -123,6 +124,7 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::MoveOp(i)
         | SceneElement::RepeatOp(i)
         | SceneElement::SketchRepeatOp(i)
+        | SceneElement::SketchOffsetOp(i)
         | SceneElement::SketchSliceOp(i)
         | SceneElement::SketchText(i)
         | SceneElement::SliceOp(i)
@@ -149,6 +151,7 @@ pub fn scene_element_from_kind(kind: &str, index: usize) -> Option<SceneElement>
         "body" => Some(SceneElement::Body(index)),
         "sketch_text" | "text" => Some(SceneElement::SketchText(index)),
         "component" => Some(SceneElement::Component(index)),
+        "sketch_offset_op" | "offset" => Some(SceneElement::SketchOffsetOp(index)),
         _ => None,
     }
 }
@@ -665,6 +668,32 @@ fn parse_repeat_op_args(
         (s, _) => s,
     };
     Ok((targets, axis, mode, expr("count")?, spacing, expr("length")?))
+}
+
+/// Parses `bearcad.offset_sketch{}`/`bearcad.edit_sketch_offset{}` arguments: the host
+/// `sketch`, the `lines`/`circles` operand index lists, the signed `distance`
+/// expression, and the `construction` output toggle.
+fn parse_sketch_offset_op_args(
+    opts: &Table,
+) -> mlua::Result<(usize, Vec<usize>, Vec<usize>, String, bool)> {
+    let sketch: usize = opts.get::<Option<usize>>("sketch")?.unwrap_or(0);
+    let lines: Vec<usize> = opts.get::<Option<Vec<usize>>>("lines")?.unwrap_or_default();
+    let circles: Vec<usize> = opts.get::<Option<Vec<usize>>>("circles")?.unwrap_or_default();
+    let distance = match opts.get::<Value>("distance")? {
+        Value::Nil => {
+            return Err(mlua::Error::external("offset_sketch requires a `distance`"))
+        }
+        Value::String(s) => s.to_str()?.to_string(),
+        Value::Integer(i) => i.to_string(),
+        Value::Number(n) => n.to_string(),
+        _ => {
+            return Err(mlua::Error::external(
+                "offset_sketch `distance` must be an expression string or a number",
+            ))
+        }
+    };
+    let construction: bool = opts.get::<Option<bool>>("construction")?.unwrap_or(false);
+    Ok((sketch, lines, circles, distance, construction))
 }
 
 /// Parses `bearcad.repeat_sketch{}`/`bearcad.edit_sketch_repeat{}` arguments (#222): the host
@@ -2878,6 +2907,65 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // 2D in-sketch offset: parallel copies of sketch lines (mitered where they chain)
+    // and concentric copies of circles at a signed distance. Positive grows a closed
+    // loop / circle; negative shrinks (or flips an open chain's side). `construction`
+    // emits the copies as construction geometry.
+    api.set(
+        "offset_sketch",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "offset_sketch",
+                &["sketch", "lines", "circles", "distance", "construction"],
+            )?;
+            let (sketch, lines, circles, distance, construction) =
+                parse_sketch_offset_op_args(&opts)?;
+            let result = unsafe {
+                tick.state().apply(crate::actions::Action::CreateSketchOffsetOperation {
+                    sketch,
+                    line_targets: lines,
+                    circle_targets: circles,
+                    distance,
+                    construction,
+                })
+            };
+            if let crate::actions::ActionResult::Err(e) = result {
+                return Err(mlua::Error::external(e));
+            }
+            Ok(())
+        })?,
+    )?;
+
+    api.set(
+        "edit_sketch_offset",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "edit_sketch_offset",
+                &["index", "sketch", "lines", "circles", "distance", "construction"],
+            )?;
+            let op: usize = opts.get("index")?;
+            let (_sketch, lines, circles, distance, construction) =
+                parse_sketch_offset_op_args(&opts)?;
+            let result = unsafe {
+                tick.state().apply(crate::actions::Action::EditSketchOffsetOperation {
+                    op,
+                    line_targets: lines,
+                    circle_targets: circles,
+                    distance,
+                    construction,
+                })
+            };
+            if let crate::actions::ActionResult::Err(e) = result {
+                return Err(mlua::Error::external(e));
+            }
+            Ok(())
+        })?,
+    )?;
+
     // Repeat-operation replay (#220): replay a cut extrusion's effect along an axis, punching N
     // holes. `cuts` are the cut-extrusion indices; axis/mode/count/spacing/length as repeat_bodies.
     api.set(
@@ -3757,6 +3845,115 @@ mod tests {
         for &ci in &op.circle_outputs {
             assert!(state.doc.circles[ci].deleted, "copy circle {ci} removed with the op");
         }
+    }
+
+    /// An in-sketch offset op parallels a closed rectangle outward, nests the copies
+    /// under the op in the pane, tracks source drags, honors the construction toggle,
+    /// re-offsets on edit, and deletes with the op.
+    #[test]
+    fn sketch_offset_op_parallels_edits_and_deletes() {
+        use crate::hierarchy::{build_hierarchy, HierarchyNode, SceneElement};
+        let mut state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 20, height = 10 }
+            bearcad.circle{ x = 40, y = 0, r = 5 }
+            bearcad.offset_sketch{ sketch = 0, lines = {0, 1, 2, 3}, circles = {0},
+                                   distance = 2 }
+            "#,
+        );
+        let op = state.doc.sketch_offset_ops[0].clone();
+        assert_eq!(op.line_outputs.len(), 4);
+        assert_eq!(op.circle_outputs.len(), 1);
+        // Closed loop grows outward: the offset rectangle spans 24 × 14.
+        let xs: Vec<f32> = op
+            .line_outputs
+            .iter()
+            .flat_map(|&li| [state.doc.lines[li].x0, state.doc.lines[li].x1])
+            .collect();
+        let w = xs.iter().cloned().fold(f32::MIN, f32::max)
+            - xs.iter().cloned().fold(f32::MAX, f32::min);
+        assert!((w - 24.0).abs() < 1e-3, "outward offset width, got {w}");
+        assert!((state.doc.circles[op.circle_outputs[0]].r - 7.0).abs() < 1e-3);
+        assert!(!state.doc.lines[op.line_outputs[0]].construction);
+
+        // Pane: the op node exists, each output listed exactly once (under the op).
+        let tree = build_hierarchy(&state.doc, None);
+        fn count_nodes(
+            entries: &[crate::hierarchy::HierarchyEntry],
+            f: &dyn Fn(&HierarchyNode) -> bool,
+        ) -> usize {
+            entries.iter().map(|e| f(&e.node) as usize + count_nodes(&e.children, f)).sum()
+        }
+        assert_eq!(
+            count_nodes(&tree, &|n| matches!(n, HierarchyNode::SketchOffsetOp(_))),
+            1
+        );
+        for &li in &op.line_outputs {
+            assert_eq!(
+                count_nodes(&tree, &|n| matches!(n, HierarchyNode::Line(l) if *l == li)),
+                1,
+                "offset line {li} listed once"
+            );
+        }
+
+        // The outputs track source geometry through recompute (the circle's centre is
+        // free — its radius is dimension-locked by the declarative call).
+        state.doc.circles[0].cx = 55.0;
+        crate::parameters::recompute_document_geometry(&mut state.doc).unwrap();
+        assert!(
+            (state.doc.circles[op.circle_outputs[0]].cx - 55.0).abs() < 1e-3,
+            "offset circle should follow its source, cx = {}",
+            state.doc.circles[op.circle_outputs[0]].cx
+        );
+
+        // Edit: new distance and construction toggle re-offset in place.
+        state.apply(crate::actions::Action::EditSketchOffsetOperation {
+            op: 0,
+            line_targets: op.line_targets.clone(),
+            circle_targets: op.circle_targets.clone(),
+            distance: "-3".to_string(),
+            construction: true,
+        });
+        let op = state.doc.sketch_offset_ops[0].clone();
+        assert!((state.doc.circles[op.circle_outputs[0]].r - 2.0).abs() < 1e-3);
+        assert!(state.doc.lines[op.line_outputs[0]].construction);
+        let xs: Vec<f32> = op
+            .line_outputs
+            .iter()
+            .flat_map(|&li| [state.doc.lines[li].x0, state.doc.lines[li].x1])
+            .collect();
+        let w = xs.iter().cloned().fold(f32::MIN, f32::max)
+            - xs.iter().cloned().fold(f32::MAX, f32::min);
+        assert!((w - 14.0).abs() < 1e-3, "negative offset shrinks, got {w}");
+
+        // Deleting the op tombstones the outputs.
+        crate::document_lifecycle::tombstone_element(&mut state.doc, SceneElement::SketchOffsetOp(0));
+        assert!(state.doc.sketch_offset_ops[0].deleted);
+        for &li in &op.line_outputs {
+            assert!(state.doc.lines[li].deleted);
+        }
+        assert!(state.doc.circles[op.circle_outputs[0]].deleted);
+    }
+
+    /// A parameter expression drives the offset distance and re-syncs on parameter edits.
+    #[test]
+    fn sketch_offset_distance_follows_parameter() {
+        let mut state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.parameter("add", "gap", "3")
+            bearcad.line{ x = 0, y = 0, x1 = 10, y1 = 0 }
+            bearcad.offset_sketch{ sketch = 0, lines = {0}, distance = "gap" }
+            "#,
+        );
+        let op = state.doc.sketch_offset_ops[0].clone();
+        assert!((state.doc.lines[op.line_outputs[0]].y0 - 3.0).abs() < 1e-3);
+        state.apply(crate::actions::Action::CommitParameterExpression {
+            index: 0,
+            expression: "5".to_string(),
+        });
+        assert!((state.doc.lines[op.line_outputs[0]].y0 - 5.0).abs() < 1e-3);
     }
 
     /// #226: repeating a whole sketch along an axis copies it onto parallel offset planes — the

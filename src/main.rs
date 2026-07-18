@@ -48,6 +48,7 @@ mod polygon;
 mod polygon_boolean;
 
 mod model;
+mod offset;
 mod menu_command;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_menu;
@@ -547,6 +548,8 @@ struct App {
     /// JSON text for bug reports, and a paste-target to load one back. `None` = closed.
     json_dialog: Option<String>,
     dim_label_drag: Option<DimLabelDrag>,
+    /// True while the offset tool's push-pull handle is being dragged.
+    offset_gizmo_drag: bool,
     /// In-flight drag of a drawing dimension label (#294): `(drawing, view, edge key, start
     /// offset mm, drag-start pointer)`.
     drawing_dim_label_drag: Option<DrawingDimLabelDrag>,
@@ -870,6 +873,7 @@ impl App {
             web_io: WebIoQueue::default(),
             json_dialog: None,
             dim_label_drag: None,
+            offset_gizmo_drag: false,
             drawing_dim_label_drag: None,
             drawing_align_parent: None,
             prev_tool: Tool::Select,
@@ -2592,6 +2596,193 @@ impl App {
             }
         }
         segs
+    }
+
+    /// Ghost preview for the in-progress offset: the parallel copies at the live
+    /// distance, as dashed world segments (circles sampled as polylines).
+    fn sketch_offset_ghost_segments(&self) -> Vec<(Vec3, Vec3)> {
+        let Some(co) = self.state.creating_sketch_offset.as_ref() else {
+            return Vec::new();
+        };
+        if !co.has_targets() {
+            return Vec::new();
+        }
+        let doc = &self.state.doc;
+        let Some(distance) = co.distance_mm(doc) else {
+            return Vec::new();
+        };
+        let Some(frame) = crate::face::sketch_geometry_frame(doc, co.sketch) else {
+            return Vec::new();
+        };
+        let sources: Vec<crate::offset::OffsetSource> = co
+            .line_targets
+            .iter()
+            .filter_map(|&i| {
+                let l = doc.lines.get(i).filter(|l| !l.deleted)?;
+                Some(crate::offset::OffsetSource {
+                    id: i,
+                    a: glam::Vec2::new(l.x0, l.y0),
+                    b: glam::Vec2::new(l.x1, l.y1),
+                })
+            })
+            .collect();
+        let mut segs = Vec::new();
+        for seg in crate::offset::offset_segments(&sources, distance) {
+            segs.push((
+                crate::face::local_to_world(&frame, seg.a.x, seg.a.y),
+                crate::face::local_to_world(&frame, seg.b.x, seg.b.y),
+            ));
+        }
+        for &ci in &co.circle_targets {
+            if let Some(c) = doc.circles.get(ci).filter(|c| !c.deleted) {
+                let r = crate::offset::offset_circle_radius(c.r, distance);
+                const N: usize = 48;
+                let mut prev = None;
+                for k in 0..=N {
+                    let t = k as f32 / N as f32 * std::f32::consts::TAU;
+                    let p =
+                        crate::face::local_to_world(&frame, c.cx + r * t.cos(), c.cy + r * t.sin());
+                    if let Some(q) = prev {
+                        segs.push((q, p));
+                    }
+                    prev = Some(p);
+                }
+            }
+        }
+        segs
+    }
+
+    /// Offset tool inside a sketch: click lines/circles to toggle them into the
+    /// offset set; drag the push-pull handle (or type in the context pane) to set the
+    /// signed distance; Enter commits.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_sketch_offset_tool(
+        &mut self,
+        ui: &egui::Ui,
+        painter: &egui::Painter,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+        session: SketchSession,
+    ) {
+        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+            && !ui.ctx().wants_keyboard_input()
+            && self
+                .state
+                .creating_sketch_offset
+                .as_ref()
+                .is_some_and(|c| c.has_targets())
+        {
+            self.commit_sketch_offset();
+            return;
+        }
+        let Some(frame) = sketch_geometry_frame(&self.state.doc, session.sketch) else {
+            return;
+        };
+
+        // Push-pull gizmo: a handle at the first pick's offset position, dragged along
+        // the offset normal. Negative pulls flip the side.
+        const HIT_PX: f32 = 10.0;
+        let gizmo = self.state.creating_sketch_offset.as_ref().and_then(|c| {
+            if !c.has_targets() {
+                return None;
+            }
+            let (anchor, normal) = c.gizmo_frame(&self.state.doc)?;
+            Some((anchor, normal, c.distance_mm(&self.state.doc).unwrap_or(0.0)))
+        });
+        if let Some((anchor, normal, dist)) = gizmo {
+            let anchor_w = local_to_world(&frame, anchor.x, anchor.y);
+            let handle_uv = anchor + normal * dist;
+            let handle_w = local_to_world(&frame, handle_uv.x, handle_uv.y);
+            if let (Some(a_px), Some(h_px)) = (project(anchor_w), project(handle_w)) {
+                let hovered =
+                    pointer_screen.is_some_and(|pp| (pp - h_px).length() <= HIT_PX);
+                let active = hovered || self.offset_gizmo_drag;
+                let color = if active { col::DIM_INPUT_BORDER_FOCUS } else { col::PREVIEW };
+                painter.line_segment([a_px, h_px], egui::Stroke::new(1.5, color));
+                painter.circle_filled(h_px, if active { 6.5 } else { 5.0 }, color);
+                if hovered && ui.input(|i| i.pointer.primary_pressed()) {
+                    self.offset_gizmo_drag = true;
+                }
+            }
+            if self.offset_gizmo_drag {
+                if !ui.input(|i| i.pointer.primary_down()) {
+                    self.offset_gizmo_drag = false;
+                } else if let Some(pp) = pointer_screen {
+                    if let Some(world) =
+                        sketch_plane_point(cam, viewport, vp, &self.state.doc, session, pp)
+                    {
+                        let (u, v) = world_to_local(&frame, world);
+                        let d = (glam::Vec2::new(u, v) - anchor).dot(normal);
+                        let d = (d * 10.0).round() / 10.0;
+                        let unit = model::effective_length_unit(&self.state.doc, session.sketch);
+                        if let Some(c) = self.state.creating_sketch_offset.as_mut() {
+                            c.distance = crate::value::format_length_display_in(d, unit);
+                        }
+                    }
+                }
+                return; // dragging the handle never also picks geometry
+            }
+        }
+
+        if !ui.input(|i| i.pointer.primary_pressed()) {
+            return;
+        }
+        let Some(pp) = pointer_screen else {
+            return;
+        };
+        let Some(target) = resolve_pick_target(pp, project, None, &self.state.doc, None) else {
+            return;
+        };
+        let co = self
+            .state
+            .creating_sketch_offset
+            .get_or_insert_with(|| actions::CreatingSketchOffset::new(session.sketch));
+        match target.kind {
+            construction::PickTargetKind::Line(li) => {
+                if let Some(pos) = co.line_targets.iter().position(|x| *x == li) {
+                    co.line_targets.remove(pos);
+                } else {
+                    co.line_targets.push(li);
+                }
+            }
+            construction::PickTargetKind::Circle(ci) => {
+                if let Some(pos) = co.circle_targets.iter().position(|x| *x == ci) {
+                    co.circle_targets.remove(pos);
+                } else {
+                    co.circle_targets.push(ci);
+                }
+            }
+            _ => return,
+        }
+        let n = co.line_targets.len() + co.circle_targets.len();
+        self.state.status =
+            format!("Offset: {n} entities — drag the handle or type a distance, Enter commits");
+    }
+
+    fn commit_sketch_offset(&mut self) {
+        let Some(c) = self.state.creating_sketch_offset.take() else {
+            return;
+        };
+        let action = match c.editing {
+            Some(op) => Action::EditSketchOffsetOperation {
+                op,
+                line_targets: c.line_targets,
+                circle_targets: c.circle_targets,
+                distance: c.distance,
+                construction: c.construction,
+            },
+            None => Action::CreateSketchOffsetOperation {
+                sketch: c.sketch,
+                line_targets: c.line_targets,
+                circle_targets: c.circle_targets,
+                distance: c.distance,
+                construction: c.construction,
+            },
+        };
+        self.state.apply(action);
     }
 
     fn edited_operation_output_bodies(&self) -> Vec<usize> {
@@ -4559,6 +4750,16 @@ impl eframe::App for App {
                 }
                 if icons::selectable_icon_button(
                     ui,
+                    icons::IconId::Offset,
+                    self.state.tool == Tool::Offset,
+                    shortcuts::compact_label("Offset", shortcuts::tool_shortcut(Tool::Offset)),
+                )
+                .clicked()
+                {
+                    self.state.apply(Action::SetTool(Tool::Offset));
+                }
+                if icons::selectable_icon_button(
+                    ui,
                     icons::IconId::Text,
                     self.state.tool == Tool::Text,
                     shortcuts::compact_label("Text", shortcuts::tool_shortcut(Tool::Text)),
@@ -5475,6 +5676,34 @@ impl eframe::App for App {
                         editing: c.editing.is_some(),
                     }
                 }),
+                sketch_offset: self.state.creating_sketch_offset.as_ref().map(|c| {
+                    context::SketchOffsetControl {
+                        entity_count: c.line_targets.len() + c.circle_targets.len(),
+                        distance: c.distance.clone(),
+                        construction: c.construction,
+                        editing: c.editing.is_some(),
+                        can_commit: c.has_targets()
+                            && c.distance_mm(&self.state.doc).is_some(),
+                    }
+                }),
+                sketch_offset_edit_start: (self.state.tool != Tool::Offset)
+                    .then(|| {
+                        let mut only = None;
+                        for element in self.state.scene_selection.iter() {
+                            match (element, only) {
+                                (SceneElement::SketchOffsetOp(i), None) => only = Some(i),
+                                _ => return None,
+                            }
+                        }
+                        only.filter(|&i| {
+                            self.state
+                                .doc
+                                .sketch_offset_ops
+                                .get(i)
+                                .is_some_and(|o| !o.deleted)
+                        })
+                    })
+                    .flatten(),
                 sketch_slice: (self.state.tool == Tool::Slice
                     && self.state.sketch_session.is_some())
                 .then(|| {
@@ -5817,6 +6046,7 @@ impl eframe::App for App {
             let mut move_edit_begin: Option<usize> = None;
             let mut repeat_edit: Option<context::RepeatEdit> = None;
             let mut sketch_repeat_edit: Option<context::SketchRepeatEdit> = None;
+            let mut sketch_offset_edit: Option<context::SketchOffsetEdit> = None;
             let mut sketch_slice_edit: Option<context::SketchSliceEdit> = None;
             let mut sketch_text_edit: Option<context::SketchTextEdit> = None;
             let mut drawing_view_edit: Option<context::DrawingViewEdit> = None;
@@ -5866,6 +6096,7 @@ impl eframe::App for App {
                         &mut |op| move_edit_begin = Some(op),
                         &mut |edit| repeat_edit = Some(edit),
                         &mut |edit| sketch_repeat_edit = Some(edit),
+                        &mut |edit| sketch_offset_edit = Some(edit),
                         &mut |edit| sketch_slice_edit = Some(edit),
                         &mut |edit| sketch_text_edit = Some(edit),
                         &mut |edit| drawing_view_edit = Some(edit),
@@ -6019,6 +6250,52 @@ impl eframe::App for App {
                                 cr.recompute_mode();
                             }
                             context::RepeatEdit::Commit => unreachable!(),
+                        }
+                    }
+                }
+            }
+            if let Some(edit) = sketch_offset_edit {
+                match edit {
+                    context::SketchOffsetEdit::Commit => {
+                        if self
+                            .state
+                            .creating_sketch_offset
+                            .as_ref()
+                            .is_some_and(|c| c.has_targets())
+                        {
+                            self.commit_sketch_offset();
+                        }
+                    }
+                    context::SketchOffsetEdit::EditStart(op) => {
+                        if let Some(existing) = self.state.doc.sketch_offset_ops.get(op).cloned() {
+                            self.state.creating_sketch_offset =
+                                Some(actions::CreatingSketchOffset {
+                                    sketch: existing.sketch,
+                                    line_targets: existing.line_targets,
+                                    circle_targets: existing.circle_targets,
+                                    distance: existing.distance,
+                                    construction: existing.construction,
+                                    editing: Some(op),
+                                });
+                            self.state.apply(Action::SetTool(Tool::Offset));
+                            // Editing happens in the op's sketch; open it if it isn't.
+                            if self.state.sketch_session.is_none() {
+                                self.state.apply(Action::OpenSketch {
+                                    sketch: existing.sketch,
+                                    viewport: None,
+                                });
+                            }
+                        }
+                    }
+                    edit => {
+                        if let Some(co) = self.state.creating_sketch_offset.as_mut() {
+                            match edit {
+                                context::SketchOffsetEdit::Distance(v) => co.distance = v,
+                                context::SketchOffsetEdit::Construction(v) => {
+                                    co.construction = v
+                                }
+                                _ => unreachable!(),
+                            }
                         }
                     }
                 }
@@ -7015,11 +7292,21 @@ fn resolve_viewport_hover_highlight(
         }
         // The Text tool joins the draw tools (#383): outside a sketch it clicks a face to
         // begin sketching there, so it hover-highlights faces the same way.
-        Tool::Rectangle | Tool::Line | Tool::Circle | Tool::Text
+        Tool::Rectangle | Tool::Line | Tool::Circle | Tool::Text | Tool::Offset
             if sketch_session.is_none() =>
         {
             pick_sketch_face(pp, project, doc, cam.eye())
                 .map(gpu_viewport::ViewportHoverHighlight::SketchFace)
+        }
+        // Offset tool in a sketch: glow the line/circle a click would pick.
+        Tool::Offset => {
+            let gp = cam.ground_point(pp, viewport, vp);
+            let target = resolve_pick_target(pp, project, gp, doc, occlusion)?;
+            matches!(
+                target.kind,
+                construction::PickTargetKind::Line(_) | construction::PickTargetKind::Circle(_)
+            )
+            .then_some(gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind))
         }
         Tool::ConstructionPlane if !creating_plane => {
             let gp = cam.ground_point(pp, viewport, vp);
@@ -12356,6 +12643,35 @@ impl App {
             self.handle_repeat_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
         }
 
+        if self.state.tool == Tool::Offset {
+            if let Some(session) = self.state.sketch_session {
+                self.handle_sketch_offset_tool(
+                    ui, &painter, &project, pointer_screen, &cam, viewport, &vp, session,
+                );
+            } else if let Some(pp) = pointer_screen {
+                // Outside a sketch the Offset tool clicks a face to begin sketching there,
+                // like the draw tools.
+                if ui.input(|i| i.pointer.primary_pressed()) {
+                    if let Some(face) = pick_sketch_face(pp, &project, &self.state.doc, self.state.cam.eye()) {
+                        self.state.apply(Action::BeginSketch {
+                            face,
+                            viewport: Some(viewport),
+                        });
+                    }
+                } else if !self.gpu_viewport && !suppress_hover_highlight {
+                    if let Some(face) = pick_sketch_face(pp, &project, &self.state.doc, self.state.cam.eye()) {
+                        draw_face_highlight(
+                            &painter,
+                            &project,
+                            &self.state.doc,
+                            face,
+                            construction::PICK_HOVER_RGBA,
+                        );
+                    }
+                }
+            }
+        }
+
         if self.state.tool == Tool::Slice {
             self.handle_slice_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
         }
@@ -13163,7 +13479,8 @@ impl App {
             });
         // Live ghost of the in-progress in-sketch repeat's duplicates (#232): dashed copies of
         // the picked lines/circles at every computed offset, so the result previews before commit.
-        let sketch_repeat_ghost = self.sketch_repeat_ghost_segments();
+        let mut sketch_repeat_ghost = self.sketch_repeat_ghost_segments();
+        sketch_repeat_ghost.extend(self.sketch_offset_ghost_segments());
         // Live-updated descendant geometry for the operation being edited (#260): recomputed from
         // a scratch doc so faded downstream bodies follow the gizmo drag in preview styling.
         let edit_preview_meshes = self.edit_preview_descendant_meshes();
@@ -14385,6 +14702,20 @@ impl App {
                     "c: constraint  •  Open a sketch to add geometric constraints"
                 } else {
                     "c: constraint  •  Shift+click or ⌘/Ctrl+click multi-select • 1–7 apply constraint • context pane shows options"
+                }
+            }
+            Tool::Offset => {
+                if self.state.sketch_session.is_none() {
+                    "offset  •  Click a face to sketch on"
+                } else if self
+                    .state
+                    .creating_sketch_offset
+                    .as_ref()
+                    .is_some_and(|c| c.has_targets())
+                {
+                    "offset  •  Drag the handle or type a distance (negative flips side) • Enter: commit • Esc: cancel"
+                } else {
+                    "offset  •  Click lines/circles to offset"
                 }
             }
             Tool::Dimension => {

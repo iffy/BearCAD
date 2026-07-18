@@ -1413,6 +1413,11 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        SceneElement::SketchOffsetOp(i) => ElementScriptTokens {
+            kind: "sketch_offset_op",
+            index: i,
+            point: None,
+        },
         SceneElement::SketchRepeatOp(i) => ElementScriptTokens {
             kind: "sketch_repeat_op",
             index: i,
@@ -2302,6 +2307,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
         Tool::Extrude => "extrude",
         Tool::Chamfer => "chamfer",
         Tool::Fillet => "fillet",
+        Tool::Offset => "offset",
         Tool::Loft => "loft",
         Tool::Revolve => "revolve",
         Tool::Combine => "combine",

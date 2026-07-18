@@ -89,7 +89,8 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
         // selects the Text tool everywhere else.
         Tool::Text => Some(ShortcutHint::plain("T")),
         // No plain-letter shortcut yet; toolbar/palette only.
-        Tool::Loft
+        Tool::Offset
+        | Tool::Loft
         | Tool::Project
         | Tool::Revolve
         | Tool::Combine

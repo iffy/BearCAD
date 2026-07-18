@@ -20,6 +20,7 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::MoveOp(_)
         | SceneElement::RepeatOp(_)
         | SceneElement::SketchRepeatOp(_)
+        | SceneElement::SketchOffsetOp(_)
         | SceneElement::SketchSliceOp(_)
         | SceneElement::SketchText(_)
         | SceneElement::SliceOp(_)
@@ -112,6 +113,7 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         SceneElement::MoveOp(index) => doc.move_ops.get(index)?.name.as_deref(),
         SceneElement::RepeatOp(index) => doc.repeat_ops.get(index)?.name.as_deref(),
         SceneElement::SketchRepeatOp(index) => doc.sketch_repeat_ops.get(index)?.name.as_deref(),
+        SceneElement::SketchOffsetOp(index) => doc.sketch_offset_ops.get(index)?.name.as_deref(),
         SceneElement::SketchSliceOp(index) => doc.sketch_slice_ops.get(index)?.name.as_deref(),
         SceneElement::SketchText(index) => doc.sketch_texts.get(index)?.name.as_deref(),
         SceneElement::SliceOp(index) => doc.slice_ops.get(index)?.name.as_deref(),
@@ -216,6 +218,13 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 .sketch_repeat_ops
                 .get_mut(index)
                 .ok_or_else(|| format!("sketch repeat {index} not found"))?;
+            op.name = stored;
+        }
+        SceneElement::SketchOffsetOp(index) => {
+            let op = doc
+                .sketch_offset_ops
+                .get_mut(index)
+                .ok_or_else(|| format!("sketch offset {index} not found"))?;
             op.name = stored;
         }
         SceneElement::SketchSliceOp(index) => {
@@ -337,6 +346,7 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
         HierarchyNode::MoveOp(i) => format!("Move {i}"),
         HierarchyNode::RepeatOp(i) => format!("Repeat {i}"),
         HierarchyNode::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
+        HierarchyNode::SketchOffsetOp(i) => format!("Offset {i}"),
         HierarchyNode::SketchSliceOp(i) => format!("Sketch slice {i}"),
         HierarchyNode::SketchText(i) => {
             // Show the string itself (first line, trimmed to keep rows compact).
@@ -460,6 +470,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::MoveOp(i) => format!("Move {i}"),
         SceneElement::RepeatOp(i) => format!("Repeat {i}"),
         SceneElement::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
+        SceneElement::SketchOffsetOp(i) => format!("Offset {i}"),
         SceneElement::SketchSliceOp(i) => format!("Sketch slice {i}"),
         SceneElement::SketchText(i) => format!("Text {i}"),
         SceneElement::SliceOp(i) => format!("Slice {i}"),
