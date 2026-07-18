@@ -547,6 +547,82 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
         }
     }
 
+    // A repeat consumes its input bodies, source planes/sketches, and replayed cut
+    // extrusions (#448): the original body is the repeat's parent, not a sibling.
+    for (oi, op) in doc.repeat_ops.iter().enumerate() {
+        if op.deleted {
+            continue;
+        }
+        for &bi in &op.targets {
+            edges.push((HierarchyNode::Body(bi), HierarchyNode::RepeatOp(oi)));
+        }
+        for &pi in &op.plane_targets {
+            edges.push((HierarchyNode::ConstructionPlane(pi), HierarchyNode::RepeatOp(oi)));
+        }
+        for &si in &op.sketch_targets {
+            edges.push((HierarchyNode::Sketch(si), HierarchyNode::RepeatOp(oi)));
+        }
+        for &ei in &op.extrusion_targets {
+            edges.push((HierarchyNode::Extrusion(ei), HierarchyNode::RepeatOp(oi)));
+        }
+    }
+    // A move also consumes its planes and images, beyond the bodies covered above (#449).
+    for (oi, op) in doc.move_ops.iter().enumerate() {
+        if op.deleted {
+            continue;
+        }
+        for &pi in &op.plane_targets {
+            edges.push((HierarchyNode::ConstructionPlane(pi), HierarchyNode::MoveOp(oi)));
+        }
+        for &ii in &op.image_targets {
+            edges.push((HierarchyNode::Image(ii), HierarchyNode::MoveOp(oi)));
+        }
+    }
+    // A slice's cutters feed it (#449): construction planes have a node; body faces don't.
+    for (oi, op) in doc.slice_ops.iter().enumerate() {
+        if op.deleted {
+            continue;
+        }
+        for cutter in &op.cutters {
+            if let FaceId::ConstructionPlane(pi) = cutter {
+                edges.push((HierarchyNode::ConstructionPlane(*pi), HierarchyNode::SliceOp(oi)));
+            }
+        }
+    }
+    // A revolution is fed by its profile sketch, and by its axis line if any (#449).
+    for (ri, rev) in doc.revolutions.iter().enumerate() {
+        if rev.deleted {
+            continue;
+        }
+        edges.push((HierarchyNode::Sketch(rev.sketch), HierarchyNode::Revolution(ri)));
+        if let crate::model::RevolveAxis::Line(li) = rev.axis {
+            edges.push((HierarchyNode::Line(li), HierarchyNode::Revolution(ri)));
+        }
+    }
+    // In-sketch ops consume their source lines/circles (#449); the in-sketch slice also
+    // its cutter lines.
+    for (oi, op) in doc.sketch_repeat_ops.iter().enumerate() {
+        if op.deleted {
+            continue;
+        }
+        for &li in &op.line_targets {
+            edges.push((HierarchyNode::Line(li), HierarchyNode::SketchRepeatOp(oi)));
+        }
+        for &ci in &op.circle_targets {
+            edges.push((HierarchyNode::Circle(ci), HierarchyNode::SketchRepeatOp(oi)));
+        }
+    }
+    for (oi, op) in doc.sketch_slice_ops.iter().enumerate() {
+        if op.deleted {
+            continue;
+        }
+        for &li in op.line_targets.iter().chain(op.cutter_lines.iter()) {
+            edges.push((HierarchyNode::Line(li), HierarchyNode::SketchSliceOp(oi)));
+        }
+        for &ci in &op.circle_targets {
+            edges.push((HierarchyNode::Circle(ci), HierarchyNode::SketchSliceOp(oi)));
+        }
+    }
     // A drawing projection depends on its source body/sketch (#281).
     for (di, drawing) in doc.drawings.iter().enumerate() {
         if drawing.deleted {
@@ -722,6 +798,9 @@ pub fn graph_related_nodes(tree: &[HierarchyEntry], selected: HierarchyNode) -> 
 #[derive(Default)]
 pub struct GraphLayout {
     nodes: HashMap<HierarchyNode, GraphNodeState>,
+    /// Persistent per-node drag offsets (#451): the user can grab any node and move it;
+    /// the offset adds to the computed layout position so physics/declutter still run.
+    drag_offsets: HashMap<HierarchyNode, egui::Vec2>,
 }
 
 /// One node's live physics state in [`GraphLayout`]: current position and velocity.
@@ -918,6 +997,16 @@ impl GraphLayout {
             kinetic = step_graph_layout(&mut self.nodes, &edges, &depth_of, width, dt);
         }
         kinetic
+    }
+
+    /// The user's drag offset for a node (#451), zero if never dragged.
+    fn drag_offset(&self, node: HierarchyNode) -> egui::Vec2 {
+        self.drag_offsets.get(&node).copied().unwrap_or(egui::Vec2::ZERO)
+    }
+
+    /// Accumulate a drag delta onto a node's offset (#451).
+    fn add_drag_offset(&mut self, node: HierarchyNode, delta: egui::Vec2) {
+        *self.drag_offsets.entry(node).or_insert(egui::Vec2::ZERO) += delta;
     }
 
     fn pos_of(&self, node: HierarchyNode) -> Option<egui::Vec2> {
@@ -2923,10 +3012,16 @@ fn show_graph_view(
                 ui.allocate_exact_size(egui::vec2(content_width, content_height), egui::Sense::hover());
             let painter = ui.painter_at(rect);
 
+            let drag_offsets: HashMap<HierarchyNode, egui::Vec2> = positions
+                .iter()
+                .map(|p| (p.node, graph_layout.drag_offset(p.node)))
+                .collect();
             let pos_of = |node: HierarchyNode| -> egui::Pos2 {
                 let x = display.get(&node).map(|(x, _)| *x).unwrap_or(GRAPH_MARGIN);
-                egui::pos2(rect.left() + x, rect.top() + TOP_PADDING + node_y(&node))
+                let offset = drag_offsets.get(&node).copied().unwrap_or(egui::Vec2::ZERO);
+                egui::pos2(rect.left() + x, rect.top() + TOP_PADDING + node_y(&node)) + offset
             };
+            let mut dragged_delta: Option<(HierarchyNode, egui::Vec2)> = None;
 
             // Component areas first, beneath everything (#423): each component shades a
             // smooth convex region encompassing its member nodes. Outer components paint
@@ -3030,8 +3125,12 @@ fn show_graph_view(
                 let node_rect =
                     egui::Rect::from_center_size(center, egui::Vec2::splat(NODE_RADIUS * 2.0));
                 let id = ui.id().with(("hierarchy_graph_node", position.node));
-                let response = ui.interact(node_rect, id, egui::Sense::click());
-                if response.hovered() {
+                let response = ui.interact(node_rect, id, egui::Sense::click_and_drag());
+                // Nodes are draggable (#451): the offset persists on top of the layout.
+                if response.dragged() {
+                    dragged_delta = Some((position.node, response.drag_delta()));
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                } else if response.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     // Pane-hover → viewport highlight (#161).
                     if let Some(element) = element.clone() {
@@ -3078,6 +3177,10 @@ fn show_graph_view(
                     egui::FontId::default(),
                     if selected || related { Color32::WHITE } else { Color32::from_gray(200) },
                 );
+            }
+            if let Some((node, delta)) = dragged_delta {
+                graph_layout.add_drag_offset(node, delta);
+                ui.ctx().request_repaint();
             }
         });
 }
@@ -3675,6 +3778,56 @@ fn component_member_node(node: HierarchyNode) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #448/#449: every operation's inputs appear as graph dependency edges — the
+    /// repeat's input body was the reported gap.
+    #[test]
+    fn graph_dependency_edges_cover_operation_inputs() {
+        let mut doc = Document::default();
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        doc.repeat_ops.push(crate::model::RepeatOperation {
+            targets: vec![0],
+            plane_targets: vec![0],
+            extrusion_targets: Vec::new(),
+            sketch_targets: Vec::new(),
+            sketch_plane_outputs: Vec::new(),
+            sketch_outputs: Vec::new(),
+            axis: crate::model::RevolveAxis::X,
+            mode: crate::model::RepeatMode::CountGap,
+            count: "3".to_string(),
+            spacing: "10".to_string(),
+            length: String::new(),
+            length_target: None,
+            outputs: Vec::new(),
+            plane_outputs: Vec::new(),
+            name: None,
+            deleted: false,
+        });
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        doc.revolutions.push(crate::model::Revolution {
+            sketch,
+            faces: Vec::new(),
+            axis: crate::model::RevolveAxis::Line(0),
+            angle_deg: 360.0,
+            symmetric: false,
+            mode: crate::model::RevolveMode::NewBody,
+            name: None,
+            deleted: false,
+        });
+        let edges = graph_dependency_edges(&doc);
+        assert!(edges.contains(&(HierarchyNode::Body(0), HierarchyNode::RepeatOp(0))));
+        assert!(edges.contains(&(
+            HierarchyNode::ConstructionPlane(0),
+            HierarchyNode::RepeatOp(0)
+        )));
+        assert!(edges.contains(&(HierarchyNode::Sketch(sketch), HierarchyNode::Revolution(0))));
+        assert!(edges.contains(&(HierarchyNode::Line(0), HierarchyNode::Revolution(0))));
+    }
 
     /// #423: assigned roots nest under their component entry in the built hierarchy, and the
     /// List rows indent them one level (skipping contents when collapsed).

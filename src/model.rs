@@ -963,6 +963,14 @@ pub enum ExtrudeTarget {
     /// `FaceId::ExtrudeSide`; other `FaceId` kinds don't reach this variant (they already
     /// have their own — `Face`/`Plane` above).
     BodyFace(FaceId),
+    /// Up to a **repeated instance's** face (#452): the source extrusion face's plane
+    /// translated along the repeat axis by instance `instance`'s offset. Parametric — the
+    /// snap follows when the repeat's spacing or the source body changes.
+    RepeatedFace {
+        face: FaceId,
+        op: usize,
+        instance: usize,
+    },
 }
 
 /// An extrusion of one or more coplanar sketch faces into a 3D solid.

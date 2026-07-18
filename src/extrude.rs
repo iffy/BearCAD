@@ -2272,6 +2272,9 @@ pub fn target_top_plane(doc: &Document, extrusion: &Extrusion) -> Option<(Vec3, 
             Some((plane.origin, plane.normal))
         }
         ExtrudeTarget::BodyFace(face_id) => body_face_plane(doc, face_id),
+        ExtrudeTarget::RepeatedFace { face, op, instance } => {
+            repeated_face_plane(doc, face, *op, *instance)
+        }
         ExtrudeTarget::Vertex(_) => None,
     }
 }
@@ -2338,7 +2341,28 @@ pub fn target_distance(
             let (p, n) = body_face_plane(doc, face_id)?;
             plane_axis_distance(base, normal, p, n)
         }
+        ExtrudeTarget::RepeatedFace { face, op, instance } => {
+            let (p, n) = repeated_face_plane(doc, face, *op, *instance)?;
+            plane_axis_distance(base, normal, p, n)
+        }
     }
+}
+
+/// The plane of a repeated instance's face (#452): the source face's plane translated
+/// along the repeat axis by that instance's offset.
+pub fn repeated_face_plane(
+    doc: &Document,
+    face: &crate::model::FaceId,
+    op: usize,
+    instance: usize,
+) -> Option<(Vec3, Vec3)> {
+    let rep = doc.repeat_ops.get(op).filter(|o| !o.deleted)?;
+    let (_, dir) = axis_world(doc, rep.axis)?;
+    // `repeat_offsets` lists the copies only; instance 0 is the original body.
+    let offsets = repeat_offsets(doc, rep)?;
+    let offset = *offsets.get(instance.checked_sub(1)?)?;
+    let (p, n) = body_face_plane(doc, face)?;
+    Some((p + dir * offset, n))
 }
 
 /// Distance along `dir` from `base` to the plane (`point`, `plane_normal`).

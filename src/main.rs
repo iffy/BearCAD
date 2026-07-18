@@ -8899,8 +8899,8 @@ fn pick_extrude_target(
 
     let target = if let Some((_, t)) = best {
         t
-    } else {
-        match pick_sketch_face(pp, project, doc, eye)? {
+    } else if let Some(face) = pick_sketch_face(pp, project, doc, eye) {
+        match face {
             FaceId::Circle(i) if !exclude.contains(&model::ExtrudeFace::Circle(i)) => {
                 ExtrudeTarget::Face(model::ExtrudeFace::Circle(i))
             }
@@ -8915,9 +8915,138 @@ fn pick_extrude_target(
             }
             _ => return None,
         }
+    } else {
+        // A repeated instance's face (#452): the analytic pick above only knows original
+        // positions, so test each repeat instance's translated cap/side faces directly.
+        pick_repeated_face(pp, project, doc, editing)?
     };
     let dist = extrude::target_distance(doc, base, normal, &target)?;
     Some((target, dist))
+}
+
+/// Hit-test the cursor against every repeated instance's translated cap/side faces
+/// (#452), returning the extrude target for the nearest hit.
+fn pick_repeated_face(
+    pp: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &model::Document,
+    editing: Option<usize>,
+) -> Option<model::ExtrudeTarget> {
+    let mut best: Option<(f32, model::ExtrudeTarget)> = None;
+    for (op_index, op) in doc.repeat_ops.iter().enumerate() {
+        if op.deleted {
+            continue;
+        }
+        let Some((_, dir)) = extrude::axis_world(doc, op.axis) else { continue };
+        let Some(offsets) = extrude::repeat_offsets(doc, op) else { continue };
+        for &body in &op.targets {
+            let extrusions = doc
+                .bodies
+                .get(body)
+                .map(|b| b.source.extrusion_indices().to_vec())
+                .unwrap_or_default();
+            for ei in extrusions {
+                if editing == Some(ei) {
+                    continue;
+                }
+                let Some(ext) = doc.extrusions.get(ei).filter(|e| !e.deleted) else {
+                    continue;
+                };
+                for profile in &ext.faces {
+                    // `repeat_offsets` lists the copies; instance = i + 1 (0 is the
+                    // original, covered by the analytic pick).
+                    for (i, &offset) in offsets.iter().enumerate() {
+                        let instance = i + 1;
+                        let shift = dir * offset;
+                        for top in [true, false] {
+                            if let Some(poly) =
+                                extrude::cap_polygon_world(doc, ei, profile, top)
+                            {
+                                let pts: Vec<Vec3> =
+                                    poly.iter().map(|&p| p + shift).collect();
+                                if let Some(center) =
+                                    polygon_screen_hit(pp, project, &pts)
+                                {
+                                    let face = FaceId::ExtrudeCap {
+                                        extrusion: ei,
+                                        profile: profile.clone(),
+                                        top,
+                                    };
+                                    consider_repeated_hit(
+                                        &mut best, center, face, op_index, instance,
+                                    );
+                                }
+                            }
+                        }
+                        for edge in 0..extrude::side_face_count(profile) {
+                            if let Some(quad) =
+                                extrude::side_quad_world(doc, ei, profile, edge)
+                            {
+                                let pts: Vec<Vec3> =
+                                    quad.iter().map(|&p| p + shift).collect();
+                                if let Some(center) =
+                                    polygon_screen_hit(pp, project, &pts)
+                                {
+                                    let face = FaceId::ExtrudeSide {
+                                        extrusion: ei,
+                                        profile: profile.clone(),
+                                        edge: edge as u8,
+                                    };
+                                    consider_repeated_hit(
+                                        &mut best, center, face, op_index, instance,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    best.map(|(_, t)| t)
+}
+
+/// Point-in-projected-polygon test; returns the polygon centre's screen depth key on hit.
+fn polygon_screen_hit(
+    pp: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    pts: &[Vec3],
+) -> Option<f32> {
+    let screen: Vec<egui::Pos2> = pts.iter().filter_map(|&p| project(p)).collect();
+    if screen.len() != pts.len() || screen.len() < 3 {
+        return None;
+    }
+    // Even-odd point-in-polygon.
+    let mut inside = false;
+    let mut j = screen.len() - 1;
+    for i in 0..screen.len() {
+        let (a, b) = (screen[i], screen[j]);
+        if (a.y > pp.y) != (b.y > pp.y)
+            && pp.x < (b.x - a.x) * (pp.y - a.y) / (b.y - a.y) + a.x
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside.then(|| {
+        let center = pts.iter().copied().fold(Vec3::ZERO, |acc, p| acc + p) / pts.len() as f32;
+        center.length()
+    })
+}
+
+fn consider_repeated_hit(
+    best: &mut Option<(f32, model::ExtrudeTarget)>,
+    depth_key: f32,
+    face: FaceId,
+    op: usize,
+    instance: usize,
+) {
+    if best.as_ref().is_none_or(|(d, _)| depth_key < *d) {
+        *best = Some((
+            depth_key,
+            model::ExtrudeTarget::RepeatedFace { face, op, instance },
+        ));
+    }
 }
 
 /// Snap radius in screen pixels, converted to sketch units per the current view.
@@ -9681,6 +9810,40 @@ fn draw_extrude_target_highlight(
         model::ExtrudeTarget::BodyFace(face_id) => {
             draw_face_highlight(painter, project, doc, face_id, color);
         }
+        // A repeated instance's face (#452): highlight the source face's outline
+        // translated to the instance position.
+        model::ExtrudeTarget::RepeatedFace { face, op, instance } => {
+            let offset = (|| {
+                let rep = doc.repeat_ops.get(op).filter(|o| !o.deleted)?;
+                let (_, dir) = extrude::axis_world(doc, rep.axis)?;
+                Some(dir * *extrude::repeat_offsets(doc, rep)?.get(instance.checked_sub(1)?)?)
+            })();
+            if let (Some(offset), Some(poly)) = (offset, face_outline_world(doc, &face)) {
+                let pts: Vec<egui::Pos2> = poly
+                    .iter()
+                    .filter_map(|&p| project(p + offset))
+                    .collect();
+                if pts.len() >= 3 {
+                    painter.add(egui::Shape::closed_line(
+                        pts,
+                        egui::Stroke::new(2.0, color),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// The world outline polygon of an extrusion-backed face (#452).
+fn face_outline_world(doc: &model::Document, face: &FaceId) -> Option<Vec<Vec3>> {
+    match face {
+        FaceId::ExtrudeCap { extrusion, profile, top } => {
+            extrude::cap_polygon_world(doc, *extrusion, profile, *top)
+        }
+        FaceId::ExtrudeSide { extrusion, profile, edge } => {
+            extrude::side_quad_world(doc, *extrusion, profile, *edge as usize).map(|q| q.to_vec())
+        }
+        _ => None,
     }
 }
 

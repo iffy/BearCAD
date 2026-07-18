@@ -399,9 +399,18 @@ fn parse_extrude_target_table(table: &Table) -> mlua::Result<crate::model::Extru
         let is_face_id_ref = face.get::<Option<String>>("kind")?.is_some()
             || face.get::<Option<String>>("type")?.is_some();
         if is_face_id_ref {
-            return Ok(crate::model::ExtrudeTarget::BodyFace(parse_face_id_table(
-                face,
-            )?));
+            let face_id = parse_face_id_table(face)?;
+            // A repeated instance's face (#452): `{ face = {...}, repeat_op = i,
+            // instance = n }` targets the source face translated to instance `n`.
+            if let Some(op) = table.get::<Option<usize>>("repeat_op")? {
+                let instance: usize = table.get::<Option<usize>>("instance")?.unwrap_or(1);
+                return Ok(crate::model::ExtrudeTarget::RepeatedFace {
+                    face: face_id,
+                    op,
+                    instance,
+                });
+            }
+            return Ok(crate::model::ExtrudeTarget::BodyFace(face_id));
         }
         return Ok(crate::model::ExtrudeTarget::Face(parse_extrude_face_table(
             &face,

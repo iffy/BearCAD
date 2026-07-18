@@ -3158,6 +3158,11 @@ fn validate_extrude_target(
                 .map(|_| ())
                 .ok_or_else(|| "Extrude target vertex does not exist".to_string())
         }
+        ExtrudeTarget::RepeatedFace { face, op, instance } => {
+            crate::extrude::repeated_face_plane(doc, face, *op, *instance)
+                .map(|_| ())
+                .ok_or_else(|| "Extrude target repeated face does not resolve".to_string())
+        }
         ExtrudeTarget::BodyFace(face_id) => {
             if !matches!(
                 face_id,
