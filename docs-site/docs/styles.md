@@ -49,9 +49,8 @@ recolors it with the edit accent.
 
 ## Bodies
 
-A selected body fills in a more saturated blue and gets an **aura** — a glowing outline just
-outside its silhouette. Blue for selection; the hover color when a body is hovered in the
-Elements pane.
+A selected body fills in a more saturated blue; a hovered one in a warm gold-grey. In
+wireframe mode the lines recolor instead of the fill.
 
 | Normal | Hovered (Elements pane) | Selected |
 |---|---|---|

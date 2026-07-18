@@ -90,6 +90,8 @@ const SHADOW_BODY_OPACITY: f32 = 0.30;
 /// Fill for a **selected** body (#174): a more saturated blue than the neutral body grey,
 /// so selection reads on the body itself, not just its aura outline.
 pub const SOLID_FILL_SELECTED: Color32 = Color32::from_rgb(112, 152, 224);
+/// Hovered-body fill (#455): a warm gold-tinted grey so hover reads on the body itself.
+pub const SOLID_FILL_HOVERED: Color32 = Color32::from_rgb(196, 180, 132);
 /// Fill for a body picked into a destructive (cut) element picker (#213) — the red highlight
 /// override, e.g. Revolve's cut bodies or a Combine **Cut**'s B side.
 pub const SOLID_FILL_CUT: Color32 = Color32::from_rgb(210, 120, 120);
@@ -145,15 +147,6 @@ const SOLID_CAP_DEPTH_BIAS: f32 = 0.02;
 /// one solid-color mitered stroke (stacking a bright core over a dim halo read as splotchy
 /// wherever the two strokes' antialiased edges beat against each other).
 pub const BODY_SILHOUETTE_COLOR: Color32 = Color32::from_rgb(95, 165, 245);
-/// Red aura for the destructive (side-B / cut) bodies of a boolean/revolve cut (#264): same
-/// silhouette treatment as [`BODY_SILHOUETTE_COLOR`] but in the cut red, so the carved-away
-/// bodies read as selected-and-destructive rather than merely tinted.
-pub const BODY_SILHOUETTE_CUT_COLOR: Color32 = Color32::from_rgb(235, 120, 120);
-const BODY_SILHOUETTE_WIDTH: f32 = 4.0;
-/// How far the silhouette glow sits *outside* the body's edges, screen pixels — an aura around
-/// the shape rather than a line on it. Each segment is also extended by the same amount at both
-/// ends so the offset outlines still meet at corners.
-const BODY_SILHOUETTE_OFFSET_PX: f32 = 5.0;
 
 const GIZMO_OFFSET_STROKE_PX: f32 = 2.5;
 const GIZMO_OFFSET_STROKE_HOVER_PX: f32 = 4.0;
@@ -716,10 +709,25 @@ impl ViewportScene {
                 mesh.push_solid_translucent(solid, SOLID_FILL_CUT, TRANSPARENT_SOLID_OPACITY);
                 continue;
             }
+            // Selection and hover recolor the body itself (#455): the fill in shaded
+            // modes, the lines in wireframe — no outline aura.
+            let hovered = matches!(
+                &input.hover_highlight,
+                Some(ViewportHoverHighlight::Element(SceneElement::Body(h))) if *h == bi
+            );
             let fill = if input.selection.is_selected(SceneElement::Body(bi)) {
                 SOLID_FILL_SELECTED
+            } else if hovered {
+                SOLID_FILL_HOVERED
             } else {
                 SOLID_FILL
+            };
+            let line_color = if input.selection.is_selected(SceneElement::Body(bi)) {
+                BODY_SILHOUETTE_COLOR
+            } else if hovered {
+                SOLID_FILL_HOVERED
+            } else {
+                WIREFRAME_LINE_COLOR
             };
             // Sketch mode dims every body (#433): the bright face shading otherwise
             // fights the sketch lines and dimension labels drawn over it.
@@ -749,7 +757,7 @@ impl ViewportScene {
                 crate::camera::ShadingMode::Wireframe => {
                     mesh.push_solid_wireframe(
                         solid,
-                        WIREFRAME_LINE_COLOR,
+                        line_color,
                         input.cam,
                         input.viewport,
                         &vp,
@@ -759,7 +767,7 @@ impl ViewportScene {
                     mesh.push_solid(solid, fill, input.cam, cap_plane);
                     mesh.push_solid_wireframe(
                         solid,
-                        WIREFRAME_LINE_COLOR,
+                        line_color,
                         input.cam,
                         input.viewport,
                         &vp,
@@ -1067,22 +1075,8 @@ impl ViewportScene {
             input.palette.dim_edge_highlight,
         );
 
-        // The destructive (side-B / cut) bodies get their own red selection aura (#264), matching
-        // the blue aura the side-A bodies already receive through `push_selection`.
-        if !input.cut_highlight_bodies.is_empty() {
-            let cut_bodies: std::collections::HashSet<usize> =
-                input.cut_highlight_bodies.iter().copied().collect();
-            mesh.push_body_aura(
-                input.doc,
-                &cut_bodies,
-                &std::collections::HashSet::new(),
-                &body_meshes,
-                BODY_SILHOUETTE_CUT_COLOR,
-                input.cam,
-                input.viewport,
-                &vp,
-            );
-        }
+        // Destructive (side-B / cut) bodies read by their red translucent fill alone
+        // (#455) — the outline aura is gone.
 
         if let Some(graphics) = input.constraint_graphics {
             if !graphics.is_empty() {
@@ -2023,7 +2017,7 @@ impl<'a> SceneMesh<'a> {
         doc: &Document,
         health: &DocumentHealth,
         selection: &SceneSelection,
-        body_meshes: &[Option<crate::extrude::SolidMesh>],
+        _body_meshes: &[Option<crate::extrude::SolidMesh>],
         cam: &Camera,
         viewport: UiRect,
         view_proj: &Mat4,
@@ -2032,11 +2026,7 @@ impl<'a> SceneMesh<'a> {
         if selection.is_empty() {
             return;
         }
-        // Selected bodies get one combined screen-space aura (#145/#148); a selected
-        // extrusion contributes only its own solid (#154), so picking an Extrude element
-        // outlines just the part it created rather than the whole body it merged into.
-        let mut aura_bodies: std::collections::HashSet<usize> = std::collections::HashSet::new();
-        let mut aura_extrusions: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
         for element in selection.iter() {
             let color = health_tint_color(base_color, health.element_status(element.clone()));
             let dashed = selection_highlight_dashed(doc, element.clone()) == Some(true);
@@ -2146,256 +2136,47 @@ impl<'a> SceneMesh<'a> {
                         self.set_index_layer(restore);
                     }
                 }
-                // A selected body (or extrusion) gets a glowing blue outline traced around its
-                // camera-facing silhouette (#145).
-                SceneElement::Body(index) => {
-                    aura_bodies.insert(index);
-                }
+                // A selected body recolors in the main pass (#455: fill in shaded modes,
+                // lines in wireframe) — no outline aura. A selected extrusion recolors
+                // just its own solid within the (possibly merged) body.
+                SceneElement::Body(_) => {}
                 SceneElement::Extrusion(index) => {
-                    aura_extrusions.insert(index);
+                    self.push_sub_body_recolor(doc, index, BODY_SILHOUETTE_COLOR, cam, viewport, view_proj);
                 }
                 _ => {}
             }
         }
-        if !aura_bodies.is_empty() || !aura_extrusions.is_empty() {
-            self.push_body_aura(
-                doc,
-                &aura_bodies,
-                &aura_extrusions,
-                body_meshes,
-                BODY_SILHOUETTE_COLOR,
-                cam,
-                viewport,
-                view_proj,
-            );
-        }
     }
 
-    /// Draw the selection aura (#145/#148) around the selected bodies as a **2D screen-space
-    /// effect**: all selected bodies are rasterized into one projected footprint, the aura is
-    /// the iso-contour of that footprint's distance field at [`BODY_SILHOUETTE_OFFSET_PX`]
-    /// (see [`AuraField`]), and a contour stretch is dropped where a *non-selected* body sits
-    /// in front of the silhouette it outlines. Union-by-construction: overlapping bodies get
-    /// one outline, and bodies closer than twice the offset have their auras join. The
-    /// contour is unprojected onto the plane through `cam.target` facing the camera, where
-    /// the px-width line renderer is exact, and drawn glow-under-core.
-    fn push_body_aura(
+    /// Recolor one extrusion's own solid inside its body (#455, replacing the aura): a
+    /// translucent overlay of its mesh in shaded modes, its feature edges in wireframe.
+    fn push_sub_body_recolor(
         &mut self,
         doc: &Document,
-        bodies: &std::collections::HashSet<usize>,
-        extrusions: &std::collections::HashSet<usize>,
-        body_meshes: &[Option<crate::extrude::SolidMesh>],
+        extrusion: usize,
         color: Color32,
         cam: &Camera,
         viewport: UiRect,
         view_proj: &Mat4,
     ) {
-        let eye = cam.eye();
-        let project = |w: Vec3| cam.project(w, viewport, view_proj);
-
-        // Project every body once up front; the selected geometry's screen bounds (clipped
-        // to the viewport) define the field region, so grid work scales with the selection.
-        // `body_meshes` is the per-frame mesh list the body render already built — hidden
-        // bodies are `None` there, so they neither get an aura nor occlude one.
-        type ScreenTri = ([egui::Pos2; 3], [f32; 3]);
-        let mut sel_tris: Vec<ScreenTri> = Vec::new();
-        let mut other_tris: Vec<ScreenTri> = Vec::new();
-        let mut sel_bounds: Option<UiRect> = None;
-        let stamp = |tri: &[Vec3; 3],
-                         selected: bool,
-                         sel_tris: &mut Vec<ScreenTri>,
-                         other_tris: &mut Vec<ScreenTri>,
-                         sel_bounds: &mut Option<UiRect>| {
-            let (Some(a), Some(b), Some(c)) = (project(tri[0]), project(tri[1]), project(tri[2]))
-            else {
-                return;
-            };
-            if selected {
-                let tri_rect = UiRect::from_min_max(
-                    egui::pos2(a.x.min(b.x).min(c.x), a.y.min(b.y).min(c.y)),
-                    egui::pos2(a.x.max(b.x).max(c.x), a.y.max(b.y).max(c.y)),
-                );
-                *sel_bounds = Some(match *sel_bounds {
-                    Some(r) => r.union(tri_rect),
-                    None => tri_rect,
-                });
-            }
-            let depths = [
-                (tri[0] - eye).length(),
-                (tri[1] - eye).length(),
-                (tri[2] - eye).length(),
-            ];
-            if selected {
-                sel_tris.push(([a, b, c], depths));
-            } else {
-                other_tris.push(([a, b, c], depths));
-            }
-        };
-        for (bi, mesh) in body_meshes.iter().enumerate() {
-            let Some(mesh) = mesh else {
-                continue;
-            };
-            let selected = bodies.contains(&bi);
-            for tri in &mesh.triangles {
-                stamp(tri, selected, &mut sel_tris, &mut other_tris, &mut sel_bounds);
-            }
-        }
-        // A selected extrusion contributes just its own analytic solid (#154): the aura then
-        // outlines the part that extrusion created, while the rest of its body (stamped as
-        // non-selected above) occludes the outline wherever it stands in front. Skip
-        // extrusions whose whole body is already selected — the body footprint covers them.
-        for &ei in extrusions {
-            let Some(ext) = doc.extrusions.get(ei) else {
-                continue;
-            };
-            if ext.deleted
-                || crate::model::body_index_for_extrusion(doc, ei)
-                    .is_some_and(|bi| bodies.contains(&bi))
-            {
-                continue;
-            }
-            let Some(mesh) = crate::extrude::extrusion_mesh(doc, ext) else {
-                continue;
-            };
-            for tri in &mesh.triangles {
-                stamp(tri, true, &mut sel_tris, &mut other_tris, &mut sel_bounds);
-            }
-        }
-        let Some(sel_bounds) = sel_bounds else {
+        let Some(ext) = doc.extrusions.get(extrusion).filter(|e| !e.deleted) else {
             return;
         };
-        let region = sel_bounds.intersect(viewport.expand(AURA_MARGIN_PX));
-        let Some(mut field) = AuraField::new(region) else {
+        let Some(mesh) = crate::extrude::extrusion_mesh(doc, ext) else {
             return;
         };
-        for (pts, depths) in &sel_tris {
-            field.stamp_triangle(*pts, *depths, true);
-        }
-        field.finalize();
-        // Non-selected bodies only matter to the occlusion test, which reads their depth in
-        // the narrow band around the silhouette — stamp them band-restricted so a large
-        // unselected body doesn't pay for its whole projected area.
-        if !other_tris.is_empty() {
-            let mut band = vec![false; field.w * field.h];
-            for &i in &field.touched {
-                band[i] = true;
-            }
-            for (pts, depths) in &other_tris {
-                field.stamp_other_in_band(*pts, *depths, &band);
-            }
-        }
-        let contour = field.visible_contour(BODY_SILHOUETTE_OFFSET_PX);
-        if contour.is_empty() {
-            return;
-        }
-
-        // Unproject onto the camera-facing plane through the target: overlay lines there
-        // project at exactly the requested pixel width (`line_screen_quad`'s world-per-px
-        // conversion is anchored at the target distance).
-        let forward = (cam.target - eye).normalize_or_zero();
-        if forward.length_squared() < 0.5 {
-            return;
-        }
-        let unproject = |p: egui::Pos2| -> Option<Vec3> {
-            cam.ray_plane_hit(p, viewport, view_proj, cam.target, forward)
-        };
-        // Chain the raw marching-squares steps into polylines, smooth, and thin them out —
-        // then draw each as one solid mitered stroke, so the aura reads as a single clean line.
-        // Drawn through the depth-test-disabled layer: the aura's geometry sits on the
-        // camera-target plane, and depth testing it would let unrelated nearer geometry (the
-        // ground grid, bodies in front) clip it — occlusion by non-selected bodies is already
-        // decided per contour stretch above, and nothing else may cover the aura.
-        let restore_layer = self.index_layer;
-        self.set_index_layer(MeshIndexLayer::Wireframe);
-        for (points, closed) in chain_contour_segments(&contour) {
-            let smoothed = chaikin_smooth(&points, closed, 2);
-            let sparse = resample_polyline(&smoothed, AURA_DRAW_STEP_PX);
-            if sparse.len() >= 2 {
-                self.push_aura_stroke(
-                    &sparse,
-                    closed,
-                    BODY_SILHOUETTE_WIDTH,
-                    color,
-                    &unproject,
-                );
-            }
-        }
-        self.set_index_layer(restore_layer);
-    }
-
-    /// Draw a screen-space polyline as one continuous mitered stroke, unprojected onto the
-    /// camera-facing target plane. Unlike a chain of per-segment `push_line_segment` quads,
-    /// consecutive segments share their join vertices, so direction changes leave no notches
-    /// (where an under-layer would peek through) and no protruding corners.
-    fn push_aura_stroke(
-        &mut self,
-        points: &[egui::Pos2],
-        closed: bool,
-        width_px: f32,
-        color: Color32,
-        unproject: &impl Fn(egui::Pos2) -> Option<Vec3>,
-    ) {
-        // A closed chain arrives with its first point repeated at the end; drop the
-        // duplicate and wrap the neighbor lookups instead.
-        let pts = if closed && points.len() >= 2 && points.first() == points.last() {
-            &points[..points.len() - 1]
+        if matches!(cam.shading_mode(), crate::camera::ShadingMode::Wireframe) {
+            self.push_solid_wireframe(&mesh, color, cam, viewport, view_proj);
         } else {
-            points
-        };
-        let n = pts.len();
-        if n < 2 {
-            return;
-        }
-        let half = width_px * 0.5;
-        let perp = |v: egui::Vec2| egui::vec2(-v.y, v.x);
-        let seg_dir = |i: usize| -> egui::Vec2 {
-            let a = pts[i];
-            let b = pts[(i + 1) % n];
-            let d = b - a;
-            let len = d.length();
-            if len < 1e-6 {
-                egui::Vec2::ZERO
-            } else {
-                d / len
-            }
-        };
-        // Left/right stroke border per vertex: offset along the miter (average of the two
-        // adjacent segment perpendiculars), scaled to keep the stroke width, clamped so
-        // near-reversals don't spike.
-        let mut left: Vec<Option<Vec3>> = Vec::with_capacity(n);
-        let mut right: Vec<Option<Vec3>> = Vec::with_capacity(n);
-        for i in 0..n {
-            let din = if i > 0 {
-                seg_dir(i - 1)
-            } else if closed {
-                seg_dir(n - 1)
-            } else {
-                seg_dir(0)
-            };
-            let dout = if i + 1 < n || closed { seg_dir(i) } else { seg_dir(i - 1) };
-            let mut tangent = din + dout;
-            if tangent.length() < 1e-6 {
-                tangent = dout;
-            }
-            let tangent = tangent.normalized();
-            let normal = perp(tangent);
-            // Miter length correction, clamped at 2x so sharp kinks bevel instead of spiking.
-            let cos_half = normal.dot(perp(dout)).abs().max(0.5);
-            let offset = normal * (half / cos_half);
-            left.push(unproject(pts[i] + offset));
-            right.push(unproject(pts[i] - offset));
-        }
-        let quads = if closed { n } else { n - 1 };
-        for i in 0..quads {
-            let j = (i + 1) % n;
-            let (Some(l0), Some(r0), Some(l1), Some(r1)) = (left[i], right[i], left[j], right[j])
-            else {
-                continue;
-            };
-            self.push_triangle(l0, r0, r1, color);
-            self.push_triangle(l0, r1, l1, color);
+            // The Overlay layer's toward-camera bias keeps this from z-fighting the body.
+            let restore = self.index_layer;
+            self.set_index_layer(MeshIndexLayer::Overlay);
+            self.push_solid_translucent(&mesh, color, 0.45);
+            self.set_index_layer(restore);
         }
     }
+
+
 
     fn push_constraint_connectors(
         &mut self,
@@ -2731,7 +2512,7 @@ impl<'a> SceneMesh<'a> {
         doc: &Document,
         element: crate::hierarchy::SceneElement,
         color: Color32,
-        body_meshes: &[Option<crate::extrude::SolidMesh>],
+        _body_meshes: &[Option<crate::extrude::SolidMesh>],
         cam: &Camera,
         viewport: UiRect,
         view_proj: &Mat4,
@@ -2882,32 +2663,11 @@ impl<'a> SceneMesh<'a> {
             | SceneElement::SliceOp(_)
             | SceneElement::Revolution(_)
             | SceneElement::Component(_) => {}
-            // Bodies and extrusions get their aura, tinted with the hover color.
-            SceneElement::Body(index) => {
-                let bodies: std::collections::HashSet<usize> = [index].into_iter().collect();
-                self.push_body_aura(
-                    doc,
-                    &bodies,
-                    &std::collections::HashSet::new(),
-                    body_meshes,
-                    color,
-                    cam,
-                    viewport,
-                    view_proj,
-                );
-            }
+            // A hovered body recolors in the main pass (#455); a hovered extrusion
+            // recolors just its own solid.
+            SceneElement::Body(_) => {}
             SceneElement::Extrusion(index) => {
-                let extrusions: std::collections::HashSet<usize> = [index].into_iter().collect();
-                self.push_body_aura(
-                    doc,
-                    &std::collections::HashSet::new(),
-                    &extrusions,
-                    body_meshes,
-                    color,
-                    cam,
-                    viewport,
-                    view_proj,
-                );
+                self.push_sub_body_recolor(doc, index, color, cam, viewport, view_proj);
             }
         }
         self.set_index_layer(restore);
@@ -3233,450 +2993,13 @@ pub fn solid_mesh_silhouette_edges(
         .collect()
 }
 
-/// Grid resolution of the aura's screen-space footprint field, pixels per cell. Small enough
-/// that the marching-squares contour (which interpolates on the distance field) stays smooth
-/// under the glow width; doubled automatically for huge extents via [`AURA_MAX_CELLS`].
-const AURA_CELL_PX: f32 = 1.5;
-/// Cap on the aura field's cell count; the cell size grows until the grid fits, so a
-/// selection filling the screen gets a slightly coarser (still smoothed) contour instead of
-/// a multi-million-cell field recomputed every frame.
-const AURA_MAX_CELLS: usize = 600_000;
-/// Extra field margin beyond the viewport so a silhouette cut off by the screen edge closes
-/// offscreen instead of drawing an aura line along the viewport border.
-const AURA_MARGIN_PX: f32 = BODY_SILHOUETTE_OFFSET_PX + 8.0;
-/// Relative depth slack for the aura's occlusion test — a non-selected surface must be
-/// meaningfully in front of the selected silhouette (not just touching it) to occlude.
-const AURA_OCCLUSION_DEPTH_SLACK: f32 = 2e-3;
 
-/// Scanline-rasterize a screen-space triangle over the aura grid's cell centers, calling
-/// `write(cell_index, depth)` for each covered center. Per grid row, the row's center line
-/// is intersected with the triangle edges to get the covered x-span and the depth at its
-/// ends (depth is affine across a triangle in screen space), then depth steps linearly —
-/// O(covered cells) with a couple of adds per cell, instead of a barycentric solve per cell.
-fn aura_scanline(
-    w: usize,
-    h: usize,
-    cell: f32,
-    origin: egui::Pos2,
-    p: [egui::Pos2; 3],
-    depth: [f32; 3],
-    mut write: impl FnMut(usize, f32),
-) {
-    let min_y = p[0].y.min(p[1].y).min(p[2].y);
-    let max_y = p[0].y.max(p[1].y).max(p[2].y);
-    let gy0 = ((min_y - origin.y) / cell).ceil().max(0.0) as usize;
-    let gy1 = (((max_y - origin.y) / cell).floor()).min(h as f32 - 1.0);
-    if gy1 < 0.0 {
-        return;
-    }
-    let gy1 = gy1 as usize;
-    let edges = [(0usize, 1usize), (1, 2), (2, 0)];
-    for gy in gy0..=gy1 {
-        let cy = origin.y + gy as f32 * cell;
-        // Crossings of the row's center line with the triangle edges: (x, depth) pairs.
-        let mut lo: Option<(f32, f32)> = None;
-        let mut hi: Option<(f32, f32)> = None;
-        for &(a, b) in &edges {
-            let (pa, pb) = (p[a], p[b]);
-            if (pa.y - cy) * (pb.y - cy) > 0.0 || (pa.y - pb.y).abs() < 1e-12 {
-                continue;
-            }
-            let t = ((cy - pa.y) / (pb.y - pa.y)).clamp(0.0, 1.0);
-            let x = pa.x + (pb.x - pa.x) * t;
-            let d = depth[a] + (depth[b] - depth[a]) * t;
-            if lo.is_none_or(|(lx, _)| x < lx) {
-                lo = Some((x, d));
-            }
-            if hi.is_none_or(|(hx, _)| x > hx) {
-                hi = Some((x, d));
-            }
-        }
-        let (Some((x_lo, d_lo)), Some((x_hi, d_hi))) = (lo, hi) else {
-            continue;
-        };
-        let gx0 = ((x_lo - origin.x) / cell).ceil().max(0.0) as usize;
-        let gx1f = ((x_hi - origin.x) / cell).floor();
-        if gx1f < 0.0 {
-            continue;
-        }
-        let gx1 = (gx1f as usize).min(w - 1);
-        if gx0 > gx1 {
-            continue;
-        }
-        let span = (x_hi - x_lo).max(1e-12);
-        let d_step = (d_hi - d_lo) / span * cell;
-        let mut d = d_lo + ((origin.x + gx0 as f32 * cell) - x_lo) / span * (d_hi - d_lo);
-        let row = gy * w;
-        for gx in gx0..=gx1 {
-            write(row + gx, d);
-            d += d_step;
-        }
-    }
-}
 
-/// Screen-space footprint field backing the selection aura (#145/#148): all selected bodies
-/// rasterized into one coarse grid (with per-cell depth), a chamfer distance transform of
-/// that mask, and the minimum depth of *non-selected* bodies per cell for occlusion. The
-/// aura is the marching-squares iso-contour of the distance field, drawn only where no
-/// non-selected body sits in front of the nearest selected silhouette.
-struct AuraField {
-    w: usize,
-    h: usize,
-    cell: f32,
-    /// Screen position of cell (0, 0)'s center.
-    origin: egui::Pos2,
-    /// Min depth (eye distance) of selected-body coverage per cell; +inf where uncovered.
-    sel_depth: Vec<f32>,
-    /// Min depth of non-selected-body coverage per cell; +inf where uncovered.
-    other_depth: Vec<f32>,
-    /// Distance (px) to the nearest selected-covered cell (0 inside), computed only within
-    /// the narrow band the aura contour can reach (+inf beyond it).
-    dist_px: Vec<f32>,
-    /// Depth of that nearest selected cell (the silhouette the aura outlines).
-    near_depth: Vec<f32>,
-    /// Cells with a finite `dist_px` (mask boundary + the band around it), filled by
-    /// [`Self::finalize`] — the only places the iso-contour can pass, so marching squares
-    /// visits just their incident squares instead of sweeping the grid.
-    touched: Vec<usize>,
-}
 
-impl AuraField {
-    /// Field over `region` (screen px) expanded by [`AURA_MARGIN_PX`] — pass the selected
-    /// bodies' projected bounds (clipped to the viewport), not the whole viewport, so the
-    /// per-frame grid work scales with the selection's on-screen size.
-    fn new(region: UiRect) -> Option<Self> {
-        if !region.is_positive() {
-            return None;
-        }
-        let mut cell = AURA_CELL_PX;
-        let (mut w, mut h);
-        loop {
-            w = ((region.width() + 2.0 * AURA_MARGIN_PX) / cell).ceil() as usize + 1;
-            h = ((region.height() + 2.0 * AURA_MARGIN_PX) / cell).ceil() as usize + 1;
-            if w.saturating_mul(h) <= AURA_MAX_CELLS {
-                break;
-            }
-            cell *= 1.25;
-        }
-        if w < 2 || h < 2 {
-            return None;
-        }
-        let n = w * h;
-        Some(Self {
-            w,
-            h,
-            cell,
-            origin: egui::pos2(
-                region.min.x - AURA_MARGIN_PX + cell * 0.5,
-                region.min.y - AURA_MARGIN_PX + cell * 0.5,
-            ),
-            sel_depth: vec![f32::INFINITY; n],
-            other_depth: vec![f32::INFINITY; n],
-            dist_px: vec![f32::INFINITY; n],
-            near_depth: vec![f32::INFINITY; n],
-            touched: Vec::new(),
-        })
-    }
 
-    fn cell_center(&self, x: usize, y: usize) -> egui::Pos2 {
-        egui::pos2(
-            self.origin.x + x as f32 * self.cell,
-            self.origin.y + y as f32 * self.cell,
-        )
-    }
 
-    /// Rasterize a projected triangle into the field: min-depth per covered cell center
-    /// (depth stepped linearly along each row — depth is affine across the triangle in
-    /// screen space), into the selected or non-selected layer.
-    fn stamp_triangle(&mut self, p: [egui::Pos2; 3], depth: [f32; 3], selected: bool) {
-        let layer = if selected {
-            &mut self.sel_depth
-        } else {
-            &mut self.other_depth
-        };
-        aura_scanline(self.w, self.h, self.cell, self.origin, p, depth, |i, d| {
-            if d < layer[i] {
-                layer[i] = d;
-            }
-        });
-    }
 
-    /// Rasterize a non-selected triangle's depth, but only into `band` cells (the narrow
-    /// band around the selected silhouette where the occlusion test reads `other_depth`) —
-    /// so unselected bodies never pay for their full projected area.
-    fn stamp_other_in_band(&mut self, p: [egui::Pos2; 3], depth: [f32; 3], band: &[bool]) {
-        let layer = &mut self.other_depth;
-        aura_scanline(self.w, self.h, self.cell, self.origin, p, depth, |i, d| {
-            if band[i] && d < layer[i] {
-                layer[i] = d;
-            }
-        });
-    }
 
-    /// Narrow-band distance transform of the selected mask: exact Euclidean cell-to-cell
-    /// distances seeded only from the mask's **boundary cells** and written only within the
-    /// band the aura contour can reach (`BODY_SILHOUETTE_OFFSET_PX` plus interpolation
-    /// slack). O(boundary × band²) instead of a full-grid chamfer sweep — for a typical
-    /// selection that's a few hundred thousand cheap updates rather than tens of millions.
-    /// Propagates the boundary cell's depth alongside the distance and records every cell
-    /// with a finite distance in `touched` (the marching-squares candidate band).
-    fn finalize(&mut self) {
-        let (w, h) = (self.w, self.h);
-        for i in 0..w * h {
-            if self.sel_depth[i].is_finite() {
-                self.dist_px[i] = 0.0;
-                self.near_depth[i] = self.sel_depth[i];
-            }
-        }
-        let band_px = BODY_SILHOUETTE_OFFSET_PX + 3.0 * self.cell;
-        let r = (band_px / self.cell).ceil() as i32;
-        let mut touched = Vec::new();
-        for y in 0..h as i32 {
-            for x in 0..w as i32 {
-                let i = y as usize * w + x as usize;
-                if self.dist_px[i] != 0.0 {
-                    continue; // not a mask cell
-                }
-                // Only boundary mask cells seed the band (a grid edge counts as boundary so
-                // an offscreen-cut silhouette still closes its contour there).
-                let boundary = [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)].iter().any(|(dx, dy)| {
-                    let (nx, ny) = (x + dx, y + dy);
-                    if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
-                        return true;
-                    }
-                    self.dist_px[ny as usize * w + nx as usize] != 0.0
-                });
-                if !boundary {
-                    continue;
-                }
-                touched.push(i);
-                let depth = self.sel_depth[i];
-                for dy in -r..=r {
-                    let ny = y + dy;
-                    if ny < 0 || ny >= h as i32 {
-                        continue;
-                    }
-                    for dx in -r..=r {
-                        let nx = x + dx;
-                        if nx < 0 || nx >= w as i32 {
-                            continue;
-                        }
-                        let j = ny as usize * w + nx as usize;
-                        if self.dist_px[j] == 0.0 {
-                            continue; // inside the mask
-                        }
-                        let d = self.cell * ((dx * dx + dy * dy) as f32).sqrt();
-                        if d < self.dist_px[j] {
-                            if !self.dist_px[j].is_finite() {
-                                touched.push(j);
-                            }
-                            self.dist_px[j] = d;
-                            self.near_depth[j] = depth;
-                        }
-                    }
-                }
-            }
-        }
-        self.touched = touched;
-    }
-
-    /// The aura contour: marching squares over the distance field at `iso_px`, dropping the
-    /// stretches where a non-selected body is in front of the silhouette being outlined.
-    /// Only squares incident to `touched` cells are visited — the contour cannot pass
-    /// anywhere else. Returns screen-space segments.
-    fn visible_contour(&self, iso_px: f32) -> Vec<(egui::Pos2, egui::Pos2)> {
-        let mut out = Vec::new();
-        let (w, h) = (self.w, self.h);
-        let mut seen = vec![false; w * h];
-        for &cell in &self.touched {
-            let (cx, cy) = (cell % w, cell / w);
-            for (x, y) in [
-                (cx.wrapping_sub(1), cy.wrapping_sub(1)),
-                (cx, cy.wrapping_sub(1)),
-                (cx.wrapping_sub(1), cy),
-                (cx, cy),
-            ] {
-                // `wrapping_sub` underflow lands far above the grid bounds and is skipped.
-                if x >= w - 1 || y >= h - 1 {
-                    continue;
-                }
-                let i00 = y * w + x;
-                if seen[i00] {
-                    continue;
-                }
-                seen[i00] = true;
-                let (i10, i01, i11) = (i00 + 1, i00 + w, i00 + w + 1);
-                let v = [
-                    self.dist_px[i00],
-                    self.dist_px[i10],
-                    self.dist_px[i11],
-                    self.dist_px[i01],
-                ];
-                let inside = [v[0] <= iso_px, v[1] <= iso_px, v[2] <= iso_px, v[3] <= iso_px];
-                let case = (inside[0] as usize)
-                    | (inside[1] as usize) << 1
-                    | (inside[2] as usize) << 2
-                    | (inside[3] as usize) << 3;
-                if case == 0 || case == 15 {
-                    continue;
-                }
-                // Occlusion: the aura at this square outlines the nearest selected surface;
-                // a non-selected body covering the square *in front of* that surface hides it.
-                let near = self.near_depth[i00];
-                let other = self.other_depth[i00];
-                if other < near - near.abs() * AURA_OCCLUSION_DEPTH_SLACK {
-                    continue;
-                }
-                let p00 = self.cell_center(x, y);
-                let step = self.cell;
-                let lerp_t = |a: f32, b: f32| {
-                    if (b - a).abs() < 1e-12 {
-                        0.5
-                    } else {
-                        ((iso_px - a) / (b - a)).clamp(0.0, 1.0)
-                    }
-                };
-                // Edge crossing points: top (00→10), right (10→11), bottom (01→11), left (00→01).
-                let top = egui::pos2(p00.x + step * lerp_t(v[0], v[1]), p00.y);
-                let right = egui::pos2(p00.x + step, p00.y + step * lerp_t(v[1], v[2]));
-                let bottom = egui::pos2(p00.x + step * lerp_t(v[3], v[2]), p00.y + step);
-                let left = egui::pos2(p00.x, p00.y + step * lerp_t(v[0], v[3]));
-                let mut emit = |a: egui::Pos2, b: egui::Pos2| out.push((a, b));
-                match case {
-                    1 | 14 => emit(left, top),
-                    2 | 13 => emit(top, right),
-                    4 | 11 => emit(right, bottom),
-                    8 | 7 => emit(bottom, left),
-                    3 | 12 => emit(left, right),
-                    6 | 9 => emit(top, bottom),
-                    5 => {
-                        emit(left, top);
-                        emit(right, bottom);
-                    }
-                    10 => {
-                        emit(top, right);
-                        emit(bottom, left);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        out
-    }
-}
-
-/// Chain unordered contour segments (as emitted by marching squares, whose shared endpoints
-/// are bitwise-identical across neighboring cells) into polylines. Returns each chain with
-/// whether it closed back on itself. Occlusion-filtered gaps naturally become open chains.
-fn chain_contour_segments(segments: &[(egui::Pos2, egui::Pos2)]) -> Vec<(Vec<egui::Pos2>, bool)> {
-    type Key = (i32, i32);
-    let key = |p: egui::Pos2| -> Key { ((p.x * 8.0).round() as i32, (p.y * 8.0).round() as i32) };
-    let mut adjacency: std::collections::HashMap<Key, Vec<usize>> = std::collections::HashMap::new();
-    for (i, (a, b)) in segments.iter().enumerate() {
-        adjacency.entry(key(*a)).or_default().push(i);
-        adjacency.entry(key(*b)).or_default().push(i);
-    }
-    let mut used = vec![false; segments.len()];
-    let mut chains = Vec::new();
-    // Walk from every unused segment; extend forward until the chain closes or dead-ends,
-    // then extend the other way for open chains.
-    for start in 0..segments.len() {
-        if used[start] {
-            continue;
-        }
-        used[start] = true;
-        let (a, b) = segments[start];
-        let mut points = vec![a, b];
-        let mut closed = false;
-        for reversed in [false, true] {
-            if closed {
-                break;
-            }
-            if reversed {
-                points.reverse();
-            }
-            loop {
-                let tip = *points.last().unwrap();
-                let Some(candidates) = adjacency.get(&key(tip)) else {
-                    break;
-                };
-                let Some(&next) = candidates.iter().find(|&&i| !used[i]) else {
-                    break;
-                };
-                used[next] = true;
-                let (na, nb) = segments[next];
-                let far = if key(na) == key(tip) { nb } else { na };
-                if key(far) == key(points[0]) {
-                    closed = true;
-                    break;
-                }
-                points.push(far);
-            }
-        }
-        chains.push((points, closed));
-    }
-    chains
-}
-
-/// Minimum spacing of drawn aura polyline vertices, px — comfortably above the glow stroke
-/// width so the per-segment screen quads read as one continuous stroke.
-const AURA_DRAW_STEP_PX: f32 = 7.0;
-
-/// Keep only points at least `step_px` apart (plus both endpoints), so the drawn stroke's
-/// segments stay longer than the stroke width.
-fn resample_polyline(points: &[egui::Pos2], step_px: f32) -> Vec<egui::Pos2> {
-    let Some((&first, rest)) = points.split_first() else {
-        return Vec::new();
-    };
-    let mut out = vec![first];
-    let mut since = 0.0;
-    for pair in points.windows(2) {
-        since += (pair[1] - pair[0]).length();
-        if since >= step_px {
-            out.push(pair[1]);
-            since = 0.0;
-        }
-    }
-    if let Some(&last) = rest.last() {
-        if out.last() != Some(&last) {
-            out.push(last);
-        }
-    }
-    out
-}
-
-/// One or more rounds of Chaikin corner-cutting. Closed chains smooth across the wrap; open
-/// chains keep their endpoints (so an occlusion-clipped aura still ends where it was cut).
-/// A closed result gets its first point repeated at the end, ready for `windows(2)` drawing.
-fn chaikin_smooth(points: &[egui::Pos2], closed: bool, iterations: usize) -> Vec<egui::Pos2> {
-    let mut pts = points.to_vec();
-    for _ in 0..iterations {
-        if pts.len() < 3 {
-            break;
-        }
-        let mut next = Vec::with_capacity(pts.len() * 2);
-        if !closed {
-            next.push(pts[0]);
-        }
-        let edges = if closed { pts.len() } else { pts.len() - 1 };
-        for i in 0..edges {
-            let p = pts[i];
-            let q = pts[(i + 1) % pts.len()];
-            next.push(p + (q - p) * 0.25);
-            next.push(p + (q - p) * 0.75);
-        }
-        if !closed {
-            next.push(*pts.last().unwrap());
-        }
-        pts = next;
-    }
-    if closed {
-        if let Some(&first) = pts.first() {
-            pts.push(first);
-        }
-    }
-    pts
-}
 
 /// Group a solid mesh's triangles into planar faces (#144): maximal sets of triangles connected
 /// through shared edges whose two adjacent triangles are coplanar (normals agree within
@@ -6470,105 +5793,10 @@ mod tests {
         );
     }
 
-    /// Test-sized aura field over a 100x100 px viewport at cell size [`AURA_CELL_PX`].
-    fn test_aura_field() -> AuraField {
-        AuraField::new(UiRect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 100.0)))
-            .expect("field")
-    }
 
-    /// Stamp an axis-aligned screen-space rectangle at a fixed depth.
-    fn stamp_rect(field: &mut AuraField, min: egui::Pos2, max: egui::Pos2, depth: f32, selected: bool) {
-        let (a, b, c, d) = (
-            min,
-            egui::pos2(max.x, min.y),
-            max,
-            egui::pos2(min.x, max.y),
-        );
-        field.stamp_triangle([a, b, c], [depth; 3], selected);
-        field.stamp_triangle([a, c, d], [depth; 3], selected);
-    }
 
-    /// #145: the aura contour rings the selected footprint at the offset distance — every
-    /// contour point sits close to `BODY_SILHOUETTE_OFFSET_PX` outside the stamped square,
-    /// none on its edges.
-    #[test]
-    fn aura_contour_rings_the_footprint_at_the_offset() {
-        let mut field = test_aura_field();
-        stamp_rect(&mut field, egui::pos2(40.0, 40.0), egui::pos2(60.0, 60.0), 100.0, true);
-        field.finalize();
-        let contour = field.visible_contour(BODY_SILHOUETTE_OFFSET_PX);
-        assert!(!contour.is_empty(), "a selected square must produce a contour");
-        for (a, b) in &contour {
-            for p in [a, b] {
-                // Signed distance of `p` to the square (positive outside).
-                let dx = (40.0 - p.x).max(p.x - 60.0).max(0.0);
-                let dy = (40.0 - p.y).max(p.y - 60.0).max(0.0);
-                let dist = (dx * dx + dy * dy).sqrt();
-                assert!(
-                    dist > BODY_SILHOUETTE_OFFSET_PX * 0.5 && dist < BODY_SILHOUETTE_OFFSET_PX * 1.6,
-                    "contour point should sit ~offset px outside the square, got {dist} at {p:?}"
-                );
-            }
-        }
-    }
 
-    /// #145: two selected squares closer than twice the offset merge into one aura — no
-    /// contour line passes through the gap between them.
-    #[test]
-    fn aura_joins_across_a_small_gap_between_selected_bodies() {
-        let mut field = test_aura_field();
-        // 4 px gap (x 48..52) between two squares; offset 5 px each side spans the gap.
-        stamp_rect(&mut field, egui::pos2(28.0, 40.0), egui::pos2(48.0, 60.0), 100.0, true);
-        stamp_rect(&mut field, egui::pos2(52.0, 40.0), egui::pos2(72.0, 60.0), 100.0, true);
-        field.finalize();
-        let contour = field.visible_contour(BODY_SILHOUETTE_OFFSET_PX);
-        assert!(!contour.is_empty());
-        for (a, b) in &contour {
-            for p in [a, b] {
-                assert!(
-                    !(p.x > 48.5 && p.x < 51.5 && p.y > 42.0 && p.y < 58.0),
-                    "auras should join across the gap — no contour inside it, got {p:?}"
-                );
-            }
-        }
-        // Sanity: the joined aura still exists above the gap (one shared outline).
-        assert!(
-            contour.iter().any(|(a, _)| a.x > 45.0 && a.x < 55.0 && a.y < 40.0),
-            "joined outline should bridge over the gap"
-        );
-    }
 
-    /// #145: a non-selected body in *front* of the silhouette occludes the aura there; the
-    /// same body behind it does not.
-    #[test]
-    fn aura_occluded_only_by_nearer_unselected_bodies() {
-        for (occluder_depth, expect_left_side) in [(50.0, false), (200.0, true)] {
-            let mut field = test_aura_field();
-            stamp_rect(&mut field, egui::pos2(40.0, 40.0), egui::pos2(60.0, 60.0), 100.0, true);
-            // Non-selected slab covering the square's left flank (where the left aura runs).
-            stamp_rect(
-                &mut field,
-                egui::pos2(20.0, 20.0),
-                egui::pos2(45.0, 80.0),
-                occluder_depth,
-                false,
-            );
-            field.finalize();
-            let contour = field.visible_contour(BODY_SILHOUETTE_OFFSET_PX);
-            let has_left = contour
-                .iter()
-                .any(|(a, b)| a.x < 38.0 && b.x < 38.0 && a.y > 42.0 && a.y < 58.0);
-            assert_eq!(
-                has_left, expect_left_side,
-                "occluder at depth {occluder_depth}: left aura present = {has_left}"
-            );
-            // The right flank is never covered by the occluder — always present.
-            assert!(
-                contour.iter().any(|(a, b)| a.x > 62.0 && b.x > 62.0),
-                "right aura must survive regardless of the occluder"
-            );
-        }
-    }
 
     /// #161: hovering an elements-pane row highlights that element in the viewport — a
     /// hovered body draws its aura in the hover color (depth-disabled layer).
@@ -6620,17 +5848,21 @@ mod tests {
         let hovered = build(Some(ViewportHoverHighlight::Element(
             crate::hierarchy::SceneElement::Body(0),
         )));
+        // Hover recolors the body fill (#455): shaded triangles pick up the hover fill's
+        // channel ratios (r > g > b), which the plain render never produces.
+        let hover_tinted = |scene: &ViewportScene| {
+            scene
+                .vertices
+                .iter()
+                .filter(|v| {
+                    let [r, g, b, a] = v.color;
+                    a > 0.0 && r > g && g > b && r > 0.3
+                })
+                .count()
+        };
         assert!(
-            count_indices_with_color(
-                &hovered,
-                &hovered.wireframe_indices,
-                crate::construction::PICK_HOVER_RGBA
-            ) > count_indices_with_color(
-                &base,
-                &base.wireframe_indices,
-                crate::construction::PICK_HOVER_RGBA
-            ),
-            "a pane-hovered body must draw its aura in the hover color"
+            hover_tinted(&hovered) > hover_tinted(&base),
+            "hovering a body must recolor its fill"
         );
     }
 
@@ -6774,93 +6006,6 @@ mod tests {
         );
     }
 
-    /// #145: selecting a body draws a glowing blue silhouette outline in the overlay layer.
-    #[test]
-    fn selected_body_draws_blue_silhouette_outline() {
-        use crate::model::{Body, BodySource, ExtrudeFace, FaceId};
-        use crate::selection::SceneSelection;
-
-        let mut state = AppState::default();
-        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
-        let rect = crate::construction::add_line_rectangle(&mut state.doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
-        state.doc.extrusions.push(crate::model::Extrusion {
-            sketch,
-            faces: vec![ExtrudeFace::Polygon(rect.to_vec())],
-            distance: 5.0,
-            target: None,
-            expression: String::new(),
-            name: None,
-            deleted: false,
-            edge_treatments: Vec::new(),
-        });
-        state.doc.bodies.push(Body {
-            source: BodySource::Extrusion(0),
-            name: None,
-            deleted: false,
-            shadow: false,
-        });
-
-        let palette = ViewportPalette::default();
-        let cam = state.cam.clone();
-        let viewport = test_viewport();
-        let mut selected = SceneSelection::default();
-        crate::selection::click_scene_selection(&mut selected, SceneElement::Body(0), false);
-
-        let build = |sel: &SceneSelection| {
-            ViewportScene::build(&ViewportSceneInput {
-                doc: &state.doc,
-                cam: &cam,
-                viewport,
-                palette,
-                sketch_session: None,
-                selection: sel,
-                cut_highlight_bodies: Vec::new(),
-            faded_bodies: Vec::new(),
-            sketch_repeat_ghost: Vec::new(),
-            edit_preview_meshes: std::collections::HashMap::new(),
-                element_visibility: &state.element_visibility,
-                preview_rect: None,
-                preview_line: None,
-                preview_circle: None,
-                preview_extrusion: None,
-                preview_solid: None,
-            repeat_ghosts: Vec::new(),
-                preview_cut_body: None,
-                editing_extrusion: None,
-                plane_preview: None,
-                active_sketch_face: None,
-                dimension_labels: &[],
-                dim_label_view: None,
-                plane_gizmo: None,
-                extrude_gizmo: None,
-                vertex_treatment_gizmo: None,
-                move_gizmos: Vec::new(),
-                move_rotation_gizmo: None,
-                revolve_arc_gizmo: None,
-                vertex_treatment_preview: None,
-                hover_highlight: None,
-                hover_color: Color32::WHITE,
-                document_health: &DocumentHealth::default(),
-                constraint_graphics: None,
-                constraint_connector_color: None,
-            })
-        };
-
-        let unselected = build(&SceneSelection::default());
-        let selected_scene = build(&selected);
-
-        assert_eq!(
-            count_indices_with_color(&unselected, &unselected.wireframe_indices, BODY_SILHOUETTE_COLOR),
-            0,
-            "no silhouette without a selected body"
-        );
-        // The aura draws in the depth-test-disabled (wireframe) layer so the ground grid and
-        // other nearer geometry can't clip it — its occlusion is decided CPU-side instead.
-        assert!(
-            count_indices_with_color(&selected_scene, &selected_scene.wireframe_indices, BODY_SILHOUETTE_COLOR) > 0,
-            "selected body should draw a blue silhouette outline in the depth-disabled layer"
-        );
-    }
 
     #[test]
     fn constraint_connectors_add_overlay_geometry() {
@@ -7558,18 +6703,28 @@ mod cut_preview_tests {
         ViewportScene::build(&input)
     }
 
-    /// #264: a body picked into the destructive (side-B / cut) picker gets a red selection aura,
-    /// so the built scene carries more geometry than the same body rendered plain.
+    /// #264/#455: a body picked into the destructive (side-B / cut) picker recolors red
+    /// (translucent fill) — the outline aura is gone, so the recolor alone must show.
     #[test]
-    fn cut_body_gets_an_aura() {
+    fn cut_body_recolors_red() {
         let state = one_body_state();
         let plain = scene_with_cut(&state, Vec::new());
         let cut = scene_with_cut(&state, vec![0]);
+        let red_tinted = |scene: &ViewportScene| {
+            scene
+                .vertices
+                .iter()
+                .filter(|v| {
+                    let [r, g, b, a] = v.color;
+                    a > 0.0 && r > g * 1.2 && r > b * 1.2
+                })
+                .count()
+        };
         assert!(
-            cut.vertices.len() > plain.vertices.len(),
-            "cut body should add a red aura: {} vs {} vertices",
-            cut.vertices.len(),
-            plain.vertices.len()
+            red_tinted(&cut) > red_tinted(&plain),
+            "cut body should recolor red: {} vs {}",
+            red_tinted(&cut),
+            red_tinted(&plain)
         );
     }
 }

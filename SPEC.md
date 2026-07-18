@@ -1579,7 +1579,7 @@ modeled on SolveSpace (https://solvespace.com).
   pane (List or Graph view) highlights that element in the 3D viewport using the
   standard hover color: sketch entities get their usual pick highlight, a hovered sketch
   row highlights all of its entities, a construction plane its fill, and a body or
-  extrusion its **aura** tinted in the hover color. Drawn depth-test-disabled like other
+  extrusion a recolor in the hover color (#455). Drawn depth-test-disabled like other
   pick highlights (#153).
 - **3D body sub-element selection (#156):** outside sketch mode, the Select tool can select
   a body's **edges and vertices** (the same feature edges/corners the hover highlight shows,
@@ -1648,24 +1648,15 @@ modeled on SolveSpace (https://solvespace.com).
   the nearer face winning when two project onto the cursor. The Chamfer/Fillet tool likewise
   hover-highlights the treatable analytic edge under the cursor before it is clicked.
 - **Selected-body fill (#174):** a selected body's solid also fills in a **more saturated
-  blue** than the neutral body grey (in every shading mode), so selection reads on the body
-  itself, not just its aura outline.
-- **Selected-body highlight / aura (#145/#148):** selecting one or more bodies
-  — e.g. in the Elements pane — draws a blue **aura** around them: a purely **2D
-  screen-space effect**. Selecting an **Extrude** element auras only the solid that
-  extrusion created (#154), with the rest of its body treated as non-selected geometry (it
-  occludes the outline where it stands in front) — so picking a feature highlights the part,
-  not the whole merged body. All selected bodies are rasterized into one projected footprint, and
-  the aura is that footprint's outline pushed a few pixels outward (the iso-contour of the
-  footprint's screen-space distance field, traced by marching squares, smoothed, and drawn as
-  a single solid-color mitered stroke). Consequences of the 2D design, all intentional:
-  - The aura is one continuous non-overlapping outline around the union silhouette — no line
-    ever crosses a selected body (e.g. behind a boss standing on a selected cube).
-  - Multiple selected bodies whose footprints overlap on screen share one outline, and bodies
-    **closer than twice the offset join** into a single merged aura.
-  - A **non-selected body occludes the aura** where it stands in front of the selected
-    silhouette being outlined (depth-compared per contour stretch); a body behind the
-    selection does not.
+  blue** than the neutral body grey (in every shading mode), so selection reads on the body itself (#455).
+- **Selected/hovered-body highlight (#455, replacing the #145/#148 aura):** selection and
+  hover recolor the **body itself** — no outline. In shaded modes the fill changes
+  (`SOLID_FILL_SELECTED` saturated blue; `SOLID_FILL_HOVERED` warm gold-grey); in
+  wireframe mode the **lines** recolor instead. Selecting or hovering an **Extrude**
+  element recolors only that extrusion's own solid within its (possibly merged) body
+  (`push_sub_body_recolor`: a translucent overlay on the toward-camera-biased Overlay
+  layer in shaded modes, its feature edges in wireframe). Destructive (cut-picker) bodies
+  keep their red translucent fill (#264), likewise without an outline.
 - **Context pane:** While the constraint tool is active, the context pane lists geometric
   constraint types as buttons (text labels for now; icons later), and below them shows the
   unified **element picker** (§7, #213) for the geometry being constrained. The constraint
