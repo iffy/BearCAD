@@ -362,6 +362,10 @@ pub enum Instruction {
     },
     /// Toggle auto-zoom (#438).
     SetAutoZoom { on: bool },
+    /// Start / advance / end an interactive tutorial.
+    StartTutorial { index: usize },
+    TutorialNext,
+    EndTutorial,
     SetDim { axis: RectAxis, value: String },
     SetDimLabelOffset { axis: DimLabelAxis, offset: f32 },
     BeginEditCommittedDim { axis: DimLabelAxis },
@@ -978,6 +982,14 @@ impl Instruction {
             Instruction::SetAutoZoom { on } => {
                 format!("bearcad.ui.auto_zoom({on})")
             }
+            Instruction::StartTutorial { index } => {
+                format!(
+                    "bearcad.ui.tutorial({:?})",
+                    crate::tutorial::TUTORIALS[*index].name
+                )
+            }
+            Instruction::TutorialNext => "bearcad.ui.tutorial_next()".to_string(),
+            Instruction::EndTutorial => "bearcad.ui.tutorial_end()".to_string(),
             Instruction::SetDim { axis, value } => {
                 format!(
                     "bearcad.set_dim({:?}, {value:?})",
@@ -3964,6 +3976,18 @@ impl ScriptRunner {
             }
             Instruction::SetAutoZoom { on } => {
                 state.auto_zoom = on;
+                StepResult::Continue
+            }
+            Instruction::StartTutorial { index } => {
+                let _ = state.apply(Action::StartTutorial { index });
+                StepResult::Continue
+            }
+            Instruction::TutorialNext => {
+                let _ = state.apply(Action::TutorialNext);
+                StepResult::Continue
+            }
+            Instruction::EndTutorial => {
+                let _ = state.apply(Action::EndTutorial);
                 StepResult::Continue
             }
             Instruction::SetDim { axis, value } => {

@@ -2311,6 +2311,44 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Interactive tutorials: start by registry name, advance a manual step, end, or
+    // read the current step index (nil when none is running).
+    api.set(
+        "tutorial",
+        lua.create_function(|lua, name: String| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let Some(index) = crate::tutorial::tutorial_index(&name) else {
+                return Err(mlua::Error::external(format!("unknown tutorial '{name}'")));
+            };
+            unsafe { tick.exec(Instruction::StartTutorial { index }) }
+        })?,
+    )?;
+    api.set(
+        "tutorial_next",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::TutorialNext) }
+        })?,
+    )?;
+    api.set(
+        "tutorial_end",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::EndTutorial) }
+        })?,
+    )?;
+    api.set(
+        "tutorial_step",
+        lua.create_function(|lua, ()| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            // Some scripted edits mutate the document without routing through
+            // `apply`; settle the tutorial before reporting, like the GUI frame does.
+            state.advance_tutorial();
+            Ok(state.tutorial.map(|r| r.step))
+        })?,
+    )?;
+
     api.set(
         "move",
         lua.create_function(|lua, (x, y): (f32, f32)| {
@@ -3727,6 +3765,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "orbit", "pan", "wheel", "set_home_view", "toggle_projection", "shading", "ground",
             "fps", "fps_look", "fps_move", "fps_jump", "fps_fly", "fps_advance", "fps_scale",
             "camera", "zoom_fit", "elements_view", "auto_zoom",
+            "tutorial", "tutorial_next", "tutorial_end", "tutorial_step",
             "move", "click", "move_ground", "click_ground",
             "drag", "right_drag", "right_drag_pan",
             "key", "keydown", "keyup", "type",
@@ -3845,6 +3884,120 @@ mod tests {
         for &ci in &op.circle_outputs {
             assert!(state.doc.circles[ci].deleted, "copy circle {ci} removed with the op");
         }
+    }
+
+    /// The bracket tutorial rides along the whole quickstart build: every predicate
+    /// step auto-advances as the scripted part comes together, and the manual
+    /// bookend steps advance with tutorial_next.
+    #[test]
+    fn bracket_tutorial_advances_through_the_quickstart_build() {
+        let state = run_lua(
+            r#"
+            bearcad.ui.tutorial("bracket")
+            assert(bearcad.ui.tutorial_step() == 0, "starts on the welcome step")
+            bearcad.ui.tutorial_next()
+            assert(bearcad.ui.tutorial_step() == 1, "parameters step")
+
+            bearcad.parameter("add", "leg", "50mm")
+            bearcad.parameter("add", "width", "40mm")
+            bearcad.parameter("add", "thick", "5mm")
+            bearcad.parameter("add", "hole", "5mm")
+            bearcad.parameter("add", "bend", "4mm")
+            bearcad.parameter("add", "bend_angle", "120deg")
+            assert(bearcad.ui.tutorial_step() == 2, "params done -> line tool step")
+
+            bearcad.ui.tool("line")
+            assert(bearcad.ui.tutorial_step() == 3, "line tool -> draw step")
+
+            bearcad.line{ x = 0,     y = 0,    x1 = 51,    y1 = 2.5 }
+            bearcad.line{ x = 51,    y = 2.5,  x1 = 49.5,  y1 = 7.8 }
+            bearcad.line{ x = 49.5,  y = 7.8,  x1 = 4.5,   y1 = 5.5 }
+            bearcad.line{ x = 4.5,   y = 5.5,  x1 = -17.5, y1 = 47 }
+            bearcad.line{ x = -17.5, y = 47,   x1 = -25.5, y1 = 43 }
+            bearcad.line{ x = -25.5, y = 43,   x1 = 0,     y1 = 0 }
+            for i = 0, 5 do
+              local j = (i + 1) % 6
+              bearcad.select{ kind = "line", index = i, ["end"] = "end" }
+              bearcad.select({ kind = "line", index = j, ["end"] = "start" }, true)
+              bearcad.add_geometric_constraint("coincident")
+            end
+            bearcad.clear_selection()
+            assert(bearcad.ui.tutorial_step() == 4, "six lines -> constraint tool step")
+
+            bearcad.ui.tool("constraint")
+            assert(bearcad.ui.tutorial_step() == 5, "constraint tool -> square-up step")
+
+            local function geo(kind, a, b)
+              bearcad.select{ kind = "line", index = a }
+              if b then bearcad.select({ kind = "line", index = b }, true) end
+              bearcad.add_geometric_constraint(kind)
+              bearcad.clear_selection()
+            end
+            bearcad.select{ kind = "line", index = 0, ["end"] = "start" }
+            bearcad.select({ kind = "origin" }, true)
+            bearcad.add_geometric_constraint("coincident")
+            bearcad.clear_selection()
+            geo("horizontal", 0)
+            geo("parallel", 0, 2)
+            geo("parallel", 3, 5)
+            geo("perpendicular", 1, 0)
+            geo("perpendicular", 4, 5)
+            assert(bearcad.ui.tutorial_step() == 6, "squared -> dimension step")
+
+            bearcad.add_constraint({ kind = "line", index = 0 }, "leg")
+            bearcad.add_constraint({ kind = "line", index = 5 }, "leg")
+            bearcad.add_constraint({ kind = "line", index = 1 }, "thick")
+            bearcad.add_constraint({ kind = "line", index = 4 }, "thick")
+            bearcad.add_angle_constraint{ a = 0, b = 3, value = "bend_angle", sign = 1 }
+            assert(bearcad.ui.tutorial_step() == 7, "dimensioned -> extrude step")
+
+            bearcad.exit_sketch()
+            local loop = {0, 1, 2, 3, 4, 5}
+            bearcad.extrude{ polygon = loop, distance = 40, name = "Bracket" }
+            assert(bearcad.ui.tutorial_step() == 8, "extruded -> bend fillet step")
+
+            bearcad.fillet_edge{ extrusion = 0, edge = { kind = "vertical", face = 0, edge = 2 }, radius = 4 }
+            bearcad.fillet_edge{ extrusion = 0, edge = { kind = "vertical", face = 0, edge = 5 }, radius = 9 }
+            assert(bearcad.ui.tutorial_step() == 9, "bend rounded -> hole sketch step")
+
+            bearcad.begin_sketch{ kind = "extrude_side", extrusion = 0, profile = "polygon",
+                                  profile_lines = loop, edge = 2 }
+            bearcad.circle{ x = 19, y = 10, r = 2.5 }
+            bearcad.circle{ x = 19, y = 30, r = 2.5 }
+            assert(bearcad.ui.tutorial_step() == 10, "circles drawn -> cut step")
+
+            bearcad.exit_sketch()
+            bearcad.extrude{ circles = {0, 1}, distance = -6, body = "cut" }
+            assert(bearcad.ui.tutorial_step() == 11, "holes cut -> countersink step")
+
+            for face = 0, 1 do
+              bearcad.chamfer_edge{ extrusion = 1,
+                edge = { kind = "cap", face = face, edge = 0, top = false }, distance = 1.2 }
+            end
+            assert(bearcad.ui.tutorial_step() == 12, "countersunk -> corner fillet step")
+
+            for _, k in ipairs({0, 1, 3, 4}) do
+              bearcad.fillet_edge{ extrusion = 0,
+                edge = { kind = "vertical", face = 0, edge = k }, radius = 2.0 }
+            end
+            assert(bearcad.ui.tutorial_step() == 13, "corners rounded -> engrave step")
+
+            bearcad.begin_sketch{ kind = "extrude_side", extrusion = 0, profile = "polygon",
+                                  profile_lines = loop, edge = 0 }
+            bearcad.text{ text = "BearCAD", x = 6, y = 17, size = 5 }
+            bearcad.exit_sketch()
+            bearcad.extrude{ text = 0, distance = -1, body = "cut" }
+            assert(bearcad.ui.tutorial_step() == 14, "engraved -> change-your-mind step")
+
+            bearcad.parameter("value", 5, "150deg")
+            assert(bearcad.ui.tutorial_step() == 15, "angle changed -> final step")
+
+            bearcad.ui.tutorial_next()
+            assert(bearcad.ui.tutorial_step() == nil, "finished")
+            "#,
+        );
+        assert!(state.tutorial.is_none());
+        assert!(state.status.contains("Tutorial complete"));
     }
 
     /// An in-sketch offset op parallels a closed rectangle outward, nests the copies

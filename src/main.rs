@@ -49,6 +49,7 @@ mod polygon_boolean;
 
 mod model;
 mod offset;
+mod tutorial;
 mod menu_command;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_menu;
@@ -729,6 +730,174 @@ impl App {
     /// The status bar's update badge (#427): appears only when a newer release exists;
     /// clicking stages the update (Windows/Linux) or auto-downloads the installer in the
     /// browser (macOS), falling back to the releases page on failure.
+    /// A workbench toolbar tool button; records its rect so a tutorial step can ring it.
+    fn tool_button(&mut self, ui: &mut egui::Ui, icon: icons::IconId, tool: Tool, label: &str) {
+        let resp = icons::selectable_icon_button(
+            ui,
+            icon,
+            self.state.tool == tool,
+            shortcuts::compact_label(label, shortcuts::tool_shortcut(tool)),
+        );
+        self.state
+            .tutorial_anchor_rects
+            .insert(tutorial::UiAnchor::Tool(tool), resp.rect);
+        if resp.clicked() {
+            self.state.apply(Action::SetTool(tool));
+        }
+    }
+
+    /// The bottom-right tutorial launcher, next to the update badge: a popup listing
+    /// every registered tutorial. Hidden while one is running (the bubble takes over).
+    fn show_tutorial_button(&mut self, ui: &mut egui::Ui) {
+        if self.state.tutorial.is_some() {
+            return;
+        }
+        let btn = ui
+            .add(egui::Button::new(egui::RichText::new("Tutorial").size(12.0)))
+            .on_hover_text("Learn BearCAD hands-on, guided by the bear");
+        egui::Popup::menu(&btn).show(|ui| {
+            for (index, tut) in tutorial::TUTORIALS.iter().enumerate() {
+                if ui.button(tut.title).clicked() {
+                    self.state.apply(Action::StartTutorial { index });
+                    ui.close();
+                }
+            }
+        });
+    }
+
+    /// Auto-advance the running tutorial when the current step's predicate is satisfied.
+    fn tick_tutorial(&mut self) {
+        self.state.advance_tutorial();
+    }
+
+    /// The tutorial overlay: a pulsing ring on the current step's anchor and the bear's
+    /// narration bubble under the view cube.
+    fn draw_tutorial_overlay(
+        &mut self,
+        ui: &egui::Ui,
+        viewport: egui::Rect,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    ) {
+        let Some(run) = self.state.tutorial else {
+            return;
+        };
+        let Some(tut) = tutorial::TUTORIALS.get(run.tutorial) else {
+            return;
+        };
+        let Some(step) = tut.steps.get(run.step) else {
+            return;
+        };
+        let ctx = ui.ctx();
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("tutorial_overlay"),
+        ));
+
+        // The glowing ring: where to click next.
+        let target = match step.anchor {
+            tutorial::StepAnchor::Ui(anchor) => self
+                .state
+                .tutorial_anchor_rects
+                .get(&anchor)
+                .map(|r| (r.center(), r.size().max_elem() * 0.5 + 6.0)),
+            tutorial::StepAnchor::WorldOrigin => {
+                project(Vec3::ZERO).map(|p| (p, 26.0))
+            }
+            tutorial::StepAnchor::None => None,
+        };
+        if let Some((center, base)) = target {
+            let t = ctx.input(|i| i.time) as f32;
+            let pulse = ((t * 2.5).sin() * 0.5 + 0.5) * 5.0;
+            for (extra, alpha) in [(0.0, 230u8), (5.0, 120), (10.0, 55)] {
+                painter.circle_stroke(
+                    center,
+                    base + pulse + extra,
+                    egui::Stroke::new(
+                        2.5,
+                        egui::Color32::from_rgba_unmultiplied(255, 200, 80, alpha),
+                    ),
+                );
+            }
+            ctx.request_repaint(); // keep the pulse animating
+        }
+
+        // The bear's speech bubble, tucked under the view cube (that IS the bear).
+        const BUBBLE_W: f32 = 320.0;
+        let anchor_pos = viewport.right_top() + egui::vec2(-BUBBLE_W - 14.0, 220.0);
+        let mut next = false;
+        let mut end = false;
+        egui::Area::new(egui::Id::new("tutorial_bubble"))
+            .fixed_pos(anchor_pos)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                let bubble = egui::Frame::default()
+                    .fill(egui::Color32::from_rgb(38, 34, 26))
+                    .stroke(egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 80)))
+                    .corner_radius(12.0)
+                    .inner_margin(12.0)
+                    .show(ui, |ui| {
+                        ui.set_width(BUBBLE_W);
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} — step {} of {}",
+                                tut.title,
+                                run.step + 1,
+                                tut.steps.len()
+                            ))
+                            .color(egui::Color32::from_rgb(255, 200, 80))
+                            .size(11.0),
+                        );
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(step.narration)
+                                .color(egui::Color32::from_gray(235))
+                                .size(13.0),
+                        );
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            if step.done.is_none() {
+                                let last = run.step + 1 == tut.steps.len();
+                                if ui.button(if last { "Finish" } else { "Next" }).clicked() {
+                                    next = true;
+                                }
+                            } else {
+                                ui.label(
+                                    egui::RichText::new("I'll notice when it's done…")
+                                        .color(egui::Color32::from_gray(150))
+                                        .size(11.0),
+                                );
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.small_button("End tutorial").clicked() {
+                                        end = true;
+                                    }
+                                },
+                            );
+                        });
+                    });
+                // The tail: a little triangle from the bubble up toward the bear.
+                let r = bubble.response.rect;
+                let tip = egui::pos2(r.right() - 26.0, r.top() - 12.0);
+                painter.add(egui::Shape::convex_polygon(
+                    vec![
+                        egui::pos2(r.right() - 44.0, r.top() + 2.0),
+                        tip,
+                        egui::pos2(r.right() - 18.0, r.top() + 2.0),
+                    ],
+                    egui::Color32::from_rgb(38, 34, 26),
+                    egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 80)),
+                ));
+            });
+        if next {
+            self.state.apply(Action::TutorialNext);
+        }
+        if end {
+            self.state.apply(Action::EndTutorial);
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn show_update_badge(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let snapshot = self.update_state.lock().map(|s| s.clone()).ok();
@@ -4624,6 +4793,8 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // Tutorial anchors are re-recorded as this frame's UI renders.
+        self.state.tutorial_anchor_rects.clear();
         tick_launch_maximize(&mut self.launch_maximize_frames_remaining, ctx);
         theme::apply(ctx);
 
@@ -4639,6 +4810,7 @@ impl eframe::App for App {
 
         self.process_screenshots(ctx);
         self.tick_script(ctx);
+        self.tick_tutorial();
         self.tick_exit_after_startup(ctx);
         self.synthetic.inject(ctx);
 
@@ -4737,99 +4909,15 @@ impl eframe::App for App {
                     }
                     return;
                 }
-                if icons::selectable_icon_button(
-                    ui,
-                    icons::IconId::Select,
-                    self.state.tool == Tool::Select,
-                    shortcuts::compact_label("Select", shortcuts::tool_shortcut(Tool::Select)),
-                )
-                .clicked()
-                {
-                    self.state.apply(Action::SetTool(Tool::Select));
-                }
-                if icons::selectable_icon_button(
-                    ui,
-                    icons::IconId::Sketch,
-                    self.state.tool == Tool::Sketch,
-                    shortcuts::compact_label("Sketch", shortcuts::tool_shortcut(Tool::Sketch)),
-                )
-                .clicked()
-                {
-                    self.state.apply(Action::SetTool(Tool::Sketch));
-                }
-                if icons::selectable_icon_button(
-                    ui,
-                    icons::IconId::Rectangle,
-                    self.state.tool == Tool::Rectangle,
-                    shortcuts::compact_label(
-                        "Rectangle",
-                        shortcuts::tool_shortcut(Tool::Rectangle),
-                    ),
-                )
-                .clicked()
-                {
-                    self.state.apply(Action::SetTool(Tool::Rectangle));
-                }
-                if icons::selectable_icon_button(
-                    ui,
-                    icons::IconId::Line,
-                    self.state.tool == Tool::Line,
-                    shortcuts::compact_label("Line", shortcuts::tool_shortcut(Tool::Line)),
-                )
-                .clicked()
-                {
-                    self.state.apply(Action::SetTool(Tool::Line));
-                }
-                if icons::selectable_icon_button(
-                    ui,
-                    icons::IconId::Circle,
-                    self.state.tool == Tool::Circle,
-                    shortcuts::compact_label("Circle", shortcuts::tool_shortcut(Tool::Circle)),
-                )
-                .clicked()
-                {
-                    self.state.apply(Action::SetTool(Tool::Circle));
-                }
-                if icons::selectable_icon_button(
-                    ui,
-                    icons::IconId::Fillet,
-                    self.state.tool == Tool::Fillet,
-                    shortcuts::compact_label("Fillet", shortcuts::tool_shortcut(Tool::Fillet)),
-                )
-                .clicked()
-                {
-                    self.state.apply(Action::SetTool(Tool::Fillet));
-                }
-                if icons::selectable_icon_button(
-                    ui,
-                    icons::IconId::Chamfer,
-                    self.state.tool == Tool::Chamfer,
-                    shortcuts::compact_label("Chamfer", shortcuts::tool_shortcut(Tool::Chamfer)),
-                )
-                .clicked()
-                {
-                    self.state.apply(Action::SetTool(Tool::Chamfer));
-                }
-                if icons::selectable_icon_button(
-                    ui,
-                    icons::IconId::Offset,
-                    self.state.tool == Tool::Offset,
-                    shortcuts::compact_label("Offset", shortcuts::tool_shortcut(Tool::Offset)),
-                )
-                .clicked()
-                {
-                    self.state.apply(Action::SetTool(Tool::Offset));
-                }
-                if icons::selectable_icon_button(
-                    ui,
-                    icons::IconId::Text,
-                    self.state.tool == Tool::Text,
-                    shortcuts::compact_label("Text", shortcuts::tool_shortcut(Tool::Text)),
-                )
-                .clicked()
-                {
-                    self.state.apply(Action::SetTool(Tool::Text));
-                }
+                self.tool_button(ui, icons::IconId::Select, Tool::Select, "Select");
+                self.tool_button(ui, icons::IconId::Sketch, Tool::Sketch, "Sketch");
+                self.tool_button(ui, icons::IconId::Rectangle, Tool::Rectangle, "Rectangle");
+                self.tool_button(ui, icons::IconId::Line, Tool::Line, "Line");
+                self.tool_button(ui, icons::IconId::Circle, Tool::Circle, "Circle");
+                self.tool_button(ui, icons::IconId::Fillet, Tool::Fillet, "Fillet");
+                self.tool_button(ui, icons::IconId::Chamfer, Tool::Chamfer, "Chamfer");
+                self.tool_button(ui, icons::IconId::Offset, Tool::Offset, "Offset");
+                self.tool_button(ui, icons::IconId::Text, Tool::Text, "Text");
                 // Project (#140, made discoverable): sketch mode only — click outside
                 // edges/bodies to bring them in as dashed associative references.
                 if self.state.sketch_session.is_some()
@@ -4843,115 +4931,16 @@ impl eframe::App for App {
                 {
                     self.state.apply(Action::SetTool(Tool::Project));
                 }
-                if icons::selectable_icon_button(
-                    ui,
-                    icons::IconId::Plane,
-                    self.state.tool == Tool::ConstructionPlane,
-                    shortcuts::compact_label(
-                        "Plane",
-                        shortcuts::tool_shortcut(Tool::ConstructionPlane),
-                    ),
-                )
-                .clicked()
-                {
-                    self.state.apply(Action::SetTool(Tool::ConstructionPlane));
-                }
-                if icons::selectable_icon_button(
-                    ui,
-                    icons::IconId::Extrude,
-                    self.state.tool == Tool::Extrude,
-                    shortcuts::compact_label("Extrude", shortcuts::tool_shortcut(Tool::Extrude)),
-                )
-                .clicked()
-                {
-                    self.state.apply(Action::SetTool(Tool::Extrude));
-                }
-                if icons::selectable_icon_button(
-                    ui,
-                    icons::IconId::Loft,
-                    self.state.tool == Tool::Loft,
-                    shortcuts::compact_label("Loft", shortcuts::tool_shortcut(Tool::Loft)),
-                )
-                .clicked()
-                {
-                    self.state.apply(Action::SetTool(Tool::Loft));
-                }
-                if icons::selectable_icon_button(
-                    ui,
-                    icons::IconId::Revolve,
-                    self.state.tool == Tool::Revolve,
-                    shortcuts::compact_label("Revolve", shortcuts::tool_shortcut(Tool::Revolve)),
-                )
-                .clicked()
-                {
-                    self.state.apply(Action::SetTool(Tool::Revolve));
-                }
-                if icons::selectable_icon_button(
-                    ui,
-                    icons::IconId::Combine,
-                    self.state.tool == Tool::Combine,
-                    shortcuts::compact_label("Combine", shortcuts::tool_shortcut(Tool::Combine)),
-                )
-                .clicked()
-                {
-                    self.state.apply(Action::SetTool(Tool::Combine));
-                }
-                if icons::selectable_icon_button(
-                    ui,
-                    icons::IconId::Move,
-                    self.state.tool == Tool::Move,
-                    shortcuts::compact_label("Move", shortcuts::tool_shortcut(Tool::Move)),
-                )
-                .clicked()
-                {
-                    self.state.apply(Action::SetTool(Tool::Move));
-                }
-                if icons::selectable_icon_button(
-                    ui,
-                    icons::IconId::Repeat,
-                    self.state.tool == Tool::Repeat,
-                    shortcuts::compact_label("Repeat", shortcuts::tool_shortcut(Tool::Repeat)),
-                )
-                .clicked()
-                {
-                    self.state.apply(Action::SetTool(Tool::Repeat));
-                }
-                if icons::selectable_icon_button(
-                    ui,
-                    icons::IconId::Slice,
-                    self.state.tool == Tool::Slice,
-                    shortcuts::compact_label("Slice", shortcuts::tool_shortcut(Tool::Slice)),
-                )
-                .clicked()
-                {
-                    self.state.apply(Action::SetTool(Tool::Slice));
-                }
-                if icons::selectable_icon_button(
-                    ui,
-                    icons::IconId::Dimension,
-                    self.state.tool == Tool::Dimension,
-                    shortcuts::compact_label(
-                        "Dimension",
-                        shortcuts::tool_shortcut(Tool::Dimension),
-                    ),
-                )
-                .clicked()
-                {
-                    self.state.apply(Action::SetTool(Tool::Dimension));
-                }
-                if icons::selectable_icon_button(
-                    ui,
-                    icons::IconId::Constraint,
-                    self.state.tool == Tool::Constraint,
-                    shortcuts::compact_label(
-                        "Constraint",
-                        shortcuts::tool_shortcut(Tool::Constraint),
-                    ),
-                )
-                .clicked()
-                {
-                    self.state.apply(Action::SetTool(Tool::Constraint));
-                }
+                self.tool_button(ui, icons::IconId::Plane, Tool::ConstructionPlane, "Plane");
+                self.tool_button(ui, icons::IconId::Extrude, Tool::Extrude, "Extrude");
+                self.tool_button(ui, icons::IconId::Loft, Tool::Loft, "Loft");
+                self.tool_button(ui, icons::IconId::Revolve, Tool::Revolve, "Revolve");
+                self.tool_button(ui, icons::IconId::Combine, Tool::Combine, "Combine");
+                self.tool_button(ui, icons::IconId::Move, Tool::Move, "Move");
+                self.tool_button(ui, icons::IconId::Repeat, Tool::Repeat, "Repeat");
+                self.tool_button(ui, icons::IconId::Slice, Tool::Slice, "Slice");
+                self.tool_button(ui, icons::IconId::Dimension, Tool::Dimension, "Dimension");
+                self.tool_button(ui, icons::IconId::Constraint, Tool::Constraint, "Constraint");
                 ui.separator();
                 if icons::selectable_icon_button(ui, icons::IconId::Zoom, false, "Zoom to fit (Z)")
                     .clicked()
@@ -5102,10 +5091,12 @@ impl eframe::App for App {
                 ui.separator();
                 ui.label(status);
                 // Update badge (#427): a bright button in the bottom-right corner when a
-                // newer release exists; unobtrusive — no popup, no interruption.
-                #[cfg(not(target_arch = "wasm32"))]
+                // newer release exists; unobtrusive — no popup, no interruption. The
+                // tutorial launcher sits just left of it.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    #[cfg(not(target_arch = "wasm32"))]
                     self.show_update_badge(ui, ctx);
+                    self.show_tutorial_button(ui);
                 });
             });
         });
@@ -14865,7 +14856,11 @@ impl App {
                 egui::StrokeKind::Middle,
             );
         }
-    }
+    
+        // Tutorial overlay: pulsing anchor ring + the bear's narration bubble (drawn last,
+        // above everything in the viewport).
+        self.draw_tutorial_overlay(ui, viewport, &project);
+}
 }
 
 /// Which normalized rectangle edge corresponds to a dimension input.

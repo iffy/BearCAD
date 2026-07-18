@@ -2392,6 +2392,26 @@ document is millimeters, so the player is person-scale: eye height
 
 ---
 
+### 11.x Interactive tutorials
+
+- **Tutorial mode**: guided, in-app walkthroughs narrated by the view-cube bear. A
+  **Tutorial** button in the bottom-right status bar (beside the update badge) lists every
+  registered tutorial (`tutorial::TUTORIALS` — a registry designed to hold more than one);
+  starting one opens a fresh document.
+- Each tutorial is a list of **steps**: the bear's narration in a cartoon **speech
+  bubble** tucked under the view cube (with a tail pointing at the bear), a **pulsing
+  gold ring** on what to click next (toolbar buttons, the Parameters `+`, or a projected
+  viewport point — anchors recorded per frame in `AppState::tutorial_anchor_rects`), and
+  either a **done predicate** on the app state (the step auto-advances the moment any
+  action satisfies it — worked-ahead users skip ahead, `AppState::advance_tutorial`) or a
+  manual **Next** button. **End tutorial** exits any time.
+- First tutorial: **Build an angle bracket** (`"bracket"`) — the Quickstart's part,
+  interactive: parameters, sloppy profile, constraints, dimensions (parameter-driven
+  angle), extrude, bend fillets, hole cuts, countersinks, corner rounds, engraving, and
+  the parametric angle change.
+- Scriptable: `bearcad.ui.tutorial("bracket")`, `bearcad.ui.tutorial_next()`,
+  `bearcad.ui.tutorial_end()`, `bearcad.ui.tutorial_step()` (current step index or nil).
+
 ### 11.x Auto-update (#427)
 
 Native builds check GitHub's latest release once at startup in a background thread

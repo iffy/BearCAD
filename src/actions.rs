@@ -57,7 +57,7 @@ use eframe::egui;
 use glam::Vec3;
 
 /// The active viewport tool.
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default, Debug)]
 pub enum Tool {
     /// Orbit/zoom only; no drawing.
     #[default]
@@ -1643,6 +1643,12 @@ pub enum Action {
     /// Create a 2D in-sketch offset: parallel copies of the picked lines (mitered where
     /// they chain) and concentric copies of the picked circles at a signed distance,
     /// grouped under a `SketchOffsetOperation`.
+    /// Start an interactive tutorial (fresh document; see `crate::tutorial`).
+    StartTutorial { index: usize },
+    /// Advance the running tutorial one step (the bubble's Next, or a satisfied step).
+    TutorialNext,
+    /// End the running tutorial.
+    EndTutorial,
     CreateSketchOffsetOperation {
         sketch: usize,
         line_targets: Vec<usize>,
@@ -2154,6 +2160,11 @@ pub struct AppState {
     /// sketch open.
     pub creating_sketch_repeat: Option<CreatingSketchRepeat>,
     pub creating_sketch_offset: Option<CreatingSketchOffset>,
+    /// The running interactive tutorial, if any (see `crate::tutorial`).
+    pub tutorial: Option<crate::tutorial::TutorialRun>,
+    /// Screen rects of tutorial-anchorable UI (toolbar buttons, pane buttons), recorded
+    /// as the frame renders and read by the tutorial overlay. Cleared every frame.
+    pub tutorial_anchor_rects: std::collections::HashMap<crate::tutorial::UiAnchor, egui::Rect>,
     /// In-progress slice operation (Slice tool).
     pub creating_slice: Option<CreatingSlice>,
     /// In-progress in-sketch slice (#238), active when the Slice tool runs with a sketch open.
@@ -2291,6 +2302,8 @@ impl Default for AppState {
             creating_repeat: None,
             creating_sketch_repeat: None,
             creating_sketch_offset: None,
+            tutorial: None,
+            tutorial_anchor_rects: std::collections::HashMap::new(),
             creating_slice: None,
             creating_sketch_slice: None,
             editing_drawing: None,
@@ -3909,6 +3922,39 @@ impl AppState {
     }
 
     pub fn apply(&mut self, action: Action) -> ActionResult {
+        let result = self.apply_action(action);
+        // A running tutorial advances the moment an action satisfies its step —
+        // through the GUI, scripts, or tests alike.
+        self.advance_tutorial();
+        result
+    }
+
+    /// Advance the running tutorial past every step whose predicate is now satisfied
+    /// (a user who worked ahead skips ahead), stopping at manual steps or the end.
+    pub fn advance_tutorial(&mut self) {
+        loop {
+            let Some(run) = self.tutorial else { return };
+            let Some(step) = crate::tutorial::TUTORIALS
+                .get(run.tutorial)
+                .and_then(|t| t.steps.get(run.step))
+            else {
+                return;
+            };
+            let Some(done) = step.done else { return };
+            if !done(self) {
+                return;
+            }
+            let run = self.tutorial.as_mut().unwrap();
+            run.step += 1;
+            if run.step >= crate::tutorial::TUTORIALS[run.tutorial].steps.len() {
+                self.tutorial = None;
+                self.status = "Tutorial complete — happy modeling!".to_string();
+                return;
+            }
+        }
+    }
+
+    fn apply_action(&mut self, action: Action) -> ActionResult {
         // Undo-group bookkeeping (#105): the OUTERMOST apply of a user-level action
         // records how much it grew `shape_order`; that growth becomes one undo group,
         // so `UndoLast` reverts the whole gesture (a rectangle's 4 lines + constraints
@@ -7901,6 +7947,35 @@ label_hidden: false,
                 }
                 self.refresh_document_health();
                 self.status = "Edited sketch repeat".to_string();
+                ActionResult::Ok
+            }
+            Action::StartTutorial { index } => {
+                let Some(tut) = crate::tutorial::TUTORIALS.get(index) else {
+                    let e = format!("Unknown tutorial {index}");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                // Tutorials assume a clean slate, like the quickstart they mirror.
+                self.apply(Action::NewDocument);
+                self.tutorial = Some(crate::tutorial::TutorialRun { tutorial: index, step: 0 });
+                self.status = format!("Tutorial started: {}", tut.title);
+                ActionResult::Ok
+            }
+            Action::TutorialNext => {
+                if let Some(run) = &mut self.tutorial {
+                    run.step += 1;
+                    let done = run.step >= crate::tutorial::TUTORIALS[run.tutorial].steps.len();
+                    if done {
+                        self.tutorial = None;
+                        self.status = "Tutorial complete — happy modeling!".to_string();
+                    }
+                }
+                ActionResult::Ok
+            }
+            Action::EndTutorial => {
+                if self.tutorial.take().is_some() {
+                    self.status = "Tutorial ended".to_string();
+                }
                 ActionResult::Ok
             }
             Action::CreateSketchOffsetOperation {
