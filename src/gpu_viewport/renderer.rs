@@ -26,6 +26,7 @@ pub struct ViewportGpuResources {
     target_format: wgpu::TextureFormat,
     msaa_sample_count: u32,
     scene_pipeline: wgpu::RenderPipeline,
+    overlay_pipeline: wgpu::RenderPipeline,
     /// Depth-test-disabled pipeline so gizmo handles stay visible through bodies (#36).
     gizmo_pipeline: wgpu::RenderPipeline,
     /// Stencil-masked pipeline for coplanar sketch fills: each pixel is painted
@@ -206,6 +207,64 @@ impl ViewportGpuResources {
             cache: None,
         });
 
+        // Overlay pipeline: same as the scene pipeline but biased toward the camera with
+        // a slope-scaled term, so hover fills and stroke overlays win against the faces
+        // and fills they sit on at any viewing angle (see the sketch-fill bias above).
+        let overlay_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("bearcad_viewport_overlay_pipeline"),
+            layout: Some(&scene_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<GpuVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 12,
+                            shader_location: 1,
+                        },
+                    ],
+                }],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: VIEWPORT_DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState {
+                    constant: -16,
+                    slope_scale: -4.0,
+                    clamp: 0.0,
+                },
+            }),
+            multisample: multisample_state(msaa_sample_count),
+            multiview: None,
+            cache: None,
+        });
+
         // Gizmo pipeline: same as the scene pipeline but with the depth test disabled
         // (compare Always) and no depth writes, so manipulation handles drawn last stay
         // visible even when a body is in front of them (#36).
@@ -320,7 +379,16 @@ impl ViewportGpuResources {
                     read_mask: 0xff,
                     write_mask: 0xff,
                 },
-                bias: wgpu::DepthBiasState::default(),
+                // Slope-scaled bias toward the camera: sketch fills are decals on the
+                // face beneath them, and the fixed millimetre world-space lifts alone
+                // collapse under glancing-angle depth interpolation on long thin faces
+                // (stippled z-fighting). The slope term grows the bias exactly where the
+                // depth gradient does.
+                bias: wgpu::DepthBiasState {
+                    constant: -8,
+                    slope_scale: -2.0,
+                    clamp: 0.0,
+                },
             }),
             multisample: multisample_state(msaa_sample_count),
             multiview: None,
@@ -630,6 +698,7 @@ impl ViewportGpuResources {
             target_format,
             msaa_sample_count,
             scene_pipeline,
+            overlay_pipeline,
             gizmo_pipeline,
             sketch_fill_pipeline,
             scene_transparent_pipeline,
@@ -1104,7 +1173,7 @@ impl ViewportGpuResources {
                     pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 }
                 if overlay_end > plane_end {
-                    pass.set_pipeline(&self.scene_pipeline);
+                    pass.set_pipeline(&self.overlay_pipeline);
                     pass.draw_indexed(plane_end..overlay_end, 0, 0..1);
                 }
                 if total_end > overlay_end {
