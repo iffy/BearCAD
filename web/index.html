@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>BearCAD</title>
   <link rel="icon" href="favicon.ico" />
   <style>
@@ -12,12 +12,20 @@
       height: 100%;
       overflow: hidden;
       background: #1b1b1f;
+      /* The app handles all touch gestures itself: no browser pinch-zoom, pan,
+         pull-to-refresh, double-tap zoom, or long-press selection. */
+      touch-action: none;
+      overscroll-behavior: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
     }
     canvas {
       display: block;
       width: 100%;
       height: 100%;
       outline: none;
+      touch-action: none;
     }
     #loading {
       position: absolute;
@@ -40,6 +48,15 @@
     <div>First load downloads the whole app (~15&nbsp;MB); it's cached afterwards.</div>
   </div>
   <canvas id="bearcad_canvas"></canvas>
+  <script>
+    // iOS Safari implements pinch page-zoom through its proprietary gesture events
+    // and ignores user-scalable=no; swallowing these keeps the pinch for the app.
+    for (const type of ["gesturestart", "gesturechange", "gestureend"]) {
+      document.addEventListener(type, (e) => e.preventDefault(), { passive: false });
+    }
+    // Double-tap zoom, likewise.
+    document.addEventListener("dblclick", (e) => e.preventDefault(), { passive: false });
+  </script>
   <script type="module">
     // The OCCT geometry kernel is a second wasm module (Emscripten); load it first so
     // the app's kernel bridge finds it. If it fails, the app still runs — with the
