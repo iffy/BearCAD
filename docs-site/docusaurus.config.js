@@ -172,7 +172,7 @@ const config = {
         ],
         // See the version-sourcing comment above: this tracks Cargo.toml
         // until the project starts cutting versioned releases via `changer`.
-        copyright: `BearCAD v${appVersion} · Docs built with Docusaurus · Copyright © ${new Date().getFullYear()}`,
+        copyright: `BearCAD v${appVersion} · Built ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC · Docs built with Docusaurus · Copyright © ${new Date().getFullYear()}`,
       },
       prism: {
         theme: prismThemes.github,

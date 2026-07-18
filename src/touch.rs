@@ -53,6 +53,17 @@ pub fn zoom_factor_to_scroll(factor: f32) -> f32 {
     (1.0 - 1.0 / factor.max(1e-3)) * 1000.0
 }
 
+/// Long-press duration before a touch press counts as a right-click.
+pub const LONG_PRESS_SECS: f64 = 0.6;
+/// How far the finger may wander (px) and still count as a long press, not a drag.
+pub const LONG_PRESS_SLOP_PX: f32 = 8.0;
+
+/// Whether a held touch press should fire as a synthetic secondary click (pure
+/// decision; the caller injects the events and latches `already_fired`).
+pub fn long_press_fires(held_secs: f64, moved_px: f32, already_fired: bool) -> bool {
+    !already_fired && held_secs >= LONG_PRESS_SECS && moved_px <= LONG_PRESS_SLOP_PX
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,6 +75,14 @@ mod tests {
         set_active(true);
         assert!(hit(10.0) > 15.0);
         set_active(false);
+    }
+
+    #[test]
+    fn long_press_fires_once_when_held_still() {
+        assert!(!long_press_fires(0.3, 0.0, false), "too short");
+        assert!(!long_press_fires(1.0, 20.0, false), "wandered: it's a drag");
+        assert!(long_press_fires(0.7, 3.0, false));
+        assert!(!long_press_fires(0.7, 3.0, true), "fires once per press");
     }
 
     /// The scroll equivalent of a pinch factor must land the camera at exactly
