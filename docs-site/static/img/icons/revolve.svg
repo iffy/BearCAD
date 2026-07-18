@@ -1,11 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="#333333" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="#7d838c" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
   <!-- Revolve: an extruded pacman with a hole through his middle — a partial solid of
        revolution; the two cut faces of the mouth are the revolved profile. -->
   <!-- inner tube: back bottom rim of the hole, seen through the mouth behind the axis -->
   <path d="M13.2 18.8 A4.8 1.7 0 0 1 18.8 18.8" />
   <!-- cut faces of the mouth (the rectangular profile), lightly filled -->
-  <path fill="#333333" fill-opacity="0.14" d="M8.8 14.9 L13.2 12.6 L13.2 21.6 L8.8 23.9 Z" />
-  <path fill="#333333" fill-opacity="0.14" d="M23.2 14.9 L18.8 12.6 L18.8 21.6 L23.2 23.9 Z" />
+  <path fill="#7d838c" fill-opacity="0.14" d="M8.8 14.9 L13.2 12.6 L13.2 21.6 L8.8 23.9 Z" />
+  <path fill="#7d838c" fill-opacity="0.14" d="M23.2 14.9 L18.8 12.6 L18.8 21.6 L23.2 23.9 Z" />
   <!-- top face: outer arc around the back, cut edge, inner arc around the hole -->
   <path d="M8.8 14.9 A12.5 4.5 0 1 1 23.2 14.9 L18.8 12.6 A4.8 1.7 0 1 0 13.2 12.6 Z" />
   <!-- outer wall: silhouette edges and the visible bottom rim -->

@@ -29,6 +29,7 @@ the [Drawing Tools](/docs/drawing-tools)).
 | <img src={useBaseUrl("/img/icons/move.svg")} width="22" /> | [Move](/docs/tools/move) | — | Translate or rotate bodies into moved copies. |
 | <img src={useBaseUrl("/img/icons/repeat.svg")} width="22" /> | [Repeat](/docs/tools/repeat) | — | Copies of bodies spaced along an axis. |
 | <img src={useBaseUrl("/img/icons/slice.svg")} width="22" /> | [Slice](/docs/tools/slice) | — | Cut bodies into fragments with planes or faces. |
+| <img src={useBaseUrl("/img/icons/offset.svg")} width="22" /> | [Offset](/docs/tools/offset) | — | Parallel copies of sketch edges a constant distance away. |
 | <img src={useBaseUrl("/img/icons/chamfer.svg")} width="22" /> | [Chamfer](/docs/tools/chamfer) | `K` | Cut a corner or edge flat. |
 | <img src={useBaseUrl("/img/icons/fillet.svg")} width="22" /> | [Fillet](/docs/tools/fillet) | `F` | Round a corner or edge. |
 | <img src={useBaseUrl("/img/icons/loft.svg")} width="22" /> | [Loft](/docs/tools/loft) | — | Blend a solid through two or more cross-section profiles. |
