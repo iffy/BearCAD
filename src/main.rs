@@ -615,6 +615,14 @@ struct App {
     last_touch_press_time: f64,
     /// Whether a multi-touch gesture was active last frame.
     was_multi_touch: bool,
+    /// Input events the on-screen keypad queued, flushed at the next frame start.
+    pending_input_events: Vec<egui::Event>,
+    /// The text field the on-screen keypad types into (last focused text widget).
+    keypad_target: Option<egui::Id>,
+    /// Frames since any text field had focus (tolerates keypad-tap focus blips).
+    keypad_focus_gone_frames: u8,
+    /// The current touch press has already fired its long-press right-click.
+    long_press_fired: bool,
     gpu_viewport: bool,
     gpu_view_cube: bool,
     /// Persistent physics state for the Elements pane's force-directed Graph view (#94).
@@ -786,6 +794,169 @@ impl App {
     /// Auto-advance the running tutorial when the current step's predicate is satisfied.
     fn tick_tutorial(&mut self) {
         self.state.advance_tutorial();
+    }
+
+    /// Touch extras, run at frame start: flush keypad-synthesised input into the
+    /// focused field, track which field the keypad serves, and turn a held-still
+    /// touch press into a synthetic right-click (context menus have no right button).
+    fn tick_touch_extras(&mut self, ctx: &egui::Context) {
+        if !touch::active() {
+            return;
+        }
+        if !self.pending_input_events.is_empty() {
+            // Tapping a keypad button surrendered the field's focus; hand it back
+            // before the events land so it consumes them like real typing.
+            if let Some(id) = self.keypad_target {
+                ctx.memory_mut(|m| m.request_focus(id));
+            }
+            let events = std::mem::take(&mut self.pending_input_events);
+            ctx.input_mut(|i| i.events.extend(events));
+        }
+        if ctx.wants_keyboard_input() {
+            if let Some(id) = ctx.memory(|m| m.focused()) {
+                self.keypad_target = Some(id);
+                self.keypad_focus_gone_frames = 0;
+            }
+        } else if self.keypad_target.is_some() {
+            self.keypad_focus_gone_frames = self.keypad_focus_gone_frames.saturating_add(1);
+            if self.keypad_focus_gone_frames > 30 {
+                self.keypad_target = None;
+            }
+        }
+        let (held, moved, down, pos) = ctx.input(|i| {
+            let held = i
+                .pointer
+                .press_start_time()
+                .map(|t| i.time - t)
+                .unwrap_or(0.0);
+            let moved = i
+                .pointer
+                .press_origin()
+                .zip(i.pointer.latest_pos())
+                .map(|(a, b)| (a - b).length())
+                .unwrap_or(f32::INFINITY);
+            (held, moved, i.pointer.primary_down(), i.pointer.latest_pos())
+        });
+        if !down {
+            self.long_press_fired = false;
+        } else if touch::long_press_fires(held, moved, self.long_press_fired) {
+            self.long_press_fired = true;
+            if let Some(pos) = pos {
+                ctx.input_mut(|i| {
+                    for pressed in [true, false] {
+                        i.events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Secondary,
+                            pressed,
+                            modifiers: egui::Modifiers::default(),
+                        });
+                    }
+                });
+            }
+        }
+    }
+
+    /// The on-screen keypad (touch mode, a text field focused): digits, units,
+    /// operators, and parameter chips, typed into the field as synthetic events so
+    /// the OS virtual keyboard never has to appear over the viewport.
+    fn show_touch_keypad(&mut self, ctx: &egui::Context) {
+        if !touch::active() || self.keypad_target.is_none() {
+            return;
+        }
+        let param_names: Vec<String> = self
+            .state
+            .doc
+            .parameters
+            .iter()
+            .filter(|p| !p.deleted)
+            .map(|p| p.name.clone())
+            .take(5)
+            .collect();
+        let mut hide = false;
+        egui::Area::new(egui::Id::new("touch_keypad"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -40.0))
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).inner_margin(8.0).show(ui, |ui| {
+                    let key = |ui: &mut egui::Ui, label: &str| -> bool {
+                        ui.add(
+                            egui::Button::new(egui::RichText::new(label).size(17.0))
+                                .min_size(egui::vec2(44.0, 38.0)),
+                        )
+                        .clicked()
+                    };
+                    let mut typed: Option<String> = None;
+                    for row in [
+                        ["7", "8", "9", "+", "mm"],
+                        ["4", "5", "6", "-", "in"],
+                        ["1", "2", "3", "*", "deg"],
+                        ["0", ".", "=", "/", "ft"],
+                    ] {
+                        ui.horizontal(|ui| {
+                            for label in row {
+                                if key(ui, label) {
+                                    typed = Some(label.to_string());
+                                }
+                            }
+                        });
+                    }
+                    if !param_names.is_empty() {
+                        ui.horizontal_wrapped(|ui| {
+                            for name in &param_names {
+                                if ui
+                                    .add(egui::Button::new(
+                                        egui::RichText::new(name).size(13.0),
+                                    ))
+                                    .clicked()
+                                {
+                                    typed = Some(name.clone());
+                                }
+                            }
+                        });
+                    }
+                    if let Some(text) = typed {
+                        self.pending_input_events.push(egui::Event::Text(text));
+                    }
+                    ui.horizontal(|ui| {
+                        // Text labels: the bundled font has no ⌫/✕ glyphs (#325).
+                        if key(ui, "Back") {
+                            self.pending_input_events.push(egui::Event::Key {
+                                key: egui::Key::Backspace,
+                                physical_key: None,
+                                pressed: true,
+                                repeat: false,
+                                modifiers: egui::Modifiers::default(),
+                            });
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new(egui::RichText::new("Enter").size(17.0))
+                                    .min_size(egui::vec2(96.0, 38.0)),
+                            )
+                            .clicked()
+                        {
+                            self.pending_input_events.push(egui::Event::Key {
+                                key: egui::Key::Enter,
+                                physical_key: None,
+                                pressed: true,
+                                repeat: false,
+                                modifiers: egui::Modifiers::default(),
+                            });
+                        }
+                        if key(ui, "Hide") {
+                            hide = true;
+                        }
+                    });
+                });
+            });
+        if hide {
+            self.keypad_target = None;
+            ctx.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
+        }
     }
 
     /// The tutorial overlay: a pulsing ring on the current step's anchor and the bear's
@@ -1085,6 +1256,10 @@ impl App {
             compact_layout_initialized: false,
             last_touch_press_time: f64::NEG_INFINITY,
             was_multi_touch: false,
+            pending_input_events: Vec::new(),
+            keypad_target: None,
+            keypad_focus_gone_frames: 0,
+            long_press_fired: false,
             gpu_viewport: gpu_viewport::install(cc),
             gpu_view_cube: gpu_view_cube::install(cc),
             graph_layout: hierarchy::GraphLayout::default(),
@@ -4841,6 +5016,8 @@ impl eframe::App for App {
         self.process_screenshots(ctx);
         self.tick_script(ctx);
         self.tick_tutorial();
+        self.tick_touch_extras(ctx);
+        self.show_touch_keypad(ctx);
         self.tick_exit_after_startup(ctx);
         self.synthetic.inject(ctx);
 

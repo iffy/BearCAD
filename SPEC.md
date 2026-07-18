@@ -2412,6 +2412,18 @@ document is millimeters, so the player is person-scale: eye height
   user's next tap after finishing a shape is almost always a pick, **committing a
   rectangle or circle in touch mode returns to the Select tool** (desktop keeps the
   drawing tool armed; the Line tool keeps chaining on touch too).
+- **On-screen keypad**: in touch mode, focusing any text field floats a keypad above
+  the status bar — digits, `.`, `=`, `+ - * /`, unit keys (mm/in/deg/ft), **parameter
+  chips** (first five names), Back, Enter, Hide. Keys type by queueing **synthetic
+  input events** flushed at the next frame start with focus handed back to the field
+  (`tick_touch_extras`/`show_touch_keypad`), so every existing field — expressions,
+  autocomplete, inline definitions — behaves exactly as if typed on a keyboard and the
+  OS virtual keyboard never covers the viewport. The keypad follows the last focused
+  field and tolerates the focus blip a key tap causes; it hides via Hide or ~30 frames
+  with no focused field.
+- **Long-press = right-click**: a touch press held ≥0.6 s within an 8 px slop
+  (`touch::long_press_fires`, fires once per press) injects a synthetic secondary
+  click at the finger, opening the same context menus.
 - **Compact layout** below 700 logical px width (phones): the three side panes render
   as **closable floating windows** over the viewport instead of docked panels
   (`show_pane_shell`), hidden by default (one-shot on first compact frame), toggled

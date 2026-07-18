@@ -28,7 +28,9 @@ which is why the camera bindings live on the *right* mouse button.
 
 Touch mode switches on at the first touch: pick targets grow to finger size, and on
 phone-width screens the side panes become floating windows, toggled from the bottom bar.
-A trackpad pinch zooms the same way.
+A trackpad pinch zooms the same way. Focusing any value field floats an **on-screen
+keypad** — digits, units, operators, and your parameter names as one-tap chips — and a
+**long press** opens the same menus a right-click does.
 
 **Zoom to fit** (in the command palette and the View menu) frames your selection — or the
 whole model — in one step.
