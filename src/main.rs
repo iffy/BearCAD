@@ -782,11 +782,12 @@ impl App {
     /// browser (macOS), falling back to the releases page on failure.
     /// A workbench toolbar tool button; records its rect so a tutorial step can ring it.
     fn tool_button(&mut self, ui: &mut egui::Ui, icon: icons::IconId, tool: Tool, label: &str) {
-        let resp = icons::selectable_icon_button(
+        let resp = icons::selectable_icon_button_at(
             ui,
             icon,
             self.state.tool == tool,
             shortcuts::compact_label(label, shortcuts::tool_shortcut(tool)),
+            TOOLBAR_ICON_SIZE,
         );
         self.state
             .tutorial_anchor_rects
@@ -5160,6 +5161,8 @@ impl eframe::App for App {
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                 .show(ui, |ui| {
             ui.horizontal(|ui| {
+                // Tool buttons sit flush, like a segmented control (#461).
+                ui.spacing_mut().item_spacing.x = 0.0;
                 // Workbench toolbars (#254/#271): the Drawing workbench (a drawing open) shows
                 // only the tools that apply to drawings — Select and Dimension (#295: no Move;
                 // the Select tool drags projections directly).
@@ -5185,11 +5188,12 @@ impl eframe::App for App {
                         (icons::IconId::Dimension, Tool::Dimension, "Dimension"),
                         (icons::IconId::Text, Tool::Text, "Text"),
                     ] {
-                        if icons::selectable_icon_button(
+                        if icons::selectable_icon_button_at(
                             ui,
                             icon,
                             self.state.tool == tool,
                             shortcuts::compact_label(label, shortcuts::tool_shortcut(tool)),
+                            TOOLBAR_ICON_SIZE,
                         )
                         .clicked()
                         {
@@ -5197,7 +5201,7 @@ impl eframe::App for App {
                         }
                     }
                     ui.separator();
-                    if icons::selectable_icon_button(ui, icons::IconId::Zoom, false, "Zoom to fit (Z)")
+                    if icons::selectable_icon_button_at(ui, icons::IconId::Zoom, false, "Zoom to fit (Z)", TOOLBAR_ICON_SIZE)
                         .clicked()
                     {
                         // In the Drawing workbench, fit = reset the page pan/zoom (#273/#279).
@@ -5235,11 +5239,12 @@ impl eframe::App for App {
                 // Project (#140, made discoverable): sketch mode only — click outside
                 // edges/bodies to bring them in as dashed associative references.
                 if self.state.sketch_session.is_some()
-                    && icons::selectable_icon_button(
+                    && icons::selectable_icon_button_at(
                         ui,
                         icons::IconId::Projection,
                         self.state.tool == Tool::Project,
                         "Project — click an outside edge or body to reference it in this sketch (or select edges and press Y)",
+                        TOOLBAR_ICON_SIZE,
                     )
                     .clicked()
                 {
@@ -5256,18 +5261,19 @@ impl eframe::App for App {
                 self.tool_button(ui, icons::IconId::Dimension, Tool::Dimension, "Dimension");
                 self.tool_button(ui, icons::IconId::Constraint, Tool::Constraint, "Constraint");
                 ui.separator();
-                if icons::selectable_icon_button(ui, icons::IconId::Zoom, false, "Zoom to fit (Z)")
+                if icons::selectable_icon_button_at(ui, icons::IconId::Zoom, false, "Zoom to fit (Z)", TOOLBAR_ICON_SIZE)
                     .clicked()
                 {
                     self.state.apply(Action::ZoomToFit);
                 }
                 // Auto-zoom toggle (#438): while on, in-progress geometry that outgrows
                 // (or shrinks well inside) the view re-frames the camera automatically.
-                if icons::selectable_icon_button(
+                if icons::selectable_icon_button_at(
                     ui,
                     icons::IconId::AutoZoom,
                     self.state.auto_zoom,
                     "Auto-zoom — keep in-progress geometry framed while drawing/extruding",
+                    TOOLBAR_ICON_SIZE,
                 )
                 .clicked()
                 {
@@ -5281,7 +5287,7 @@ impl eframe::App for App {
                 // Import/Export toolbar buttons (#352): the same actions as the File menu, grouped
                 // under a popup on each icon.
                 ui.separator();
-                ui.menu_image_button(icons::sized_texture(ui.ctx(), icons::IconId::Import), |ui| {
+                ui.menu_image_button(icons::sized_texture_at(ui.ctx(), icons::IconId::Import, TOOLBAR_ICON_SIZE), |ui| {
                     if ui.button("Import STL…").clicked() {
                         self.import_stl();
                         ui.close();
@@ -5297,7 +5303,7 @@ impl eframe::App for App {
                 })
                 .response
                 .on_hover_text("Import STL, STEP, or an image");
-                ui.menu_image_button(icons::sized_texture(ui.ctx(), icons::IconId::Export), |ui| {
+                ui.menu_image_button(icons::sized_texture_at(ui.ctx(), icons::IconId::Export, TOOLBAR_ICON_SIZE), |ui| {
                     if ui.button("Export STL…").clicked() {
                         self.export_stl_all();
                         ui.close();
@@ -7428,6 +7434,9 @@ mod col {
 
 const GRID_EXTENT: f32 = gpu_viewport::GRID_EXTENT;
 const GRID_STEP: f32 = gpu_viewport::GRID_STEP;
+/// Workbench toolbar icon size: 50% larger than pane icons (#461).
+const TOOLBAR_ICON_SIZE: f32 = icons::ICON_DISPLAY_SIZE * 1.5;
+
 /// Width of the sketch-mode viewport border (#74).
 const SKETCH_MODE_BORDER_WIDTH: f32 = 3.0;
 

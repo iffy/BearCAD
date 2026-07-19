@@ -9,7 +9,7 @@ use eframe::egui::{
 use std::collections::HashMap;
 
 pub const ICON_DISPLAY_SIZE: f32 = 18.0;
-const ICON_RASTER_SIZE: u32 = 32;
+const ICON_RASTER_SIZE: u32 = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum IconId {
@@ -430,10 +430,11 @@ fn texture_for_icon(ctx: &Context, id: IconId) -> egui::TextureId {
 }
 
 pub fn sized_texture(ctx: &Context, id: IconId) -> egui::load::SizedTexture {
-    egui::load::SizedTexture::new(
-        texture_for_icon(ctx, id),
-        egui::vec2(ICON_DISPLAY_SIZE, ICON_DISPLAY_SIZE),
-    )
+    sized_texture_at(ctx, id, ICON_DISPLAY_SIZE)
+}
+
+pub fn sized_texture_at(ctx: &Context, id: IconId, size: f32) -> egui::load::SizedTexture {
+    egui::load::SizedTexture::new(texture_for_icon(ctx, id), egui::vec2(size, size))
 }
 
 pub fn paint_icon(painter: &Painter, ctx: &Context, id: IconId, rect: Rect, tint: Color32) {
@@ -452,8 +453,20 @@ pub fn selectable_icon_button(
     selected: bool,
     tooltip: impl Into<WidgetText>,
 ) -> egui::Response {
+    selectable_icon_button_at(ui, id, selected, tooltip, ICON_DISPLAY_SIZE)
+}
+
+/// [`selectable_icon_button`] at an explicit icon size (the workbench toolbar runs
+/// larger than pane icons, #461).
+pub fn selectable_icon_button_at(
+    ui: &mut Ui,
+    id: IconId,
+    selected: bool,
+    tooltip: impl Into<WidgetText>,
+    size: f32,
+) -> egui::Response {
     let response = ui.add(
-        egui::ImageButton::new(sized_texture(ui.ctx(), id))
+        egui::ImageButton::new(sized_texture_at(ui.ctx(), id, size))
             .frame(true)
             .selected(selected),
     );
