@@ -38,6 +38,7 @@ use crate::dimensions::{
 };
 use crate::gpu_viewport::dim_labels::ViewportDimLabel;
 use crate::selection::SceneSelection;
+use crate::value::LengthUnit;
 use eframe::egui::Color32;
 use egui::Rect as UiRect;
 use glam::{Mat4, Quat, Vec3};
@@ -45,24 +46,51 @@ use glam::{Mat4, Quat, Vec3};
 pub const GRID_EXTENT: f32 = 200.0;
 pub const GRID_STEP: f32 = 20.0;
 
-/// Round a desired grid spacing up to a "nice" 1/2/5×10ⁿ value (#353), so an adaptive grid steps
-/// through familiar magnitudes (…, 10, 20, 50, 100, 200, …) as the camera zooms.
-pub fn nice_grid_step(desired: f32) -> f32 {
-    if !(desired.is_finite()) || desired <= 0.0 {
-        return GRID_STEP;
-    }
-    let pow = 10f32.powf(desired.log10().floor());
-    let m = desired / pow; // 1..10
-    let nice = if m <= 1.0 {
-        1.0
-    } else if m <= 2.0 {
-        2.0
-    } else if m <= 5.0 {
-        5.0
+/// Grid steps for the document's unit system (#464): the **fine** subdivision step and
+/// the **heavy** step it subdivides, in mm, as consecutive rungs of a unit ladder —
+/// powers of ten of a millimetre for metric documents; quarters of an inch up to an
+/// inch, inches to a foot, then tens of feet for imperial ones. Each rung divides the
+/// next exactly, so heavy lines always land on fine-line positions and the grid never
+/// shifts as the ladder steps with zoom. `min_step_mm` is the smallest world spacing
+/// worth drawing (a few px on screen); the fine step is the first rung at or above it.
+pub fn grid_steps_for_unit(unit: LengthUnit, min_step_mm: f32) -> (f32, f32) {
+    let min = if min_step_mm.is_finite() && min_step_mm > 0.0 {
+        min_step_mm
     } else {
         10.0
     };
-    nice * pow
+    match unit {
+        LengthUnit::Mm | LengthUnit::Cm | LengthUnit::M => {
+            // The epsilon keeps exact powers of ten (log10 = whole ± float noise) on
+            // their own rung instead of jumping one up.
+            let fine = 10f32.powi((min.log10() - 1e-4).ceil() as i32);
+            (fine, fine * 10.0)
+        }
+        LengthUnit::In | LengthUnit::Ft => {
+            let next = |s: f32| {
+                if s < 1.0 {
+                    s * 4.0
+                } else if s < 12.0 {
+                    12.0
+                } else {
+                    s * 10.0
+                }
+            };
+            let mut fine_in = 1.0 / 1024.0;
+            while fine_in * 25.4 < min && fine_in < 1e9 {
+                fine_in = next(fine_in);
+            }
+            (fine_in * 25.4, next(fine_in) * 25.4)
+        }
+    }
+}
+
+/// Gamma-space blend from `a` to `b`; the fine grid lines fade toward the background
+/// with this so ladder transitions never pop lines in or out.
+fn mix_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 /// Brightness multiplier for geometry outside the active sketch (other sketches, planes).
 pub const SKETCH_DIMMED: f32 = 0.50;
@@ -531,6 +559,7 @@ impl ViewportScene {
             &vp,
             sketch_dimmed,
             &input.palette,
+            input.doc.default_length_unit,
         );
 
         for (ci, circle) in input.doc.circles.iter().enumerate() {
@@ -1663,13 +1692,18 @@ impl<'a> SceneMesh<'a> {
         view_proj: &Mat4,
         dim: bool,
         palette: &ViewportPalette,
+        unit: LengthUnit,
     ) {
         // Keep the grid and origin axes a usable on-screen size when zoomed out for large parts
         // (#353): measure how many pixels one world-mm spans at the origin, then scale the grid
         // extent/step and axis length so the axes are always at least ~MIN_AXIS_PX pixels and the
         // grid stays a readable reference instead of collapsing to a dot.
         const MIN_AXIS_PX: f32 = 90.0;
-        const TARGET_GRID_STEP_PX: f32 = 26.0;
+        // The fine subdivision level appears once its lines are this far apart on
+        // screen, and fades up to full strength by FINE_FULL_PX (#464) — a continuous
+        // ramp, so zooming never pops lines in or out.
+        const FINE_MIN_PX: f32 = 8.0;
+        const FINE_FULL_PX: f32 = 32.0;
         // Pixels per world-mm along the camera's screen-horizontal, measured at the origin.
         let ppw = {
             let fwd = (cam.target - cam.eye()).normalize_or_zero();
@@ -1686,13 +1720,20 @@ impl<'a> SceneMesh<'a> {
                 _ => 1.0,
             }
         };
-        // Grid step: a "nice" 1/2/5×10ⁿ multiple whose on-screen spacing is near the target, but
-        // never below the default fine step when zoomed in.
-        let grid_step = nice_grid_step((TARGET_GRID_STEP_PX / ppw).max(GRID_STEP));
-        // Extent covers a generous multiple of the step (bounded line count), and at least enough
-        // that the axes reach MIN_AXIS_PX.
+        // Two grid levels from the document's unit ladder (#464): heavy lines at the
+        // coarse step, lighter subdividing lines at the fine step between them.
+        let (fine_step, coarse_step) = grid_steps_for_unit(unit, FINE_MIN_PX / ppw);
+        let subdiv = ((coarse_step / fine_step).round() as i64).max(2);
+        // Extent covers a generous multiple of the heavy step (bounded line count), at
+        // least enough that the axes reach MIN_AXIS_PX — snapped to a whole number of
+        // heavy steps so every line sits on a fixed world multiple of its step and
+        // zooming can't slide the grid (the old extent-anchored walk did exactly that,
+        // which is what made lines wander and vanish).
         let axis_len = (MIN_AXIS_PX / ppw).max(GRID_EXTENT);
-        let e = (grid_step * 24.0).max(axis_len).max(GRID_EXTENT);
+        let n_heavy = (((coarse_step * 12.0).max(axis_len).max(GRID_EXTENT) / coarse_step)
+            .floor() as i64)
+            .clamp(1, 400);
+        let e = n_heavy as f32 * coarse_step;
         // Solid ground (#159): one filled plane in the grid's grey (darkened so bodies and
         // sketches still read against it), pushed slightly away from the camera with the
         // same bias the grid lines use so body bottoms resting on z = 0 never z-fight it.
@@ -1709,35 +1750,52 @@ impl<'a> SceneMesh<'a> {
             let lifted = offset_corners_toward_camera(corners, Vec3::Z, eye, GRID_DEPTH_BIAS);
             self.push_quad_fill(lifted, fill);
         } else {
-            let mut t = -e;
-            while t <= e + 0.001 {
-            let base = if t.abs() < 0.001 {
-                palette.grid_axis
-            } else {
-                palette.grid
+            let mut cross = |t: f32, color: Color32| {
+                self.push_line_segment_with_bias(
+                    Vec3::new(-e, t, 0.0),
+                    Vec3::new(e, t, 0.0),
+                    color,
+                    1.0,
+                    cam,
+                    viewport,
+                    view_proj,
+                    GRID_DEPTH_BIAS,
+                );
+                self.push_line_segment_with_bias(
+                    Vec3::new(t, -e, 0.0),
+                    Vec3::new(t, e, 0.0),
+                    color,
+                    1.0,
+                    cam,
+                    viewport,
+                    view_proj,
+                    GRID_DEPTH_BIAS,
+                );
             };
-            let color = sketch_ground_color(base, dim);
-            self.push_line_segment_with_bias(
-                Vec3::new(-e, t, 0.0),
-                Vec3::new(e, t, 0.0),
-                color,
-                1.0,
-                cam,
-                viewport,
-                view_proj,
-                GRID_DEPTH_BIAS,
-            );
-            self.push_line_segment_with_bias(
-                Vec3::new(t, -e, 0.0),
-                Vec3::new(t, e, 0.0),
-                color,
-                1.0,
-                cam,
-                viewport,
-                view_proj,
-                GRID_DEPTH_BIAS,
-            );
-                t += grid_step;
+            for i in -n_heavy..=n_heavy {
+                let base = if i == 0 {
+                    palette.grid_axis
+                } else {
+                    palette.grid
+                };
+                cross(i as f32 * coarse_step, sketch_ground_color(base, dim));
+            }
+            // Fine subdivisions, fading in with zoom. They only need to surround the
+            // origin a dozen heavy steps out (their spacing is screen-bounded, so this
+            // already reaches far past any viewport), capped for safety.
+            let fade = (fine_step * ppw - FINE_MIN_PX) / (FINE_FULL_PX - FINE_MIN_PX);
+            if fade > 0.01 {
+                let color = mix_color(
+                    palette.background,
+                    sketch_ground_color(palette.grid, dim),
+                    0.7 * fade.min(1.0),
+                );
+                let n_fine = (n_heavy * subdiv).min(12 * subdiv).min(600);
+                for i in -n_fine..=n_fine {
+                    if i % subdiv != 0 {
+                        cross(i as f32 * fine_step, color);
+                    }
+                }
             }
         }
         self.push_line_segment_with_bias(
@@ -4805,18 +4863,28 @@ mod tests {
         );
     }
 
-    /// #353: the adaptive grid step snaps a desired spacing up to a 1/2/5×10ⁿ magnitude.
+    /// #464: grid steps follow the document's unit system — powers of ten of a mm for
+    /// metric, the quarter-inch/inch/foot ladder for imperial — with the heavy step
+    /// always an exact multiple of the fine one.
     #[test]
-    fn nice_grid_step_snaps_to_familiar_magnitudes() {
-        assert_eq!(nice_grid_step(1.0), 1.0);
-        assert_eq!(nice_grid_step(1.5), 2.0);
-        assert_eq!(nice_grid_step(3.0), 5.0);
-        assert_eq!(nice_grid_step(7.0), 10.0);
-        assert_eq!(nice_grid_step(120.0), 200.0);
-        assert_eq!(nice_grid_step(2500.0), 5000.0);
-        // Degenerate inputs fall back to the default fine step.
-        assert_eq!(nice_grid_step(0.0), GRID_STEP);
-        assert_eq!(nice_grid_step(f32::NAN), GRID_STEP);
+    fn grid_steps_follow_document_units() {
+        let close = |(a, b): (f32, f32), (x, y): (f32, f32)| {
+            assert!((a - x).abs() < x * 1e-4, "fine {a} != {x}");
+            assert!((b - y).abs() < y * 1e-4, "coarse {b} != {y}");
+        };
+        close(grid_steps_for_unit(LengthUnit::Mm, 4.0), (10.0, 100.0));
+        close(grid_steps_for_unit(LengthUnit::Mm, 10.0), (10.0, 100.0));
+        close(grid_steps_for_unit(LengthUnit::Cm, 0.05), (0.1, 1.0));
+        close(grid_steps_for_unit(LengthUnit::M, 400.0), (1000.0, 10000.0));
+        // 1 in fine under a 1 ft heavy line.
+        close(grid_steps_for_unit(LengthUnit::In, 20.0), (25.4, 304.8));
+        // Quarter inches under whole inches.
+        close(grid_steps_for_unit(LengthUnit::In, 5.0), (6.35, 25.4));
+        close(grid_steps_for_unit(LengthUnit::Ft, 20.0), (25.4, 304.8));
+        // Zoomed way out: 10 ft under 100 ft.
+        close(grid_steps_for_unit(LengthUnit::Ft, 400.0), (3048.0, 30480.0));
+        // Degenerate input falls back to a sane metric default.
+        close(grid_steps_for_unit(LengthUnit::Mm, f32::NAN), (10.0, 100.0));
     }
 
     #[test]

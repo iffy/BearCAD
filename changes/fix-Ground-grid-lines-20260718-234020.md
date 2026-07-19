@@ -1,0 +1,1 @@
+Ground grid lines follow the document's units (mm powers of ten; quarter-inches, inches, feet) with lighter subdivisions fading in between heavier lines as you zoom — lines sit on fixed world positions so zooming never pops or slides them

@@ -126,11 +126,16 @@ features in dependency order.
   default sketching plane when none is chosen. X and Y span the ground; Z is height.
 - Internal canonical length unit is millimetres (§5.3); the ground plane and all geometry
   are expressed in this convention.
-- **Adaptive ground grid & origin axes (#353):** the grid and the origin X/Y/Z axis triad scale
-  with the camera so they stay a usable on-screen size for parts of any magnitude — the axes are
-  kept at least ~90 px long and the grid spacing snaps to a "nice" 1/2/5×10ⁿ step
-  (`gpu_viewport::nice_grid_step`) sized to the zoom, so a 20 ft part doesn't shrink them to a
-  dot. Line count stays bounded (extent is a fixed multiple of the current step).
+- **Adaptive ground grid & origin axes (#353/#464):** the grid and the origin X/Y/Z axis
+  triad scale with the camera so they stay a usable on-screen size for parts of any
+  magnitude — the axes are kept at least ~90 px long. Grid spacing follows the
+  **document's default length unit** (`gpu_viewport::grid_steps_for_unit`): two levels at
+  once, heavy lines at a coarse step with lighter subdividing lines between them —
+  powers of ten of a millimetre for metric documents; quarter inches under inches,
+  inches under feet, then tens of feet for imperial ones. As the camera zooms in the
+  next-finer rung **fades in** continuously (8→32 px screen spacing), and every line
+  sits on a fixed world multiple of its step, so zooming never pops or slides lines.
+  Line count stays bounded (extent is a fixed multiple of the heavy step).
 
 ---
 

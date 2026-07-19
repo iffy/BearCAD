@@ -62,7 +62,9 @@ The **gear icon** under the view bear opens display settings:
 - **Projection** — orthographic (flat, technical) or perspective (natural).
 - **Shading** — wireframe, transparent, solid, solid + visible edges, or realistic
   lighting.
-- **Ground** — grid lines or a solid ground plane.
+- **Ground** — grid lines or a solid ground plane. Grid lines follow the document's
+  units — millimetre powers of ten, or inches and feet — and finer subdivisions fade
+  in between the heavier lines as you zoom.
 
 These change how you *see* the model, never the model itself.
 
