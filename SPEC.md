@@ -2443,7 +2443,18 @@ document is millimeters, so the player is person-scale: eye height
   viewport point — anchors recorded per frame in `AppState::tutorial_anchor_rects`), and
   either a **done predicate** on the app state (the step auto-advances the moment any
   action satisfies it — worked-ahead users skip ahead, `AppState::advance_tutorial`) or a
-  manual **Next** button. **End tutorial** exits any time.
+  manual **Next** button, and a **Back** button reviews earlier steps (auto-advance
+  stands down while reviewing and resumes when Next reaches unfinished work,
+  `TutorialRun::hold`). **End tutorial** exits any time. The ring is a **pulsing blue
+  orb that glides** between anchors so the eye can follow it; the bracket's
+  parameter stage is guided literally click by click (tap the name box, type leg,
+  tap the value box, press + — each with its own anchor,
+  `UiAnchor::{ParametersName, ParametersValue, ParametersAdd}` recorded by the pane,
+  the name-box tap detected via `ParametersPaneState::new_name_focused`), and
+  the profile-drawing step leads **vertex by vertex** around the sloppy outline
+  (`next_profile_point`), pointing at the ground origin until the sketch opens. The
+  bubble hangs directly under the view cube's actual rect
+  (`view_cube::cube_rect_in_viewport`), tail pointing at the bear.
 - First tutorial: **Build an angle bracket** (`"bracket"`) — the Quickstart's part,
   interactive: parameters, sloppy profile, constraints, dimensions (parameter-driven
   angle), extrude, bend fillets, hole cuts, countersinks, corner rounds, engraving, and

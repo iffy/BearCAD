@@ -1647,6 +1647,9 @@ pub enum Action {
     StartTutorial { index: usize },
     /// Advance the running tutorial one step (the bubble's Next, or a satisfied step).
     TutorialNext,
+    /// Step the running tutorial back one step to review it (auto-advance stands
+    /// down until Next catches back up to unfinished work).
+    TutorialBack,
     /// End the running tutorial.
     EndTutorial,
     CreateSketchOffsetOperation {
@@ -3934,6 +3937,9 @@ impl AppState {
     pub fn advance_tutorial(&mut self) {
         loop {
             let Some(run) = self.tutorial else { return };
+            if run.hold {
+                return;
+            }
             let Some(step) = crate::tutorial::TUTORIALS
                 .get(run.tutorial)
                 .and_then(|t| t.steps.get(run.step))
@@ -7966,17 +7972,39 @@ label_hidden: false,
                 };
                 // Tutorials assume a clean slate, like the quickstart they mirror.
                 self.apply(Action::NewDocument);
-                self.tutorial = Some(crate::tutorial::TutorialRun { tutorial: index, step: 0 });
+                self.tutorial =
+                    Some(crate::tutorial::TutorialRun { tutorial: index, step: 0, hold: false });
                 self.status = format!("Tutorial started: {}", tut.title);
                 ActionResult::Ok
             }
             Action::TutorialNext => {
-                if let Some(run) = &mut self.tutorial {
+                if let Some(mut run) = self.tutorial {
                     run.step += 1;
-                    let done = run.step >= crate::tutorial::TUTORIALS[run.tutorial].steps.len();
-                    if done {
+                    if run.step >= crate::tutorial::TUTORIALS[run.tutorial].steps.len() {
                         self.tutorial = None;
                         self.status = "Tutorial complete — happy modeling!".to_string();
+                    } else {
+                        // Reviewing (Back) ends when Next reaches a step whose work
+                        // isn't done yet — from there auto-advance takes over again.
+                        if run.hold {
+                            let live = crate::tutorial::TUTORIALS[run.tutorial].steps[run.step]
+                                .done
+                                .map(|done| !done(self))
+                                .unwrap_or(true);
+                            if live {
+                                run.hold = false;
+                            }
+                        }
+                        self.tutorial = Some(run);
+                    }
+                }
+                ActionResult::Ok
+            }
+            Action::TutorialBack => {
+                if let Some(run) = &mut self.tutorial {
+                    if run.step > 0 {
+                        run.step -= 1;
+                        run.hold = true;
                     }
                 }
                 ActionResult::Ok

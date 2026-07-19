@@ -1,0 +1,1 @@
+Tutorial polish: the bubble hangs from the bear (view cube) with its tail on it, Back reviews steps, the click-me orb pulses blue and glides between targets, the parameter stage guides click by click, and the profile step leads vertex by vertex

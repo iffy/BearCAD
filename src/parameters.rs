@@ -220,6 +220,9 @@ pub struct ParametersPaneState {
     pub editing_focus: bool,
     /// Inline validation or action feedback shown under the table.
     pub message: Option<String>,
+    /// Whether the new-parameter name field has focus (mirrored each frame for the
+    /// tutorial's "tap the name box" predicate).
+    pub new_name_focused: bool,
 }
 
 /// Whether the new-parameter row has enough input to attempt a commit.
@@ -1230,6 +1233,11 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                         .hint_text("name")
                         .desired_width(f32::INFINITY),
                 );
+                app.parameters_pane.new_name_focused = name_response.has_focus();
+                app.tutorial_anchor_rects.insert(
+                    crate::tutorial::UiAnchor::ParametersName,
+                    name_response.rect,
+                );
                 if name_response.changed() {
                     app.parameters_pane
                         .new_name
@@ -1264,13 +1272,21 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                 }
                 let value_response = input.show(ui, &mut new_value, &app.doc);
                 app.parameters_pane.new_value = new_value;
+                app.tutorial_anchor_rects.insert(
+                    crate::tutorial::UiAnchor::ParametersValue,
+                    value_response.rect,
+                );
                 if app.parameters_pane.focus_new_value {
                     value_response.request_focus();
                     app.parameters_pane.focus_new_value = false;
                 }
 
-                let add_clicked =
-                    icon_button(ui, IconId::Plus, "Add parameter").clicked();
+                let add_response = icon_button(ui, IconId::Plus, "Add parameter");
+                app.tutorial_anchor_rects.insert(
+                    crate::tutorial::UiAnchor::ParametersAdd,
+                    add_response.rect,
+                );
+                let add_clicked = add_response.clicked();
 
                 if name_response.gained_focus() || value_response.gained_focus() {
                     app.parameters_pane.cancel_edit();

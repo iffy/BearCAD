@@ -3914,10 +3914,10 @@ mod tests {
             bearcad.parameter("add", "hole", "5mm")
             bearcad.parameter("add", "bend", "4mm")
             bearcad.parameter("add", "bend_angle", "120deg")
-            assert(bearcad.ui.tutorial_step() == 2, "params done -> line tool step")
+            assert(bearcad.ui.tutorial_step() == 6, "params done -> line tool step")
 
             bearcad.ui.tool("line")
-            assert(bearcad.ui.tutorial_step() == 3, "line tool -> draw step")
+            assert(bearcad.ui.tutorial_step() == 7, "line tool -> draw step")
 
             bearcad.line{ x = 0,     y = 0,    x1 = 51,    y1 = 2.5 }
             bearcad.line{ x = 51,    y = 2.5,  x1 = 49.5,  y1 = 7.8 }
@@ -3932,10 +3932,10 @@ mod tests {
               bearcad.add_geometric_constraint("coincident")
             end
             bearcad.clear_selection()
-            assert(bearcad.ui.tutorial_step() == 4, "six lines -> constraint tool step")
+            assert(bearcad.ui.tutorial_step() == 8, "six lines -> constraint tool step")
 
             bearcad.ui.tool("constraint")
-            assert(bearcad.ui.tutorial_step() == 5, "constraint tool -> square-up step")
+            assert(bearcad.ui.tutorial_step() == 9, "constraint tool -> square-up step")
 
             local function geo(kind, a, b)
               bearcad.select{ kind = "line", index = a }
@@ -3952,56 +3952,56 @@ mod tests {
             geo("parallel", 3, 5)
             geo("perpendicular", 1, 0)
             geo("perpendicular", 4, 5)
-            assert(bearcad.ui.tutorial_step() == 6, "squared -> dimension step")
+            assert(bearcad.ui.tutorial_step() == 10, "squared -> dimension step")
 
             bearcad.add_constraint({ kind = "line", index = 0 }, "leg")
             bearcad.add_constraint({ kind = "line", index = 5 }, "leg")
             bearcad.add_constraint({ kind = "line", index = 1 }, "thick")
             bearcad.add_constraint({ kind = "line", index = 4 }, "thick")
             bearcad.add_angle_constraint{ a = 0, b = 3, value = "bend_angle", sign = 1 }
-            assert(bearcad.ui.tutorial_step() == 7, "dimensioned -> extrude step")
+            assert(bearcad.ui.tutorial_step() == 11, "dimensioned -> extrude step")
 
             bearcad.exit_sketch()
             local loop = {0, 1, 2, 3, 4, 5}
             bearcad.extrude{ polygon = loop, distance = 40, name = "Bracket" }
-            assert(bearcad.ui.tutorial_step() == 8, "extruded -> bend fillet step")
+            assert(bearcad.ui.tutorial_step() == 12, "extruded -> bend fillet step")
 
             bearcad.fillet_edge{ extrusion = 0, edge = { kind = "vertical", face = 0, edge = 2 }, radius = 4 }
             bearcad.fillet_edge{ extrusion = 0, edge = { kind = "vertical", face = 0, edge = 5 }, radius = 9 }
-            assert(bearcad.ui.tutorial_step() == 9, "bend rounded -> hole sketch step")
+            assert(bearcad.ui.tutorial_step() == 13, "bend rounded -> hole sketch step")
 
             bearcad.begin_sketch{ kind = "extrude_side", extrusion = 0, profile = "polygon",
                                   profile_lines = loop, edge = 2 }
             bearcad.circle{ x = 19, y = 10, r = 2.5 }
             bearcad.circle{ x = 19, y = 30, r = 2.5 }
-            assert(bearcad.ui.tutorial_step() == 10, "circles drawn -> cut step")
+            assert(bearcad.ui.tutorial_step() == 14, "circles drawn -> cut step")
 
             bearcad.exit_sketch()
             bearcad.extrude{ circles = {0, 1}, distance = -6, body = "cut" }
-            assert(bearcad.ui.tutorial_step() == 11, "holes cut -> countersink step")
+            assert(bearcad.ui.tutorial_step() == 15, "holes cut -> countersink step")
 "#;
         let full_tail = r#"
             for face = 0, 1 do
               bearcad.chamfer_edge{ extrusion = 1,
                 edge = { kind = "cap", face = face, edge = 0, top = false }, distance = 1.2 }
             end
-            assert(bearcad.ui.tutorial_step() == 12, "countersunk -> corner fillet step")
+            assert(bearcad.ui.tutorial_step() == 16, "countersunk -> corner fillet step")
 
             for _, k in ipairs({0, 1, 3, 4}) do
               bearcad.fillet_edge{ extrusion = 0,
                 edge = { kind = "vertical", face = 0, edge = k }, radius = 2.0 }
             end
-            assert(bearcad.ui.tutorial_step() == 13, "corners rounded -> engrave step")
+            assert(bearcad.ui.tutorial_step() == 17, "corners rounded -> engrave step")
 
             bearcad.begin_sketch{ kind = "extrude_side", extrusion = 0, profile = "polygon",
                                   profile_lines = loop, edge = 0 }
             bearcad.text{ text = "BearCAD", x = 6, y = 17, size = 5 }
             bearcad.exit_sketch()
             bearcad.extrude{ text = 0, distance = -1, body = "cut" }
-            assert(bearcad.ui.tutorial_step() == 14, "engraved -> change-your-mind step")
+            assert(bearcad.ui.tutorial_step() == 18, "engraved -> change-your-mind step")
 
             bearcad.parameter("value", 5, "150deg")
-            assert(bearcad.ui.tutorial_step() == 15, "angle changed -> final step")
+            assert(bearcad.ui.tutorial_step() == 19, "angle changed -> final step")
 
             bearcad.ui.tutorial_next()
             assert(bearcad.ui.tutorial_step() == nil, "finished")

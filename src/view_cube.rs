@@ -1421,7 +1421,7 @@ fn show_home_button(
     }
 }
 
-fn cube_rect_in_viewport(viewport: Rect) -> Rect {
+pub fn cube_rect_in_viewport(viewport: Rect) -> Rect {
     Rect::from_min_size(
         Pos2::new(
             viewport.max.x - CUBE_SIZE - CUBE_MARGIN,

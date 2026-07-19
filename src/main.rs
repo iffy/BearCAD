@@ -623,6 +623,9 @@ struct App {
     keypad_focus_gone_frames: u8,
     /// The current touch press has already fired its long-press right-click.
     long_press_fired: bool,
+    /// The tutorial orb's animated screen position: it glides between anchors so the
+    /// eye can follow it.
+    tutorial_orb_pos: Option<egui::Pos2>,
     gpu_viewport: bool,
     gpu_view_cube: bool,
     /// Persistent physics state for the Elements pane's force-directed Graph view (#94).
@@ -982,38 +985,62 @@ impl App {
             egui::Id::new("tutorial_overlay"),
         ));
 
-        // The glowing ring: where to click next.
+        // The glowing orb: where to click next. It pulses blue and *glides* between
+        // anchors, so the eye can follow it from one target to the next.
         let target = match step.anchor {
             tutorial::StepAnchor::Ui(anchor) => self
                 .state
                 .tutorial_anchor_rects
                 .get(&anchor)
                 .map(|r| (r.center(), r.size().max_elem() * 0.5 + 6.0)),
-            tutorial::StepAnchor::WorldOrigin => {
-                project(Vec3::ZERO).map(|p| (p, 26.0))
+            tutorial::StepAnchor::World(point) => {
+                point(&self.state).and_then(&project).map(|p| (p, 26.0))
             }
             tutorial::StepAnchor::None => None,
         };
-        if let Some((center, base)) = target {
+        if let Some((goal, base)) = target {
+            let dt = ctx.input(|i| i.stable_dt).min(0.1);
+            let pos = match self.tutorial_orb_pos {
+                Some(prev) => {
+                    // Exponential glide toward the goal (~90% of the way per quarter second).
+                    let k = 1.0 - (-dt * 9.0).exp();
+                    prev + (goal - prev) * k
+                }
+                None => goal,
+            };
+            self.tutorial_orb_pos = Some(pos);
             let t = ctx.input(|i| i.time) as f32;
             let pulse = ((t * 2.5).sin() * 0.5 + 0.5) * 5.0;
             for (extra, alpha) in [(0.0, 230u8), (5.0, 120), (10.0, 55)] {
                 painter.circle_stroke(
-                    center,
+                    pos,
                     base + pulse + extra,
                     egui::Stroke::new(
                         2.5,
-                        egui::Color32::from_rgba_unmultiplied(255, 200, 80, alpha),
+                        egui::Color32::from_rgba_unmultiplied(90, 160, 255, alpha),
                     ),
                 );
             }
-            ctx.request_repaint(); // keep the pulse animating
+            painter.circle_filled(
+                pos,
+                4.0,
+                egui::Color32::from_rgba_unmultiplied(140, 190, 255, 200),
+            );
+            ctx.request_repaint(); // keep the pulse and glide animating
+        } else {
+            self.tutorial_orb_pos = None;
         }
 
-        // The bear's speech bubble, tucked under the view cube (that IS the bear).
+        // The bear's speech bubble, hanging directly under the view cube (that IS
+        // the bear), tail pointing up at it.
         const BUBBLE_W: f32 = 320.0;
-        let anchor_pos = viewport.right_top() + egui::vec2(-BUBBLE_W - 14.0, 220.0);
+        let cube = view_cube::cube_rect_in_viewport(viewport);
+        let anchor_pos = egui::pos2(
+            (cube.right() - BUBBLE_W).max(viewport.left() + 8.0),
+            cube.bottom() + 16.0,
+        );
         let mut next = false;
+        let mut back = false;
         let mut end = false;
         egui::Area::new(egui::Id::new("tutorial_bubble"))
             .fixed_pos(anchor_pos)
@@ -1044,7 +1071,10 @@ impl App {
                         );
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
-                            if step.done.is_none() {
+                            if run.step > 0 && ui.button("Back").clicked() {
+                                back = true;
+                            }
+                            if step.done.is_none() || run.hold {
                                 let last = run.step + 1 == tut.steps.len();
                                 if ui.button(if last { "Finish" } else { "Next" }).clicked() {
                                     next = true;
@@ -1068,12 +1098,13 @@ impl App {
                     });
                 // The tail: a little triangle from the bubble up toward the bear.
                 let r = bubble.response.rect;
-                let tip = egui::pos2(r.right() - 26.0, r.top() - 12.0);
+                let tail_x = cube.center().x.clamp(r.left() + 30.0, r.right() - 30.0);
+                let tip = egui::pos2(tail_x, r.top() - 12.0);
                 painter.add(egui::Shape::convex_polygon(
                     vec![
-                        egui::pos2(r.right() - 44.0, r.top() + 2.0),
+                        egui::pos2(tail_x - 14.0, r.top() + 2.0),
                         tip,
-                        egui::pos2(r.right() - 18.0, r.top() + 2.0),
+                        egui::pos2(tail_x + 14.0, r.top() + 2.0),
                     ],
                     egui::Color32::from_rgb(38, 34, 26),
                     egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 80)),
@@ -1081,6 +1112,9 @@ impl App {
             });
         if next {
             self.state.apply(Action::TutorialNext);
+        }
+        if back {
+            self.state.apply(Action::TutorialBack);
         }
         if end {
             self.state.apply(Action::EndTutorial);
@@ -1260,6 +1294,7 @@ impl App {
             keypad_target: None,
             keypad_focus_gone_frames: 0,
             long_press_fired: false,
+            tutorial_orb_pos: None,
             gpu_viewport: gpu_viewport::install(cc),
             gpu_view_cube: gpu_view_cube::install(cc),
             graph_layout: hierarchy::GraphLayout::default(),

@@ -15,14 +15,19 @@ pub enum UiAnchor {
     Tool(Tool),
     /// The Parameters pane's `+` add button.
     ParametersAdd,
+    /// The Parameters pane's new-parameter **name** field.
+    ParametersName,
+    /// The Parameters pane's new-parameter **value** field.
+    ParametersValue,
 }
 
 /// Where a step's glowing ring points.
 #[derive(Clone, Copy, Debug)]
 pub enum StepAnchor {
     Ui(UiAnchor),
-    /// The world origin, projected into the viewport (for "click the ground" steps).
-    WorldOrigin,
+    /// A computed world point, projected into the viewport — e.g. the next profile
+    /// vertex to click, so a drawing step leads point by point.
+    World(fn(&AppState) -> Option<glam::Vec3>),
     /// No ring — narration only.
     None,
 }
@@ -48,6 +53,9 @@ pub struct Tutorial {
 pub struct TutorialRun {
     pub tutorial: usize,
     pub step: usize,
+    /// Reviewing earlier steps (the Back button): auto-advance stands down until
+    /// Next reaches a step whose work isn't done yet.
+    pub hold: bool,
 }
 
 pub static TUTORIALS: &[Tutorial] = &[Tutorial {
@@ -66,6 +74,33 @@ fn live_constraints(app: &AppState) -> impl Iterator<Item = &crate::model::Const
     app.doc.constraints.iter().filter(|c| !c.deleted)
 }
 
+fn param_exists(app: &AppState, name: &str) -> bool {
+    app.doc
+        .parameters
+        .iter()
+        .any(|p| !p.deleted && p.name.eq_ignore_ascii_case(name))
+}
+
+fn name_box_tapped(app: &AppState) -> bool {
+    app.parameters_pane.new_name_focused
+        || !app.parameters_pane.new_name.trim().is_empty()
+        || param_exists(app, "leg")
+}
+
+fn name_says_leg(app: &AppState) -> bool {
+    app.parameters_pane.new_name.trim().eq_ignore_ascii_case("leg") || param_exists(app, "leg")
+}
+
+fn value_says_50(app: &AppState) -> bool {
+    crate::value::eval_length_mm(&app.parameters_pane.new_value)
+        .is_some_and(|v| (v - 50.0).abs() < 1e-3)
+        || param_exists(app, "leg")
+}
+
+fn leg_added(app: &AppState) -> bool {
+    param_exists(app, "leg")
+}
+
 fn params_defined(app: &AppState) -> bool {
     ["leg", "width", "thick", "hole", "bend", "bend_angle"].iter().all(|name| {
         app.doc
@@ -77,6 +112,43 @@ fn params_defined(app: &AppState) -> bool {
 
 fn line_tool_active(app: &AppState) -> bool {
     app.tool == Tool::Line
+}
+
+/// The sloppy bracket profile the tutorial leads the user around, in sketch-local
+/// millimetres (mirrors the quickstart's rough hexagon; the constraint steps square
+/// it up afterwards).
+const PROFILE_POINTS: [(f32, f32); 6] = [
+    (0.0, 0.0),
+    (51.0, 2.5),
+    (49.5, 7.8),
+    (4.5, 5.5),
+    (-17.5, 47.0),
+    (-25.5, 43.0),
+];
+
+/// The next profile vertex to click while drawing the sloppy outline: follows the
+/// chain (placed lines + the in-progress segment) and finally points back at the
+/// start to close the loop.
+fn next_profile_point(app: &AppState) -> Option<glam::Vec3> {
+    // No sketch open yet: the first click is on the ground plane itself — point there.
+    let Some(session) = app.sketch_session else {
+        return Some(glam::Vec3::ZERO);
+    };
+    let frame = crate::face::sketch_geometry_frame(&app.doc, session.sketch)?;
+    let placed = app
+        .doc
+        .lines
+        .iter()
+        .filter(|l| !l.deleted && l.sketch == session.sketch && !l.construction)
+        .count();
+    let index = match placed {
+        0 if app.creating_line.is_none() => 0,
+        0 => 1,
+        n if n < 5 => n + 1,
+        _ => 0, // last segment: close the loop back at the start
+    };
+    let (u, v) = PROFILE_POINTS[index % PROFILE_POINTS.len()];
+    Some(crate::face::local_to_world(&frame, u, v))
 }
 
 fn profile_drawn(app: &AppState) -> bool {
@@ -177,11 +249,31 @@ static BRACKET_STEPS: &[Step] = &[
         done: None,
     },
     Step {
-        narration: "First, names for our numbers. In the Parameters pane on the right, type a \
-                    name and value, then press + \u{2014} six times:\n\
-                    leg = 50mm, width = 40mm, thick = 5mm,\n\
-                    hole = 5mm, bend = 4mm, bend_angle = 120deg",
+        narration: "First, a name for our first number. See the Parameters pane on the \
+                    right? Tap inside the name box \u{2014} the pulsing ring marks it.",
+        anchor: StepAnchor::Ui(UiAnchor::ParametersName),
+        done: Some(name_box_tapped),
+    },
+    Step {
+        narration: "Type leg \u{2014} just those three letters. It's the length of each \
+                    of the bracket's legs.",
+        anchor: StepAnchor::Ui(UiAnchor::ParametersName),
+        done: Some(name_says_leg),
+    },
+    Step {
+        narration: "Now tap the value box beside it and type 50mm.",
+        anchor: StepAnchor::Ui(UiAnchor::ParametersValue),
+        done: Some(value_says_50),
+    },
+    Step {
+        narration: "Press + to add it. Your first parameter!",
         anchor: StepAnchor::Ui(UiAnchor::ParametersAdd),
+        done: Some(leg_added),
+    },
+    Step {
+        narration: "Five more, exactly the same moves:\n\
+                    width = 40mm\nthick = 5mm\nhole = 5mm\nbend = 4mm\nbend_angle = 120deg",
+        anchor: StepAnchor::Ui(UiAnchor::ParametersName),
         done: Some(params_defined),
     },
     Step {
@@ -190,11 +282,11 @@ static BRACKET_STEPS: &[Step] = &[
         done: Some(line_tool_active),
     },
     Step {
-        narration: "Click on the ground near the origin and chain six sloppy lines: a long \
-                    base leg, a short end cap, back along the inside, up the tilted leg \
-                    (roughly 120\u{b0} from the base), its end cap, and close the loop back at \
-                    the start. Sloppy is fine \u{2014} we'll square it up next!",
-        anchor: StepAnchor::WorldOrigin,
+        narration: "Now follow me around the profile: click each glowing point in turn \
+                    \u{2014} down the base leg, a short end cap, back along the inside, up \
+                    the tilted leg, and finally back to the start to close the loop. \
+                    Sloppy is fine \u{2014} we'll square it up next!",
+        anchor: StepAnchor::World(next_profile_point),
         done: Some(profile_drawn),
     },
     Step {
@@ -291,7 +383,7 @@ mod tests {
     #[test]
     fn bracket_predicates_track_a_scripted_build() {
         let mut app = AppState::default();
-        app.tutorial = Some(TutorialRun { tutorial: 0, step: 1 });
+        app.tutorial = Some(TutorialRun { tutorial: 0, step: 1, hold: false });
 
         assert!(!params_defined(&app));
         for (name, value) in [
@@ -318,6 +410,45 @@ mod tests {
             expression: "150deg".to_string(),
         });
         assert!(bend_angle_changed(&app));
+    }
+
+    /// Back reviews earlier steps without auto-advance re-firing on their already-
+    /// satisfied predicates; Next resumes auto mode once it reaches unfinished work.
+    #[test]
+    fn back_reviews_without_auto_advance_snapping_forward() {
+        let mut app = AppState::default();
+        app.apply(Action::StartTutorial { index: 0 });
+        app.apply(Action::TutorialNext); // past the welcome step
+        for (name, value) in [
+            ("leg", "50mm"),
+            ("width", "40mm"),
+            ("thick", "5mm"),
+            ("hole", "5mm"),
+            ("bend", "4mm"),
+            ("bend_angle", "120deg"),
+        ] {
+            app.apply(Action::AddParameter {
+                name: name.to_string(),
+                expression: value.to_string(),
+            });
+        }
+        assert_eq!(app.tutorial.unwrap().step, 6, "params chain to the line-tool step");
+
+        app.apply(Action::TutorialBack);
+        let run = app.tutorial.unwrap();
+        assert_eq!(run.step, 5);
+        assert!(run.hold);
+        // Its predicate is satisfied, but reviewing holds auto-advance off.
+        app.advance_tutorial();
+        assert_eq!(app.tutorial.unwrap().step, 5);
+
+        // Next walks forward; reaching the line-tool step (unfinished) resumes auto.
+        app.apply(Action::TutorialNext);
+        let run = app.tutorial.unwrap();
+        assert_eq!(run.step, 6);
+        assert!(!run.hold, "caught up to live work — auto-advance resumes");
+        app.apply(Action::SetTool(Tool::Line));
+        assert_eq!(app.tutorial.unwrap().step, 7, "auto-advance is live again");
     }
 
     #[test]
