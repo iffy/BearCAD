@@ -2311,6 +2311,23 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
+    // Read a line's current endpoints (sketch-local mm) — the assertion hook for
+    // interaction regression tests.
+    api.set(
+        "line_endpoints",
+        lua.create_function(|lua, index: usize| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let state = unsafe { tick.state() };
+            let line = state
+                .doc
+                .lines
+                .get(index)
+                .filter(|l| !l.deleted)
+                .ok_or_else(|| mlua::Error::external(format!("no line {index}")))?;
+            Ok((line.x0, line.y0, line.x1, line.y1))
+        })?,
+    )?;
+
     // Touch mode: force on/off (otherwise auto-detected from the first real touch).
     api.set(
         "touch",
@@ -5915,9 +5932,16 @@ mod tests {
     /// leaves the geometry untouched (a locked `rect` corner is fully constrained).
     #[test]
     fn lua_drag_vertex_fully_constrained_raises() {
+        // #459: a dimensioned rect is only rigid once it's also *located* — pin a
+        // corner to the origin, then dragging raises. (Unpinned dimensioned shapes
+        // translate under drags instead of refusing.)
         let state = run_lua(
             r#"
             bearcad.rect{ width = 10, height = 10 }
+            bearcad.select{ kind = "line", index = 0, ["end"] = "start" }
+            bearcad.select({ kind = "origin" }, true)
+            bearcad.add_geometric_constraint("coincident")
+            bearcad.clear_selection()
             local ok, err = pcall(function()
                 bearcad.drag_vertex{
                     point = { kind = "line", index = 0, ["end"] = "end" },
@@ -5929,6 +5953,32 @@ mod tests {
         "#,
         );
         assert!((state.doc.lines[0].x1 - 10.0).abs() < 1e-3, "corner must not move");
+    }
+
+    /// #459 regression: a dimensioned-but-unpinned rect still drags — the whole
+    /// shape translates, both dimensions intact. (The DOF analysis used to count
+    /// the solver's weak gauge-hold pins as real constraints, so every dimensioned
+    /// shape froze solid.)
+    #[test]
+    fn lua_drag_translates_dimensioned_unpinned_rect() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ x = 15, y = 10, width = 40, height = 20 }
+            bearcad.drag_vertex{
+                point = { kind = "line", index = 0, ["end"] = "end" },
+                du = 10, dv = 5,
+            }
+        "#,
+        );
+        let l0 = &state.doc.lines[0];
+        let w = (l0.x1 - l0.x0).abs();
+        assert!((w - 40.0).abs() < 1e-2, "width preserved, got {w}");
+        assert!(
+            (l0.x1 - 55.0).abs() > 1.0 || (l0.y1 - 10.0).abs() > 1.0,
+            "the corner actually moved: ({}, {})",
+            l0.x1,
+            l0.y1
+        );
     }
 
     /// #114: `edit_extrusion` push/pulls an existing extrusion — `by` nudges from the

@@ -108,6 +108,22 @@ jobs:
             xvfb-run -a ./target/debug/bearcad --script "$script" --exit --timeout 30
           done
 
+      # Interaction regression tests (todoer #459): scripted *real* pointer input
+      # (raw-input synthetic events) driving click-select and drags end to end.
+      # A lua assert failure exits non-zero (#125) and fails the job.
+      - name: Run interaction tests
+        run: |
+          shopt -s nullglob
+          tests=(tests/interaction/*.lua)
+          if [[ ${#tests[@]} -eq 0 ]]; then
+            echo "No interaction tests found in tests/interaction/" >&2
+            exit 1
+          fi
+          for script in "${tests[@]}"; do
+            echo "Running $script"
+            xvfb-run -a ./target/debug/bearcad --script "$script" --exit --timeout 30
+          done
+
   # Builds BearCAD with the statically-linked OpenCASCADE kernel (#86/#89). The
   # OCCT build is expensive, so it's cached on the pinned submodule + build-script
   # hash — after the first cold run it's restored, not rebuilt. Linux only here;

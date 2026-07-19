@@ -1,0 +1,1 @@
+Dimensioned-but-unpinned sketch shapes drag again (the whole shape translates, dimensions intact): the DOF analysis no longer counts the solver's gauge-hold pins as constraints; interaction regression tests now run real pointer input in CI

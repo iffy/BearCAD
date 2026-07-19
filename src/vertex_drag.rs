@@ -1407,9 +1407,15 @@ mod tests {
         assert!((parallel_dot - 1.0).abs() < 0.01, "parallel_dot={parallel_dot}");
     }
 
+    /// #459: only *genuinely rigid* geometry blocks dragging. A dimensioned line
+    /// whose position is still free must drag (translation/rotation preserve its
+    /// length); pinning it to the origin plus fixing its direction makes it rigid,
+    /// and only then is the drag refused. (The old check counted the solver's weak
+    /// gauge-hold pins as constraints, so any dimensioned line read as rigid.)
     #[test]
     fn fully_constrained_line_vertex_drag_is_blocked() {
         use crate::constraints::add_distance_constraint;
+        use crate::model::{ConstraintEntity, ConstraintKind};
 
         let (mut doc, sketch) = sketch_doc();
         setup_angle_parallel_spacing_lines(&mut doc, sketch).unwrap();
@@ -1425,6 +1431,32 @@ mod tests {
             line: 1,
             end: LineEnd::Start,
         };
+        // Dimensioned but positionally free: still draggable.
+        assert!(can_drag_point(&doc, sketch, point.clone()));
+        assert!(can_drag_line(&doc, sketch, ConstraintLine::Line(1)));
+
+        // Pin its start to the origin and fix its direction: now truly rigid.
+        doc.constraints.push(crate::model::Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(point.clone()),
+                b: ConstraintEntity::Origin,
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+        doc.constraints.push(crate::model::Constraint {
+            sketch,
+            kind: ConstraintKind::Horizontal {
+                line: ConstraintLine::Line(1),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
         assert!(!can_drag_point(&doc, sketch, point));
         assert!(!can_drag_line(&doc, sketch, ConstraintLine::Line(1)));
     }

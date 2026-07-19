@@ -25,7 +25,9 @@ the angle between them. Type the value, press **Enter**.
 
 A fully dimensioned shape draws in the
 [fully-constrained color](/docs/styles#lines) and can no longer be dragged out of shape —
-that's the goal: a sketch that only changes when you change a number.
+that's the goal: a sketch that only changes when you change a number. Until it's also
+**located** (say, a corner pinned to the origin), the whole shape still drags around as
+one piece, dimensions intact.
 
 ## In 3D mode
 

@@ -651,17 +651,20 @@ pub fn sketch_conflicting_constraints(
 
 /// Remaining degrees of freedom for one sketch's constraint system.
 pub fn sketch_dof_remaining(doc: &Document, sketch: SketchId) -> Result<i32, String> {
-    let bridge = SketchBridge::from_document(doc, sketch, true)?;
+    // Analysis, not a solve: gauge holds are solve-time stabilisers, not constraints —
+    // counting their Pin equations in the Jacobian deletes real degrees of freedom
+    // (a dimensioned-but-unpinned rectangle read as fully constrained, todoer #459).
+    let bridge = SketchBridge::from_document(doc, sketch, false)?;
     Ok(dof_remaining(&bridge.system))
 }
 
-/// Whether a sketch point can still move under the current constraints (reference geometry held).
+/// Whether a sketch point can still move under the current constraints.
 pub fn sketch_point_movable(
     doc: &Document,
     sketch: SketchId,
     point: ConstraintPoint,
 ) -> Result<bool, String> {
-    let mut bridge = SketchBridge::from_document(doc, sketch, true)?;
+    let mut bridge = SketchBridge::from_document(doc, sketch, false)?;
     match bridge.point_solver_vars(doc, point) {
         Ok((u, v)) => Ok(vars_can_move_together(&bridge.system, &[u, v])),
         Err(_) => Ok(false),
@@ -678,7 +681,9 @@ pub fn sketch_line_vertex_drag_blocked(
     if find_distance_constraint(doc, DistanceTarget::LineLength(line_index)).is_none() {
         return Ok(false);
     }
-    let mut bridge = SketchBridge::from_document(doc, sketch, true)?;
+    // Drag feasibility must model drag conditions: gauge holds are a no-op during a
+    // drag (see `hold_point`), so they must not count against the endpoints' freedom.
+    let mut bridge = SketchBridge::from_document(doc, sketch, false)?;
     let start = ConstraintPoint::LineEndpoint {
         line: line_index,
         end: LineEnd::Start,
@@ -707,7 +712,7 @@ pub fn sketch_fully_constrained_lines(
     sketch: SketchId,
 ) -> Result<std::collections::HashSet<usize>, String> {
     use crate::constraints::find_distance_constraint;
-    let mut bridge = SketchBridge::from_document(doc, sketch, true)?;
+    let mut bridge = SketchBridge::from_document(doc, sketch, false)?;
     let mut out = std::collections::HashSet::new();
     for (li, line) in doc.lines.iter().enumerate() {
         if line.deleted || line.sketch != sketch {

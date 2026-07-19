@@ -17,3 +17,5 @@ When writing docs, I really *really* **REALLY** prefer brevity. Be as succinct a
 Always work directly on the `master` branch. Do not create feature branches unless I specifically tell you to — commit your work straight to `master` and push to `origin` when a task is complete.
 
 Never, ever install software on a computer. You can ask me to, but you do not do that.
+
+Interaction regression tests live in `tests/interaction/*.lua` and run in CI: they drive the app through **real pointer input** (`bearcad.ui.click_ground` / `drag_ground` feed egui's raw input) and assert on resulting geometry (`bearcad.line_endpoints`). When you change anything in the pointer/pick/drag path — hit radii, drag gating, selection semantics, solver drag feasibility — add or extend an interaction test in the same change. Scripts must pick their tool explicitly (`bearcad.ui.tool("select")`) so stray host keystrokes can't change the outcome when run on a desktop.

@@ -206,6 +206,17 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   blocks dragging (dimensioned, and the solver's DOF analysis finds no joint endpoint
   freedom), so "white = can't move" is consistent between styling and interaction. The set
   is memoized per document state (the DOF analysis builds a solver system per sketch).
+  **The analysis excludes the solver's gauge-hold `Pin` equations (#459)** — those are
+  solve-time stabilisers, not constraints; counting them once made every *dimensioned*
+  shape read as fully constrained, so dimensioned-but-unpinned geometry refused to drag.
+  A dimensioned shape drags as a whole (translation preserves its dimensions) and only
+  locks once it's also located (e.g. pinned to the origin). Invariant, enforced in
+  `dof::build_jacobian`: anything that must truly lock a variable uses `System::fixed`,
+  never a `Pin`. Guarded by unit tests and by **interaction regression tests**
+  (`tests/interaction/*.lua`, run in CI): scripted real pointer input — synthetic events
+  delivered through eframe's `raw_input_hook`, so they build genuine egui pointer state —
+  driving click-select and drags end to end, asserting on geometry via
+  `bearcad.line_endpoints`.
   Construction (dashed grey) and projected (dashed teal, #140) styling take precedence.
 - **Snapping:** while drawing or dragging sketch geometry, the cursor snaps to nearby
   vertices, line midpoints, lines, the sketch **origin**, and the sketch's two in-plane

@@ -1,13 +1,26 @@
 //! Degrees-of-freedom analysis from the constraint Jacobian.
 
 use super::system::{System, VarId};
+use super::residuals::Equation;
 
 const RANK_EPS: f64 = 1e-8;
 
 /// Build the weighted Jacobian for free variables: `m` equations × `n` free columns.
 pub fn build_jacobian(system: &System) -> (Vec<f64>, usize, usize, Vec<VarId>) {
     let free = system.free_vars();
-    let n_eq = system.equations.len();
+    // INVARIANT: `Pin` equations are gauge scaffolding — solve-time stabilisers
+    // (hold a reference still, bias which end of a dimensioned line grows), never
+    // user constraints. They must not contribute Jacobian rows: each one deletes a
+    // real degree of freedom from this analysis, which is how a dimensioned-but-
+    // unpinned rectangle came to read as "fully constrained" and refuse to drag
+    // (todoer #459). Anything that should genuinely lock a variable must use
+    // `System::fixed`, not a `Pin`.
+    let analysed: Vec<&Equation> = system
+        .equations
+        .iter()
+        .filter(|eq| !matches!(eq, Equation::Pin { .. }))
+        .collect();
+    let n_eq = analysed.len();
     let n_free = free.len();
     if n_eq == 0 || n_free == 0 {
         return (Vec::new(), n_eq, n_free, free);
@@ -22,7 +35,7 @@ pub fn build_jacobian(system: &System) -> (Vec<f64>, usize, usize, Vec<VarId>) {
     let mut jacobian = vec![0.0f64; n_eq * n_free];
     let mut row_buf: Vec<(VarId, f64)> = Vec::new();
 
-    for (row, equation) in system.equations.iter().enumerate() {
+    for (row, equation) in analysed.iter().enumerate() {
         equation.jacobian_row(system, &mut row_buf);
         for (var, deriv) in &row_buf {
             if let Some(&col) = free_index.get(&var.0) {
