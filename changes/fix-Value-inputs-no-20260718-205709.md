@@ -1,0 +1,1 @@
+Value inputs no longer jump while typing: the computed value floats in a small chip above the focused field (like the rectangle's floating dimension inputs) instead of appearing beside it in the layout
