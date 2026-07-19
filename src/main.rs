@@ -7812,8 +7812,9 @@ fn resolve_viewport_hover_highlight(
             .then_some(gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind))
         }
         Tool::ConstructionPlane if !creating_plane => {
+            // Body faces are pickable plane anchors too (#465), so they glow on hover.
             let gp = cam.ground_point(pp, viewport, vp);
-            resolve_pick_target(pp, project, gp, doc, occlusion)
+            construction::resolve_plane_pick_target(pp, project, gp, doc, cam.eye(), occlusion)
                 .map(|t| gpu_viewport::ViewportHoverHighlight::PickTarget(t.kind))
         }
         // Project tool (#140): glow the outside edge or body face a click would project.
@@ -13469,9 +13470,14 @@ impl App {
                 let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
 
                 if !was_creating && primary_pressed {
-                    if let Some(target) =
-                        resolve_pick_target(pp, &project, gp, &self.state.doc, pick_occlusion)
-                    {
+                    if let Some(target) = construction::resolve_plane_pick_target(
+                        pp,
+                        &project,
+                        gp,
+                        &self.state.doc,
+                        cam.eye(),
+                        pick_occlusion,
+                    ) {
                         let parent = parent_from_pick_target(&self.state.doc, target.kind);
                         self.state.apply(Action::BeginConstructionPlane {
                             reference: target.reference,

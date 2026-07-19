@@ -1222,6 +1222,60 @@ pub fn resolve_pick_target(
     best
 }
 
+/// Body-face pick candidate for the Plane tool (#465): the planar body face under the
+/// cursor as an offset-plane reference — origin at the face centroid, normal the face
+/// normal — so a new plane can be anchored on any face of any body.
+pub fn body_face_pick_target(
+    screen: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &Document,
+    eye: Vec3,
+    occlusion: Option<&PickOcclusion>,
+) -> Option<PickTarget> {
+    let kind = crate::face::pick_body_face(screen, project, doc, eye)
+        .filter(|kind| occlusion.is_none_or(|occ| occ.pickable(doc, kind)))?;
+    let PickTargetKind::BodyFace {
+        ref triangles,
+        normal,
+        ..
+    } = kind
+    else {
+        return None;
+    };
+    let count = (triangles.len() * 3).max(1) as f32;
+    let origin = triangles.iter().flat_map(|t| t.iter()).copied().sum::<Vec3>() / count;
+    Some(PickTarget {
+        kind,
+        reference: PlaneReference::Face {
+            origin,
+            normal,
+            label: "Face".to_string(),
+        },
+        distance_px: 0.0,
+        // Beats the construction-plane quads (2) and ground (3); loses to the sharp
+        // targets — points, edges, axes (0).
+        priority: 1,
+    })
+}
+
+/// The Plane tool's full pick (#465): a sharp target from [`resolve_pick_target`]
+/// (point, edge, axis) wins; otherwise a body face under the cursor; otherwise the
+/// construction-plane quad or ground fallback.
+pub fn resolve_plane_pick_target(
+    screen: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    ground_point: Option<Vec3>,
+    doc: &Document,
+    eye: Vec3,
+    occlusion: Option<&PickOcclusion>,
+) -> Option<PickTarget> {
+    let base = resolve_pick_target(screen, project, ground_point, doc, occlusion);
+    if base.as_ref().is_some_and(|t| t.priority == 0) {
+        return base;
+    }
+    body_face_pick_target(screen, project, doc, eye, occlusion).or(base)
+}
+
 impl PickTarget {
     fn beats(&self, other: &PickTarget) -> bool {
         if self.priority != other.priority {
@@ -2885,6 +2939,109 @@ mod tests {
         let mut sorted = loops[0].clone();
         sorted.sort_unstable();
         assert_eq!(sorted, vec![0, 1, 2, 3]);
+    }
+
+    /// #465: the Plane tool's pick prefers a body face under the cursor over the ground
+    /// fallback, but a sharp target (a body edge) still beats the face.
+    #[test]
+    fn plane_pick_prefers_body_face_over_ground_but_not_edges() {
+        // A 10x10x10 imported-mesh box, so face/edge picking works without the kernel.
+        let c = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::new(10.0, 10.0, 0.0),
+            Vec3::new(0.0, 10.0, 0.0),
+            Vec3::new(0.0, 0.0, 10.0),
+            Vec3::new(10.0, 0.0, 10.0),
+            Vec3::new(10.0, 10.0, 10.0),
+            Vec3::new(0.0, 10.0, 10.0),
+        ];
+        let quad = |a: usize, b: usize, d: usize, e: usize| {
+            vec![[c[a], c[b], c[d]], [c[a], c[d], c[e]]]
+        };
+        let mut triangles = Vec::new();
+        for face in [
+            quad(0, 1, 2, 3),
+            quad(4, 5, 6, 7),
+            quad(0, 1, 5, 4),
+            quad(1, 2, 6, 5),
+            quad(2, 3, 7, 6),
+            quad(3, 0, 4, 7),
+        ] {
+            triangles.extend(face);
+        }
+        let mut doc = Document::default();
+        doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles,
+            source_name: "box".to_string(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        // ×20 scale so the box spans 200 px — a real on-screen size, keeping the face
+        // center well clear of the edge pick radius.
+        let project = |p: Vec3| Some(egui::pos2(p.x * 20.0, p.y * 20.0));
+        let eye = Vec3::new(5.0, 5.0, 100.0);
+
+        // Center of the top face: the face wins over the ground fallback.
+        let target = resolve_plane_pick_target(
+            egui::pos2(100.0, 100.0),
+            &project,
+            Some(Vec3::new(5.0, 5.0, 0.0)),
+            &doc,
+            eye,
+            None,
+        )
+        .expect("something under the cursor");
+        match &target.kind {
+            PickTargetKind::BodyFace { .. } => match &target.reference {
+                PlaneReference::Face { origin, normal, .. } => {
+                    assert!((origin.z - 10.0).abs() < 1e-3, "top-face centroid, got {origin:?}");
+                    assert!(normal.z.abs() > 0.99, "top-face normal, got {normal:?}");
+                }
+                other => panic!("face pick should anchor a Face reference, got {other:?}"),
+            },
+            other => panic!("expected a body face, got {other:?}"),
+        }
+
+        // On a box edge: the sharp edge target still beats the face.
+        let target = resolve_plane_pick_target(
+            egui::pos2(100.0, 0.0),
+            &project,
+            Some(Vec3::new(5.0, 0.0, 0.0)),
+            &doc,
+            eye,
+            None,
+        )
+        .expect("something under the cursor");
+        assert!(
+            matches!(target.kind, PickTargetKind::BodyEdge { .. }),
+            "edge should win, got {:?}",
+            target.kind
+        );
+
+        // Far off the box: falls back to the ground plane (the quad when the cursor is
+        // over its display extent, bare ground beyond it).
+        let target = resolve_plane_pick_target(
+            egui::pos2(500.0, 500.0),
+            &project,
+            Some(Vec3::new(25.0, 25.0, 0.0)),
+            &doc,
+            eye,
+            None,
+        )
+        .expect("ground fallback");
+        assert!(
+            matches!(
+                target.kind,
+                PickTargetKind::Ground(_) | PickTargetKind::ConstructionPlane(0)
+            ),
+            "ground fallback, got {:?}",
+            target.kind
+        );
     }
 
     #[test]

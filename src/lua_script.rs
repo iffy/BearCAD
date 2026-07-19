@@ -2700,16 +2700,37 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
 
     // #116: declaratively add a new construction plane offset from an existing one — the
     // scripted equivalent of picking a face/plane in the viewport and typing an offset.
-    // `from` defaults to plane 0 (Ground); there is no scripted way yet to create one
-    // anchored on an axis (which also takes an `angle`).
+    // `from` defaults to plane 0 (Ground). Alternatively `origin = {x,y,z}` and
+    // `normal = {x,y,z}` together anchor the plane on an arbitrary face (#465), like
+    // clicking a body face with the Plane tool. There is no scripted way yet to create
+    // one anchored on an axis (which also takes an `angle`).
     api.set(
         "plane",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let offset: f32 = opts.get::<Option<f32>>("offset")?.unwrap_or(0.0);
             let from: usize = opts.get::<Option<usize>>("from")?.unwrap_or(0);
+            let origin: Option<Table> = opts.get("origin")?;
+            let normal: Option<Table> = opts.get("normal")?;
             unsafe {
-                tick.exec(Instruction::CreatePlane { offset, from })?;
+                match (origin, normal) {
+                    (Some(o), Some(n)) => {
+                        let v = |t: &Table| -> mlua::Result<glam::Vec3> {
+                            Ok(glam::Vec3::new(t.get(1)?, t.get(2)?, t.get(3)?))
+                        };
+                        tick.exec(Instruction::CreateFacePlane {
+                            offset,
+                            origin: v(&o)?,
+                            normal: v(&n)?,
+                        })?;
+                    }
+                    (None, None) => tick.exec(Instruction::CreatePlane { offset, from })?,
+                    _ => {
+                        return Err(mlua::Error::external(
+                            "plane: origin and normal must be given together",
+                        ))
+                    }
+                }
             }
             let element = SceneElement::ConstructionPlane(unsafe {
                 tick.state().doc.construction_planes.len().saturating_sub(1)
@@ -6070,6 +6091,24 @@ mod tests {
         assert_eq!(ext.target, Some(crate::model::ExtrudeTarget::Plane(1)));
         let depth = crate::extrude::effective_distance(&state.doc, ext);
         assert!((depth - 5.0).abs() < 1e-3, "depth should match the plane offset, got {depth}");
+    }
+
+    /// #465: `plane{ origin, normal }` anchors a plane on an arbitrary face, offset
+    /// along the normal — the scripted equivalent of clicking a body face.
+    #[test]
+    fn lua_plane_from_face_origin_and_normal() {
+        let state = run_lua(
+            r#"
+            bearcad.plane{ offset = 5, origin = {0, 0, 10}, normal = {0, 0, 1} }
+        "#,
+        );
+        let plane = state
+            .doc
+            .construction_planes
+            .last()
+            .expect("plane should be created");
+        assert!((plane.origin.z - 15.0).abs() < 1e-3, "origin {:?}", plane.origin);
+        assert!((plane.normal.z - 1.0).abs() < 1e-4, "normal {:?}", plane.normal);
     }
 
     /// #126: `extrude{ to = { face = { kind = "extrude_cap", ... } } }` snaps an extrusion's

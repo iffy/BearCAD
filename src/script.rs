@@ -424,6 +424,9 @@ pub enum Instruction {
     SetPlaneAngle { value: String },
     /// Declaratively add a new construction plane offset from plane `from` (#116).
     CreatePlane { offset: f32, from: usize },
+    /// #465: a plane anchored on an arbitrary face (origin + normal), offset along the
+    /// normal — the scripted equivalent of clicking a body face with the Plane tool.
+    CreateFacePlane { offset: f32, origin: Vec3, normal: Vec3 },
     FocusDim(RectAxis),
     FocusLineLength,
     FocusCircleDiameter,
@@ -1093,6 +1096,12 @@ impl Instruction {
             }
             Instruction::CreatePlane { offset, from } => {
                 format!("bearcad.plane{{ offset = {offset}, from = {from} }}")
+            }
+            Instruction::CreateFacePlane { offset, origin, normal } => {
+                format!(
+                    "bearcad.plane{{ offset = {offset}, origin = {{{}, {}, {}}}, normal = {{{}, {}, {}}} }}",
+                    origin.x, origin.y, origin.z, normal.x, normal.y, normal.z
+                )
             }
             Instruction::FocusDim(axis) => {
                 format!("bearcad.ui.focus_dim({:?})", rect_axis_lua_name(*axis))
@@ -4149,6 +4158,25 @@ impl ScriptRunner {
             }
             Instruction::CreatePlane { offset, from } => {
                 let result = state.apply(Action::AddConstructionPlane { from, offset_mm: offset });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::CreateFacePlane { offset, origin, normal } => {
+                // The same Begin → typed offset → Commit path the Plane tool takes when a
+                // face is clicked (#465).
+                let result = state.apply(Action::BeginConstructionPlane {
+                    reference: crate::construction::PlaneReference::Face {
+                        origin,
+                        normal: normal.normalize_or_zero(),
+                        label: "Face".to_string(),
+                    },
+                    parent: crate::model::ConstructionPlaneParent::Root,
+                });
+                self.record_action_error(result);
+                let _ = state.apply(Action::SetPlaneOffset {
+                    value: format!("{offset}mm"),
+                });
+                let result = state.apply(Action::CommitConstructionPlane);
                 self.record_action_error(result);
                 StepResult::Continue
             }

@@ -1,0 +1,1 @@
+The Plane tool picks body faces: hover any planar face of any body to glow it, click to anchor the new construction plane on it (offset along the face normal). Scripts can do the same with bearcad.plane{ offset, origin = {x,y,z}, normal = {x,y,z} }

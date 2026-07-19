@@ -111,6 +111,15 @@ bearcad.begin_sketch{
 }
 ```
 
+Create construction planes — offset from an existing plane, or anchored on any face
+by its origin and normal:
+
+```lua
+bearcad.plane{ offset = 12 }                                       -- 12 mm above Ground
+bearcad.plane{ offset = 5, from = 1 }                              -- offset from plane 1
+bearcad.plane{ offset = 5, origin = {0, 0, 20}, normal = {0, 0, 1} } -- on a body face
+```
+
 Re-open or leave a sketch without drawing:
 
 ```lua
