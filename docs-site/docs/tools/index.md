@@ -20,7 +20,7 @@ the [Drawing Tools](/docs/drawing-tools)).
 | <img src={useBaseUrl("/img/icons/line.svg")} width="22" /> | [Line](/docs/tools/line) | `L` | Draw connected lines and curves. |
 | <img src={useBaseUrl("/img/icons/circle.svg")} width="22" /> | [Circle](/docs/tools/circle) | `O` | Draw a circle by center and diameter. |
 | <img src={useBaseUrl("/img/icons/text.svg")} width="22" /> | [Text](/docs/tools/text) | `T` | Place editable lettering in a sketch. |
-| <img src={useBaseUrl("/img/icons/plane.svg")} width="22" /> | [Construction Plane](/docs/tools/construction-plane) | `P` | Add a flat reference plane to sketch on. |
+| <img src={useBaseUrl("/img/icons/plane.svg")} width="22" /> | [Construction Plane](/docs/tools/construction-plane) | — | Add a flat reference plane to sketch on. |
 | <img src={useBaseUrl("/img/icons/dimension.svg")} width="22" /> | [Dimension](/docs/tools/dimension) | `D` | Set exact lengths, distances, and angles. |
 | <img src={useBaseUrl("/img/icons/constraint.svg")} width="22" /> | [Constraint](/docs/tools/constraint) | `C` | Relate geometry: parallel, equal, coincident, … |
 | <img src={useBaseUrl("/img/icons/extrude.svg")} width="22" /> | [Extrude](/docs/tools/extrude) | `E` | Pull a sketch face into a solid — or cut into one. |

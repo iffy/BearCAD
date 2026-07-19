@@ -7,8 +7,6 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 
 # <img src={useBaseUrl("/img/icons/plane.svg")} width="30" /> Construction Plane
 
-**Shortcut:** `P`
-
 Construction planes are invisible flat surfaces to sketch on — for building at an offset
 from a face, or at an angle. Click a reference, position the plane, press **Enter**:
 

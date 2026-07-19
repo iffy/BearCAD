@@ -2270,17 +2270,6 @@ impl App {
                 && self.state.creating_line.is_none()
                 && self.state.creating_circle.is_none()
                 && self.state.creating_plane.is_none()
-                && ctx.input(|i| i.key_pressed(egui::Key::P))
-            {
-                if self.state.tool != Tool::ConstructionPlane {
-                    self.state.apply(Action::SetTool(Tool::ConstructionPlane));
-                }
-            }
-
-            if self.state.creating_rect.is_none()
-                && self.state.creating_line.is_none()
-                && self.state.creating_circle.is_none()
-                && self.state.creating_plane.is_none()
                 && ctx.input(|i| i.key_pressed(egui::Key::D))
             {
                 self.state.apply(Action::SetTool(Tool::Dimension));
@@ -15127,7 +15116,7 @@ impl App {
                 } else if self.state.sketch_session.is_some() {
                     "Sketch mode — drag vertices • Shift+click or ⌘/Ctrl+click multi-select • double-click a dimension to edit • Esc: exit sketch"
                 } else {
-                    "Click to select • Shift+click or ⌘/Ctrl+click multi-select • Right-drag: orbit  •  Wheel: zoom  •  s: sketch  •  p: plane"
+                    "Click to select • Shift+click or ⌘/Ctrl+click multi-select • Right-drag: orbit  •  Wheel: zoom  •  s: sketch"
                 }
             }
             Tool::Sketch => {
@@ -15290,7 +15279,7 @@ impl App {
                         "Drag arrow for offset • wheel or type to lock • Click/Enter: create plane • Esc: cancel"
                     }
                 } else {
-                    "p: plane  •  Click a face, line, shape edge, global axis, or ground • then set offset (and angle for lines)"
+                    "plane  •  Click a face, line, shape edge, global axis, or ground • then set offset (and angle for lines)"
                 }
             }
             Tool::Extrude => {

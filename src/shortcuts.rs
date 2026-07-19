@@ -78,7 +78,6 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
         Tool::Rectangle => Some(ShortcutHint::plain("R")),
         Tool::Line => Some(ShortcutHint::plain("L")),
         Tool::Circle => Some(ShortcutHint::plain("O")),
-        Tool::ConstructionPlane => Some(ShortcutHint::plain("P")),
         Tool::Dimension => Some(ShortcutHint::plain("D")),
         Tool::Constraint => Some(ShortcutHint::plain("C")),
         Tool::Extrude => Some(ShortcutHint::plain("E")),
@@ -88,8 +87,10 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
         // T also means the Tangent constraint in tangent contexts (#311); the plain-T binding
         // selects the Text tool everywhere else.
         Tool::Text => Some(ShortcutHint::plain("T")),
-        // No plain-letter shortcut yet; toolbar/palette only.
-        Tool::Offset
+        // No plain-letter shortcut; toolbar/palette only. (Plane creation isn't
+        // common enough to spend a letter on, #462.)
+        Tool::ConstructionPlane
+        | Tool::Offset
         | Tool::Loft
         | Tool::Project
         | Tool::Revolve
@@ -338,7 +339,6 @@ mod shortcut_list_tests {
             Tool::Rectangle,
             Tool::Line,
             Tool::Circle,
-            Tool::ConstructionPlane,
             Tool::Dimension,
             Tool::Constraint,
             Tool::Extrude,
