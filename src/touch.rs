@@ -53,6 +53,20 @@ pub fn zoom_factor_to_scroll(factor: f32) -> f32 {
     (1.0 - 1.0 / factor.max(1e-3)) * 1000.0
 }
 
+static VALUE_FIELD_FOCUSED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the currently focused text widget is a *value* field (expression/dimension
+/// input). Set during rendering by the value widgets, cleared each frame; drives which
+/// keyboard a touch device gets — the app's keypad for values, the OS keyboard for
+/// free text like names.
+pub fn set_value_field_focused(on: bool) {
+    VALUE_FIELD_FOCUSED.store(on, Ordering::Relaxed);
+}
+
+pub fn value_field_focused() -> bool {
+    VALUE_FIELD_FOCUSED.load(Ordering::Relaxed)
+}
+
 /// Long-press duration before a touch press counts as a right-click.
 pub const LONG_PRESS_SECS: f64 = 0.6;
 /// How far the finger may wander (px) and still count as a long press, not a drag.

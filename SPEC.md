@@ -2412,7 +2412,13 @@ document is millimeters, so the player is person-scale: eye height
   user's next tap after finishing a shape is almost always a pick, **committing a
   rectangle or circle in touch mode returns to the Select tool** (desktop keeps the
   drawing tool armed; the Line tool keeps chaining on touch too).
-- **On-screen keypad**: in touch mode, focusing any text field floats a keypad above
+- **One keyboard at a time (web)**: value fields (expression/dimension inputs) mark
+  their focus (`touch::set_value_field_focused`, cleared per frame); on touch web
+  builds the app stamps `inputmode="none"` onto eframe's hidden text agent while a
+  value field is focused (re-focusing it so iOS re-evaluates), so the OS keyboard
+  stays down where the app keypad serves — and free-text fields (names, notes,
+  search) get the OS keyboard with the keypad standing down.
+- **On-screen keypad**: in touch mode, focusing a **value** field floats a keypad above
   the status bar — digits, `.`, `=`, `+ - * /`, unit keys (mm/in/deg/ft), **parameter
   chips** (first five names), Back, Enter, Hide. Keys type by queueing **synthetic
   input events** flushed at the next frame start with focus handed back to the field

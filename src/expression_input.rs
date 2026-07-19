@@ -526,6 +526,8 @@ pub fn show_length_expression_text_edit(
         .inner;
 
     if output.response.has_focus() {
+        // Touch devices: a focused value field gets the app keypad, not the OS keyboard.
+        crate::touch::set_value_field_focused(true);
         let cursor = cursor_char_index(Some(&output.state), text);
         if expression_autocomplete_show_dropdown(
             ui,

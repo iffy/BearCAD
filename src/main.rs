@@ -639,6 +639,12 @@ struct App {
     /// The tutorial orb's animated screen position: it glides between anchors so the
     /// eye can follow it.
     tutorial_orb_pos: Option<egui::Pos2>,
+    /// Last frame's "focused text widget is a value field" — gates the touch keypad
+    /// and mobile OS-keyboard suppression.
+    keypad_serves_focus: bool,
+    /// The last `inputmode` applied to eframe's hidden text agent (web).
+    #[cfg(target_arch = "wasm32")]
+    agent_inputmode_none: Option<bool>,
     gpu_viewport: bool,
     gpu_view_cube: bool,
     /// Persistent physics state for the Elements pane's force-directed Graph view (#94).
@@ -812,6 +818,33 @@ impl App {
         self.state.advance_tutorial();
     }
 
+    /// Suppress the mobile OS keyboard while a value field is focused (the app keypad
+    /// serves those): stamp `inputmode` on eframe's hidden text agent — the page's only
+    /// `<input>` — and re-focus it so iOS re-evaluates the mode.
+    #[cfg(target_arch = "wasm32")]
+    fn sync_mobile_keyboard(&mut self, value_field_focus: bool) {
+        use wasm_bindgen::JsCast;
+        if self.agent_inputmode_none == Some(value_field_focus) {
+            return;
+        }
+        self.agent_inputmode_none = Some(value_field_focus);
+        let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+            return;
+        };
+        let Ok(Some(agent)) = document.query_selector("input[autocapitalize]") else {
+            return;
+        };
+        let _ = agent.set_attribute("inputmode", if value_field_focus { "none" } else { "text" });
+        // iOS decides the keyboard at focus time; if the agent is already focused,
+        // cycle it so the new mode takes effect.
+        if let Some(el) = agent.dyn_ref::<web_sys::HtmlElement>() {
+            if document.active_element().as_ref() == Some(&agent) {
+                let _ = el.blur();
+                let _ = el.focus();
+            }
+        }
+    }
+
     /// Touch extras, run at frame start: flush keypad-synthesised input into the
     /// focused field, track which field the keypad serves, and turn a held-still
     /// touch press into a synthetic right-click (context menus have no right button).
@@ -829,7 +862,10 @@ impl App {
             ctx.input_mut(|i| i.events.extend(events));
         }
         if ctx.wants_keyboard_input() {
-            if let Some(id) = ctx.memory(|m| m.focused()) {
+            if !self.keypad_serves_focus {
+                // A free-text field (name, note, search): the OS keyboard's job.
+                self.keypad_target = None;
+            } else if let Some(id) = ctx.memory(|m| m.focused()) {
                 self.keypad_target = Some(id);
                 self.keypad_focus_gone_frames = 0;
             }
@@ -1308,6 +1344,9 @@ impl App {
             keypad_focus_gone_frames: 0,
             long_press_fired: false,
             tutorial_orb_pos: None,
+            keypad_serves_focus: false,
+            #[cfg(target_arch = "wasm32")]
+            agent_inputmode_none: None,
             gpu_viewport: gpu_viewport::install(cc),
             gpu_view_cube: gpu_view_cube::install(cc),
             graph_layout: hierarchy::GraphLayout::default(),
@@ -5041,6 +5080,13 @@ impl eframe::App for App {
         // Tutorial anchors are re-recorded as this frame's UI renders.
         self.state.tutorial_anchor_rects.clear();
         touch::detect(ctx);
+        // Which keyboard should a touch device get? A focused *value* field takes the
+        // app keypad (OS keyboard suppressed); anything else keeps the OS keyboard.
+        let value_field_focus = touch::value_field_focused() && touch::active();
+        touch::set_value_field_focused(false);
+        self.keypad_serves_focus = value_field_focus;
+        #[cfg(target_arch = "wasm32")]
+        self.sync_mobile_keyboard(value_field_focus);
         // The first time the compact (phone) layout engages, start with the panes
         // closed — three floating windows over a 390-px viewport is all window.
         if touch::compact(ctx) && !self.compact_layout_initialized {
@@ -8488,6 +8534,7 @@ fn show_sketch_dimension_field(
 ) -> SketchDimFieldResult {
     let has_focus = ctx.memory(|m| m.focused()) == Some(id);
     if has_focus {
+        touch::set_value_field_focused(true);
         expression_autocomplete_handle_keys(ui, ctx, id, text, doc, &[]);
     }
     let field_errors = if angle {
