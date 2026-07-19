@@ -3897,11 +3897,12 @@ mod tests {
 
     /// The bracket tutorial rides along the whole quickstart build: every predicate
     /// step auto-advances as the scripted part comes together, and the manual
-    /// bookend steps advance with tutorial_next.
+    /// bookend steps advance with tutorial_next. The lean (no-kernel) build can't
+    /// carve the screw holes, so its cap rims can't be chamfered — there the script
+    /// stops after the hole-cut step and ends the tutorial instead.
     #[test]
     fn bracket_tutorial_advances_through_the_quickstart_build() {
-        let state = run_lua(
-            r#"
+        let prefix = r#"
             bearcad.ui.tutorial("bracket")
             assert(bearcad.ui.tutorial_step() == 0, "starts on the welcome step")
             bearcad.ui.tutorial_next()
@@ -3978,7 +3979,8 @@ mod tests {
             bearcad.exit_sketch()
             bearcad.extrude{ circles = {0, 1}, distance = -6, body = "cut" }
             assert(bearcad.ui.tutorial_step() == 11, "holes cut -> countersink step")
-
+"#;
+        let full_tail = r#"
             for face = 0, 1 do
               bearcad.chamfer_edge{ extrusion = 1,
                 edge = { kind = "cap", face = face, edge = 0, top = false }, distance = 1.2 }
@@ -4003,10 +4005,23 @@ mod tests {
 
             bearcad.ui.tutorial_next()
             assert(bearcad.ui.tutorial_step() == nil, "finished")
-            "#,
-        );
+            "#;
+        let lean_tail = r#"
+            bearcad.ui.tutorial_end()
+            assert(bearcad.ui.tutorial_step() == nil, "ended")
+            "#;
+        let source = if cfg!(feature = "occt") {
+            format!("{prefix}{full_tail}")
+        } else {
+            format!("{prefix}{lean_tail}")
+        };
+        let state = run_lua(&source);
         assert!(state.tutorial.is_none());
-        assert!(state.status.contains("Tutorial complete"));
+        if cfg!(feature = "occt") {
+            assert!(state.status.contains("Tutorial complete"));
+        } else {
+            assert!(state.status.contains("Tutorial ended"));
+        }
     }
 
     /// An in-sketch offset op parallels a closed rectangle outward, nests the copies
