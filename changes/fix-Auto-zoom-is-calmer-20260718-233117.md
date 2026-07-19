@@ -1,0 +1,1 @@
+Auto-zoom is calmer: zooms out only when the live shape actually grows off-screen, zooms in only when it shrinks and its size is deliberate (typed dimension or extrusion) — dragging a fresh small rectangle no longer yanks the camera in

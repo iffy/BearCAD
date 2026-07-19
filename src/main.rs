@@ -644,6 +644,9 @@ struct App {
     keypad_serves_focus: bool,
     /// One-shot: the input-debug harness focus request was sent.
     debug_focus_requested: bool,
+    /// Last frame's live-bounds diagonal, so auto-zoom only reacts to actual growth
+    /// or shrinkage (#463) rather than to a shape merely being small.
+    auto_zoom_last_extent: Option<f32>,
     /// The last `inputmode` applied to eframe's hidden text agent (web).
     #[cfg(target_arch = "wasm32")]
     agent_inputmode_none: Option<bool>,
@@ -718,8 +721,26 @@ impl App {
             return;
         }
         let Some(viewport) = self.last_viewport else { return };
-        let Some((min, max)) = self.auto_zoom_live_bounds() else { return };
-        if auto_zoom_should_frame(&self.state.cam, viewport, min, max) {
+        let Some((min, max)) = self.auto_zoom_live_bounds() else {
+            self.auto_zoom_last_extent = None;
+            return;
+        };
+        let extent = (max - min).length();
+        let (grew, shrank) = match self.auto_zoom_last_extent {
+            Some(prev) => (extent > prev * 1.02 + 1e-3, extent < prev * 0.98 - 1e-3),
+            None => (false, false),
+        };
+        self.auto_zoom_last_extent = Some(extent);
+        // A shape is "deliberately sized" once a dimension was typed for it, or when
+        // an extrusion is being set — mid-drag mouse sizing never zooms in (#463).
+        let deliberately_sized = self.state.creating_extrusion.is_some()
+            || self
+                .state
+                .creating_rect
+                .as_ref()
+                .is_some_and(|cr| cr.user_edited.iter().any(|e| *e));
+        let (offscreen, too_small) = auto_zoom_screen_state(&self.state.cam, viewport, min, max);
+        if auto_zoom_should_frame(offscreen, too_small, grew, shrank, deliberately_sized) {
             let aspect = (viewport.width() / viewport.height().max(1.0)).max(0.1);
             self.state
                 .cam
@@ -1349,6 +1370,7 @@ impl App {
             tutorial_orb_pos: None,
             keypad_serves_focus: false,
             debug_focus_requested: false,
+            auto_zoom_last_extent: None,
             #[cfg(target_arch = "wasm32")]
             agent_inputmode_none: None,
             gpu_viewport: gpu_viewport::install(cc),
@@ -7659,12 +7681,27 @@ fn viewport_pointer_pos(
 /// Whether auto-zoom should re-frame (#438): the bounds poke outside the viewport (any
 /// corner off-screen or behind the camera), or they occupy less than a third of it (the
 /// extrusion was dragged back down). Pure so it's unit-testable.
+/// Whether auto-zoom should re-frame (#438, tempered by #463): zoom **out** only when
+/// the live geometry has actually *grown* out of the view, and zoom **in** only when it
+/// has actually *shrunk* well inside — and only once its size is deliberate (a typed
+/// dimension or an extrusion), never mid-drag of a fresh shape.
 fn auto_zoom_should_frame(
+    offscreen: bool,
+    too_small: bool,
+    grew: bool,
+    shrank: bool,
+    deliberately_sized: bool,
+) -> bool {
+    (offscreen && grew) || (too_small && shrank && deliberately_sized)
+}
+
+/// How the live bounds sit in the current view: (pokes off-screen, occupies < ⅓ of it).
+fn auto_zoom_screen_state(
     cam: &camera::Camera,
     viewport: egui::Rect,
     min: Vec3,
     max: Vec3,
-) -> bool {
+) -> (bool, bool) {
     let vp = cam.view_proj(viewport);
     let corners = [
         Vec3::new(min.x, min.y, min.z),
@@ -7693,7 +7730,7 @@ fn auto_zoom_should_frame(
     }
     let extent = (screen_max - screen_min).max_elem();
     let too_small = extent > 0.0 && extent < viewport.width().min(viewport.height()) * 0.33;
-    any_offscreen || too_small
+    (any_offscreen, too_small)
 }
 
 fn suppress_viewport_pick_hover(
@@ -15952,34 +15989,41 @@ fn draw_ground(
 mod tests {
     use super::*;
 
-    /// #438: auto-zoom triggers when live bounds outgrow the view or shrink well
-    /// inside it, and stays quiet when they fit comfortably.
+    /// #438: the screen-state probe sees overflow and underfill; comfortable fits
+    /// report neither.
     #[test]
-    fn auto_zoom_triggers_on_overflow_and_underfill() {
+    fn auto_zoom_screen_state_reports_overflow_and_underfill() {
         let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0));
         let mut cam = camera::Camera::default();
         cam.frame_bounds_instant(Vec3::splat(-50.0), Vec3::splat(50.0), 1000.0 / 800.0);
-        // Fits comfortably: no trigger.
-        assert!(!auto_zoom_should_frame(
-            &cam,
-            viewport,
-            Vec3::splat(-50.0),
-            Vec3::splat(50.0)
-        ));
-        // Grew 20x: pokes off-screen, trigger.
-        assert!(auto_zoom_should_frame(
-            &cam,
-            viewport,
-            Vec3::splat(-1000.0),
-            Vec3::splat(1000.0)
-        ));
-        // Shrunk to a sliver of the view: trigger to zoom back in.
-        assert!(auto_zoom_should_frame(
-            &cam,
-            viewport,
-            Vec3::splat(-2.0),
-            Vec3::splat(2.0)
-        ));
+        assert_eq!(
+            auto_zoom_screen_state(&cam, viewport, Vec3::splat(-50.0), Vec3::splat(50.0)),
+            (false, false),
+            "comfortable fit"
+        );
+        let (offscreen, _) =
+            auto_zoom_screen_state(&cam, viewport, Vec3::splat(-1000.0), Vec3::splat(1000.0));
+        assert!(offscreen, "20x growth pokes off-screen");
+        let (_, too_small) =
+            auto_zoom_screen_state(&cam, viewport, Vec3::splat(-2.0), Vec3::splat(2.0));
+        assert!(too_small, "a sliver underfills the view");
+    }
+
+    /// #463: auto-zoom only zooms out on actual growth, only zooms in on actual
+    /// shrinkage — and zooming in additionally needs a deliberate size (typed
+    /// dimension / extrusion), so mid-drag rectangle sizing never yanks the camera.
+    #[test]
+    fn auto_zoom_decision_is_direction_and_intent_gated() {
+        // Off-screen but not grown (e.g. the user orbited): stay put.
+        assert!(!auto_zoom_should_frame(true, false, false, false, true));
+        // Grew off-screen: zoom out, typed or not.
+        assert!(auto_zoom_should_frame(true, false, true, false, false));
+        // Small but not shrinking (drag just started): stay put.
+        assert!(!auto_zoom_should_frame(false, true, false, false, true));
+        // Shrinking mid-drag with no typed size: stay put.
+        assert!(!auto_zoom_should_frame(false, true, false, true, false));
+        // Shrunk deliberately (typed a small dimension): zoom in.
+        assert!(auto_zoom_should_frame(false, true, false, true, true));
     }
 
     use super::actions::CreatingRect;
