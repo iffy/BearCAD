@@ -642,6 +642,8 @@ struct App {
     /// Last frame's "focused text widget is a value field" — gates the touch keypad
     /// and mobile OS-keyboard suppression.
     keypad_serves_focus: bool,
+    /// One-shot: the input-debug harness focus request was sent.
+    debug_focus_requested: bool,
     /// The last `inputmode` applied to eframe's hidden text agent (web).
     #[cfg(target_arch = "wasm32")]
     agent_inputmode_none: Option<bool>,
@@ -1345,6 +1347,7 @@ impl App {
             long_press_fired: false,
             tutorial_orb_pos: None,
             keypad_serves_focus: false,
+            debug_focus_requested: false,
             #[cfg(target_arch = "wasm32")]
             agent_inputmode_none: None,
             gpu_viewport: gpu_viewport::install(cc),
@@ -5076,10 +5079,24 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // Scripted input (bearcad.ui.click/drag/key…) feeds egui as raw events, one
+        // queued batch per frame — indistinguishable from OS input to every handler.
+        if let Some(batch) = self.synthetic.take_raw_frame() {
+            raw_input.events.extend(batch);
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // Tutorial anchors are re-recorded as this frame's UI renders.
         self.state.tutorial_anchor_rects.clear();
         touch::detect(ctx);
+        // Input-debug harness: keep this window frontmost so synthetic system mouse
+        // events land here and nowhere else.
+        if std::env::var("BEARCAD_DEBUG_INPUT").is_ok() && !self.debug_focus_requested {
+            self.debug_focus_requested = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
         // Which keyboard should a touch device get? A focused *value* field takes the
         // app keypad (OS keyboard suppressed); anything else keeps the OS keyboard.
         let value_field_focus = touch::value_field_focused() && touch::active();
@@ -5114,7 +5131,8 @@ impl eframe::App for App {
         self.tick_touch_extras(ctx);
         self.show_touch_keypad(ctx);
         self.tick_exit_after_startup(ctx);
-        self.synthetic.inject(ctx);
+        // Synthetic script input now arrives through `raw_input_hook` (below), so it
+        // builds real egui pointer state instead of being appended mid-frame (#302).
 
         self.tick_fps_mode(ctx, dt);
         self.handle_keyboard_shortcuts(ctx);
@@ -16840,6 +16858,55 @@ mod tests {
         let (a, b) = rect_highlight_edge(corners, RectDimEdge::Height);
         assert_eq!(a, Vec3::new(1.0, 2.0, 0.0));
         assert_eq!(b, Vec3::new(1.0, 8.0, 0.0));
+    }
+
+    #[test]
+    fn committed_dim_label_rects_stay_label_sized() {
+        // #459 diagnosis: a huge label rect would make `over_committed_dim_label`
+        // true across the viewport and freeze every sketch drag.
+        let mut state = crate::actions::AppState::default();
+        let sketch = state.doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        state.doc.lines.push(crate::model::Line::from_local_endpoints(
+            sketch, -30.0, -20.0, 30.0, 20.0,
+        ));
+        state.doc.shape_order.push(crate::model::ShapeKind::Line);
+        crate::constraints::add_distance_constraint(
+            &mut state.doc,
+            sketch,
+            crate::model::DistanceTarget::LineLength(0),
+            "60mm".to_string(),
+        )
+        .unwrap();
+        assert!(!state.doc.constraints.is_empty(), "dimension exists");
+
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0));
+        let cam = state.cam.clone();
+        let vp = cam.view_proj(viewport);
+        let project = |w: Vec3| cam.project(w, viewport, &vp);
+        let frame = sketch_geometry_frame(&state.doc, sketch).unwrap();
+        let view = PlanarLabelView::from_camera_and_plane(&cam, frame.normal);
+        let painter = egui::Painter::new(
+            ctx.clone(),
+            egui::LayerId::background(),
+            viewport,
+        );
+        let layouts = build_committed_dim_layouts(
+            &painter,
+            &project,
+            &view,
+            &state.doc,
+            crate::actions::SketchSession { sketch },
+        );
+        assert!(!layouts.is_empty(), "the dimension produced a layout");
+        for layout in &layouts {
+            let r = layout.label_rect;
+            assert!(
+                r.width() < 200.0 && r.height() < 100.0,
+                "label rect should be label-sized, got {r:?}"
+            );
+        }
     }
 
     #[test]

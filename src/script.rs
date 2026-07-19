@@ -492,6 +492,8 @@ pub enum Instruction {
     /// Move/click at ground-plane world coordinates (millimetres, z = 0).
     MoveGround { x: f32, y: f32 },
     ClickGround { x: f32, y: f32 },
+    /// Primary-drag between two ground-plane points (world mm), like [`Self::Drag`].
+    DragGround { x0: f32, y0: f32, x1: f32, y1: f32 },
     Drag {
         x0: f32,
         y0: f32,
@@ -1228,6 +1230,9 @@ impl Instruction {
             Instruction::Click { x, y } => format!("bearcad.ui.click({x}, {y})"),
             Instruction::MoveGround { x, y } => format!("bearcad.ui.move_ground({x}, {y})"),
             Instruction::ClickGround { x, y } => format!("bearcad.ui.click_ground({x}, {y})"),
+            Instruction::DragGround { x0, y0, x1, y1 } => {
+                format!("bearcad.ui.drag_ground({x0}, {y0}, {x1}, {y1})")
+            }
             Instruction::Drag { x0, y0, x1, y1 } => {
                 format!("bearcad.ui.drag({x0}, {y0}, {x1}, {y1})")
             }
@@ -2537,20 +2542,28 @@ fn distance_target_lua_ref(target: &DistanceTarget) -> String {
 /// Queued synthetic pointer/keyboard events injected into egui each frame.
 #[derive(Default)]
 pub struct SyntheticInput {
-    events: Vec<egui::Event>,
+    /// Event batches, one per frame, delivered through eframe's `raw_input_hook` —
+    /// so synthetic pointer input builds *real* egui pointer state (presses, drags,
+    /// hover) exactly like OS events, and spreads across frames the way tool
+    /// handlers expect (press one frame, move the next, release after).
+    frames: std::collections::VecDeque<Vec<egui::Event>>,
     pointer_pos: Option<egui::Pos2>,
     /// When set, secondary-button drag deltas are applied via events.
     pending_right_drag: Option<(egui::Vec2, Modifiers)>,
 }
 
 impl SyntheticInput {
-    pub fn inject(&mut self, ctx: &egui::Context) {
-        if self.events.is_empty() && self.pending_right_drag.is_none() {
-            return;
-        }
-        ctx.input_mut(|input| {
-            input.events.append(&mut self.events);
-        });
+    /// The next frame's synthetic events, consumed by `raw_input_hook`.
+    pub fn take_raw_frame(&mut self) -> Option<Vec<egui::Event>> {
+        self.frames.pop_front()
+    }
+
+    fn push_batch(&mut self, events: Vec<egui::Event>) {
+        self.frames.push_back(events);
+    }
+
+    fn push_event(&mut self, event: egui::Event) {
+        self.frames.push_back(vec![event]);
     }
 
     /// Apply secondary-button drag after egui has processed pointer state.
@@ -2568,20 +2581,22 @@ impl SyntheticInput {
     pub fn move_to(&mut self, viewport: egui::Rect, x: f32, y: f32) {
         let pos = Self::viewport_pos(viewport, x, y);
         self.pointer_pos = Some(pos);
-        self.events.push(egui::Event::PointerMoved(pos));
+        self.push_event(egui::Event::PointerMoved(pos));
     }
 
     pub fn click(&mut self, viewport: egui::Rect, x: f32, y: f32) {
         let pos = Self::viewport_pos(viewport, x, y);
         self.pointer_pos = Some(pos);
-        self.events.push(egui::Event::PointerMoved(pos));
-        self.events.push(egui::Event::PointerButton {
+        // Hover one frame, press the next, release the one after — the exact shape
+        // tool handlers (press-frame logic, select-then-drag) are written against.
+        self.push_event(egui::Event::PointerMoved(pos));
+        self.push_event(egui::Event::PointerButton {
             pos,
             button: PointerButton::Primary,
             pressed: true,
             modifiers: Modifiers::NONE,
         });
-        self.events.push(egui::Event::PointerButton {
+        self.push_event(egui::Event::PointerButton {
             pos,
             button: PointerButton::Primary,
             pressed: false,
@@ -2593,15 +2608,19 @@ impl SyntheticInput {
         let p0 = Self::viewport_pos(viewport, x0, y0);
         let p1 = Self::viewport_pos(viewport, x1, y1);
         self.pointer_pos = Some(p1);
-        self.events.push(egui::Event::PointerMoved(p0));
-        self.events.push(egui::Event::PointerButton {
+        self.push_event(egui::Event::PointerMoved(p0));
+        self.push_event(egui::Event::PointerButton {
             pos: p0,
             button: PointerButton::Primary,
             pressed: true,
             modifiers: Modifiers::NONE,
         });
-        self.events.push(egui::Event::PointerMoved(p1));
-        self.events.push(egui::Event::PointerButton {
+        // Several interpolated moves: drag handlers integrate per-frame deltas.
+        for step in 1..=4 {
+            let t = step as f32 / 4.0;
+            self.push_event(egui::Event::PointerMoved(p0 + (p1 - p0) * t));
+        }
+        self.push_event(egui::Event::PointerButton {
             pos: p1,
             button: PointerButton::Primary,
             pressed: false,
@@ -2613,20 +2632,23 @@ impl SyntheticInput {
         let pos = self
             .pointer_pos
             .unwrap_or_else(|| viewport.center());
-        self.events.push(egui::Event::PointerMoved(pos));
-        self.events.push(egui::Event::PointerButton {
-            pos,
-            button: PointerButton::Secondary,
-            pressed: true,
-            modifiers: if shift { Modifiers::SHIFT } else { Modifiers::NONE },
-        });
-        self.pending_right_drag = Some((egui::vec2(dx, dy), if shift { Modifiers::SHIFT } else { Modifiers::NONE }));
-        self.events.push(egui::Event::PointerButton {
-            pos: pos + egui::vec2(dx, dy),
-            button: PointerButton::Secondary,
-            pressed: false,
-            modifiers: if shift { Modifiers::SHIFT } else { Modifiers::NONE },
-        });
+        let modifiers = if shift { Modifiers::SHIFT } else { Modifiers::NONE };
+        self.pending_right_drag = Some((egui::vec2(dx, dy), modifiers));
+        self.push_batch(vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: PointerButton::Secondary,
+                pressed: true,
+                modifiers,
+            },
+            egui::Event::PointerButton {
+                pos: pos + egui::vec2(dx, dy),
+                button: PointerButton::Secondary,
+                pressed: false,
+                modifiers,
+            },
+        ]);
     }
 
     pub fn key(&mut self, key: Key) {
@@ -2643,7 +2665,7 @@ impl SyntheticInput {
     }
 
     fn push_key(&mut self, key: Key, pressed: bool) {
-        self.events.push(egui::Event::Key {
+        self.push_event(egui::Event::Key {
             key,
             physical_key: None,
             pressed,
@@ -2653,7 +2675,7 @@ impl SyntheticInput {
     }
 
     pub fn type_text(&mut self, text: &str) {
-        self.events.push(egui::Event::Text(text.to_string()));
+        self.push_event(egui::Event::Text(text.to_string()));
     }
 }
 
@@ -4424,6 +4446,20 @@ impl ScriptRunner {
                     return StepResult::Wait;
                 }
                 Self::ground_pointer(synthetic, state, viewport, x, y, true);
+                StepResult::Continue
+            }
+            Instruction::DragGround { x0, y0, x1, y1 } => {
+                let Some(vp) = viewport else {
+                    return StepResult::Wait;
+                };
+                let mat = state.cam.view_proj(vp);
+                let (Some(a), Some(b)) = (
+                    state.cam.project(Vec3::new(x0, y0, 0.0), vp, &mat),
+                    state.cam.project(Vec3::new(x1, y1, 0.0), vp, &mat),
+                ) else {
+                    return StepResult::Continue;
+                };
+                synthetic.drag(vp, a.x - vp.min.x, a.y - vp.min.y, b.x - vp.min.x, b.y - vp.min.y);
                 StepResult::Continue
             }
             Instruction::Drag { x0, y0, x1, y1 } => {

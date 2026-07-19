@@ -2383,6 +2383,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     api.set(
+        "drag_ground",
+        lua.create_function(|lua, (x0, y0, x1, y1): (f32, f32, f32, f32)| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            unsafe { tick.exec(Instruction::DragGround { x0, y0, x1, y1 }) }
+        })?,
+    )?;
+    api.set(
         "click_ground",
         lua.create_function(|lua, (x, y): (f32, f32)| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
@@ -3776,7 +3783,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             "camera", "zoom_fit", "elements_view", "auto_zoom",
             "tutorial", "tutorial_next", "tutorial_end", "tutorial_step", "touch",
             "move", "click", "move_ground", "click_ground",
-            "drag", "right_drag", "right_drag_pan",
+            "drag", "drag_ground", "right_drag", "right_drag_pan",
             "key", "keydown", "keyup", "type",
             "_view", "_view_home", "_wait", "_wait_ms", "_screenshot",
         }
