@@ -9890,16 +9890,6 @@ fn handle_vertex_drag(
     let primary_down = ui.input(|i| i.pointer.primary_down());
     let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
     let primary_released = ui.input(|i| i.pointer.primary_released());
-    if std::env::var("BEARCAD_DEBUG_INPUT").is_ok() && primary_pressed {
-        eprintln!(
-            "DBGINPUT vertex_drag press pp={:?} near={:?}",
-            pointer_screen,
-            pointer_screen.and_then(|pp| nearest_sketch_point_in_sketch(
-                pp, project, &state.doc, session.sketch
-            )
-            .map(|(p, d)| (p, d)))
-        );
-    }
 
     if let Some(active) = drag.as_ref() {
         if primary_released {
