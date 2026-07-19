@@ -186,7 +186,7 @@ impl NativeMenu {
                     Some("About BearCAD"),
                     Some(AboutMetadata {
                         name: Some("BearCAD".to_string()),
-                        version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                        version: Some(crate::full_version()),
                         copyright: Some("On-device parametric CAD (prototype)".to_string()),
                         ..Default::default()
                     }),

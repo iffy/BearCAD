@@ -174,11 +174,21 @@ fn initial_launch_maximize_frames() -> u8 {
 }
 
 /// Testing override: `BEARCAD_WINDOW=390x760` opens a fixed-size window (e.g.
-/// phone-sized, to exercise the compact touch layout) instead of maximizing.
+/// phone-sized, to exercise the compact touch layout) instead of maximizing;
+/// `BEARCAD_WINDOW=900x700@100,100` also pins its position, so external input
+/// harnesses know where it is.
 fn window_size_override() -> Option<[f32; 2]> {
     let spec = std::env::var("BEARCAD_WINDOW").ok()?;
-    let (w, h) = spec.split_once(['x', 'X'])?;
+    let size = spec.split_once('@').map(|(s, _)| s).unwrap_or(&spec);
+    let (w, h) = size.split_once(['x', 'X'])?;
     Some([w.trim().parse().ok()?, h.trim().parse().ok()?])
+}
+
+fn window_pos_override() -> Option<[f32; 2]> {
+    let spec = std::env::var("BEARCAD_WINDOW").ok()?;
+    let (_, pos) = spec.split_once('@')?;
+    let (x, y) = pos.split_once(',')?;
+    Some([x.trim().parse().ok()?, y.trim().parse().ok()?])
 }
 
 fn tick_launch_maximize(frames_remaining: &mut u8, ctx: &egui::Context) {
@@ -197,6 +207,9 @@ fn native_options() -> eframe::NativeOptions {
         .with_inner_size(window_size_override().unwrap_or([960.0, 640.0]))
         .with_title("BearCAD")
         .with_icon(app_icon::load_for_viewport());
+    if let Some([x, y]) = window_pos_override() {
+        viewport = viewport.with_position([x, y]);
+    }
     if window_size_override().is_none() && !uses_deferred_launch_maximize() {
         viewport = viewport.with_maximized(true);
     }
@@ -1871,7 +1884,8 @@ impl App {
             MenuCommand::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             MenuCommand::About => {
                 self.state.status = format!(
-                    "BearCAD — on-device parametric CAD (prototype) • {}",
+                    "BearCAD {} — on-device parametric CAD (prototype) • {}",
+                    full_version(),
                     kernel::selftest()
                 );
             }
@@ -7429,6 +7443,23 @@ fn show_pane_shell(
     }
 }
 
+/// The build's full identity (About, web and native alike): the release tag when this
+/// binary was built from an exactly-tagged checkout (`v0.1.0-build.N`), otherwise the
+/// crate version plus the git commit it was built from.
+pub fn full_version() -> String {
+    let describe = env!("BEARCAD_GIT_DESCRIBE");
+    if describe.starts_with('v') && !describe.contains("-g") {
+        describe.to_string()
+    } else {
+        let sha = env!("BEARCAD_GIT_SHA");
+        if sha.is_empty() {
+            format!("v{}", env!("CARGO_PKG_VERSION"))
+        } else {
+            format!("v{} ({sha})", env!("CARGO_PKG_VERSION"))
+        }
+    }
+}
+
 fn build_gpu_dimension_labels(
     ctx: &egui::Context,
     layouts: &[CommittedDimLayout],
@@ -9859,6 +9890,16 @@ fn handle_vertex_drag(
     let primary_down = ui.input(|i| i.pointer.primary_down());
     let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
     let primary_released = ui.input(|i| i.pointer.primary_released());
+    if std::env::var("BEARCAD_DEBUG_INPUT").is_ok() && primary_pressed {
+        eprintln!(
+            "DBGINPUT vertex_drag press pp={:?} near={:?}",
+            pointer_screen,
+            pointer_screen.and_then(|pp| nearest_sketch_point_in_sketch(
+                pp, project, &state.doc, session.sketch
+            )
+            .map(|(p, d)| (p, d)))
+        );
+    }
 
     if let Some(active) = drag.as_ref() {
         if primary_released {

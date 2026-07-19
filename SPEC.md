@@ -2463,6 +2463,12 @@ document is millimeters, so the player is person-scale: eye height
   `bearcad.ui.tutorial_end()`, `bearcad.ui.tutorial_step()` (current step index or nil).
 
 ### 11.x Auto-update (#427)
+- **Build identity (#460):** `build.rs` bakes `git describe --tags` and the short SHA
+  into the binary. `full_version()` reports the release tag verbatim when built from an
+  exactly-tagged checkout (`v0.1.0-build.N`), else `v0.1.0 (<sha>)`; the About dialog
+  (native menu metadata and the in-app Help → About status line, web included) shows it.
+  The update check compares the latest release tag against the baked describe — so a
+  release build knows its own build number and never offers itself as an update.
 
 Native builds check GitHub's latest release once at startup in a background thread
 (`updater::spawn_check`, system `curl` against the releases API — no TLS dependency; the

@@ -47,7 +47,7 @@ pub fn spawn_check(state: SharedUpdateState) {
     std::thread::spawn(move || {
         cleanup_leftovers();
         if let Some(latest) = fetch_latest_version() {
-            if is_newer(&latest, env!("CARGO_PKG_VERSION")) {
+            if is_newer(&latest, &update_check_version()) {
                 if let Ok(mut s) = state.lock() {
                     s.available = Some(latest);
                 }
@@ -116,6 +116,18 @@ fn fetch_latest_version() -> Option<String> {
 
 /// Whether `candidate` is a strictly newer version than `current` (dotted numeric
 /// compare; non-numeric segments compare as 0).
+/// The version string the update check compares against release tags: the baked
+/// `git describe` when available (so a release build knows its own build number and
+/// the badge never claims its own version is an update), else the crate version.
+fn update_check_version() -> String {
+    let describe = env!("BEARCAD_GIT_DESCRIBE");
+    if describe.starts_with('v') {
+        describe.trim_start_matches('v').to_string()
+    } else {
+        env!("CARGO_PKG_VERSION").to_string()
+    }
+}
+
 pub fn is_newer(candidate: &str, current: &str) -> bool {
     let parse = |v: &str| -> Vec<u64> {
         v.trim_start_matches('v')
@@ -341,6 +353,19 @@ fn find_binary(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> 
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests_release_identity {
+    use super::*;
+
+    /// #460: a release build baked with its own tag must not see itself as an update.
+    #[test]
+    fn own_build_number_is_not_an_update() {
+        assert!(!is_newer("0.1.0-build.261", "0.1.0-build.261"));
+        assert!(is_newer("0.1.0-build.262", "0.1.0-build.261"));
+        assert!(!is_newer("0.1.0-build.260", "0.1.0-build.261"));
+    }
 }
 
 #[cfg(test)]

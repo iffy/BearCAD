@@ -1,4 +1,21 @@
 fn main() {
+    // Bake the build identity in (About dialog, update check): `git describe` names
+    // release builds by their tag (v0.1.0-build.N); the short SHA identifies any build.
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let describe = git(&["describe", "--tags", "--always"]).unwrap_or_default();
+    let sha = git(&["rev-parse", "--short=9", "HEAD"]).unwrap_or_default();
+    println!("cargo:rustc-env=BEARCAD_GIT_DESCRIBE={describe}");
+    println!("cargo:rustc-env=BEARCAD_GIT_SHA={sha}");
+    println!("cargo:rerun-if-changed=.git/HEAD");
+
     // OCCT kernel (#86): only when built with `--features occt`. Cargo exposes an
     // enabled feature as CARGO_FEATURE_<NAME>.
     // On wasm32 the kernel ships as a separate Emscripten-built module (see
