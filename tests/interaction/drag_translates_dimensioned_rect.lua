@@ -4,8 +4,16 @@
 bearcad.new()
 bearcad.rect{ x = 15, y = 10, width = 40, height = 20 }
 bearcad.ui.tool("select")
+-- Hide the side panes: under CI's WM-less Xvfb the window can't maximize, and with
+-- all three panes open the 3D viewport is too narrow for the ground-coordinate
+-- clicks below to land inside it.
+bearcad.ui.pane("elements", "hide")
+bearcad.ui.pane("context", "hide")
+bearcad.ui.pane("parameters", "hide")
 bearcad.ui.view("top")
 bearcad.ui.wait(5)
+bearcad.ui.zoom_fit()
+bearcad.ui.wait(2)
 bearcad.ui.click_ground(55, 10)      -- the corner at (x+width, y): select
 bearcad.ui.wait(5)
 bearcad.ui.drag_ground(55, 10, 75, 25)
