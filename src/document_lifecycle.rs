@@ -728,6 +728,9 @@ pub fn constraint_kind_applicable(doc: &Document, kind: &ConstraintKind) -> bool
             line_b,
             rotation_sign: _,
         } => constraint_line_alive(doc, line_a) && constraint_line_alive(doc, line_b),
+        ConstraintKind::Tangent { a, b } => {
+            constraint_point_alive(doc, a) && constraint_point_alive(doc, b)
+        }
     }
 }
 

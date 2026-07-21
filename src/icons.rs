@@ -378,6 +378,7 @@ pub fn icon_for_constraint_kind(kind: &ConstraintKind) -> IconId {
         ConstraintKind::Horizontal { .. } => IconId::Horizontal,
         ConstraintKind::Vertical { .. } => IconId::Vertical,
         ConstraintKind::Angle { .. } => IconId::Constraint,
+        ConstraintKind::Tangent { .. } => IconId::Coincident,
     }
 }
 

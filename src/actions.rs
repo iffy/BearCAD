@@ -3558,43 +3558,35 @@ pub(crate) fn chained_curve_handles(
     }
 }
 
-/// Whether the two lines meeting at `point` currently have mirrored, tangent-continuous
-/// handles (within a small epsilon of what [`smooth_joint_bezier`] would produce) — used by
-/// the `T` shortcut on a selection to decide which way to toggle (#73).
-fn vertex_is_tangent_continuous(doc: &Document, sketch: SketchId, point: ConstraintPoint) -> bool {
-    let Some([(line1, end1), (line2, end2)]) =
-        vertex_drag::incident_two_lines(doc, sketch, point)
-    else {
-        return false;
-    };
-    let (Some(l1), Some(l2)) = (doc.lines.get(line1), doc.lines.get(line2)) else {
-        return false;
-    };
-    let (Some(b1), Some(b2)) = (l1.bezier, l2.bezier) else {
-        return false;
-    };
-    let (v, a) = match end1 {
-        LineEnd::Start => ((l1.x0, l1.y0), (l1.x1, l1.y1)),
-        LineEnd::End => ((l1.x1, l1.y1), (l1.x0, l1.y0)),
-    };
-    let b = match end2 {
-        LineEnd::Start => (l2.x1, l2.y1),
-        LineEnd::End => (l2.x0, l2.y0),
-    };
-    let ([_, h1_near], [h2_near, _]) = smooth_joint_bezier(a, v, b);
-    let actual_h1_near = match end1 {
-        LineEnd::Start => b1[0],
-        LineEnd::End => b1[1],
-    };
-    let actual_h2_near = match end2 {
-        LineEnd::Start => b2[0],
-        LineEnd::End => b2[1],
-    };
-    const EPS: f32 = 1e-2;
-    (actual_h1_near.0 - h1_near.0).abs() < EPS
-        && (actual_h1_near.1 - h1_near.1).abs() < EPS
-        && (actual_h2_near.0 - h2_near.0).abs() < EPS
-        && (actual_h2_near.1 - h2_near.1).abs() < EPS
+/// The live [`ConstraintKind::Tangent`] joint at `point`, if one exists (#473) — matched
+/// against the two incident line-ends in either order.
+pub(crate) fn tangent_joint_constraint(
+    doc: &Document,
+    sketch: SketchId,
+    point: ConstraintPoint,
+) -> Option<usize> {
+    let [(line1, end1), (line2, end2)] =
+        vertex_drag::incident_two_lines(doc, sketch, point)?;
+    let pa = ConstraintPoint::LineEndpoint { line: line1, end: end1 };
+    let pb = ConstraintPoint::LineEndpoint { line: line2, end: end2 };
+    doc.constraints.iter().position(|c| {
+        !c.deleted
+            && c.sketch == sketch
+            && matches!(&c.kind, crate::model::ConstraintKind::Tangent { a, b }
+                if (*a == pa && *b == pb) || (*a == pb && *b == pa))
+    })
+}
+
+/// Whether the joint at `point` is tangent-continuous (#473): tangency is explicit state —
+/// a [`ConstraintKind::Tangent`] between the two incident line-ends — created by smoothing
+/// (right-click convert, the line tool's `T` mode, the toggle) and removed by breaking the
+/// joint, so it survives handle drags rather than being re-derived from geometry.
+pub(crate) fn vertex_is_tangent_continuous(
+    doc: &Document,
+    sketch: SketchId,
+    point: ConstraintPoint,
+) -> bool {
+    tangent_joint_constraint(doc, sketch, point).is_some()
 }
 
 fn draw_mode_status(tool: &str, construction: bool) -> String {
@@ -5275,6 +5267,20 @@ impl AppState {
                     self.doc.lines.push(line);
                     self.doc.shape_order.push(ShapeKind::Line);
                     let line_index = self.doc.lines.len() - 1;
+                    // A curve-mode chained joint drawn with the tangent constraint on is
+                    // tangent state, not just geometry (#473) — record it. The new segment
+                    // starts at the previous chained line's end.
+                    if cl.curve_mode && cl.tangent_constraint {
+                        if let Some(prev_idx) = cl.chained_from {
+                            self.record_tangent_joint(
+                                session.sketch,
+                                prev_idx,
+                                LineEnd::End,
+                                line_index,
+                                LineEnd::Start,
+                            );
+                        }
+                    }
                     if cl.user_edited {
                         if let Err(e) = add_distance_constraint(
                             &mut self.doc,
@@ -6269,13 +6275,32 @@ impl AppState {
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
+                let Some(l) = self.doc.lines.get(line) else {
+                    return ActionResult::Err("Line no longer exists".to_string());
+                };
+                if l.bezier.is_none() {
+                    return ActionResult::Err("Line is not curved".to_string());
+                }
+                let sketch = l.sketch;
+                let end = if near_start { LineEnd::Start } else { LineEnd::End };
+                let point = ConstraintPoint::LineEndpoint { line, end };
+                // A tangent-continuous joint stays tangent through the drag (#473): note the
+                // state *before* moving, then mirror the partner handle after.
+                let was_tangent =
+                    vertex_is_tangent_continuous(&self.doc, sketch, point.clone());
                 let Some(l) = self.doc.lines.get_mut(line) else {
                     return ActionResult::Err("Line no longer exists".to_string());
                 };
-                let Some(handles) = l.bezier.as_mut() else {
-                    return ActionResult::Err("Line is not curved".to_string());
+                let vpos = match end {
+                    LineEnd::Start => (l.x0, l.y0),
+                    LineEnd::End => (l.x1, l.y1),
                 };
-                handles[if near_start { 0 } else { 1 }] = (u, v);
+                if let Some(handles) = l.bezier.as_mut() {
+                    handles[if near_start { 0 } else { 1 }] = (u, v);
+                }
+                if was_tangent {
+                    self.mirror_partner_handle(sketch, point, line, end, vpos, (u, v));
+                }
                 ActionResult::Ok
             }
             Action::ConvertVertexToBezier { point } => {
@@ -6310,6 +6335,7 @@ impl AppState {
                         LineEnd::End => [h2_far, h2_near],
                     });
                 }
+                self.record_tangent_joint(sketch, line1, end1, line2, end2);
                 self.status = "Converted to curve".to_string();
                 ActionResult::Ok
             }
@@ -9535,6 +9561,9 @@ label_hidden: false,
                 if continuous {
                     return self.apply(Action::ConvertVertexToBezier { point });
                 }
+                if let Some(ci) = tangent_joint_constraint(&self.doc, sketch, point.clone()) {
+                    self.doc.constraints[ci].deleted = true;
+                }
                 let Some([(line1, end1), (line2, end2)]) =
                     vertex_drag::incident_two_lines(&self.doc, sketch, point.clone())
                 else {
@@ -9862,6 +9891,82 @@ label_hidden: false,
         } else {
             Ok(format!("Toggled curve at {toggled} vertex(es)"))
         }
+    }
+
+    /// Record a [`ConstraintKind::Tangent`] joint between two line-ends (#473), unless an
+    /// identical live one already exists.
+    fn record_tangent_joint(
+        &mut self,
+        sketch: SketchId,
+        line1: usize,
+        end1: LineEnd,
+        line2: usize,
+        end2: LineEnd,
+    ) {
+        let pa = ConstraintPoint::LineEndpoint { line: line1, end: end1 };
+        let pb = ConstraintPoint::LineEndpoint { line: line2, end: end2 };
+        let exists = self.doc.constraints.iter().any(|c| {
+            !c.deleted
+                && c.sketch == sketch
+                && matches!(&c.kind, crate::model::ConstraintKind::Tangent { a, b }
+                    if (*a == pa && *b == pb) || (*a == pb && *b == pa))
+        });
+        if exists {
+            return;
+        }
+        self.doc.constraints.push(crate::model::Constraint {
+            sketch,
+            kind: crate::model::ConstraintKind::Tangent { a: pa, b: pb },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+        self.doc.shape_order.push(ShapeKind::Constraint);
+    }
+
+    /// Rotate the *other* line's near handle at a tangent joint so it stays collinear with
+    /// the just-moved handle (#473): the partner keeps its own length and lands on the
+    /// opposite side of the vertex. No-op when the vertex doesn't join exactly two lines,
+    /// the partner isn't curved, or the moved handle sits on the vertex (no direction).
+    fn mirror_partner_handle(
+        &mut self,
+        sketch: SketchId,
+        point: ConstraintPoint,
+        moved_line: usize,
+        moved_end: LineEnd,
+        vpos: (f32, f32),
+        moved_handle: (f32, f32),
+    ) {
+        let Some([(l1, e1), (l2, e2)]) =
+            vertex_drag::incident_two_lines(&self.doc, sketch, point)
+        else {
+            return;
+        };
+        let (other_line, other_end) = if (l1, e1) == (moved_line, moved_end) {
+            (l2, e2)
+        } else {
+            (l1, e1)
+        };
+        let dir = (vpos.0 - moved_handle.0, vpos.1 - moved_handle.1);
+        let len = (dir.0 * dir.0 + dir.1 * dir.1).sqrt();
+        if len < 1e-6 {
+            return;
+        }
+        let Some(other) = self.doc.lines.get_mut(other_line) else {
+            return;
+        };
+        let Some(handles) = other.bezier.as_mut() else {
+            return;
+        };
+        let idx = if other_end == LineEnd::Start { 0 } else { 1 };
+        let near = handles[idx];
+        let partner_len =
+            ((near.0 - vpos.0).powi(2) + (near.1 - vpos.1).powi(2)).sqrt().max(1e-3);
+        handles[idx] = (
+            vpos.0 + dir.0 / len * partner_len,
+            vpos.1 + dir.1 / len * partner_len,
+        );
     }
 
     /// `T` shortcut on a Select-tool vertex selection (#73): re-smooths (mirrors) each
@@ -13357,6 +13462,71 @@ mod tests {
         });
         assert!(matches!(result, ActionResult::Ok));
         assert_eq!(state.doc.lines[0].bezier, Some([(3.0, 5.0), (7.0, 0.0)]));
+    }
+
+    /// #473: moving a handle at a tangent-continuous joint rotates the partner handle to
+    /// stay collinear (its own length preserved), so the joint stays tangent.
+    #[test]
+    fn dragging_a_handle_keeps_a_tangent_joint_tangent() {
+        use crate::model::{Constraint, ConstraintEntity, ConstraintKind, LineEnd};
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 20.0, 5.0));
+        state.doc.shape_order.extend([ShapeKind::Line, ShapeKind::Line]);
+        let point = ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End };
+        state.doc.constraints.push(Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(point.clone()),
+                b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                    line: 1,
+                    end: LineEnd::Start,
+                }),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+        state.doc.shape_order.push(ShapeKind::Constraint);
+        assert!(matches!(
+            state.apply(Action::ConvertVertexToBezier { point: point.clone() }),
+            ActionResult::Ok
+        ));
+        assert!(vertex_is_tangent_continuous(&state.doc, sketch, point.clone()));
+
+        // Swing line 0's near handle to a new direction; the joint must stay tangent and
+        // line 1's near handle must keep its own length.
+        let old_partner = state.doc.lines[1].bezier.unwrap()[0];
+        let old_len = ((old_partner.0 - 10.0).powi(2) + old_partner.1.powi(2)).sqrt();
+        assert!(matches!(
+            state.apply(Action::SetBezierHandle { line: 0, near_start: false, u: 8.0, v: 3.0 }),
+            ActionResult::Ok
+        ));
+        assert!(
+            vertex_is_tangent_continuous(&state.doc, sketch, point.clone()),
+            "joint must stay tangent after the handle drag"
+        );
+        let partner = state.doc.lines[1].bezier.unwrap()[0];
+        let len = ((partner.0 - 10.0).powi(2) + partner.1.powi(2)).sqrt();
+        assert!((len - old_len).abs() < 1e-3, "partner keeps its length ({old_len} -> {len})");
+
+        // Break tangency, then a drag must leave the partner alone.
+        assert!(matches!(
+            state.apply(Action::SetVertexTangent { point: point.clone(), continuous: false }),
+            ActionResult::Ok
+        ));
+        let partner_before = state.doc.lines[1].bezier.unwrap()[0];
+        assert!(matches!(
+            state.apply(Action::SetBezierHandle { line: 0, near_start: false, u: 6.0, v: -2.0 }),
+            ActionResult::Ok
+        ));
+        assert_eq!(
+            state.doc.lines[1].bezier.unwrap()[0],
+            partner_before,
+            "an independent joint's partner handle must not move"
+        );
     }
 
     #[test]

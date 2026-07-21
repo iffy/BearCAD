@@ -231,6 +231,10 @@ pub fn require_constraint_editable(
             require_element_editable(health, scene_element_for_line(line_a))?;
             require_element_editable(health, scene_element_for_line(line_b))?;
         }
+        ConstraintKind::Tangent { a, b } => {
+            require_element_editable(health, scene_element_for_point(a))?;
+            require_element_editable(health, scene_element_for_point(b))?;
+        }
         _ => {}
     }
     Ok(())
@@ -421,6 +425,17 @@ fn mark_invalid_constraints_and_unstable_geometry(doc: &Document, health: &mut D
             }
             ConstraintKind::Horizontal { line } | ConstraintKind::Vertical { line } => {
                 if !constraint_line_alive(doc, line) {
+                    set_element_invalid(
+                        health,
+                        doc,
+                        element,
+                        "Referenced geometry was deleted".to_string(),
+                        None,
+                    );
+                }
+            }
+            ConstraintKind::Tangent { a, b } => {
+                if !constraint_point_alive(doc, a) || !constraint_point_alive(doc, b) {
                     set_element_invalid(
                         health,
                         doc,

@@ -2228,6 +2228,10 @@ fn constraint_kind_touches_element(kind: &ConstraintKind, element: &SceneElement
             constraint_line_touches_element(line_a, element)
                 || constraint_line_touches_element(line_b, element)
         }
+        ConstraintKind::Tangent { a, b } => {
+            constraint_point_touches_element(a, element)
+                || constraint_point_touches_element(b, element)
+        }
     }
 }
 

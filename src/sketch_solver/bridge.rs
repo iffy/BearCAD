@@ -213,6 +213,9 @@ impl SketchBridge {
                     weight: DEFAULT_WEIGHT,
                 });
             }
+            // Tangent joints are app-maintained handle geometry (#473), not solver
+            // equations — nothing to add.
+            ConstraintKind::Tangent { .. } => {}
             ConstraintKind::Angle {
                 line_a,
                 line_b,

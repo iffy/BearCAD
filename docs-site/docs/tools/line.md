@@ -31,9 +31,11 @@ can be toggled in the Context pane.
 ## Curves
 
 While drawing, tick **Curve mode** (**⌘/Ctrl+B**) and the next point becomes a smooth
-curve point instead of a corner. On a finished sketch, drag a curve's two round handles to
-reshape it; right-click a corner → **Convert to bezier curve** to smooth it
-(**Straighten curve** undoes). Deleting a handle straightens the curve.
+curve point instead of a corner. On a finished sketch, drag a curve's two round handles
+(blue; gold when hovered) to reshape it — at a tangent joint the opposite handle follows
+so the joint stays smooth. **Click** a handle, or a selected joint vertex, to toggle the
+joint's tangent constraint on and off. Right-click a corner → **Convert to bezier curve**
+to smooth it (**Straighten curve** undoes). Deleting a handle straightens the curve.
 
 Curved lines close loops, extrude, and take dimensions like straight ones (a length
 dimension controls the endpoint-to-endpoint distance).

@@ -502,6 +502,10 @@ struct SketchMoveDrag {
 
 struct VertexDrag {
     point: ConstraintPoint,
+    /// Where the press landed and whether it ever traveled: a press that releases without
+    /// moving is a *click*, which toggles the vertex's tangent continuity (#473).
+    pressed_at: egui::Pos2,
+    moved: bool,
 }
 
 /// A bezier control-point handle being dragged: `near_start` selects `line.bezier`'s handle
@@ -516,6 +520,10 @@ struct TextWidthDrag {
 struct BezierHandleDrag {
     line: usize,
     near_start: bool,
+    /// Where the press landed and whether it ever traveled: a press that releases without
+    /// moving is a *click*, which toggles tangency at the handle's joint (#473).
+    pressed_at: egui::Pos2,
+    moved: bool,
 }
 
 /// What the viewport's right-click context menu should offer (#54/#75).
@@ -10301,6 +10309,25 @@ fn handle_vertex_drag(
             if let Some((point, target)) = state.active_snap.take() {
                 let _ = state.apply(Action::ApplySnapConstraint { point, target });
             }
+            // A press on an already-selected vertex that never traveled is a click: when
+            // the joint has a curve, toggle its tangent continuity (#473). Straight-line
+            // joints keep plain click-selection (curving them stays on the right-click menu).
+            if !active.moved {
+                let point = active.point.clone();
+                let joins_curve = crate::vertex_drag::incident_two_lines(
+                    &state.doc,
+                    session.sketch,
+                    point.clone(),
+                )
+                .is_some_and(|[(l1, _), (l2, _)]| {
+                    [l1, l2].iter().any(|&li| {
+                        state.doc.lines.get(li).is_some_and(|l| l.bezier.is_some())
+                    })
+                });
+                if joins_curve {
+                    toggle_vertex_tangent(state, session.sketch, point);
+                }
+            }
             *drag = None;
             return false;
         }
@@ -10309,6 +10336,15 @@ fn handle_vertex_drag(
                 if let Some(world) =
                     sketch_plane_point(cam, viewport, vp, &state.doc, session, pp)
                 {
+                    let moved = active.moved
+                        || (pp - active.pressed_at).length() > touch::hit(4.0);
+                    if let Some(a) = drag.as_mut() {
+                        a.moved = moved;
+                    }
+                    if !moved {
+                        return true;
+                    }
+                    let active = drag.as_ref().unwrap();
                     let frame = sketch_geometry_frame(&state.doc, session.sketch).unwrap();
                     let (mut u, mut v) = world_to_local(&frame, world);
                     state.active_snap = None;
@@ -10360,7 +10396,25 @@ fn handle_vertex_drag(
                 // selected, so a click selects it without moving it (#239). A second press-drag
                 // then moves it.
                 if state.scene_selection.is_selected(selectable.clone()) && !additive {
-                    *drag = Some(VertexDrag { point });
+                    // Same-frame press+release (a fast/synthetic click) on the selected
+                    // vertex: toggle its tangent continuity now (#473).
+                    if primary_released {
+                        let joins_curve = crate::vertex_drag::incident_two_lines(
+                            &state.doc,
+                            session.sketch,
+                            point.clone(),
+                        )
+                        .is_some_and(|[(l1, _), (l2, _)]| {
+                            [l1, l2].iter().any(|&li| {
+                                state.doc.lines.get(li).is_some_and(|l| l.bezier.is_some())
+                            })
+                        });
+                        if joins_curve {
+                            toggle_vertex_tangent(state, session.sketch, point);
+                        }
+                        return true;
+                    }
+                    *drag = Some(VertexDrag { point, pressed_at: pp, moved: false });
                 } else {
                     state.apply(Action::ClickSceneElement { element: selectable, additive });
                 }
@@ -10600,22 +10654,45 @@ fn handle_bezier_handle_drag(
 
     if let Some(active) = drag.as_ref() {
         if primary_released {
+            // A press that never traveled is a click: toggle tangency at this handle's
+            // joint (#473) instead of nudging the handle.
+            if !active.moved {
+                toggle_vertex_tangent(
+                    state,
+                    session.sketch,
+                    ConstraintPoint::LineEndpoint {
+                        line: active.line,
+                        end: if active.near_start { model::LineEnd::Start } else { model::LineEnd::End },
+                    },
+                );
+            }
             *drag = None;
             return false;
         }
         if primary_down {
             if let Some(pp) = pointer_screen {
-                if let Some(world) =
-                    sketch_plane_point(cam, viewport, vp, &state.doc, session, pp)
-                {
-                    let frame = sketch_geometry_frame(&state.doc, session.sketch).unwrap();
-                    let (u, v) = world_to_local(&frame, world);
-                    let _ = state.apply(Action::SetBezierHandle {
-                        line: active.line,
-                        near_start: active.near_start,
-                        u,
-                        v,
-                    });
+                let moved = active.moved
+                    || (pp - active.pressed_at).length() > touch::hit(4.0);
+                if let Some(active) = drag.as_mut() {
+                    active.moved = moved;
+                }
+                // Until the press travels, leave the handle alone so a plain click
+                // doesn't micro-nudge it toward the cursor.
+                if moved {
+                    if let Some(world) =
+                        sketch_plane_point(cam, viewport, vp, &state.doc, session, pp)
+                    {
+                        let frame = sketch_geometry_frame(&state.doc, session.sketch).unwrap();
+                        let (u, v) = world_to_local(&frame, world);
+                        let (line, near_start) =
+                            drag.as_ref().map(|a| (a.line, a.near_start)).unwrap();
+                        let _ = state.apply(Action::SetBezierHandle {
+                            line,
+                            near_start,
+                            u,
+                            v,
+                        });
+                    }
                 }
             }
             return true;
@@ -10629,13 +10706,51 @@ fn handle_bezier_handle_drag(
             if let Some((line_index, near_start)) =
                 nearest_bezier_handle_in_sketch(pp, project, &state.doc, session.sketch)
             {
-                *drag = Some(BezierHandleDrag { line: line_index, near_start });
+                // Press and release in the same frame (a fast/synthetic click): toggle
+                // tangency now — the per-frame drag path would never see the release.
+                if primary_released {
+                    toggle_vertex_tangent(
+                        state,
+                        session.sketch,
+                        ConstraintPoint::LineEndpoint {
+                            line: line_index,
+                            end: if near_start { model::LineEnd::Start } else { model::LineEnd::End },
+                        },
+                    );
+                    return true;
+                }
+                *drag = Some(BezierHandleDrag {
+                    line: line_index,
+                    near_start,
+                    pressed_at: pp,
+                    moved: false,
+                });
                 return true;
             }
         }
     }
 
     false
+}
+
+/// Toggle tangent continuity at `point` (#473): mirror the joint's handles if they aren't
+/// tangent-continuous, break them into independent corner handles if they are. Silently
+/// does nothing when the vertex doesn't join exactly two lines.
+fn toggle_vertex_tangent(
+    state: &mut AppState,
+    sketch: model::SketchId,
+    point: ConstraintPoint,
+) {
+    if crate::vertex_drag::incident_two_lines(&state.doc, sketch, point.clone()).is_none() {
+        return;
+    }
+    let continuous = !actions::vertex_is_tangent_continuous(&state.doc, sketch, point.clone());
+    if matches!(
+        state.apply(Action::SetVertexTangent { point, continuous }),
+        actions::ActionResult::Ok
+    ) {
+        state.status = format!("Tangent: {}", if continuous { "on" } else { "off" });
+    }
 }
 
 fn nearest_bezier_handle_in_sketch(

@@ -162,6 +162,8 @@ fn build_graphic(doc: &Document, index: usize) -> Option<ConstraintViewportGraph
                 }],
             })
         }
+        // Tangent joints show through the handle rendering itself (#473), not a badge.
+        ConstraintKind::Tangent { .. } => None,
         ConstraintKind::Angle {
             line_a,
             line_b,

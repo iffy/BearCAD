@@ -4555,20 +4555,23 @@ impl ScriptRunner {
                 StepResult::Continue
             }
             Instruction::MoveGround { x, y } => {
-                if viewport.is_none() {
+                if viewport.is_none() || state.cam.is_transitioning() {
                     return StepResult::Wait;
                 }
                 Self::ground_pointer(synthetic, state, viewport, x, y, false);
                 StepResult::Continue
             }
             Instruction::ClickGround { x, y } => {
-                if viewport.is_none() {
+                if viewport.is_none() || state.cam.is_transitioning() {
                     return StepResult::Wait;
                 }
                 Self::ground_pointer(synthetic, state, viewport, x, y, true);
                 StepResult::Continue
             }
             Instruction::DragGround { x0, y0, x1, y1 } => {
+                if state.cam.is_transitioning() {
+                    return StepResult::Wait;
+                }
                 let Some(vp) = viewport else {
                     return StepResult::Wait;
                 };

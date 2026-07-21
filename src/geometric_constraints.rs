@@ -536,6 +536,16 @@ fn validate_constraint_kind(
             }
             Ok(())
         }
+        // Tangent joints are created through handle/vertex clicks (#473), not the
+        // constraint pane; they only need their two points alive.
+        ConstraintKind::Tangent { ref a, ref b } => {
+            if !crate::document_lifecycle::constraint_point_alive(doc, a)
+                || !crate::document_lifecycle::constraint_point_alive(doc, b)
+            {
+                return Err("Vertex no longer exists".to_string());
+            }
+            Ok(())
+        }
     }
 }
 

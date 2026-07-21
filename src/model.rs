@@ -863,6 +863,13 @@ pub enum ConstraintKind {
         #[serde(default = "default_constraint_sign")]
         rotation_sign: ConstraintSign,
     },
+    /// Tangent-continuous curve joint (#473): the two curved line ends meeting at a
+    /// vertex keep their handles mirrored — moving one handle rotates the partner onto
+    /// the opposite ray. Maintained by the app's handle editing (not a solver equation).
+    Tangent {
+        a: ConstraintPoint,
+        b: ConstraintPoint,
+    },
 }
 
 /// Point or line reference for coincident constraints.

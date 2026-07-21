@@ -1,0 +1,1 @@
+Tangent joints are real constraints: a smoothed curve joint stays tangent while you drag its handles (the partner handle follows), and clicking a handle — or a selected joint vertex — toggles the tangent constraint on and off

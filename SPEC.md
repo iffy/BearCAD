@@ -280,10 +280,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
       read/written by `Action::ApplyCurveMode`/`ToggleCurveMode`.
     - **Tangent constraint (`T`, default on):** while curve mode is on, controls *how* each
       shared vertex is curved. On: both sides' handles are mirrored/tangent-continuous via the
-      same smoothing used by "Convert to bezier curve" below. Off: the previous segment's handle
-      is left alone and the new segment gets an independent "corner" handle a third of the way
-      along its own chord — a barely-curved starting shape meant to be reshaped by hand via the
-      draggable handles below.
+      same smoothing used by "Convert to bezier curve" below, and the joint records an explicit
+      **`ConstraintKind::Tangent`** between the two line-ends (#473) — listed in the Elements
+      pane like any constraint — so the tangency is durable state, not a coincidence of handle
+      positions. Off: the previous segment's handle is left alone and the new segment gets an
+      independent "corner" handle a third of the way along its own chord — a barely-curved
+      starting shape meant to be reshaped by hand via the draggable handles below.
     - **Live preview:** as the mouse moves before the next point is placed, the in-progress
       segment previews its live curve toward the cursor, and — when curve mode smooths a shared
       vertex — the previous segment's end visibly bends to stay smooth/corner-consistent with it,
@@ -295,9 +297,15 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
       between tangent-continuous (re-smoothed) and independent handles at the vertex. Vertices
       that don't join exactly two plain lines are skipped (no-op).
   - **Draggable handles:** once committed, a curved line's two tangent handles are shown (in the
-    active sketch) as small discs with dashed guides back to their endpoint; dragging one
-    reshapes the curve live. Clicking (rather than dragging) a handle selects it; pressing
-    Delete/Backspace, or right-clicking it and choosing "Delete handle", straightens the line
+    active sketch) as small discs (sketch blue; gold when hovered, dragged, or selected, #472)
+    with dashed guides back to their endpoint; dragging one reshapes the curve live — and when
+    the handle's joint carries a Tangent constraint (#473), the partner handle on the other
+    line rotates to stay collinear (keeping its own length), so a tangent joint stays tangent
+    through any handle drag. **Clicking** (rather than dragging) a handle toggles the joint's
+    tangent constraint on/off (status bar reports "Tangent: on/off"); clicking an
+    already-selected vertex whose joint has a curve does the same. A click also selects the
+    handle; pressing Delete/Backspace, or right-clicking it and choosing "Delete handle",
+    straightens the line
     (#75) — a curve is either both handles or neither, so there's no independent per-handle
     state to remove, only the whole curve.
   - **Right-click a vertex:** right-clicking a vertex where exactly two plain lines meet offers

@@ -594,6 +594,9 @@ impl<'a> Builder<'a> {
                     ..Default::default()
                 });
             }
+            // Tangent joints are app-maintained handle geometry (#473), not solver
+            // equations — nothing to add.
+            ConstraintKind::Tangent { .. } => {}
             ConstraintKind::Angle {
                 line_a,
                 line_b,
@@ -1038,6 +1041,7 @@ pub fn solve_sketch(
                     hold_line(&b, &reference, &mut dragged, &mut hold_point)
                 }
             }
+            ConstraintKind::Tangent { .. } => {}
             ConstraintKind::Midpoint { point, line } => {
                 if should_hold_pair(line, point_pinned(point)) {
                     hold_line(&b, line, &mut dragged, &mut hold_point)
