@@ -18,116 +18,12 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
-  ci:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      # Pinned, not @stable: with RUSTFLAGS=-D warnings, each new stable's fresh lints
-      # break every job at once (1.97.0 did exactly that on 2026-07-09, todoer #287).
-      # Upgrades are deliberate: bump the pin (all six uses across ci.yml/docs.yml) and
-      # fix the new lints in the same change.
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.0
-
-      - name: Cache cargo
-        id: cargo-cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          # Default is false: a failed job does not update the cache, so repeated
-          # failures keep paying full dependency compile cost.
-          cache-on-failure: true
-          shared-key: ci
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libx11-dev \
-            libxcb-render0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            libxkbcommon-dev \
-            libxkbcommon-x11-0 \
-            libwayland-dev \
-            libssl-dev \
-            libvulkan-dev \
-            mesa-vulkan-drivers \
-            libgtk-3-dev \
-            xvfb
-
-      # This job checks the lean no-kernel (fallback) build — `occt` is a default
-      # feature now (#89), so `--no-default-features` builds without OCCT / a C++
-      # toolchain, keeping this check fast. The kernel build is covered by the
-      # `occt` job below.
-      - name: Fetch solvespace submodule (libslvs sketch solver)
-        run: |
-          git submodule update --init --depth 1 third_party/solvespace
-          git -C third_party/solvespace submodule update --init --depth 1 extlib/eigen extlib/mimalloc
-
-      - name: cargo test (no kernel)
-        run: |
-          if [[ "${{ steps.cargo-cache.outputs.cache-hit }}" == "true" ]]; then
-            echo "Cargo cache hit — dependency artifacts restored."
-          else
-            echo "Cargo cache miss — compiling dependencies (~2 min on a cold runner)."
-          fi
-          cargo test --no-default-features
-
-      # cargo test builds a test harness, not target/debug/bearcad — needed for smoke/scripts.
-      - name: cargo build (no kernel)
-        run: cargo build --no-default-features
-
-      - name: Launch smoke test
-        run: |
-          set +e
-          timeout 2 xvfb-run -a ./target/debug/bearcad
-          code=$?
-          set -e
-          if [[ $code -eq 0 || $code -eq 124 ]]; then
-            echo "App launched successfully (exit code $code)."
-          else
-            echo "App failed to launch (exit code $code)." >&2
-            exit "$code"
-          fi
-
-      - name: Run example scripts
-        run: |
-          shopt -s nullglob
-          scripts=(examples/*.lua)
-          if [[ ${#scripts[@]} -eq 0 ]]; then
-            echo "No example Lua scripts found in examples/" >&2
-            exit 1
-          fi
-          for script in "${scripts[@]}"; do
-            echo "Running $script"
-            # --timeout force-exits (code 1) if the app hasn't finished on its own —
-            # a hung script (e.g. headless GPU/EGL issues under Xvfb) must fail the
-            # job instead of hanging it indefinitely.
-            xvfb-run -a ./target/debug/bearcad --script "$script" --exit --timeout 30
-          done
-
-      # Interaction regression tests (todoer #459): scripted *real* pointer input
-      # (raw-input synthetic events) driving click-select and drags end to end.
-      # A lua assert failure exits non-zero (#125) and fails the job.
-      - name: Run interaction tests
-        run: |
-          shopt -s nullglob
-          tests=(tests/interaction/*.lua)
-          if [[ ${#tests[@]} -eq 0 ]]; then
-            echo "No interaction tests found in tests/interaction/" >&2
-            exit 1
-          fi
-          for script in "${tests[@]}"; do
-            echo "Running $script"
-            xvfb-run -a ./target/debug/bearcad --script "$script" --exit --timeout 30
-          done
-
-  # Builds BearCAD with the statically-linked OpenCASCADE kernel (#86/#89). The
-  # OCCT build is expensive, so it's cached on the pinned submodule + build-script
-  # hash — after the first cold run it's restored, not rebuilt. Linux only here;
-  # the macOS OCCT path (-dead_strip) is exercised by the macOS release build.
+  # The Linux test job (todoer #470): builds BearCAD with the statically-linked
+  # OpenCASCADE kernel (#86/#89) — the shipping configuration — and runs the full
+  # test suite, launch smoke, example scripts, and interaction tests against it.
+  # The OCCT build is expensive, so it's cached on the pinned submodule +
+  # build-script hash — after the first cold run it's restored, not rebuilt. The
+  # macOS OCCT path (-dead_strip) is exercised by the macOS release build.
   occt:
     runs-on: ubuntu-latest
     steps:
@@ -203,6 +99,38 @@ jobs:
             exit "$code"
           fi
 
+      - name: Run example scripts
+        run: |
+          shopt -s nullglob
+          scripts=(examples/*.lua)
+          if [[ ${#scripts[@]} -eq 0 ]]; then
+            echo "No example Lua scripts found in examples/" >&2
+            exit 1
+          fi
+          for script in "${scripts[@]}"; do
+            echo "Running $script"
+            # --timeout force-exits (code 1) if the app hasn't finished on its own —
+            # a hung script (e.g. headless GPU/EGL issues under Xvfb) must fail the
+            # job instead of hanging it indefinitely.
+            xvfb-run -a ./target/debug/bearcad --script "$script" --exit --timeout 30
+          done
+
+      # Interaction regression tests (todoer #459): scripted *real* pointer input
+      # (raw-input synthetic events) driving click-select and drags end to end.
+      # A lua assert failure exits non-zero (#125) and fails the job.
+      - name: Run interaction tests
+        run: |
+          shopt -s nullglob
+          tests=(tests/interaction/*.lua)
+          if [[ ${#tests[@]} -eq 0 ]]; then
+            echo "No interaction tests found in tests/interaction/" >&2
+            exit 1
+          fi
+          for script in "${tests[@]}"; do
+            echo "Running $script"
+            xvfb-run -a ./target/debug/bearcad --script "$script" --exit --timeout 30
+          done
+
   # Windows/MSVC static-OCCT kernel build + tests (#96, proven; todoer #468): the
   # same configuration the Windows release ships, so kernel regressions on
   # Windows are caught on every push/PR like the Linux `occt` job does.
@@ -254,7 +182,7 @@ jobs:
 
   build-release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    needs: [ci, occt]
+    needs: [occt, windows-occt]
     strategy:
       fail-fast: false
       matrix:
