@@ -21,7 +21,7 @@
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <GeomAPI_PointsToBSpline.hxx>
-#include <TColgp_Array1OfPnt.hxx>
+#include <NCollection_Array1.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Common.hxx>
@@ -224,9 +224,9 @@ extern "C" BearcadShape* bearcad_shape_sweep(const double* profile_xyz, unsigned
         }
         TopoDS_Wire spine;
         if (smooth != 0) {
-            TColgp_Array1OfPnt pts(1, static_cast<Standard_Integer>(n_path));
+            NCollection_Array1<gp_Pnt> pts(1, static_cast<int>(n_path));
             for (unsigned long i = 0; i < n_path; ++i) {
-                pts.SetValue(static_cast<Standard_Integer>(i + 1),
+                pts.SetValue(static_cast<int>(i + 1),
                              gp_Pnt(path_xyz[3 * i], path_xyz[3 * i + 1], path_xyz[3 * i + 2]));
             }
             GeomAPI_PointsToBSpline fit(pts);
@@ -252,7 +252,7 @@ extern "C" BearcadShape* bearcad_shape_sweep(const double* profile_xyz, unsigned
         pipe.SetTransitionMode(BRepBuilderAPI_RightCorner);
         // WithContact = false (the profile stays where it is relative to the spine start),
         // WithCorrection = true (the profile is rotated normal to the spine tangent).
-        pipe.Add(poly.Wire(), Standard_False, Standard_True);
+        pipe.Add(poly.Wire(), false, true);
         pipe.Build();
         if (!pipe.IsDone()) {
             return nullptr;
