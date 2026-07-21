@@ -484,6 +484,10 @@ pub struct ViewportSceneInput<'a> {
     /// like the finished cut. `None` for add/new-body extrudes (block preview) or when the
     /// kernel can't build the cut result.
     pub preview_cut_body: Option<usize>,
+    /// Follow-path cut preview: `(body, mesh)` replacement solids — each listed body
+    /// renders this translucent cut-result mesh in place of its intact self, like
+    /// `preview_cut_body` does for the in-progress extrusion.
+    pub preview_cut_solids: Vec<(usize, crate::extrude::SolidMesh)>,
     pub plane_preview: Option<ViewportPlanePreview>,
     pub active_sketch_face: Option<FaceId>,
     pub dimension_labels: &'a [ViewportDimLabel],
@@ -698,7 +702,9 @@ impl ViewportScene {
             }
             // The cut target is drawn as the translucent cut-result preview instead of its
             // intact committed solid.
-            if preview_cut.as_ref().is_some_and(|(cut_bi, _)| *cut_bi == bi) {
+            if preview_cut.as_ref().is_some_and(|(cut_bi, _)| *cut_bi == bi)
+                || input.preview_cut_solids.iter().any(|(cut_bi, _)| *cut_bi == bi)
+            {
                 continue;
             }
             let Some(solid) = body_meshes[bi].as_ref() else {
@@ -820,6 +826,9 @@ impl ViewportScene {
             }
         }
         if let Some(solid) = input.preview_solid.as_ref() {
+            mesh.push_solid_translucent(solid, SOLID_PREVIEW_FILL, SOLID_PREVIEW_OPACITY);
+        }
+        for (_, solid) in &input.preview_cut_solids {
             mesh.push_solid_translucent(solid, SOLID_PREVIEW_FILL, SOLID_PREVIEW_OPACITY);
         }
         // Repeat-tool instance ghosts (#223): each would-be copy, translucent like other previews.
@@ -2721,6 +2730,7 @@ impl<'a> SceneMesh<'a> {
             | SceneElement::SketchSliceOp(_)
             | SceneElement::SliceOp(_)
             | SceneElement::Revolution(_)
+            | SceneElement::FollowPathOp(_)
             | SceneElement::Component(_) => {}
             // A hovered body recolors in the main pass (#455); a hovered extrusion
             // recolors just its own solid.
@@ -3995,6 +4005,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4487,6 +4498,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4525,6 +4537,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             editing_extrusion: None,
             plane_preview: Some(ViewportPlanePreview {
                 plane: preview_plane,
@@ -4577,6 +4590,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4614,6 +4628,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4670,6 +4685,7 @@ mod tests {
                 preview_solid: None,
             repeat_ghosts: Vec::new(),
                 preview_cut_body: None,
+                preview_cut_solids: Vec::new(),
                 editing_extrusion: None,
                 plane_preview: None,
                 active_sketch_face: None,
@@ -4734,6 +4750,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4782,6 +4799,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4831,6 +4849,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4910,6 +4929,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4968,6 +4988,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -5133,6 +5154,7 @@ mod tests {
                 preview_solid: None,
             repeat_ghosts: Vec::new(),
                 preview_cut_body: None,
+                preview_cut_solids: Vec::new(),
                 editing_extrusion: editing,
                 plane_preview: None,
                 active_sketch_face: None,
@@ -5310,6 +5332,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             editing_extrusion: None,
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
@@ -5438,6 +5461,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -5550,6 +5574,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -5608,6 +5633,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -5776,6 +5802,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -5813,6 +5840,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -5894,6 +5922,7 @@ mod tests {
                 preview_solid: None,
             repeat_ghosts: Vec::new(),
                 preview_cut_body: None,
+                preview_cut_solids: Vec::new(),
                 editing_extrusion: None,
                 plane_preview: None,
                 active_sketch_face: None,
@@ -5979,6 +6008,7 @@ mod tests {
                 preview_solid: None,
             repeat_ghosts: Vec::new(),
                 preview_cut_body: None,
+                preview_cut_solids: Vec::new(),
                 editing_extrusion: None,
                 plane_preview: None,
                 active_sketch_face: None,
@@ -6046,6 +6076,7 @@ mod tests {
                 preview_solid: None,
             repeat_ghosts: Vec::new(),
                 preview_cut_body: None,
+                preview_cut_solids: Vec::new(),
                 editing_extrusion: None,
                 plane_preview: None,
                 active_sketch_face: None,
@@ -6132,6 +6163,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -6169,6 +6201,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -6348,6 +6381,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -6389,6 +6423,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -6497,6 +6532,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -6536,6 +6572,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -6573,6 +6610,7 @@ mod tests {
             preview_solid: None,
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -6664,6 +6702,7 @@ mod perf_probe {
             repeat_ghosts: Vec::new(),
                 editing_extrusion: None,
                 preview_cut_body: None,
+                preview_cut_solids: Vec::new(),
                 plane_preview: None,
                 active_sketch_face: None,
                 palette: ViewportPalette::default(),
@@ -6748,6 +6787,7 @@ mod cut_preview_tests {
             repeat_ghosts: Vec::new(),
             editing_extrusion: None,
             preview_cut_body: None,
+            preview_cut_solids: Vec::new(),
             plane_preview: None,
             active_sketch_face: None,
             palette: ViewportPalette::default(),

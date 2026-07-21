@@ -56,6 +56,8 @@ pub struct ContextInput<'a> {
     pub calibrate_image: Option<CalibrateImageControl>,
     /// Revolve tool state (#revolve): `Some` while the Revolve tool is active.
     pub revolve: Option<RevolveControl>,
+    /// Follow-path tool state (#follow-path): `Some` while the Follow-path tool is active.
+    pub follow_path: Option<FollowPathControl>,
     /// Combine tool state: `Some` while the Combine tool is active (creating or editing
     /// a boolean operation).
     pub boolean_op: Option<BooleanControl>,
@@ -100,6 +102,8 @@ pub struct ContextInput<'a> {
     pub slice_edit_start: Option<usize>,
     /// "Edit revolve" entry point (#211): `Some(op)` when exactly one revolution is selected.
     pub revolve_edit_start: Option<usize>,
+    /// "Edit follow path" entry point: `Some(op)` when exactly one follow-path is selected.
+    pub follow_path_edit_start: Option<usize>,
     /// Guided calibration entry point (#163): `Some(image)` when exactly one tracing image
     /// is selected and no calibration is running — renders the "Calibrate scale" button.
     pub calibrate_start: Option<usize>,
@@ -123,6 +127,22 @@ pub struct RevolveControl {
     pub symmetric: bool,
     pub body_choice: crate::actions::RevolveBodyChoice,
     /// In Cut mode, the picked bodies to cut (rendered through the unified element picker, #213).
+    pub cut_bodies: Vec<usize>,
+}
+
+/// What the Follow-path tool's context section shows (#follow-path): the picked profile
+/// faces, the picked path lines, the body mode, and — in Cut mode — the picked bodies.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FollowPathControl {
+    /// One label per picked profile face, shown in the face element picker.
+    pub face_rows: Vec<String>,
+    /// One label per picked path line, shown in the path element picker.
+    pub path_rows: Vec<String>,
+    /// Which picker shows the focus ring: Profile until a face is picked, then Path
+    /// until a line is picked, then back to Profile.
+    pub path_focused: bool,
+    pub body_choice: crate::actions::RevolveBodyChoice,
+    /// In Cut mode, the picked bodies to cut (rendered through the unified element picker).
     pub cut_bodies: Vec<usize>,
 }
 
@@ -475,6 +495,16 @@ pub enum RevolveEdit {
     ClearAxis,
 }
 
+/// One edit from the Follow-path context section.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FollowPathEdit {
+    BodyChoice(crate::actions::RevolveBodyChoice),
+    /// Remove profile face row `i` from the face picker (`None` clears them all).
+    RemoveFace(Option<usize>),
+    /// Remove path line row `i` from the path picker (`None` clears them all).
+    RemovePath(Option<usize>),
+}
+
 /// The "Calibrate scale" control's inputs (#171): the target image and the reference
 /// segment's plane-local endpoints (a line the user drew over a known image feature).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -568,6 +598,8 @@ pub struct ContextPaneContent {
     pub calibrate_image: Option<CalibrateImageControl>,
     /// Revolve tool controls (#revolve).
     pub revolve: Option<RevolveControl>,
+    /// Follow-path tool controls (#follow-path).
+    pub follow_path: Option<FollowPathControl>,
     /// Combine tool controls.
     pub boolean_op: Option<BooleanControl>,
     /// "Edit operation" button target.
@@ -609,6 +641,8 @@ pub struct ContextPaneContent {
     pub slice_edit_start: Option<usize>,
     /// "Edit revolve" button target (#211).
     pub revolve_edit_start: Option<usize>,
+    /// "Edit follow path" button target.
+    pub follow_path_edit_start: Option<usize>,
     /// "Calibrate scale" start button (#163): the selected tracing image.
     pub calibrate_start: Option<usize>,
     /// Guided-calibration hint: points placed so far (of 2).
@@ -722,6 +756,8 @@ pub struct ToolPickerView {
 pub enum PickerTarget {
     /// The Revolve tool's cut bodies (`CreatingRevolve::cut_bodies`).
     RevolveCut,
+    /// The Follow-path tool's cut bodies (`CreatingFollowPath::cut_bodies`).
+    FollowCut,
     /// The Move tool's target bodies (`CreatingMove::targets`).
     MoveTargets,
     /// The Repeat tool's target bodies (`CreatingRepeat::targets`).
@@ -871,6 +907,17 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             ));
         }
     }
+    if let Some(f) = input.follow_path.as_ref() {
+        if f.body_choice == crate::actions::RevolveBodyChoice::Cut {
+            tool_pickers.push(body_tool_picker(
+                "Cut bodies",
+                PickerTarget::FollowCut,
+                &f.cut_bodies,
+                Some(crate::theme::CUT_ACCENT),
+                true,
+            ));
+        }
+    }
     if let Some(m) = input.move_op.as_ref() {
         tool_pickers.push(body_tool_picker(
             "Bodies",
@@ -921,6 +968,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     }
     let calibrate_image = input.calibrate_image;
     let revolve = input.revolve.clone();
+    let follow_path = input.follow_path.clone();
     let boolean_op = input.boolean_op.clone();
     let boolean_edit_start = input.boolean_edit_start;
     let move_op = input.move_op.clone();
@@ -945,6 +993,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let slice_op = input.slice_op.clone();
     let slice_edit_start = input.slice_edit_start;
     let revolve_edit_start = input.revolve_edit_start;
+    let follow_path_edit_start = input.follow_path_edit_start;
     let calibrate_start = input.calibrate_start;
     let calibrate_pending = input.calibrate_pending;
 
@@ -967,6 +1016,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             tool_pickers: Vec::new(),
             calibrate_image,
             revolve: revolve.clone(),
+            follow_path: follow_path.clone(),
             boolean_op: boolean_op.clone(),
             boolean_edit_start,
             move_op: move_op.clone(),
@@ -986,6 +1036,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             slice_op: slice_op.clone(),
             slice_edit_start,
             revolve_edit_start,
+            follow_path_edit_start,
         calibrate_start,
             calibrate_pending,
         };
@@ -1009,6 +1060,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             tool_pickers: Vec::new(),
             calibrate_image,
             revolve: revolve.clone(),
+            follow_path: follow_path.clone(),
             boolean_op: boolean_op.clone(),
             boolean_edit_start,
             move_op: move_op.clone(),
@@ -1028,6 +1080,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             slice_op: slice_op.clone(),
             slice_edit_start,
             revolve_edit_start,
+            follow_path_edit_start,
         calibrate_start,
             calibrate_pending,
         };
@@ -1051,6 +1104,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             tool_pickers: Vec::new(),
             calibrate_image,
             revolve: revolve.clone(),
+            follow_path: follow_path.clone(),
             boolean_op: boolean_op.clone(),
             boolean_edit_start,
             move_op: move_op.clone(),
@@ -1070,6 +1124,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             slice_op: slice_op.clone(),
             slice_edit_start,
             revolve_edit_start,
+            follow_path_edit_start,
         calibrate_start,
             calibrate_pending,
         };
@@ -1096,6 +1151,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         tool_pickers,
         calibrate_image,
         revolve,
+        follow_path,
         boolean_op,
         boolean_edit_start,
         move_op,
@@ -1115,6 +1171,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         slice_op,
         slice_edit_start,
         revolve_edit_start,
+        follow_path_edit_start,
         calibrate_start,
         calibrate_pending,
     }
@@ -1492,6 +1549,7 @@ pub fn show_pane(
     on_selection_edit: &mut impl FnMut(SelectionEdit),
     on_tool_picker_edit: &mut impl FnMut(PickerTarget, ToolPickerAction),
     on_revolve_edit: &mut impl FnMut(RevolveEdit),
+    on_follow_path_edit: &mut impl FnMut(FollowPathEdit),
     on_boolean_edit: &mut impl FnMut(BooleanEdit),
     on_boolean_edit_start: &mut impl FnMut(usize),
     on_move_edit: &mut impl FnMut(MoveEdit),
@@ -1509,6 +1567,7 @@ pub fn show_pane(
     on_slice_edit: &mut impl FnMut(SliceEdit),
     on_slice_edit_start: &mut impl FnMut(usize),
     on_revolve_edit_start: &mut impl FnMut(usize),
+    on_follow_path_edit_start: &mut impl FnMut(usize),
     on_calibrate_start: &mut impl FnMut(usize),
     on_calibrate_image: &mut impl FnMut(CalibrateImageControl, String),
 ) {
@@ -1898,6 +1957,91 @@ pub fn show_pane(
                     && choice != value
                 {
                     on_revolve_edit(RevolveEdit::BodyChoice(value));
+                }
+            }
+        });
+    }
+
+    if let Some(control) = &content.follow_path {
+        any_control = true;
+        ui.separator();
+        section_label(ui, "Follow path");
+
+        // Face element picker: the picked profile faces, click one's ✕ to drop it. Faces
+        // are still added by clicking them in the viewport.
+        labeled_row_top(ui, "Profile", |ui| {
+            if let Some(event) = crate::element_picker::show_labeled(
+                ui,
+                "follow_path_faces",
+                !control.path_focused,
+                false,
+                crate::icons::IconId::Sketch,
+                &control.face_rows,
+            ) {
+                match event {
+                    crate::element_picker::PickerEvent::Focus => {}
+                    crate::element_picker::PickerEvent::Remove(i) => {
+                        on_follow_path_edit(FollowPathEdit::RemoveFace(Some(i)))
+                    }
+                    crate::element_picker::PickerEvent::Clear => {
+                        on_follow_path_edit(FollowPathEdit::RemoveFace(None))
+                    }
+                }
+            }
+        });
+
+        // Path element picker: the picked path lines, click a row's ✕ to drop it. Lines
+        // are added by clicking them in the viewport.
+        labeled_row_top(ui, "Path", |ui| {
+            if let Some(event) = crate::element_picker::show_labeled(
+                ui,
+                "follow_path_path",
+                control.path_focused,
+                false,
+                crate::icons::IconId::Line,
+                &control.path_rows,
+            ) {
+                match event {
+                    crate::element_picker::PickerEvent::Focus => {}
+                    crate::element_picker::PickerEvent::Remove(i) => {
+                        on_follow_path_edit(FollowPathEdit::RemovePath(Some(i)))
+                    }
+                    crate::element_picker::PickerEvent::Clear => {
+                        on_follow_path_edit(FollowPathEdit::RemovePath(None))
+                    }
+                }
+            }
+        });
+
+        // New body / Add to touching / Cut — the same segmented icon group as Revolve.
+        // A cut needs the kernel, so it's only offered on an `occt` build.
+        let choice = control.body_choice;
+        ui.horizontal(|ui| {
+            let mut choices = vec![
+                (
+                    crate::actions::RevolveBodyChoice::NewBody,
+                    crate::icons::IconId::NewBody,
+                    "New body",
+                ),
+                (
+                    crate::actions::RevolveBodyChoice::AddTouching,
+                    crate::icons::IconId::AddToBody,
+                    "Add to touching bodies",
+                ),
+            ];
+            if cfg!(feature = "occt") {
+                choices.push((
+                    crate::actions::RevolveBodyChoice::Cut,
+                    crate::icons::IconId::CutBody,
+                    "Cut bodies",
+                ));
+            }
+            for (value, icon, tooltip) in choices {
+                if crate::icons::selectable_icon_button(ui, icon, choice == value, tooltip)
+                    .clicked()
+                    && choice != value
+                {
+                    on_follow_path_edit(FollowPathEdit::BodyChoice(value));
                 }
             }
         });
@@ -2996,6 +3140,19 @@ pub fn show_pane(
         );
     }
 
+    if let Some(op) = content.follow_path_edit_start {
+        any_control = true;
+        ui.separator();
+        if ui.button("Edit follow path").clicked() {
+            on_follow_path_edit_start(op);
+        }
+        ui.label(
+            egui::RichText::new("Re-open the Follow-path tool to change this operation")
+                .color(egui::Color32::from_gray(140))
+                .size(11.0),
+        );
+    }
+
     if let Some(image) = content.calibrate_start {
         any_control = true;
         ui.separator();
@@ -3511,6 +3668,7 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
+            follow_path: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -3531,6 +3689,7 @@ mod tests {
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
+            follow_path_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         }
@@ -3636,6 +3795,7 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
+            follow_path: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -3656,6 +3816,7 @@ mod tests {
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
+            follow_path_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         };
@@ -3707,6 +3868,7 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
+            follow_path: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -3727,6 +3889,7 @@ mod tests {
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
+            follow_path_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         };
@@ -3983,6 +4146,7 @@ mod tests {
                 tool_pickers: Vec::new(),
                 calibrate_image: None,
                 revolve: None,
+            follow_path: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4002,6 +4166,7 @@ mod tests {
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
+            follow_path_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: Some(UnitsControl {
@@ -4040,6 +4205,7 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
+            follow_path: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4060,6 +4226,7 @@ mod tests {
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
+            follow_path_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -4082,6 +4249,7 @@ mod tests {
             tool_pickers: Vec::new(),
                 calibrate_image: None,
                 revolve: None,
+            follow_path: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4101,6 +4269,7 @@ mod tests {
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
+            follow_path_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: Some(UnitsControl {
@@ -4139,6 +4308,7 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
+            follow_path: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4159,6 +4329,7 @@ mod tests {
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
+            follow_path_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -4199,6 +4370,7 @@ mod tests {
                 tool_pickers: Vec::new(),
                 calibrate_image: None,
                 revolve: None,
+            follow_path: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4218,6 +4390,7 @@ mod tests {
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
+            follow_path_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: None,
@@ -4304,6 +4477,7 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
+            follow_path: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4324,6 +4498,7 @@ mod tests {
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
+            follow_path_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -4359,6 +4534,7 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
+            follow_path: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4379,6 +4555,7 @@ mod tests {
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
+            follow_path_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });
@@ -4403,6 +4580,7 @@ mod tests {
             tool_pickers: Vec::new(),
                 calibrate_image: None,
                 revolve: None,
+            follow_path: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4422,6 +4600,7 @@ mod tests {
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
+            follow_path_edit_start: None,
             calibrate_start: None,
                 calibrate_pending: None,
                 units: None,
@@ -4451,6 +4630,7 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
+            follow_path: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4471,6 +4651,7 @@ mod tests {
             slice_op: None,
             slice_edit_start: None,
             revolve_edit_start: None,
+            follow_path_edit_start: None,
             calibrate_start: None,
             calibrate_pending: None,
         });

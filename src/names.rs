@@ -25,6 +25,7 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::SketchText(_)
         | SceneElement::SliceOp(_)
         | SceneElement::Revolution(_)
+        | SceneElement::FollowPathOp(_)
         | SceneElement::Component(_) => Some(element),
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
@@ -118,6 +119,7 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         SceneElement::SketchText(index) => doc.sketch_texts.get(index)?.name.as_deref(),
         SceneElement::SliceOp(index) => doc.slice_ops.get(index)?.name.as_deref(),
         SceneElement::Revolution(index) => doc.revolutions.get(index)?.name.as_deref(),
+        SceneElement::FollowPathOp(index) => doc.follow_paths.get(index)?.name.as_deref(),
         SceneElement::Component(index) => doc.components.get(index)?.name.as_deref(),
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
@@ -262,6 +264,13 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 .ok_or_else(|| format!("revolution {index} not found"))?;
             rev.name = stored;
         }
+        SceneElement::FollowPathOp(index) => {
+            let fp = doc
+                .follow_paths
+                .get_mut(index)
+                .ok_or_else(|| format!("follow path {index} not found"))?;
+            fp.name = stored;
+        }
         SceneElement::Image(index) => {
             let image = doc
                 .tracing_images
@@ -363,6 +372,7 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
         }
         HierarchyNode::SliceOp(i) => format!("Slice {i}"),
         HierarchyNode::Revolution(i) => format!("Revolve {i}"),
+        HierarchyNode::FollowPathOp(i) => format!("Follow path {i}"),
         HierarchyNode::Drawing(i) => doc
             .drawings
             .get(i)
@@ -475,6 +485,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::SketchText(i) => format!("Text {i}"),
         SceneElement::SliceOp(i) => format!("Slice {i}"),
         SceneElement::Revolution(i) => format!("Revolve {i}"),
+        SceneElement::FollowPathOp(i) => format!("Follow path {i}"),
     }
 }
 

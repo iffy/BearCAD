@@ -34,6 +34,7 @@ pub enum IconId {
     Extrude,
     Loft,
     Revolve,
+    FollowPath,
     Combine,
     Move,
     Repeat,
@@ -101,7 +102,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 66] = [
+    pub const ALL: [Self; 67] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -123,6 +124,7 @@ impl IconId {
         Self::Extrude,
         Self::Loft,
         Self::Revolve,
+        Self::FollowPath,
         Self::Combine,
         Self::Move,
         Self::Repeat,
@@ -193,6 +195,7 @@ impl IconId {
             Self::Extrude => include_str!("assets/icons/extrude.svg"),
             Self::Loft => include_str!("assets/icons/loft.svg"),
             Self::Revolve => include_str!("assets/icons/revolve.svg"),
+            Self::FollowPath => include_str!("assets/icons/follow_path.svg"),
             Self::Combine => include_str!("assets/icons/combine.svg"),
             Self::Move => include_str!("assets/icons/move.svg"),
             Self::Repeat => include_str!("assets/icons/repeat.svg"),
@@ -267,6 +270,7 @@ impl IconId {
             Self::Extrude => "Extrude",
             Self::Loft => "Loft",
             Self::Revolve => "Revolve",
+            Self::FollowPath => "Follow path",
             Self::Combine => "Combine",
             Self::Move => "Move",
             Self::Repeat => "Repeat",

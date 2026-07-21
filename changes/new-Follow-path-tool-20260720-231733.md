@@ -1,0 +1,1 @@
+Follow path tool: sweep profile faces along a chain of sketch lines (straight or curved) into a new body, add to touching bodies, or cut picked bodies — with live preview, elements-graph inputs/outputs, re-editing, and `bearcad.follow_path{}` scripting

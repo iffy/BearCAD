@@ -94,6 +94,7 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
         | Tool::Loft
         | Tool::Project
         | Tool::Revolve
+        | Tool::FollowPath
         | Tool::Combine
         | Tool::Move
         | Tool::Repeat

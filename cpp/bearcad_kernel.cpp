@@ -17,6 +17,11 @@
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepOffsetAPI_ThruSections.hxx>
+#include <BRepOffsetAPI_MakePipeShell.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
+#include <GeomAPI_PointsToBSpline.hxx>
+#include <TColgp_Array1OfPnt.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Common.hxx>
@@ -191,6 +196,71 @@ extern "C" BearcadShape* bearcad_shape_loft(const double* bottom_xyz, const doub
             return nullptr;
         }
         return new BearcadShape{gen.Shape()};
+    } catch (const Standard_Failure&) {
+        return nullptr;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+// Sweep a closed planar profile along a path polyline (#follow-path). The profile is
+// swept with BRepOffsetAPI_MakePipeShell (WithCorrection keeps it normal to the spine);
+// a `smooth` path interpolates its points with a B-spline so curved sketch segments
+// sweep as curves, an all-straight path keeps sharp right-corner transitions.
+extern "C" BearcadShape* bearcad_shape_sweep(const double* profile_xyz, unsigned long n_profile,
+                                             const double* path_xyz, unsigned long n_path,
+                                             int smooth) {
+    if (profile_xyz == nullptr || n_profile < 3 || path_xyz == nullptr || n_path < 2) {
+        return nullptr;
+    }
+    try {
+        BRepBuilderAPI_MakePolygon poly;
+        for (unsigned long i = 0; i < n_profile; ++i) {
+            poly.Add(gp_Pnt(profile_xyz[3 * i], profile_xyz[3 * i + 1], profile_xyz[3 * i + 2]));
+        }
+        poly.Close();
+        if (!poly.IsDone()) {
+            return nullptr;
+        }
+        TopoDS_Wire spine;
+        if (smooth != 0) {
+            TColgp_Array1OfPnt pts(1, static_cast<Standard_Integer>(n_path));
+            for (unsigned long i = 0; i < n_path; ++i) {
+                pts.SetValue(static_cast<Standard_Integer>(i + 1),
+                             gp_Pnt(path_xyz[3 * i], path_xyz[3 * i + 1], path_xyz[3 * i + 2]));
+            }
+            GeomAPI_PointsToBSpline fit(pts);
+            if (!fit.IsDone()) {
+                return nullptr;
+            }
+            BRepBuilderAPI_MakeWire wire(BRepBuilderAPI_MakeEdge(fit.Curve()).Edge());
+            if (!wire.IsDone()) {
+                return nullptr;
+            }
+            spine = wire.Wire();
+        } else {
+            BRepBuilderAPI_MakePolygon path;
+            for (unsigned long i = 0; i < n_path; ++i) {
+                path.Add(gp_Pnt(path_xyz[3 * i], path_xyz[3 * i + 1], path_xyz[3 * i + 2]));
+            }
+            if (!path.IsDone()) {
+                return nullptr;
+            }
+            spine = path.Wire();
+        }
+        BRepOffsetAPI_MakePipeShell pipe(spine);
+        pipe.SetTransitionMode(BRepBuilderAPI_RightCorner);
+        // WithContact = false (the profile stays where it is relative to the spine start),
+        // WithCorrection = true (the profile is rotated normal to the spine tangent).
+        pipe.Add(poly.Wire(), Standard_False, Standard_True);
+        pipe.Build();
+        if (!pipe.IsDone()) {
+            return nullptr;
+        }
+        if (!pipe.MakeSolid()) {
+            return nullptr;
+        }
+        return new BearcadShape{pipe.Shape()};
     } catch (const Standard_Failure&) {
         return nullptr;
     } catch (...) {

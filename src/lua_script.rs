@@ -106,6 +106,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::SketchText(_) => "sketch_text",
         SceneElement::SliceOp(_) => "slice_op",
         SceneElement::Revolution(_) => "revolution",
+        SceneElement::FollowPathOp(_) => "follow_path",
         SceneElement::Component(_) => "component",
     }
 }
@@ -129,6 +130,7 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::SketchText(i)
         | SceneElement::SliceOp(i)
         | SceneElement::Revolution(i)
+        | SceneElement::FollowPathOp(i)
         | SceneElement::Component(i) => i,
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
@@ -3327,6 +3329,51 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     body,
                     bodies,
                 })?;
+            }
+            let element = SceneElement::Body(unsafe {
+                tick.state().doc.bodies.len().saturating_sub(1)
+            });
+            apply_optional_name(lua, element, Some(opts))
+        })?,
+    )?;
+
+    // Sweep profiles along a path of sketch lines (SPEC §3.5 Follow path):
+    // `bearcad.follow_path{ circles = {i, ...} and/or polygon = {line, ...},
+    // path = {line, ...}, body = "add"|"cut"?, bodies = {i, ...}? }`. Each face's sketch
+    // is inferred like `extrude`'s; the path lines are chained tip-to-tail.
+    api.set(
+        "follow_path",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            let mut faces: Vec<crate::model::ExtrudeFace> = Vec::new();
+            if let Some(i) = opts.get::<Option<usize>>("circle")? {
+                faces.push(crate::model::ExtrudeFace::Circle(i));
+            }
+            if let Some(list) = opts.get::<Option<Vec<usize>>>("circles")? {
+                faces.extend(list.into_iter().map(crate::model::ExtrudeFace::Circle));
+            }
+            if let Some(lines) = opts.get::<Option<Vec<usize>>>("polygon")? {
+                faces.push(crate::model::ExtrudeFace::Polygon(lines));
+            }
+            if faces.is_empty() {
+                return Err(mlua::Error::external(
+                    "follow_path requires a `circle`/`circles`/`polygon` face",
+                ));
+            }
+            let path: Vec<usize> = opts.get::<Option<Vec<usize>>>("path")?.unwrap_or_default();
+            if path.is_empty() {
+                return Err(mlua::Error::external(
+                    "follow_path requires `path` (a list of line indices)",
+                ));
+            }
+            let bodies: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
+            let body = match opts.get::<Option<String>>("body")?.as_deref() {
+                Some("add") => crate::actions::RevolveBodyChoice::AddTouching,
+                Some("cut") => crate::actions::RevolveBodyChoice::Cut,
+                _ => crate::actions::RevolveBodyChoice::NewBody,
+            };
+            unsafe {
+                tick.exec(Instruction::FollowPath { faces, path, body, bodies })?;
             }
             let element = SceneElement::Body(unsafe {
                 tick.state().doc.bodies.len().saturating_sub(1)

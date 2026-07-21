@@ -3319,6 +3319,16 @@ impl App {
                 .map(|(bi, _)| bi)
                 .collect();
         }
+        if let Some(op) = s.creating_follow_path.as_ref().and_then(|c| c.editing) {
+            return s
+                .doc
+                .bodies
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| !b.deleted && b.source == model::BodySource::FollowPath(op))
+                .map(|(bi, _)| bi)
+                .collect();
+        }
         Vec::new()
     }
 
@@ -3593,6 +3603,137 @@ impl App {
                                 }
                                 self.state.status =
                                     format!("Revolve: cutting {} body(ies)", cr.cut_bodies.len());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Follow-path tool (#follow-path): click coplanar profile faces, then click sketch
+    /// lines to build the path; in Cut mode clicking a body toggles it into the cut set.
+    /// Enter commits.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_follow_path_tool(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+        pick_occlusion: Option<&construction::PickOcclusion>,
+    ) {
+        if self.state.sketch_session.is_some() {
+            return;
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+            && self
+                .state
+                .creating_follow_path
+                .as_ref()
+                .is_some_and(|c| !c.faces.is_empty() && !c.path.is_empty())
+        {
+            self.state.apply(Action::CommitFollowPath);
+            return;
+        }
+        if !ui.input(|i| i.pointer.primary_pressed()) {
+            return;
+        }
+        let Some(pp) = pointer_screen else {
+            return;
+        };
+        // 1) profile faces
+        if let Some(face) = pick_extrude_face(
+            pp,
+            project,
+            &self.state.doc,
+            self.state.cam.eye(),
+            cam,
+            viewport,
+            vp,
+        ) {
+            let sketch = actions::extrude_face_sketch(&self.state.doc, &face);
+            let cf = self
+                .state
+                .creating_follow_path
+                .get_or_insert_with(actions::CreatingFollowPath::default);
+            if cf.sketch.is_some() && cf.sketch != sketch {
+                self.state.status = "Follow-path faces must share one sketch".to_string();
+                return;
+            }
+            cf.sketch = sketch;
+            if let Some(pos) = cf.faces.iter().position(|f| *f == face) {
+                cf.faces.remove(pos);
+            } else {
+                cf.faces.push(face);
+            }
+            self.state.status = format!(
+                "Follow path: {} face(s){}",
+                cf.faces.len(),
+                if cf.path.is_empty() { " — click a path line" } else { "" }
+            );
+            return;
+        }
+        // 2) path lines / 3) cut bodies
+        let gp = cam.ground_point(pp, viewport, vp);
+        if let Some(target) = resolve_pick_target(pp, project, gp, &self.state.doc, pick_occlusion)
+        {
+            match target.kind {
+                construction::PickTargetKind::Line(li) => {
+                    // A line lying *in* the profile plane can't be a path — the sweep must
+                    // leave the plane it starts on.
+                    let in_plane = self
+                        .state
+                        .creating_follow_path
+                        .as_ref()
+                        .and_then(|c| c.faces.first())
+                        .and_then(|f| extrude::face_profile_world(&self.state.doc, f))
+                        .and_then(|(profile, normal)| {
+                            let p0 = *profile.first()?;
+                            let line = self.state.doc.lines.get(li)?;
+                            let (a, b) = face::line_world_endpoints(&self.state.doc, line)?;
+                            Some(
+                                (a - p0).dot(normal).abs() < 1e-3
+                                    && (b - p0).dot(normal).abs() < 1e-3,
+                            )
+                        })
+                        .unwrap_or(false);
+                    if in_plane {
+                        self.state.status =
+                            "Follow path: pick a line that leaves the profile plane".to_string();
+                        return;
+                    }
+                    let cf = self
+                        .state
+                        .creating_follow_path
+                        .get_or_insert_with(actions::CreatingFollowPath::default);
+                    if let Some(pos) = cf.path.iter().position(|&l| l == li) {
+                        cf.path.remove(pos);
+                    } else {
+                        cf.path.push(li);
+                    }
+                    self.state.status = format!(
+                        "Follow path: {} path line(s) — Enter commits",
+                        cf.path.len()
+                    );
+                    return;
+                }
+                ref kind => {
+                    // In Cut mode, clicking a body toggles it into the cut set.
+                    if let Some(bi) = self.pick_whole_body(pp, project, cam, kind) {
+                        if let Some(cf) = self.state.creating_follow_path.as_mut() {
+                            if cf.body_choice == actions::RevolveBodyChoice::Cut {
+                                if let Some(pos) = cf.cut_bodies.iter().position(|b| *b == bi) {
+                                    cf.cut_bodies.remove(pos);
+                                } else {
+                                    cf.cut_bodies.push(bi);
+                                }
+                                self.state.status = format!(
+                                    "Follow path: cutting {} body(ies)",
+                                    cf.cut_bodies.len()
+                                );
                             }
                         }
                     }
@@ -5276,6 +5417,12 @@ impl eframe::App for App {
                 self.tool_button(ui, icons::IconId::Extrude, Tool::Extrude, "Extrude");
                 self.tool_button(ui, icons::IconId::Loft, Tool::Loft, "Loft");
                 self.tool_button(ui, icons::IconId::Revolve, Tool::Revolve, "Revolve");
+                self.tool_button(
+                    ui,
+                    icons::IconId::FollowPath,
+                    Tool::FollowPath,
+                    "Follow path",
+                );
                 self.tool_button(ui, icons::IconId::Combine, Tool::Combine, "Combine");
                 self.tool_button(ui, icons::IconId::Move, Tool::Move, "Move");
                 self.tool_button(ui, icons::IconId::Repeat, Tool::Repeat, "Repeat");
@@ -6382,6 +6529,63 @@ impl eframe::App for App {
                         })
                     })
                     .flatten(),
+                follow_path_edit_start: (self.state.tool != Tool::FollowPath)
+                    .then(|| {
+                        let mut only = None;
+                        for element in self.state.scene_selection.iter() {
+                            match (element, only) {
+                                (SceneElement::FollowPathOp(i), None) => only = Some(i),
+                                _ => return None,
+                            }
+                        }
+                        only.filter(|&i| {
+                            self.state.doc.follow_paths.get(i).is_some_and(|f| !f.deleted)
+                        })
+                    })
+                    .flatten(),
+                follow_path: (self.state.tool == Tool::FollowPath).then(|| {
+                    let cf = self.state.creating_follow_path.as_ref();
+                    context::FollowPathControl {
+                        face_rows: cf
+                            .map(|c| {
+                                c.faces
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(n, f)| {
+                                        let kind = match f {
+                                            model::ExtrudeFace::Circle(_) => "Circle",
+                                            model::ExtrudeFace::Polygon(_) => "Loop",
+                                            model::ExtrudeFace::Boolean { .. } => "Region",
+                                            model::ExtrudeFace::TextGlyph { .. } => "Glyph",
+                                        };
+                                        format!("{kind} {}", n + 1)
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        path_rows: cf
+                            .map(|c| {
+                                c.path
+                                    .iter()
+                                    .map(|&li| {
+                                        names::element_name(
+                                            &self.state.doc,
+                                            SceneElement::Line(li),
+                                        )
+                                        .map(|n| n.to_string())
+                                        .unwrap_or_else(|| format!("line {li}"))
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        // Exactly one picker shows the focus ring: Path once a profile is
+                        // picked but no path line yet, Profile otherwise.
+                        path_focused: cf
+                            .is_some_and(|c| !c.faces.is_empty() && c.path.is_empty()),
+                        body_choice: cf.map(|c| c.body_choice).unwrap_or_default(),
+                        cut_bodies: cf.map(|c| c.cut_bodies.clone()).unwrap_or_default(),
+                    }
+                }),
                 revolve: (self.state.tool == Tool::Revolve).then(|| {
                     let cr = self.state.creating_revolve.as_ref();
                     context::RevolveControl {
@@ -6462,6 +6666,7 @@ impl eframe::App for App {
             let mut calibrate_apply: Option<(context::CalibrateImageControl, String)> = None;
             let mut calibrate_begin: Option<usize> = None;
             let mut revolve_edit: Option<context::RevolveEdit> = None;
+            let mut follow_path_edit: Option<context::FollowPathEdit> = None;
             let mut boolean_edit: Option<context::BooleanEdit> = None;
             let mut boolean_edit_begin: Option<usize> = None;
             let mut move_edit: Option<context::MoveEdit> = None;
@@ -6479,6 +6684,7 @@ impl eframe::App for App {
             let mut slice_edit: Option<context::SliceEdit> = None;
             let mut slice_edit_begin: Option<usize> = None;
             let mut revolve_edit_begin: Option<usize> = None;
+            let mut follow_path_edit_begin: Option<usize> = None;
             let pane_kept_open = show_pane_shell(ctx, "context", "Context", true, 200.0, Some(280.0), |ui| {
                     context::show_pane(
                         ui,
@@ -6507,6 +6713,7 @@ impl eframe::App for App {
                         &mut |edit| selection_edit = Some(edit),
                         &mut |target, edit| tool_picker_edit = Some((target, edit)),
                         &mut |edit| revolve_edit = Some(edit),
+                        &mut |edit| follow_path_edit = Some(edit),
                         &mut |edit| boolean_edit = Some(edit),
                         &mut |op| boolean_edit_begin = Some(op),
                         &mut |edit| move_edit = Some(edit),
@@ -6524,6 +6731,7 @@ impl eframe::App for App {
                         &mut |edit| slice_edit = Some(edit),
                         &mut |op| slice_edit_begin = Some(op),
                         &mut |op| revolve_edit_begin = Some(op),
+                        &mut |op| follow_path_edit_begin = Some(op),
                         &mut |image| calibrate_begin = Some(image),
                         &mut |control, text| calibrate_apply = Some((control, text)),
                     );
@@ -6552,6 +6760,33 @@ impl eframe::App for App {
                         cr.sketch = None;
                     }
                     context::RevolveEdit::ClearAxis => cr.axis = None,
+                }
+            }
+            if let Some(edit) = follow_path_edit {
+                let cf = self
+                    .state
+                    .creating_follow_path
+                    .get_or_insert_with(actions::CreatingFollowPath::default);
+                match edit {
+                    context::FollowPathEdit::BodyChoice(choice) => cf.body_choice = choice,
+                    context::FollowPathEdit::RemoveFace(Some(i)) => {
+                        if i < cf.faces.len() {
+                            cf.faces.remove(i);
+                        }
+                        if cf.faces.is_empty() {
+                            cf.sketch = None;
+                        }
+                    }
+                    context::FollowPathEdit::RemoveFace(None) => {
+                        cf.faces.clear();
+                        cf.sketch = None;
+                    }
+                    context::FollowPathEdit::RemovePath(Some(i)) => {
+                        if i < cf.path.len() {
+                            cf.path.remove(i);
+                        }
+                    }
+                    context::FollowPathEdit::RemovePath(None) => cf.path.clear(),
                 }
             }
             if let Some(remove) = extrude_face_remove {
@@ -7113,6 +7348,30 @@ impl eframe::App for App {
                     self.state.apply(Action::SetTool(Tool::Revolve));
                 }
             }
+            if let Some(op) = follow_path_edit_begin {
+                if let Some(existing) = self.state.doc.follow_paths.get(op).cloned() {
+                    let (body_choice, cut_bodies) = match &existing.mode {
+                        model::FollowMode::NewBody => {
+                            (actions::RevolveBodyChoice::NewBody, Vec::new())
+                        }
+                        model::FollowMode::AddTo(_) => {
+                            (actions::RevolveBodyChoice::AddTouching, Vec::new())
+                        }
+                        model::FollowMode::Cut(b) => {
+                            (actions::RevolveBodyChoice::Cut, b.clone())
+                        }
+                    };
+                    self.state.creating_follow_path = Some(actions::CreatingFollowPath {
+                        sketch: Some(existing.sketch),
+                        faces: existing.faces,
+                        path: existing.path,
+                        body_choice,
+                        cut_bodies,
+                        editing: Some(op),
+                    });
+                    self.state.apply(Action::SetTool(Tool::FollowPath));
+                }
+            }
             if let Some(image) = calibrate_begin {
                 self.state.apply(Action::BeginImageCalibration { image });
             }
@@ -7139,6 +7398,11 @@ impl eframe::App for App {
                     context::PickerTarget::RevolveCut => {
                         if let Some(cr) = self.state.creating_revolve.as_mut() {
                             remove_or_clear(&mut cr.cut_bodies, edit);
+                        }
+                    }
+                    context::PickerTarget::FollowCut => {
+                        if let Some(cf) = self.state.creating_follow_path.as_mut() {
+                            remove_or_clear(&mut cf.cut_bodies, edit);
                         }
                     }
                     context::PickerTarget::MoveTargets => {
@@ -7987,6 +8251,7 @@ fn build_viewport_scene_input<'a>(
     creating_extrusion: Option<&CreatingExtrusion>,
     creating_edge_treatment: Option<&CreatingEdgeTreatment>,
     creating_revolve: Option<&actions::CreatingRevolve>,
+    creating_follow_path: Option<&actions::CreatingFollowPath>,
     creating_loft: Option<&actions::CreatingLoft>,
     creating_repeat: Option<&actions::CreatingRepeat>,
     pending_extrude_target: Option<model::ExtrudeTarget>,
@@ -8135,6 +8400,41 @@ fn build_viewport_scene_input<'a>(
         extrude::loft_mesh(doc, &loft)
     });
 
+    // Live ghost of the in-progress follow-path sweep, meshed the same way a commit would.
+    // In Cut mode with picked bodies the cut *result* previews instead (below), replacing
+    // the carved bodies — mirroring the extrude cut preview (#142).
+    let follow_probe = creating_follow_path.and_then(|cf| {
+        let sketch = cf.sketch?;
+        if cf.faces.is_empty() || cf.path.is_empty() {
+            return None;
+        }
+        Some(model::FollowPath {
+            sketch,
+            faces: cf.faces.clone(),
+            path: cf.path.clone(),
+            mode: model::FollowMode::NewBody,
+            name: None,
+            deleted: false,
+        })
+    });
+    let preview_cut_solids: Vec<(usize, extrude::SolidMesh)> = creating_follow_path
+        .zip(follow_probe.as_ref())
+        .filter(|(cf, _)| {
+            cf.body_choice == actions::RevolveBodyChoice::Cut && !cf.cut_bodies.is_empty()
+        })
+        .map(|(cf, probe)| {
+            let mut cut = probe.clone();
+            cut.mode = model::FollowMode::Cut(cf.cut_bodies.clone());
+            extrude::preview_follow_cut_meshes(doc, &cut)
+        })
+        .unwrap_or_default();
+    let preview_solid = preview_solid.or_else(|| {
+        if !preview_cut_solids.is_empty() {
+            return None;
+        }
+        extrude::follow_path_mesh(doc, follow_probe.as_ref()?)
+    });
+
     let preview_extrusion = creating_extrusion
         .and_then(|ce| {
             (!ce.faces.is_empty()).then(|| model::Extrusion {
@@ -8260,6 +8560,7 @@ fn build_viewport_scene_input<'a>(
         repeat_ghosts,
         editing_extrusion,
         preview_cut_body,
+        preview_cut_solids,
         plane_preview,
         active_sketch_face,
         dimension_labels,
@@ -12359,6 +12660,7 @@ impl App {
                 | Tool::Repeat
                 | Tool::Slice
                 | Tool::Revolve
+                | Tool::FollowPath
         ) {
             Some(construction::PickOcclusion::new(
                 &self.state.doc,
@@ -13205,6 +13507,10 @@ impl App {
             self.show_revolve_angle_input(ui, &project);
         }
 
+        if self.state.tool == Tool::FollowPath {
+            self.handle_follow_path_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
+        }
+
         if self.state.tool == Tool::Combine {
             self.handle_combine_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
         }
@@ -13778,9 +14084,10 @@ impl App {
         }
         // Revolve tool (#303): hover the profile face under the cursor, same affordance as
         // the Extrude tool — clicking it picks the profile. Anything else keeps the generic
-        // hover (lines still light up for the axis pick).
-        if self.state.tool == Tool::Revolve
-            && self.revolve_gizmo_drag.is_none()
+        // hover (lines still light up for the axis pick). The Follow-path tool shares the
+        // affordance (its path lines light up through the generic line hover).
+        if (self.state.tool == Tool::Revolve && self.revolve_gizmo_drag.is_none()
+            || self.state.tool == Tool::FollowPath)
             && self.state.sketch_session.is_none()
         {
             hover_highlight = pointer_screen
@@ -13966,6 +14273,17 @@ impl App {
                     cut_highlight_bodies.extend(cr.cut_bodies.iter().copied());
                 }
             }
+            Tool::FollowPath => {
+                if let Some(cf) = self.state.creating_follow_path.as_ref() {
+                    // Picked profile faces and path lines highlight like selected geometry.
+                    for face in &cf.faces {
+                        folded.extend(extrude::extrude_face_scene_elements(face));
+                    }
+                    folded.extend(cf.path.iter().map(|&li| SceneElement::Line(li)));
+                    // The cut bodies are consumed destructively → red.
+                    cut_highlight_bodies.extend(cf.cut_bodies.iter().copied());
+                }
+            }
             _ => {}
         }
         let render_selection = if folded.is_empty() {
@@ -14078,6 +14396,7 @@ impl App {
             self.state.creating_extrusion.as_ref(),
             self.state.creating_edge_treatment.as_ref(),
             self.state.creating_revolve.as_ref(),
+            self.state.creating_follow_path.as_ref(),
             self.state.creating_loft.as_ref(),
             self.state.creating_repeat.as_ref(),
             self.pending_extrude_target.clone(),
@@ -15199,6 +15518,16 @@ impl App {
                     "Revolve — click one or more coplanar profile faces"
                 }
             }
+            Tool::FollowPath => {
+                let cf = self.state.creating_follow_path.as_ref();
+                if cf.is_some_and(|c| !c.faces.is_empty() && !c.path.is_empty()) {
+                    "Follow path — click more faces or path lines to add/remove • Enter: commit • Esc: cancel"
+                } else if cf.is_some_and(|c| !c.faces.is_empty()) {
+                    "Follow path — click a line (crossing the profile plane) for the path"
+                } else {
+                    "Follow path — click one or more coplanar profile faces"
+                }
+            }
             Tool::Combine => {
                 let cb = self.state.creating_boolean.as_ref();
                 if cb.is_some_and(|c| !c.a.is_empty()) {
@@ -16203,6 +16532,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             pending.clone(),
             None,
             None,
@@ -16272,6 +16602,7 @@ mod tests {
             &element_visibility,
             &selection,
             &health,
+            None,
             None,
             None,
             None,
@@ -16371,6 +16702,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 state.creating_loft.as_ref(),
                 None,
                 None,
@@ -16459,6 +16791,7 @@ mod tests {
             None,
             None,
             state.creating_edge_treatment.as_ref(),
+            None,
             None,
             None,
             None,

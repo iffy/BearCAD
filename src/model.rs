@@ -1012,6 +1012,8 @@ pub enum BodySource {
     Loft(usize),
     /// A revolved solid (#revolve); indexes `Document::revolutions`.
     Revolve(usize),
+    /// A swept solid (the Follow-path tool, #follow-path); indexes `Document::follow_paths`.
+    FollowPath(usize),
     /// One repeated instance of one input of a linear repeat (Repeat tool): `op` indexes
     /// `Document::repeat_ops`; `target` is the input's position in the op's target list;
     /// `instance` counts from 1 (the original body is instance 0).
@@ -1078,6 +1080,7 @@ impl BodySource {
             Self::Solid { add, .. } => add.as_slice(),
             Self::Loft(_)
             | Self::Revolve(_)
+            | Self::FollowPath(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
             | Self::Repeated { .. }
@@ -1095,6 +1098,7 @@ impl BodySource {
             | Self::Imported(_)
             | Self::Loft(_)
             | Self::Revolve(_)
+            | Self::FollowPath(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
             | Self::Repeated { .. }
@@ -1110,6 +1114,7 @@ impl BodySource {
             | Self::Solid { .. }
             | Self::Loft(_)
             | Self::Revolve(_)
+            | Self::FollowPath(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
             | Self::Repeated { .. }
@@ -1135,6 +1140,7 @@ impl BodySource {
             Self::Imported(_)
             | Self::Loft(_)
             | Self::Revolve(_)
+            | Self::FollowPath(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
             | Self::Repeated { .. }
@@ -1163,6 +1169,7 @@ impl BodySource {
             Self::Imported(_)
             | Self::Loft(_)
             | Self::Revolve(_)
+            | Self::FollowPath(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
             | Self::Repeated { .. }
@@ -1197,6 +1204,7 @@ impl BodySource {
             | Self::Imported(_)
             | Self::Loft(_)
             | Self::Revolve(_)
+            | Self::FollowPath(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
             | Self::Repeated { .. }
@@ -1305,6 +1313,36 @@ pub struct Revolution {
     pub symmetric: bool,
     /// How the solid lands (new body / fuse into bodies / cut bodies).
     pub mode: RevolveMode,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+/// How a swept solid lands in the document (#follow-path): its own body, fused into
+/// existing bodies, or subtracted from existing bodies (the cut list is user-picked).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FollowMode {
+    NewBody,
+    AddTo(Vec<usize>),
+    Cut(Vec<usize>),
+}
+
+/// A swept solid (the Follow-path tool, #follow-path): one or more coplanar closed
+/// profiles swept along a path of sketch lines (straight or bezier) that intersects the
+/// profile plane. Parametric like everything else — the solid is rebuilt from the live
+/// profiles and path on every recompute.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FollowPath {
+    pub sketch: SketchId,
+    /// Closed profiles to sweep, same shape as [`Extrusion::faces`].
+    pub faces: Vec<ExtrudeFace>,
+    /// Path segments as `Document::lines` indices; chained tip-to-tail on evaluation
+    /// (pick order doesn't matter).
+    pub path: Vec<usize>,
+    /// How the solid lands (new body / fuse into bodies / cut bodies).
+    pub mode: FollowMode,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -1933,6 +1971,8 @@ pub enum ShapeKind {
     /// A loft feature (its body is a separate `Body` entry).
     Loft,
     Revolution,
+    /// A follow-path sweep (its body is a separate `Body` entry).
+    FollowPath,
     /// A boolean operation between bodies (its output bodies are separate `Body` entries).
     BooleanOperation,
     /// A move operation on bodies (its output bodies are separate `Body` entries).
@@ -2508,6 +2548,9 @@ pub struct Document {
     /// Revolved solids (#revolve).
     #[serde(default)]
     pub revolutions: Vec<Revolution>,
+    /// Swept solids (the Follow-path tool, #follow-path).
+    #[serde(default)]
+    pub follow_paths: Vec<FollowPath>,
     /// Boolean operations between bodies (the Combine tool).
     #[serde(default)]
     pub boolean_ops: Vec<BooleanOperation>,
@@ -2601,6 +2644,7 @@ pub enum ComponentMember {
     RepeatOp,
     SliceOp,
     Revolution,
+    FollowPath,
     Drawing,
 }
 
@@ -2710,6 +2754,7 @@ impl Default for Document {
             tracing_images: Vec::new(),
             lofts: Vec::new(),
             revolutions: Vec::new(),
+            follow_paths: Vec::new(),
             boolean_ops: Vec::new(),
             move_ops: Vec::new(),
             repeat_ops: Vec::new(),

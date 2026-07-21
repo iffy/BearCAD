@@ -245,6 +245,14 @@ pub enum Instruction {
         body: crate::actions::RevolveBodyChoice,
         bodies: Vec<usize>,
     },
+    /// Sweep profiles along a path of sketch lines (SPEC §3.5 Follow path). Sketch
+    /// inferred per face.
+    FollowPath {
+        faces: Vec<crate::model::ExtrudeFace>,
+        path: Vec<usize>,
+        body: crate::actions::RevolveBodyChoice,
+        bodies: Vec<usize>,
+    },
     /// Boolean operation between whole bodies (the Combine tool).
     CreateBooleanOp {
         kind: crate::model::BooleanOpKind,
@@ -874,6 +882,43 @@ impl Instruction {
                 }
                 format!("bearcad.revolve{{ {} }}", parts.join(", "))
             }
+            Instruction::FollowPath { faces, path, body, bodies } => {
+                use crate::model::ExtrudeFace;
+                let index_list = |indices: &[usize]| -> String {
+                    indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+                };
+                let mut parts = Vec::new();
+                let circles: Vec<usize> = faces
+                    .iter()
+                    .filter_map(|f| match f {
+                        ExtrudeFace::Circle(i) => Some(*i),
+                        _ => None,
+                    })
+                    .collect();
+                if !circles.is_empty() {
+                    parts.push(format!("circles = {{{}}}", index_list(&circles)));
+                }
+                for f in faces {
+                    if let ExtrudeFace::Polygon(lines) = f {
+                        parts.push(format!("polygon = {{{}}}", index_list(lines)));
+                    }
+                }
+                parts.push(format!("path = {{{}}}", index_list(path)));
+                match body {
+                    crate::actions::RevolveBodyChoice::NewBody => {}
+                    crate::actions::RevolveBodyChoice::AddTouching => {
+                        parts.push("body = \"add\"".to_string());
+                        if !bodies.is_empty() {
+                            parts.push(format!("bodies = {{{}}}", index_list(bodies)));
+                        }
+                    }
+                    crate::actions::RevolveBodyChoice::Cut => {
+                        parts.push("body = \"cut\"".to_string());
+                        parts.push(format!("bodies = {{{}}}", index_list(bodies)));
+                    }
+                }
+                format!("bearcad.follow_path{{ {} }}", parts.join(", "))
+            }
             Instruction::CreateBooleanOp { kind, a, b, keep_b } => {
                 boolean_op_lua("bearcad.combine", None, *kind, a, b, *keep_b)
             }
@@ -1474,6 +1519,11 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        SceneElement::FollowPathOp(i) => ElementScriptTokens {
+            kind: "follow_path",
+            index: i,
+            point: None,
+        },
         SceneElement::Component(i) => ElementScriptTokens {
             kind: "component",
             index: i,
@@ -1979,6 +2029,27 @@ pub fn instruction_for_new_revolution(doc: &crate::model::Document) -> Option<In
     })
 }
 
+/// Replayable `Instruction::FollowPath` for the sweep the interactive tool just created
+/// (mirrors `instruction_for_new_revolution`).
+pub fn instruction_for_new_follow_path(doc: &crate::model::Document) -> Option<Instruction> {
+    let fp = doc.follow_paths.last()?;
+    let (body, bodies) = match &fp.mode {
+        crate::model::FollowMode::NewBody => {
+            (crate::actions::RevolveBodyChoice::NewBody, Vec::new())
+        }
+        crate::model::FollowMode::AddTo(b) => {
+            (crate::actions::RevolveBodyChoice::AddTouching, b.clone())
+        }
+        crate::model::FollowMode::Cut(b) => (crate::actions::RevolveBodyChoice::Cut, b.clone()),
+    };
+    Some(Instruction::FollowPath {
+        faces: fp.faces.clone(),
+        path: fp.path.clone(),
+        body,
+        bodies,
+    })
+}
+
 /// Render a boolean-operation call (`bearcad.combine{}` / `bearcad.edit_boolean{}`).
 fn boolean_op_lua(
     call: &str,
@@ -2341,6 +2412,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
         Tool::Offset => "offset",
         Tool::Loft => "loft",
         Tool::Revolve => "revolve",
+        Tool::FollowPath => "follow_path",
         Tool::Combine => "combine",
         Tool::Move => "move",
         Tool::Repeat => "repeat",
@@ -3850,6 +3922,26 @@ impl ScriptRunner {
                     axis,
                     angle_deg,
                     symmetric,
+                    body,
+                    bodies,
+                });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::FollowPath { faces, path, body, bodies } => {
+                let Some(sketch) = faces
+                    .first()
+                    .and_then(|f| crate::actions::extrude_face_sketch(&state.doc, f))
+                else {
+                    self.record_action_error(crate::actions::ActionResult::Err(
+                        "follow-path face does not exist".to_string(),
+                    ));
+                    return StepResult::Continue;
+                };
+                let result = state.apply(Action::CreateFollowPath {
+                    sketch,
+                    faces,
+                    path,
                     body,
                     bodies,
                 });

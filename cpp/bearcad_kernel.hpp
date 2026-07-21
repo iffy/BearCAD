@@ -48,6 +48,14 @@ BearcadShape* bearcad_shape_prism(const double* xyz, unsigned long n_pts,
 BearcadShape* bearcad_shape_loft(const double* bottom_xyz, const double* top_xyz,
                                  unsigned long n_pts);
 
+// Sweep a closed planar profile (`n_profile` points, x,y,z,..., not repeated) along a
+// path polyline (`n_path` >= 2 points). `smooth` != 0 interpolates the path points with
+// a B-spline spine (curved path); 0 keeps the polyline's sharp corners (right-corner
+// transitions). NULL on failure.
+BearcadShape* bearcad_shape_sweep(const double* profile_xyz, unsigned long n_profile,
+                                  const double* path_xyz, unsigned long n_path,
+                                  int smooth);
+
 // Boolean combine two shapes into a new owned shape (inputs untouched). `op`:
 // 0 = fuse (a ∪ b), 1 = cut (a − b), 2 = common (a ∩ b). NULL on failure.
 BearcadShape* bearcad_shape_boolean(const BearcadShape* a, const BearcadShape* b, int op);

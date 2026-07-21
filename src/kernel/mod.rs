@@ -52,6 +52,13 @@ mod ffi {
             top_xyz: *const f64,
             n_pts: c_ulong,
         ) -> *mut BearcadShape;
+        pub fn bearcad_shape_sweep(
+            profile_xyz: *const f64,
+            n_profile: c_ulong,
+            path_xyz: *const f64,
+            n_path: c_ulong,
+            smooth: c_int,
+        ) -> *mut BearcadShape;
         pub fn bearcad_shape_cylinder(
             cx: f64,
             cy: f64,
@@ -333,6 +340,33 @@ impl Shape {
                 axis.z as f64,
                 angle_rad,
                 symmetric as std::os::raw::c_int,
+            )
+        };
+        (!raw.is_null()).then_some(Shape { raw })
+    }
+
+    /// Sweep a closed planar profile loop (world-space points, first point not repeated)
+    /// along a path polyline (#follow-path). `smooth` interpolates the path points with a
+    /// spline (curved sketch segments); otherwise the spine keeps its sharp polyline
+    /// corners. `None` on degenerate input or kernel failure.
+    pub fn sweep(profile: &[glam::Vec3], path: &[glam::Vec3], smooth: bool) -> Option<Shape> {
+        if profile.len() < 3 || path.len() < 2 {
+            return None;
+        }
+        let flat = |pts: &[glam::Vec3]| -> Vec<f64> {
+            pts.iter()
+                .flat_map(|p| [p.x as f64, p.y as f64, p.z as f64])
+                .collect()
+        };
+        let pr = flat(profile);
+        let pa = flat(path);
+        let raw = unsafe {
+            ffi::bearcad_shape_sweep(
+                pr.as_ptr(),
+                profile.len() as std::os::raw::c_ulong,
+                pa.as_ptr(),
+                path.len() as std::os::raw::c_ulong,
+                smooth as std::os::raw::c_int,
             )
         };
         (!raw.is_null()).then_some(Shape { raw })

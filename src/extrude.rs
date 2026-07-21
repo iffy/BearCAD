@@ -573,6 +573,9 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
         crate::model::BodySource::Revolve(ri) => {
             occt_revolution_shape(doc, doc.revolutions.get(ri).filter(|r| !r.deleted)?)?
         }
+        crate::model::BodySource::FollowPath(fi) => {
+            occt_follow_path_shape(doc, doc.follow_paths.get(fi).filter(|f| !f.deleted)?)?
+        }
         crate::model::BodySource::Boolean { op, solid } => {
             return occt_boolean_output_shape(doc, op, solid);
         }
@@ -595,6 +598,17 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
     for (ri, is_cut) in revolutions_targeting(doc, body_index) {
         let rev = &doc.revolutions[ri];
         let shape = occt_revolution_shape(doc, rev)?;
+        let op = if is_cut {
+            crate::kernel::BoolOp::Cut
+        } else {
+            crate::kernel::BoolOp::Fuse
+        };
+        solid = solid.boolean(&shape, op)?;
+    }
+    // Follow-path sweeps that fuse into / cut this body (#follow-path).
+    for (fi, is_cut) in follow_paths_targeting(doc, body_index) {
+        let fp = &doc.follow_paths[fi];
+        let shape = occt_follow_path_shape(doc, fp)?;
         let op = if is_cut {
             crate::kernel::BoolOp::Cut
         } else {
@@ -1286,9 +1300,10 @@ pub fn occt_edge_treatments_feasible(
 pub fn kernel_fallback_cut_warning(doc: &Document) -> Option<String> {
     for (i, body) in doc.bodies.iter().enumerate() {
         let cut_by_revolve = revolutions_targeting(doc, i).iter().any(|(_, cut)| *cut);
+        let cut_by_follow = follow_paths_targeting(doc, i).iter().any(|(_, cut)| *cut);
         if body.deleted
             || body.source.imported_mesh_index().is_some()
-            || (body.source.cut_extrusion_indices().is_empty() && !cut_by_revolve)
+            || (body.source.cut_extrusion_indices().is_empty() && !cut_by_revolve && !cut_by_follow)
         {
             continue;
         }
@@ -1465,6 +1480,305 @@ pub fn revolutions_targeting(
             }
             crate::model::RevolveMode::Cut(bodies) if bodies.contains(&body_index) => {
                 Some((ri, true))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Ordered world-space polyline of a follow-path's picked path lines (#follow-path): each
+/// line is sampled bezier-aware, the segments are chained tip-to-tail regardless of pick
+/// order, and the chain is oriented to start at the end nearer the profile plane. `None`
+/// when a path line died, the segments don't form one connected chain, or the result
+/// degenerates below two distinct points.
+pub fn follow_path_polyline(
+    doc: &Document,
+    fp: &crate::model::FollowPath,
+) -> Option<Vec<Vec3>> {
+    /// Endpoint-matching tolerance (mm): path segments picked from a sketch chain share
+    /// exact endpoints; the slack only absorbs float noise from the sketch solver.
+    const TOL: f32 = 1e-2;
+    let mut segs: Vec<Vec<Vec3>> = Vec::new();
+    for &li in &fp.path {
+        let line = doc.lines.get(li)?;
+        if !crate::document_lifecycle::line_alive(doc, li) {
+            return None;
+        }
+        let pts = crate::face::line_world_polyline(doc, line)?;
+        if pts.len() >= 2 {
+            segs.push(pts);
+        }
+    }
+    if segs.is_empty() {
+        return None;
+    }
+    let mut chain = segs.remove(0);
+    while !segs.is_empty() {
+        let head = *chain.first()?;
+        let tail = *chain.last()?;
+        let mut attached = false;
+        for i in 0..segs.len() {
+            let s_first = *segs[i].first()?;
+            let s_last = *segs[i].last()?;
+            if s_first.distance(tail) < TOL {
+                chain.extend(segs.remove(i).into_iter().skip(1));
+            } else if s_last.distance(tail) < TOL {
+                let mut s = segs.remove(i);
+                s.reverse();
+                chain.extend(s.into_iter().skip(1));
+            } else if s_last.distance(head) < TOL {
+                let mut s = segs.remove(i);
+                s.pop();
+                s.extend(chain);
+                chain = s;
+            } else if s_first.distance(head) < TOL {
+                let mut s = segs.remove(i);
+                s.reverse();
+                s.pop();
+                s.extend(chain);
+                chain = s;
+            } else {
+                continue;
+            }
+            attached = true;
+            break;
+        }
+        if !attached {
+            // A leftover segment touches neither chain end: the path isn't one chain.
+            return None;
+        }
+    }
+    // Sweep from the end nearer the profile plane, so the solid grows away from the faces.
+    let (profile, normal) = fp.faces.first().and_then(|f| face_profile_world(doc, f))?;
+    let p0 = *profile.first()?;
+    if ((*chain.last()? - p0).dot(normal)).abs() < ((*chain.first()? - p0).dot(normal)).abs() {
+        chain.reverse();
+    }
+    // Drop zero-length steps so every window has a real tangent.
+    chain.dedup_by(|a, b| a.distance(*b) < 1e-5);
+    (chain.len() >= 2).then_some(chain)
+}
+
+/// Per-point sweep frames along `path` (#follow-path): parallel-transport rotations that
+/// carry the profile plane onto each point's tangent without accumulating twist. The
+/// first frame turns the profile normal (flipped to face along the path if needed) onto
+/// the starting tangent; each following frame adds only the tangent-to-tangent turn.
+fn follow_path_frames(path: &[Vec3], profile_normal: Vec3) -> Vec<glam::Quat> {
+    let n = path.len();
+    let seg_dir = |i: usize| (path[i + 1] - path[i]).normalize_or_zero();
+    let mut tangents: Vec<Vec3> = (0..n)
+        .map(|i| {
+            if i == 0 {
+                seg_dir(0)
+            } else if i == n - 1 {
+                seg_dir(n - 2)
+            } else {
+                (seg_dir(i - 1) + seg_dir(i)).normalize_or_zero()
+            }
+        })
+        .collect();
+    for i in 0..n {
+        // A doubled point or a hairpin corner averages to zero; coast on the neighbor.
+        if tangents[i].length_squared() < 1e-8 {
+            tangents[i] = if i > 0 { tangents[i - 1] } else { Vec3::Z };
+        }
+    }
+    let n0 = if profile_normal.dot(tangents[0]) < 0.0 {
+        -profile_normal
+    } else {
+        profile_normal
+    };
+    let mut q = glam::Quat::from_rotation_arc(n0.normalize_or_zero(), tangents[0]);
+    let mut frames = Vec::with_capacity(n);
+    frames.push(q);
+    for i in 1..n {
+        q = glam::Quat::from_rotation_arc(tangents[i - 1], tangents[i]) * q;
+        frames.push(q);
+    }
+    frames
+}
+
+/// Hand-rolled sweep mesh for a follow-path (#follow-path) — the no-kernel fallback and
+/// the live ghost preview: each profile ring is carried to every path point on
+/// parallel-transport frames, walls are stitched between consecutive rings, and both end
+/// profiles are capped.
+pub fn follow_path_mesh(doc: &Document, fp: &crate::model::FollowPath) -> Option<SolidMesh> {
+    let path = follow_path_polyline(doc, fp)?;
+    let anchor = path[0];
+    let mut mesh = SolidMesh::default();
+    for face in &fp.faces {
+        let (profile, normal) = face_profile_world(doc, face)?;
+        if profile.len() < 3 {
+            return None;
+        }
+        let frames = follow_path_frames(&path, normal);
+        let rings: Vec<Vec<Vec3>> = path
+            .iter()
+            .zip(&frames)
+            .map(|(&p, &q)| profile.iter().map(|&v| p + q * (v - anchor)).collect())
+            .collect();
+        // Orientation reference: the transported profile centroid — a point locally inside
+        // the solid at every sweep step (same trick as [`revolve_mesh`]).
+        let centroid = profile.iter().copied().sum::<Vec3>() / profile.len() as f32;
+        let centroids: Vec<Vec3> = path
+            .iter()
+            .zip(&frames)
+            .map(|(&p, &q)| p + q * (centroid - anchor))
+            .collect();
+        let n = profile.len();
+        let steps = rings.len() - 1;
+        for (i, w) in rings.windows(2).enumerate() {
+            let (ra, rb) = (&w[0], &w[1]);
+            let interior = (centroids[i] + centroids[i + 1]) * 0.5;
+            for k in 0..n {
+                let k1 = (k + 1) % n;
+                push_oriented(&mut mesh.triangles, [ra[k], ra[k1], rb[k1]], interior);
+                push_oriented(&mut mesh.triangles, [ra[k], rb[k1], rb[k]], interior);
+            }
+        }
+        // Cap interiors sit half a step *into* the sweep so each cap faces outward.
+        triangulate_cap(rings.first()?, centroids[0].lerp(centroids[1], 0.5), &mut mesh.triangles);
+        triangulate_cap(
+            rings.last()?,
+            centroids[steps].lerp(centroids[steps - 1], 0.5),
+            &mut mesh.triangles,
+        );
+    }
+    (!mesh.is_empty()).then_some(mesh)
+}
+
+/// Real BREP swept solid via the kernel (#follow-path): each profile piped along the
+/// path wire, multiple profiles fused. `None` when any face/path is degenerate or the
+/// kernel can't build it (callers fall back to [`follow_path_mesh`]).
+#[cfg(feature = "occt")]
+pub fn occt_follow_path_shape(
+    doc: &Document,
+    fp: &crate::model::FollowPath,
+) -> Option<crate::kernel::Shape> {
+    let path = follow_path_polyline(doc, fp)?;
+    // A curved segment anywhere makes the whole spine a smooth spline; an all-straight
+    // chain keeps its sharp corners.
+    let smooth = fp
+        .path
+        .iter()
+        .any(|&li| doc.lines.get(li).is_some_and(|l| l.bezier.is_some()));
+    // A spline is fitted through the sample points with uniform parameterization, so
+    // straight segments (2 samples) mixed with curved ones (25) would wiggle at the
+    // density jump — resample evenly by arc length first.
+    let path = if smooth { resample_polyline_by_arc_length(&path, 64) } else { path };
+    let mut fused: Option<crate::kernel::Shape> = None;
+    for face in &fp.faces {
+        let shape = occt_face_sweep_solid(doc, face, &path, smooth)?;
+        fused = Some(match fused {
+            None => shape,
+            Some(acc) => acc.boolean(&shape, crate::kernel::BoolOp::Fuse)?,
+        });
+    }
+    fused
+}
+
+/// BREP solid for sweeping a single face along the path, mirroring [`occt_face_solid`]:
+/// a `Boolean` face sweeps each operand and applies the same boolean to the swept solids,
+/// so an annulus profile sweeps into a tube. Leaf faces sweep their boundary loop.
+#[cfg(feature = "occt")]
+fn occt_face_sweep_solid(
+    doc: &Document,
+    face: &ExtrudeFace,
+    path: &[Vec3],
+    smooth: bool,
+) -> Option<crate::kernel::Shape> {
+    if let ExtrudeFace::Boolean { op, a, b } = face {
+        let sa = occt_face_sweep_solid(doc, a, path, smooth)?;
+        let sb = occt_face_sweep_solid(doc, b, path, smooth)?;
+        let boolop = match op {
+            crate::model::BooleanOp::Difference => crate::kernel::BoolOp::Cut,
+            crate::model::BooleanOp::Intersection => crate::kernel::BoolOp::Common,
+        };
+        return sa.boolean(&sb, boolop);
+    }
+    let (profile, _normal) = face_profile_world(doc, face)?;
+    if profile.len() < 3 {
+        return None;
+    }
+    crate::kernel::Shape::sweep(&profile, path, smooth)
+}
+
+thread_local! {
+    /// Single-slot memo for [`preview_follow_cut_meshes`]: `(key, meshes)`. The draft only
+    /// changes on a pick (no gizmo drag), so idle frames are free.
+    static FOLLOW_CUT_PREVIEW_CACHE: std::cell::RefCell<((u64, u64), Vec<(usize, SolidMesh)>)> =
+        std::cell::RefCell::new(((0, 0), Vec::new()));
+}
+
+/// Cut-result meshes for the in-progress follow-path cut preview: each target body of the
+/// draft's `Cut` list meshed from a scratch document with the draft sweep appended, so the
+/// preview shows the finished carve (mirroring the extrude cut preview, #142). Bodies the
+/// scratch build can't mesh are simply absent. Cached per `(document, draft)` state.
+pub fn preview_follow_cut_meshes(
+    doc: &Document,
+    fp: &crate::model::FollowPath,
+) -> Vec<(usize, SolidMesh)> {
+    let crate::model::FollowMode::Cut(bodies) = &fp.mode else {
+        return Vec::new();
+    };
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    format!("{fp:?}").hash(&mut h);
+    let key = (document_mesh_fingerprint(doc), h.finish());
+    FOLLOW_CUT_PREVIEW_CACHE.with(|cache| {
+        if cache.borrow().0 == key {
+            return cache.borrow().1.clone();
+        }
+        let mut scratch = doc.clone();
+        scratch.follow_paths.push(fp.clone());
+        let meshes: Vec<(usize, SolidMesh)> = bodies
+            .iter()
+            .filter_map(|&bi| body_solid_mesh_uncached(&scratch, bi).map(|m| (bi, m)))
+            .collect();
+        *cache.borrow_mut() = (key, meshes.clone());
+        meshes
+    })
+}
+
+/// Resample a polyline to `n + 1` points evenly spaced along its arc length. Keeps the
+/// endpoints exact; interior points interpolate on the original segments.
+#[cfg(feature = "occt")]
+fn resample_polyline_by_arc_length(path: &[Vec3], n: usize) -> Vec<Vec3> {
+    let total: f32 = path.windows(2).map(|w| w[0].distance(w[1])).sum();
+    if total <= 1e-6 || path.len() < 2 {
+        return path.to_vec();
+    }
+    let mut out = Vec::with_capacity(n + 1);
+    out.push(path[0]);
+    let mut seg = 0usize;
+    let mut seg_start_len = 0.0f32;
+    let mut seg_len = path[0].distance(path[1]);
+    for i in 1..n {
+        let target = total * i as f32 / n as f32;
+        while seg_start_len + seg_len < target && seg + 2 < path.len() {
+            seg_start_len += seg_len;
+            seg += 1;
+            seg_len = path[seg].distance(path[seg + 1]);
+        }
+        let t = if seg_len > 1e-9 { (target - seg_start_len) / seg_len } else { 0.0 };
+        out.push(path[seg].lerp(path[seg + 1], t.clamp(0.0, 1.0)));
+    }
+    out.push(*path.last().unwrap());
+    out
+}
+
+/// The follow-paths fusing into (`false`) or cutting (`true`) `body_index`.
+pub fn follow_paths_targeting(doc: &Document, body_index: usize) -> Vec<(usize, bool)> {
+    doc.follow_paths
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| !f.deleted)
+        .filter_map(|(fi, f)| match &f.mode {
+            crate::model::FollowMode::AddTo(bodies) if bodies.contains(&body_index) => {
+                Some((fi, false))
+            }
+            crate::model::FollowMode::Cut(bodies) if bodies.contains(&body_index) => {
+                Some((fi, true))
             }
             _ => None,
         })
@@ -1771,6 +2085,18 @@ pub fn selection_world_bounds(
                     }
                 }
             }
+            SceneElement::FollowPathOp(op) => {
+                // The swept solid's body is linked by `BodySource::FollowPath` (NewBody mode).
+                for bi in 0..doc.bodies.len() {
+                    if doc.bodies[bi].source == crate::model::BodySource::FollowPath(op) {
+                        if let Some((min, max)) = body_solid_mesh(doc, bi).and_then(|m| m.bounds())
+                        {
+                            extend(min);
+                            extend(max);
+                        }
+                    }
+                }
+            }
             SceneElement::Body(bi) => {
                 if let Some((min, max)) = body_solid_mesh(doc, bi).and_then(|m| m.bounds()) {
                     extend(min);
@@ -1888,6 +2214,7 @@ fn document_mesh_fingerprint(doc: &Document) -> u64 {
             &doc.slice_ops,
             &doc.boolean_ops,
             &doc.revolutions,
+            &doc.follow_paths,
             &doc.lofts,
         ),
     )
@@ -2026,6 +2353,11 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
         let rev = doc.revolutions.get(ri).filter(|r| !r.deleted)?;
         return revolve_mesh(doc, rev);
     }
+    #[cfg(not(feature = "occt"))]
+    if let crate::model::BodySource::FollowPath(fi) = body.source {
+        let fp = doc.follow_paths.get(fi).filter(|f| !f.deleted)?;
+        return follow_path_mesh(doc, fp);
+    }
     // Fuse the body's added extrusions into one real solid via OCCT and subtract its cut
     // extrusions (#86/#35) when they're all kernel-representable; otherwise fall back to
     // per-extrusion meshing below.
@@ -2048,6 +2380,10 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
         let rev = doc.revolutions.get(ri).filter(|r| !r.deleted)?;
         return revolve_mesh(doc, rev);
     }
+    if let crate::model::BodySource::FollowPath(fi) = body.source {
+        let fp = doc.follow_paths.get(fi).filter(|f| !f.deleted)?;
+        return follow_path_mesh(doc, fp);
+    }
     let mut mesh = SolidMesh::default();
     for &ei in body.source.extrusion_indices() {
         let Some(extrusion) = doc.extrusions.get(ei) else {
@@ -2065,6 +2401,14 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
             continue;
         }
         if let Some(solid) = revolve_mesh(doc, &doc.revolutions[ri]) {
+            mesh.triangles.extend(solid.triangles);
+        }
+    }
+    for (fi, is_cut) in follow_paths_targeting(doc, body_index) {
+        if is_cut {
+            continue;
+        }
+        if let Some(solid) = follow_path_mesh(doc, &doc.follow_paths[fi]) {
             mesh.triangles.extend(solid.triangles);
         }
     }
@@ -4719,6 +5063,134 @@ mod tests {
         );
     }
 
+    /// A vertical construction plane (normal Y, u→X, v→Z) for follow-path tests: sketch
+    /// lines drawn on it run through the ground plane rather than in it.
+    fn vertical_path_sketch(doc: &mut Document) -> crate::model::SketchId {
+        doc.construction_planes.push(crate::model::ConstructionPlane {
+            origin: Vec3::ZERO,
+            normal: Vec3::Y,
+            u_axis: Vec3::X,
+            v_axis: Vec3::Z,
+            parent: crate::model::ConstructionPlaneParent::Root,
+            definition: crate::face::default_xy_plane_definition(),
+            repeat_instance: None,
+            name: None,
+            deleted: false,
+        });
+        doc.add_sketch(FaceId::ConstructionPlane(doc.construction_planes.len() - 1))
+    }
+
+    /// #follow-path: a 10x10 profile swept along a straight 30mm path normal to its plane
+    /// is a plain box — the fallback sweep mesh closes to the exact prism volume.
+    #[test]
+    fn follow_path_straight_sweep_makes_a_box() {
+        let (mut doc, sketch) = sketch_doc();
+        let profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
+        let path_sketch = vertical_path_sketch(&mut doc);
+        doc.lines.push(crate::model::Line::from_local_endpoints(path_sketch, 5.0, 0.0, 5.0, 30.0));
+        let fp = crate::model::FollowPath {
+            sketch,
+            faces: vec![profile],
+            path: vec![doc.lines.len() - 1],
+            mode: crate::model::FollowMode::NewBody,
+            name: None,
+            deleted: false,
+        };
+        let vol = mesh_signed_volume(&follow_path_mesh(&doc, &fp).expect("sweep mesh")).abs();
+        assert!(
+            (vol - 3000.0).abs() < 30.0,
+            "10x10 profile along a straight 30mm path should be ~3000, got {vol}"
+        );
+    }
+
+    /// #follow-path: segments picked out of order chain tip-to-tail, and the chain starts
+    /// at the end on the profile plane. An L path (up 20, across 15) picked far-leg-first.
+    #[test]
+    fn follow_path_chains_out_of_order_segments() {
+        let (mut doc, sketch) = sketch_doc();
+        let profile = rect_profile(&mut doc, sketch, -2.0, -2.0, 4.0, 4.0);
+        let ps = vertical_path_sketch(&mut doc);
+        doc.lines.push(crate::model::Line::from_local_endpoints(ps, 0.0, 20.0, 15.0, 20.0));
+        doc.lines.push(crate::model::Line::from_local_endpoints(ps, 0.0, 0.0, 0.0, 20.0));
+        let fp = crate::model::FollowPath {
+            sketch,
+            faces: vec![profile],
+            path: vec![doc.lines.len() - 2, doc.lines.len() - 1],
+            mode: crate::model::FollowMode::NewBody,
+            name: None,
+            deleted: false,
+        };
+        let path = follow_path_polyline(&doc, &fp).expect("chained polyline");
+        assert!(
+            path.first().unwrap().z.abs() < 1e-3,
+            "path must start on the profile plane, starts at {:?}",
+            path.first().unwrap()
+        );
+        assert!(
+            (*path.last().unwrap() - Vec3::new(15.0, 0.0, 20.0)).length() < 1e-3,
+            "path must end at the far leg's tip, ends at {:?}",
+            path.last().unwrap()
+        );
+        // The swept solid closes: a 4x4 section over the ~35mm L, corner effects aside.
+        let vol = mesh_signed_volume(&follow_path_mesh(&doc, &fp).expect("sweep mesh")).abs();
+        assert!(vol > 300.0 && vol < 700.0, "L-sweep volume plausible, got {vol}");
+    }
+
+    /// #follow-path: a disconnected extra segment refuses to chain (no silent gaps).
+    #[test]
+    fn follow_path_rejects_a_disconnected_path() {
+        let (mut doc, sketch) = sketch_doc();
+        let profile = rect_profile(&mut doc, sketch, -2.0, -2.0, 4.0, 4.0);
+        let ps = vertical_path_sketch(&mut doc);
+        doc.lines.push(crate::model::Line::from_local_endpoints(ps, 0.0, 0.0, 0.0, 20.0));
+        doc.lines.push(crate::model::Line::from_local_endpoints(ps, 40.0, 0.0, 40.0, 20.0));
+        let fp = crate::model::FollowPath {
+            sketch,
+            faces: vec![profile],
+            path: vec![doc.lines.len() - 2, doc.lines.len() - 1],
+            mode: crate::model::FollowMode::NewBody,
+            name: None,
+            deleted: false,
+        };
+        assert!(follow_path_polyline(&doc, &fp).is_none());
+        assert!(follow_path_mesh(&doc, &fp).is_none());
+    }
+
+    /// #follow-path: a sweep in Cut mode carves its swept column out of the targeted body
+    /// (kernel path, mirroring `revolve_cut_carves_the_targeted_body`).
+    #[cfg(feature = "occt")]
+    #[test]
+    fn follow_path_cut_carves_the_targeted_body() {
+        let (mut doc, sketch) = sketch_doc();
+        let plate = rect_profile(&mut doc, sketch, -30.0, -30.0, 60.0, 60.0);
+        doc.extrusions.push(extrusion(sketch, vec![plate], 5.0));
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        // Cut tool: a 4x4 profile swept straight through the plate (z -10..10).
+        let bit = rect_profile(&mut doc, sketch, -2.0, -2.0, 4.0, 4.0);
+        let ps = vertical_path_sketch(&mut doc);
+        doc.lines.push(crate::model::Line::from_local_endpoints(ps, 0.0, -10.0, 0.0, 10.0));
+        doc.follow_paths.push(crate::model::FollowPath {
+            sketch,
+            faces: vec![bit],
+            path: vec![doc.lines.len() - 1],
+            mode: crate::model::FollowMode::Cut(vec![0]),
+            name: None,
+            deleted: false,
+        });
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
+        let plain = 60.0 * 60.0 * 5.0;
+        let expected = plain - 4.0 * 4.0 * 5.0;
+        assert!(
+            (vol - expected).abs() < 40.0,
+            "cut should remove the swept column: got {vol}, expected {expected}"
+        );
+    }
+
     /// Two equal circles on planes 10mm apart loft into a closed prism whose signed
     /// volume matches the swept n-gon (~pi*r^2*h), proving the walls and caps close up.
     /// #399: a loft between circles sketched at the same off-origin (u, v) on Ground and an
@@ -4936,12 +5408,12 @@ mod tests {
 
     #[test]
     fn closed_line_loop_extrudes_to_a_prism_mesh() {
-        use crate::model::{Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, Line, LineEnd};
+        use crate::model::{Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, LineEnd};
 
         let (mut doc, sketch) = sketch_doc();
-        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 5.0, 8.0));
-        doc.lines.push(Line::from_local_endpoints(sketch, 5.0, 8.0, 0.0, 0.0));
+        doc.lines.push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines.push(crate::model::Line::from_local_endpoints(sketch, 10.0, 0.0, 5.0, 8.0));
+        doc.lines.push(crate::model::Line::from_local_endpoints(sketch, 5.0, 8.0, 0.0, 0.0));
         let coincident = |a, b| Constraint {
             sketch,
             kind: ConstraintKind::Coincident {

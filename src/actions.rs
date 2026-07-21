@@ -104,6 +104,10 @@ pub enum Tool {
     /// revolve a solid (SPEC §3.5 Revolve). New body / fuse into touching bodies / cut
     /// picked bodies.
     Revolve,
+    /// Pick coplanar profile faces plus a path of sketch lines that intersects their
+    /// plane, and sweep the profiles along it (SPEC §3.5 Follow path). New body / fuse
+    /// into touching bodies / cut picked bodies.
+    FollowPath,
     /// Boolean operations between whole bodies (Combine tool): union, cut, intersect,
     /// symmetric difference. Inputs become shadow bodies; outputs are new bodies.
     Combine,
@@ -148,6 +152,7 @@ impl Tool {
             "fillet" => Some(Tool::Fillet),
             "loft" => Some(Tool::Loft),
             "revolve" => Some(Tool::Revolve),
+            "follow_path" | "followpath" | "follow path" | "sweep" => Some(Tool::FollowPath),
             "combine" | "boolean" => Some(Tool::Combine),
             "move" => Some(Tool::Move),
             "repeat" | "linear_repeat" | "pattern" => Some(Tool::Repeat),
@@ -852,6 +857,22 @@ impl CreatingRevolve {
     }
 }
 
+/// State for the in-progress (pre-Enter) follow-path sweep (#follow-path): picked
+/// profile faces, the picked path lines, and how the result lands. Committing (Enter)
+/// creates a [`crate::model::FollowPath`] plus (in NewBody mode) its body.
+#[derive(Clone, Debug, Default)]
+pub struct CreatingFollowPath {
+    pub sketch: Option<SketchId>,
+    pub faces: Vec<ExtrudeFace>,
+    /// Picked path lines (`Document::lines` indices), chained tip-to-tail at commit.
+    pub path: Vec<usize>,
+    pub body_choice: RevolveBodyChoice,
+    /// Bodies picked for Cut mode.
+    pub cut_bodies: Vec<usize>,
+    /// `Some(op)` while re-editing a committed follow-path, else a fresh sweep.
+    pub editing: Option<usize>,
+}
+
 /// State for the in-progress (pre-Enter) loft: the cross sections picked so far.
 /// Committing (Enter, >= 2 sections) creates a [`crate::model::Loft`] plus its body.
 #[derive(Clone, Debug, Default)]
@@ -1540,6 +1561,18 @@ pub enum Action {
         body: RevolveBodyChoice,
         bodies: Vec<usize>,
     },
+    /// Finalize the in-progress follow-path sweep (reads `creating_follow_path`).
+    CommitFollowPath,
+    /// Scripted/replayed follow-path creation with an explicit payload. `bodies` is the
+    /// explicit Add/Cut body list; an empty list with `AddTouching` auto-resolves the
+    /// touching bodies, like the interactive tool.
+    CreateFollowPath {
+        sketch: SketchId,
+        faces: Vec<ExtrudeFace>,
+        path: Vec<usize>,
+        body: RevolveBodyChoice,
+        bodies: Vec<usize>,
+    },
     /// Commit the in-progress Combine-tool boolean operation.
     CommitBoolean,
     /// Scripted/replayed boolean operation with an explicit payload (also what
@@ -2153,6 +2186,7 @@ pub struct AppState {
     pub creating_loft: Option<CreatingLoft>,
     /// In-progress revolve (Revolve tool).
     pub creating_revolve: Option<CreatingRevolve>,
+    pub creating_follow_path: Option<CreatingFollowPath>,
     /// In-progress boolean operation (Combine tool).
     pub creating_boolean: Option<CreatingBoolean>,
     /// In-progress move operation (Move tool).
@@ -2300,6 +2334,7 @@ impl Default for AppState {
             creating_edge_treatment: None,
             creating_loft: None,
             creating_revolve: None,
+            creating_follow_path: None,
             creating_boolean: None,
             creating_move: None,
             creating_repeat: None,
@@ -3020,6 +3055,165 @@ impl AppState {
         self.tool = Tool::Select;
         self.refresh_document_health();
         self.status = format!("Revolve updated ({angle_deg:.0}°)");
+        ActionResult::Ok
+    }
+
+    fn resolve_follow_mode(
+        &mut self,
+        sketch: SketchId,
+        faces: &[ExtrudeFace],
+        path: &[usize],
+        choice: RevolveBodyChoice,
+        bodies: &[usize],
+    ) -> Result<crate::model::FollowMode, String> {
+        Ok(match choice {
+            RevolveBodyChoice::NewBody => crate::model::FollowMode::NewBody,
+            RevolveBodyChoice::AddTouching => {
+                if !bodies.is_empty() {
+                    return Ok(crate::model::FollowMode::AddTo(bodies.to_vec()));
+                }
+                let probe = crate::model::FollowPath {
+                    sketch,
+                    faces: faces.to_vec(),
+                    path: path.to_vec(),
+                    mode: crate::model::FollowMode::NewBody,
+                    name: None,
+                    deleted: false,
+                };
+                let touching = crate::extrude::follow_path_mesh(&self.doc, &probe)
+                    .and_then(|m| m.bounds())
+                    .map(|rb| {
+                        (0..self.doc.bodies.len())
+                            .filter(|&bi| !self.doc.bodies[bi].deleted)
+                            .filter(|&bi| {
+                                crate::extrude::body_solid_mesh(&self.doc, bi)
+                                    .and_then(|m| m.bounds())
+                                    .is_some_and(|bb| {
+                                        bb.0.cmple(rb.1).all() && rb.0.cmple(bb.1).all()
+                                    })
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if touching.is_empty() {
+                    self.status = "No touching bodies — swept into a new body".to_string();
+                    crate::model::FollowMode::NewBody
+                } else {
+                    crate::model::FollowMode::AddTo(touching)
+                }
+            }
+            RevolveBodyChoice::Cut => {
+                if bodies.is_empty() {
+                    return Err("Pick at least one body to cut".to_string());
+                }
+                crate::model::FollowMode::Cut(bodies.to_vec())
+            }
+        })
+    }
+
+    /// Shared follow-path commit: validates the solid builds, stores the
+    /// [`crate::model::FollowPath`], and (in NewBody mode) its body — one
+    /// `ShapeKind::FollowPath` undo marker covers both.
+    fn create_follow_path(
+        &mut self,
+        sketch: SketchId,
+        faces: Vec<ExtrudeFace>,
+        path: Vec<usize>,
+        mode: crate::model::FollowMode,
+    ) -> ActionResult {
+        let fp = crate::model::FollowPath {
+            sketch,
+            faces,
+            path,
+            mode: mode.clone(),
+            name: None,
+            deleted: false,
+        };
+        if crate::extrude::follow_path_mesh(&self.doc, &fp).is_none() {
+            let e = "Follow path failed: profiles must be closed faces and the path one                      connected chain of lines"
+                .to_string();
+            self.status = e.clone();
+            return ActionResult::Err(e);
+        }
+        self.doc.follow_paths.push(fp);
+        if matches!(mode, crate::model::FollowMode::NewBody) {
+            self.doc.bodies.push(crate::model::Body {
+                source: crate::model::BodySource::FollowPath(self.doc.follow_paths.len() - 1),
+                name: None,
+                deleted: false,
+                shadow: false,
+            });
+        }
+        self.doc.shape_order.push(crate::model::ShapeKind::FollowPath);
+        self.creating_follow_path = None;
+        self.tool = Tool::Select;
+        self.refresh_document_health();
+        self.status = match &mode {
+            crate::model::FollowMode::NewBody => "Swept along path".to_string(),
+            crate::model::FollowMode::AddTo(b) => {
+                format!("Swept into {} body(ies)", b.len())
+            }
+            crate::model::FollowMode::Cut(b) => {
+                format!("Path sweep cut {} body(ies)", b.len())
+            }
+        };
+        ActionResult::Ok
+    }
+
+    /// Re-point an existing follow-path: replace its parameters in place (preserving its
+    /// name), then reconcile its output body — a `NewBody`-mode sweep owns one body via
+    /// `BodySource::FollowPath`; `AddTo`/`Cut` own none (they fuse at recompute).
+    fn edit_follow_path(
+        &mut self,
+        op: usize,
+        sketch: SketchId,
+        faces: Vec<ExtrudeFace>,
+        path: Vec<usize>,
+        mode: crate::model::FollowMode,
+    ) -> ActionResult {
+        let Some(existing) = self.doc.follow_paths.get(op).filter(|f| !f.deleted) else {
+            return ActionResult::Err(format!("no follow path {op}"));
+        };
+        let candidate = crate::model::FollowPath {
+            sketch,
+            faces,
+            path,
+            mode: mode.clone(),
+            name: existing.name.clone(),
+            deleted: false,
+        };
+        if crate::extrude::follow_path_mesh(&self.doc, &candidate).is_none() {
+            let e = "Follow path failed: profiles must be closed faces and the path one                      connected chain of lines"
+                .to_string();
+            self.status = e.clone();
+            return ActionResult::Err(e);
+        }
+        self.doc.follow_paths[op] = candidate;
+        let has_body = self
+            .doc
+            .bodies
+            .iter()
+            .any(|b| !b.deleted && b.source == crate::model::BodySource::FollowPath(op));
+        match (matches!(mode, crate::model::FollowMode::NewBody), has_body) {
+            (true, false) => self.doc.bodies.push(crate::model::Body {
+                source: crate::model::BodySource::FollowPath(op),
+                name: None,
+                deleted: false,
+                shadow: false,
+            }),
+            (false, true) => {
+                for body in self.doc.bodies.iter_mut() {
+                    if body.source == crate::model::BodySource::FollowPath(op) {
+                        body.deleted = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+        self.creating_follow_path = None;
+        self.tool = Tool::Select;
+        self.refresh_document_health();
+        self.status = "Follow path updated".to_string();
         ActionResult::Ok
     }
 
@@ -3759,6 +3953,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::SketchText(i) => format!("Text {i}"),
         SceneElement::SliceOp(i) => format!("Slice operation {i}"),
         SceneElement::Revolution(i) => format!("Revolve operation {i}"),
+        SceneElement::FollowPathOp(i) => format!("Follow path operation {i}"),
         SceneElement::Origin => "Origin".to_string(),
     }
 }
@@ -4642,6 +4837,9 @@ impl AppState {
                 if self.creating_revolve.is_some() && tool != Tool::Revolve {
                     self.creating_revolve = None;
                 }
+                if self.creating_follow_path.is_some() && tool != Tool::FollowPath {
+                    self.creating_follow_path = None;
+                }
                 if self.creating_calibration.is_some() && tool != Tool::Select {
                     self.creating_calibration = None;
                 }
@@ -4672,7 +4870,7 @@ impl AppState {
                 }
                 // Extruding/lofting act on the 3D model, not sketch geometry: leave
                 // sketch editing when either tool is picked from inside a sketch.
-                if matches!(tool, Tool::Extrude | Tool::Loft | Tool::Revolve)
+                if matches!(tool, Tool::Extrude | Tool::Loft | Tool::Revolve | Tool::FollowPath)
                     && self.sketch_session.is_some()
                 {
                     self.exit_sketch_session();
@@ -4723,6 +4921,9 @@ impl AppState {
                     Tool::ConstructionPlane => "Construction plane tool".to_string(),
                     Tool::Extrude => {
                         "Extrude tool — click coplanar faces, then set a distance".to_string()
+                    }
+                    Tool::FollowPath => {
+                        "Follow path tool — click coplanar faces, then a path line".to_string()
                     }
                     Tool::Chamfer if self.sketch_session.is_some() => {
                         "Chamfer tool — click a sketch vertex".to_string()
@@ -4813,6 +5014,8 @@ impl AppState {
                     self.status = "Cancelled loft".to_string();
                 } else if self.creating_revolve.take().is_some() {
                     self.status = "Cancelled revolve".to_string();
+                } else if self.creating_follow_path.take().is_some() {
+                    self.status = "Cancelled follow path".to_string();
                 } else if self.creating_calibration.take().is_some() {
                     self.status = "Cancelled calibration".to_string();
                 } else if self
@@ -8881,6 +9084,60 @@ label_hidden: false,
                 }
                 result
             }
+            Action::CommitFollowPath => {
+                let Some(cf) = self.creating_follow_path.take() else {
+                    return ActionResult::Err("No follow path in progress".to_string());
+                };
+                if cf.faces.is_empty() {
+                    self.creating_follow_path = Some(cf);
+                    let e = "Pick at least one profile face to sweep".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let (Some(sketch), false) = (cf.sketch, cf.path.is_empty()) else {
+                    let e = "Pick a path line for the profile to follow".to_string();
+                    self.creating_follow_path = Some(cf);
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                let mode = match self.resolve_follow_mode(
+                    sketch,
+                    &cf.faces,
+                    &cf.path,
+                    cf.body_choice,
+                    &cf.cut_bodies,
+                ) {
+                    Ok(mode) => mode,
+                    Err(e) => {
+                        self.creating_follow_path = Some(cf);
+                        self.status = e.clone();
+                        return ActionResult::Err(e);
+                    }
+                };
+                let result = match cf.editing {
+                    Some(op) => {
+                        self.edit_follow_path(op, sketch, cf.faces.clone(), cf.path.clone(), mode)
+                    }
+                    None => {
+                        self.create_follow_path(sketch, cf.faces.clone(), cf.path.clone(), mode)
+                    }
+                };
+                if matches!(result, ActionResult::Err(_)) {
+                    self.creating_follow_path = Some(cf);
+                }
+                result
+            }
+            Action::CreateFollowPath { sketch, faces, path, body, bodies } => {
+                let mode =
+                    match self.resolve_follow_mode(sketch, &faces, &path, body, &bodies) {
+                        Ok(mode) => mode,
+                        Err(e) => {
+                            self.status = e.clone();
+                            return ActionResult::Err(e);
+                        }
+                    };
+                self.create_follow_path(sketch, faces, path, mode)
+            }
             Action::CreateRevolution {
                 sketch,
                 faces,
@@ -10998,6 +11255,17 @@ pub fn toggle_body_in_active_tool(state: &mut AppState, bi: usize) -> bool {
                 false
             }
         }
+        Tool::FollowPath => {
+            let cf = state
+                .creating_follow_path
+                .get_or_insert_with(CreatingFollowPath::default);
+            if cf.body_choice == RevolveBodyChoice::Cut {
+                toggle(&mut cf.cut_bodies, bi);
+                true
+            } else {
+                false
+            }
+        }
         _ => false,
     }
 }
@@ -11033,7 +11301,7 @@ pub fn single_selected_sketch_text(state: &AppState) -> Option<usize> {
 /// Element counts per component-member kind (#429), read before an action to detect what
 /// it created. Bodies are skipped: their component derives from the producing
 /// op/extrusion (`hierarchy::owning_component`), and rebuilds churn the body list.
-fn member_vec_lens(doc: &Document) -> [(crate::model::ComponentMember, usize); 8] {
+fn member_vec_lens(doc: &Document) -> [(crate::model::ComponentMember, usize); 9] {
     use crate::model::ComponentMember as CM;
     [
         (CM::ConstructionPlane, doc.construction_planes.len()),
@@ -11044,6 +11312,7 @@ fn member_vec_lens(doc: &Document) -> [(crate::model::ComponentMember, usize); 8
         (CM::RepeatOp, doc.repeat_ops.len()),
         (CM::SliceOp, doc.slice_ops.len()),
         (CM::Revolution, doc.revolutions.len()),
+        (CM::FollowPath, doc.follow_paths.len()),
     ]
 }
 
@@ -11064,6 +11333,7 @@ fn assign_new_members(
             CM::RepeatOp => doc.repeat_ops.len(),
             CM::SliceOp => doc.slice_ops.len(),
             CM::Revolution => doc.revolutions.len(),
+            CM::FollowPath => doc.follow_paths.len(),
             CM::Body | CM::Drawing => continue,
         };
         for index in prior..now {
@@ -12262,6 +12532,63 @@ mod tests {
 
         state.apply(Action::UndoLast);
         assert!(state.doc.revolutions.is_empty());
+        assert!(state.doc.bodies.is_empty());
+    }
+
+    /// #follow-path: committing a sweep stores the op + its NewBody body under one undo
+    /// marker; a single undo removes both (mirrors the revolve commit test).
+    #[test]
+    fn commit_follow_path_creates_body_and_undo_removes_both() {
+        let mut state = AppState::default();
+        let sketch = state.doc.add_sketch(FaceId::ConstructionPlane(0));
+        let lines = crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch,
+            0.0,
+            0.0,
+            10.0,
+            10.0,
+            [false; 4],
+        );
+        // A vertical plane (normal Y, u→X, v→Z) so the path line leaves the ground plane.
+        state.doc.construction_planes.push(crate::model::ConstructionPlane {
+            origin: glam::Vec3::ZERO,
+            normal: glam::Vec3::Y,
+            u_axis: glam::Vec3::X,
+            v_axis: glam::Vec3::Z,
+            parent: crate::model::ConstructionPlaneParent::Root,
+            definition: crate::face::default_xy_plane_definition(),
+            repeat_instance: None,
+            name: None,
+            deleted: false,
+        });
+        let path_sketch = state
+            .doc
+            .add_sketch(FaceId::ConstructionPlane(state.doc.construction_planes.len() - 1));
+        state
+            .doc
+            .lines
+            .push(crate::model::Line::from_local_endpoints(path_sketch, 5.0, 0.0, 5.0, 25.0));
+        let li = state.doc.lines.len() - 1;
+        state.creating_follow_path = Some(CreatingFollowPath {
+            sketch: Some(sketch),
+            faces: vec![crate::model::ExtrudeFace::Polygon(lines.to_vec())],
+            path: vec![li],
+            ..CreatingFollowPath::default()
+        });
+        assert!(matches!(state.apply(Action::CommitFollowPath), ActionResult::Ok));
+        assert_eq!(state.doc.follow_paths.len(), 1);
+        assert_eq!(state.doc.follow_paths[0].path, vec![li]);
+        assert_eq!(
+            state.doc.bodies.last().map(|b| b.source.clone()),
+            Some(crate::model::BodySource::FollowPath(0))
+        );
+        assert_eq!(state.doc.shape_order.last(), Some(&ShapeKind::FollowPath));
+        assert!(state.creating_follow_path.is_none());
+        assert!(crate::extrude::body_solid_mesh(&state.doc, state.doc.bodies.len() - 1).is_some());
+
+        state.apply(Action::UndoLast);
+        assert!(state.doc.follow_paths.is_empty());
         assert!(state.doc.bodies.is_empty());
     }
 
