@@ -971,6 +971,10 @@ pub struct CreatingConstructionPlane {
     pub normal_candidates: Vec<(String, glam::Vec3)>,
     /// Which of [`normal_candidates`](Self::normal_candidates) the plane currently uses.
     pub normal_choice: usize,
+    /// How the anchor was established (#483): face alone, edge alone, point, or line+point.
+    pub anchor_source: crate::construction::PlaneAnchorSource,
+    /// Context-pane Anchor rows (one or two labels for line+point).
+    pub anchor_labels: Vec<String>,
 }
 
 impl CreatingConstructionPlane {
@@ -5677,6 +5681,13 @@ impl AppState {
                 }
             }
             Action::BeginConstructionPlane { reference, parent } => {
+                let anchor_labels = vec![reference.label().to_string()];
+                let anchor_source = if reference.is_axis() {
+                    crate::construction::PlaneAnchorSource::Axis
+                } else {
+                    // Callers that know a vertex pick set Point (and line+point) after apply.
+                    crate::construction::PlaneAnchorSource::Face
+                };
                 self.creating_plane = Some(CreatingConstructionPlane {
                     edit_index: None,
                     reference,
@@ -5692,6 +5703,8 @@ impl AppState {
                     axis_gizmo_drag: None,
                     normal_candidates: Vec::new(),
                     normal_choice: 0,
+                    anchor_source,
+                    anchor_labels,
                 });
                 self.tool = Tool::ConstructionPlane;
                 self.status = "Set offset • type to lock • Tab cycle dims • click/Enter commit • Esc cancel"
@@ -5709,6 +5722,12 @@ impl AppState {
                         (plane.definition.offset_mm, plane.definition.angle_deg)
                     }
                 };
+                let anchor_labels = vec![reference.label().to_string()];
+                let anchor_source = if reference.is_axis() {
+                    crate::construction::PlaneAnchorSource::Axis
+                } else {
+                    crate::construction::PlaneAnchorSource::Face
+                };
                 self.creating_plane = Some(CreatingConstructionPlane {
                     edit_index: Some(index),
                     reference,
@@ -5724,6 +5743,8 @@ impl AppState {
                     axis_gizmo_drag: None,
                     normal_candidates: Vec::new(),
                     normal_choice: 0,
+                    anchor_source,
+                    anchor_labels,
                 });
                 self.tool = Tool::ConstructionPlane;
                 self.status = format!(
@@ -13089,6 +13110,58 @@ mod tests {
         state.apply(Action::CommitConstructionPlane);
         state.apply(Action::UndoLast);
         assert_eq!(state.doc.construction_planes.len(), 1);
+    }
+
+    #[test]
+    fn line_plus_point_anchor_commits_plane_normal_to_line_through_point() {
+        // #483: start on an axis (line-in-plane), complement with a point, commit.
+        use crate::construction::{
+            complement_plane_anchor, PickTargetKind, PlaneAnchorSource, PlaneReference,
+        };
+        use crate::model::ConstraintPoint;
+
+        let mut state = AppState::default();
+        state.apply(Action::BeginConstructionPlane {
+            reference: PlaneReference::Axis {
+                origin: Vec3::new(0.0, 5.0, 0.0),
+                direction: Vec3::X,
+                label: "Line".to_string(),
+            },
+            parent: ConstructionPlaneParent::Root,
+        });
+        {
+            let cp = state.creating_plane.as_mut().unwrap();
+            cp.anchor_source = PlaneAnchorSource::Axis;
+            let point_ref = PlaneReference::Face {
+                origin: Vec3::new(10.0, 20.0, 0.0),
+                normal: Vec3::Z,
+                label: "Point".to_string(),
+            };
+            let (new_ref, source, labels) = complement_plane_anchor(
+                cp.anchor_source,
+                &cp.reference,
+                &PickTargetKind::Point(ConstraintPoint::CircleCenter(0)),
+                &point_ref,
+            )
+            .expect("axis + point complements");
+            cp.reference = new_ref;
+            cp.anchor_source = source;
+            cp.anchor_labels = labels;
+            cp.offset_live = 0.0;
+        }
+        state.apply(Action::CommitConstructionPlane);
+        assert_eq!(state.doc.construction_planes.len(), 2);
+        let plane = &state.doc.construction_planes[1];
+        assert!(
+            (plane.normal - Vec3::X).length() < 1e-3 || (plane.normal + Vec3::X).length() < 1e-3,
+            "normal {:?}",
+            plane.normal
+        );
+        assert!(
+            (plane.origin - Vec3::new(10.0, 20.0, 0.0)).length() < 1e-2,
+            "origin {:?}",
+            plane.origin
+        );
     }
 
     #[test]

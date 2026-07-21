@@ -83,6 +83,162 @@ impl PlaneReference {
     }
 }
 
+/// How the Plane tool's current anchor was established (#474 / #483).
+///
+/// Valid complete sets for the Anchor picker:
+/// - [`Face`](Self::Face): one planar face / ground / construction plane
+/// - [`Axis`](Self::Axis): one straight edge (the line lies *in* the plane)
+/// - [`LineAndPoint`](Self::LineAndPoint): one line/curve + one point (plane through
+///   the point, normal along the line) — built by a complementary second pick
+/// - [`Point`](Self::Point): a vertex alone (optionally with #474 normal candidates)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaneAnchorSource {
+    Face,
+    Axis,
+    Point,
+    LineAndPoint,
+}
+
+/// Classify a viewport pick as a plane-anchor source kind.
+pub fn plane_anchor_source_from_pick(kind: &PickTargetKind) -> PlaneAnchorSource {
+    match kind {
+        PickTargetKind::Point(_) | PickTargetKind::BodyVertex { .. } => PlaneAnchorSource::Point,
+        PickTargetKind::Line(_)
+        | PickTargetKind::BodyEdge { .. }
+        | PickTargetKind::GlobalAxis(_)
+        | PickTargetKind::Circle(_) => PlaneAnchorSource::Axis,
+        PickTargetKind::BodyFace { .. }
+        | PickTargetKind::ConstructionPlane(_)
+        | PickTargetKind::Ground(_) => PlaneAnchorSource::Face,
+    }
+}
+
+/// If `next` complements the current anchor into a line+point set (#483), return the
+/// upgraded face-mode reference, new source, and Anchor row labels. Otherwise `None`
+/// (caller may treat the click as a commit).
+///
+/// Complements:
+/// - [`Axis`](PlaneAnchorSource::Axis) + point → through point, normal along the axis
+/// - [`Point`](PlaneAnchorSource::Point) / [`LineAndPoint`](PlaneAnchorSource::LineAndPoint)
+///   + line/edge/axis → keep origin, normal along the line
+pub fn complement_plane_anchor(
+    source: PlaneAnchorSource,
+    current: &PlaneReference,
+    next_kind: &PickTargetKind,
+    next_reference: &PlaneReference,
+) -> Option<(PlaneReference, PlaneAnchorSource, Vec<String>)> {
+    let is_point = matches!(
+        next_kind,
+        PickTargetKind::Point(_) | PickTargetKind::BodyVertex { .. }
+    );
+    let is_line = matches!(
+        next_kind,
+        PickTargetKind::Line(_)
+            | PickTargetKind::BodyEdge { .. }
+            | PickTargetKind::GlobalAxis(_)
+            | PickTargetKind::Circle(_)
+    );
+
+    match source {
+        PlaneAnchorSource::Axis if is_point => {
+            let PlaneReference::Axis {
+                direction,
+                label: line_label,
+                ..
+            } = current
+            else {
+                return None;
+            };
+            let dir = direction.normalize_or_zero();
+            if dir.length_squared() < 1e-8 {
+                return None;
+            }
+            let (origin, point_label) = match next_reference {
+                PlaneReference::Face { origin, label, .. }
+                | PlaneReference::Axis { origin, label, .. } => (*origin, label.clone()),
+            };
+            Some((
+                PlaneReference::Face {
+                    origin,
+                    normal: dir,
+                    label: format!("{point_label} ⊥ {line_label}"),
+                },
+                PlaneAnchorSource::LineAndPoint,
+                vec![point_label, line_label.clone()],
+            ))
+        }
+        PlaneAnchorSource::Point | PlaneAnchorSource::LineAndPoint if is_line => {
+            let PlaneReference::Face {
+                origin,
+                label: point_label,
+                ..
+            } = current
+            else {
+                return None;
+            };
+            let PlaneReference::Axis {
+                direction,
+                label: line_label,
+                ..
+            } = next_reference
+            else {
+                return None;
+            };
+            let dir = direction.normalize_or_zero();
+            if dir.length_squared() < 1e-8 {
+                return None;
+            }
+            // When already LineAndPoint, keep a short point label if we stored one in rows;
+            // the combined label still reads well from the first Face label when it was a
+            // plain vertex ("Vertex (…)" / "Point").
+            let point_row = if source == PlaneAnchorSource::LineAndPoint {
+                // Prefer the part before " ⊥ " when re-picking the line.
+                point_label
+                    .split(" ⊥ ")
+                    .next()
+                    .unwrap_or(point_label)
+                    .to_string()
+            } else {
+                point_label.clone()
+            };
+            Some((
+                PlaneReference::Face {
+                    origin: *origin,
+                    normal: dir,
+                    label: format!("{point_row} ⊥ {line_label}"),
+                },
+                PlaneAnchorSource::LineAndPoint,
+                vec![point_row, line_label.clone()],
+            ))
+        }
+        PlaneAnchorSource::LineAndPoint if is_point => {
+            // Re-pick the point; keep the current normal.
+            let PlaneReference::Face { normal, label, .. } = current else {
+                return None;
+            };
+            let (origin, point_label) = match next_reference {
+                PlaneReference::Face { origin, label, .. }
+                | PlaneReference::Axis { origin, label, .. } => (*origin, label.clone()),
+            };
+            let line_row = label
+                .split(" ⊥ ")
+                .nth(1)
+                .unwrap_or("Line")
+                .to_string();
+            Some((
+                PlaneReference::Face {
+                    origin,
+                    normal: *normal,
+                    label: format!("{point_label} ⊥ {line_row}"),
+                },
+                PlaneAnchorSource::LineAndPoint,
+                vec![point_label, line_row],
+            ))
+        }
+        _ => None,
+    }
+}
+
 /// Which dimension field is focused while creating a plane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlaneDim {
@@ -2525,6 +2681,94 @@ mod tests {
             parent_from_pick_target(&doc, PickTargetKind::Ground(Vec3::ZERO)),
             ConstructionPlaneParent::Root
         );
+    }
+
+    #[test]
+    fn complement_axis_plus_point_makes_plane_normal_to_line_through_point() {
+        // #483: line first (axis), then a separate point → face through point, normal = line dir.
+        let axis = PlaneReference::Axis {
+            origin: Vec3::new(0.0, 5.0, 0.0),
+            direction: Vec3::X,
+            label: "Line".to_string(),
+        };
+        let point_ref = PlaneReference::Face {
+            origin: Vec3::new(10.0, 20.0, 0.0),
+            normal: Vec3::Z,
+            label: "Point".to_string(),
+        };
+        let (upgraded, source, labels) = complement_plane_anchor(
+            PlaneAnchorSource::Axis,
+            &axis,
+            &PickTargetKind::Point(crate::model::ConstraintPoint::CircleCenter(0)),
+            &point_ref,
+        )
+        .expect("axis + point should complement");
+        assert_eq!(source, PlaneAnchorSource::LineAndPoint);
+        assert_eq!(labels, vec!["Point".to_string(), "Line".to_string()]);
+        match upgraded {
+            PlaneReference::Face {
+                origin, normal, ..
+            } => {
+                assert!((origin - Vec3::new(10.0, 20.0, 0.0)).length() < 1e-4);
+                assert!((normal - Vec3::X).length() < 1e-4 || (normal + Vec3::X).length() < 1e-4);
+            }
+            other => panic!("expected Face, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn complement_point_plus_line_makes_plane_normal_to_line_through_point() {
+        // #483: point first, then a line → same result, other pick order.
+        let point = PlaneReference::Face {
+            origin: Vec3::new(10.0, 20.0, 0.0),
+            normal: Vec3::Z,
+            label: "Vertex (line 0)".to_string(),
+        };
+        let line_ref = PlaneReference::Axis {
+            origin: Vec3::new(0.0, 5.0, 0.0),
+            direction: Vec3::new(0.0, 1.0, 0.0),
+            label: "Line".to_string(),
+        };
+        let (upgraded, source, labels) = complement_plane_anchor(
+            PlaneAnchorSource::Point,
+            &point,
+            &PickTargetKind::Line(1),
+            &line_ref,
+        )
+        .expect("point + line should complement");
+        assert_eq!(source, PlaneAnchorSource::LineAndPoint);
+        assert_eq!(labels[1], "Line");
+        match upgraded {
+            PlaneReference::Face {
+                origin, normal, ..
+            } => {
+                assert!((origin - Vec3::new(10.0, 20.0, 0.0)).length() < 1e-4);
+                assert!((normal - Vec3::Y).length() < 1e-4 || (normal + Vec3::Y).length() < 1e-4);
+            }
+            other => panic!("expected Face, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn complement_face_alone_rejects_second_pick() {
+        // A face anchor is already a complete set; a further pick must not rewrite it.
+        let face = PlaneReference::Face {
+            origin: Vec3::ZERO,
+            normal: Vec3::Z,
+            label: "Ground".to_string(),
+        };
+        let line_ref = PlaneReference::Axis {
+            origin: Vec3::ZERO,
+            direction: Vec3::X,
+            label: "Line".to_string(),
+        };
+        assert!(complement_plane_anchor(
+            PlaneAnchorSource::Face,
+            &face,
+            &PickTargetKind::Line(0),
+            &line_ref,
+        )
+        .is_none());
     }
 
     #[test]

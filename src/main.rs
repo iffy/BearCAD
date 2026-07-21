@@ -6587,7 +6587,15 @@ impl eframe::App for App {
                 plane_tool: (self.state.tool == Tool::ConstructionPlane).then(|| {
                     let cp = self.state.creating_plane.as_ref();
                     context::PlaneToolControl {
-                        anchor_label: cp.map(|c| c.reference.label().to_string()),
+                        anchor_labels: cp
+                            .map(|c| {
+                                if c.anchor_labels.is_empty() {
+                                    vec![c.reference.label().to_string()]
+                                } else {
+                                    c.anchor_labels.clone()
+                                }
+                            })
+                            .unwrap_or_default(),
                         normal_labels: cp
                             .map(|c| {
                                 c.normal_candidates
@@ -6834,7 +6842,8 @@ impl eframe::App for App {
                     context::PlaneToolEdit::ClearAnchor => {
                         self.state.creating_plane = None;
                         self.state.status =
-                            "Plane tool — click a face, edge, or vertex to anchor".to_string();
+                            "Plane tool — click a face, edge, or point (+ line for normal-to-line)"
+                                .to_string();
                     }
                     context::PlaneToolEdit::NormalChoice(i) => {
                         if let Some(cp) = self.state.creating_plane.as_mut() {
@@ -13999,6 +14008,8 @@ impl App {
                             }
                             _ => Vec::new(),
                         };
+                        let anchor_source =
+                            construction::plane_anchor_source_from_pick(&target.kind);
                         let parent = parent_from_pick_target(&self.state.doc, target.kind);
                         self.state.apply(Action::BeginConstructionPlane {
                             reference: target.reference,
@@ -14007,11 +14018,27 @@ impl App {
                         if let Some(cp) = self.state.creating_plane.as_mut() {
                             cp.normal_candidates = candidates;
                             cp.normal_choice = 0;
+                            cp.anchor_source = anchor_source;
+                            cp.anchor_labels = vec![cp.reference.label().to_string()];
                         }
                     }
                 }
 
                 let mut commit_click = false;
+                // #483: resolve a complementary second pick (line+point) before taking a
+                // mutable borrow of creating_plane — needs shared access to doc.
+                let complement_pick = if was_creating && primary_pressed {
+                    construction::resolve_plane_pick_target(
+                        pp,
+                        &project,
+                        gp,
+                        &self.state.doc,
+                        cam.eye(),
+                        pick_occlusion,
+                    )
+                } else {
+                    None
+                };
                 if let Some(cp) = &mut self.state.creating_plane {
                     let scroll = ui.input(|i| i.raw_scroll_delta.y);
                     let primary_down = ui.input(|i| i.pointer.primary_down());
@@ -14166,11 +14193,44 @@ impl App {
                         .is_some(),
                     };
 
-                    if should_commit_sketch_on_click(
-                        was_creating,
-                        primary_pressed,
-                        over_input || over_gizmo || cp.axis_gizmo_drag.is_some(),
-                    ) {
+                    // #483: second pick completing line+point upgrades instead of commit.
+                    let mut complemented = false;
+                    if was_creating
+                        && primary_pressed
+                        && !over_input
+                        && !over_gizmo
+                        && cp.axis_gizmo_drag.is_none()
+                    {
+                        if let Some(target) = complement_pick.as_ref() {
+                            if let Some((new_ref, new_source, labels)) =
+                                construction::complement_plane_anchor(
+                                    cp.anchor_source,
+                                    &cp.reference,
+                                    &target.kind,
+                                    &target.reference,
+                                )
+                            {
+                                cp.reference = new_ref;
+                                cp.anchor_source = new_source;
+                                cp.anchor_labels = labels;
+                                cp.normal_candidates.clear();
+                                cp.normal_choice = 0;
+                                // Angle only applies to axis (line-in-plane) mode.
+                                cp.user_edited_angle = false;
+                                cp.axis_angle_deg = 0.0;
+                                cp.angle_text.clear();
+                                complemented = true;
+                            }
+                        }
+                    }
+
+                    if !complemented
+                        && should_commit_sketch_on_click(
+                            was_creating,
+                            primary_pressed,
+                            over_input || over_gizmo || cp.axis_gizmo_drag.is_some(),
+                        )
+                    {
                         commit_click = true;
                     }
                 }
@@ -15891,24 +15951,35 @@ impl App {
                         .as_ref()
                         .and_then(|cp| cp.edit_index)
                         .is_some();
-                    if self
+                    let from_axis = self
                         .state
                         .creating_plane
                         .as_ref()
-                        .is_some_and(|cp| cp.reference.is_axis())
-                    {
+                        .is_some_and(|cp| cp.reference.is_axis());
+                    let can_add_point = self.state.creating_plane.as_ref().is_some_and(|cp| {
+                        matches!(
+                            cp.anchor_source,
+                            construction::PlaneAnchorSource::Axis
+                                | construction::PlaneAnchorSource::Point
+                        )
+                    });
+                    if from_axis {
                         if editing {
                             "Edit plane • drag arrow/circle or type to lock • Tab: switch dims • Click/Enter: commit • Esc: cancel"
+                        } else if can_add_point {
+                            "Drag arrow for offset • click a point for normal-to-line • drag circle for angle • Click/Enter: commit • Esc: cancel"
                         } else {
                             "Drag arrow for offset • drag circle handle for angle • type to lock • Tab: switch dims • Click/Enter: commit • Esc: cancel"
                         }
                     } else if editing {
                         "Edit plane • drag arrow or type to lock offset • Click/Enter: commit • Esc: cancel"
+                    } else if can_add_point {
+                        "Drag arrow for offset • click a line for normal direction • Click/Enter: create plane • Esc: cancel"
                     } else {
                         "Drag arrow for offset • wheel or type to lock • Click/Enter: create plane • Esc: cancel"
                     }
                 } else {
-                    "plane  •  Click a face, line, shape edge, global axis, or ground • then set offset (and angle for lines)"
+                    "plane  •  Click a face, edge, or point (+ line for normal-to-line) • then set offset"
                 }
             }
             Tool::Extrude => {

@@ -150,13 +150,14 @@ pub struct SweepControl {
     pub cut_bodies: Vec<usize>,
 }
 
-/// What the Construction Plane tool's context section shows (#474): the picked anchor
-/// (face, edge, or vertex — with a ✕ to clear and repick) and, for a vertex where several
-/// lines/curves meet, the normal-direction choices.
+/// What the Construction Plane tool's context section shows (#474 / #483): the picked
+/// anchor set (face; edge; or line+point — with a ✕ to clear and repick) and, for a
+/// vertex where several lines/curves meet, the normal-direction choices.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlaneToolControl {
-    /// The picked anchor's label; `None` while nothing is picked yet.
-    pub anchor_label: Option<String>,
+    /// Anchor row labels; empty while nothing is picked yet. One row for face/edge/vertex;
+    /// two rows when the set is line+point (#483).
+    pub anchor_labels: Vec<String>,
     /// One label per normal candidate at a picked vertex (empty or 1 when unambiguous).
     pub normal_labels: Vec<String>,
     pub normal_choice: usize,
@@ -2130,16 +2131,15 @@ pub fn show_pane(
         ui.separator();
         section_label(ui, "Construction plane");
 
-        // The picked anchor — a face, straight edge, or vertex — with ✕ to clear (#474).
-        let anchor_rows: Vec<String> = control.anchor_label.iter().cloned().collect();
+        // The picked anchor set — face, edge, vertex, or line+point — with ✕ to clear (#474/#483).
         labeled_row_top(ui, "Anchor", |ui| {
             if let Some(event) = crate::element_picker::show_labeled(
                 ui,
                 "plane_anchor",
-                control.anchor_label.is_none(),
+                control.anchor_labels.is_empty(),
                 true,
                 crate::icons::IconId::Plane,
-                &anchor_rows,
+                &control.anchor_labels,
             ) {
                 match event {
                     crate::element_picker::PickerEvent::Focus => {}
