@@ -1733,46 +1733,64 @@ impl<'a> SceneMesh<'a> {
         // coarse step, lighter subdividing lines at the fine step between them.
         let (fine_step, coarse_step) = grid_steps_for_unit(unit, FINE_MIN_PX / ppw);
         let subdiv = ((coarse_step / fine_step).round() as i64).max(2);
-        // Extent covers a generous multiple of the heavy step (bounded line count), at
-        // least enough that the axes reach MIN_AXIS_PX — snapped to a whole number of
-        // heavy steps so every line sits on a fixed world multiple of its step and
-        // zooming can't slide the grid (the old extent-anchored walk did exactly that,
-        // which is what made lines wander and vanish).
         let axis_len = (MIN_AXIS_PX / ppw).max(GRID_EXTENT);
-        let n_heavy = (((coarse_step * 12.0).max(axis_len).max(GRID_EXTENT) / coarse_step)
-            .floor() as i64)
-            .clamp(1, 400);
-        let e = n_heavy as f32 * coarse_step;
+        // The grid covers the **visible ground footprint** (#467), not a fixed box around
+        // the origin: cast a 3×3 fan of screen points onto z = 0 and bound their hits.
+        // An origin-centered box failed two ways — panning away from the origin left the
+        // whole view past the grid's edge (no grid at all), and when zoomed in its lines
+        // stretched so far that one endpoint fell behind the camera, where `project()`
+        // culls the entire segment (grid showing lines in only one direction, or none,
+        // depending on the orbit angle). Footprint-bounded lines keep both endpoints
+        // near the frustum. Above-horizon rays miss the plane; the reach clamp bounds
+        // the hits that remain so a horizon view gets a deep-but-finite grid.
+        let eye = cam.eye();
+        let anchor = glam::Vec2::new(cam.target.x, cam.target.y);
+        let reach = ((eye - cam.target).length() * 8.0).max(GRID_EXTENT);
+        let mut lo = anchor;
+        let mut hi = anchor;
+        for sy in 0..3 {
+            for sx in 0..3 {
+                let screen = egui::pos2(
+                    viewport.min.x + viewport.width() * sx as f32 / 2.0,
+                    viewport.min.y + viewport.height() * sy as f32 / 2.0,
+                );
+                if let Some(g) = cam.ground_point(screen, viewport, view_proj) {
+                    let g = anchor + (glam::Vec2::new(g.x, g.y) - anchor).clamp_length_max(reach);
+                    lo = lo.min(g);
+                    hi = hi.max(g);
+                }
+            }
+        }
+        lo -= glam::Vec2::splat(coarse_step);
+        hi += glam::Vec2::splat(coarse_step);
         // Solid ground (#159): one filled plane in the grid's grey (darkened so bodies and
         // sketches still read against it), pushed slightly away from the camera with the
         // same bias the grid lines use so body bottoms resting on z = 0 never z-fight it.
         // The axis lines below still draw on top for orientation.
         if cam.ground_display() == crate::camera::GroundDisplay::Solid {
-            let eye = cam.eye();
             let fill = sketch_ground_color(scale_color(palette.grid, 0.55), dim);
             let corners = [
-                Vec3::new(-e, -e, 0.0),
-                Vec3::new(e, -e, 0.0),
-                Vec3::new(e, e, 0.0),
-                Vec3::new(-e, e, 0.0),
+                Vec3::new(lo.x, lo.y, 0.0),
+                Vec3::new(hi.x, lo.y, 0.0),
+                Vec3::new(hi.x, hi.y, 0.0),
+                Vec3::new(lo.x, hi.y, 0.0),
             ];
             let lifted = offset_corners_toward_camera(corners, Vec3::Z, eye, GRID_DEPTH_BIAS);
             self.push_quad_fill(lifted, fill);
         } else {
-            let mut cross = |t: f32, color: Color32| {
+            // Index range of step-multiples covering [lo, hi], hard-capped to `max_n`
+            // lines each side of the anchor. Lines stay on fixed world multiples of
+            // their step, so zooming or panning never slides them.
+            let line_range = |lo: f32, hi: f32, step: f32, center: f32, max_n: i64| {
+                let a = (lo / step).floor() as i64;
+                let b = (hi / step).ceil() as i64;
+                let c = (center / step).round() as i64;
+                (a.max(c - max_n), b.min(c + max_n))
+            };
+            let mut vertical = |x: f32, color: Color32| {
                 self.push_line_segment_with_bias(
-                    Vec3::new(-e, t, 0.0),
-                    Vec3::new(e, t, 0.0),
-                    color,
-                    1.0,
-                    cam,
-                    viewport,
-                    view_proj,
-                    GRID_DEPTH_BIAS,
-                );
-                self.push_line_segment_with_bias(
-                    Vec3::new(t, -e, 0.0),
-                    Vec3::new(t, e, 0.0),
+                    Vec3::new(x, lo.y, 0.0),
+                    Vec3::new(x, hi.y, 0.0),
                     color,
                     1.0,
                     cam,
@@ -1781,28 +1799,48 @@ impl<'a> SceneMesh<'a> {
                     GRID_DEPTH_BIAS,
                 );
             };
-            for i in -n_heavy..=n_heavy {
-                let base = if i == 0 {
-                    palette.grid_axis
-                } else {
-                    palette.grid
-                };
-                cross(i as f32 * coarse_step, sketch_ground_color(base, dim));
+            let heavy = sketch_ground_color(palette.grid, dim);
+            let axis_heavy = sketch_ground_color(palette.grid_axis, dim);
+            let (hx0, hx1) = line_range(lo.x, hi.x, coarse_step, anchor.x, 400);
+            for i in hx0..=hx1 {
+                vertical(i as f32 * coarse_step, if i == 0 { axis_heavy } else { heavy });
             }
-            // Fine subdivisions, fading in with zoom. They only need to surround the
-            // origin a dozen heavy steps out (their spacing is screen-bounded, so this
-            // already reaches far past any viewport), capped for safety.
+            // Fine subdivisions, fading in with zoom.
             let fade = (fine_step * ppw - FINE_MIN_PX) / (FINE_FULL_PX - FINE_MIN_PX);
+            let fine_color = mix_color(
+                palette.background,
+                sketch_ground_color(palette.grid, dim),
+                0.7 * fade.clamp(0.0, 1.0),
+            );
             if fade > 0.01 {
-                let color = mix_color(
-                    palette.background,
-                    sketch_ground_color(palette.grid, dim),
-                    0.7 * fade.min(1.0),
-                );
-                let n_fine = (n_heavy * subdiv).min(12 * subdiv).min(600);
-                for i in -n_fine..=n_fine {
+                let (fx0, fx1) = line_range(lo.x, hi.x, fine_step, anchor.x, 600);
+                for i in fx0..=fx1 {
                     if i % subdiv != 0 {
-                        cross(i as f32 * fine_step, color);
+                        vertical(i as f32 * fine_step, fine_color);
+                    }
+                }
+            }
+            let mut horizontal = |y: f32, color: Color32| {
+                self.push_line_segment_with_bias(
+                    Vec3::new(lo.x, y, 0.0),
+                    Vec3::new(hi.x, y, 0.0),
+                    color,
+                    1.0,
+                    cam,
+                    viewport,
+                    view_proj,
+                    GRID_DEPTH_BIAS,
+                );
+            };
+            let (hy0, hy1) = line_range(lo.y, hi.y, coarse_step, anchor.y, 400);
+            for j in hy0..=hy1 {
+                horizontal(j as f32 * coarse_step, if j == 0 { axis_heavy } else { heavy });
+            }
+            if fade > 0.01 {
+                let (fy0, fy1) = line_range(lo.y, hi.y, fine_step, anchor.y, 600);
+                for j in fy0..=fy1 {
+                    if j % subdiv != 0 {
+                        horizontal(j as f32 * fine_step, fine_color);
                     }
                 }
             }
