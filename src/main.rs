@@ -8252,6 +8252,7 @@ fn build_viewport_scene_input<'a>(
     creating_edge_treatment: Option<&CreatingEdgeTreatment>,
     creating_revolve: Option<&actions::CreatingRevolve>,
     creating_sweep: Option<&actions::CreatingSweep>,
+    highlighted_bezier_handles: Vec<(usize, bool)>,
     creating_loft: Option<&actions::CreatingLoft>,
     creating_repeat: Option<&actions::CreatingRepeat>,
     pending_extrude_target: Option<model::ExtrudeTarget>,
@@ -8561,6 +8562,7 @@ fn build_viewport_scene_input<'a>(
         editing_extrusion,
         preview_cut_body,
         preview_cut_solids,
+        highlighted_bezier_handles,
         plane_preview,
         active_sketch_face,
         dimension_labels,
@@ -14381,6 +14383,25 @@ impl App {
         // Live-updated descendant geometry for the operation being edited (#260): recomputed from
         // a scratch doc so faded downstream bodies follow the gizmo drag in preview styling.
         let edit_preview_meshes = self.edit_preview_descendant_meshes();
+        // Bezier tangent handles to draw highlighted (#472): the selected handle, the one
+        // mid-drag, and the one under the cursor (so hover reads as "grabbable").
+        let mut highlighted_bezier_handles: Vec<(usize, bool)> = Vec::new();
+        if let Some(session) = self.state.sketch_session {
+            if let Some((line, near_start)) = self.selected_bezier_handle {
+                if self.state.doc.lines.get(line).is_some_and(|l| l.bezier.is_some()) {
+                    highlighted_bezier_handles.push((line, near_start));
+                }
+            }
+            if let Some(active) = &self.bezier_handle_drag {
+                highlighted_bezier_handles.push((active.line, active.near_start));
+            } else if let Some(pp) = pointer_screen {
+                if let Some(handle) =
+                    nearest_bezier_handle_in_sketch(pp, &project, &self.state.doc, session.sketch)
+                {
+                    highlighted_bezier_handles.push(handle);
+                }
+            }
+        }
         let scene_input = build_viewport_scene_input(
             doc,
             &cam,
@@ -14397,6 +14418,7 @@ impl App {
             self.state.creating_edge_treatment.as_ref(),
             self.state.creating_revolve.as_ref(),
             self.state.creating_sweep.as_ref(),
+            highlighted_bezier_handles,
             self.state.creating_loft.as_ref(),
             self.state.creating_repeat.as_ref(),
             self.pending_extrude_target.clone(),
@@ -16531,6 +16553,7 @@ mod tests {
             None,
             None,
             None,
+            Vec::new(),
             None,
             None,
             pending.clone(),
@@ -16610,6 +16633,7 @@ mod tests {
             None,
             None,
             None,
+            Vec::new(),
             None,
             state.creating_repeat.as_ref(),
             None,
@@ -16703,6 +16727,7 @@ mod tests {
                 None,
                 None,
                 None,
+                Vec::new(),
                 state.creating_loft.as_ref(),
                 None,
                 None,
@@ -16793,6 +16818,7 @@ mod tests {
             state.creating_edge_treatment.as_ref(),
             None,
             None,
+            Vec::new(),
             None,
             None,
             None,

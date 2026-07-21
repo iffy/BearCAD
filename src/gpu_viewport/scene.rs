@@ -488,6 +488,9 @@ pub struct ViewportSceneInput<'a> {
     /// renders this translucent cut-result mesh in place of its intact self, like
     /// `preview_cut_body` does for the in-progress extrusion.
     pub preview_cut_solids: Vec<(usize, crate::extrude::SolidMesh)>,
+    /// Bezier tangent handles to draw in the gold pick-highlight color (#472): the
+    /// hovered, dragged, and/or selected `(line, near_start)` handles.
+    pub highlighted_bezier_handles: Vec<(usize, bool)>,
     pub plane_preview: Option<ViewportPlanePreview>,
     pub active_sketch_face: Option<FaceId>,
     pub dimension_labels: &'a [ViewportDimLabel],
@@ -996,8 +999,11 @@ impl ViewportScene {
         // dashed guide from each endpoint to its handle, plus a disc at the handle itself.
         if let Some(session) = input.sketch_session {
             mesh.set_index_layer(MeshIndexLayer::Gizmo);
-            let handle_color = input.palette.preview;
-            for line in input.doc.lines.iter() {
+            // Handles draw in the sketch blue; a hovered/dragged/selected handle turns
+            // the gold pick-highlight color and grows a little (#472).
+            let handle_color = input.palette.rect_line;
+            let highlight_color = crate::construction::PICK_HOVER_RGBA;
+            for (li, line) in input.doc.lines.iter().enumerate() {
                 if line.deleted || line.sketch != session.sketch {
                     continue;
                 }
@@ -1013,8 +1019,17 @@ impl ViewportScene {
                 let h1 = crate::face::local_to_world(&frame, c1.0, c1.1);
                 mesh.push_dashed_line_segment(p0, h0, handle_color, 1.5, input.cam, input.viewport, &vp);
                 mesh.push_dashed_line_segment(p1, h1, handle_color, 1.5, input.cam, input.viewport, &vp);
-                mesh.push_point_marker(h0, handle_color, 5.0, input.cam, input.viewport, &vp);
-                mesh.push_point_marker(h1, handle_color, 5.0, input.cam, input.viewport, &vp);
+                for (near_start, h) in [(true, h0), (false, h1)] {
+                    let hot = input.highlighted_bezier_handles.contains(&(li, near_start));
+                    mesh.push_point_marker(
+                        h,
+                        if hot { highlight_color } else { handle_color },
+                        if hot { 6.5 } else { 5.0 },
+                        input.cam,
+                        input.viewport,
+                        &vp,
+                    );
+                }
             }
         }
 
@@ -4044,6 +4059,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4537,6 +4553,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4576,6 +4593,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: Some(ViewportPlanePreview {
                 plane: preview_plane,
@@ -4629,6 +4647,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4667,6 +4686,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4724,6 +4744,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
                 preview_cut_body: None,
                 preview_cut_solids: Vec::new(),
+                highlighted_bezier_handles: Vec::new(),
                 editing_extrusion: None,
                 plane_preview: None,
                 active_sketch_face: None,
@@ -4789,6 +4810,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4838,6 +4860,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4888,6 +4911,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -4968,6 +4992,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -5027,6 +5052,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -5193,6 +5219,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
                 preview_cut_body: None,
                 preview_cut_solids: Vec::new(),
+                highlighted_bezier_handles: Vec::new(),
                 editing_extrusion: editing,
                 plane_preview: None,
                 active_sketch_face: None,
@@ -5371,6 +5398,7 @@ mod tests {
             editing_extrusion: None,
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             plane_preview: None,
             active_sketch_face: None,
             dimension_labels: &[],
@@ -5500,6 +5528,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -5613,6 +5642,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -5672,6 +5702,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -5841,6 +5872,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -5879,6 +5911,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -5961,6 +5994,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
                 preview_cut_body: None,
                 preview_cut_solids: Vec::new(),
+                highlighted_bezier_handles: Vec::new(),
                 editing_extrusion: None,
                 plane_preview: None,
                 active_sketch_face: None,
@@ -6047,6 +6081,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
                 preview_cut_body: None,
                 preview_cut_solids: Vec::new(),
+                highlighted_bezier_handles: Vec::new(),
                 editing_extrusion: None,
                 plane_preview: None,
                 active_sketch_face: None,
@@ -6115,6 +6150,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
                 preview_cut_body: None,
                 preview_cut_solids: Vec::new(),
+                highlighted_bezier_handles: Vec::new(),
                 editing_extrusion: None,
                 plane_preview: None,
                 active_sketch_face: None,
@@ -6202,6 +6238,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -6240,6 +6277,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -6420,6 +6458,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -6462,6 +6501,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -6571,6 +6611,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -6611,6 +6652,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -6649,6 +6691,7 @@ mod tests {
             repeat_ghosts: Vec::new(),
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             editing_extrusion: None,
             plane_preview: None,
             active_sketch_face: None,
@@ -6741,6 +6784,7 @@ mod perf_probe {
                 editing_extrusion: None,
                 preview_cut_body: None,
                 preview_cut_solids: Vec::new(),
+                highlighted_bezier_handles: Vec::new(),
                 plane_preview: None,
                 active_sketch_face: None,
                 palette: ViewportPalette::default(),
@@ -6826,6 +6870,7 @@ mod cut_preview_tests {
             editing_extrusion: None,
             preview_cut_body: None,
             preview_cut_solids: Vec::new(),
+            highlighted_bezier_handles: Vec::new(),
             plane_preview: None,
             active_sketch_face: None,
             palette: ViewportPalette::default(),
