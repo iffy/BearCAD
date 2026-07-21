@@ -338,6 +338,14 @@ jobs:
           git submodule update --init --depth 1 third_party/OCCT
           scripts/build-occt.sh
 
+      # Bake the exact release tag into the binary (todoer #466): the `release` job tags
+      # v{version}-build.{run_number} *after* this build, and the shallow checkout has no
+      # tags for `git describe` — without this the shipped binary only knows its crate
+      # version and the update badge offers the very build being run.
+      - name: Bake release identity
+        shell: bash
+        run: echo "BEARCAD_RELEASE_TAG=v$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)-build.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+
       # macOS/Linux use the default build (occt); Windows passes --no-default-features.
       - name: cargo build --release
         run: cargo build --release ${{ matrix.cargo_flags }}

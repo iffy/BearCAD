@@ -366,6 +366,14 @@ mod tests_release_identity {
         assert!(is_newer("0.1.0-build.262", "0.1.0-build.261"));
         assert!(!is_newer("0.1.0-build.260", "0.1.0-build.261"));
     }
+
+    /// #466: a dev build sitting on commits past the latest tag (`git describe` appends
+    /// `-N-g<sha>`) is ahead of that release, not behind it.
+    #[test]
+    fn dev_build_past_the_latest_tag_is_not_an_update() {
+        assert!(!is_newer("0.1.0-build.299", "0.1.0-build.299-3-gabc1234"));
+        assert!(is_newer("0.1.0-build.300", "0.1.0-build.299-3-gabc1234"));
+    }
 }
 
 #[cfg(test)]

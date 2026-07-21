@@ -10,7 +10,18 @@ fn main() {
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .filter(|s| !s.is_empty())
     };
-    let describe = git(&["describe", "--tags", "--always"]).unwrap_or_default();
+    // CI release builds pass the exact tag the release job will publish under
+    // (BEARCAD_RELEASE_TAG, todoer #466): the tag doesn't exist yet at build time, and
+    // the CI checkout is shallow (no tags), so `git describe` alone can't name it —
+    // leaving the update check comparing against the bare crate version and offering
+    // the very build being run.
+    println!("cargo:rerun-if-env-changed=BEARCAD_RELEASE_TAG");
+    let describe = std::env::var("BEARCAD_RELEASE_TAG")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| git(&["describe", "--tags", "--always"]))
+        .unwrap_or_default();
     let sha = git(&["rev-parse", "--short=9", "HEAD"]).unwrap_or_default();
     println!("cargo:rustc-env=BEARCAD_GIT_DESCRIBE={describe}");
     println!("cargo:rustc-env=BEARCAD_GIT_SHA={sha}");
