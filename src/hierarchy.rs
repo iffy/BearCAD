@@ -1439,10 +1439,10 @@ pub fn build_hierarchy(
             children,
         });
     }
-    // Sweeps: the operation is its own element, with its output body
-    // (linked by `BodySource::Sweep`) nested beneath it.
+    // Sweeps nest under their profile sketch (#478, see `build_sketch_entry`); only a
+    // sweep whose sketch died falls back to a top-level orphan here so it stays reachable.
     for (oi, fp) in doc.sweeps.iter().enumerate() {
-        if fp.deleted {
+        if fp.deleted || crate::document_lifecycle::sketch_alive(doc, fp.sketch) {
             continue;
         }
         let children = doc
@@ -2618,6 +2618,28 @@ fn build_sketch_entry(
 
     // Extrusions built from this sketch nest under it (each owns its Body).
     children.extend(build_sketch_extrusions(doc, sketch, sketch_session));
+    // Sweeps whose profile faces live in this sketch nest under it too (#478), each
+    // owning its output body — so the graph shows the sketch (the faces' proxy) as the
+    // op's input rather than the document root.
+    for (oi, fp) in doc.sweeps.iter().enumerate() {
+        if fp.deleted || fp.sketch != sketch {
+            continue;
+        }
+        let bodies = doc
+            .bodies
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| !b.deleted && b.source == crate::model::BodySource::Sweep(oi))
+            .map(|(bi, _)| HierarchyEntry {
+                node: HierarchyNode::Body(bi),
+                children: Vec::new(),
+            })
+            .collect();
+        children.push(HierarchyEntry {
+            node: HierarchyNode::SweepOp(oi),
+            children: bodies,
+        });
+    }
 
     HierarchyEntry {
         node: HierarchyNode::Sketch(sketch),
@@ -5093,6 +5115,7 @@ label_hidden: false,
                 LoftSection { sketch: 1, face: ExtrudeFace::Circle(1) },
                 LoftSection { sketch: 2, face: ExtrudeFace::Circle(2) },
             ],
+            mode: crate::model::LoftMode::NewBody,
             name: None,
             deleted: false,
         });
@@ -5148,11 +5171,37 @@ label_hidden: false,
         });
 
         let tree = build_hierarchy(&doc, None);
-        let op = tree[0]
-            .children
-            .iter()
-            .find(|e| e.node == HierarchyNode::SweepOp(0))
-            .expect("the sweep op is a top-level operation, not a bare body");
+        // The op nests under its profile sketch (#478), with the output body beneath it.
+        fn find_op(entries: &[HierarchyEntry]) -> Option<&HierarchyEntry> {
+            for e in entries {
+                if e.node == HierarchyNode::SweepOp(0) {
+                    return Some(e);
+                }
+                if let Some(found) = find_op(&e.children) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let op = find_op(&tree).expect("the sweep op appears in the tree");
+        let sketch_entry = {
+            fn find_sketch(entries: &[HierarchyEntry], sketch: SketchId) -> Option<&HierarchyEntry> {
+                for e in entries {
+                    if e.node == HierarchyNode::Sketch(sketch) {
+                        return Some(e);
+                    }
+                    if let Some(found) = find_sketch(&e.children, sketch) {
+                        return Some(found);
+                    }
+                }
+                None
+            }
+            find_sketch(&tree, sketch).expect("profile sketch in the tree")
+        };
+        assert!(
+            sketch_entry.children.iter().any(|c| c.node == HierarchyNode::SweepOp(0)),
+            "the sweep op nests under its profile sketch"
+        );
         assert!(
             op.children.iter().any(|c| c.node == HierarchyNode::Body(0)),
             "the swept body nests under the sweep op as its output"

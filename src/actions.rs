@@ -878,6 +878,10 @@ pub struct CreatingSweep {
 #[derive(Clone, Debug, Default)]
 pub struct CreatingLoft {
     pub sections: Vec<crate::model::LoftSection>,
+    /// Where the committed loft lands (#479): new body / fuse into touching / cut.
+    pub body_choice: RevolveBodyChoice,
+    /// Bodies picked for Cut mode.
+    pub cut_bodies: Vec<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -4875,7 +4879,11 @@ impl AppState {
                         &self.doc,
                         &self.scene_selection,
                     );
-                    self.creating_loft = Some(CreatingLoft { sections });
+                    self.creating_loft = Some(CreatingLoft {
+                        sections,
+                        body_choice: RevolveBodyChoice::default(),
+                        cut_bodies: Vec::new(),
+                    });
                 }
                 // The floating dimension editor only makes sense under the tools that
                 // can interact with it (Select drags labels, Dimension edits values);
@@ -7243,8 +7251,9 @@ impl AppState {
                         "Pick at least two cross sections to loft".to_string(),
                     );
                 }
-                let loft = crate::model::Loft {
+                let mut loft = crate::model::Loft {
                     sections: crate::extrude::order_loft_sections(&self.doc, cl.sections.clone()),
+                    mode: crate::model::LoftMode::NewBody,
                     name: None,
                     deleted: false,
                 };
@@ -7254,18 +7263,65 @@ impl AppState {
                         "Loft sections must be closed profiles".to_string(),
                     );
                 }
+                // Resolve where it lands (#479), mirroring revolve/sweep.
+                loft.mode = match cl.body_choice {
+                    RevolveBodyChoice::NewBody => crate::model::LoftMode::NewBody,
+                    RevolveBodyChoice::AddTouching => {
+                        let touching = crate::extrude::loft_mesh(&self.doc, &loft)
+                            .and_then(|m| m.bounds())
+                            .map(|rb| {
+                                (0..self.doc.bodies.len())
+                                    .filter(|&bi| !self.doc.bodies[bi].deleted)
+                                    .filter(|&bi| {
+                                        crate::extrude::body_solid_mesh(&self.doc, bi)
+                                            .and_then(|m| m.bounds())
+                                            .is_some_and(|bb| {
+                                                bb.0.cmple(rb.1).all() && rb.0.cmple(bb.1).all()
+                                            })
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        if touching.is_empty() {
+                            self.status = "No touching bodies — lofted into a new body".to_string();
+                            crate::model::LoftMode::NewBody
+                        } else {
+                            crate::model::LoftMode::AddTo(touching)
+                        }
+                    }
+                    RevolveBodyChoice::Cut => {
+                        if cl.cut_bodies.is_empty() {
+                            let e = "Pick at least one body to cut".to_string();
+                            self.creating_loft = Some(cl);
+                            self.status = e.clone();
+                            return ActionResult::Err(e);
+                        }
+                        crate::model::LoftMode::Cut(cl.cut_bodies.clone())
+                    }
+                };
                 let count = loft.sections.len();
+                let mode = loft.mode.clone();
                 self.doc.lofts.push(loft);
-                self.doc.bodies.push(crate::model::Body {
-                    source: crate::model::BodySource::Loft(self.doc.lofts.len() - 1),
-                    name: None,
-                    deleted: false,
-                    shadow: false,
-                });
+                if matches!(mode, crate::model::LoftMode::NewBody) {
+                    self.doc.bodies.push(crate::model::Body {
+                        source: crate::model::BodySource::Loft(self.doc.lofts.len() - 1),
+                        name: None,
+                        deleted: false,
+                        shadow: false,
+                    });
+                }
                 // One shape-order marker for the pair; undo pops the body with the loft.
                 self.doc.shape_order.push(ShapeKind::Loft);
                 self.tool = Tool::Select;
-                self.status = format!("Added loft ({count} sections)");
+                self.status = match &mode {
+                    crate::model::LoftMode::NewBody => format!("Added loft ({count} sections)"),
+                    crate::model::LoftMode::AddTo(b) => {
+                        format!("Lofted into {} body(ies) ({count} sections)", b.len())
+                    }
+                    crate::model::LoftMode::Cut(b) => {
+                        format!("Loft cut {} body(ies) ({count} sections)", b.len())
+                    }
+                };
                 self.refresh_document_health();
                 ActionResult::Ok
             }

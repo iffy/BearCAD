@@ -4935,6 +4935,21 @@ impl App {
             element.and_then(|el| extrude::loft_section_from_element(&self.state.doc, el))
         {
             self.state.apply(Action::ToggleLoftSection { section });
+            return;
+        }
+        // In Cut mode, clicking a body toggles it into the cut set (#479).
+        if let Some(bi) = self.pick_whole_body(pp, project, cam, &target.kind) {
+            if let Some(cl) = self.state.creating_loft.as_mut() {
+                if cl.body_choice == actions::RevolveBodyChoice::Cut {
+                    if let Some(pos) = cl.cut_bodies.iter().position(|b| *b == bi) {
+                        cl.cut_bodies.remove(pos);
+                    } else {
+                        cl.cut_bodies.push(bi);
+                    }
+                    self.state.status =
+                        format!("Loft: cutting {} body(ies)", cl.cut_bodies.len());
+                }
+            }
         }
     }
 
@@ -5464,7 +5479,17 @@ impl eframe::App for App {
                 // Import/Export toolbar buttons (#352): the same actions as the File menu, grouped
                 // under a popup on each icon.
                 ui.separator();
-                ui.menu_image_button(icons::sized_texture_at(ui.ctx(), icons::IconId::Import, TOOLBAR_ICON_SIZE), |ui| {
+                // Flush icon buttons like the tool buttons (#475) — `menu_image_button`
+                // wraps the icon in a padded, always-framed menu button that rendered
+                // visibly bigger than its neighbors; a plain icon button + popup matches.
+                let import_btn = icons::selectable_icon_button_at(
+                    ui,
+                    icons::IconId::Import,
+                    false,
+                    "Import STL, STEP, or an image",
+                    TOOLBAR_ICON_SIZE,
+                );
+                egui::Popup::menu(&import_btn).show(|ui| {
                     if ui.button("Import STL…").clicked() {
                         self.import_stl();
                         ui.close();
@@ -5477,10 +5502,15 @@ impl eframe::App for App {
                         self.import_image();
                         ui.close();
                     }
-                })
-                .response
-                .on_hover_text("Import STL, STEP, or an image");
-                ui.menu_image_button(icons::sized_texture_at(ui.ctx(), icons::IconId::Export, TOOLBAR_ICON_SIZE), |ui| {
+                });
+                let export_btn = icons::selectable_icon_button_at(
+                    ui,
+                    icons::IconId::Export,
+                    false,
+                    "Export all bodies as STL or STEP",
+                    TOOLBAR_ICON_SIZE,
+                );
+                egui::Popup::menu(&export_btn).show(|ui| {
                     if ui.button("Export STL…").clicked() {
                         self.export_stl_all();
                         ui.close();
@@ -5489,16 +5519,10 @@ impl eframe::App for App {
                         self.export_step_all();
                         ui.close();
                     }
-                })
-                .response
-                .on_hover_text("Export all bodies as STL or STEP");
+                });
                 if let Some(session) = self.state.sketch_session {
                     ui.separator();
                     ui.label(sketch_label(&self.state.doc, session.sketch));
-                }
-                ui.separator();
-                if ui.button("Clear").clicked() {
-                    self.state.apply(Action::Clear);
                 }
             });
             });
@@ -6551,6 +6575,15 @@ impl eframe::App for App {
                         })
                     })
                     .flatten(),
+                loft_body: (self.state.tool == Tool::Loft
+                    && self.state.sketch_session.is_none())
+                .then(|| {
+                    let cl = self.state.creating_loft.as_ref();
+                    context::LoftBodyControl {
+                        body_choice: cl.map(|c| c.body_choice).unwrap_or_default(),
+                        cut_bodies: cl.map(|c| c.cut_bodies.clone()).unwrap_or_default(),
+                    }
+                }),
                 plane_tool: (self.state.tool == Tool::ConstructionPlane).then(|| {
                     let cp = self.state.creating_plane.as_ref();
                     context::PlaneToolControl {
@@ -6691,6 +6724,7 @@ impl eframe::App for App {
             let mut revolve_edit: Option<context::RevolveEdit> = None;
             let mut sweep_edit: Option<context::SweepEdit> = None;
             let mut plane_tool_edit: Option<context::PlaneToolEdit> = None;
+            let mut loft_body_choice: Option<actions::RevolveBodyChoice> = None;
             let mut boolean_edit: Option<context::BooleanEdit> = None;
             let mut boolean_edit_begin: Option<usize> = None;
             let mut move_edit: Option<context::MoveEdit> = None;
@@ -6739,6 +6773,7 @@ impl eframe::App for App {
                         &mut |edit| revolve_edit = Some(edit),
                         &mut |edit| sweep_edit = Some(edit),
                         &mut |edit| plane_tool_edit = Some(edit),
+                        &mut |choice| loft_body_choice = Some(choice),
                         &mut |edit| boolean_edit = Some(edit),
                         &mut |op| boolean_edit_begin = Some(op),
                         &mut |edit| move_edit = Some(edit),
@@ -6786,6 +6821,13 @@ impl eframe::App for App {
                     }
                     context::RevolveEdit::ClearAxis => cr.axis = None,
                 }
+            }
+            if let Some(choice) = loft_body_choice {
+                let cl = self
+                    .state
+                    .creating_loft
+                    .get_or_insert_with(actions::CreatingLoft::default);
+                cl.body_choice = choice;
             }
             if let Some(edit) = plane_tool_edit {
                 match edit {
@@ -7453,6 +7495,11 @@ impl eframe::App for App {
                     context::PickerTarget::SweepCut => {
                         if let Some(cf) = self.state.creating_sweep.as_mut() {
                             remove_or_clear(&mut cf.cut_bodies, edit);
+                        }
+                    }
+                    context::PickerTarget::LoftCut => {
+                        if let Some(cl) = self.state.creating_loft.as_mut() {
+                            remove_or_clear(&mut cl.cut_bodies, edit);
                         }
                     }
                     context::PickerTarget::MoveTargets => {
@@ -8445,6 +8492,7 @@ fn build_viewport_scene_input<'a>(
         }
         let loft = model::Loft {
             sections: extrude::order_loft_sections(doc, cl.sections.clone()),
+            mode: model::LoftMode::NewBody,
             name: None,
             deleted: false,
         };
@@ -14399,6 +14447,8 @@ impl App {
                     for section in &cl.sections {
                         folded.extend(extrude::loft_section_scene_elements(section));
                     }
+                    // Loft's cut bodies are consumed destructively → red (#479).
+                    cut_highlight_bodies.extend(cl.cut_bodies.iter().copied());
                 }
             }
             Tool::Combine => {
@@ -16923,6 +16973,7 @@ mod tests {
         // One section: nothing to blend yet, no preview.
         state.creating_loft = Some(CreatingLoft {
             sections: vec![LoftSection { sketch: s0, face: ExtrudeFace::Circle(0) }],
+            ..CreatingLoft::default()
         });
         assert!(!build(&state), "a single section shouldn't preview a loft");
 
@@ -16932,6 +16983,7 @@ mod tests {
                 LoftSection { sketch: s0, face: ExtrudeFace::Circle(0) },
                 LoftSection { sketch: s1, face: ExtrudeFace::Circle(1) },
             ],
+            ..CreatingLoft::default()
         });
         assert!(build(&state), "two sections should preview the blended solid");
     }

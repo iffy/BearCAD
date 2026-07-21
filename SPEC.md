@@ -1119,12 +1119,18 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   (with ≥ 2 sections)
   commits: sections are ordered along the loft's principal direction (so pick order doesn't
   tangle the blend), and a new `Loft` feature plus its body land under a single undo marker.
-  The mesh is a ruled loft rebuilt parametrically from the live profiles: each section
-  boundary is resampled to a common ring size, rings are aligned (consistent winding,
-  twist-minimizing start offset) and stitched with wall quads, and the end sections are
-  capped — a hand-rolled mesh like the no-kernel edge-treatment fallback; an OCCT
-  `ThruSections` BREP loft is a documented follow-up. Scriptable as
-  `bearcad.loft{ circles = {i, ...}, polygons = {{line, ...}, ...}, name = }` (singular
+  The result lands as a **new body**, **fused into touching bodies**, or **cut from picked
+  bodies** (#479) — the same segmented New/Add/Cut icon group as Revolve/Sweep, with cut
+  targets clicked in the viewport, listed in the context pane's picker, and stored as
+  `LoftMode::{NewBody, AddTo, Cut}` on the feature (`lofts_targeting` at mesh/kernel build
+  time; pre-#479 files load as `NewBody`). The mesh is a ruled loft rebuilt parametrically
+  from the live profiles: each section boundary is resampled to a common ring size, rings
+  are aligned (consistent winding, twist-minimizing start offset) and stitched with wall
+  quads, and the end sections are capped; the kernel path builds the same ruled blend as
+  pairwise `ThruSections` segments fused into one BREP solid, which is what Add/Cut boolean
+  against. Scriptable as
+  `bearcad.loft{ circles = {i, ...}, polygons = {{line, ...}, ...}, body = "new"|"add"|"cut",
+  bodies = {..}, name = }` (singular
   `circle`/`polygon` also accepted; each face's sketch is inferred as in `bearcad.extrude`),
   and interactive lofts replay to the command log as the same call. In the Elements pane a
   loft shows as its **own operation node** (`HierarchyNode::Loft`) with its output body nested

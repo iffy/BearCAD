@@ -19,7 +19,10 @@ horns, hulls, funnels, transitions between shapes.
    section planes at the offsets you need.
 2. Pick the **Loft** tool and click each profile — a click on any line of a loop picks
    the whole loop; clicking a picked section removes it.
-3. With two or more sections picked, press **Enter**. Sections blend in order along the
+3. Choose where the result lands in the context pane — **New body**, **Add to touching
+   bodies**, or **Cut bodies** (click the bodies to carve in the viewport) — the same
+   three buttons Revolve and Sweep have.
+4. With two or more sections picked, press **Enter**. Sections blend in order along the
    loft's direction — pick order doesn't matter.
 
 ## Good to know

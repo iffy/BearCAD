@@ -3409,8 +3409,14 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     "loft requires at least two sections (`circles`/`polygons`)",
                 ));
             }
+            let bodies: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
+            let body = match opts.get::<Option<String>>("body")?.as_deref() {
+                Some("add") => crate::actions::RevolveBodyChoice::AddTouching,
+                Some("cut") => crate::actions::RevolveBodyChoice::Cut,
+                _ => crate::actions::RevolveBodyChoice::NewBody,
+            };
             unsafe {
-                tick.exec(Instruction::Loft { faces })?;
+                tick.exec(Instruction::Loft { faces, body, bodies })?;
             }
             let element = SceneElement::Body(unsafe {
                 tick.state().doc.bodies.len().saturating_sub(1)

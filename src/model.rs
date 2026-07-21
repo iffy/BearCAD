@@ -1271,10 +1271,24 @@ pub struct Loft {
     /// The cross sections, in blend order (sorted along the loft's principal direction at
     /// commit time). Each names a closed profile the same way `Extrusion::faces` does.
     pub sections: Vec<LoftSection>,
+    /// How the solid lands (#479): its own body (the default — pre-#479 files load as
+    /// this), fused into existing bodies, or subtracted from them.
+    #[serde(default)]
+    pub mode: LoftMode,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
     pub deleted: bool,
+}
+
+/// How a lofted solid lands in the document (#479), mirroring [`SweepMode`].
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoftMode {
+    #[default]
+    NewBody,
+    AddTo(Vec<usize>),
+    Cut(Vec<usize>),
 }
 
 /// One loft cross section: a closed profile (`ExtrudeFace`) plus the sketch it lives in.

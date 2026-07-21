@@ -352,7 +352,13 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             if faces.len() < 2 {
                 return Err("loft requires at least two sections (`circles`/`polygons`)".into());
             }
-            Ok(Instruction::Loft { faces })
+            let bodies = usize_list(o, "bodies")?;
+            let body = match opt_str(o, "body")?.as_deref() {
+                Some("add") => RevolveBodyChoice::AddTouching,
+                Some("cut") => RevolveBodyChoice::Cut,
+                _ => RevolveBodyChoice::NewBody,
+            };
+            Ok(Instruction::Loft { faces, body, bodies })
         }
         "combine" => {
             let (kind, a, b, keep_b) = boolean_op_args(o)?;
@@ -1820,6 +1826,8 @@ mod tests {
                     ExtrudeFace::Circle(1),
                     ExtrudeFace::Polygon(vec![2, 3, 4, 5]),
                 ],
+                body: RevolveBodyChoice::NewBody,
+                bodies: vec![],
             })
         );
         // Fewer than two sections is rejected, as in the closure.

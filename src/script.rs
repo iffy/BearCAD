@@ -152,7 +152,11 @@ pub enum Instruction {
     },
     /// Loft a solid through two or more closed cross-section profiles (SPEC §3.5).
     /// Each face's owning sketch is inferred at execution time, like `bearcad.extrude`.
-    Loft { faces: Vec<crate::model::ExtrudeFace> },
+    Loft {
+        faces: Vec<crate::model::ExtrudeFace>,
+        body: crate::actions::RevolveBodyChoice,
+        bodies: Vec<usize>,
+    },
     /// Create a technical drawing (#180), optionally named.
     CreateDrawing { name: Option<String> },
     /// Set a drawing's page size and margin, in millimetres (#273/#406). `None` keeps the
@@ -701,7 +705,7 @@ impl Instruction {
                     .unwrap_or_default();
                 format!("bearcad.edit_extrusion{{ extrusion = {extrusion}{d}{to} }}")
             }
-            Instruction::Loft { faces } => {
+            Instruction::Loft { faces, body, bodies } => {
                 use crate::model::ExtrudeFace;
                 let index_list = |indices: &[usize]| -> String {
                     indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
@@ -730,6 +734,19 @@ impl Instruction {
                             .collect::<Vec<_>>()
                             .join(", ")
                     ));
+                }
+                match body {
+                    crate::actions::RevolveBodyChoice::NewBody => {}
+                    crate::actions::RevolveBodyChoice::AddTouching => {
+                        parts.push("body = \"add\"".to_string());
+                        if !bodies.is_empty() {
+                            parts.push(format!("bodies = {{{}}}", index_list(bodies)));
+                        }
+                    }
+                    crate::actions::RevolveBodyChoice::Cut => {
+                        parts.push("body = \"cut\"".to_string());
+                        parts.push(format!("bodies = {{{}}}", index_list(bodies)));
+                    }
                 }
                 format!("bearcad.loft{{ {} }}", parts.join(", "))
             }
@@ -2001,8 +2018,19 @@ pub fn instruction_for_new_extrusion(doc: &crate::model::Document) -> Option<Ins
 /// like `instruction_for_new_extrusion` the sections come from post-commit state.
 pub fn instruction_for_new_loft(doc: &crate::model::Document) -> Option<Instruction> {
     let loft = doc.lofts.last()?;
+    let (body, bodies) = match &loft.mode {
+        crate::model::LoftMode::NewBody => {
+            (crate::actions::RevolveBodyChoice::NewBody, Vec::new())
+        }
+        crate::model::LoftMode::AddTo(b) => {
+            (crate::actions::RevolveBodyChoice::AddTouching, b.clone())
+        }
+        crate::model::LoftMode::Cut(b) => (crate::actions::RevolveBodyChoice::Cut, b.clone()),
+    };
     Some(Instruction::Loft {
         faces: loft.sections.iter().map(|sec| sec.face.clone()).collect(),
+        body,
+        bodies,
     })
 }
 
@@ -3722,7 +3750,7 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::Loft { faces } => {
+            Instruction::Loft { faces, body, bodies } => {
                 // Rebuild sections from the faces (sketch inferred per face), then drive the
                 // same action pair the interactive tool uses.
                 state.creating_loft = None;
@@ -3738,6 +3766,10 @@ impl ScriptRunner {
                         section: crate::model::LoftSection { sketch, face },
                     });
                     self.record_action_error(result);
+                }
+                if let Some(cl) = state.creating_loft.as_mut() {
+                    cl.body_choice = body;
+                    cl.cut_bodies = bodies;
                 }
                 let result = state.apply(Action::CommitLoft);
                 self.record_action_error(result);

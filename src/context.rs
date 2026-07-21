@@ -60,6 +60,8 @@ pub struct ContextInput<'a> {
     pub sweep: Option<SweepControl>,
     /// Construction Plane tool state (#474): `Some` while the Plane tool is active.
     pub plane_tool: Option<PlaneToolControl>,
+    /// Loft tool body-mode state (#479): `Some` while the Loft tool is active.
+    pub loft_body: Option<LoftBodyControl>,
     /// Combine tool state: `Some` while the Combine tool is active (creating or editing
     /// a boolean operation).
     pub boolean_op: Option<BooleanControl>,
@@ -158,6 +160,14 @@ pub struct PlaneToolControl {
     /// One label per normal candidate at a picked vertex (empty or 1 when unambiguous).
     pub normal_labels: Vec<String>,
     pub normal_choice: usize,
+}
+
+/// The Loft tool's body-mode state (#479): the New/Add/Cut choice plus Cut's picked
+/// bodies (rendered through the unified element picker like Revolve's).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoftBodyControl {
+    pub body_choice: crate::actions::RevolveBodyChoice,
+    pub cut_bodies: Vec<usize>,
 }
 
 /// One edit from the Construction Plane tool's context section (#474).
@@ -625,6 +635,8 @@ pub struct ContextPaneContent {
     pub sweep: Option<SweepControl>,
     /// Construction Plane tool state (#474): `Some` while the Plane tool is active.
     pub plane_tool: Option<PlaneToolControl>,
+    /// Loft tool body-mode state (#479): `Some` while the Loft tool is active.
+    pub loft_body: Option<LoftBodyControl>,
     /// Combine tool controls.
     pub boolean_op: Option<BooleanControl>,
     /// "Edit operation" button target.
@@ -783,6 +795,8 @@ pub enum PickerTarget {
     RevolveCut,
     /// The Sweep tool's cut bodies (`CreatingSweep::cut_bodies`).
     SweepCut,
+    /// The Loft tool's cut bodies (`CreatingLoft::cut_bodies`, #479).
+    LoftCut,
     /// The Move tool's target bodies (`CreatingMove::targets`).
     MoveTargets,
     /// The Repeat tool's target bodies (`CreatingRepeat::targets`).
@@ -943,6 +957,17 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             ));
         }
     }
+    if let Some(l) = input.loft_body.as_ref() {
+        if l.body_choice == crate::actions::RevolveBodyChoice::Cut {
+            tool_pickers.push(body_tool_picker(
+                "Cut bodies",
+                PickerTarget::LoftCut,
+                &l.cut_bodies,
+                Some(crate::theme::CUT_ACCENT),
+                true,
+            ));
+        }
+    }
     if let Some(m) = input.move_op.as_ref() {
         tool_pickers.push(body_tool_picker(
             "Bodies",
@@ -995,6 +1020,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let revolve = input.revolve.clone();
     let sweep = input.sweep.clone();
     let plane_tool = input.plane_tool.clone();
+    let loft_body = input.loft_body.clone();
     let boolean_op = input.boolean_op.clone();
     let boolean_edit_start = input.boolean_edit_start;
     let move_op = input.move_op.clone();
@@ -1044,6 +1070,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             revolve: revolve.clone(),
             sweep: sweep.clone(),
             plane_tool: plane_tool.clone(),
+            loft_body: loft_body.clone(),
             boolean_op: boolean_op.clone(),
             boolean_edit_start,
             move_op: move_op.clone(),
@@ -1089,6 +1116,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             revolve: revolve.clone(),
             sweep: sweep.clone(),
             plane_tool: plane_tool.clone(),
+            loft_body: loft_body.clone(),
             boolean_op: boolean_op.clone(),
             boolean_edit_start,
             move_op: move_op.clone(),
@@ -1134,6 +1162,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             revolve: revolve.clone(),
             sweep: sweep.clone(),
             plane_tool: plane_tool.clone(),
+            loft_body: loft_body.clone(),
             boolean_op: boolean_op.clone(),
             boolean_edit_start,
             move_op: move_op.clone(),
@@ -1182,6 +1211,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         revolve,
         sweep,
         plane_tool,
+        loft_body,
         boolean_op,
         boolean_edit_start,
         move_op,
@@ -1544,20 +1574,6 @@ fn labeled_row_top<R>(
 
 /// One row of the extrude "into" picker (#32/#35): the mode's icon followed by a radio button.
 /// Selecting the radio mutates `current`, which the caller diffs to fire the change callback.
-fn extrude_body_mode_row(
-    ui: &mut egui::Ui,
-    ctx: &egui::Context,
-    current: &mut ExtrudeBodyMode,
-    value: ExtrudeBodyMode,
-    icon: crate::icons::IconId,
-    label: String,
-) {
-    ui.horizontal(|ui| {
-        ui.image(crate::icons::sized_texture(ctx, icon));
-        ui.radio_value(current, value, label);
-    });
-}
-
 pub fn show_pane(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
@@ -1581,6 +1597,7 @@ pub fn show_pane(
     on_revolve_edit: &mut impl FnMut(RevolveEdit),
     on_sweep_edit: &mut impl FnMut(SweepEdit),
     on_plane_tool_edit: &mut impl FnMut(PlaneToolEdit),
+    on_loft_body_choice: &mut impl FnMut(crate::actions::RevolveBodyChoice),
     on_boolean_edit: &mut impl FnMut(BooleanEdit),
     on_boolean_edit_start: &mut impl FnMut(usize),
     on_move_edit: &mut impl FnMut(MoveEdit),
@@ -2069,6 +2086,40 @@ pub fn show_pane(
                     && choice != value
                 {
                     on_sweep_edit(SweepEdit::BodyChoice(value));
+                }
+            }
+        });
+    }
+
+    if let Some(control) = &content.loft_body {
+        any_control = true;
+        ui.separator();
+        section_label(ui, "Loft");
+        // The same segmented icon group as Revolve/Sweep (#479).
+        let choice = control.body_choice;
+        ui.horizontal(|ui| {
+            for (value, icon, tooltip) in [
+                (
+                    crate::actions::RevolveBodyChoice::NewBody,
+                    crate::icons::IconId::NewBody,
+                    "New body",
+                ),
+                (
+                    crate::actions::RevolveBodyChoice::AddTouching,
+                    crate::icons::IconId::AddToBody,
+                    "Add to touching bodies",
+                ),
+                (
+                    crate::actions::RevolveBodyChoice::Cut,
+                    crate::icons::IconId::CutBody,
+                    "Cut bodies",
+                ),
+            ] {
+                if crate::icons::selectable_icon_button(ui, icon, choice == value, tooltip)
+                    .clicked()
+                    && choice != value
+                {
+                    on_loft_body_choice(value);
                 }
             }
         });
@@ -3327,33 +3378,36 @@ pub fn show_pane(
     if let Some(control) = &content.extrude_body {
         any_control = true;
         let mut mode = control.mode;
+        // The same segmented icon group the Revolve/Sweep/Loft tools use (#479).
         labeled_row_top(ui, "Extrude into", |ui| {
-        ui.add_enabled_ui(controls_enabled, |ui| {
-            extrude_body_mode_row(
-                ui,
-                ctx,
-                &mut mode,
-                ExtrudeBodyMode::MergeInto(control.merge_body),
-                crate::icons::IconId::AddToBody,
-                format!("Add to {}", control.merge_body_label),
-            );
-            extrude_body_mode_row(
-                ui,
-                ctx,
-                &mut mode,
-                ExtrudeBodyMode::NewBody,
-                crate::icons::IconId::NewBody,
-                "New body".to_string(),
-            );
-            extrude_body_mode_row(
-                ui,
-                ctx,
-                &mut mode,
-                ExtrudeBodyMode::Cut(control.merge_body),
-                crate::icons::IconId::CutBody,
-                format!("Cut {}", control.merge_body_label),
-            );
-        });
+            ui.add_enabled_ui(controls_enabled, |ui| {
+                ui.horizontal(|ui| {
+                    for (value, icon, tooltip) in [
+                        (
+                            ExtrudeBodyMode::NewBody,
+                            crate::icons::IconId::NewBody,
+                            "New body".to_string(),
+                        ),
+                        (
+                            ExtrudeBodyMode::MergeInto(control.merge_body),
+                            crate::icons::IconId::AddToBody,
+                            format!("Add to {}", control.merge_body_label),
+                        ),
+                        (
+                            ExtrudeBodyMode::Cut(control.merge_body),
+                            crate::icons::IconId::CutBody,
+                            format!("Cut {}", control.merge_body_label),
+                        ),
+                    ] {
+                        if crate::icons::selectable_icon_button(ui, icon, mode == value, tooltip)
+                            .clicked()
+                            && mode != value
+                        {
+                            mode = value;
+                        }
+                    }
+                });
+            });
         });
         if mode != control.mode {
             on_extrude_body_mode_changed(mode);
@@ -3738,6 +3792,7 @@ mod tests {
             revolve: None,
             sweep: None,
             plane_tool: None,
+            loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -3866,6 +3921,7 @@ mod tests {
             revolve: None,
             sweep: None,
             plane_tool: None,
+            loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -3940,6 +3996,7 @@ mod tests {
             revolve: None,
             sweep: None,
             plane_tool: None,
+            loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4219,6 +4276,7 @@ mod tests {
                 revolve: None,
             sweep: None,
             plane_tool: None,
+            loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4279,6 +4337,7 @@ mod tests {
             revolve: None,
             sweep: None,
             plane_tool: None,
+            loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4324,6 +4383,7 @@ mod tests {
                 revolve: None,
             sweep: None,
             plane_tool: None,
+            loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4384,6 +4444,7 @@ mod tests {
             revolve: None,
             sweep: None,
             plane_tool: None,
+            loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4447,6 +4508,7 @@ mod tests {
                 revolve: None,
             sweep: None,
             plane_tool: None,
+            loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4555,6 +4617,7 @@ mod tests {
             revolve: None,
             sweep: None,
             plane_tool: None,
+            loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4613,6 +4676,7 @@ mod tests {
             revolve: None,
             sweep: None,
             plane_tool: None,
+            loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4660,6 +4724,7 @@ mod tests {
                 revolve: None,
             sweep: None,
             plane_tool: None,
+            loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4711,6 +4776,7 @@ mod tests {
             revolve: None,
             sweep: None,
             plane_tool: None,
+            loft_body: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,

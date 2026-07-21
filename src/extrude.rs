@@ -566,6 +566,9 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
         crate::model::BodySource::Sweep(fi) => {
             occt_sweep_shape(doc, doc.sweeps.get(fi).filter(|f| !f.deleted)?)?
         }
+        crate::model::BodySource::Loft(li) => {
+            occt_loft_shape(doc, doc.lofts.get(li).filter(|l| !l.deleted)?)?
+        }
         crate::model::BodySource::Boolean { op, solid } => {
             return occt_boolean_output_shape(doc, op, solid);
         }
@@ -599,6 +602,17 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
     for (fi, is_cut) in sweeps_targeting(doc, body_index) {
         let fp = &doc.sweeps[fi];
         let shape = occt_sweep_shape(doc, fp)?;
+        let op = if is_cut {
+            crate::kernel::BoolOp::Cut
+        } else {
+            crate::kernel::BoolOp::Fuse
+        };
+        solid = solid.boolean(&shape, op)?;
+    }
+    // Lofts that fuse into / cut this body (#479).
+    for (li, is_cut) in lofts_targeting(doc, body_index) {
+        let loft = &doc.lofts[li];
+        let shape = occt_loft_shape(doc, loft)?;
         let op = if is_cut {
             crate::kernel::BoolOp::Cut
         } else {
@@ -1271,9 +1285,13 @@ pub fn kernel_fallback_cut_warning(doc: &Document) -> Option<String> {
     for (i, body) in doc.bodies.iter().enumerate() {
         let cut_by_revolve = revolutions_targeting(doc, i).iter().any(|(_, cut)| *cut);
         let cut_by_sweep = sweeps_targeting(doc, i).iter().any(|(_, cut)| *cut);
+        let cut_by_loft = lofts_targeting(doc, i).iter().any(|(_, cut)| *cut);
         if body.deleted
             || body.source.imported_mesh_index().is_some()
-            || (body.source.cut_extrusion_indices().is_empty() && !cut_by_revolve && !cut_by_sweep)
+            || (body.source.cut_extrusion_indices().is_empty()
+                && !cut_by_revolve
+                && !cut_by_sweep
+                && !cut_by_loft)
         {
             continue;
         }
@@ -1754,6 +1772,28 @@ pub fn sweeps_targeting(doc: &Document, body_index: usize) -> Vec<(usize, bool)>
 /// capped. A hand-rolled mesh like the no-kernel edge-treatment fallback — the OCCT
 /// `ThruSections` surface loft is a documented follow-up.
 pub fn loft_mesh(doc: &Document, loft: &crate::model::Loft) -> Option<SolidMesh> {
+    let rings = loft_rings(doc, loft)?;
+    let centroid = |ring: &Vec<Vec3>| ring.iter().copied().sum::<Vec3>() / ring.len() as f32;
+    let interior = rings.iter().map(centroid).sum::<Vec3>() / rings.len() as f32;
+    let mut triangles = Vec::new();
+    for w in rings.windows(2) {
+        let (a, b) = (&w[0], &w[1]);
+        let n = a.len();
+        for k in 0..n {
+            let k1 = (k + 1) % n;
+            push_oriented(&mut triangles, [a[k], a[k1], b[k1]], interior);
+            push_oriented(&mut triangles, [a[k], b[k1], b[k]], interior);
+        }
+    }
+    triangulate_cap(rings.first()?, interior, &mut triangles);
+    triangulate_cap(rings.last()?, interior, &mut triangles);
+    (!triangles.is_empty()).then_some(SolidMesh { triangles })
+}
+
+/// The loft's aligned cross-section rings: each section resampled to a common ring size,
+/// wound consistently along the blend axis, and twist-minimized against its predecessor —
+/// shared by the mesh and kernel paths.
+fn loft_rings(doc: &Document, loft: &crate::model::Loft) -> Option<Vec<Vec<Vec3>>> {
     const RING: usize = CIRCLE_SEGMENTS;
     let mut rings: Vec<Vec<Vec3>> = Vec::new();
     for section in &loft.sections {
@@ -1805,20 +1845,45 @@ pub fn loft_mesh(doc: &Document, loft: &crate::model::Loft) -> Option<SolidMesh>
         ring.rotate_left(best);
     }
 
-    let interior = rings.iter().map(centroid).sum::<Vec3>() / rings.len() as f32;
-    let mut triangles = Vec::new();
+    Some(rings)
+}
+
+/// Real BREP loft via the kernel (#479): consecutive aligned rings become pairwise ruled
+/// `ThruSections` solids, fused — geometrically the same ruled blend as [`loft_mesh`],
+/// but a kernel shape that booleans can add/cut with. `None` when any section is
+/// degenerate or the kernel can't build a segment (callers fall back to the mesh).
+pub fn occt_loft_shape(
+    doc: &Document,
+    loft: &crate::model::Loft,
+) -> Option<crate::kernel::Shape> {
+    let rings = loft_rings(doc, loft)?;
+    let mut fused: Option<crate::kernel::Shape> = None;
     for w in rings.windows(2) {
-        let (a, b) = (&w[0], &w[1]);
-        let n = a.len();
-        for k in 0..n {
-            let k1 = (k + 1) % n;
-            push_oriented(&mut triangles, [a[k], a[k1], b[k1]], interior);
-            push_oriented(&mut triangles, [a[k], b[k1], b[k]], interior);
-        }
+        let segment = crate::kernel::Shape::loft(&w[0], &w[1])?;
+        fused = Some(match fused {
+            None => segment,
+            Some(acc) => acc.boolean(&segment, crate::kernel::BoolOp::Fuse)?,
+        });
     }
-    triangulate_cap(rings.first()?, interior, &mut triangles);
-    triangulate_cap(rings.last()?, interior, &mut triangles);
-    (!triangles.is_empty()).then_some(SolidMesh { triangles })
+    fused
+}
+
+/// The lofts fusing into (`false`) or cutting (`true`) `body_index` (#479).
+pub fn lofts_targeting(doc: &Document, body_index: usize) -> Vec<(usize, bool)> {
+    doc.lofts
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| !l.deleted)
+        .filter_map(|(li, l)| match &l.mode {
+            crate::model::LoftMode::AddTo(bodies) if bodies.contains(&body_index) => {
+                Some((li, false))
+            }
+            crate::model::LoftMode::Cut(bodies) if bodies.contains(&body_index) => {
+                Some((li, true))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Resample a closed loop to exactly `count` points, evenly spaced by arc length.
@@ -2238,10 +2303,7 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
             triangles: imported.triangles.clone(),
         });
     }
-    if let crate::model::BodySource::Loft(li) = body.source {
-        let loft = doc.lofts.get(li).filter(|l| !l.deleted)?;
-        return loft_mesh(doc, loft);
-    }
+
     if let crate::model::BodySource::Repeated { op, target, instance } = body.source {
         let rp = doc.repeat_ops.get(op).filter(|o| !o.deleted)?;
         let &input = rp.targets.get(target)?;
@@ -2321,6 +2383,10 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
         let fp = doc.sweeps.get(fi).filter(|f| !f.deleted)?;
         return sweep_mesh(doc, fp);
     }
+    if let crate::model::BodySource::Loft(li) = body.source {
+        let loft = doc.lofts.get(li).filter(|l| !l.deleted)?;
+        return loft_mesh(doc, loft);
+    }
     let mut mesh = SolidMesh::default();
     for &ei in body.source.extrusion_indices() {
         let Some(extrusion) = doc.extrusions.get(ei) else {
@@ -2346,6 +2412,14 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
             continue;
         }
         if let Some(solid) = sweep_mesh(doc, &doc.sweeps[fi]) {
+            mesh.triangles.extend(solid.triangles);
+        }
+    }
+    for (li, is_cut) in lofts_targeting(doc, body_index) {
+        if is_cut {
+            continue;
+        }
+        if let Some(solid) = loft_mesh(doc, &doc.lofts[li]) {
             mesh.triangles.extend(solid.triangles);
         }
     }
@@ -5097,6 +5171,55 @@ mod tests {
         );
     }
 
+    /// #479: a loft in Cut mode carves its blended solid out of the targeted body via
+    /// the kernel (pairwise ruled ThruSections, fused, then subtracted).
+    #[test]
+    fn loft_cut_carves_the_targeted_body() {
+        let (mut doc, sketch) = sketch_doc();
+        let plate = rect_profile(&mut doc, sketch, -30.0, -30.0, 60.0, 60.0);
+        doc.extrusions.push(extrusion(sketch, vec![plate], 5.0));
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Extrusion(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        // Cut tool: two circles on planes below and above the plate loft into a frustum
+        // column punching through it.
+        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 3.0, 0.0));
+        doc.construction_planes.push(crate::construction::plane_from_definition(
+            &crate::construction::definition_from_reference(
+                &crate::construction::PlaneReference::Face {
+                    origin: glam::Vec3::ZERO,
+                    normal: glam::Vec3::Z,
+                    label: "Ground".to_string(),
+                },
+                10.0,
+                0.0,
+            ),
+            crate::model::ConstructionPlaneParent::Root,
+        ));
+        let top = doc.add_sketch(FaceId::ConstructionPlane(doc.construction_planes.len() - 1));
+        doc.circles.push(Circle::from_local_center_radius(top, 0.0, 0.0, 3.0, 0.0));
+        doc.lofts.push(crate::model::Loft {
+            sections: vec![
+                crate::model::LoftSection { sketch, face: ExtrudeFace::Circle(0) },
+                crate::model::LoftSection { sketch: top, face: ExtrudeFace::Circle(1) },
+            ],
+            mode: crate::model::LoftMode::Cut(vec![0]),
+            name: None,
+            deleted: false,
+        });
+        let vol = mesh_signed_volume(&body_solid_mesh(&doc, 0).expect("mesh")).abs();
+        let plain = 60.0 * 60.0 * 5.0;
+        // The cylinder-ish column removes ~pi*r^2*h through the 5mm plate.
+        let expected = plain - std::f32::consts::PI * 3.0 * 3.0 * 5.0;
+        assert!(
+            (vol - expected).abs() < 20.0,
+            "loft cut should remove the column: got {vol}, expected ~{expected}"
+        );
+    }
+
     /// Two equal circles on planes 10mm apart loft into a closed prism whose signed
     /// volume matches the swept n-gon (~pi*r^2*h), proving the walls and caps close up.
     /// #399: a loft between circles sketched at the same off-origin (u, v) on Ground and an
@@ -5122,6 +5245,7 @@ mod tests {
                 crate::model::LoftSection { sketch: s0, face: ExtrudeFace::Circle(0) },
                 crate::model::LoftSection { sketch: s1, face: ExtrudeFace::Circle(1) },
             ],
+            mode: crate::model::LoftMode::NewBody,
             name: None,
             deleted: false,
         };
@@ -5163,6 +5287,7 @@ mod tests {
                 crate::model::LoftSection { sketch: bottom, face: ExtrudeFace::Circle(0) },
                 crate::model::LoftSection { sketch: top, face: ExtrudeFace::Circle(1) },
             ],
+            mode: crate::model::LoftMode::NewBody,
             name: None,
             deleted: false,
         };
@@ -5189,6 +5314,7 @@ mod tests {
                 sketch,
                 face: ExtrudeFace::Circle(0),
             }],
+            mode: crate::model::LoftMode::NewBody,
             name: None,
             deleted: false,
         };
