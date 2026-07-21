@@ -91,7 +91,7 @@ mkdir -p "$repo_root/web/kernel"
 
 # The 16 extern "C" entry points the app bridge calls, plus malloc/free for
 # passing arrays through the module heap.
-exports='["_bearcad_slvs_solve","_bearcad_kernel_box_volume","_bearcad_kernel_occt_version","_bearcad_shape_prism","_bearcad_shape_loft","_bearcad_shape_revolve","_bearcad_shape_cylinder","_bearcad_shape_boolean","_bearcad_shape_fillet","_bearcad_shape_chamfer","_bearcad_shape_volume","_bearcad_shape_tessellate","_bearcad_tri_free","_bearcad_shape_free","_bearcad_shape_split_solids","_bearcad_handles_free","_bearcad_shape_transform","_bearcad_face_boolean_loop","_bearcad_pts_free","_bearcad_shape_write_step","_bearcad_read_step","_malloc","_free"]'
+exports='["_bearcad_slvs_solve","_bearcad_kernel_box_volume","_bearcad_kernel_occt_version","_bearcad_shape_prism","_bearcad_shape_loft","_bearcad_shape_revolve","_bearcad_shape_sweep","_bearcad_shape_cylinder","_bearcad_shape_boolean","_bearcad_shape_fillet","_bearcad_shape_chamfer","_bearcad_shape_volume","_bearcad_shape_tessellate","_bearcad_tri_free","_bearcad_shape_free","_bearcad_shape_split_solids","_bearcad_handles_free","_bearcad_shape_transform","_bearcad_face_boolean_loop","_bearcad_pts_free","_bearcad_shape_write_step","_bearcad_read_step","_malloc","_free"]'
 
 emcc "$repo_root/cpp/bearcad_kernel.cpp" \
   "$repo_root/cpp/bearcad_slvs.cpp" \

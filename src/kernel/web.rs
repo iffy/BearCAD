@@ -37,6 +37,7 @@ extern "C" {
         angle_rad: f64,
         symmetric: bool,
     ) -> u32;
+    fn kernel_sweep(profile: &[f64], path: &[f64], smooth: bool) -> u32;
     fn kernel_boolean(a: u32, b: u32, op: i32) -> u32;
     fn kernel_fillet(h: u32, edges: &[f64], radii: &[f64]) -> u32;
     fn kernel_chamfer(h: u32, edges: &[f64], dists: &[f64]) -> u32;
@@ -189,6 +190,15 @@ impl Shape {
             angle_rad,
             symmetric,
         ))
+    }
+
+    /// Sweep a closed planar profile along a path polyline (#follow-path); see the
+    /// native `Shape::sweep`.
+    pub fn sweep(profile: &[glam::Vec3], path: &[glam::Vec3], smooth: bool) -> Option<Shape> {
+        if profile.len() < 3 || path.len() < 2 || !kernel_available() {
+            return None;
+        }
+        Self::from_handle(kernel_sweep(&flat_points(profile), &flat_points(path), smooth))
     }
 
     pub fn loft(bottom: &[glam::Vec3], top: &[glam::Vec3]) -> Option<Shape> {

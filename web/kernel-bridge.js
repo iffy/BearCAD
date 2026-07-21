@@ -81,6 +81,18 @@ export function kernel_revolve(xyz, ox, oy, oz, ax, ay, az, angleRad, symmetric)
   return h;
 }
 
+export function kernel_sweep(profile, path, smooth) {
+  const m = M();
+  if (!m) return 0;
+  const pp = copyF64In(m, profile);
+  const pa = copyF64In(m, path);
+  const h = m._bearcad_shape_sweep(pp, profile.length / 3, pa, path.length / 3,
+                                   smooth ? 1 : 0);
+  m._free(pp);
+  m._free(pa);
+  return h;
+}
+
 export function kernel_boolean(a, b, op) {
   const m = M();
   if (!m) return 0;
