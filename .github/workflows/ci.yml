@@ -203,16 +203,11 @@ jobs:
             exit "$code"
           fi
 
-  # EXPERIMENTAL (#96): Windows/MSVC static-OCCT kernel build. Expected to fail
-  # initially — this job exists to produce real MSVC build/link logs that the
-  # scaffold (scripts/build-occt.ps1 + build.rs windows arm) is iterated against.
-  # It is non-blocking (continue-on-error) and deliberately NOT in any job's
-  # `needs`: the Windows *release* keeps shipping the --no-default-features
-  # fallback until this build is proven, at which point build-release flips
-  # `kernel: true` for Windows.
+  # Windows/MSVC static-OCCT kernel build + tests (#96, proven; todoer #468): the
+  # same configuration the Windows release ships, so kernel regressions on
+  # Windows are caught on every push/PR like the Linux `occt` job does.
   windows-occt:
     runs-on: windows-latest
-    continue-on-error: true
     steps:
       - name: Checkout
         # Submodules are fetched only on an OCCT cache miss (below), to avoid the
@@ -263,26 +258,31 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # `kernel` selects whether the shipped binary links the OCCT kernel.
-        # macOS/Linux ship with it (the default build); Windows lags (no clean
-        # static OCCT/MSVC build yet — see #89) and ships the no-kernel fallback
-        # build via --no-default-features.
+        # Every platform ships the OCCT kernel (todoer #468); `occt_script` is the
+        # per-OS static-OCCT build script, hashed into the cache key so each
+        # platform shares its cache with the corresponding test job.
         include:
           - runner: ubuntu-latest
             os_slug: linux-x86_64
             artifact: bearcad-linux-x86_64.tar.gz
             kernel: true
+            occt_script: scripts/build-occt.sh
+            occt_build: bash scripts/build-occt.sh
             cargo_flags: ""
           - runner: macos-latest
             os_slug: macos-aarch64
             artifact: bearcad.dmg
             kernel: true
+            occt_script: scripts/build-occt.sh
+            occt_build: bash scripts/build-occt.sh
             cargo_flags: ""
           - runner: windows-latest
             os_slug: windows-x86_64
             artifact: bearcad.exe
-            kernel: false
-            cargo_flags: "--no-default-features"
+            kernel: true
+            occt_script: scripts/build-occt.ps1
+            occt_build: pwsh scripts/build-occt.ps1
+            cargo_flags: ""
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
@@ -316,16 +316,16 @@ jobs:
             mesa-vulkan-drivers \
             libgtk-3-dev
 
-      # OCCT kernel for the platforms that ship it (macOS/Linux). Cached on the
-      # pinned submodule + build script, matching the `occt` CI job's key so Linux
-      # reuses the same build. Windows (kernel == false) skips all of this.
+      # OCCT kernel, cached on the pinned submodule + per-OS build script,
+      # matching the `occt`/`windows-occt` CI jobs' keys so each platform reuses
+      # the same build.
       - name: Cache OCCT static build
         if: matrix.kernel
         id: occt-cache
         uses: actions/cache@v4
         with:
           path: third_party/OCCT/occt-install
-          key: occt-install-${{ runner.os }}-v8.0.0-${{ hashFiles('scripts/build-occt.sh') }}
+          key: occt-install-${{ runner.os }}-v8.0.0-${{ hashFiles(matrix.occt_script) }}
 
       - name: Fetch solvespace submodule (libslvs sketch solver)
         run: |
@@ -334,9 +334,10 @@ jobs:
 
       - name: Build OCCT (cache miss only)
         if: matrix.kernel && steps.occt-cache.outputs.cache-hit != 'true'
+        shell: bash
         run: |
           git submodule update --init --depth 1 third_party/OCCT
-          scripts/build-occt.sh
+          ${{ matrix.occt_build }}
 
       # Bake the exact release tag into the binary (todoer #466): the `release` job tags
       # v{version}-build.{run_number} *after* this build, and the shallow checkout has no
@@ -346,7 +347,7 @@ jobs:
         shell: bash
         run: echo "BEARCAD_RELEASE_TAG=v$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)-build.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
 
-      # macOS/Linux use the default build (occt); Windows passes --no-default-features.
+      # Every platform builds the default feature set (kernel included).
       - name: cargo build --release
         run: cargo build --release ${{ matrix.cargo_flags }}
 

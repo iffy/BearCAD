@@ -77,9 +77,9 @@ feature:
 cargo run --no-default-features
 ```
 
-This is what the Windows release and the fast CI check build. The kernel-only
-features fall back to hand-rolled mesh geometry (or are hidden, e.g. extrude Cut),
-but the app is otherwise fully functional.
+This is what the fast CI check builds. The kernel-only features fall back to
+hand-rolled mesh geometry (or are hidden, e.g. extrude Cut), but the app is
+otherwise fully functional.
 
 ### Recompiling against a different OCCT version
 
@@ -99,20 +99,16 @@ without touching BearCAD's source. See
 
 ### Kernel in CI and releases
 
-CI (`.github/workflows/ci.yml`) has a dedicated `occt` job that builds OCCT once
-(cached on the pinned submodule + build script, so it's restored rather than
-rebuilt on later runs) and runs the kernel test suite, so kernel regressions are
-caught on every push/PR. The `ci` job separately builds/tests the
-`--no-default-features` (no-kernel fallback) configuration — fast, no OCCT — so
-both code paths stay green.
+CI (`.github/workflows/ci.yml`) has dedicated `occt` (Linux) and `windows-occt`
+(Windows/MSVC) jobs that build OCCT once (cached on the pinned submodule + build
+script, so it's restored rather than rebuilt on later runs) and run the kernel
+test suite, so kernel regressions are caught on every push/PR. The `ci` job
+separately builds/tests the `--no-default-features` (no-kernel fallback)
+configuration — fast, no OCCT — so both code paths stay green.
 
-The **macOS and Linux release binaries ship with the kernel** (the default build).
-**Windows currently ships the no-kernel fallback build** (`--no-default-features`)
-— a static OCCT/MSVC build is being scaffolded via the experimental, non-blocking
-`windows-occt` CI job (see issue #96), so on Windows the
-kernel-only features (real BREP fillets/chamfers, solid booleans/cut,
-curved-surface STEP) fall back to hand-rolled mesh geometry (or are hidden) until
-that lands.
+**All release binaries — macOS, Linux, and Windows — ship with the kernel** (the
+default build), so real BREP fillets/chamfers, solid booleans/cut, and
+curved-surface STEP work the same on every platform.
 
 ## Scripting
 
