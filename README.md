@@ -49,23 +49,27 @@ cargo test
 BearCAD's real BREP geometry kernel is [OpenCASCADE (OCCT)](https://dev.opencascade.org/),
 behind the **`occt`** Cargo feature, which is **on by default** — solid
 booleans/cut, true BREP fillets/chamfers, and curved-surface STEP all come from the
-kernel. So the default `cargo build` / `cargo run` needs a C++ toolchain and a built
-OCCT; set that up once:
+kernel. So the default `cargo build` / `cargo run` needs a built OCCT; set that up
+once:
 
 ```sh
-# 1. Fetch the pinned OCCT source (once):
-git submodule update --init --depth 1 third_party/OCCT
-
-# 2. Build OCCT as static libraries (needs cmake + a C++17 compiler; takes a while):
+# 1. Install OCCT (downloads a prebuilt when one matches; Windows: scripts/build-occt.ps1):
 scripts/build-occt.sh
 
-# 3. Build/run BearCAD (the default build links the kernel):
+# 2. Build/run BearCAD (the default build links the kernel):
 cargo run
 ```
 
-`scripts/build-occt.sh` builds the modeling toolkits plus DataExchange (for STEP
-read/write) — no visualization, application-framework, or Draw modules — into
-`third_party/OCCT/occt-install`, which `build.rs` statically links against.
+`scripts/build-occt.sh` first tries the **prebuilt** static libraries published by
+the `occt-prebuilt` workflow — keyed to the pinned OCCT submodule commit and the
+build script itself, checksum-verified — so a fresh clone is building BearCAD in
+minutes with no OCCT compile. When no prebuilt matches your platform (or with
+`BEARCAD_OCCT_FROM_SOURCE=1`), it compiles from source instead: fetch the
+submodule (`git submodule update --init --depth 1 third_party/OCCT`) and have
+cmake + a C++17 toolchain on PATH. Either way the result lands in
+`third_party/OCCT/occt-install` — the modeling toolkits plus DataExchange (for
+STEP read/write), no visualization/application-framework/Draw — which `build.rs`
+statically links against.
 
 ### Building without the kernel
 

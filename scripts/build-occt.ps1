@@ -29,6 +29,55 @@ $occtSrc = Join-Path $repoRoot 'third_party/OCCT'
 $occtBuild = Join-Path $occtSrc 'occt-build'
 $occtInstall = Join-Path $occtSrc 'occt-install'
 
+# Prebuilt key (todoer #469): the pinned OCCT submodule commit (from the gitlink, no
+# submodule init needed) plus this script's own hash — matching the occt-prebuilt
+# workflow's asset naming, so a fetch is only accepted when it matches exactly what
+# a local build would produce.
+$gitlink = ((git -C $repoRoot ls-tree HEAD third_party/OCCT) -split '\s+')[2].Substring(0, 12)
+$scriptHash = (Get-FileHash -Algorithm SHA256 $PSCommandPath).Hash.ToLower().Substring(0, 12)
+$prebuiltSlug = 'windows-x86_64'
+$prebuiltKey = "$gitlink-$scriptHash"
+$prebuiltAsset = "occt-install-$prebuiltSlug-$prebuiltKey.tar.gz"
+$prebuiltUrl = "https://github.com/iffy/BearCAD/releases/download/occt-prebuilt/$prebuiltAsset"
+$keyFile = Join-Path $occtInstall '.prebuilt-key'
+
+# A previously fetched prebuilt that still matches the key needs no work at all.
+if ($env:BEARCAD_OCCT_FROM_SOURCE -ne '1' -and (Test-Path $keyFile) -and
+    ((Get-Content $keyFile -Raw).Trim() -eq "$prebuiltSlug-$prebuiltKey")) {
+    Write-Host ">> Prebuilt OCCT already installed and up to date ($prebuiltSlug-$prebuiltKey)."
+    Write-Host '>> Now build BearCAD with: cargo build --features occt'
+    exit 0
+}
+
+# Try the prebuilt before compiling from source (skipped with
+# BEARCAD_OCCT_FROM_SOURCE=1, or when an install is already present).
+if ($env:BEARCAD_OCCT_FROM_SOURCE -ne '1' -and -not (Test-Path (Join-Path $occtInstall 'lib'))) {
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "bearcad-occt-prebuilt-$PID"
+    New-Item -ItemType Directory -Force $tmp | Out-Null
+    try {
+        Write-Host ">> Trying prebuilt OCCT: $prebuiltUrl"
+        $archive = Join-Path $tmp $prebuiltAsset
+        Invoke-WebRequest -Uri $prebuiltUrl -OutFile $archive
+        Invoke-WebRequest -Uri "$prebuiltUrl.sha256" -OutFile "$archive.sha256"
+        $want = ((Get-Content "$archive.sha256" -Raw).Trim() -split '\s+')[0].ToLower()
+        $got = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLower()
+        if ($want -and ($want -eq $got)) {
+            New-Item -ItemType Directory -Force $occtSrc | Out-Null
+            tar xzf $archive -C $occtSrc
+            if ($LASTEXITCODE -ne 0) { throw "tar extraction failed (exit $LASTEXITCODE)" }
+            Set-Content -Path $keyFile -Value "$prebuiltSlug-$prebuiltKey"
+            Write-Host ">> Installed prebuilt OCCT into $occtInstall (checksum verified)."
+            Write-Host '>> Now build BearCAD with: cargo build --features occt'
+            exit 0
+        }
+        Write-Warning ">> Prebuilt checksum mismatch (want $want, got $got); building from source."
+    } catch {
+        Write-Host ">> No prebuilt for $prebuiltSlug-$prebuiltKey (or download failed); building from source."
+    } finally {
+        Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+    }
+}
+
 if (-not (Test-Path (Join-Path $occtSrc 'CMakeLists.txt'))) {
     Write-Error ("OCCT submodule missing at $occtSrc`n" +
         '       run: git submodule update --init --depth 1 third_party/OCCT')

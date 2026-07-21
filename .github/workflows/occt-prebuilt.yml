@@ -1,0 +1,112 @@
+name: OCCT prebuilt
+
+# Publishes the static OCCT kernel build (third_party/OCCT/occt-install) as
+# downloadable per-platform archives (todoer #469), so contributors skip the
+# ~30-minute OCCT compile: scripts/build-occt.sh / .ps1 fetch the matching
+# archive automatically before falling back to a source build.
+#
+# Assets live on a rolling `occt-prebuilt` prerelease (a prerelease so it never
+# becomes the repo's "latest" release — the in-app updater reads releases/latest).
+# Each asset is named occt-install-<os>-<arch>-<occt submodule sha12>-<build
+# script sha12>.tar.gz, exactly the key the build scripts compute, so an archive
+# is only ever used against the submodule commit + script that produced it.
+# Publishing is idempotent: an already-published key is skipped.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "scripts/build-occt.sh"
+      - "scripts/build-occt.ps1"
+      - "third_party/OCCT"
+      - ".github/workflows/occt-prebuilt.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            script: scripts/build-occt.sh
+            build: bash scripts/build-occt.sh
+          - runner: macos-latest
+            script: scripts/build-occt.sh
+            build: bash scripts/build-occt.sh
+          - runner: windows-latest
+            script: scripts/build-occt.ps1
+            build: pwsh scripts/build-occt.ps1
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # Must mirror the key computation in scripts/build-occt.sh / .ps1 exactly.
+      - name: Compute prebuilt key
+        id: key
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            slug="windows-x86_64"
+          else
+            slug="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
+          fi
+          gitlink=$(git ls-tree HEAD third_party/OCCT | awk '{print $3}' | cut -c1-12)
+          shash=$( (sha256sum "${{ matrix.script }}" 2>/dev/null || shasum -a 256 "${{ matrix.script }}") | awk '{print $1}' | cut -c1-12)
+          echo "asset=occt-install-$slug-$gitlink-$shash.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether this key is already published
+        id: published
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          names=$(gh release view occt-prebuilt --json assets -q '.assets[].name' 2>/dev/null || true)
+          if grep -qx "${{ steps.key.outputs.asset }}" <<<"$names"; then
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+            echo "Asset ${{ steps.key.outputs.asset }} already published; nothing to do."
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Same cache keys as the ci/release jobs, so a warm cache skips the compile.
+      - name: Cache OCCT static build
+        if: steps.published.outputs.hit != 'true'
+        id: occt-cache
+        uses: actions/cache@v4
+        with:
+          path: third_party/OCCT/occt-install
+          key: occt-install-${{ runner.os }}-v8.0.0-${{ hashFiles(matrix.script) }}
+
+      - name: Build OCCT (cache miss only)
+        if: steps.published.outputs.hit != 'true' && steps.occt-cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          # The build scripts themselves try the prebuilt first — this workflow is
+          # what *produces* the prebuilt, so force the source build.
+          BEARCAD_OCCT_FROM_SOURCE: "1"
+        run: |
+          git submodule update --init --depth 1 third_party/OCCT
+          ${{ matrix.build }}
+
+      - name: Package and publish
+        if: steps.published.outputs.hit != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          asset="${{ steps.key.outputs.asset }}"
+          # The archive must contain only the pristine install tree (no .prebuilt-key
+          # marker from a cache that was itself seeded by a fetch).
+          rm -f third_party/OCCT/occt-install/.prebuilt-key
+          tar czf "$asset" -C third_party/OCCT occt-install
+          (sha256sum "$asset" 2>/dev/null || shasum -a 256 "$asset") | awk '{print $1}' > "$asset.sha256"
+          gh release create occt-prebuilt \
+            --title "OCCT prebuilt static libraries" \
+            --notes "Rolling per-platform builds of third_party/OCCT/occt-install, fetched automatically by scripts/build-occt.sh / .ps1. Not an app release." \
+            --prerelease 2>/dev/null || true
+          gh release upload occt-prebuilt "$asset" "$asset.sha256" --clobber

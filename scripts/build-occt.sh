@@ -26,6 +26,51 @@ occt_src="$repo_root/third_party/OCCT"
 occt_build="$occt_src/occt-build"
 occt_install="$occt_src/occt-install"
 
+# Prebuilt key (todoer #469): the pinned OCCT submodule commit (readable from the
+# gitlink without initializing the submodule) plus this script's own hash — the same
+# key the occt-prebuilt workflow stamps into its release assets, so a fetch is only
+# accepted when it matches exactly what a local build would produce.
+sha256_of() {
+  (sha256sum "$1" 2>/dev/null || shasum -a 256 "$1") | awk '{print $1}'
+}
+prebuilt_slug="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
+prebuilt_key="$(git -C "$repo_root" ls-tree HEAD third_party/OCCT | awk '{print $3}' | cut -c1-12)-$(sha256_of "${BASH_SOURCE[0]}" | cut -c1-12)"
+prebuilt_asset="occt-install-$prebuilt_slug-$prebuilt_key.tar.gz"
+prebuilt_url="https://github.com/iffy/BearCAD/releases/download/occt-prebuilt/$prebuilt_asset"
+
+# A previously fetched prebuilt that still matches the key needs no work at all.
+if [ "${BEARCAD_OCCT_FROM_SOURCE:-}" != "1" ] \
+  && [ -f "$occt_install/.prebuilt-key" ] \
+  && [ "$(cat "$occt_install/.prebuilt-key")" = "$prebuilt_slug-$prebuilt_key" ]; then
+  echo ">> Prebuilt OCCT already installed and up to date ($prebuilt_slug-$prebuilt_key)."
+  echo ">> Now build BearCAD with: cargo build --features occt"
+  exit 0
+fi
+
+# Try the prebuilt before compiling from source (skipped with
+# BEARCAD_OCCT_FROM_SOURCE=1, or when an install is already present).
+if [ "${BEARCAD_OCCT_FROM_SOURCE:-}" != "1" ] && [ ! -d "$occt_install/lib" ]; then
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  echo ">> Trying prebuilt OCCT: $prebuilt_url"
+  if curl -fsSL -o "$tmp/$prebuilt_asset" "$prebuilt_url" \
+    && curl -fsSL -o "$tmp/$prebuilt_asset.sha256" "$prebuilt_url.sha256"; then
+    want="$(awk '{print $1}' "$tmp/$prebuilt_asset.sha256")"
+    got="$(sha256_of "$tmp/$prebuilt_asset")"
+    if [ -n "$want" ] && [ "$want" = "$got" ]; then
+      mkdir -p "$occt_src"
+      tar xzf "$tmp/$prebuilt_asset" -C "$occt_src"
+      echo "$prebuilt_slug-$prebuilt_key" > "$occt_install/.prebuilt-key"
+      echo ">> Installed prebuilt OCCT into $occt_install (checksum verified)."
+      echo ">> Now build BearCAD with: cargo build --features occt"
+      exit 0
+    fi
+    echo ">> Prebuilt checksum mismatch (want $want, got $got); building from source." >&2
+  else
+    echo ">> No prebuilt for $prebuilt_slug-$prebuilt_key (or download failed); building from source."
+  fi
+fi
+
 if [ ! -f "$occt_src/CMakeLists.txt" ]; then
   echo "error: OCCT submodule missing at $occt_src" >&2
   echo "       run: git submodule update --init --depth 1 third_party/OCCT" >&2
