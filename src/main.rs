@@ -6586,6 +6586,7 @@ impl eframe::App for App {
                 }),
                 plane_tool: (self.state.tool == Tool::ConstructionPlane).then(|| {
                     let cp = self.state.creating_plane.as_ref();
+                    let pending = self.state.pending_plane_line.as_ref();
                     context::PlaneToolControl {
                         anchor_labels: cp
                             .map(|c| {
@@ -6595,6 +6596,7 @@ impl eframe::App for App {
                                     c.anchor_labels.clone()
                                 }
                             })
+                            .or_else(|| pending.map(|p| vec![p.label.clone()]))
                             .unwrap_or_default(),
                         normal_labels: cp
                             .map(|c| {
@@ -6841,8 +6843,9 @@ impl eframe::App for App {
                 match edit {
                     context::PlaneToolEdit::ClearAnchor => {
                         self.state.creating_plane = None;
+                        self.state.pending_plane_line = None;
                         self.state.status =
-                            "Plane tool — click a face, edge, or point (+ line for normal-to-line)"
+                            "Plane tool — click a face, edge, or point (+ line/curve for normal)"
                                 .to_string();
                     }
                     context::PlaneToolEdit::NormalChoice(i) => {
@@ -8183,6 +8186,7 @@ fn resolve_viewport_hover_highlight(
         }
         Tool::ConstructionPlane if !creating_plane => {
             // Body faces are pickable plane anchors too (#465), so they glow on hover.
+            // Also active while a curve is pending a point (#483).
             let gp = cam.ground_point(pp, viewport, vp);
             construction::resolve_plane_pick_target(pp, project, gp, doc, cam.eye(), occlusion)
                 .map(|t| gpu_viewport::ViewportHoverHighlight::PickTarget(t.kind))
@@ -13989,45 +13993,12 @@ impl App {
             if let Some(pp) = pointer_screen {
                 let gp = ground(pp);
                 let was_creating = self.state.creating_plane.is_some();
+                let had_pending_line = self.state.pending_plane_line.is_some();
                 let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
 
-                if !was_creating && primary_pressed {
-                    if let Some(target) = construction::resolve_plane_pick_target(
-                        pp,
-                        &project,
-                        gp,
-                        &self.state.doc,
-                        cam.eye(),
-                        pick_occlusion,
-                    ) {
-                        // A picked vertex exposes one normal candidate per line/curve
-                        // meeting it (#474); the reference already uses the first.
-                        let candidates = match &target.kind {
-                            construction::PickTargetKind::Point(point) => {
-                                construction::vertex_normal_candidates(&self.state.doc, point)
-                            }
-                            _ => Vec::new(),
-                        };
-                        let anchor_source =
-                            construction::plane_anchor_source_from_pick(&target.kind);
-                        let parent = parent_from_pick_target(&self.state.doc, target.kind);
-                        self.state.apply(Action::BeginConstructionPlane {
-                            reference: target.reference,
-                            parent,
-                        });
-                        if let Some(cp) = self.state.creating_plane.as_mut() {
-                            cp.normal_candidates = candidates;
-                            cp.normal_choice = 0;
-                            cp.anchor_source = anchor_source;
-                            cp.anchor_labels = vec![cp.reference.label().to_string()];
-                        }
-                    }
-                }
-
-                let mut commit_click = false;
-                // #483: resolve a complementary second pick (line+point) before taking a
-                // mutable borrow of creating_plane — needs shared access to doc.
-                let complement_pick = if was_creating && primary_pressed {
+                // Resolve a pick once per click for first-anchor, pending-line completion,
+                // and complementary second picks (#483).
+                let click_pick = if primary_pressed {
                     construction::resolve_plane_pick_target(
                         pp,
                         &project,
@@ -14039,12 +14010,252 @@ impl App {
                 } else {
                     None
                 };
+
+                // #483: a pending curve (or line held for line+point) completes when a
+                // point is clicked — plane through the point, normal along the line
+                // (endpoint tangent when the point is an end of that line/curve).
+                if !was_creating && had_pending_line && primary_pressed {
+                    if let Some(target) = click_pick.as_ref() {
+                        let is_point = matches!(
+                            &target.kind,
+                            construction::PickTargetKind::Point(_)
+                                | construction::PickTargetKind::BodyVertex { .. }
+                        );
+                        if is_point {
+                            let pending = self.state.pending_plane_line.take().unwrap();
+                            let (origin, point_label) = match &target.reference {
+                                PlaneReference::Face { origin, label, .. }
+                                | PlaneReference::Axis { origin, label, .. } => {
+                                    (*origin, label.clone())
+                                }
+                            };
+                            let pt = match &target.kind {
+                                construction::PickTargetKind::Point(p) => Some(p.clone()),
+                                _ => None,
+                            };
+                            let fallback = match &pending.reference {
+                                PlaneReference::Axis { direction, .. } => *direction,
+                                PlaneReference::Face { normal, .. } => *normal,
+                            };
+                            let normal = construction::plane_normal_for_line_and_point(
+                                &self.state.doc,
+                                pending.line_index,
+                                pt.as_ref(),
+                                fallback,
+                            );
+                            let (reference, labels) = construction::line_and_point_plane_reference(
+                                origin,
+                                normal,
+                                &point_label,
+                                &pending.label,
+                            );
+                            let parent = pending.parent;
+                            self.state.apply(Action::BeginConstructionPlane {
+                                reference,
+                                parent,
+                            });
+                            if let Some(cp) = self.state.creating_plane.as_mut() {
+                                cp.anchor_source =
+                                    construction::PlaneAnchorSource::LineAndPoint;
+                                cp.anchor_labels = labels;
+                                cp.anchor_line = pending.line_index;
+                                cp.anchor_point = pt;
+                                cp.normal_candidates.clear();
+                                cp.normal_choice = 0;
+                            }
+                        }
+                    }
+                }
+
+                // First pick while idle: face / straight edge begin immediately; a curve
+                // alone is held as pending (needs a point for the line+point set).
+                if !was_creating
+                    && !had_pending_line
+                    && self.state.creating_plane.is_none()
+                    && primary_pressed
+                {
+                    if let Some(target) = click_pick.as_ref() {
+                        let curve_line = match &target.kind {
+                            construction::PickTargetKind::Line(i)
+                                if construction::sketch_line_is_curve(&self.state.doc, *i) =>
+                            {
+                                Some(*i)
+                            }
+                            _ => None,
+                        };
+                        if let Some(li) = curve_line {
+                            // Curve alone is not a complete set — wait for a point.
+                            let label = target.reference.label().to_string();
+                            let parent =
+                                parent_from_pick_target(&self.state.doc, target.kind.clone());
+                            self.state.pending_plane_line =
+                                Some(actions::PendingPlaneLine {
+                                    line_index: Some(li),
+                                    reference: target.reference.clone(),
+                                    parent,
+                                    label: label.clone(),
+                                });
+                            self.state.status = format!(
+                                "Plane — curve “{label}” picked • click a point (endpoint for end-normal) • Esc: cancel"
+                            );
+                        } else {
+                            let candidates = match &target.kind {
+                                construction::PickTargetKind::Point(point) => {
+                                    construction::vertex_normal_candidates(
+                                        &self.state.doc,
+                                        point,
+                                    )
+                                }
+                                _ => Vec::new(),
+                            };
+                            let anchor_source =
+                                construction::plane_anchor_source_from_pick(&target.kind);
+                            let anchor_line = match &target.kind {
+                                construction::PickTargetKind::Line(i) => Some(*i),
+                                _ => None,
+                            };
+                            let anchor_point = match &target.kind {
+                                construction::PickTargetKind::Point(p) => Some(p.clone()),
+                                _ => None,
+                            };
+                            let parent =
+                                parent_from_pick_target(&self.state.doc, target.kind.clone());
+                            self.state.apply(Action::BeginConstructionPlane {
+                                reference: target.reference.clone(),
+                                parent,
+                            });
+                            if let Some(cp) = self.state.creating_plane.as_mut() {
+                                cp.normal_candidates = candidates;
+                                cp.normal_choice = 0;
+                                cp.anchor_source = anchor_source;
+                                cp.anchor_labels = vec![cp.reference.label().to_string()];
+                                cp.anchor_line = anchor_line;
+                                cp.anchor_point = anchor_point;
+                            }
+                        }
+                    }
+                }
+
+                // Replacing a pending curve with a face / straight edge / vertex.
+                if !was_creating
+                    && had_pending_line
+                    && self.state.creating_plane.is_none()
+                    && primary_pressed
+                {
+                    if let Some(target) = click_pick.as_ref() {
+                        let is_point = matches!(
+                            &target.kind,
+                            construction::PickTargetKind::Point(_)
+                                | construction::PickTargetKind::BodyVertex { .. }
+                        );
+                        if !is_point {
+                            // New non-point pick replaces the pending curve.
+                            self.state.pending_plane_line = None;
+                            let curve_line = match &target.kind {
+                                construction::PickTargetKind::Line(i)
+                                    if construction::sketch_line_is_curve(
+                                        &self.state.doc,
+                                        *i,
+                                    ) =>
+                                {
+                                    Some(*i)
+                                }
+                                _ => None,
+                            };
+                            if let Some(li) = curve_line {
+                                let label = target.reference.label().to_string();
+                                let parent = parent_from_pick_target(
+                                    &self.state.doc,
+                                    target.kind.clone(),
+                                );
+                                self.state.pending_plane_line =
+                                    Some(actions::PendingPlaneLine {
+                                        line_index: Some(li),
+                                        reference: target.reference.clone(),
+                                        parent,
+                                        label: label.clone(),
+                                    });
+                                self.state.status = format!(
+                                    "Plane — curve “{label}” picked • click a point • Esc: cancel"
+                                );
+                            } else {
+                                let candidates = match &target.kind {
+                                    construction::PickTargetKind::Point(point) => {
+                                        construction::vertex_normal_candidates(
+                                            &self.state.doc,
+                                            point,
+                                        )
+                                    }
+                                    _ => Vec::new(),
+                                };
+                                let anchor_source =
+                                    construction::plane_anchor_source_from_pick(&target.kind);
+                                let anchor_line = match &target.kind {
+                                    construction::PickTargetKind::Line(i) => Some(*i),
+                                    _ => None,
+                                };
+                                let parent = parent_from_pick_target(
+                                    &self.state.doc,
+                                    target.kind.clone(),
+                                );
+                                self.state.apply(Action::BeginConstructionPlane {
+                                    reference: target.reference.clone(),
+                                    parent,
+                                });
+                                if let Some(cp) = self.state.creating_plane.as_mut() {
+                                    cp.normal_candidates = candidates;
+                                    cp.normal_choice = 0;
+                                    cp.anchor_source = anchor_source;
+                                    cp.anchor_labels =
+                                        vec![cp.reference.label().to_string()];
+                                    cp.anchor_line = anchor_line;
+                                    cp.anchor_point = None;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let mut commit_click = false;
+                let was_creating = self.state.creating_plane.is_some();
                 if let Some(cp) = &mut self.state.creating_plane {
                     let scroll = ui.input(|i| i.raw_scroll_delta.y);
                     let primary_down = ui.input(|i| i.pointer.primary_down());
                     let primary_released = ui.input(|i| i.pointer.primary_released());
 
-                    if primary_pressed {
+                    // #483: try complementary line+point upgrade *before* gizmo grab so an
+                    // endpoint near the offset handle still completes the set.
+                    let mut complemented = false;
+                    if was_creating && primary_pressed {
+                        if let Some(target) = click_pick.as_ref() {
+                            if let Some((new_ref, new_source, labels, line, pt)) =
+                                construction::complement_plane_anchor(
+                                    &self.state.doc,
+                                    cp.anchor_source,
+                                    &cp.reference,
+                                    cp.anchor_line,
+                                    cp.anchor_point.as_ref(),
+                                    &target.kind,
+                                    &target.reference,
+                                )
+                            {
+                                cp.reference = new_ref;
+                                cp.anchor_source = new_source;
+                                cp.anchor_labels = labels;
+                                cp.anchor_line = line;
+                                cp.anchor_point = pt;
+                                cp.normal_candidates.clear();
+                                cp.normal_choice = 0;
+                                cp.user_edited_angle = false;
+                                cp.axis_angle_deg = 0.0;
+                                cp.angle_text.clear();
+                                cp.axis_gizmo_drag = None;
+                                complemented = true;
+                            }
+                        }
+                    }
+
+                    if primary_pressed && !complemented {
                         match &cp.reference {
                             PlaneReference::Axis {
                                 origin,
@@ -14192,37 +14403,6 @@ impl App {
                         )
                         .is_some(),
                     };
-
-                    // #483: second pick completing line+point upgrades instead of commit.
-                    let mut complemented = false;
-                    if was_creating
-                        && primary_pressed
-                        && !over_input
-                        && !over_gizmo
-                        && cp.axis_gizmo_drag.is_none()
-                    {
-                        if let Some(target) = complement_pick.as_ref() {
-                            if let Some((new_ref, new_source, labels)) =
-                                construction::complement_plane_anchor(
-                                    cp.anchor_source,
-                                    &cp.reference,
-                                    &target.kind,
-                                    &target.reference,
-                                )
-                            {
-                                cp.reference = new_ref;
-                                cp.anchor_source = new_source;
-                                cp.anchor_labels = labels;
-                                cp.normal_candidates.clear();
-                                cp.normal_choice = 0;
-                                // Angle only applies to axis (line-in-plane) mode.
-                                cp.user_edited_angle = false;
-                                cp.axis_angle_deg = 0.0;
-                                cp.angle_text.clear();
-                                complemented = true;
-                            }
-                        }
-                    }
 
                     if !complemented
                         && should_commit_sketch_on_click(
@@ -15944,7 +16124,9 @@ impl App {
                 }
             }
             Tool::ConstructionPlane => {
-                if self.state.creating_plane.is_some() {
+                if self.state.pending_plane_line.is_some() {
+                    "Plane — curve picked • click a point (use the endpoint for normal-at-end) • Esc: cancel"
+                } else if self.state.creating_plane.is_some() {
                     let editing = self
                         .state
                         .creating_plane
@@ -15974,12 +16156,12 @@ impl App {
                     } else if editing {
                         "Edit plane • drag arrow or type to lock offset • Click/Enter: commit • Esc: cancel"
                     } else if can_add_point {
-                        "Drag arrow for offset • click a line for normal direction • Click/Enter: create plane • Esc: cancel"
+                        "Drag arrow for offset • click a line/curve for normal direction • Click/Enter: create plane • Esc: cancel"
                     } else {
                         "Drag arrow for offset • wheel or type to lock • Click/Enter: create plane • Esc: cancel"
                     }
                 } else {
-                    "plane  •  Click a face, edge, or point (+ line for normal-to-line) • then set offset"
+                    "plane  •  Click a face, straight edge, or curve+point (endpoint = normal-at-end) • then set offset"
                 }
             }
             Tool::Extrude => {

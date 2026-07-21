@@ -113,24 +113,135 @@ pub fn plane_anchor_source_from_pick(kind: &PickTargetKind) -> PlaneAnchorSource
     }
 }
 
+/// Whether a sketch line is a curve (has bezier handles), not a straight edge.
+///
+/// Straight edges alone are a complete plane-anchor set (line *in* the plane). A curve
+/// alone is not — it needs a point for the line+point set (#483): plane through the
+/// point, normal along the curve (tangent at an endpoint).
+pub fn sketch_line_is_curve(doc: &Document, line_index: usize) -> bool {
+    doc.lines
+        .get(line_index)
+        .is_some_and(|l| !l.deleted && l.bezier.is_some())
+}
+
+/// Outward world-space tangent of `line_index` at `point` when the point (or a
+/// coincidence partner) is an endpoint of that line — the same direction #474 uses.
+/// `None` when the point is not on this line's ends.
+pub fn line_outward_tangent_at_point(
+    doc: &Document,
+    line_index: usize,
+    point: &crate::model::ConstraintPoint,
+) -> Option<Vec3> {
+    let sketch = point_sketch(doc, point.clone())?;
+    let ends: Vec<crate::model::LineEnd> =
+        crate::vertex_drag::coincident_group(doc, sketch, point.clone())
+            .into_iter()
+            .filter_map(|p| match p {
+                crate::model::ConstraintPoint::LineEndpoint { line, end } if line == line_index => {
+                    Some(end)
+                }
+                _ => None,
+            })
+            .collect();
+    let end = *ends.first()?;
+    line_outward_tangent_at_end(doc, line_index, end)
+}
+
+fn line_outward_tangent_at_end(
+    doc: &Document,
+    line_index: usize,
+    end: crate::model::LineEnd,
+) -> Option<Vec3> {
+    let line = doc.lines.get(line_index)?;
+    if line.deleted {
+        return None;
+    }
+    let frame = crate::face::sketch_geometry_frame(doc, line.sketch)?;
+    let (v, toward) = match end {
+        crate::model::LineEnd::Start => {
+            let toward = line.bezier.map(|b| b[0]).unwrap_or((line.x1, line.y1));
+            ((line.x0, line.y0), toward)
+        }
+        crate::model::LineEnd::End => {
+            let toward = line.bezier.map(|b| b[1]).unwrap_or((line.x0, line.y0));
+            ((line.x1, line.y1), toward)
+        }
+    };
+    let vw = crate::face::local_to_world(&frame, v.0, v.1);
+    let tw = crate::face::local_to_world(&frame, toward.0, toward.1);
+    let dir = (vw - tw).normalize_or_zero();
+    (dir.length_squared() >= 1e-8).then_some(dir)
+}
+
+/// World normal for a line+point plane (#483): prefer the line's tangent at the point
+/// when the point is an endpoint of that line (curves included); otherwise `fallback_dir`.
+pub fn plane_normal_for_line_and_point(
+    doc: &Document,
+    line_index: Option<usize>,
+    point: Option<&crate::model::ConstraintPoint>,
+    fallback_dir: Vec3,
+) -> Vec3 {
+    if let (Some(li), Some(pt)) = (line_index, point) {
+        if let Some(dir) = line_outward_tangent_at_point(doc, li, pt) {
+            return dir;
+        }
+    }
+    let dir = fallback_dir.normalize_or_zero();
+    if dir.length_squared() >= 1e-8 {
+        dir
+    } else {
+        Vec3::Z
+    }
+}
+
+/// Build the face-mode reference for a completed line+point anchor set.
+pub fn line_and_point_plane_reference(
+    origin: Vec3,
+    normal: Vec3,
+    point_label: &str,
+    line_label: &str,
+) -> (PlaneReference, Vec<String>) {
+    let labels = vec![point_label.to_string(), line_label.to_string()];
+    (
+        PlaneReference::Face {
+            origin,
+            normal,
+            label: format!("{point_label} ⊥ {line_label}"),
+        },
+        labels,
+    )
+}
+
 /// If `next` complements the current anchor into a line+point set (#483), return the
 /// upgraded face-mode reference, new source, and Anchor row labels. Otherwise `None`
 /// (caller may treat the click as a commit).
 ///
 /// Complements:
-/// - [`Axis`](PlaneAnchorSource::Axis) + point → through point, normal along the axis
+/// - [`Axis`](PlaneAnchorSource::Axis) + point → through point, normal along the line
+///   (endpoint tangent when the point is on the line)
 /// - [`Point`](PlaneAnchorSource::Point) / [`LineAndPoint`](PlaneAnchorSource::LineAndPoint)
-///   + line/edge/axis → keep origin, normal along the line
+///   + line/edge/axis → keep origin, normal along the line (same tangent rule)
+///
+/// `axis_line` / `anchor_point` identify the geometry so curve endpoints use the true
+/// tangent at the end rather than a mid-segment axis direction.
 pub fn complement_plane_anchor(
+    doc: &Document,
     source: PlaneAnchorSource,
     current: &PlaneReference,
+    axis_line: Option<usize>,
+    anchor_point: Option<&crate::model::ConstraintPoint>,
     next_kind: &PickTargetKind,
     next_reference: &PlaneReference,
-) -> Option<(PlaneReference, PlaneAnchorSource, Vec<String>)> {
+) -> Option<(PlaneReference, PlaneAnchorSource, Vec<String>, Option<usize>, Option<crate::model::ConstraintPoint>)>
+{
     let is_point = matches!(
         next_kind,
         PickTargetKind::Point(_) | PickTargetKind::BodyVertex { .. }
     );
+    let next_line = match next_kind {
+        PickTargetKind::Line(i) => Some(*i),
+        _ => None,
+    };
     let is_line = matches!(
         next_kind,
         PickTargetKind::Line(_)
@@ -149,22 +260,28 @@ pub fn complement_plane_anchor(
             else {
                 return None;
             };
-            let dir = direction.normalize_or_zero();
-            if dir.length_squared() < 1e-8 {
-                return None;
-            }
             let (origin, point_label) = match next_reference {
                 PlaneReference::Face { origin, label, .. }
                 | PlaneReference::Axis { origin, label, .. } => (*origin, label.clone()),
             };
+            let pt = match next_kind {
+                PickTargetKind::Point(p) => Some(p.clone()),
+                _ => None,
+            };
+            let dir = plane_normal_for_line_and_point(
+                doc,
+                axis_line,
+                pt.as_ref(),
+                *direction,
+            );
+            let (reference, labels) =
+                line_and_point_plane_reference(origin, dir, &point_label, line_label);
             Some((
-                PlaneReference::Face {
-                    origin,
-                    normal: dir,
-                    label: format!("{point_label} ⊥ {line_label}"),
-                },
+                reference,
                 PlaneAnchorSource::LineAndPoint,
-                vec![point_label, line_label.clone()],
+                labels,
+                axis_line,
+                pt,
             ))
         }
         PlaneAnchorSource::Point | PlaneAnchorSource::LineAndPoint if is_line => {
@@ -184,15 +301,7 @@ pub fn complement_plane_anchor(
             else {
                 return None;
             };
-            let dir = direction.normalize_or_zero();
-            if dir.length_squared() < 1e-8 {
-                return None;
-            }
-            // When already LineAndPoint, keep a short point label if we stored one in rows;
-            // the combined label still reads well from the first Face label when it was a
-            // plain vertex ("Vertex (…)" / "Point").
             let point_row = if source == PlaneAnchorSource::LineAndPoint {
-                // Prefer the part before " ⊥ " when re-picking the line.
                 point_label
                     .split(" ⊥ ")
                     .next()
@@ -201,18 +310,25 @@ pub fn complement_plane_anchor(
             } else {
                 point_label.clone()
             };
+            let line_idx = next_line.or(axis_line);
+            let dir = plane_normal_for_line_and_point(
+                doc,
+                line_idx,
+                anchor_point,
+                *direction,
+            );
+            let (reference, labels) =
+                line_and_point_plane_reference(*origin, dir, &point_row, line_label);
             Some((
-                PlaneReference::Face {
-                    origin: *origin,
-                    normal: dir,
-                    label: format!("{point_row} ⊥ {line_label}"),
-                },
+                reference,
                 PlaneAnchorSource::LineAndPoint,
-                vec![point_row, line_label.clone()],
+                labels,
+                line_idx,
+                anchor_point.cloned(),
             ))
         }
         PlaneAnchorSource::LineAndPoint if is_point => {
-            // Re-pick the point; keep the current normal.
+            // Re-pick the point; recompute normal if we know the line (endpoint tangent).
             let PlaneReference::Face { normal, label, .. } = current else {
                 return None;
             };
@@ -225,14 +341,19 @@ pub fn complement_plane_anchor(
                 .nth(1)
                 .unwrap_or("Line")
                 .to_string();
+            let pt = match next_kind {
+                PickTargetKind::Point(p) => Some(p.clone()),
+                _ => None,
+            };
+            let dir = plane_normal_for_line_and_point(doc, axis_line, pt.as_ref(), *normal);
+            let (reference, labels) =
+                line_and_point_plane_reference(origin, dir, &point_label, &line_row);
             Some((
-                PlaneReference::Face {
-                    origin,
-                    normal: *normal,
-                    label: format!("{point_label} ⊥ {line_row}"),
-                },
+                reference,
                 PlaneAnchorSource::LineAndPoint,
-                vec![point_label, line_row],
+                labels,
+                axis_line,
+                pt,
             ))
         }
         _ => None,
@@ -2686,6 +2807,7 @@ mod tests {
     #[test]
     fn complement_axis_plus_point_makes_plane_normal_to_line_through_point() {
         // #483: line first (axis), then a separate point → face through point, normal = line dir.
+        let doc = Document::default();
         let axis = PlaneReference::Axis {
             origin: Vec3::new(0.0, 5.0, 0.0),
             direction: Vec3::X,
@@ -2696,9 +2818,12 @@ mod tests {
             normal: Vec3::Z,
             label: "Point".to_string(),
         };
-        let (upgraded, source, labels) = complement_plane_anchor(
+        let (upgraded, source, labels, _, _) = complement_plane_anchor(
+            &doc,
             PlaneAnchorSource::Axis,
             &axis,
+            None,
+            None,
             &PickTargetKind::Point(crate::model::ConstraintPoint::CircleCenter(0)),
             &point_ref,
         )
@@ -2719,6 +2844,7 @@ mod tests {
     #[test]
     fn complement_point_plus_line_makes_plane_normal_to_line_through_point() {
         // #483: point first, then a line → same result, other pick order.
+        let doc = Document::default();
         let point = PlaneReference::Face {
             origin: Vec3::new(10.0, 20.0, 0.0),
             normal: Vec3::Z,
@@ -2729,9 +2855,12 @@ mod tests {
             direction: Vec3::new(0.0, 1.0, 0.0),
             label: "Line".to_string(),
         };
-        let (upgraded, source, labels) = complement_plane_anchor(
+        let (upgraded, source, labels, _, _) = complement_plane_anchor(
+            &doc,
             PlaneAnchorSource::Point,
             &point,
+            None,
+            None,
             &PickTargetKind::Line(1),
             &line_ref,
         )
@@ -2750,8 +2879,74 @@ mod tests {
     }
 
     #[test]
+    fn complement_curve_plus_endpoint_uses_endpoint_tangent_not_mid_segment() {
+        // #483: a bezier curve picked as axis (wrong mid-segment direction) + its start
+        // endpoint must use the curve tangent at that end (+Y toward the near handle).
+        use crate::model::{ConstraintPoint, Line, LineEnd};
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        // Start (6,4), near handle (6,12) → outward at start is -Y (away from handle).
+        // Mid-segment direction along the chord is roughly +X/+Y — not the end tangent.
+        let mut curve = Line::from_local_endpoints(sketch, 6.0, 4.0, 26.0, 14.0);
+        curve.bezier = Some([(6.0, 12.0), (18.0, 14.0)]);
+        doc.lines.push(curve);
+
+        let mid_segment_dir = Vec3::new(1.0, 0.5, 0.0).normalize();
+        let axis = PlaneReference::Axis {
+            origin: Vec3::new(16.0, 9.0, 0.0),
+            direction: mid_segment_dir,
+            label: "Curve".to_string(),
+        };
+        let point = ConstraintPoint::LineEndpoint {
+            line: 0,
+            end: LineEnd::Start,
+        };
+        let point_ref = PlaneReference::Face {
+            origin: Vec3::new(6.0, 4.0, 0.0),
+            normal: Vec3::Z,
+            label: "Vertex".to_string(),
+        };
+        let (upgraded, source, _, _, _) = complement_plane_anchor(
+            &doc,
+            PlaneAnchorSource::Axis,
+            &axis,
+            Some(0),
+            None,
+            &PickTargetKind::Point(point),
+            &point_ref,
+        )
+        .expect("curve + endpoint should complement");
+        assert_eq!(source, PlaneAnchorSource::LineAndPoint);
+        match upgraded {
+            PlaneReference::Face { normal, origin, .. } => {
+                assert!((origin - Vec3::new(6.0, 4.0, 0.0)).length() < 1e-3);
+                // Outward at start = away from handle (6,12): -Y
+                assert!(
+                    (normal - Vec3::new(0.0, -1.0, 0.0)).length() < 1e-3,
+                    "expected -Y end tangent, got {normal:?} (not mid-segment {mid_segment_dir:?})"
+                );
+            }
+            other => panic!("expected Face, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sketch_line_is_curve_detects_bezier() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        let mut curve = Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 10.0);
+        curve.bezier = Some([(0.0, 5.0), (5.0, 10.0)]);
+        doc.lines.push(curve);
+        assert!(!sketch_line_is_curve(&doc, 0));
+        assert!(sketch_line_is_curve(&doc, 1));
+    }
+
+    #[test]
     fn complement_face_alone_rejects_second_pick() {
         // A face anchor is already a complete set; a further pick must not rewrite it.
+        let doc = Document::default();
         let face = PlaneReference::Face {
             origin: Vec3::ZERO,
             normal: Vec3::Z,
@@ -2763,8 +2958,11 @@ mod tests {
             label: "Line".to_string(),
         };
         assert!(complement_plane_anchor(
+            &doc,
             PlaneAnchorSource::Face,
             &face,
+            None,
+            None,
             &PickTargetKind::Line(0),
             &line_ref,
         )

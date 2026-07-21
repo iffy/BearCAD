@@ -975,6 +975,22 @@ pub struct CreatingConstructionPlane {
     pub anchor_source: crate::construction::PlaneAnchorSource,
     /// Context-pane Anchor rows (one or two labels for line+point).
     pub anchor_labels: Vec<String>,
+    /// Sketch line index when the line half of a line/edge anchor is known (#483).
+    pub anchor_line: Option<usize>,
+    /// Point half of a line+point (or vertex) anchor, for endpoint-tangent normals.
+    pub anchor_point: Option<crate::model::ConstraintPoint>,
+}
+
+/// A line/curve waiting for its complementary point before the plane is created (#483).
+///
+/// Curves alone are not a complete anchor set (unlike straight edges): the next click
+/// should be a point so the plane can sit through it with normal along the curve.
+#[derive(Clone, Debug)]
+pub struct PendingPlaneLine {
+    pub line_index: Option<usize>,
+    pub reference: PlaneReference,
+    pub parent: ConstructionPlaneParent,
+    pub label: String,
 }
 
 impl CreatingConstructionPlane {
@@ -2248,6 +2264,8 @@ pub struct AppState {
     /// `draw_curve_mode` is on.
     pub draw_tangent_constraint: bool,
     pub creating_plane: Option<CreatingConstructionPlane>,
+    /// Partial plane anchor: a curve (or line held for line+point) awaiting a point (#483).
+    pub pending_plane_line: Option<PendingPlaneLine>,
     pub panes: PaneVisibility,
     pub parameters_pane: ParametersPaneState,
     pub command_palette: CommandPaletteState,
@@ -2365,6 +2383,7 @@ impl Default for AppState {
             draw_curve_mode: false,
             draw_tangent_constraint: true,
             creating_plane: None,
+            pending_plane_line: None,
             panes: PaneVisibility::default(),
             parameters_pane: ParametersPaneState::default(),
             command_palette: CommandPaletteState::default(),
@@ -4753,8 +4772,9 @@ impl AppState {
                 if self.creating_circle.is_some() && tool != Tool::Circle {
                     self.creating_circle = None;
                 }
-                if self.creating_plane.is_some() && tool != Tool::ConstructionPlane {
+                if tool != Tool::ConstructionPlane {
                     self.creating_plane = None;
+                    self.pending_plane_line = None;
                 }
                 if self.creating_extrusion.is_some() && tool != Tool::Extrude {
                     self.creating_extrusion = None;
@@ -5051,6 +5071,7 @@ impl AppState {
                     || self.discard_creating_line()
                     || self.creating_circle.take().is_some()
                     || self.creating_plane.take().is_some()
+                    || self.pending_plane_line.take().is_some()
                     || self.creating_vertex_treatment.take().is_some()
                 {
                     self.status = "Cancelled".to_string();
@@ -5688,6 +5709,7 @@ impl AppState {
                     // Callers that know a vertex pick set Point (and line+point) after apply.
                     crate::construction::PlaneAnchorSource::Face
                 };
+                self.pending_plane_line = None;
                 self.creating_plane = Some(CreatingConstructionPlane {
                     edit_index: None,
                     reference,
@@ -5705,6 +5727,8 @@ impl AppState {
                     normal_choice: 0,
                     anchor_source,
                     anchor_labels,
+                    anchor_line: None,
+                    anchor_point: None,
                 });
                 self.tool = Tool::ConstructionPlane;
                 self.status = "Set offset • type to lock • Tab cycle dims • click/Enter commit • Esc cancel"
@@ -5728,6 +5752,7 @@ impl AppState {
                 } else {
                     crate::construction::PlaneAnchorSource::Face
                 };
+                self.pending_plane_line = None;
                 self.creating_plane = Some(CreatingConstructionPlane {
                     edit_index: Some(index),
                     reference,
@@ -5745,6 +5770,8 @@ impl AppState {
                     normal_choice: 0,
                     anchor_source,
                     anchor_labels,
+                    anchor_line: None,
+                    anchor_point: None,
                 });
                 self.tool = Tool::ConstructionPlane;
                 self.status = format!(
@@ -13137,9 +13164,12 @@ mod tests {
                 normal: Vec3::Z,
                 label: "Point".to_string(),
             };
-            let (new_ref, source, labels) = complement_plane_anchor(
+            let (new_ref, source, labels, line, pt) = complement_plane_anchor(
+                &state.doc,
                 cp.anchor_source,
                 &cp.reference,
+                None,
+                None,
                 &PickTargetKind::Point(ConstraintPoint::CircleCenter(0)),
                 &point_ref,
             )
@@ -13147,6 +13177,8 @@ mod tests {
             cp.reference = new_ref;
             cp.anchor_source = source;
             cp.anchor_labels = labels;
+            cp.anchor_line = line;
+            cp.anchor_point = pt;
             cp.offset_live = 0.0;
         }
         state.apply(Action::CommitConstructionPlane);
@@ -13162,6 +13194,59 @@ mod tests {
             "origin {:?}",
             plane.origin
         );
+    }
+
+    #[test]
+    fn pending_curve_plus_endpoint_makes_plane_normal_to_curve_end() {
+        // #483: a curve is held pending, then completed with its endpoint.
+        use crate::construction::{
+            line_and_point_plane_reference, plane_normal_for_line_and_point, PlaneAnchorSource,
+        };
+        use crate::model::{ConstraintPoint, Line, LineEnd};
+
+        let mut state = AppState::default();
+        let sketch = state
+            .doc
+            .add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        let mut curve = Line::from_local_endpoints(sketch, 6.0, 4.0, 26.0, 14.0);
+        curve.bezier = Some([(6.0, 12.0), (18.0, 14.0)]);
+        state.doc.lines.push(curve);
+
+        let point = ConstraintPoint::LineEndpoint {
+            line: 0,
+            end: LineEnd::Start,
+        };
+        let normal = plane_normal_for_line_and_point(
+            &state.doc,
+            Some(0),
+            Some(&point),
+            glam::Vec3::new(1.0, 0.5, 0.0),
+        );
+        let (reference, labels) = line_and_point_plane_reference(
+            glam::Vec3::new(6.0, 4.0, 0.0),
+            normal,
+            "Vertex",
+            "Curve",
+        );
+        state.apply(Action::BeginConstructionPlane {
+            reference,
+            parent: ConstructionPlaneParent::Sketch(sketch),
+        });
+        if let Some(cp) = state.creating_plane.as_mut() {
+            cp.anchor_source = PlaneAnchorSource::LineAndPoint;
+            cp.anchor_labels = labels;
+            cp.anchor_line = Some(0);
+            cp.anchor_point = Some(point);
+            cp.offset_live = 0.0;
+        }
+        state.apply(Action::CommitConstructionPlane);
+        let plane = &state.doc.construction_planes[1];
+        assert!(
+            (plane.normal - glam::Vec3::new(0.0, -1.0, 0.0)).length() < 1e-3,
+            "expected -Y end tangent, got {:?}",
+            plane.normal
+        );
+        assert!((plane.origin - glam::Vec3::new(6.0, 4.0, 0.0)).length() < 1e-2);
     }
 
     #[test]
