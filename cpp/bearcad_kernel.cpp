@@ -203,7 +203,7 @@ extern "C" BearcadShape* bearcad_shape_loft(const double* bottom_xyz, const doub
     }
 }
 
-// Sweep a closed planar profile along a path polyline (#follow-path). The profile is
+// Sweep a closed planar profile along a path polyline (#sweep). The profile is
 // swept with BRepOffsetAPI_MakePipeShell (WithCorrection keeps it normal to the spine);
 // a `smooth` path interpolates its points with a B-spline so curved sketch segments
 // sweep as curves, an all-straight path keeps sharp right-corner transitions.

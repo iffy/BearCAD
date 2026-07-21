@@ -484,7 +484,7 @@ pub struct ViewportSceneInput<'a> {
     /// like the finished cut. `None` for add/new-body extrudes (block preview) or when the
     /// kernel can't build the cut result.
     pub preview_cut_body: Option<usize>,
-    /// Follow-path cut preview: `(body, mesh)` replacement solids — each listed body
+    /// Sweep cut preview: `(body, mesh)` replacement solids — each listed body
     /// renders this translucent cut-result mesh in place of its intact self, like
     /// `preview_cut_body` does for the in-progress extrusion.
     pub preview_cut_solids: Vec<(usize, crate::extrude::SolidMesh)>,
@@ -2768,7 +2768,7 @@ impl<'a> SceneMesh<'a> {
             | SceneElement::SketchSliceOp(_)
             | SceneElement::SliceOp(_)
             | SceneElement::Revolution(_)
-            | SceneElement::FollowPathOp(_)
+            | SceneElement::SweepOp(_)
             | SceneElement::Component(_) => {}
             // A hovered body recolors in the main pass (#455); a hovered extrusion
             // recolors just its own solid.

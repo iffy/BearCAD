@@ -25,7 +25,7 @@ the [Drawing Tools](/docs/drawing-tools)).
 | <img src={useBaseUrl("/img/icons/constraint.svg")} width="22" /> | [Constraint](/docs/tools/constraint) | `C` | Relate geometry: parallel, equal, coincident, … |
 | <img src={useBaseUrl("/img/icons/extrude.svg")} width="22" /> | [Extrude](/docs/tools/extrude) | `E` | Pull a sketch face into a solid — or cut into one. |
 | <img src={useBaseUrl("/img/icons/revolve.svg")} width="22" /> | [Revolve](/docs/tools/revolve) | — | Spin a profile around an axis into a solid. |
-| <img src={useBaseUrl("/img/icons/follow_path.svg")} width="22" /> | [Follow path](/docs/tools/follow-path) | — | Sweep a profile along a path of sketch lines. |
+| <img src={useBaseUrl("/img/icons/sweep.svg")} width="22" /> | [Sweep](/docs/tools/sweep) | — | Sweep a profile along a path of sketch lines. |
 | <img src={useBaseUrl("/img/icons/combine.svg")} width="22" /> | [Combine](/docs/tools/combine) | — | Boolean operations on bodies: merge, cut, intersect, difference. |
 | <img src={useBaseUrl("/img/icons/move.svg")} width="22" /> | [Move](/docs/tools/move) | — | Translate or rotate bodies into moved copies. |
 | <img src={useBaseUrl("/img/icons/repeat.svg")} width="22" /> | [Repeat](/docs/tools/repeat) | — | Copies of bodies spaced along an axis. |

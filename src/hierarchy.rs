@@ -57,8 +57,8 @@ pub enum HierarchyNode {
     SliceOp(usize),
     /// A revolved solid (Revolve tool); its output body nests under it (#211).
     Revolution(usize),
-    /// A follow-path sweep (Follow-path tool); its output body nests under it.
-    FollowPathOp(usize),
+    /// A sweep (Sweep tool); its output body nests under it.
+    SweepOp(usize),
     /// A loft (Loft tool): its output body nests under it, and its cross-section sketches feed
     /// it as graph inputs (#252). Display-only for now (no `SceneElement`).
     Loft(usize),
@@ -140,8 +140,8 @@ pub enum SceneElement {
     SliceOp(usize),
     /// A revolved solid (Revolve tool, #211).
     Revolution(usize),
-    /// A follow-path sweep (Follow-path tool).
-    FollowPathOp(usize),
+    /// A sweep (Sweep tool).
+    SweepOp(usize),
     /// The origin, selectable in a sketch so a point can be constrained coincident to it from
     /// the constraint tool (#189). Fixed geometry with no owning entity, like `FaceEdge`.
     Origin,
@@ -196,7 +196,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::SketchText(i) => SceneElement::SketchText(i),
         HierarchyNode::SliceOp(i) => SceneElement::SliceOp(i),
         HierarchyNode::Revolution(i) => SceneElement::Revolution(i),
-        HierarchyNode::FollowPathOp(i) => SceneElement::FollowPathOp(i),
+        HierarchyNode::SweepOp(i) => SceneElement::SweepOp(i),
         HierarchyNode::Component(i) => SceneElement::Component(i),
     })
 }
@@ -329,7 +329,7 @@ impl ElementVisibility {
                 .is_some_and(|t| self.effective_visible(doc, SceneElement::Sketch(t.sketch))),
             SceneElement::SliceOp(_) => true,
             SceneElement::Revolution(_) => true,
-            SceneElement::FollowPathOp(_) => true,
+            SceneElement::SweepOp(_) => true,
             // The origin is always visible while sketching (#189).
             SceneElement::Origin => true,
         }
@@ -609,14 +609,14 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
             edges.push((HierarchyNode::Line(li), HierarchyNode::Revolution(ri)));
         }
     }
-    // A follow-path sweep is fed by its profile sketch and every path line.
-    for (fi, fp) in doc.follow_paths.iter().enumerate() {
+    // A sweep is fed by its profile sketch and every path line.
+    for (fi, fp) in doc.sweeps.iter().enumerate() {
         if fp.deleted {
             continue;
         }
-        edges.push((HierarchyNode::Sketch(fp.sketch), HierarchyNode::FollowPathOp(fi)));
+        edges.push((HierarchyNode::Sketch(fp.sketch), HierarchyNode::SweepOp(fi)));
         for &li in &fp.path {
-            edges.push((HierarchyNode::Line(li), HierarchyNode::FollowPathOp(fi)));
+            edges.push((HierarchyNode::Line(li), HierarchyNode::SweepOp(fi)));
         }
     }
     // In-sketch ops consume their source lines/circles (#449); the in-sketch slice also
@@ -1102,7 +1102,7 @@ fn build_creation_ranks(doc: &Document) -> CreationRanks {
             ShapeKind::Image
             | ShapeKind::Loft
             | ShapeKind::Revolution
-            | ShapeKind::FollowPath
+            | ShapeKind::Sweep
             | ShapeKind::BooleanOperation
             | ShapeKind::MoveOperation
             | ShapeKind::RepeatOperation
@@ -1143,7 +1143,7 @@ fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
         HierarchyNode::SketchText(_) => usize::MAX,
         HierarchyNode::SliceOp(_) => usize::MAX,
         HierarchyNode::Revolution(_) => usize::MAX,
-        HierarchyNode::FollowPathOp(_) => usize::MAX,
+        HierarchyNode::SweepOp(_) => usize::MAX,
         HierarchyNode::Loft(_) => usize::MAX,
         // Edge treatments order by their index within the extrusion, after the bodies/sketches.
         HierarchyNode::EdgeTreatment { index, .. } => index,
@@ -1226,8 +1226,8 @@ pub fn build_hierarchy(
                     | crate::model::BodySource::Loft(_)
                     // A revolved body nests under its Revolution node (#305), not the root.
                     | crate::model::BodySource::Revolve(_)
-                    // A swept body nests under its Follow-path node, not the root.
-                    | crate::model::BodySource::FollowPath(_)
+                    // A swept body nests under its Sweep node, not the root.
+                    | crate::model::BodySource::Sweep(_)
             )
         {
             roots.push(HierarchyEntry {
@@ -1439,9 +1439,9 @@ pub fn build_hierarchy(
             children,
         });
     }
-    // Follow-path sweeps: the operation is its own element, with its output body
-    // (linked by `BodySource::FollowPath`) nested beneath it.
-    for (oi, fp) in doc.follow_paths.iter().enumerate() {
+    // Sweeps: the operation is its own element, with its output body
+    // (linked by `BodySource::Sweep`) nested beneath it.
+    for (oi, fp) in doc.sweeps.iter().enumerate() {
         if fp.deleted {
             continue;
         }
@@ -1449,14 +1449,14 @@ pub fn build_hierarchy(
             .bodies
             .iter()
             .enumerate()
-            .filter(|(_, b)| !b.deleted && b.source == crate::model::BodySource::FollowPath(oi))
+            .filter(|(_, b)| !b.deleted && b.source == crate::model::BodySource::Sweep(oi))
             .map(|(bi, _)| HierarchyEntry {
                 node: HierarchyNode::Body(bi),
                 children: Vec::new(),
             })
             .collect();
         roots.push(HierarchyEntry {
-            node: HierarchyNode::FollowPathOp(oi),
+            node: HierarchyNode::SweepOp(oi),
             children,
         });
     }
@@ -1528,7 +1528,7 @@ fn group_roots_into_components(doc: &Document, roots: Vec<HierarchyEntry>) -> Ve
             HierarchyNode::RepeatOp(i) => (CM::RepeatOp, *i),
             HierarchyNode::SliceOp(i) => (CM::SliceOp, *i),
             HierarchyNode::Revolution(i) => (CM::Revolution, *i),
-            HierarchyNode::FollowPathOp(i) => (CM::FollowPath, *i),
+            HierarchyNode::SweepOp(i) => (CM::Sweep, *i),
             HierarchyNode::Drawing(i) => (CM::Drawing, *i),
             _ => return None,
         };
@@ -1713,7 +1713,7 @@ impl ElementFilter {
             | HierarchyNode::SketchSliceOp(_)
             | HierarchyNode::SliceOp(_)
             | HierarchyNode::Revolution(_)
-            | HierarchyNode::FollowPathOp(_)
+            | HierarchyNode::SweepOp(_)
             | HierarchyNode::Loft(_) => self.operations,
             HierarchyNode::Image(_) => self.images,
             HierarchyNode::Drawing(_) => self.drawings,
@@ -1805,7 +1805,7 @@ pub fn component_member_element(
         CM::RepeatOp => SceneElement::RepeatOp(index),
         CM::SliceOp => SceneElement::SliceOp(index),
         CM::Revolution => SceneElement::Revolution(index),
-        CM::FollowPath => SceneElement::FollowPathOp(index),
+        CM::Sweep => SceneElement::SweepOp(index),
         CM::Loft | CM::Drawing => return None,
     })
 }
@@ -1843,7 +1843,7 @@ pub fn owning_component(doc: &Document, element: &SceneElement) -> Option<usize>
                 BodySource::Imported(_) => None,
                 BodySource::Loft(l) => doc.component_of(CM::Loft, *l),
                 BodySource::Revolve(r) => doc.component_of(CM::Revolution, *r),
-                BodySource::FollowPath(f) => doc.component_of(CM::FollowPath, *f),
+                BodySource::Sweep(f) => doc.component_of(CM::Sweep, *f),
                 BodySource::Repeated { op, .. } => doc.component_of(CM::RepeatOp, *op),
                 BodySource::Moved { op, .. } => doc.component_of(CM::MoveOp, *op),
                 BodySource::Boolean { op, .. } => doc.component_of(CM::BooleanOp, *op),
@@ -1860,7 +1860,7 @@ pub fn owning_component(doc: &Document, element: &SceneElement) -> Option<usize>
         SceneElement::RepeatOp(i) => doc.component_of(CM::RepeatOp, *i),
         SceneElement::SliceOp(i) => doc.component_of(CM::SliceOp, *i),
         SceneElement::Revolution(i) => doc.component_of(CM::Revolution, *i),
-        SceneElement::FollowPathOp(i) => doc.component_of(CM::FollowPath, *i),
+        SceneElement::SweepOp(i) => doc.component_of(CM::Sweep, *i),
         // In-sketch geometry cascades through its sketch's plane (handled by the sketch's
         // own effective-visibility recursion); everything else has no owning component.
         _ => None,
@@ -1932,7 +1932,7 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
             .map(|t| SceneElement::Sketch(t.sketch)),
         SceneElement::SliceOp(_) => None,
         SceneElement::Revolution(_) => None,
-        SceneElement::FollowPathOp(_) => None,
+        SceneElement::SweepOp(_) => None,
     }
 }
 
@@ -2126,10 +2126,10 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                 }
             }
         }
-        SceneElement::FollowPathOp(index) => {
-            // The swept solid's output body is linked by `BodySource::FollowPath`.
+        SceneElement::SweepOp(index) => {
+            // The swept solid's output body is linked by `BodySource::Sweep`.
             for (bi, body) in doc.bodies.iter().enumerate() {
-                if !body.deleted && body.source == crate::model::BodySource::FollowPath(index) {
+                if !body.deleted && body.source == crate::model::BodySource::Sweep(index) {
                     out.insert(SceneElement::Body(bi));
                     collect_descendants(doc, SceneElement::Body(bi), out);
                 }
@@ -2406,7 +2406,7 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         HierarchyNode::SketchText(_) => IconId::Text,
         HierarchyNode::SliceOp(_) => IconId::Slice,
         HierarchyNode::Revolution(_) => IconId::Revolve,
-        HierarchyNode::FollowPathOp(_) => IconId::FollowPath,
+        HierarchyNode::SweepOp(_) => IconId::Sweep,
         HierarchyNode::Loft(_) => IconId::Loft,
         HierarchyNode::EdgeTreatment { extrusion, index } => {
             match edge_treatment_at(doc, extrusion, index).map(|t| t.kind) {
@@ -3890,7 +3890,7 @@ fn component_member_node(node: HierarchyNode) -> bool {
             | HierarchyNode::RepeatOp(_)
             | HierarchyNode::SliceOp(_)
             | HierarchyNode::Revolution(_)
-            | HierarchyNode::FollowPathOp(_)
+            | HierarchyNode::SweepOp(_)
     )
 }
 
@@ -5119,25 +5119,25 @@ label_hidden: false,
         }
     }
 
-    /// #follow-path: the op node depends on its profile sketch and every path line, and
+    /// #sweep: the op node depends on its profile sketch and every path line, and
     /// its NewBody output body nests beneath it.
     #[test]
-    fn follow_path_appears_in_the_tree_and_feeds_from_its_inputs() {
-        use crate::model::{Body, BodySource, FollowMode, FollowPath, Line};
+    fn sweep_appears_in_the_tree_and_feeds_from_its_inputs() {
+        use crate::model::{Body, BodySource, SweepMode, Sweep, Line};
         let mut doc = Document::default();
         let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 10.0, 10.0));
-        doc.follow_paths.push(FollowPath {
+        doc.sweeps.push(Sweep {
             sketch,
             faces: Vec::new(),
             path: vec![0, 1],
-            mode: FollowMode::NewBody,
+            mode: SweepMode::NewBody,
             name: None,
             deleted: false,
         });
         doc.bodies.push(Body {
-            source: BodySource::FollowPath(0),
+            source: BodySource::Sweep(0),
             name: None,
             deleted: false,
             shadow: false,
@@ -5147,16 +5147,16 @@ label_hidden: false,
         let op = tree[0]
             .children
             .iter()
-            .find(|e| e.node == HierarchyNode::FollowPathOp(0))
-            .expect("the follow-path op is a top-level operation, not a bare body");
+            .find(|e| e.node == HierarchyNode::SweepOp(0))
+            .expect("the sweep op is a top-level operation, not a bare body");
         assert!(
             op.children.iter().any(|c| c.node == HierarchyNode::Body(0)),
-            "the swept body nests under the follow-path op as its output"
+            "the swept body nests under the sweep op as its output"
         );
         let deps = graph_dependency_edges(&doc);
-        assert!(deps.contains(&(HierarchyNode::Sketch(sketch), HierarchyNode::FollowPathOp(0))));
-        assert!(deps.contains(&(HierarchyNode::Line(0), HierarchyNode::FollowPathOp(0))));
-        assert!(deps.contains(&(HierarchyNode::Line(1), HierarchyNode::FollowPathOp(0))));
+        assert!(deps.contains(&(HierarchyNode::Sketch(sketch), HierarchyNode::SweepOp(0))));
+        assert!(deps.contains(&(HierarchyNode::Line(0), HierarchyNode::SweepOp(0))));
+        assert!(deps.contains(&(HierarchyNode::Line(1), HierarchyNode::SweepOp(0))));
     }
 
     #[test]

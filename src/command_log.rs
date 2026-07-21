@@ -23,7 +23,7 @@ pub struct CommandLog {
     extrusion_count_before: usize,
     loft_count_before: usize,
     revolution_count_before: usize,
-    follow_path_count_before: usize,
+    sweep_count_before: usize,
     constraint_count_before: usize,
 }
 
@@ -115,8 +115,8 @@ impl CommandLog {
         if matches!(action, Action::CommitRevolve) {
             self.revolution_count_before = doc.revolutions.len();
         }
-        if matches!(action, Action::CommitFollowPath) {
-            self.follow_path_count_before = doc.follow_paths.len();
+        if matches!(action, Action::CommitSweep) {
+            self.sweep_count_before = doc.sweeps.len();
         }
         if Self::can_add_snap_constraint(action) {
             self.constraint_count_before = doc.constraints.len();
@@ -149,9 +149,9 @@ impl CommandLog {
             (doc.revolutions.len() > self.revolution_count_before)
                 .then(|| crate::script::instruction_for_new_revolution(doc))
                 .flatten()
-        } else if matches!(action, Action::CommitFollowPath) {
-            (doc.follow_paths.len() > self.follow_path_count_before)
-                .then(|| crate::script::instruction_for_new_follow_path(doc))
+        } else if matches!(action, Action::CommitSweep) {
+            (doc.sweeps.len() > self.sweep_count_before)
+                .then(|| crate::script::instruction_for_new_sweep(doc))
                 .flatten()
         } else {
             instruction_from_action(&action, doc)

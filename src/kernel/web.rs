@@ -192,7 +192,7 @@ impl Shape {
         ))
     }
 
-    /// Sweep a closed planar profile along a path polyline (#follow-path); see the
+    /// Sweep a closed planar profile along a path polyline (#sweep); see the
     /// native `Shape::sweep`.
     pub fn sweep(profile: &[glam::Vec3], path: &[glam::Vec3], smooth: bool) -> Option<Shape> {
         if profile.len() < 3 || path.len() < 2 || !kernel_available() {

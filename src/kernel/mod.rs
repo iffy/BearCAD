@@ -346,7 +346,7 @@ impl Shape {
     }
 
     /// Sweep a closed planar profile loop (world-space points, first point not repeated)
-    /// along a path polyline (#follow-path). `smooth` interpolates the path points with a
+    /// along a path polyline (#sweep). `smooth` interpolates the path points with a
     /// spline (curved sketch segments); otherwise the spine keeps its sharp polyline
     /// corners. `None` on degenerate input or kernel failure.
     pub fn sweep(profile: &[glam::Vec3], path: &[glam::Vec3], smooth: bool) -> Option<Shape> {

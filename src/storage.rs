@@ -235,7 +235,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "tracing_image", &doc.tracing_images)?;
     save_indexed_nodes(&tx, &mut row_id, "loft", &doc.lofts)?;
     save_indexed_nodes(&tx, &mut row_id, "revolution", &doc.revolutions)?;
-    save_indexed_nodes(&tx, &mut row_id, "follow_path", &doc.follow_paths)?;
+    save_indexed_nodes(&tx, &mut row_id, "sweep", &doc.sweeps)?;
     save_indexed_nodes(&tx, &mut row_id, "boolean_op", &doc.boolean_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "move_op", &doc.move_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "repeat_op", &doc.repeat_ops)?;
@@ -516,7 +516,7 @@ pub fn open(path: &str) -> Result<Document> {
     let tracing_images = load_indexed_entities(&conn, "tracing_image")?;
     let lofts = load_indexed_entities(&conn, "loft")?;
     let revolutions = load_indexed_entities(&conn, "revolution")?;
-    let follow_paths = load_indexed_entities(&conn, "follow_path")?;
+    let sweeps = load_indexed_entities(&conn, "sweep")?;
     let boolean_ops = load_indexed_entities(&conn, "boolean_op")?;
     let move_ops = load_indexed_entities(&conn, "move_op")?;
     let repeat_ops = load_indexed_entities(&conn, "repeat_op")?;
@@ -546,7 +546,7 @@ pub fn open(path: &str) -> Result<Document> {
         tracing_images,
         lofts,
         revolutions,
-        follow_paths,
+        sweeps,
         boolean_ops,
         move_ops,
         repeat_ops,

@@ -106,7 +106,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::SketchText(_) => "sketch_text",
         SceneElement::SliceOp(_) => "slice_op",
         SceneElement::Revolution(_) => "revolution",
-        SceneElement::FollowPathOp(_) => "follow_path",
+        SceneElement::SweepOp(_) => "sweep",
         SceneElement::Component(_) => "component",
     }
 }
@@ -130,7 +130,7 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::SketchText(i)
         | SceneElement::SliceOp(i)
         | SceneElement::Revolution(i)
-        | SceneElement::FollowPathOp(i)
+        | SceneElement::SweepOp(i)
         | SceneElement::Component(i) => i,
         SceneElement::Point(_)
         | SceneElement::FaceEdge(_)
@@ -3337,12 +3337,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // Sweep profiles along a path of sketch lines (SPEC §3.5 Follow path):
-    // `bearcad.follow_path{ circles = {i, ...} and/or polygon = {line, ...},
+    // Sweep profiles along a path of sketch lines (SPEC §3.5 Sweep):
+    // `bearcad.sweep{ circles = {i, ...} and/or polygon = {line, ...},
     // path = {line, ...}, body = "add"|"cut"?, bodies = {i, ...}? }`. Each face's sketch
     // is inferred like `extrude`'s; the path lines are chained tip-to-tail.
     api.set(
-        "follow_path",
+        "sweep",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let mut faces: Vec<crate::model::ExtrudeFace> = Vec::new();
@@ -3373,7 +3373,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 _ => crate::actions::RevolveBodyChoice::NewBody,
             };
             unsafe {
-                tick.exec(Instruction::FollowPath { faces, path, body, bodies })?;
+                tick.exec(Instruction::Sweep { faces, path, body, bodies })?;
             }
             let element = SceneElement::Body(unsafe {
                 tick.state().doc.bodies.len().saturating_sub(1)

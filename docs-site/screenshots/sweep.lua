@@ -1,4 +1,4 @@
--- Documentation screenshot: the Follow path tool.
+-- Documentation screenshot: the Sweep tool.
 --
 -- Sweeps a circular profile along an L-shaped path (up, then a curve over to the
 -- side) into a bent tube, so the path-following is obvious.
@@ -8,7 +8,7 @@
 -- (a display, or CI Linux with xvfb + software Vulkan); otherwise the capture
 -- never resolves and --timeout force-exits without a PNG, which is expected.
 
-local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/follow-path.png"
+local out = (os.getenv("BEARCAD_SCREENSHOT_OUT") or ".") .. "/sweep.png"
 
 bearcad.new()
 bearcad.ui.pane("elements", "hide")
@@ -27,7 +27,7 @@ bearcad.line{ x = 0, y = 0, x1 = 0, y1 = 20 }
 bearcad.line{ x = 0, y = 20, x1 = 25, y1 = 38, bezier = { { 0, 30 }, { 14, 38 } } }
 bearcad.exit_sketch()
 
-bearcad.follow_path{ circle = 0, path = { 0, 1 }, name = "Tube" }
+bearcad.sweep{ circle = 0, path = { 0, 1 }, name = "Tube" }
 
 bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
 bearcad.set_visible({ kind = "construction_plane", index = 1 }, "hide")

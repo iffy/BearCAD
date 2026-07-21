@@ -245,9 +245,9 @@ pub enum Instruction {
         body: crate::actions::RevolveBodyChoice,
         bodies: Vec<usize>,
     },
-    /// Sweep profiles along a path of sketch lines (SPEC §3.5 Follow path). Sketch
+    /// Sweep profiles along a path of sketch lines (SPEC §3.5 Sweep). Sketch
     /// inferred per face.
-    FollowPath {
+    Sweep {
         faces: Vec<crate::model::ExtrudeFace>,
         path: Vec<usize>,
         body: crate::actions::RevolveBodyChoice,
@@ -882,7 +882,7 @@ impl Instruction {
                 }
                 format!("bearcad.revolve{{ {} }}", parts.join(", "))
             }
-            Instruction::FollowPath { faces, path, body, bodies } => {
+            Instruction::Sweep { faces, path, body, bodies } => {
                 use crate::model::ExtrudeFace;
                 let index_list = |indices: &[usize]| -> String {
                     indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
@@ -917,7 +917,7 @@ impl Instruction {
                         parts.push(format!("bodies = {{{}}}", index_list(bodies)));
                     }
                 }
-                format!("bearcad.follow_path{{ {} }}", parts.join(", "))
+                format!("bearcad.sweep{{ {} }}", parts.join(", "))
             }
             Instruction::CreateBooleanOp { kind, a, b, keep_b } => {
                 boolean_op_lua("bearcad.combine", None, *kind, a, b, *keep_b)
@@ -1519,8 +1519,8 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
-        SceneElement::FollowPathOp(i) => ElementScriptTokens {
-            kind: "follow_path",
+        SceneElement::SweepOp(i) => ElementScriptTokens {
+            kind: "sweep",
             index: i,
             point: None,
         },
@@ -2029,20 +2029,20 @@ pub fn instruction_for_new_revolution(doc: &crate::model::Document) -> Option<In
     })
 }
 
-/// Replayable `Instruction::FollowPath` for the sweep the interactive tool just created
+/// Replayable `Instruction::Sweep` for the sweep the interactive tool just created
 /// (mirrors `instruction_for_new_revolution`).
-pub fn instruction_for_new_follow_path(doc: &crate::model::Document) -> Option<Instruction> {
-    let fp = doc.follow_paths.last()?;
+pub fn instruction_for_new_sweep(doc: &crate::model::Document) -> Option<Instruction> {
+    let fp = doc.sweeps.last()?;
     let (body, bodies) = match &fp.mode {
-        crate::model::FollowMode::NewBody => {
+        crate::model::SweepMode::NewBody => {
             (crate::actions::RevolveBodyChoice::NewBody, Vec::new())
         }
-        crate::model::FollowMode::AddTo(b) => {
+        crate::model::SweepMode::AddTo(b) => {
             (crate::actions::RevolveBodyChoice::AddTouching, b.clone())
         }
-        crate::model::FollowMode::Cut(b) => (crate::actions::RevolveBodyChoice::Cut, b.clone()),
+        crate::model::SweepMode::Cut(b) => (crate::actions::RevolveBodyChoice::Cut, b.clone()),
     };
-    Some(Instruction::FollowPath {
+    Some(Instruction::Sweep {
         faces: fp.faces.clone(),
         path: fp.path.clone(),
         body,
@@ -2412,7 +2412,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
         Tool::Offset => "offset",
         Tool::Loft => "loft",
         Tool::Revolve => "revolve",
-        Tool::FollowPath => "follow_path",
+        Tool::Sweep => "sweep",
         Tool::Combine => "combine",
         Tool::Move => "move",
         Tool::Repeat => "repeat",
@@ -3928,17 +3928,17 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::FollowPath { faces, path, body, bodies } => {
+            Instruction::Sweep { faces, path, body, bodies } => {
                 let Some(sketch) = faces
                     .first()
                     .and_then(|f| crate::actions::extrude_face_sketch(&state.doc, f))
                 else {
                     self.record_action_error(crate::actions::ActionResult::Err(
-                        "follow-path face does not exist".to_string(),
+                        "sweep face does not exist".to_string(),
                     ));
                     return StepResult::Continue;
                 };
-                let result = state.apply(Action::CreateFollowPath {
+                let result = state.apply(Action::CreateSweep {
                     sketch,
                     faces,
                     path,

@@ -91,8 +91,8 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             .revolutions
             .get(index)
             .is_some_and(|rev| !rev.deleted),
-        SceneElement::FollowPathOp(index) => doc
-            .follow_paths
+        SceneElement::SweepOp(index) => doc
+            .sweeps
             .get(index)
             .is_some_and(|fp| !fp.deleted),
         SceneElement::Image(index) => doc
@@ -413,14 +413,14 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                 }
             }
         }
-        SceneElement::FollowPathOp(index) => {
+        SceneElement::SweepOp(index) => {
             // Deleting the sweep removes its output body (only NewBody mode has one;
             // AddTo/Cut fuse into existing bodies at recompute).
-            if let Some(fp) = doc.follow_paths.get_mut(index) {
+            if let Some(fp) = doc.sweeps.get_mut(index) {
                 if !fp.deleted {
                     fp.deleted = true;
                     for body in doc.bodies.iter_mut() {
-                        if body.source == crate::model::BodySource::FollowPath(index) {
+                        if body.source == crate::model::BodySource::Sweep(index) {
                             body.deleted = true;
                         }
                     }

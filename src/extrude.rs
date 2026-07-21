@@ -573,8 +573,8 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
         crate::model::BodySource::Revolve(ri) => {
             occt_revolution_shape(doc, doc.revolutions.get(ri).filter(|r| !r.deleted)?)?
         }
-        crate::model::BodySource::FollowPath(fi) => {
-            occt_follow_path_shape(doc, doc.follow_paths.get(fi).filter(|f| !f.deleted)?)?
+        crate::model::BodySource::Sweep(fi) => {
+            occt_sweep_shape(doc, doc.sweeps.get(fi).filter(|f| !f.deleted)?)?
         }
         crate::model::BodySource::Boolean { op, solid } => {
             return occt_boolean_output_shape(doc, op, solid);
@@ -605,10 +605,10 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
         };
         solid = solid.boolean(&shape, op)?;
     }
-    // Follow-path sweeps that fuse into / cut this body (#follow-path).
-    for (fi, is_cut) in follow_paths_targeting(doc, body_index) {
-        let fp = &doc.follow_paths[fi];
-        let shape = occt_follow_path_shape(doc, fp)?;
+    // Sweeps that fuse into / cut this body (#sweep).
+    for (fi, is_cut) in sweeps_targeting(doc, body_index) {
+        let fp = &doc.sweeps[fi];
+        let shape = occt_sweep_shape(doc, fp)?;
         let op = if is_cut {
             crate::kernel::BoolOp::Cut
         } else {
@@ -1300,10 +1300,10 @@ pub fn occt_edge_treatments_feasible(
 pub fn kernel_fallback_cut_warning(doc: &Document) -> Option<String> {
     for (i, body) in doc.bodies.iter().enumerate() {
         let cut_by_revolve = revolutions_targeting(doc, i).iter().any(|(_, cut)| *cut);
-        let cut_by_follow = follow_paths_targeting(doc, i).iter().any(|(_, cut)| *cut);
+        let cut_by_sweep = sweeps_targeting(doc, i).iter().any(|(_, cut)| *cut);
         if body.deleted
             || body.source.imported_mesh_index().is_some()
-            || (body.source.cut_extrusion_indices().is_empty() && !cut_by_revolve && !cut_by_follow)
+            || (body.source.cut_extrusion_indices().is_empty() && !cut_by_revolve && !cut_by_sweep)
         {
             continue;
         }
@@ -1486,14 +1486,14 @@ pub fn revolutions_targeting(
         .collect()
 }
 
-/// Ordered world-space polyline of a follow-path's picked path lines (#follow-path): each
+/// Ordered world-space polyline of a sweep's picked path lines (#sweep): each
 /// line is sampled bezier-aware, the segments are chained tip-to-tail regardless of pick
 /// order, and the chain is oriented to start at the end nearer the profile plane. `None`
 /// when a path line died, the segments don't form one connected chain, or the result
 /// degenerates below two distinct points.
-pub fn follow_path_polyline(
+pub fn sweep_path_polyline(
     doc: &Document,
-    fp: &crate::model::FollowPath,
+    fp: &crate::model::Sweep,
 ) -> Option<Vec<Vec3>> {
     /// Endpoint-matching tolerance (mm): path segments picked from a sketch chain share
     /// exact endpoints; the slack only absorbs float noise from the sketch solver.
@@ -1559,11 +1559,11 @@ pub fn follow_path_polyline(
     (chain.len() >= 2).then_some(chain)
 }
 
-/// Per-point sweep frames along `path` (#follow-path): parallel-transport rotations that
+/// Per-point sweep frames along `path` (#sweep): parallel-transport rotations that
 /// carry the profile plane onto each point's tangent without accumulating twist. The
 /// first frame turns the profile normal (flipped to face along the path if needed) onto
 /// the starting tangent; each following frame adds only the tangent-to-tangent turn.
-fn follow_path_frames(path: &[Vec3], profile_normal: Vec3) -> Vec<glam::Quat> {
+fn sweep_path_frames(path: &[Vec3], profile_normal: Vec3) -> Vec<glam::Quat> {
     let n = path.len();
     let seg_dir = |i: usize| (path[i + 1] - path[i]).normalize_or_zero();
     let mut tangents: Vec<Vec3> = (0..n)
@@ -1598,12 +1598,12 @@ fn follow_path_frames(path: &[Vec3], profile_normal: Vec3) -> Vec<glam::Quat> {
     frames
 }
 
-/// Hand-rolled sweep mesh for a follow-path (#follow-path) — the no-kernel fallback and
+/// Hand-rolled sweep mesh for a sweep (#sweep) — the no-kernel fallback and
 /// the live ghost preview: each profile ring is carried to every path point on
 /// parallel-transport frames, walls are stitched between consecutive rings, and both end
 /// profiles are capped.
-pub fn follow_path_mesh(doc: &Document, fp: &crate::model::FollowPath) -> Option<SolidMesh> {
-    let path = follow_path_polyline(doc, fp)?;
+pub fn sweep_mesh(doc: &Document, fp: &crate::model::Sweep) -> Option<SolidMesh> {
+    let path = sweep_path_polyline(doc, fp)?;
     let anchor = path[0];
     let mut mesh = SolidMesh::default();
     for face in &fp.faces {
@@ -1611,7 +1611,7 @@ pub fn follow_path_mesh(doc: &Document, fp: &crate::model::FollowPath) -> Option
         if profile.len() < 3 {
             return None;
         }
-        let frames = follow_path_frames(&path, normal);
+        let frames = sweep_path_frames(&path, normal);
         let rings: Vec<Vec<Vec3>> = path
             .iter()
             .zip(&frames)
@@ -1647,15 +1647,15 @@ pub fn follow_path_mesh(doc: &Document, fp: &crate::model::FollowPath) -> Option
     (!mesh.is_empty()).then_some(mesh)
 }
 
-/// Real BREP swept solid via the kernel (#follow-path): each profile piped along the
+/// Real BREP swept solid via the kernel (#sweep): each profile piped along the
 /// path wire, multiple profiles fused. `None` when any face/path is degenerate or the
-/// kernel can't build it (callers fall back to [`follow_path_mesh`]).
+/// kernel can't build it (callers fall back to [`sweep_mesh`]).
 #[cfg(feature = "occt")]
-pub fn occt_follow_path_shape(
+pub fn occt_sweep_shape(
     doc: &Document,
-    fp: &crate::model::FollowPath,
+    fp: &crate::model::Sweep,
 ) -> Option<crate::kernel::Shape> {
-    let path = follow_path_polyline(doc, fp)?;
+    let path = sweep_path_polyline(doc, fp)?;
     // A curved segment anywhere makes the whole spine a smooth spline; an all-straight
     // chain keeps its sharp corners.
     let smooth = fp
@@ -1704,33 +1704,33 @@ fn occt_face_sweep_solid(
 }
 
 thread_local! {
-    /// Single-slot memo for [`preview_follow_cut_meshes`]: `(key, meshes)`. The draft only
+    /// Single-slot memo for [`preview_sweep_cut_meshes`]: `(key, meshes)`. The draft only
     /// changes on a pick (no gizmo drag), so idle frames are free.
-    static FOLLOW_CUT_PREVIEW_CACHE: std::cell::RefCell<((u64, u64), Vec<(usize, SolidMesh)>)> =
+    static SWEEP_CUT_PREVIEW_CACHE: std::cell::RefCell<((u64, u64), Vec<(usize, SolidMesh)>)> =
         std::cell::RefCell::new(((0, 0), Vec::new()));
 }
 
-/// Cut-result meshes for the in-progress follow-path cut preview: each target body of the
+/// Cut-result meshes for the in-progress sweep cut preview: each target body of the
 /// draft's `Cut` list meshed from a scratch document with the draft sweep appended, so the
 /// preview shows the finished carve (mirroring the extrude cut preview, #142). Bodies the
 /// scratch build can't mesh are simply absent. Cached per `(document, draft)` state.
-pub fn preview_follow_cut_meshes(
+pub fn preview_sweep_cut_meshes(
     doc: &Document,
-    fp: &crate::model::FollowPath,
+    fp: &crate::model::Sweep,
 ) -> Vec<(usize, SolidMesh)> {
-    let crate::model::FollowMode::Cut(bodies) = &fp.mode else {
+    let crate::model::SweepMode::Cut(bodies) = &fp.mode else {
         return Vec::new();
     };
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     format!("{fp:?}").hash(&mut h);
     let key = (document_mesh_fingerprint(doc), h.finish());
-    FOLLOW_CUT_PREVIEW_CACHE.with(|cache| {
+    SWEEP_CUT_PREVIEW_CACHE.with(|cache| {
         if cache.borrow().0 == key {
             return cache.borrow().1.clone();
         }
         let mut scratch = doc.clone();
-        scratch.follow_paths.push(fp.clone());
+        scratch.sweeps.push(fp.clone());
         let meshes: Vec<(usize, SolidMesh)> = bodies
             .iter()
             .filter_map(|&bi| body_solid_mesh_uncached(&scratch, bi).map(|m| (bi, m)))
@@ -1767,17 +1767,17 @@ fn resample_polyline_by_arc_length(path: &[Vec3], n: usize) -> Vec<Vec3> {
     out
 }
 
-/// The follow-paths fusing into (`false`) or cutting (`true`) `body_index`.
-pub fn follow_paths_targeting(doc: &Document, body_index: usize) -> Vec<(usize, bool)> {
-    doc.follow_paths
+/// The sweeps fusing into (`false`) or cutting (`true`) `body_index`.
+pub fn sweeps_targeting(doc: &Document, body_index: usize) -> Vec<(usize, bool)> {
+    doc.sweeps
         .iter()
         .enumerate()
         .filter(|(_, f)| !f.deleted)
         .filter_map(|(fi, f)| match &f.mode {
-            crate::model::FollowMode::AddTo(bodies) if bodies.contains(&body_index) => {
+            crate::model::SweepMode::AddTo(bodies) if bodies.contains(&body_index) => {
                 Some((fi, false))
             }
-            crate::model::FollowMode::Cut(bodies) if bodies.contains(&body_index) => {
+            crate::model::SweepMode::Cut(bodies) if bodies.contains(&body_index) => {
                 Some((fi, true))
             }
             _ => None,
@@ -2085,10 +2085,10 @@ pub fn selection_world_bounds(
                     }
                 }
             }
-            SceneElement::FollowPathOp(op) => {
-                // The swept solid's body is linked by `BodySource::FollowPath` (NewBody mode).
+            SceneElement::SweepOp(op) => {
+                // The swept solid's body is linked by `BodySource::Sweep` (NewBody mode).
                 for bi in 0..doc.bodies.len() {
-                    if doc.bodies[bi].source == crate::model::BodySource::FollowPath(op) {
+                    if doc.bodies[bi].source == crate::model::BodySource::Sweep(op) {
                         if let Some((min, max)) = body_solid_mesh(doc, bi).and_then(|m| m.bounds())
                         {
                             extend(min);
@@ -2214,7 +2214,7 @@ fn document_mesh_fingerprint(doc: &Document) -> u64 {
             &doc.slice_ops,
             &doc.boolean_ops,
             &doc.revolutions,
-            &doc.follow_paths,
+            &doc.sweeps,
             &doc.lofts,
         ),
     )
@@ -2354,9 +2354,9 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
         return revolve_mesh(doc, rev);
     }
     #[cfg(not(feature = "occt"))]
-    if let crate::model::BodySource::FollowPath(fi) = body.source {
-        let fp = doc.follow_paths.get(fi).filter(|f| !f.deleted)?;
-        return follow_path_mesh(doc, fp);
+    if let crate::model::BodySource::Sweep(fi) = body.source {
+        let fp = doc.sweeps.get(fi).filter(|f| !f.deleted)?;
+        return sweep_mesh(doc, fp);
     }
     // Fuse the body's added extrusions into one real solid via OCCT and subtract its cut
     // extrusions (#86/#35) when they're all kernel-representable; otherwise fall back to
@@ -2380,9 +2380,9 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
         let rev = doc.revolutions.get(ri).filter(|r| !r.deleted)?;
         return revolve_mesh(doc, rev);
     }
-    if let crate::model::BodySource::FollowPath(fi) = body.source {
-        let fp = doc.follow_paths.get(fi).filter(|f| !f.deleted)?;
-        return follow_path_mesh(doc, fp);
+    if let crate::model::BodySource::Sweep(fi) = body.source {
+        let fp = doc.sweeps.get(fi).filter(|f| !f.deleted)?;
+        return sweep_mesh(doc, fp);
     }
     let mut mesh = SolidMesh::default();
     for &ei in body.source.extrusion_indices() {
@@ -2404,11 +2404,11 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
             mesh.triangles.extend(solid.triangles);
         }
     }
-    for (fi, is_cut) in follow_paths_targeting(doc, body_index) {
+    for (fi, is_cut) in sweeps_targeting(doc, body_index) {
         if is_cut {
             continue;
         }
-        if let Some(solid) = follow_path_mesh(doc, &doc.follow_paths[fi]) {
+        if let Some(solid) = sweep_mesh(doc, &doc.sweeps[fi]) {
             mesh.triangles.extend(solid.triangles);
         }
     }
@@ -5063,7 +5063,7 @@ mod tests {
         );
     }
 
-    /// A vertical construction plane (normal Y, u→X, v→Z) for follow-path tests: sketch
+    /// A vertical construction plane (normal Y, u→X, v→Z) for sweep tests: sketch
     /// lines drawn on it run through the ground plane rather than in it.
     fn vertical_path_sketch(doc: &mut Document) -> crate::model::SketchId {
         doc.construction_planes.push(crate::model::ConstructionPlane {
@@ -5080,47 +5080,47 @@ mod tests {
         doc.add_sketch(FaceId::ConstructionPlane(doc.construction_planes.len() - 1))
     }
 
-    /// #follow-path: a 10x10 profile swept along a straight 30mm path normal to its plane
+    /// #sweep: a 10x10 profile swept along a straight 30mm path normal to its plane
     /// is a plain box — the fallback sweep mesh closes to the exact prism volume.
     #[test]
-    fn follow_path_straight_sweep_makes_a_box() {
+    fn sweep_straight_path_makes_a_box() {
         let (mut doc, sketch) = sketch_doc();
         let profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
         let path_sketch = vertical_path_sketch(&mut doc);
         doc.lines.push(crate::model::Line::from_local_endpoints(path_sketch, 5.0, 0.0, 5.0, 30.0));
-        let fp = crate::model::FollowPath {
+        let fp = crate::model::Sweep {
             sketch,
             faces: vec![profile],
             path: vec![doc.lines.len() - 1],
-            mode: crate::model::FollowMode::NewBody,
+            mode: crate::model::SweepMode::NewBody,
             name: None,
             deleted: false,
         };
-        let vol = mesh_signed_volume(&follow_path_mesh(&doc, &fp).expect("sweep mesh")).abs();
+        let vol = mesh_signed_volume(&sweep_mesh(&doc, &fp).expect("sweep mesh")).abs();
         assert!(
             (vol - 3000.0).abs() < 30.0,
             "10x10 profile along a straight 30mm path should be ~3000, got {vol}"
         );
     }
 
-    /// #follow-path: segments picked out of order chain tip-to-tail, and the chain starts
+    /// #sweep: segments picked out of order chain tip-to-tail, and the chain starts
     /// at the end on the profile plane. An L path (up 20, across 15) picked far-leg-first.
     #[test]
-    fn follow_path_chains_out_of_order_segments() {
+    fn sweep_chains_out_of_order_segments() {
         let (mut doc, sketch) = sketch_doc();
         let profile = rect_profile(&mut doc, sketch, -2.0, -2.0, 4.0, 4.0);
         let ps = vertical_path_sketch(&mut doc);
         doc.lines.push(crate::model::Line::from_local_endpoints(ps, 0.0, 20.0, 15.0, 20.0));
         doc.lines.push(crate::model::Line::from_local_endpoints(ps, 0.0, 0.0, 0.0, 20.0));
-        let fp = crate::model::FollowPath {
+        let fp = crate::model::Sweep {
             sketch,
             faces: vec![profile],
             path: vec![doc.lines.len() - 2, doc.lines.len() - 1],
-            mode: crate::model::FollowMode::NewBody,
+            mode: crate::model::SweepMode::NewBody,
             name: None,
             deleted: false,
         };
-        let path = follow_path_polyline(&doc, &fp).expect("chained polyline");
+        let path = sweep_path_polyline(&doc, &fp).expect("chained polyline");
         assert!(
             path.first().unwrap().z.abs() < 1e-3,
             "path must start on the profile plane, starts at {:?}",
@@ -5132,35 +5132,35 @@ mod tests {
             path.last().unwrap()
         );
         // The swept solid closes: a 4x4 section over the ~35mm L, corner effects aside.
-        let vol = mesh_signed_volume(&follow_path_mesh(&doc, &fp).expect("sweep mesh")).abs();
+        let vol = mesh_signed_volume(&sweep_mesh(&doc, &fp).expect("sweep mesh")).abs();
         assert!(vol > 300.0 && vol < 700.0, "L-sweep volume plausible, got {vol}");
     }
 
-    /// #follow-path: a disconnected extra segment refuses to chain (no silent gaps).
+    /// #sweep: a disconnected extra segment refuses to chain (no silent gaps).
     #[test]
-    fn follow_path_rejects_a_disconnected_path() {
+    fn sweep_rejects_a_disconnected_path() {
         let (mut doc, sketch) = sketch_doc();
         let profile = rect_profile(&mut doc, sketch, -2.0, -2.0, 4.0, 4.0);
         let ps = vertical_path_sketch(&mut doc);
         doc.lines.push(crate::model::Line::from_local_endpoints(ps, 0.0, 0.0, 0.0, 20.0));
         doc.lines.push(crate::model::Line::from_local_endpoints(ps, 40.0, 0.0, 40.0, 20.0));
-        let fp = crate::model::FollowPath {
+        let fp = crate::model::Sweep {
             sketch,
             faces: vec![profile],
             path: vec![doc.lines.len() - 2, doc.lines.len() - 1],
-            mode: crate::model::FollowMode::NewBody,
+            mode: crate::model::SweepMode::NewBody,
             name: None,
             deleted: false,
         };
-        assert!(follow_path_polyline(&doc, &fp).is_none());
-        assert!(follow_path_mesh(&doc, &fp).is_none());
+        assert!(sweep_path_polyline(&doc, &fp).is_none());
+        assert!(sweep_mesh(&doc, &fp).is_none());
     }
 
-    /// #follow-path: a sweep in Cut mode carves its swept column out of the targeted body
+    /// #sweep: a sweep in Cut mode carves its swept column out of the targeted body
     /// (kernel path, mirroring `revolve_cut_carves_the_targeted_body`).
     #[cfg(feature = "occt")]
     #[test]
-    fn follow_path_cut_carves_the_targeted_body() {
+    fn sweep_cut_carves_the_targeted_body() {
         let (mut doc, sketch) = sketch_doc();
         let plate = rect_profile(&mut doc, sketch, -30.0, -30.0, 60.0, 60.0);
         doc.extrusions.push(extrusion(sketch, vec![plate], 5.0));
@@ -5174,11 +5174,11 @@ mod tests {
         let bit = rect_profile(&mut doc, sketch, -2.0, -2.0, 4.0, 4.0);
         let ps = vertical_path_sketch(&mut doc);
         doc.lines.push(crate::model::Line::from_local_endpoints(ps, 0.0, -10.0, 0.0, 10.0));
-        doc.follow_paths.push(crate::model::FollowPath {
+        doc.sweeps.push(crate::model::Sweep {
             sketch,
             faces: vec![bit],
             path: vec![doc.lines.len() - 1],
-            mode: crate::model::FollowMode::Cut(vec![0]),
+            mode: crate::model::SweepMode::Cut(vec![0]),
             name: None,
             deleted: false,
         });

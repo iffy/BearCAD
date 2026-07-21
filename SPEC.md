@@ -1040,8 +1040,8 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   provides the fallback for browsers without WebGPU.
 
 ### 3.5 Advanced features
-- **Follow path (sweep)** *(implemented)* — sweep one or more coplanar closed profiles
-  along a path of sketch lines into a solid. The **Follow path** toolbar tool collects
+- **Sweep** *(implemented)* — sweep one or more coplanar closed profiles
+  along a path of sketch lines into a solid. The **Sweep** toolbar tool collects
   profile faces by clicking (same face picking as Extrude), then path lines: any lines —
   straight or bezier-curved, plain/construction/projected, in any sketch — that chain
   end-to-end and cross the profile plane (an in-plane line is refused with a status hint).
@@ -1053,20 +1053,20 @@ workflow). The web build is the lean configuration plus web-specific plumbing:
   **new body**, **fused into touching bodies** (resolved at commit by mesh-bounds
   intersection), or **cut from picked bodies** — the same segmented icon group as Revolve;
   in Cut mode the preview replaces each targeted body with the finished cut result
-  (mirroring the extrude cut preview). Selecting a committed sweep offers **Edit follow
-  path**, re-opening the tool with its faces/path/mode loaded and re-pointing the
-  operation in place on commit. Data model: `FollowPath { sketch, faces, path, mode }` in
-  `Document::follow_paths` with `FollowMode::{NewBody, AddTo(bodies), Cut(bodies)}`;
-  add/cut relationships live on the sweep (bodies consult `follow_paths_targeting` at
-  mesh/kernel build time), and a NewBody sweep gets `BodySource::FollowPath`. One
-  `ShapeKind::FollowPath` undo marker covers the feature and its body. In the elements
-  graph the profile sketch and every path line feed the Follow-path operation node, and
+  (mirroring the extrude cut preview). Selecting a committed sweep offers **Edit
+  sweep**, re-opening the tool with its faces/path/mode loaded and re-pointing the
+  operation in place on commit. Data model: `Sweep { sketch, faces, path, mode }` in
+  `Document::sweeps` with `SweepMode::{NewBody, AddTo(bodies), Cut(bodies)}`;
+  add/cut relationships live on the sweep (bodies consult `sweeps_targeting` at
+  mesh/kernel build time), and a NewBody sweep gets `BodySource::Sweep`. One
+  `ShapeKind::Sweep` undo marker covers the feature and its body. In the elements
+  graph the profile sketch and every path line feed the Sweep operation node, and
   the output body nests beneath it. Kernel builds use `BRepOffsetAPI_MakePipeShell`
   (right-corner transitions for straight chains; a chain containing any curved segment is
   interpolated into a B-spline spine) with the profile corrected normal to the spine; the
   no-kernel fallback carries profile rings along parallel-transport frames, stitches the
   walls, and caps both ends, oriented against the transported profile centroid. Scriptable
-  as `bearcad.follow_path{ polygon|circles =, path = {line indices},
+  as `bearcad.sweep{ polygon|circles =, path = {line indices},
   body = "new"|"add"|"cut", bodies = {..} }`, and interactive sweeps replay to the
   command log as the same call. Limitation: the path must be one connected chain, and a
   tight bend radius smaller than the profile's half-width can self-intersect.

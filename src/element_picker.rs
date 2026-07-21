@@ -89,7 +89,7 @@ impl ElementKind {
             | SceneElement::SketchText(_)
             | SceneElement::SliceOp(_)
             | SceneElement::Revolution(_)
-            | SceneElement::FollowPathOp(_) => ElementKind::Operation,
+            | SceneElement::SweepOp(_) => ElementKind::Operation,
         }
     }
 
