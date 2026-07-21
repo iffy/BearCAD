@@ -15563,8 +15563,15 @@ impl App {
                     ctx.memory_mut(|m| m.request_focus(target_id));
                 }
 
-                let dim_field_focused =
-                    current == Some(id_offset) || current == Some(id_angle);
+                // While `pending_focus` is still set the field has requested focus but not
+                // settled it (its `resp.has_focus()` is false, so it never reports its own
+                // enter_commit). If `memory().focused()` already points at the field we'd
+                // otherwise suppress the unfocused-Enter path too, and Enter would be lost
+                // in that gap — which is exactly what happens on a small/WM-less window
+                // where focus can take several frames to land. Treat a field whose focus is
+                // still pending as not-yet-focused so Enter commits the plane directly.
+                let dim_field_focused = !cp.pending_focus
+                    && (current == Some(id_offset) || current == Some(id_angle));
                 if should_commit_sketch_on_enter(
                     commit_plane,
                     dim_field_focused,
