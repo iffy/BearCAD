@@ -962,6 +962,11 @@ pub struct CreatingConstructionPlane {
     pub user_edited_angle: bool,
     pub pending_focus: bool,
     pub axis_gizmo_drag: Option<AxisGizmoDrag>,
+    /// Normal directions available at a picked vertex (#474): one `(line label, outward
+    /// world direction)` per line/curve meeting the point. Empty for non-vertex anchors.
+    pub normal_candidates: Vec<(String, glam::Vec3)>,
+    /// Which of [`normal_candidates`](Self::normal_candidates) the plane currently uses.
+    pub normal_choice: usize,
 }
 
 impl CreatingConstructionPlane {
@@ -5677,6 +5682,8 @@ impl AppState {
                     user_edited_angle: false,
                     pending_focus: true,
                     axis_gizmo_drag: None,
+                    normal_candidates: Vec::new(),
+                    normal_choice: 0,
                 });
                 self.tool = Tool::ConstructionPlane;
                 self.status = "Set offset • type to lock • Tab cycle dims • click/Enter commit • Esc cancel"
@@ -5707,6 +5714,8 @@ impl AppState {
                     user_edited_angle: false,
                     pending_focus: true,
                     axis_gizmo_drag: None,
+                    normal_candidates: Vec::new(),
+                    normal_choice: 0,
                 });
                 self.tool = Tool::ConstructionPlane;
                 self.status = format!(

@@ -6551,7 +6551,22 @@ impl eframe::App for App {
                         })
                     })
                     .flatten(),
-                follow_path: (self.state.tool == Tool::Sweep).then(|| {
+                plane_tool: (self.state.tool == Tool::ConstructionPlane).then(|| {
+                    let cp = self.state.creating_plane.as_ref();
+                    context::PlaneToolControl {
+                        anchor_label: cp.map(|c| c.reference.label().to_string()),
+                        normal_labels: cp
+                            .map(|c| {
+                                c.normal_candidates
+                                    .iter()
+                                    .map(|(label, _)| label.clone())
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        normal_choice: cp.map(|c| c.normal_choice).unwrap_or(0),
+                    }
+                }),
+                sweep: (self.state.tool == Tool::Sweep).then(|| {
                     let cf = self.state.creating_sweep.as_ref();
                     context::SweepControl {
                         face_rows: cf
@@ -6675,6 +6690,7 @@ impl eframe::App for App {
             let mut calibrate_begin: Option<usize> = None;
             let mut revolve_edit: Option<context::RevolveEdit> = None;
             let mut sweep_edit: Option<context::SweepEdit> = None;
+            let mut plane_tool_edit: Option<context::PlaneToolEdit> = None;
             let mut boolean_edit: Option<context::BooleanEdit> = None;
             let mut boolean_edit_begin: Option<usize> = None;
             let mut move_edit: Option<context::MoveEdit> = None;
@@ -6722,6 +6738,7 @@ impl eframe::App for App {
                         &mut |target, edit| tool_picker_edit = Some((target, edit)),
                         &mut |edit| revolve_edit = Some(edit),
                         &mut |edit| sweep_edit = Some(edit),
+                        &mut |edit| plane_tool_edit = Some(edit),
                         &mut |edit| boolean_edit = Some(edit),
                         &mut |op| boolean_edit_begin = Some(op),
                         &mut |edit| move_edit = Some(edit),
@@ -6768,6 +6785,31 @@ impl eframe::App for App {
                         cr.sketch = None;
                     }
                     context::RevolveEdit::ClearAxis => cr.axis = None,
+                }
+            }
+            if let Some(edit) = plane_tool_edit {
+                match edit {
+                    context::PlaneToolEdit::ClearAnchor => {
+                        self.state.creating_plane = None;
+                        self.state.status =
+                            "Plane tool — click a face, edge, or vertex to anchor".to_string();
+                    }
+                    context::PlaneToolEdit::NormalChoice(i) => {
+                        if let Some(cp) = self.state.creating_plane.as_mut() {
+                            if let Some((label, dir)) = cp.normal_candidates.get(i).cloned() {
+                                cp.normal_choice = i;
+                                if let construction::PlaneReference::Face {
+                                    normal,
+                                    label: ref_label,
+                                    ..
+                                } = &mut cp.reference
+                                {
+                                    *normal = dir;
+                                    *ref_label = format!("Vertex ({label})");
+                                }
+                            }
+                        }
+                    }
                 }
             }
             if let Some(edit) = sweep_edit {
@@ -13901,11 +13943,23 @@ impl App {
                         cam.eye(),
                         pick_occlusion,
                     ) {
+                        // A picked vertex exposes one normal candidate per line/curve
+                        // meeting it (#474); the reference already uses the first.
+                        let candidates = match &target.kind {
+                            construction::PickTargetKind::Point(point) => {
+                                construction::vertex_normal_candidates(&self.state.doc, point)
+                            }
+                            _ => Vec::new(),
+                        };
                         let parent = parent_from_pick_target(&self.state.doc, target.kind);
                         self.state.apply(Action::BeginConstructionPlane {
                             reference: target.reference,
                             parent,
                         });
+                        if let Some(cp) = self.state.creating_plane.as_mut() {
+                            cp.normal_candidates = candidates;
+                            cp.normal_choice = 0;
+                        }
                     }
                 }
 

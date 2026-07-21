@@ -217,11 +217,11 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     )
     .map_err(|e| e.to_string())?;
 
-    tx.execute(
-        "DELETE FROM dag_nodes WHERE kind IN ('sketch', 'line', 'circle', 'parameter', 'constraint', 'construction_plane', 'extrusion', 'body', 'imported_mesh', 'tracing_image', 'loft', 'revolution', 'follow_path')",
-        [],
-    )
-    .map_err(|e| e.to_string())?;
+    // Every kind is re-inserted below, so clear the whole table: the old hardcoded kind
+    // list silently omitted newer kinds (boolean_op, move_op, sweep, ...), which then
+    // accumulated duplicate rows on every in-place save and loaded back duplicated.
+    tx.execute("DELETE FROM dag_nodes", [])
+        .map_err(|e| e.to_string())?;
 
     let mut row_id = 0i64;
     save_indexed_nodes(&tx, &mut row_id, "sketch", &doc.sketches)?;

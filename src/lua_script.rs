@@ -3358,13 +3358,13 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             }
             if faces.is_empty() {
                 return Err(mlua::Error::external(
-                    "follow_path requires a `circle`/`circles`/`polygon` face",
+                    "sweep requires a `circle`/`circles`/`polygon` face",
                 ));
             }
             let path: Vec<usize> = opts.get::<Option<Vec<usize>>>("path")?.unwrap_or_default();
             if path.is_empty() {
                 return Err(mlua::Error::external(
-                    "follow_path requires `path` (a list of line indices)",
+                    "sweep requires `path` (a list of line indices)",
                 ));
             }
             let bodies: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();

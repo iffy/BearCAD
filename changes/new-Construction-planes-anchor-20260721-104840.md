@@ -1,0 +1,1 @@
+Construction planes can anchor on a curve's vertex: the plane sits normal to the curve at that point (pick which direction when several curves meet there), with the usual offset handle — and the context pane now shows the picked anchor with a clear button

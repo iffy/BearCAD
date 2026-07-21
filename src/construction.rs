@@ -1131,12 +1131,24 @@ pub fn resolve_pick_target(
             _ => Vec3::ZERO,
         };
         if pickable(&kind) && visible(origin) {
+            // A vertex on a line/curve anchors a plane *normal to the curve* at that
+            // point (#474): the first incident direction is the default; the Plane tool
+            // offers the rest when several curves meet there. A bare point (no incident
+            // lines) keeps the horizontal-plane fallback.
+            let (normal, label) = match &kind {
+                PickTargetKind::Point(point) => vertex_normal_candidates(doc, point)
+                    .into_iter()
+                    .next()
+                    .map(|(l, d)| (d, format!("Vertex ({l})")))
+                    .unwrap_or((Vec3::Z, "Point".to_string())),
+                _ => (Vec3::Z, "Point".to_string()),
+            };
             consider(PickTarget {
                 kind,
                 reference: PlaneReference::Face {
                     origin,
-                    normal: Vec3::Z,
-                    label: "Point".to_string(),
+                    normal,
+                    label,
                 },
                 distance_px: dist,
                 priority: 0,
@@ -1302,6 +1314,67 @@ impl PickTarget {
         }
         self.distance_px < other.distance_px
     }
+}
+
+/// The plane-normal candidates at a sketch vertex (#474): for every line/curve end
+/// meeting the point (via its coincidence group), the world-space direction the curve
+/// leaves the vertex along — a straight line contributes its own direction, a curve the
+/// tangent at that endpoint (toward its near bezier handle), each pointing *away* from
+/// the geometry so a positive offset walks out past the vertex. Labeled by line name.
+pub fn vertex_normal_candidates(
+    doc: &Document,
+    point: &crate::model::ConstraintPoint,
+) -> Vec<(String, Vec3)> {
+    let Some(sketch) = point_sketch(doc, point.clone()) else {
+        return Vec::new();
+    };
+    let Some(frame) = crate::face::sketch_geometry_frame(doc, sketch) else {
+        return Vec::new();
+    };
+    let mut ends: Vec<(usize, crate::model::LineEnd)> =
+        crate::vertex_drag::coincident_group(doc, sketch, point.clone())
+            .into_iter()
+            .filter_map(|p| match p {
+                crate::model::ConstraintPoint::LineEndpoint { line, end } => Some((line, end)),
+                _ => None,
+            })
+            .collect();
+    ends.sort_by_key(|&(line, end)| (line, matches!(end, crate::model::LineEnd::End)));
+    ends.dedup();
+    let mut out = Vec::new();
+    for (li, end) in ends {
+        let Some(line) = doc.lines.get(li) else { continue };
+        if line.deleted {
+            continue;
+        }
+        let (v, toward) = match end {
+            crate::model::LineEnd::Start => {
+                let toward = line
+                    .bezier
+                    .map(|b| b[0])
+                    .unwrap_or((line.x1, line.y1));
+                ((line.x0, line.y0), toward)
+            }
+            crate::model::LineEnd::End => {
+                let toward = line
+                    .bezier
+                    .map(|b| b[1])
+                    .unwrap_or((line.x0, line.y0));
+                ((line.x1, line.y1), toward)
+            }
+        };
+        let vw = crate::face::local_to_world(&frame, v.0, v.1);
+        let tw = crate::face::local_to_world(&frame, toward.0, toward.1);
+        let dir = (vw - tw).normalize_or_zero();
+        if dir.length_squared() < 1e-8 {
+            continue;
+        }
+        let label = crate::names::element_name(doc, crate::hierarchy::SceneElement::Line(li))
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| format!("line {li}"));
+        out.push((label, dir));
+    }
+    out
 }
 
 /// Map a viewport pick to a scene-tree selection target, when selectable.
@@ -2452,6 +2525,56 @@ mod tests {
             parent_from_pick_target(&doc, PickTargetKind::Ground(Vec3::ZERO)),
             ConstructionPlaneParent::Root
         );
+    }
+
+    #[test]
+    fn vertex_normal_candidates_follow_line_and_curve_tangents() {
+        use crate::model::{Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, Line, LineEnd};
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        // A straight line along +X and a curve leaving the shared vertex along +Y
+        // (its near handle sits at (10, 5) above the vertex (10, 0)).
+        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        let mut curve = Line::from_local_endpoints(sketch, 10.0, 0.0, 20.0, 10.0);
+        curve.bezier = Some([(10.0, 5.0), (15.0, 10.0)]);
+        doc.lines.push(curve);
+        doc.constraints.push(Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                    line: 0,
+                    end: LineEnd::End,
+                }),
+                b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
+                    line: 1,
+                    end: LineEnd::Start,
+                }),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+
+        let candidates = vertex_normal_candidates(
+            &doc,
+            &ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End },
+        );
+        assert_eq!(candidates.len(), 2, "one candidate per incident line");
+        // Straight line 0: outward direction at its end is +X (away from (0,0)).
+        assert!((candidates[0].1 - Vec3::X).length() < 1e-4, "{:?}", candidates[0]);
+        // Curve 1: tangent at its start points toward its near handle (+Y), so the
+        // outward direction is -Y.
+        assert!((candidates[1].1 - Vec3::new(0.0, -1.0, 0.0)).length() < 1e-4, "{:?}", candidates[1]);
+
+        // A lone endpoint (no coincidence) still yields its own line's direction.
+        let solo = vertex_normal_candidates(
+            &doc,
+            &ConstraintPoint::LineEndpoint { line: 1, end: LineEnd::End },
+        );
+        assert_eq!(solo.len(), 1);
+        // Outward at the curve's end = away from its near handle (15,10) -> (20,10): +X.
+        assert!((solo[0].1 - Vec3::X).length() < 1e-4, "{:?}", solo[0]);
     }
 
     #[test]

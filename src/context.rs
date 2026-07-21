@@ -57,7 +57,9 @@ pub struct ContextInput<'a> {
     /// Revolve tool state (#revolve): `Some` while the Revolve tool is active.
     pub revolve: Option<RevolveControl>,
     /// Sweep tool state (#sweep): `Some` while the Sweep tool is active.
-    pub follow_path: Option<SweepControl>,
+    pub sweep: Option<SweepControl>,
+    /// Construction Plane tool state (#474): `Some` while the Plane tool is active.
+    pub plane_tool: Option<PlaneToolControl>,
     /// Combine tool state: `Some` while the Combine tool is active (creating or editing
     /// a boolean operation).
     pub boolean_op: Option<BooleanControl>,
@@ -144,6 +146,27 @@ pub struct SweepControl {
     pub body_choice: crate::actions::RevolveBodyChoice,
     /// In Cut mode, the picked bodies to cut (rendered through the unified element picker).
     pub cut_bodies: Vec<usize>,
+}
+
+/// What the Construction Plane tool's context section shows (#474): the picked anchor
+/// (face, edge, or vertex — with a ✕ to clear and repick) and, for a vertex where several
+/// lines/curves meet, the normal-direction choices.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlaneToolControl {
+    /// The picked anchor's label; `None` while nothing is picked yet.
+    pub anchor_label: Option<String>,
+    /// One label per normal candidate at a picked vertex (empty or 1 when unambiguous).
+    pub normal_labels: Vec<String>,
+    pub normal_choice: usize,
+}
+
+/// One edit from the Construction Plane tool's context section (#474).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PlaneToolEdit {
+    /// Clear the picked anchor (start over).
+    ClearAnchor,
+    /// Anchor the plane on the `i`-th normal candidate at the picked vertex.
+    NormalChoice(usize),
 }
 
 /// What the Combine tool's context section shows: the operation kind, both picker
@@ -599,7 +622,9 @@ pub struct ContextPaneContent {
     /// Revolve tool controls (#revolve).
     pub revolve: Option<RevolveControl>,
     /// Sweep tool controls (#sweep).
-    pub follow_path: Option<SweepControl>,
+    pub sweep: Option<SweepControl>,
+    /// Construction Plane tool state (#474): `Some` while the Plane tool is active.
+    pub plane_tool: Option<PlaneToolControl>,
     /// Combine tool controls.
     pub boolean_op: Option<BooleanControl>,
     /// "Edit operation" button target.
@@ -907,7 +932,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             ));
         }
     }
-    if let Some(f) = input.follow_path.as_ref() {
+    if let Some(f) = input.sweep.as_ref() {
         if f.body_choice == crate::actions::RevolveBodyChoice::Cut {
             tool_pickers.push(body_tool_picker(
                 "Cut bodies",
@@ -968,7 +993,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     }
     let calibrate_image = input.calibrate_image;
     let revolve = input.revolve.clone();
-    let follow_path = input.follow_path.clone();
+    let sweep = input.sweep.clone();
+    let plane_tool = input.plane_tool.clone();
     let boolean_op = input.boolean_op.clone();
     let boolean_edit_start = input.boolean_edit_start;
     let move_op = input.move_op.clone();
@@ -1016,7 +1042,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             tool_pickers: Vec::new(),
             calibrate_image,
             revolve: revolve.clone(),
-            follow_path: follow_path.clone(),
+            sweep: sweep.clone(),
+            plane_tool: plane_tool.clone(),
             boolean_op: boolean_op.clone(),
             boolean_edit_start,
             move_op: move_op.clone(),
@@ -1060,7 +1087,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             tool_pickers: Vec::new(),
             calibrate_image,
             revolve: revolve.clone(),
-            follow_path: follow_path.clone(),
+            sweep: sweep.clone(),
+            plane_tool: plane_tool.clone(),
             boolean_op: boolean_op.clone(),
             boolean_edit_start,
             move_op: move_op.clone(),
@@ -1104,7 +1132,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             tool_pickers: Vec::new(),
             calibrate_image,
             revolve: revolve.clone(),
-            follow_path: follow_path.clone(),
+            sweep: sweep.clone(),
+            plane_tool: plane_tool.clone(),
             boolean_op: boolean_op.clone(),
             boolean_edit_start,
             move_op: move_op.clone(),
@@ -1151,7 +1180,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         tool_pickers,
         calibrate_image,
         revolve,
-        follow_path,
+        sweep,
+        plane_tool,
         boolean_op,
         boolean_edit_start,
         move_op,
@@ -1550,6 +1580,7 @@ pub fn show_pane(
     on_tool_picker_edit: &mut impl FnMut(PickerTarget, ToolPickerAction),
     on_revolve_edit: &mut impl FnMut(RevolveEdit),
     on_sweep_edit: &mut impl FnMut(SweepEdit),
+    on_plane_tool_edit: &mut impl FnMut(PlaneToolEdit),
     on_boolean_edit: &mut impl FnMut(BooleanEdit),
     on_boolean_edit_start: &mut impl FnMut(usize),
     on_move_edit: &mut impl FnMut(MoveEdit),
@@ -1960,7 +1991,7 @@ pub fn show_pane(
         });
     }
 
-    if let Some(control) = &content.follow_path {
+    if let Some(control) = &content.sweep {
         any_control = true;
         ui.separator();
         section_label(ui, "Sweep");
@@ -2041,6 +2072,51 @@ pub fn show_pane(
                 }
             }
         });
+    }
+
+    if let Some(control) = &content.plane_tool {
+        any_control = true;
+        ui.separator();
+        section_label(ui, "Construction plane");
+
+        // The picked anchor — a face, straight edge, or vertex — with ✕ to clear (#474).
+        let anchor_rows: Vec<String> = control.anchor_label.iter().cloned().collect();
+        labeled_row_top(ui, "Anchor", |ui| {
+            if let Some(event) = crate::element_picker::show_labeled(
+                ui,
+                "plane_anchor",
+                control.anchor_label.is_none(),
+                true,
+                crate::icons::IconId::Plane,
+                &anchor_rows,
+            ) {
+                match event {
+                    crate::element_picker::PickerEvent::Focus => {}
+                    crate::element_picker::PickerEvent::Remove(_)
+                    | crate::element_picker::PickerEvent::Clear => {
+                        on_plane_tool_edit(PlaneToolEdit::ClearAnchor)
+                    }
+                }
+            }
+        });
+
+        // Several curves meet the picked vertex: choose which one's direction is the
+        // plane's normal (#474).
+        if control.normal_labels.len() > 1 {
+            labeled_row_top(ui, "Normal", |ui| {
+                ui.vertical(|ui| {
+                    for (i, label) in control.normal_labels.iter().enumerate() {
+                        if ui
+                            .selectable_label(control.normal_choice == i, format!("Along {label}"))
+                            .clicked()
+                            && control.normal_choice != i
+                        {
+                            on_plane_tool_edit(PlaneToolEdit::NormalChoice(i));
+                        }
+                    }
+                });
+            });
+        }
     }
 
     if let Some(control) = &content.boolean_op {
@@ -3660,7 +3736,8 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
-            follow_path: None,
+            sweep: None,
+            plane_tool: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -3787,7 +3864,8 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
-            follow_path: None,
+            sweep: None,
+            plane_tool: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -3860,7 +3938,8 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
-            follow_path: None,
+            sweep: None,
+            plane_tool: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4138,7 +4217,8 @@ mod tests {
                 tool_pickers: Vec::new(),
                 calibrate_image: None,
                 revolve: None,
-            follow_path: None,
+            sweep: None,
+            plane_tool: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4197,7 +4277,8 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
-            follow_path: None,
+            sweep: None,
+            plane_tool: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4241,7 +4322,8 @@ mod tests {
             tool_pickers: Vec::new(),
                 calibrate_image: None,
                 revolve: None,
-            follow_path: None,
+            sweep: None,
+            plane_tool: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4300,7 +4382,8 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
-            follow_path: None,
+            sweep: None,
+            plane_tool: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4362,7 +4445,8 @@ mod tests {
                 tool_pickers: Vec::new(),
                 calibrate_image: None,
                 revolve: None,
-            follow_path: None,
+            sweep: None,
+            plane_tool: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4469,7 +4553,8 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
-            follow_path: None,
+            sweep: None,
+            plane_tool: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4526,7 +4611,8 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
-            follow_path: None,
+            sweep: None,
+            plane_tool: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4572,7 +4658,8 @@ mod tests {
             tool_pickers: Vec::new(),
                 calibrate_image: None,
                 revolve: None,
-            follow_path: None,
+            sweep: None,
+            plane_tool: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
@@ -4622,7 +4709,8 @@ mod tests {
             loft_rows: None,
             calibrate_image: None,
             revolve: None,
-            follow_path: None,
+            sweep: None,
+            plane_tool: None,
             boolean_op: None,
             boolean_edit_start: None,
             move_op: None,
