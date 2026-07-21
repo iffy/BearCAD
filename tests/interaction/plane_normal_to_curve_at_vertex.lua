@@ -1,9 +1,11 @@
 -- #474: the Plane tool anchored on a curve's vertex makes a plane normal to the
 -- curve at that point (its normal = the curve's tangent there).
 bearcad.new()
--- A curve rising from (0,0) toward (20,10); tangent at the start points at its
--- near handle (0,8) => straight +Y in sketch/world terms.
-bearcad.line{ x = 0, y = 0, x1 = 20, y1 = 10, bezier = { { 0, 8 }, { 12, 10 } } }
+-- A curve rising from (6,4) toward (26,14); tangent at the start points at its
+-- near handle (6,12) => straight +Y in sketch/world terms. (Deliberately away from
+-- the origin: the origin marker is also a pickable point and would make the
+-- vertex click ambiguous.)
+bearcad.line{ x = 6, y = 4, x1 = 26, y1 = 14, bezier = { { 6, 12 }, { 18, 14 } } }
 bearcad.exit_sketch()
 bearcad.ui.tool("construction_plane")
 -- Hide the side panes (CI's WM-less Xvfb can't maximize; see tests/interaction).
@@ -17,7 +19,7 @@ bearcad.ui.zoom_fit()
 bearcad.ui.wait(2)
 
 -- Click the curve's start vertex to anchor, then Enter commits at offset 0.
-bearcad.ui.click_ground(0, 0)
+bearcad.ui.click_ground(6, 4)
 bearcad.ui.wait(8)
 bearcad.ui.key("Enter")
 bearcad.ui.wait(8)
