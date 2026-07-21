@@ -10,18 +10,6 @@ license = "MIT OR Apache-2.0"
 name = "bearcad"
 path = "src/main.rs"
 
-[features]
-# The OCCT geometry kernel (#86/#89) is ON by default so the normal `cargo build`
-# / `cargo run` ships the real kernel (solid booleans/cut, true BREP fillets,
-# curved-surface STEP). Building it needs a C++ toolchain + a built OCCT (see
-# README.md "Building with the OCCT kernel"); to build the lean no-kernel fallback
-# instead — no OCCT build required (a C++ compiler is still needed for the vendored
-# libslvs sketch solver, which every build links) — use `--no-default-features` (this is what
-# the Windows release and the fast CI check do). See SPEC.md §10.
-default = ["occt"]
-# Statically link the OpenCASCADE (OCCT) geometry kernel.
-occt = []
-
 [build-dependencies]
 ico = "0.4"
 image = { version = "0.25", default-features = false, features = ["png"] }

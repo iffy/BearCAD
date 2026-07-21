@@ -1,9 +1,9 @@
-//! SolveSpace's constraint solver (libslvs) — the sketch solver's numeric backend
-//! (`slvs` feature, on by default). Natively it is linked statically (build.rs); on the
+//! SolveSpace's constraint solver (libslvs) — the sketch solver's numeric backend.
+//! Natively it is linked statically (build.rs); on the
 //! web it lives inside the emscripten kernel module and is reached through
-//! web/kernel-bridge.js. When neither is available (lean `--no-default-features` build,
-//! or the kernel module failed to load in the browser), sketch solving falls back to
-//! the built-in Levenberg-Marquardt solver in `newton.rs`.
+//! web/kernel-bridge.js. When it is unavailable (the kernel module failed to load in
+//! the browser), sketch solving falls back to the built-in Levenberg-Marquardt solver
+//! in `newton.rs`.
 //!
 //! Only the *solve* is replaced: the document model, the constraint kinds, the DOF/rank
 //! analysis (`dof.rs`), and the drag plumbing stay as they are. This module maps one
@@ -226,7 +226,7 @@ fn raw_solve(b: &Builder) -> Option<RawSolve> {
             vals,
         })
     }
-    #[cfg(all(target_arch = "wasm32", feature = "occt"))]
+    #[cfg(target_arch = "wasm32")]
     {
         // Packed as [result, dof, nfaileds, ...failed, ...vals] by web/kernel-bridge.js.
         let out = crate::kernel::slvs_solve(&params, &entities, &constraints, &dragged)?;
@@ -247,11 +247,6 @@ fn raw_solve(b: &Builder) -> Option<RawSolve> {
             failed,
             vals,
         })
-    }
-    #[cfg(all(target_arch = "wasm32", not(feature = "occt")))]
-    {
-        let _ = (params, entities, constraints, dragged);
-        None
     }
 }
 

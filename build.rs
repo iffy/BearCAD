@@ -27,13 +27,10 @@ fn main() {
     println!("cargo:rustc-env=BEARCAD_GIT_SHA={sha}");
     println!("cargo:rerun-if-changed=.git/HEAD");
 
-    // OCCT kernel (#86): only when built with `--features occt`. Cargo exposes an
-    // enabled feature as CARGO_FEATURE_<NAME>.
-    // On wasm32 the kernel ships as a separate Emscripten-built module (see
-    // scripts/build-occt-wasm.sh) — nothing links into the app binary here.
-    if std::env::var_os("CARGO_FEATURE_OCCT").is_some()
-        && std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("wasm32")
-    {
+    // OCCT kernel (#86, unconditional since todoer #471). On wasm32 the kernel
+    // ships as a separate Emscripten-built module (see scripts/build-occt-wasm.sh)
+    // — nothing links into the app binary there.
+    if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("wasm32") {
         build_occt_shim();
     }
     // libslvs (the sketch constraint solver) links into every native build; the wasm32

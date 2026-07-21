@@ -8,7 +8,7 @@
 #
 # Usage:
 #   scripts/build-occt.sh              # build into third_party/OCCT/occt-install
-#   cargo build --features occt        # then build BearCAD against it
+#   cargo build                        # then build BearCAD against it
 #
 # To build BearCAD against your *own* OCCT instead of this script's output, set
 # OCCT_DIR to an install prefix containing include/opencascade and lib/libTK*.a
@@ -43,7 +43,7 @@ if [ "${BEARCAD_OCCT_FROM_SOURCE:-}" != "1" ] \
   && [ -f "$occt_install/.prebuilt-key" ] \
   && [ "$(cat "$occt_install/.prebuilt-key")" = "$prebuilt_slug-$prebuilt_key" ]; then
   echo ">> Prebuilt OCCT already installed and up to date ($prebuilt_slug-$prebuilt_key)."
-  echo ">> Now build BearCAD with: cargo build --features occt"
+  echo ">> Now build BearCAD with: cargo build"
   exit 0
 fi
 
@@ -62,7 +62,7 @@ if [ "${BEARCAD_OCCT_FROM_SOURCE:-}" != "1" ] && [ ! -d "$occt_install/lib" ]; t
       tar xzf "$tmp/$prebuilt_asset" -C "$occt_src"
       echo "$prebuilt_slug-$prebuilt_key" > "$occt_install/.prebuilt-key"
       echo ">> Installed prebuilt OCCT into $occt_install (checksum verified)."
-      echo ">> Now build BearCAD with: cargo build --features occt"
+      echo ">> Now build BearCAD with: cargo build"
       exit 0
     fi
     echo ">> Prebuilt checksum mismatch (want $want, got $got); building from source." >&2
@@ -117,4 +117,4 @@ echo ">> Installing OCCT into $occt_install ..."
 cmake --install "$occt_build" --config Release
 
 echo ">> Done. OCCT static libs are in $occt_install/lib"
-echo ">> Now build BearCAD with: cargo build --features occt"
+echo ">> Now build BearCAD with: cargo build"

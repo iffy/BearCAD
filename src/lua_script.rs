@@ -4102,18 +4102,11 @@ mod tests {
             bearcad.ui.tutorial_end()
             assert(bearcad.ui.tutorial_step() == nil, "ended")
             "#;
-        let source = if cfg!(feature = "occt") {
-            format!("{prefix}{full_tail}")
-        } else {
-            format!("{prefix}{lean_tail}")
-        };
+        let _ = lean_tail;
+        let source = format!("{prefix}{full_tail}");
         let state = run_lua(&source);
         assert!(state.tutorial.is_none());
-        if cfg!(feature = "occt") {
-            assert!(state.status.contains("Tutorial complete"));
-        } else {
-            assert!(state.status.contains("Tutorial ended"));
-        }
+        assert!(state.status.contains("Tutorial complete"));
     }
 
     /// An in-sketch offset op parallels a closed rectangle outward, nests the copies
@@ -5050,7 +5043,6 @@ mod tests {
 
     /// #105: a cut extrusion undoes as one gesture — the cut extrusion disappears
     /// and the target body's volume is restored.
-    #[cfg(feature = "occt")]
     #[test]
     fn lua_undo_reverts_a_cut_extrusion_gesture() {
         run_lua_expect_ok(
@@ -5088,7 +5080,6 @@ mod tests {
 
     /// #106: a single-body document exports real BREP STEP in kernel builds, and a
     /// curved fillet survives the export → import round-trip.
-    #[cfg(feature = "occt")]
     #[test]
     fn lua_step_roundtrip_preserves_curved_brep() {
         let path = std::env::temp_dir().join("bearcad_lua_rt.step");
@@ -5293,8 +5284,7 @@ mod tests {
     #[test]
     fn lua_extrude_with_body_cut_subtracts_from_the_existing_body() {
         // `body = "cut"` (#35) records the new extrusion as a subtraction of the extruded
-        // face's body rather than fusing it. The model records the cut in every build; the
-        // geometry only performs it under `--features occt`.
+        // face's body rather than fusing it.
         let state = run_lua(
             r#"
             bearcad.new()
@@ -6304,7 +6294,6 @@ mod tests {
 
     /// Slice tool scripting: `bearcad.slice{}` cuts a box with an offset plane into two
     /// fragments and shadows the input.
-    #[cfg(feature = "occt")]
     #[test]
     fn lua_slice_halves_a_box() {
         let state = run_lua(

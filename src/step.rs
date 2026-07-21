@@ -496,7 +496,6 @@ mod tests {
 
     /// #106: OCCT's STEP reader must accept BearCAD's own faceted export (the
     /// end-to-end conformance check the unit test above approximates).
-    #[cfg(feature = "occt")]
     #[test]
     fn occt_reader_accepts_write_step_output() {
         let text = write_step("part", &box_mesh());

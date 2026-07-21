@@ -71,20 +71,6 @@ cmake + a C++17 toolchain on PATH. Either way the result lands in
 STEP read/write), no visualization/application-framework/Draw — which `build.rs`
 statically links against.
 
-### Building without the kernel
-
-To build the lean fallback — **no OCCT** (a C++ compiler is still required for the vendored
-libslvs sketch solver) — disable the default
-feature:
-
-```sh
-cargo run --no-default-features
-```
-
-This is what the fast CI check builds. The kernel-only features fall back to
-hand-rolled mesh geometry (or are hidden, e.g. extrude Cut), but the app is
-otherwise fully functional.
-
 ### Recompiling against a different OCCT version
 
 BearCAD links OCCT **statically**. The LGPL 2.1 permits this on the condition that
@@ -105,10 +91,9 @@ without touching BearCAD's source. See
 
 CI (`.github/workflows/ci.yml`) has dedicated `occt` (Linux) and `windows-occt`
 (Windows/MSVC) jobs that build OCCT once (cached on the pinned submodule + build
-script, so it's restored rather than rebuilt on later runs) and run the kernel
-test suite, so kernel regressions are caught on every push/PR. The `ci` job
-separately builds/tests the `--no-default-features` (no-kernel fallback)
-configuration — fast, no OCCT — so both code paths stay green.
+script, so it's restored rather than rebuilt on later runs) and run the full test
+suite — plus the launch smoke, example scripts, and interaction tests — against
+the kernel build, so kernel regressions are caught on every push/PR.
 
 **All release binaries — macOS, Linux, and Windows — ship with the kernel** (the
 default build), so real BREP fillets/chamfers, solid booleans/cut, and

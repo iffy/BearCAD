@@ -11,7 +11,7 @@
 #
 # Usage:
 #   pwsh scripts/build-occt.ps1        # build into third_party/OCCT/occt-install
-#   cargo build --features occt        # then build BearCAD against it
+#   cargo build                        # then build BearCAD against it
 #
 # To build BearCAD against your *own* OCCT instead of this script's output, set
 # OCCT_DIR to an install prefix containing include/opencascade and lib/TK*.lib
@@ -45,7 +45,7 @@ $keyFile = Join-Path $occtInstall '.prebuilt-key'
 if ($env:BEARCAD_OCCT_FROM_SOURCE -ne '1' -and (Test-Path $keyFile) -and
     ((Get-Content $keyFile -Raw).Trim() -eq "$prebuiltSlug-$prebuiltKey")) {
     Write-Host ">> Prebuilt OCCT already installed and up to date ($prebuiltSlug-$prebuiltKey)."
-    Write-Host '>> Now build BearCAD with: cargo build --features occt'
+    Write-Host '>> Now build BearCAD with: cargo build'
     exit 0
 }
 
@@ -67,7 +67,7 @@ if ($env:BEARCAD_OCCT_FROM_SOURCE -ne '1' -and -not (Test-Path (Join-Path $occtI
             if ($LASTEXITCODE -ne 0) { throw "tar extraction failed (exit $LASTEXITCODE)" }
             Set-Content -Path $keyFile -Value "$prebuiltSlug-$prebuiltKey"
             Write-Host ">> Installed prebuilt OCCT into $occtInstall (checksum verified)."
-            Write-Host '>> Now build BearCAD with: cargo build --features occt'
+            Write-Host '>> Now build BearCAD with: cargo build'
             exit 0
         }
         Write-Warning ">> Prebuilt checksum mismatch (want $want, got $got); building from source."
@@ -148,4 +148,4 @@ cmake --install "$occtBuild" --config Release
 if ($LASTEXITCODE -ne 0) { Write-Error "cmake install failed (exit $LASTEXITCODE)" }
 
 Write-Host ">> Done. OCCT static libs are in $occtInstall/lib"
-Write-Host '>> Now build BearCAD with: cargo build --features occt'
+Write-Host '>> Now build BearCAD with: cargo build'

@@ -1944,13 +1944,11 @@ pub fn show_pane(
                     "Add to touching bodies",
                 ),
             ];
-            if cfg!(feature = "occt") {
-                choices.push((
-                    crate::actions::RevolveBodyChoice::Cut,
-                    crate::icons::IconId::CutBody,
-                    "Cut bodies",
-                ));
-            }
+            choices.push((
+                crate::actions::RevolveBodyChoice::Cut,
+                crate::icons::IconId::CutBody,
+                "Cut bodies",
+            ));
             for (value, icon, tooltip) in choices {
                 if crate::icons::selectable_icon_button(ui, icon, choice == value, tooltip)
                     .clicked()
@@ -2029,13 +2027,11 @@ pub fn show_pane(
                     "Add to touching bodies",
                 ),
             ];
-            if cfg!(feature = "occt") {
-                choices.push((
-                    crate::actions::RevolveBodyChoice::Cut,
-                    crate::icons::IconId::CutBody,
-                    "Cut bodies",
-                ));
-            }
+            choices.push((
+                crate::actions::RevolveBodyChoice::Cut,
+                crate::icons::IconId::CutBody,
+                "Cut bodies",
+            ));
             for (value, icon, tooltip) in choices {
                 if crate::icons::selectable_icon_button(ui, icon, choice == value, tooltip)
                     .clicked()
@@ -3273,18 +3269,14 @@ pub fn show_pane(
                 crate::icons::IconId::NewBody,
                 "New body".to_string(),
             );
-            // A cut needs the kernel to subtract solids; a non-`occt` build can't perform it,
-            // so it isn't offered (avoids a dead control). See `body_solid_mesh` (#35).
-            if cfg!(feature = "occt") {
-                extrude_body_mode_row(
-                    ui,
-                    ctx,
-                    &mut mode,
-                    ExtrudeBodyMode::Cut(control.merge_body),
-                    crate::icons::IconId::CutBody,
-                    format!("Cut {}", control.merge_body_label),
-                );
-            }
+            extrude_body_mode_row(
+                ui,
+                ctx,
+                &mut mode,
+                ExtrudeBodyMode::Cut(control.merge_body),
+                crate::icons::IconId::CutBody,
+                format!("Cut {}", control.merge_body_label),
+            );
         });
         });
         if mode != control.mode {

@@ -2255,8 +2255,7 @@ pub struct AppState {
     /// viewport is rendering the additive-only fallback with the cuts silently missing.
     /// Recomputed alongside `document_health` at every document mutation point; re-asserted
     /// into `status` at the end of every mutating [`AppState::apply`] so the warning stays
-    /// visible for as long as the document is in that state. Always `None` without the
-    /// kernel (`--no-default-features`): there the limitation is inherent and documented.
+    /// visible for as long as the document is in that state.
     pub kernel_fallback_warning: Option<String>,
     /// Whether `refresh_document_health` ran during the current `apply` call (i.e. the
     /// document just mutated) — consumed by `apply`'s tail to decide when to re-assert
@@ -2514,7 +2513,6 @@ impl AppState {
         // silently dropping this body's cuts" check lives here rather than being replicated
         // across every extrusion/treatment/cut action arm. `apply`'s tail turns the result
         // into a status-bar warning once the arm has finished writing its own status.
-        #[cfg(feature = "occt")]
         {
             self.kernel_fallback_warning = crate::extrude::kernel_fallback_cut_warning(&self.doc);
             self.kernel_fallback_warning_pending = true;
@@ -2709,7 +2707,6 @@ impl AppState {
     /// imported-mesh body, non-representable geometry, or a kernel write failure) fall back
     /// to the hand-rolled faceted-BREP mesh path.
     fn write_step_body_file(&mut self, path: &str, name: &str, body: usize) -> ActionResult {
-        #[cfg(feature = "occt")]
         {
             if let Some(shape) = crate::extrude::occt_body_shape(&self.doc, body) {
                 if shape.write_step(std::path::Path::new(path)) {
@@ -2772,7 +2769,7 @@ impl AppState {
     pub fn import_step_bytes(&mut self, name: &str, bytes: &[u8]) -> ActionResult {
         // Web kernel builds read real BREP (curved surfaces included) through the
         // bridged STEP reader, mirroring the native path-based arm.
-        #[cfg(all(feature = "occt", target_arch = "wasm32"))]
+        #[cfg(target_arch = "wasm32")]
         {
             if let Some(shape) = crate::kernel::Shape::read_step_bytes(bytes) {
                 let tris = shape.tessellate(crate::extrude::OCCT_DEFLECTION as f64);
@@ -2856,7 +2853,7 @@ impl AppState {
     /// native single-body path); everything else uses the faceted writer.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub fn export_step_bytes(&self, body: Option<usize>) -> Result<Vec<u8>, String> {
-        #[cfg(all(feature = "occt", target_arch = "wasm32"))]
+        #[cfg(target_arch = "wasm32")]
         {
             let single = body.or_else(|| {
                 let mut live = self
@@ -4663,7 +4660,6 @@ impl AppState {
                 // STEPControl_Reader and tessellate it (#71). Falls back to the hand-rolled
                 // faceted-subset parser when the kernel isn't compiled in or can't read the
                 // file (e.g. missing/empty/not-a-solid).
-                #[cfg(feature = "occt")]
                 {
                     if let Some(shape) = crate::kernel::Shape::read_step(std::path::Path::new(&path))
                     {
@@ -6604,7 +6600,6 @@ impl AppState {
                 // the gizmo, the amount input, and scripting), never per-frame: the live drag
                 // preview is a separate ghost mesh that doesn't go through this action. In a
                 // no-kernel build there's nothing to consult; the mesh-bevel clamp stands.
-                #[cfg(feature = "occt")]
                 if !crate::extrude::occt_edge_treatments_feasible(&self.doc, extrusion, &updated) {
                     let (noun, param) = match kind {
                         VertexTreatmentKind::Chamfer => ("chamfer", "distance"),
@@ -7009,11 +7004,10 @@ impl AppState {
                     // #141: the sketch sits on a face of `merge_candidate`, whose body lies on
                     // the negative-normal side. Extruding backward (negative distance) drives
                     // the profile into that body, so auto-switch to a cut; pulling forward
-                    // again reverts to adding. A cut needs the kernel (see the pane's `occt`
-                    // gate), so a non-`occt` build stays additive. Leaves an explicit `NewBody`
-                    // choice untouched on forward drags — only the cut toggle is automatic.
+                    // again reverts to adding. Leaves an explicit `NewBody` choice untouched
+                    // on forward drags — only the cut toggle is automatic.
                     if let Some(bi) = ce.merge_candidate {
-                        if distance < 0.0 && cfg!(feature = "occt") {
+                        if distance < 0.0 {
                             ce.body_mode = ExtrudeBodyMode::Cut(bi);
                         } else if ce.body_mode == ExtrudeBodyMode::Cut(bi) {
                             ce.body_mode = ExtrudeBodyMode::MergeInto(bi);
@@ -15309,7 +15303,6 @@ mod tests {
 
     /// Slice: a plane through the middle of a box splits it into two fragment bodies, the
     /// input becomes a shadow body, and one undo restores everything.
-    #[cfg(feature = "occt")]
     #[test]
     fn slice_splits_a_box_into_two_fragments() {
         let mut state = two_box_state(false);
@@ -15346,7 +15339,6 @@ mod tests {
     }
 
     /// A cutter that misses the body leaves it whole (one fragment).
-    #[cfg(feature = "occt")]
     #[test]
     fn slice_with_a_missing_cutter_keeps_the_body_whole() {
         let mut state = two_box_state(false);
@@ -15361,7 +15353,6 @@ mod tests {
     }
 
     /// Editing a slice re-points its cutters and resizes the fragment list.
-    #[cfg(feature = "occt")]
     #[test]
     fn slice_edit_resizes_outputs() {
         let mut state = two_box_state(false);
@@ -15411,7 +15402,6 @@ mod tests {
 
     /// Combining two *disjoint* boxes keeps them as one operation with (kernel builds) two
     /// output solids — and the outputs render as real meshes.
-    #[cfg(feature = "occt")]
     #[test]
     fn boolean_combine_disjoint_produces_two_outputs() {
         let mut state = two_box_state(false);
@@ -15432,7 +15422,6 @@ mod tests {
     }
 
     /// Cutting an overlapping box out of another produces a real, smaller solid.
-    #[cfg(feature = "occt")]
     #[test]
     fn boolean_cut_produces_kernel_mesh() {
         let mut state = two_box_state(true);
@@ -15561,7 +15550,6 @@ mod tests {
     /// points *out* of the body (positive along the side face's outward normal) is flipped
     /// inward at commit; one that can't bite in either direction warns and stays as given.
     #[test]
-    #[cfg(feature = "occt")]
     fn cut_that_misses_the_body_flips_inward_or_warns() {
         use crate::model::FaceId;
         // Box 10×10×5 (body 0); its y=0 side wall's frame points out of the solid (−Y).
@@ -15622,7 +15610,6 @@ mod tests {
     /// #141: dragging a body-face extrusion backward (negative distance, into the body it sits
     /// on) auto-switches it to a cut; pulling forward again reverts to adding.
     #[test]
-    #[cfg(feature = "occt")]
     fn extruding_backward_into_body_auto_switches_to_cut() {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
@@ -16310,7 +16297,6 @@ mod tests {
     /// far larger than the solid) must be rejected at commit with an actionable error, not
     /// stored — storing it silently knocked the whole body onto the additive-only mesh
     /// fallback, deleting its cut holes from the render.
-    #[cfg(feature = "occt")]
     #[test]
     fn commit_edge_treatment_rejects_a_kernel_infeasible_amount() {
         let mut state = box_extrusion_state();
@@ -16336,7 +16322,6 @@ mod tests {
     /// cut-bearing body (created before the commit-time trial existed) renders the additive
     /// fallback — the status bar must warn that the cuts are not shown, both right after
     /// loading the document and after any later document mutation.
-    #[cfg(feature = "occt")]
     #[test]
     fn kernel_fallback_on_a_cut_bearing_body_warns_on_open_and_mutation() {
         let mut state = AppState::default();

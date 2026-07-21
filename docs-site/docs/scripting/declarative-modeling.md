@@ -284,9 +284,8 @@ bearcad.import_image{ path = "drawing.png", plane = 1 }
 bearcad.calibrate_image{ image = 0, from = { -100, -120 }, to = { 100, -120 }, length = 50 }
 ```
 
-With the OCCT kernel (the standard build), STEP export writes real BREP and import reads
-it back, curved/NURBS surfaces included. A `--no-default-features` build uses a faceted
-STEP path: triangulated export, planar-only import.
+STEP export writes real BREP and import reads it back, curved/NURBS surfaces
+included.
 
 ## Document lifecycle
 

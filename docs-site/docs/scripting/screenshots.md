@@ -33,9 +33,6 @@ scripts/gen-doc-screenshots.sh
 
 # Reuse an already-built binary (faster iteration):
 BEARCAD_SKIP_BUILD=1 scripts/gen-doc-screenshots.sh
-
-# Lean build without the OCCT kernel (cheaper; rectangles/extrudes/mesh fillets still render):
-BEARCAD_CARGO_FLAGS="--no-default-features" scripts/gen-doc-screenshots.sh
 ```
 
 Capturing a screenshot needs a **real rendered GPU frame**. This works on a normal desktop (a

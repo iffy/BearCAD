@@ -2,10 +2,10 @@
 //! (non-self-intersecting), not-necessarily-convex closed polygon loops sharing the same 2D
 //! frame, producing `Intersection` or `Difference` (`a - b`).
 //!
-//! The app-facing entry point is [`face_boolean`]. In kernel builds it delegates to OCCT
+//! The app-facing entry point is [`face_boolean`], which delegates to OCCT
 //! (`kernel::face_boolean_loop`, #88), unifying the 2D face booleans with the 3D solid ones
 //! already on OCCT; the hand-rolled Weiler–Atherton clipper below ([`polygon_boolean`]) is
-//! the `--no-default-features` fallback only, deletable once Windows ships the kernel (#96).
+//! retained as the reference implementation for the parity tests.
 //!
 //! Scope (deliberate — see SPEC.md): this only ever combines **two** shapes at a time, and
 //! only when the boolean result reduces to a **single simple polygon loop**. Multi-part
@@ -35,7 +35,6 @@ type Pt = (f32, f32);
 /// either way: `None` unless the result is one simple hole-free loop of non-negligible area;
 /// the returned loop is CCW (positive shoelace area).
 pub fn face_boolean(a: &[Pt], b: &[Pt], op: BooleanOp) -> Option<Vec<Pt>> {
-    #[cfg(feature = "occt")]
     {
         if a.len() < 3 || b.len() < 3 || !all_finite(a) || !all_finite(b) {
             return None;
@@ -46,19 +45,13 @@ pub fn face_boolean(a: &[Pt], b: &[Pt], op: BooleanOp) -> Option<Vec<Pt>> {
         // (bbox-scaled threshold) and normalize winding to CCW.
         finalize(raw, scale)
     }
-    #[cfg(not(feature = "occt"))]
-    {
-        polygon_boolean(a, b, op)
-    }
 }
 
-/// Hand-rolled Weiler–Atherton clipper: the no-kernel (`--no-default-features`) backend of
-/// [`face_boolean`], kept `pub` for the OCCT parity tests. Slated for deletion once Windows
-/// ships the kernel (#96). Returns `None` if the result isn't a single simple polygon loop —
-/// see the module-level scope note for why this is a deliberate limitation, not a bug.
-// In kernel builds the clipper is only reached from the parity tests, hence dead in a
-// plain `cargo build --features occt` — allowed until its deletion with #96.
-#[cfg_attr(feature = "occt", allow(dead_code))]
+/// Hand-rolled Weiler–Atherton clipper, kept `pub` as the reference implementation for the
+/// OCCT parity tests (it is only reached from those tests, hence dead in a plain build).
+/// Returns `None` if the result isn't a single simple polygon loop — see the module-level
+/// scope note for why this is a deliberate limitation, not a bug.
+#[allow(dead_code)]
 pub fn polygon_boolean(a: &[Pt], b: &[Pt], op: BooleanOp) -> Option<Vec<Pt>> {
     if a.len() < 3 || b.len() < 3 {
         return None;
@@ -692,7 +685,6 @@ mod tests {
     /// assert they agree: Some/None on every case, and |shoelace area| within 0.5% where
     /// both succeed (vertex order/winding/count may legitimately differ — OCCT can emit
     /// extra collinear vertices where input edges were split).
-    #[cfg(feature = "occt")]
     mod occt_parity {
         use super::*;
 

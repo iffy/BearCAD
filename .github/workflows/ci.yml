@@ -81,10 +81,10 @@ jobs:
           scripts/build-occt.sh
 
       - name: cargo test (occt)
-        run: cargo test --features occt
+        run: cargo test
 
       - name: cargo build (occt)
-        run: cargo build --features occt
+        run: cargo build
 
       - name: Launch smoke test (occt)
         run: |
@@ -175,10 +175,10 @@ jobs:
       # On Windows the default feature set already includes `occt`; the explicit
       # flag keeps this job self-describing.
       - name: cargo build (occt)
-        run: cargo build --features occt
+        run: cargo build
 
       - name: cargo test (occt)
-        run: cargo test --features occt
+        run: cargo test
 
   build-release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'

@@ -4,8 +4,8 @@
 //! Shape handles are the kernel module's heap pointers, carried here as plain `u32`s.
 //!
 //! If the hosting page failed to load the kernel module, every bridge call degrades (null
-//! results), and this backend reports "not available" — the same graceful story as a
-//! native build without `--features occt`.
+//! results), and this backend reports "not available" — the app stays usable on its
+//! fallback meshers, like any kernel-op failure.
 
 use wasm_bindgen::prelude::wasm_bindgen;
 

@@ -8,12 +8,12 @@
 //!
 //! To build with the kernel: see `README.md` ("Building with the OCCT kernel").
 
-#[cfg(all(feature = "occt", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 mod web;
-#[cfg(all(feature = "occt", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 pub use web::{face_boolean_loop, slvs_available, slvs_solve, Shape};
 
-#[cfg(all(feature = "occt", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod ffi {
     use std::os::raw::{c_char, c_int, c_ulong};
 
@@ -124,29 +124,22 @@ mod ffi {
 ///
 /// Part of the kernel's public API surface; only exercised (by [`selftest`] and
 /// the pilot tests) in `occt` builds, hence inert/dead in the default build.
-#[cfg_attr(not(feature = "occt"), allow(dead_code))]
 pub fn box_volume(dx: f64, dy: f64, dz: f64) -> Option<f64> {
-    #[cfg(all(feature = "occt", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let v = unsafe { ffi::bearcad_kernel_box_volume(dx, dy, dz) };
         (v >= 0.0).then_some(v)
     }
-    #[cfg(all(feature = "occt", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     {
         web::box_volume(dx, dy, dz)
-    }
-    #[cfg(not(feature = "occt"))]
-    {
-        let _ = (dx, dy, dz);
-        None
     }
 }
 
 /// Linked OCCT version string (e.g. `"8.0.0"`), or `None` when the kernel isn't
 /// compiled in. Inert/dead in the default build, like [`box_volume`].
-#[cfg_attr(not(feature = "occt"), allow(dead_code))]
 pub fn occt_version() -> Option<String> {
-    #[cfg(all(feature = "occt", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let ptr = unsafe { ffi::bearcad_kernel_occt_version() };
         if ptr.is_null() {
@@ -155,13 +148,9 @@ pub fn occt_version() -> Option<String> {
         let s = unsafe { std::ffi::CStr::from_ptr(ptr) };
         s.to_str().ok().map(str::to_owned)
     }
-    #[cfg(all(feature = "occt", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     {
         web::occt_version()
-    }
-    #[cfg(not(feature = "occt"))]
-    {
-        None
     }
 }
 
@@ -170,7 +159,6 @@ pub fn occt_version() -> Option<String> {
 /// geometry kernel. Doubles as the pilot round-trip self-check: with the kernel
 /// linked it actually calls OCCT (build a 1×2×3 box, expect volume ≈ 6).
 pub fn selftest() -> String {
-    #[cfg(feature = "occt")]
     {
         match box_volume(1.0, 2.0, 3.0) {
             Some(v) if (v - 6.0).abs() < 1e-6 => {
@@ -181,16 +169,11 @@ pub fn selftest() -> String {
             None => "OCCT kernel: self-check FAILED (kernel error)".to_string(),
         }
     }
-    #[cfg(not(feature = "occt"))]
-    {
-        "OCCT kernel: not compiled in (build with --features occt)".to_string()
-    }
 }
 
 /// Boolean operation on two [`Shape`]s. `Fuse` drives body union today; `Cut`
 /// and `Common` are exercised by tests and land in app code with extrude
 /// cut/intersect mode (#35), hence `allow(dead_code)` for the unused variants.
-#[cfg(feature = "occt")]
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BoolOp {
@@ -209,7 +192,7 @@ pub enum BoolOp {
 /// result is exactly one hole-free face (multi-part, annulus, empty, or any OCCT
 /// error all reject). Winding of the returned loop is unspecified — the caller
 /// ([`crate::polygon_boolean::face_boolean`]) normalizes it.
-#[cfg(all(feature = "occt", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn face_boolean_loop(
     a: &[(f32, f32)],
     b: &[(f32, f32)],
@@ -255,12 +238,12 @@ pub fn face_boolean_loop(
 /// combined with booleans, and only tessellated into triangles at the end for the
 /// viewport. Only available in `occt` builds — the migration off the hand-rolled
 /// mesh code onto this type is incremental and feature-gated (#86).
-#[cfg(all(feature = "occt", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Shape {
     raw: *mut ffi::BearcadShape,
 }
 
-#[cfg(all(feature = "occt", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl Shape {
     /// Extrude a closed planar profile loop (world-space points, first point not
     /// repeated) along `dir`. `None` on a degenerate profile or kernel failure.
@@ -542,14 +525,14 @@ impl Shape {
     }
 }
 
-#[cfg(all(feature = "occt", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for Shape {
     fn drop(&mut self) {
         unsafe { ffi::bearcad_shape_free(self.raw) }
     }
 }
 
-#[cfg(all(test, feature = "occt"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use glam::Vec3;

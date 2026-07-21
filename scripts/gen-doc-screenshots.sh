@@ -8,8 +8,6 @@
 #
 # Usage:
 #   scripts/gen-doc-screenshots.sh                  # release build (default)
-#   BEARCAD_CARGO_FLAGS="--no-default-features" \
-#     scripts/gen-doc-screenshots.sh                # lean build (no OCCT kernel)
 #   BEARCAD_SKIP_BUILD=1 scripts/gen-doc-screenshots.sh   # reuse existing binary
 #
 # Rendering requirements: capturing a screenshot needs a real rendered GPU

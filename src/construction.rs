@@ -2481,14 +2481,9 @@ mod tests {
 
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
         let hit = nearest_treatable_edge(Pos2::new(5.0, 0.0), &project, &state.doc);
-        // Cap rims of a cylinder are treatable in a kernel build (#177); the lean build
-        // still has no analytic circle edges.
-        if cfg!(feature = "occt") {
-            let (_, edge, _, _, _) = hit.expect("rim should be pickable");
-            assert!(matches!(edge, ExtrusionEdgeRef::Cap { edge: 0, .. }));
-        } else {
-            assert!(hit.is_none());
-        }
+        // Cap rims of a cylinder are treatable analytic circle edges (#177).
+        let (_, edge, _, _, _) = hit.expect("rim should be pickable");
+        assert!(matches!(edge, ExtrusionEdgeRef::Cap { edge: 0, .. }));
     }
 
     #[test]
