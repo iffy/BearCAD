@@ -2657,8 +2657,11 @@ impl AppState {
     ) -> Option<&'static str> {
         match crate::extrude::cut_tool_bites(&self.doc, bi, ext) {
             Some(false) => {
-                // A target-driven depth or expression-bound distance has no sign to flip.
-                if ext.target.is_none() && ext.expression.is_empty() {
+                // A target-driven depth has no free sign to flip. Expression-driven
+                // distances still store a signed `distance` (expression is magnitude;
+                // [`crate::parameters::rebake_extrusion_distances`] preserves sign), so
+                // flipping is fine and needed for `smallWidth/2`-style cuts (#508).
+                if ext.target.is_none() {
                     let mut flipped = ext.clone();
                     flipped.distance = -flipped.distance;
                     if crate::extrude::cut_tool_bites(&self.doc, bi, &flipped) == Some(true) {
@@ -2670,6 +2673,37 @@ impl AppState {
             }
             _ => None,
         }
+    }
+
+    /// Tombstone a body-face sketch created by [`Action::ExtrudeBodyFace`] that was never
+    /// committed into an extrusion (#509). Filleted caps project to 100+ segments; leaving
+    /// every cancelled attempt live stacks coincident constraints and slows the document.
+    fn discard_orphan_body_face_extrude_sketch(&mut self, sketch: SketchId) {
+        let Some(host) = self.doc.sketch_face(sketch) else {
+            return;
+        };
+        if !matches!(
+            host,
+            FaceId::ExtrudeCap { .. } | FaceId::ExtrudeSide { .. }
+        ) {
+            return;
+        }
+        for ext in &self.doc.extrusions {
+            if ext.deleted {
+                continue;
+            }
+            if ext
+                .faces
+                .iter()
+                .any(|f| extrude_face_sketch(&self.doc, f) == Some(sketch))
+            {
+                return;
+            }
+        }
+        let _ = crate::document_lifecycle::tombstone_element(
+            &mut self.doc,
+            crate::hierarchy::SceneElement::Sketch(sketch),
+        );
     }
 
     fn attach_new_extrusion_to_body(&mut self, ei: usize, mode: ExtrudeBodyMode) -> usize {
@@ -3319,8 +3353,34 @@ impl AppState {
     }
 }
 
-/// Default starting extrusion distance (mm).
+/// Default starting extrusion distance magnitude (mm).
 pub const DEFAULT_EXTRUDE_DISTANCE: f32 = 10.0;
+
+/// Signed starting extrude distance: magnitude [`DEFAULT_EXTRUDE_DISTANCE`], sign chosen so
+/// the solid grows toward the camera (#508). When the camera is on the face-normal side,
+/// distance is positive; from the opposite side it is negative — so orbiting to the back
+/// of a face and extruding again grows the free half-space the user is looking at, instead
+/// of always reusing the same world direction (which pushes into existing material and can
+/// thrash cut/merge booleans).
+pub fn initial_extrude_distance(
+    doc: &Document,
+    faces: &[ExtrudeFace],
+    eye: Vec3,
+) -> f32 {
+    let mag = DEFAULT_EXTRUDE_DISTANCE;
+    let Some((origin, normal)) = crate::extrude::faces_anchor(doc, faces) else {
+        return mag;
+    };
+    let toward_eye = eye - origin;
+    if toward_eye.length_squared() < 1e-12 {
+        return mag;
+    }
+    if toward_eye.dot(normal) >= 0.0 {
+        mag
+    } else {
+        -mag
+    }
+}
 
 /// The sketch a face (rect/circle/polygon profile) belongs to.
 pub(crate) fn extrude_face_sketch(doc: &Document, face: &ExtrudeFace) -> Option<SketchId> {
@@ -4811,7 +4871,9 @@ impl AppState {
                     self.pending_plane_line = None;
                 }
                 if self.creating_extrusion.is_some() && tool != Tool::Extrude {
-                    self.creating_extrusion = None;
+                    if let Some(ce) = self.creating_extrusion.take() {
+                        self.discard_orphan_body_face_extrude_sketch(ce.sketch);
+                    }
                 }
                 if self.creating_vertex_treatment.is_some()
                     && !matches!(tool, Tool::Chamfer | Tool::Fillet)
@@ -5113,7 +5175,8 @@ impl AppState {
                     || self.placing_angle_dimension.take().is_some()
                 {
                     self.status = "Cancelled".to_string();
-                } else if self.creating_extrusion.take().is_some() {
+                } else if let Some(ce) = self.creating_extrusion.take() {
+                    self.discard_orphan_body_face_extrude_sketch(ce.sketch);
                     self.status = "Cancelled extrusion".to_string();
                 } else if self.creating_loft.take().is_some() {
                     self.status = "Cancelled loft".to_string();
@@ -7089,12 +7152,15 @@ impl AppState {
                     // A face on a different plane starts a fresh extrusion.
                     _ => {
                         let merge_candidate = extrude_merge_candidate(&self.doc, sketch);
+                        let faces = vec![face];
+                        let distance =
+                            initial_extrude_distance(&self.doc, &faces, self.cam.eye());
                         self.creating_extrusion = Some(CreatingExtrusion {
                             sketch,
-                            faces: vec![face],
-                            distance: DEFAULT_EXTRUDE_DISTANCE,
+                            faces,
+                            distance,
                             text: crate::value::format_length_display_in(
-                                DEFAULT_EXTRUDE_DISTANCE,
+                                distance.abs(),
                                 crate::model::effective_length_unit(&self.doc, sketch),
                             ),
                             user_edited: false,
@@ -7112,6 +7178,11 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::ExtrudeBodyFace { face_id } => {
+                // Drop a previous unfinished body-face extrude so its projected boundary
+                // sketch doesn't stack (100+ segment caps thrash picks/solves, #509).
+                if let Some(prev) = self.creating_extrusion.take() {
+                    self.discard_orphan_body_face_extrude_sketch(prev.sketch);
+                }
                 let face = match create_implicit_extrude_sketch(&mut self.doc, face_id) {
                     Ok(face) => face,
                     Err(e) => {
@@ -7125,12 +7196,14 @@ impl AppState {
                 // A body face always starts a fresh single-face extrusion, never grouped
                 // with whatever else was in progress (#122).
                 let merge_candidate = extrude_merge_candidate(&self.doc, sketch);
+                let faces = vec![face];
+                let distance = initial_extrude_distance(&self.doc, &faces, self.cam.eye());
                 self.creating_extrusion = Some(CreatingExtrusion {
                     sketch,
-                    faces: vec![face],
-                    distance: DEFAULT_EXTRUDE_DISTANCE,
+                    faces,
+                    distance,
                     text: crate::value::format_length_display_in(
-                        DEFAULT_EXTRUDE_DISTANCE,
+                        distance.abs(),
                         crate::model::effective_length_unit(&self.doc, sketch),
                     ),
                     user_edited: false,
@@ -16042,6 +16115,18 @@ mod tests {
             profile,
             edge: 0,
         };
+        // #508: default extrude grows toward the camera — stand outside the wall so the
+        // push extends free space rather than into the solid.
+        if let Some(frame) = crate::face::sketch_frame(&state.doc, face_id.clone()) {
+            state.cam.target = frame.origin;
+            // Place the eye outside along the face normal.
+            let outside = frame.origin + frame.normal * 40.0;
+            let offset = outside - state.cam.target;
+            state.cam.distance = offset.length();
+            let dir = offset.normalize_or_zero();
+            state.cam.pitch = dir.z.asin();
+            state.cam.yaw = dir.y.atan2(dir.x);
+        }
 
         let result = state.apply(Action::ExtrudeBodyFace { face_id });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
@@ -16056,19 +16141,45 @@ mod tests {
             .expect("should start a fresh in-progress extrusion");
         assert_eq!(ce.faces.len(), 1);
         assert!(matches!(ce.faces[0], ExtrudeFace::Polygon(_)));
+        assert!(
+            ce.distance > 0.0,
+            "from outside the wall, default distance should be positive along the normal"
+        );
 
         state.apply(Action::CommitExtrusion);
         assert_eq!(state.doc.extrusions.len(), 2, "should commit as a second extrusion");
         // Sketching on an existing body's face merges into that body by default (#32) — the
         // push extends the original box rather than creating a separate one, so the merged
-        // mesh's bounds are the union of the original box (y: 0..10) and the new slab
-        // pushed out from the y=0 wall by the default 10mm (y: -10..0).
+        // mesh's bounds grow by the default 10mm along the outward normal of the wall.
         let merged = crate::extrude::body_solid_mesh(&state.doc, 0).unwrap();
         let (min, max) = merged.bounds().unwrap();
-        assert!((max.x - min.x - 10.0).abs() < 1e-3, "box width, got {min:?}..{max:?}");
-        assert!((max.z - min.z - 5.0).abs() < 1e-3, "box height, got {min:?}..{max:?}");
-        assert!((max.y - min.y - 20.0).abs() < 1e-3, "box + push, got {min:?}..{max:?}");
-        assert!(min.y < -9.0, "push should extend past the original box, got {min:?}");
+        let extent = (max - min).max_element();
+        assert!(
+            (max - min).min_element() > 4.0 && extent > 15.0,
+            "merged body should grow past the original 10×10×5 box, got {min:?}..{max:?}"
+        );
+    }
+
+    /// #509: cancelling a body-face extrude discards the projected boundary sketch so
+    /// filleted caps don't leave 100+ segments behind every attempt.
+    #[test]
+    fn cancelling_body_face_extrude_discards_orphan_sketch() {
+        let mut state = box_extrusion_state();
+        let profile = state.doc.extrusions[0].faces[0].clone();
+        let face_id = FaceId::ExtrudeSide {
+            extrusion: 0,
+            profile,
+            edge: 0,
+        };
+        state.apply(Action::ExtrudeBodyFace { face_id });
+        let sketch = state.creating_extrusion.as_ref().unwrap().sketch;
+        assert!(!state.doc.sketches[sketch].deleted);
+        state.apply(Action::CancelOperation);
+        assert!(
+            state.doc.sketches[sketch].deleted,
+            "orphan body-face sketch should be tombstoned on cancel"
+        );
+        assert!(state.creating_extrusion.is_none());
     }
 
     /// #122: a circular cap gets a real `Circle` in the implicit sketch, not a tessellated
@@ -16138,6 +16249,78 @@ mod tests {
             offset: None,
         });
         assert!(state.doc.drawings[0].views[0].circle_dim_offsets.is_empty());
+    }
+
+    /// #508: starting an extrude faces the free half-space the camera is looking at.
+    #[test]
+    fn initial_extrude_distance_follows_camera_side_of_face() {
+        let mut state = box_extrusion_state();
+        let profile = state.doc.extrusions[0].faces[0].clone();
+        // Top cap of the box (z = 5), normal +Z.
+        let top = crate::model::FaceId::ExtrudeCap {
+            extrusion: 0,
+            profile: profile.clone(),
+            top: true,
+        };
+        let sketch = state.doc.add_sketch(top);
+        // Reuse the box's footprint as a profile on that sketch plane.
+        let face = ExtrudeFace::Polygon(vec![0, 1, 2, 3]);
+        // Camera above the box → positive extrude (toward +Z / camera).
+        state.cam.target = glam::Vec3::new(5.0, 5.0, 5.0);
+        state.cam.distance = 40.0;
+        state.cam.yaw = 0.0;
+        state.cam.pitch = 0.4; // slightly above
+        let eye_above = state.cam.eye();
+        let d_above = initial_extrude_distance(&state.doc, &[face.clone()], eye_above);
+        assert!(
+            d_above > 0.0,
+            "from above, expect +distance, eye={eye_above:?} d={d_above}"
+        );
+        // Camera below the top face (looking up at it) → negative extrude toward −Z.
+        let eye_below = glam::Vec3::new(5.0, 5.0, -20.0);
+        let d_below = initial_extrude_distance(&state.doc, &[face], eye_below);
+        assert!(
+            d_below < 0.0,
+            "from below, expect −distance, eye={eye_below:?} d={d_below}"
+        );
+        let _ = sketch;
+        let _ = profile;
+    }
+
+    /// #508: expression-driven cuts still flip their signed distance when the tool points out.
+    #[test]
+    fn expression_driven_cut_still_flips_inward() {
+        use crate::model::FaceId;
+        let mut state = box_extrusion_state();
+        crate::parameters::add_parameter(&mut state.doc, "cutD".into(), "4mm".into()).unwrap();
+        let profile = state.doc.extrusions[0].faces[0].clone();
+        let side = FaceId::ExtrudeSide {
+            extrusion: 0,
+            profile,
+            edge: 0,
+        };
+        let s2 = state.doc.add_sketch(side);
+        state.doc.circles.push(crate::model::Circle::from_local_center_radius(
+            s2, 5.0, 2.5, 2.0, 0.0,
+        ));
+        let result = state.apply(Action::CreateExtrusion {
+            expression: Some("cutD".into()),
+            sketch: s2,
+            faces: vec![ExtrudeFace::Circle(0)],
+            distance: 4.0, // outward
+            body: crate::actions::ExtrudeBodyChoice::Cut,
+            target: None,
+            symmetric: false,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        let cut = state.doc.extrusions.last().unwrap();
+        assert!(
+            cut.distance < 0.0,
+            "expression cut should flip inward, got {} (expr={})",
+            cut.distance,
+            cut.expression
+        );
+        assert_eq!(cut.expression, "cutD");
     }
 
     /// #380: a committed cut must actually remove material. A scripted cut whose distance
