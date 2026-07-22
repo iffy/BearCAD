@@ -6452,6 +6452,12 @@ impl AppState {
                             }
                         }
                         self.refresh_document_health();
+                        // After placing a *new* dimension, clear the selection so the next pick
+                        // starts fresh (#549) — otherwise the just-dimensioned line stays
+                        // selected and the next click adds to it instead of dimensioning anew.
+                        if matches!(target, DimEditTarget::New(_)) {
+                            self.scene_selection.clear();
+                        }
                         self.status = "Updated dimension".to_string();
                         ActionResult::Ok
                     }
@@ -13153,6 +13159,27 @@ mod tests {
         state.apply(Action::DeleteElement { element: SceneElement::SketchMirrorOp(0) });
         assert!(state.doc.lines[out].deleted, "reflected line removed with the op");
         assert!(!state.doc.lines[1].deleted, "source kept");
+    }
+
+    /// #549: after placing a new dimension on a line, the selection clears so the next click
+    /// starts a fresh pick instead of adding to the just-dimensioned line.
+    #[test]
+    fn dimensioning_a_line_clears_the_selection() {
+        use crate::hierarchy::SceneElement;
+        use crate::model::Line;
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0)); // line 0
+        state.apply(Action::ClickSceneElement { element: SceneElement::Line(0), additive: false });
+        assert!(!state.scene_selection.is_empty(), "the line is selected");
+        assert!(state.try_begin_dimension_from_selection(), "a single line dimensions its length");
+        assert!(state.editing_committed_dim.is_some());
+        let r = state.apply(Action::CommitCommittedDim);
+        assert!(matches!(r, ActionResult::Ok), "{r:?}");
+        assert!(
+            state.scene_selection.is_empty(),
+            "the dimensioned line is deselected (#549)"
+        );
     }
 
     /// #547: mirroring a rectangle reflects its corner-coincidences too, so the reflected edges
