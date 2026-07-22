@@ -37,6 +37,7 @@ pub enum IconId {
     Sweep,
     Combine,
     Move,
+    Mirror,
     Repeat,
     Offset,
     Slice,
@@ -104,7 +105,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 68] = [
+    pub const ALL: [Self; 69] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -129,6 +130,7 @@ impl IconId {
         Self::Sweep,
         Self::Combine,
         Self::Move,
+        Self::Mirror,
         Self::Repeat,
         Self::Offset,
         Self::Slice,
@@ -201,6 +203,7 @@ impl IconId {
             Self::Sweep => include_str!("assets/icons/sweep.svg"),
             Self::Combine => include_str!("assets/icons/combine.svg"),
             Self::Move => include_str!("assets/icons/move.svg"),
+            Self::Mirror => include_str!("assets/icons/mirror.svg"),
             Self::Repeat => include_str!("assets/icons/repeat.svg"),
             Self::Offset => include_str!("assets/icons/offset.svg"),
             Self::Slice => include_str!("assets/icons/slice.svg"),
@@ -277,6 +280,7 @@ impl IconId {
             Self::Sweep => "Sweep",
             Self::Combine => "Combine",
             Self::Move => "Move",
+            Self::Mirror => "Mirror",
             Self::Repeat => "Repeat",
             Self::Offset => "Offset",
             Self::Slice => "Slice",

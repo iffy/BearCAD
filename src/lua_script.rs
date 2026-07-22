@@ -99,6 +99,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::Image(_) => "image",
         SceneElement::BooleanOp(_) => "boolean_op",
         SceneElement::MoveOp(_) => "move_op",
+        SceneElement::MirrorOp(_) => "mirror_op",
         SceneElement::RepeatOp(_) => "repeat_op",
         SceneElement::SketchRepeatOp(_) => "sketch_repeat_op",
         SceneElement::SketchOffsetOp(_) => "sketch_offset_op",
@@ -123,6 +124,7 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::Image(i)
         | SceneElement::BooleanOp(i)
         | SceneElement::MoveOp(i)
+        | SceneElement::MirrorOp(i)
         | SceneElement::RepeatOp(i)
         | SceneElement::SketchRepeatOp(i)
         | SceneElement::SketchOffsetOp(i)

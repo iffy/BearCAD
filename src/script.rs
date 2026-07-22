@@ -1505,6 +1505,11 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        SceneElement::MirrorOp(i) => ElementScriptTokens {
+            kind: "mirror_op",
+            index: i,
+            point: None,
+        },
         SceneElement::RepeatOp(i) => ElementScriptTokens {
             kind: "repeat_op",
             index: i,

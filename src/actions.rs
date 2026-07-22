@@ -4110,6 +4110,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::Image(i) => format!("Image {i}"),
         SceneElement::BooleanOp(i) => format!("Boolean operation {i}"),
         SceneElement::MoveOp(i) => format!("Move operation {i}"),
+        SceneElement::MirrorOp(i) => format!("Mirror operation {i}"),
         SceneElement::RepeatOp(i) => format!("Repeat operation {i}"),
         SceneElement::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
         SceneElement::SketchOffsetOp(i) => format!("Sketch offset {i}"),
@@ -11929,7 +11930,7 @@ pub fn single_selected_sketch_text(state: &AppState) -> Option<usize> {
 /// Element counts per component-member kind (#429), read before an action to detect what
 /// it created. Bodies are skipped: their component derives from the producing
 /// op/extrusion (`hierarchy::owning_component`), and rebuilds churn the body list.
-fn member_vec_lens(doc: &Document) -> [(crate::model::ComponentMember, usize); 9] {
+fn member_vec_lens(doc: &Document) -> [(crate::model::ComponentMember, usize); 10] {
     use crate::model::ComponentMember as CM;
     [
         (CM::ConstructionPlane, doc.construction_planes.len()),
@@ -11937,6 +11938,7 @@ fn member_vec_lens(doc: &Document) -> [(crate::model::ComponentMember, usize); 9
         (CM::Loft, doc.lofts.len()),
         (CM::BooleanOp, doc.boolean_ops.len()),
         (CM::MoveOp, doc.move_ops.len()),
+        (CM::MirrorOp, doc.mirror_ops.len()),
         (CM::RepeatOp, doc.repeat_ops.len()),
         (CM::SliceOp, doc.slice_ops.len()),
         (CM::Revolution, doc.revolutions.len()),
@@ -11958,6 +11960,7 @@ fn assign_new_members(
             CM::Loft => doc.lofts.len(),
             CM::BooleanOp => doc.boolean_ops.len(),
             CM::MoveOp => doc.move_ops.len(),
+            CM::MirrorOp => doc.mirror_ops.len(),
             CM::RepeatOp => doc.repeat_ops.len(),
             CM::SliceOp => doc.slice_ops.len(),
             CM::Revolution => doc.revolutions.len(),

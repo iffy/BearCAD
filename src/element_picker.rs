@@ -82,6 +82,7 @@ impl ElementKind {
             SceneElement::Extrusion(_)
             | SceneElement::BooleanOp(_)
             | SceneElement::MoveOp(_)
+            | SceneElement::MirrorOp(_)
             | SceneElement::RepeatOp(_)
             | SceneElement::SketchRepeatOp(_)
             | SceneElement::SketchOffsetOp(_)
@@ -135,6 +136,7 @@ pub enum OperationKind {
     Extrude,
     Boolean,
     Move,
+    Mirror,
     Repeat,
     Slice,
     Revolution,
@@ -147,6 +149,7 @@ impl OperationKind {
             SceneElement::Extrusion(_) => OperationKind::Extrude,
             SceneElement::BooleanOp(_) => OperationKind::Boolean,
             SceneElement::MoveOp(_) => OperationKind::Move,
+            SceneElement::MirrorOp(_) => OperationKind::Mirror,
             SceneElement::RepeatOp(_) => OperationKind::Repeat,
             SceneElement::SliceOp(_) => OperationKind::Slice,
             SceneElement::Revolution(_) => OperationKind::Revolution,

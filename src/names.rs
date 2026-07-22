@@ -18,6 +18,7 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::Image(_)
         | SceneElement::BooleanOp(_)
         | SceneElement::MoveOp(_)
+        | SceneElement::MirrorOp(_)
         | SceneElement::RepeatOp(_)
         | SceneElement::SketchRepeatOp(_)
         | SceneElement::SketchOffsetOp(_)
@@ -112,6 +113,7 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         SceneElement::Image(index) => doc.tracing_images.get(index)?.name.as_deref(),
         SceneElement::BooleanOp(index) => doc.boolean_ops.get(index)?.name.as_deref(),
         SceneElement::MoveOp(index) => doc.move_ops.get(index)?.name.as_deref(),
+        SceneElement::MirrorOp(index) => doc.mirror_ops.get(index)?.name.as_deref(),
         SceneElement::RepeatOp(index) => doc.repeat_ops.get(index)?.name.as_deref(),
         SceneElement::SketchRepeatOp(index) => doc.sketch_repeat_ops.get(index)?.name.as_deref(),
         SceneElement::SketchOffsetOp(index) => doc.sketch_offset_ops.get(index)?.name.as_deref(),
@@ -206,6 +208,13 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 .move_ops
                 .get_mut(index)
                 .ok_or_else(|| format!("move operation {index} not found"))?;
+            op.name = stored;
+        }
+        SceneElement::MirrorOp(index) => {
+            let op = doc
+                .mirror_ops
+                .get_mut(index)
+                .ok_or_else(|| format!("mirror operation {index} not found"))?;
             op.name = stored;
         }
         SceneElement::RepeatOp(index) => {
@@ -353,6 +362,7 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
             format!("{kind} {i}")
         }
         HierarchyNode::MoveOp(i) => format!("Move {i}"),
+        HierarchyNode::MirrorOp(i) => format!("Mirror {i}"),
         HierarchyNode::RepeatOp(i) => format!("Repeat {i}"),
         HierarchyNode::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
         HierarchyNode::SketchOffsetOp(i) => format!("Offset {i}"),
@@ -478,6 +488,7 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::Image(i) => format!("Image {i}"),
         SceneElement::BooleanOp(i) => format!("Boolean {i}"),
         SceneElement::MoveOp(i) => format!("Move {i}"),
+        SceneElement::MirrorOp(i) => format!("Mirror {i}"),
         SceneElement::RepeatOp(i) => format!("Repeat {i}"),
         SceneElement::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
         SceneElement::SketchOffsetOp(i) => format!("Offset {i}"),

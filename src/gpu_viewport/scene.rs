@@ -2777,6 +2777,7 @@ impl<'a> SceneMesh<'a> {
             | SceneElement::Image(_)
             | SceneElement::BooleanOp(_)
             | SceneElement::MoveOp(_)
+            | SceneElement::MirrorOp(_)
             | SceneElement::RepeatOp(_)
             | SceneElement::SketchRepeatOp(_)
             | SceneElement::SketchOffsetOp(_)

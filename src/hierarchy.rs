@@ -44,6 +44,8 @@ pub enum HierarchyNode {
     BooleanOp(usize),
     /// A move operation on bodies (Move tool); its output bodies nest under it.
     MoveOp(usize),
+    /// A mirror operation on bodies (Mirror tool, #523); its reflected bodies nest under it.
+    MirrorOp(usize),
     /// A linear repeat on bodies (Repeat tool); its output bodies nest under it.
     RepeatOp(usize),
     /// A 2D in-sketch linear repeat (#222/#228); its duplicated lines/circles nest under it.
@@ -127,6 +129,8 @@ pub enum SceneElement {
     BooleanOp(usize),
     /// A move operation on bodies (Move tool).
     MoveOp(usize),
+    /// A mirror operation on bodies (Mirror tool, #523).
+    MirrorOp(usize),
     /// A linear repeat on bodies (Repeat tool).
     RepeatOp(usize),
     /// A 2D in-sketch linear repeat (#222/#228).
@@ -189,6 +193,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::Image(i) => SceneElement::Image(i),
         HierarchyNode::BooleanOp(i) => SceneElement::BooleanOp(i),
         HierarchyNode::MoveOp(i) => SceneElement::MoveOp(i),
+        HierarchyNode::MirrorOp(i) => SceneElement::MirrorOp(i),
         HierarchyNode::RepeatOp(i) => SceneElement::RepeatOp(i),
         HierarchyNode::SketchRepeatOp(i) => SceneElement::SketchRepeatOp(i),
         HierarchyNode::SketchOffsetOp(i) => SceneElement::SketchOffsetOp(i),
@@ -319,6 +324,7 @@ impl ElementVisibility {
             // of their own (their outputs are ordinary bodies).
             SceneElement::BooleanOp(_) => true,
             SceneElement::MoveOp(_) => true,
+            SceneElement::MirrorOp(_) => true,
             SceneElement::RepeatOp(_) => true,
             SceneElement::SketchRepeatOp(_) => true,
             SceneElement::SketchOffsetOp(_) => true,
@@ -532,6 +538,15 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
         }
         for &bi in &op.targets {
             edges.push((HierarchyNode::Body(bi), HierarchyNode::MoveOp(oi)));
+        }
+    }
+    // A mirror consumes its input bodies (and its plane face's body, if any) — #523.
+    for (oi, op) in doc.mirror_ops.iter().enumerate() {
+        if op.deleted {
+            continue;
+        }
+        for &bi in &op.targets {
+            edges.push((HierarchyNode::Body(bi), HierarchyNode::MirrorOp(oi)));
         }
     }
     for (oi, op) in doc.slice_ops.iter().enumerate() {
@@ -1111,6 +1126,7 @@ fn build_creation_ranks(doc: &Document) -> CreationRanks {
             | ShapeKind::Sweep
             | ShapeKind::BooleanOperation
             | ShapeKind::MoveOperation
+            | ShapeKind::MirrorOperation
             | ShapeKind::RepeatOperation
             | ShapeKind::SliceOperation
             | ShapeKind::SketchRepeatOperation
@@ -1142,6 +1158,7 @@ fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
         // Boolean/move operations likewise list after ranked nodes.
         HierarchyNode::BooleanOp(_) => usize::MAX,
         HierarchyNode::MoveOp(_) => usize::MAX,
+        HierarchyNode::MirrorOp(_) => usize::MAX,
         HierarchyNode::RepeatOp(_) => usize::MAX,
         HierarchyNode::SketchRepeatOp(_) => usize::MAX,
         HierarchyNode::SketchOffsetOp(_) => usize::MAX,
@@ -1300,6 +1317,24 @@ pub fn build_hierarchy(
             .collect();
         roots.push(HierarchyEntry {
             node: HierarchyNode::MoveOp(oi),
+            children,
+        });
+    }
+    for (oi, op) in doc.mirror_ops.iter().enumerate() {
+        if op.deleted {
+            continue;
+        }
+        let children = op
+            .outputs
+            .iter()
+            .filter(|&&bi| doc.bodies.get(bi).is_some_and(|b| !b.deleted))
+            .map(|&bi| HierarchyEntry {
+                node: HierarchyNode::Body(bi),
+                children: Vec::new(),
+            })
+            .collect();
+        roots.push(HierarchyEntry {
+            node: HierarchyNode::MirrorOp(oi),
             children,
         });
     }
@@ -1531,6 +1566,7 @@ fn group_roots_into_components(doc: &Document, roots: Vec<HierarchyEntry>) -> Ve
             HierarchyNode::Loft(i) => (CM::Loft, *i),
             HierarchyNode::BooleanOp(i) => (CM::BooleanOp, *i),
             HierarchyNode::MoveOp(i) => (CM::MoveOp, *i),
+            HierarchyNode::MirrorOp(i) => (CM::MirrorOp, *i),
             HierarchyNode::RepeatOp(i) => (CM::RepeatOp, *i),
             HierarchyNode::SliceOp(i) => (CM::SliceOp, *i),
             HierarchyNode::Revolution(i) => (CM::Revolution, *i),
@@ -1713,6 +1749,7 @@ impl ElementFilter {
             HierarchyNode::Extrusion(_)
             | HierarchyNode::BooleanOp(_)
             | HierarchyNode::MoveOp(_)
+            | HierarchyNode::MirrorOp(_)
             | HierarchyNode::RepeatOp(_)
             | HierarchyNode::SketchRepeatOp(_)
             | HierarchyNode::SketchOffsetOp(_)
@@ -1808,6 +1845,7 @@ pub fn component_member_element(
         CM::Body => SceneElement::Body(index),
         CM::BooleanOp => SceneElement::BooleanOp(index),
         CM::MoveOp => SceneElement::MoveOp(index),
+        CM::MirrorOp => SceneElement::MirrorOp(index),
         CM::RepeatOp => SceneElement::RepeatOp(index),
         CM::SliceOp => SceneElement::SliceOp(index),
         CM::Revolution => SceneElement::Revolution(index),
@@ -1852,6 +1890,7 @@ pub fn owning_component(doc: &Document, element: &SceneElement) -> Option<usize>
                 BodySource::Sweep(f) => doc.component_of(CM::Sweep, *f),
                 BodySource::Repeated { op, .. } => doc.component_of(CM::RepeatOp, *op),
                 BodySource::Moved { op, .. } => doc.component_of(CM::MoveOp, *op),
+                BodySource::Mirrored { op, .. } => doc.component_of(CM::MirrorOp, *op),
                 BodySource::Boolean { op, .. } => doc.component_of(CM::BooleanOp, *op),
                 BodySource::Sliced { op, .. } => doc.component_of(CM::SliceOp, *op),
                 BodySource::Solid { .. } => None,
@@ -1863,6 +1902,7 @@ pub fn owning_component(doc: &Document, element: &SceneElement) -> Option<usize>
             .and_then(|img| owning_component(doc, &SceneElement::ConstructionPlane(img.plane))),
         SceneElement::BooleanOp(i) => doc.component_of(CM::BooleanOp, *i),
         SceneElement::MoveOp(i) => doc.component_of(CM::MoveOp, *i),
+        SceneElement::MirrorOp(i) => doc.component_of(CM::MirrorOp, *i),
         SceneElement::RepeatOp(i) => doc.component_of(CM::RepeatOp, *i),
         SceneElement::SliceOp(i) => doc.component_of(CM::SliceOp, *i),
         SceneElement::Revolution(i) => doc.component_of(CM::Revolution, *i),
@@ -1927,6 +1967,7 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
             .map(|img| SceneElement::ConstructionPlane(img.plane)),
         SceneElement::BooleanOp(_) => None,
         SceneElement::MoveOp(_) => None,
+        SceneElement::MirrorOp(_) => None,
         SceneElement::RepeatOp(_) => None,
         SceneElement::SketchRepeatOp(_) => None,
         SceneElement::SketchOffsetOp(_) => None,
@@ -2070,6 +2111,14 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         }
         SceneElement::MoveOp(index) => {
             if let Some(op) = doc.move_ops.get(index) {
+                for &output in &op.outputs {
+                    out.insert(SceneElement::Body(output));
+                    collect_descendants(doc, SceneElement::Body(output), out);
+                }
+            }
+        }
+        SceneElement::MirrorOp(index) => {
+            if let Some(op) = doc.mirror_ops.get(index) {
                 for &output in &op.outputs {
                     out.insert(SceneElement::Body(output));
                     collect_descendants(doc, SceneElement::Body(output), out);
@@ -2430,6 +2479,7 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         HierarchyNode::Image(_) => IconId::Plane,
         HierarchyNode::BooleanOp(_) => IconId::Combine,
         HierarchyNode::MoveOp(_) => IconId::Move,
+        HierarchyNode::MirrorOp(_) => IconId::Mirror,
         HierarchyNode::RepeatOp(_) => IconId::Repeat,
         HierarchyNode::SketchRepeatOp(_) => IconId::Repeat,
         HierarchyNode::SketchOffsetOp(_) => IconId::Offset,

@@ -1045,6 +1045,16 @@ pub enum BodySource {
         #[serde(default)]
         target: usize,
     },
+    /// The reflected copy of one input of a mirror operation (Mirror tool, #523): `op`
+    /// indexes `Document::mirror_ops`, `target` is the input's position within that
+    /// operation's target list. Unlike Move, the original input body is **kept** (not
+    /// shadowed) — a mirror adds the reflection alongside the source.
+    Mirrored {
+        #[serde(rename = "mirror_op")]
+        op: usize,
+        #[serde(default)]
+        target: usize,
+    },
     /// One output solid of a boolean operation (Combine tool): `op` indexes
     /// `Document::boolean_ops`, `solid` is the ordinal of this body's solid within the
     /// operation's result (a cut or difference can split into several pieces). The last
@@ -1095,6 +1105,7 @@ impl BodySource {
             | Self::Sweep(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
+            | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. } => &[],
             Self::Imported(_) => &[],
@@ -1113,6 +1124,7 @@ impl BodySource {
             | Self::Sweep(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
+            | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. } => &[],
         }
@@ -1129,6 +1141,7 @@ impl BodySource {
             | Self::Sweep(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
+            | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. } => None,
         }
@@ -1155,6 +1168,7 @@ impl BodySource {
             | Self::Sweep(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
+            | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. } => {}
         }
@@ -1184,6 +1198,7 @@ impl BodySource {
             | Self::Sweep(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
+            | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. } => {}
         }
@@ -1219,6 +1234,7 @@ impl BodySource {
             | Self::Sweep(_)
             | Self::Boolean { .. }
             | Self::Moved { .. }
+            | Self::Mirrored { .. }
             | Self::Repeated { .. }
             | Self::Sliced { .. } => {}
         }
@@ -1465,6 +1481,24 @@ pub struct MoveOperation {
     /// Rotation angle (angle expression; empty = 0).
     #[serde(default)]
     pub angle: String,
+    /// Output body indices, matching `targets` order.
+    #[serde(default)]
+    pub outputs: Vec<usize>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+/// A mirror operation (Mirror tool, #523): reflects each input body across a mirror plane,
+/// producing one reflected output body per input while keeping the originals. The mirror
+/// plane is a `FaceId` — a construction plane or a planar body face.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MirrorOperation {
+    /// The mirror plane: a construction plane or a planar body face.
+    pub plane: FaceId,
+    /// Input body indices, one reflected output per entry (same order).
+    pub targets: Vec<usize>,
     /// Output body indices, matching `targets` order.
     #[serde(default)]
     pub outputs: Vec<usize>,
@@ -2003,6 +2037,9 @@ pub enum ShapeKind {
     BooleanOperation,
     /// A move operation on bodies (its output bodies are separate `Body` entries).
     MoveOperation,
+    /// A mirror operation on bodies (#523): its reflected output bodies are separate
+    /// `Body` entries; the originals are kept.
+    MirrorOperation,
     /// A linear repeat on bodies (its output bodies are separate `Body` entries).
     RepeatOperation,
     /// A slice operation on bodies (its fragment bodies are separate `Body` entries).
@@ -2583,6 +2620,9 @@ pub struct Document {
     /// Move operations on bodies (the Move tool, #176/#183).
     #[serde(default)]
     pub move_ops: Vec<MoveOperation>,
+    /// Mirror operations on bodies (the Mirror tool, #523).
+    #[serde(default)]
+    pub mirror_ops: Vec<MirrorOperation>,
     /// Linear repeats on bodies (the Repeat tool, #182).
     #[serde(default)]
     pub repeat_ops: Vec<RepeatOperation>,
@@ -2667,6 +2707,7 @@ pub enum ComponentMember {
     Loft,
     BooleanOp,
     MoveOp,
+    MirrorOp,
     RepeatOp,
     SliceOp,
     Revolution,
@@ -2783,6 +2824,7 @@ impl Default for Document {
             sweeps: Vec::new(),
             boolean_ops: Vec::new(),
             move_ops: Vec::new(),
+            mirror_ops: Vec::new(),
             repeat_ops: Vec::new(),
             slice_ops: Vec::new(),
             sketch_repeat_ops: Vec::new(),

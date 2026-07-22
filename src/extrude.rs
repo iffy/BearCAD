@@ -562,6 +562,9 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
         crate::model::BodySource::Moved { op, target } => {
             return occt_moved_output_shape(doc, op, target);
         }
+        crate::model::BodySource::Mirrored { op, target } => {
+            return occt_mirrored_output_shape(doc, op, target);
+        }
         crate::model::BodySource::Repeated { op, target, instance } => {
             return occt_repeated_output_shape(doc, op, target, instance);
         }
@@ -682,6 +685,40 @@ fn occt_moved_output_shape(
     }
     let shape = occt_body_shape(doc, input)?;
     let m = move_op_transform(doc, op)?;
+    shape.transformed(&mat4_to_rows_3x4(&m))
+}
+
+/// World-space reflection (a `Mat4` with determinant −1) across a mirror operation's plane
+/// (Mirror tool, #523). `None` when the plane face died or isn't planar. The reflection of a
+/// point `x` across the plane through `o` with unit normal `n` is `x - 2((x-o)·n) n`.
+pub fn mirror_op_transform(doc: &Document, op: &crate::model::MirrorOperation) -> Option<glam::Mat4> {
+    let frame = crate::face::sketch_frame(doc, op.plane.clone())?;
+    let n = frame.normal.normalize_or_zero();
+    if n.length_squared() < 1e-8 {
+        return None;
+    }
+    let o = frame.origin;
+    // Householder reflection: R = I - 2 n nᵀ (columns are n·n[j]).
+    let r = glam::Mat3::IDENTITY - 2.0 * glam::Mat3::from_cols(n * n.x, n * n.y, n * n.z);
+    // Affine reflection about the plane through `o`: x' = R(x - o) + o = R x + (o - R o).
+    Some(glam::Mat4::from_translation(o - r * o) * glam::Mat4::from_mat3(r))
+}
+
+/// The BREP solid of one mirror-operation output: the input body's shape, reflected across
+/// the op's plane. The original input body is kept, so — unlike Move — a reflected output
+/// never shadows its source.
+fn occt_mirrored_output_shape(
+    doc: &Document,
+    op_index: usize,
+    target: usize,
+) -> Option<crate::kernel::Shape> {
+    let op = doc.mirror_ops.get(op_index).filter(|o| !o.deleted)?;
+    let &input = op.targets.get(target)?;
+    if op.outputs.contains(&input) {
+        return None;
+    }
+    let shape = occt_body_shape(doc, input)?;
+    let m = mirror_op_transform(doc, op)?;
     shape.transformed(&mat4_to_rows_3x4(&m))
 }
 
@@ -2062,6 +2099,19 @@ pub fn selection_world_bounds(
                     }
                 }
             }
+            SceneElement::MirrorOp(op) => {
+                let outputs = doc
+                    .mirror_ops
+                    .get(op)
+                    .map(|o| o.outputs.clone())
+                    .unwrap_or_default();
+                for bi in outputs {
+                    if let Some((min, max)) = body_solid_mesh(doc, bi).and_then(|m| m.bounds()) {
+                        extend(min);
+                        extend(max);
+                    }
+                }
+            }
             SceneElement::BooleanOp(op) => {
                 let outputs = doc
                     .boolean_ops
@@ -2327,6 +2377,29 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
                     m.transform_point3(tri[0]),
                     m.transform_point3(tri[1]),
                     m.transform_point3(tri[2]),
+                ]
+            })
+            .collect();
+        return Some(SolidMesh { triangles });
+    }
+    if let crate::model::BodySource::Mirrored { op, target } = body.source {
+        let mr = doc.mirror_ops.get(op).filter(|o| !o.deleted)?;
+        let &input = mr.targets.get(target)?;
+        if input == body_index {
+            return None;
+        }
+        let m = mirror_op_transform(doc, mr)?;
+        let source = body_solid_mesh_uncached(doc, input)?;
+        // A reflection flips handedness, so reverse each triangle's winding (swap two
+        // vertices) to keep its outward normal pointing out.
+        let triangles = source
+            .triangles
+            .iter()
+            .map(|tri| {
+                [
+                    m.transform_point3(tri[0]),
+                    m.transform_point3(tri[2]),
+                    m.transform_point3(tri[1]),
                 ]
             })
             .collect();
