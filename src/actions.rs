@@ -9525,7 +9525,7 @@ label_hidden: false,
                             additive = true;
                         }
                     }
-                    click_scene_selection(&mut self.scene_selection, element, additive);
+                    click_scene_selection(&mut self.scene_selection, element.clone(), additive);
                     if let Some((health_status, reason)) =
                         selection_frozen_summary(&self.document_health, &self.scene_selection)
                     {
