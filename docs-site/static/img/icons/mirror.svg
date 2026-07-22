@@ -2,5 +2,5 @@
   <!-- Mirror: a solid shape and its faded reflection across a dashed mirror line. -->
   <line x1="16" y1="3" x2="16" y2="29" stroke-dasharray="2.5 2.5" />
   <path d="M13 8 L5 16 L13 24 Z" fill="currentColor" stroke="none" />
-  <path d="M19 8 L27 16 L19 24 Z" fill="currentColor" fill-opacity="0.35" stroke="none" />
+  <path d="M19 8 L27 16 L19 24 Z" fill="currentColor" fill-opacity="0.9" stroke="none" />
 </svg>
