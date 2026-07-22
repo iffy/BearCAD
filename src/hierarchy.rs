@@ -2327,6 +2327,8 @@ fn row_style(
     health: &DocumentHealth,
     highlight_elements: &HashSet<SceneElement>,
 ) -> RowStyle {
+    // Health tints the label/icon (red/amber). Selection highlight is applied separately
+    // via `row_is_selected` so an invalid/unstable row can still show as selected (#511).
     match health.element_status(element.clone()) {
         HealthStatus::Invalid => return RowStyle::Invalid,
         HealthStatus::Unstable => return RowStyle::Unstable,
@@ -2352,6 +2354,15 @@ fn row_style(
     } else {
         RowStyle::Faint
     }
+}
+
+/// Whether the row should paint the egui selected background — independent of health tint (#511).
+fn row_shows_selection(
+    element: &SceneElement,
+    selection: &SceneSelection,
+    style_selection: bool,
+) -> bool {
+    style_selection && row_is_selected(element, selection)
 }
 
 fn styled_label(label: &str, style: RowStyle) -> RichText {
@@ -3247,7 +3258,7 @@ fn show_graph_view(
                 let element = scene_element_for_node(position.node);
                 let style = element.clone().map(|el| {
                     row_style(
-                        el,
+                        el.clone(),
                         selection,
                         context,
                         related_constraints,
@@ -3256,7 +3267,10 @@ fn show_graph_view(
                         highlight_elements,
                     )
                 });
-                let selected = style == Some(RowStyle::Selected);
+                // Selection fills white even when health tints the icon red/amber (#511).
+                let selected = element
+                    .as_ref()
+                    .is_some_and(|el| row_shows_selection(el, selection, style_selection));
                 let related = related_nodes.contains(&position.node);
                 let fill = if selected {
                     Color32::WHITE
@@ -3479,7 +3493,10 @@ fn show_component_row(
         } else {
             styled_label(&label, style)
         };
-        let response = ui.selectable_label(style == RowStyle::Selected, text);
+        let response = ui.selectable_label(
+            row_shows_selection(&element, selection, style_selection),
+            text,
+        );
         if response.clicked() {
             let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
             on_click_element(element.clone(), additive);
@@ -3761,7 +3778,7 @@ fn show_row(
 
         let label = node_label(doc, node);
         let response = ui.selectable_label(
-            style == RowStyle::Selected,
+            row_shows_selection(&element, selection, style_selection),
             styled_label(&label, style),
         );
         // Pane-hover → viewport highlight (#161): the 3D view shows what this row is.
@@ -4805,6 +4822,74 @@ label_hidden: false,
                 &selection,
                 &context,
                 &related,
+                true,
+                &health,
+                &HashSet::new(),
+            ),
+            RowStyle::Unstable
+        );
+    }
+
+    /// #511: an invalid/unstable row still paints as selected when picked in the pane.
+    #[test]
+    fn invalid_and_unstable_rows_still_show_selection_highlight() {
+        use crate::document_lifecycle::tombstone_element;
+        use crate::model::{Constraint, ConstraintKind, ConstraintLine, Line, ShapeKind};
+
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.shape_order.push(ShapeKind::Line);
+        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 5.0, 10.0, 5.0));
+        doc.shape_order.push(ShapeKind::Line);
+        doc.constraints.push(Constraint {
+            sketch,
+            kind: ConstraintKind::Parallel {
+                line_a: ConstraintLine::Line(0),
+                line_b: ConstraintLine::Line(1),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+        tombstone_element(&mut doc, SceneElement::Line(0));
+        let health = crate::document_health::recompute_document_health(&doc);
+
+        let mut selection = SceneSelection::default();
+        crate::selection::click_scene_selection(
+            &mut selection,
+            SceneElement::Constraint(0),
+            false,
+        );
+        assert!(row_shows_selection(
+            &SceneElement::Constraint(0),
+            &selection,
+            true
+        ));
+        assert_eq!(
+            row_style(
+                SceneElement::Constraint(0),
+                &selection,
+                &HashSet::new(),
+                &HashSet::new(),
+                true,
+                &health,
+                &HashSet::new(),
+            ),
+            RowStyle::Invalid,
+            "health tint stays invalid while selected"
+        );
+
+        let mut selection = SceneSelection::default();
+        crate::selection::click_scene_selection(&mut selection, SceneElement::Line(1), false);
+        assert!(row_shows_selection(&SceneElement::Line(1), &selection, true));
+        assert_eq!(
+            row_style(
+                SceneElement::Line(1),
+                &selection,
+                &HashSet::new(),
+                &HashSet::new(),
                 true,
                 &health,
                 &HashSet::new(),

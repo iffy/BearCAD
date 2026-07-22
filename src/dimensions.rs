@@ -236,27 +236,46 @@ pub fn dimension_arrow_wing_world(along: Vec3, outward: Vec3) -> Vec3 {
     Vec3::ZERO
 }
 
+/// Convert a screen-pixel length at `anchor` into world units.
+///
+/// Uses `direction_world` when it has a stable on-screen footprint; if that direction is
+/// foreshortened (nearly along the view ray — common when orbiting a sketch edge-on),
+/// samples a few other unit axes at the same anchor and picks the strongest scale so
+/// dimension arcs don't fly off into huge world radii (#510).
 pub fn pixels_to_world_distance(
     project: &impl Fn(Vec3) -> Option<Pos2>,
     anchor: Vec3,
     direction_world: Vec3,
     pixels: f32,
 ) -> f32 {
-    let dir = direction_world.normalize_or_zero();
-    if dir.length_squared() < 1e-8 {
-        return pixels;
-    }
     let Some(p0) = project(anchor) else {
-        return pixels;
+        return 0.0;
     };
-    let Some(p1) = project(anchor + dir) else {
-        return pixels;
-    };
-    let px_per_unit = (p1 - p0).length();
-    if px_per_unit < 1e-4 {
-        return pixels;
+    let mut best_px_per_unit = 0.0f32;
+    let primary = direction_world.normalize_or_zero();
+    let candidates = [
+        primary,
+        Vec3::X,
+        Vec3::Y,
+        Vec3::Z,
+        Vec3::new(1.0, 1.0, 0.0).normalize_or_zero(),
+        Vec3::new(1.0, 0.0, 1.0).normalize_or_zero(),
+        Vec3::new(0.0, 1.0, 1.0).normalize_or_zero(),
+    ];
+    for dir in candidates {
+        if dir.length_squared() < 1e-8 {
+            continue;
+        }
+        let Some(p1) = project(anchor + dir) else {
+            continue;
+        };
+        best_px_per_unit = best_px_per_unit.max((p1 - p0).length());
     }
-    pixels / px_per_unit
+    // Completely degenerate projection (off-screen / singular): no useful scale.
+    if best_px_per_unit < 1e-3 {
+        return 0.0;
+    }
+    pixels / best_px_per_unit
 }
 
 pub fn linear_dimension_world_geom(
@@ -686,6 +705,9 @@ pub fn arc_dimension_world_geom(
     radius_world: f32,
     label_outset_world: f32,
 ) -> Option<ArcDimensionWorldGeom> {
+    if radius_world <= 1e-6 {
+        return None;
+    }
     let dir_a = dir_a.normalize_or_zero();
     let dir_b = dir_b.normalize_or_zero();
     let plane_n = plane_normal.normalize_or_zero();
@@ -694,7 +716,15 @@ pub fn arc_dimension_world_geom(
     }
     let start = center + dir_a * radius_world;
     let end = center + dir_b * radius_world;
-    let mid_dir = (dir_a + dir_b).normalize_or_zero();
+    // Bisector of the *oriented* wedge from dir_a → dir_b around the plane normal, not the
+    // vector sum (which collapses near 180° and points into the supplementary angle) (#510).
+    let sin = dir_a.cross(dir_b).dot(plane_n);
+    let cos = dir_a.dot(dir_b).clamp(-1.0, 1.0);
+    let half = 0.5 * sin.atan2(cos);
+    let (s, c) = half.sin_cos();
+    // Rodrigues: rotate dir_a by `half` about plane_n.
+    let mid_dir = (dir_a * c + plane_n.cross(dir_a) * s + plane_n * plane_n.dot(dir_a) * (1.0 - c))
+        .normalize_or_zero();
     let label_center = if mid_dir.length_squared() < 1e-8 {
         center + plane_n * label_outset_world
     } else {
@@ -1142,6 +1172,53 @@ mod tests {
         assert_eq!(effective_dim_offset(None), OFFSET);
         assert_eq!(effective_dim_offset(Some(2.0)), MIN_DIM_OFFSET);
         assert_eq!(effective_dim_offset(Some(500.0)), MAX_DIM_OFFSET);
+    }
+
+    /// #510: when the preferred direction is foreshortened (edge-on), world distance still
+    /// comes from a stable on-screen scale instead of blowing up.
+    #[test]
+    fn pixels_to_world_distance_stable_when_primary_dir_is_edge_on() {
+        // Project: XY plane onto screen with Y collapsed (view along Y).
+        let project = |p: Vec3| -> Option<Pos2> {
+            Some(Pos2::new(p.x * 10.0, p.z * 10.0))
+        };
+        let anchor = Vec3::ZERO;
+        // Primary dir is along Y → zero screen motion; must not return huge/absurd values.
+        let along_view = pixels_to_world_distance(&project, anchor, Vec3::Y, 20.0);
+        let along_x = pixels_to_world_distance(&project, anchor, Vec3::X, 20.0);
+        assert!(
+            (along_x - 2.0).abs() < 1e-3,
+            "X is 10px per unit → 20px = 2 world units, got {along_x}"
+        );
+        assert!(
+            (along_view - along_x).abs() < 1e-3,
+            "edge-on primary should fall back to a stable scale, got {along_view} vs {along_x}"
+        );
+    }
+
+    /// #510: arc label sits on the oriented wedge bisector, not the vector-sum short-cut.
+    #[test]
+    fn arc_label_uses_oriented_angle_bisector() {
+        let center = Vec3::ZERO;
+        let dir_a = Vec3::X;
+        // 90° from +X toward +Y around +Z.
+        let dir_b = Vec3::Y;
+        let geom = arc_dimension_world_geom(center, dir_a, dir_b, Vec3::Z, 10.0, 2.0).unwrap();
+        let expected_mid = (Vec3::X + Vec3::Y).normalize() * 12.0;
+        assert!(
+            (geom.label_center - expected_mid).length() < 1e-3,
+            "label={:?} expected≈{expected_mid:?}",
+            geom.label_center
+        );
+        // Nearly 180°: vector sum collapses, oriented bisector stays finite.
+        let dir_b180 = Vec3::new(-1.0, 0.05, 0.0).normalize();
+        let geom180 =
+            arc_dimension_world_geom(center, dir_a, dir_b180, Vec3::Z, 10.0, 0.0).unwrap();
+        assert!(
+            geom180.label_center.length() > 5.0,
+            "near-180° bisector should not collapse, got {:?}",
+            geom180.label_center
+        );
     }
 
     #[test]
