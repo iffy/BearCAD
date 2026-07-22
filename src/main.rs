@@ -4592,6 +4592,175 @@ impl App {
     /// mirror plane, then click bodies to add/remove them from the reflected set; Enter
     /// commits. Draws the mirror-plane highlight and a translucent ghost of each reflection.
     #[allow(clippy::too_many_arguments)]
+    /// Re-open an operation in its tool for editing (#546): the single, universal edit path
+    /// shared by a double-click on the pane row and a right-click → "Edit". Loads the committed
+    /// operation back into its `creating_*` in-progress state and switches to the matching tool,
+    /// so re-committing updates it in place.
+    fn begin_operation_edit(&mut self, element: hierarchy::SceneElement) {
+        use hierarchy::SceneElement as SE;
+        match element {
+            SE::MoveOp(op) => {
+                if let Some(existing) = self.state.doc.move_ops.get(op).cloned() {
+                    self.state.creating_move = Some(actions::CreatingMove {
+                        targets: existing.targets,
+                        plane_targets: existing.plane_targets,
+                        image_targets: existing.image_targets,
+                        tx: existing.tx,
+                        ty: existing.ty,
+                        tz: existing.tz,
+                        axis: existing.axis,
+                        angle: existing.angle,
+                        editing: Some(op),
+                    });
+                    self.state.apply(Action::SetTool(Tool::Move));
+                }
+            }
+            SE::MirrorOp(op) => {
+                if let Some(existing) = self.state.doc.mirror_ops.get(op).cloned() {
+                    self.state.creating_mirror = Some(actions::CreatingMirror {
+                        plane: Some(existing.plane),
+                        targets: existing.targets,
+                        editing: Some(op),
+                    });
+                    self.state.apply(Action::SetTool(Tool::Mirror));
+                }
+            }
+            SE::RepeatOp(op) => {
+                if let Some(existing) = self.state.doc.repeat_ops.get(op).cloned() {
+                    let (computed, gap_is_offset, distance_is_end) = existing.mode.to_repeat_ui();
+                    self.state.creating_repeat = Some(actions::CreatingRepeat {
+                        targets: existing.targets,
+                        plane_targets: existing.plane_targets,
+                        extrusion_targets: existing.extrusion_targets,
+                        sketch_targets: existing.sketch_targets,
+                        axis: Some(existing.axis),
+                        mode: existing.mode,
+                        count: existing.count,
+                        spacing: existing.spacing,
+                        length: existing.length,
+                        gap_is_offset,
+                        distance_is_end,
+                        var_mru: computed.as_mru(),
+                        editing: Some(op),
+                    });
+                    self.state.apply(Action::SetTool(Tool::Repeat));
+                }
+            }
+            SE::SliceOp(op) => {
+                if let Some(existing) = self.state.doc.slice_ops.get(op).cloned() {
+                    self.state.creating_slice = Some(actions::CreatingSlice {
+                        targets: existing.targets,
+                        cutters: existing.cutters,
+                        picking_cutter: false,
+                        extend_infinite: existing.extend_infinite,
+                        editing: Some(op),
+                    });
+                    self.state.apply(Action::SetTool(Tool::Slice));
+                }
+            }
+            SE::BooleanOp(op) => {
+                if let Some(existing) = self.state.doc.boolean_ops.get(op).cloned() {
+                    self.state.creating_boolean = Some(actions::CreatingBoolean {
+                        kind: existing.kind,
+                        a: existing.a,
+                        b: existing.b,
+                        picking_b: false,
+                        keep_b: existing.keep_b,
+                        editing: Some(op),
+                    });
+                    self.state.apply(Action::SetTool(Tool::Combine));
+                }
+            }
+            SE::Revolution(op) => {
+                if let Some(existing) = self.state.doc.revolutions.get(op).cloned() {
+                    let (body_choice, cut_bodies) = match &existing.mode {
+                        model::RevolveMode::NewBody => {
+                            (actions::RevolveBodyChoice::NewBody, Vec::new())
+                        }
+                        model::RevolveMode::AddTo(_) => {
+                            (actions::RevolveBodyChoice::AddTouching, Vec::new())
+                        }
+                        model::RevolveMode::Cut(b) => (actions::RevolveBodyChoice::Cut, b.clone()),
+                    };
+                    self.state.creating_revolve = Some(actions::CreatingRevolve {
+                        sketch: Some(existing.sketch),
+                        faces: existing.faces,
+                        axis: Some(existing.axis),
+                        angle_live: existing.angle_deg,
+                        text: format!("{:.0}", existing.angle_deg),
+                        user_edited: true,
+                        pending_focus: false,
+                        symmetric: existing.symmetric,
+                        body_choice,
+                        cut_bodies,
+                        editing: Some(op),
+                    });
+                    self.state.apply(Action::SetTool(Tool::Revolve));
+                }
+            }
+            SE::SweepOp(op) => {
+                if let Some(existing) = self.state.doc.sweeps.get(op).cloned() {
+                    let (body_choice, cut_bodies) = match &existing.mode {
+                        model::SweepMode::NewBody => {
+                            (actions::RevolveBodyChoice::NewBody, Vec::new())
+                        }
+                        model::SweepMode::AddTo(_) => {
+                            (actions::RevolveBodyChoice::AddTouching, Vec::new())
+                        }
+                        model::SweepMode::Cut(b) => (actions::RevolveBodyChoice::Cut, b.clone()),
+                    };
+                    self.state.creating_sweep = Some(actions::CreatingSweep {
+                        sketch: Some(existing.sketch),
+                        faces: existing.faces,
+                        path: existing.path,
+                        body_choice,
+                        cut_bodies,
+                        editing: Some(op),
+                    });
+                    self.state.apply(Action::SetTool(Tool::Sweep));
+                }
+            }
+            SE::SketchMirrorOp(op) => {
+                if let Some(existing) = self.state.doc.sketch_mirror_ops.get(op).cloned() {
+                    self.state.creating_sketch_mirror = Some(actions::CreatingSketchMirror {
+                        sketch: existing.sketch,
+                        line: Some(existing.line),
+                        line_targets: existing.line_targets,
+                        circle_targets: existing.circle_targets,
+                        editing: Some(op),
+                    });
+                    self.state.apply(Action::SetTool(Tool::Mirror));
+                    if self.state.sketch_session.is_none() {
+                        self.state.apply(Action::OpenSketch {
+                            sketch: existing.sketch,
+                            viewport: None,
+                        });
+                    }
+                }
+            }
+            SE::SketchOffsetOp(op) => {
+                if let Some(existing) = self.state.doc.sketch_offset_ops.get(op).cloned() {
+                    self.state.creating_sketch_offset = Some(actions::CreatingSketchOffset {
+                        sketch: existing.sketch,
+                        line_targets: existing.line_targets,
+                        circle_targets: existing.circle_targets,
+                        distance: existing.distance,
+                        construction: existing.construction,
+                        editing: Some(op),
+                    });
+                    self.state.apply(Action::SetTool(Tool::Offset));
+                    if self.state.sketch_session.is_none() {
+                        self.state.apply(Action::OpenSketch {
+                            sketch: existing.sketch,
+                            viewport: None,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn handle_mirror_tool(
         &mut self,
         ui: &egui::Ui,
@@ -6448,6 +6617,7 @@ impl eframe::App for App {
             let mut edit_extrusion: Option<usize> = None;
             let mut edit_edge_treatment: Option<(usize, usize)> = None;
             let mut edit_edge_treatment_op: Option<usize> = None;
+            let mut edit_operation: Option<hierarchy::SceneElement> = None;
             let mut edit_drawing: Option<usize> = None;
             let mut select_drawing_element: Option<hierarchy::HierarchyNode> = None;
             let mut hover_drawing_element: Option<hierarchy::HierarchyNode> = None;
@@ -6499,6 +6669,9 @@ impl eframe::App for App {
                     };
                     let mut queue_edit_edge_treatment_op = |op: usize| {
                         edit_edge_treatment_op = Some(op);
+                    };
+                    let mut queue_edit_operation = |element: hierarchy::SceneElement| {
+                        edit_operation = Some(element);
                     };
                     let mut queue_edit_drawing = |index: usize| {
                         edit_drawing = Some(index);
@@ -6581,6 +6754,7 @@ impl eframe::App for App {
                         &mut queue_edit_extrusion,
                         &mut queue_edit_edge_treatment,
                         &mut queue_edit_edge_treatment_op,
+                        &mut queue_edit_operation,
                         &mut queue_edit_drawing,
                         &mut queue_select_drawing_element,
                         &mut queue_hover_drawing_element,
@@ -6723,6 +6897,10 @@ impl eframe::App for App {
             if let Some(op) = edit_edge_treatment_op {
                 // Re-open a committed chamfer/fillet operation for editing (#531).
                 self.state.apply(Action::EditEdgeTreatmentOp { op });
+            }
+            if let Some(element) = edit_operation {
+                // Universal operation editing (#546): double-click / right-click → "Edit".
+                self.begin_operation_edit(element);
             }
             if let Some(index) = export_body {
                 self.export_stl_body(index);
@@ -6913,24 +7091,7 @@ impl eframe::App for App {
                         },
                     }
                 }),
-                boolean_edit_start: (self.state.tool != Tool::Combine)
-                    .then(|| {
-                        let mut only = None;
-                        for element in self.state.scene_selection.iter() {
-                            match (element, only) {
-                                (SceneElement::BooleanOp(i), None) => only = Some(i),
-                                _ => return None,
-                            }
-                        }
-                        only.filter(|&i| {
-                            self.state
-                                .doc
-                                .boolean_ops
-                                .get(i)
-                                .is_some_and(|o| !o.deleted)
-                        })
-                    })
-                    .flatten(),
+                boolean_edit_start: None,
                 // The body-move controls are hidden inside a sketch (#306): there, the Move
                 // tool is the in-sketch selection gizmo, not the whole-body move.
                 move_op: (self.state.tool == Tool::Move
@@ -6960,20 +7121,7 @@ impl eframe::App for App {
                             .unwrap_or(false),
                     }
                 }),
-                move_edit_start: (self.state.tool != Tool::Move)
-                    .then(|| {
-                        let mut only = None;
-                        for element in self.state.scene_selection.iter() {
-                            match (element, only) {
-                                (SceneElement::MoveOp(i), None) => only = Some(i),
-                                _ => return None,
-                            }
-                        }
-                        only.filter(|&i| {
-                            self.state.doc.move_ops.get(i).is_some_and(|o| !o.deleted)
-                        })
-                    })
-                    .flatten(),
+                move_edit_start: None,
                 mirror_op: (self.state.tool == Tool::Mirror
                     && self.state.sketch_session.is_none())
                 .then(|| {
@@ -6987,20 +7135,7 @@ impl eframe::App for App {
                         can_commit: cm.map(|c| c.can_commit()).unwrap_or(false),
                     }
                 }),
-                mirror_edit_start: (self.state.tool != Tool::Mirror)
-                    .then(|| {
-                        let mut only = None;
-                        for element in self.state.scene_selection.iter() {
-                            match (element, only) {
-                                (SceneElement::MirrorOp(i), None) => only = Some(i),
-                                _ => return None,
-                            }
-                        }
-                        only.filter(|&i| {
-                            self.state.doc.mirror_ops.get(i).is_some_and(|o| !o.deleted)
-                        })
-                    })
-                    .flatten(),
+                mirror_edit_start: None,
                 repeat_op: (self.state.tool == Tool::Repeat
                     && self.state.sketch_session.is_none())
                 .then(|| {
@@ -7139,24 +7274,7 @@ impl eframe::App for App {
                             && c.distance_mm(&self.state.doc).is_some(),
                     }
                 }),
-                sketch_offset_edit_start: (self.state.tool != Tool::Offset)
-                    .then(|| {
-                        let mut only = None;
-                        for element in self.state.scene_selection.iter() {
-                            match (element, only) {
-                                (SceneElement::SketchOffsetOp(i), None) => only = Some(i),
-                                _ => return None,
-                            }
-                        }
-                        only.filter(|&i| {
-                            self.state
-                                .doc
-                                .sketch_offset_ops
-                                .get(i)
-                                .is_some_and(|o| !o.deleted)
-                        })
-                    })
-                    .flatten(),
+                sketch_offset_edit_start: None,
                 sketch_mirror: (self.state.tool == Tool::Mirror
                     && self.state.sketch_session.is_some())
                 .then(|| {
@@ -7177,24 +7295,7 @@ impl eframe::App for App {
                         can_commit: c.map(|c| c.can_commit()).unwrap_or(false),
                     }
                 }),
-                sketch_mirror_edit_start: (self.state.tool != Tool::Mirror)
-                    .then(|| {
-                        let mut only = None;
-                        for element in self.state.scene_selection.iter() {
-                            match (element, only) {
-                                (SceneElement::SketchMirrorOp(i), None) => only = Some(i),
-                                _ => return None,
-                            }
-                        }
-                        only.filter(|&i| {
-                            self.state
-                                .doc
-                                .sketch_mirror_ops
-                                .get(i)
-                                .is_some_and(|o| !o.deleted)
-                        })
-                    })
-                    .flatten(),
+                sketch_mirror_edit_start: None,
                 sketch_slice: (self.state.tool == Tool::Slice
                     && self.state.sketch_session.is_some())
                 .then(|| {
@@ -7376,20 +7477,7 @@ impl eframe::App for App {
                         hierarchy::HierarchyNode::DrawingProjection { drawing: d, view: v },
                     )))
                 }),
-                repeat_edit_start: (self.state.tool != Tool::Repeat)
-                    .then(|| {
-                        let mut only = None;
-                        for element in self.state.scene_selection.iter() {
-                            match (element, only) {
-                                (SceneElement::RepeatOp(i), None) => only = Some(i),
-                                _ => return None,
-                            }
-                        }
-                        only.filter(|&i| {
-                            self.state.doc.repeat_ops.get(i).is_some_and(|o| !o.deleted)
-                        })
-                    })
-                    .flatten(),
+                repeat_edit_start: None,
                 slice_op: (self.state.tool == Tool::Slice).then(|| {
                     let cs = self.state.creating_slice.as_ref();
                     let target_rows = cs
@@ -7423,48 +7511,9 @@ impl eframe::App for App {
                             .unwrap_or(false),
                     }
                 }),
-                slice_edit_start: (self.state.tool != Tool::Slice)
-                    .then(|| {
-                        let mut only = None;
-                        for element in self.state.scene_selection.iter() {
-                            match (element, only) {
-                                (SceneElement::SliceOp(i), None) => only = Some(i),
-                                _ => return None,
-                            }
-                        }
-                        only.filter(|&i| {
-                            self.state.doc.slice_ops.get(i).is_some_and(|o| !o.deleted)
-                        })
-                    })
-                    .flatten(),
-                revolve_edit_start: (self.state.tool != Tool::Revolve)
-                    .then(|| {
-                        let mut only = None;
-                        for element in self.state.scene_selection.iter() {
-                            match (element, only) {
-                                (SceneElement::Revolution(i), None) => only = Some(i),
-                                _ => return None,
-                            }
-                        }
-                        only.filter(|&i| {
-                            self.state.doc.revolutions.get(i).is_some_and(|r| !r.deleted)
-                        })
-                    })
-                    .flatten(),
-                sweep_edit_start: (self.state.tool != Tool::Sweep)
-                    .then(|| {
-                        let mut only = None;
-                        for element in self.state.scene_selection.iter() {
-                            match (element, only) {
-                                (SceneElement::SweepOp(i), None) => only = Some(i),
-                                _ => return None,
-                            }
-                        }
-                        only.filter(|&i| {
-                            self.state.doc.sweeps.get(i).is_some_and(|f| !f.deleted)
-                        })
-                    })
-                    .flatten(),
+                slice_edit_start: None,
+                revolve_edit_start: None,
+                sweep_edit_start: None,
                 loft_body: (self.state.tool == Tool::Loft
                     && self.state.sketch_session.is_none())
                 .then(|| {
@@ -7859,20 +7908,7 @@ impl eframe::App for App {
                 }
             }
             if let Some(op) = move_edit_begin {
-                if let Some(existing) = self.state.doc.move_ops.get(op).cloned() {
-                    self.state.creating_move = Some(actions::CreatingMove {
-                        targets: existing.targets,
-                        plane_targets: existing.plane_targets,
-                        image_targets: existing.image_targets,
-                        tx: existing.tx,
-                        ty: existing.ty,
-                        tz: existing.tz,
-                        axis: existing.axis,
-                        angle: existing.angle,
-                        editing: Some(op),
-                    });
-                    self.state.apply(Action::SetTool(Tool::Move));
-                }
+                self.begin_operation_edit(hierarchy::SceneElement::MoveOp(op));
             }
             if let Some(edit) = mirror_edit {
                 match edit {
@@ -7887,14 +7923,7 @@ impl eframe::App for App {
                 }
             }
             if let Some(op) = mirror_edit_begin {
-                if let Some(existing) = self.state.doc.mirror_ops.get(op).cloned() {
-                    self.state.creating_mirror = Some(actions::CreatingMirror {
-                        plane: Some(existing.plane),
-                        targets: existing.targets,
-                        editing: Some(op),
-                    });
-                    self.state.apply(Action::SetTool(Tool::Mirror));
-                }
+                self.begin_operation_edit(hierarchy::SceneElement::MirrorOp(op));
             }
             if let Some(edit) = repeat_edit {
                 match edit {
@@ -7950,25 +7979,7 @@ impl eframe::App for App {
                         }
                     }
                     context::SketchOffsetEdit::EditStart(op) => {
-                        if let Some(existing) = self.state.doc.sketch_offset_ops.get(op).cloned() {
-                            self.state.creating_sketch_offset =
-                                Some(actions::CreatingSketchOffset {
-                                    sketch: existing.sketch,
-                                    line_targets: existing.line_targets,
-                                    circle_targets: existing.circle_targets,
-                                    distance: existing.distance,
-                                    construction: existing.construction,
-                                    editing: Some(op),
-                                });
-                            self.state.apply(Action::SetTool(Tool::Offset));
-                            // Editing happens in the op's sketch; open it if it isn't.
-                            if self.state.sketch_session.is_none() {
-                                self.state.apply(Action::OpenSketch {
-                                    sketch: existing.sketch,
-                                    viewport: None,
-                                });
-                            }
-                        }
+                        self.begin_operation_edit(hierarchy::SceneElement::SketchOffsetOp(op));
                     }
                     edit => {
                         if let Some(co) = self.state.creating_sketch_offset.as_mut() {
@@ -8002,23 +8013,7 @@ impl eframe::App for App {
                         self.state.apply(Action::CommitSketchMirror);
                     }
                     context::SketchMirrorEdit::EditStart(op) => {
-                        if let Some(existing) = self.state.doc.sketch_mirror_ops.get(op).cloned() {
-                            self.state.creating_sketch_mirror =
-                                Some(actions::CreatingSketchMirror {
-                                    sketch: existing.sketch,
-                                    line: Some(existing.line),
-                                    line_targets: existing.line_targets,
-                                    circle_targets: existing.circle_targets,
-                                    editing: Some(op),
-                                });
-                            self.state.apply(Action::SetTool(Tool::Mirror));
-                            if self.state.sketch_session.is_none() {
-                                self.state.apply(Action::OpenSketch {
-                                    sketch: existing.sketch,
-                                    viewport: None,
-                                });
-                            }
-                        }
+                        self.begin_operation_edit(hierarchy::SceneElement::SketchMirrorOp(op));
                     }
                     context::SketchMirrorEdit::ClearLine => {
                         if let Some(sm) = self.state.creating_sketch_mirror.as_mut() {
@@ -8331,25 +8326,7 @@ impl eframe::App for App {
                 self.drawing_align_parent = None;
             }
             if let Some(op) = repeat_edit_begin {
-                if let Some(existing) = self.state.doc.repeat_ops.get(op).cloned() {
-                    let (computed, gap_is_offset, distance_is_end) = existing.mode.to_repeat_ui();
-                    self.state.creating_repeat = Some(actions::CreatingRepeat {
-                        targets: existing.targets,
-                        plane_targets: existing.plane_targets,
-                        extrusion_targets: existing.extrusion_targets,
-                        sketch_targets: existing.sketch_targets,
-                        axis: Some(existing.axis),
-                        mode: existing.mode,
-                        count: existing.count,
-                        spacing: existing.spacing,
-                        length: existing.length,
-                        gap_is_offset,
-                        distance_is_end,
-                        var_mru: computed.as_mru(),
-                        editing: Some(op),
-                    });
-                    self.state.apply(Action::SetTool(Tool::Repeat));
-                }
+                self.begin_operation_edit(hierarchy::SceneElement::RepeatOp(op));
             }
             if let Some(edit) = slice_edit {
                 match edit {
@@ -8382,82 +8359,16 @@ impl eframe::App for App {
                 }
             }
             if let Some(op) = slice_edit_begin {
-                if let Some(existing) = self.state.doc.slice_ops.get(op).cloned() {
-                    self.state.creating_slice = Some(actions::CreatingSlice {
-                        targets: existing.targets,
-                        cutters: existing.cutters,
-                        picking_cutter: false,
-                        extend_infinite: existing.extend_infinite,
-                        editing: Some(op),
-                    });
-                    self.state.apply(Action::SetTool(Tool::Slice));
-                }
+                self.begin_operation_edit(hierarchy::SceneElement::SliceOp(op));
             }
             if let Some(op) = boolean_edit_begin {
-                if let Some(existing) = self.state.doc.boolean_ops.get(op).cloned() {
-                    self.state.creating_boolean = Some(actions::CreatingBoolean {
-                        kind: existing.kind,
-                        a: existing.a,
-                        b: existing.b,
-                        picking_b: false,
-                        keep_b: existing.keep_b,
-                        editing: Some(op),
-                    });
-                    self.state.apply(Action::SetTool(Tool::Combine));
-                }
+                self.begin_operation_edit(hierarchy::SceneElement::BooleanOp(op));
             }
             if let Some(op) = revolve_edit_begin {
-                if let Some(existing) = self.state.doc.revolutions.get(op).cloned() {
-                    let (body_choice, cut_bodies) = match &existing.mode {
-                        model::RevolveMode::NewBody => {
-                            (actions::RevolveBodyChoice::NewBody, Vec::new())
-                        }
-                        model::RevolveMode::AddTo(_) => {
-                            (actions::RevolveBodyChoice::AddTouching, Vec::new())
-                        }
-                        model::RevolveMode::Cut(b) => {
-                            (actions::RevolveBodyChoice::Cut, b.clone())
-                        }
-                    };
-                    self.state.creating_revolve = Some(actions::CreatingRevolve {
-                        sketch: Some(existing.sketch),
-                        faces: existing.faces,
-                        axis: Some(existing.axis),
-                        angle_live: existing.angle_deg,
-                        text: format!("{:.0}", existing.angle_deg),
-                        user_edited: true,
-                        pending_focus: false,
-                        symmetric: existing.symmetric,
-                        body_choice,
-                        cut_bodies,
-                        editing: Some(op),
-                    });
-                    self.state.apply(Action::SetTool(Tool::Revolve));
-                }
+                self.begin_operation_edit(hierarchy::SceneElement::Revolution(op));
             }
             if let Some(op) = sweep_edit_begin {
-                if let Some(existing) = self.state.doc.sweeps.get(op).cloned() {
-                    let (body_choice, cut_bodies) = match &existing.mode {
-                        model::SweepMode::NewBody => {
-                            (actions::RevolveBodyChoice::NewBody, Vec::new())
-                        }
-                        model::SweepMode::AddTo(_) => {
-                            (actions::RevolveBodyChoice::AddTouching, Vec::new())
-                        }
-                        model::SweepMode::Cut(b) => {
-                            (actions::RevolveBodyChoice::Cut, b.clone())
-                        }
-                    };
-                    self.state.creating_sweep = Some(actions::CreatingSweep {
-                        sketch: Some(existing.sketch),
-                        faces: existing.faces,
-                        path: existing.path,
-                        body_choice,
-                        cut_bodies,
-                        editing: Some(op),
-                    });
-                    self.state.apply(Action::SetTool(Tool::Sweep));
-                }
+                self.begin_operation_edit(hierarchy::SceneElement::SweepOp(op));
             }
             if let Some(image) = calibrate_begin {
                 self.state.apply(Action::BeginImageCalibration { image });

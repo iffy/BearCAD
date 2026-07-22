@@ -218,6 +218,25 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
     })
 }
 
+/// The [`SceneElement`] for an operation whose editing is opened the **universal** way — a
+/// double-click on the row or a right-click → "Edit" (#546) — reloading it into its tool. `None`
+/// for elements edited through their own dedicated entry (sketches, planes, extrusions, edge
+/// treatments, drawings) or that aren't operations at all.
+pub fn node_editable_operation(node: HierarchyNode) -> Option<SceneElement> {
+    match node {
+        HierarchyNode::BooleanOp(i) => Some(SceneElement::BooleanOp(i)),
+        HierarchyNode::MoveOp(i) => Some(SceneElement::MoveOp(i)),
+        HierarchyNode::MirrorOp(i) => Some(SceneElement::MirrorOp(i)),
+        HierarchyNode::RepeatOp(i) => Some(SceneElement::RepeatOp(i)),
+        HierarchyNode::SliceOp(i) => Some(SceneElement::SliceOp(i)),
+        HierarchyNode::Revolution(i) => Some(SceneElement::Revolution(i)),
+        HierarchyNode::SweepOp(i) => Some(SceneElement::SweepOp(i)),
+        HierarchyNode::SketchMirrorOp(i) => Some(SceneElement::SketchMirrorOp(i)),
+        HierarchyNode::SketchOffsetOp(i) => Some(SceneElement::SketchOffsetOp(i)),
+        _ => None,
+    }
+}
+
 /// Drag-and-drop payload for dragging an Elements-pane row onto the open drawing page (#290):
 /// the dragged body/sketch becomes a projection at the drop point.
 #[derive(Clone, Debug)]
@@ -2909,6 +2928,7 @@ pub fn show_pane(
     on_edit_extrusion: &mut impl FnMut(usize),
     on_edit_edge_treatment: &mut impl FnMut(usize, usize),
     on_edit_edge_treatment_op: &mut impl FnMut(usize),
+    on_edit_operation: &mut impl FnMut(SceneElement),
     on_edit_drawing: &mut impl FnMut(usize),
     on_select_drawing_element: &mut impl FnMut(HierarchyNode),
     on_hover_drawing_element: &mut impl FnMut(Option<HierarchyNode>),
@@ -3117,6 +3137,7 @@ pub fn show_pane(
                         on_edit_extrusion,
                         on_edit_edge_treatment,
                         on_edit_edge_treatment_op,
+                        on_edit_operation,
                         on_edit_drawing,
                         on_select_drawing_element,
                         on_hover_drawing_element,
@@ -3826,6 +3847,7 @@ fn show_row(
     on_edit_extrusion: &mut impl FnMut(usize),
     on_edit_edge_treatment: &mut impl FnMut(usize, usize),
     on_edit_edge_treatment_op: &mut impl FnMut(usize),
+    on_edit_operation: &mut impl FnMut(SceneElement),
     on_edit_drawing: &mut impl FnMut(usize),
     on_select_drawing_element: &mut impl FnMut(HierarchyNode),
     on_hover_drawing_element: &mut impl FnMut(Option<HierarchyNode>),
@@ -4114,6 +4136,16 @@ fn show_row(
             }
             // Handled by the early return above (no SceneElement).
             HierarchyNode::EdgeTreatment { .. } | HierarchyNode::Drawing(_) => unreachable!(),
+            // Every other operation edits the universal way: double-click reopens it in its tool
+            // (#546); a plain click selects it.
+            node if node_editable_operation(node).is_some() => {
+                if row_primary_double_clicked(&response, ui) {
+                    on_edit_operation(element.clone());
+                } else if response.clicked() {
+                    let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+                    on_click_element(element.clone(), additive);
+                }
+            }
             _ => {
                 if response.clicked() {
                     let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
@@ -4174,6 +4206,13 @@ fn show_row(
                     }
                     if ui.button("Export STEP…").clicked() {
                         on_export_body_step(index);
+                        ui.close();
+                    }
+                }
+                // Every other operation edits the universal way: right-click → "Edit" (#546).
+                node if node_editable_operation(node).is_some() => {
+                    if ui.button("Edit").clicked() {
+                        on_edit_operation(element.clone());
                         ui.close();
                     }
                 }
