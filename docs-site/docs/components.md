@@ -45,10 +45,11 @@ graph, so hiding a category (say, sketches) thins out either view the same way.
 ## Rolling back
 
 Select any element and click **⏮ Roll back to here** at the top of the Elements pane to
-see the model as it was just after that element — everything created later is hidden from
-the viewport and faded in the pane, without touching your own show/hide toggles. Click
-**Clear** to roll forward again. It's a quick way to revisit an earlier point, make a
-change, and let the rest follow.
+see the model as it was just after that element — everything that **depends on** it (the
+operations built on it and their results) is hidden from the viewport and faded in the
+pane, without touching your own show/hide toggles. Independent branches stay put, so this
+follows the element graph rather than the order things were created. Click **Clear** to
+roll forward again.
 
 ## Scripting
 

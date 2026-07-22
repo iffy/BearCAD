@@ -1168,67 +1168,83 @@ fn build_creation_ranks(doc: &Document) -> CreationRanks {
     ranks
 }
 
-/// The [`SceneElement`] created by each `shape_order` entry, in creation order — the timeline
-/// used by the rollback marker (#524). Entries that don't correspond to a selectable element
-/// (parameters, lofts, in-place edits) map to `None` but still hold their slot so positions
-/// line up with `shape_order`.
-fn shape_order_timeline(doc: &Document) -> Vec<Option<SceneElement>> {
-    use crate::model::ShapeKind as SK;
-    let (mut sk, mut ln, mut ci, mut cn, mut pl, mut ex, mut bd, mut im, mut tx) =
-        (0, 0, 0, 0, 1usize, 0, 0, 0, 0);
-    let (mut bo, mut mv, mut mr, mut rp, mut sl, mut rv, mut sw) = (0, 0, 0, 0, 0, 0, 0);
-    let (mut srp, mut ssl, mut sof, mut smr) = (0, 0, 0, 0);
-    let mut out = Vec::with_capacity(doc.shape_order.len());
-    for kind in &doc.shape_order {
-        let el = match kind {
-            SK::Sketch => (SceneElement::Sketch(sk), &mut sk),
-            SK::Line => (SceneElement::Line(ln), &mut ln),
-            SK::Circle => (SceneElement::Circle(ci), &mut ci),
-            SK::Constraint => (SceneElement::Constraint(cn), &mut cn),
-            SK::ConstructionPlane => (SceneElement::ConstructionPlane(pl), &mut pl),
-            SK::Extrusion => (SceneElement::Extrusion(ex), &mut ex),
-            SK::Body => (SceneElement::Body(bd), &mut bd),
-            SK::Image => (SceneElement::Image(im), &mut im),
-            SK::SketchText => (SceneElement::SketchText(tx), &mut tx),
-            SK::BooleanOperation => (SceneElement::BooleanOp(bo), &mut bo),
-            SK::MoveOperation => (SceneElement::MoveOp(mv), &mut mv),
-            SK::MirrorOperation => (SceneElement::MirrorOp(mr), &mut mr),
-            SK::RepeatOperation => (SceneElement::RepeatOp(rp), &mut rp),
-            SK::SliceOperation => (SceneElement::SliceOp(sl), &mut sl),
-            SK::Revolution => (SceneElement::Revolution(rv), &mut rv),
-            SK::Sweep => (SceneElement::SweepOp(sw), &mut sw),
-            SK::SketchRepeatOperation => (SceneElement::SketchRepeatOp(srp), &mut srp),
-            SK::SketchSliceOperation => (SceneElement::SketchSliceOp(ssl), &mut ssl),
-            SK::SketchOffsetOperation => (SceneElement::SketchOffsetOp(sof), &mut sof),
-            SK::SketchMirrorOperation => (SceneElement::SketchMirrorOp(smr), &mut smr),
-            // No selectable element: keep the slot so positions stay aligned.
-            SK::Parameter
-            | SK::Loft
-            | SK::ConstructionPlaneEdit
-            | SK::EdgeTreatmentEdit => {
-                out.push(None);
-                continue;
-            }
-        };
-        let (element, counter) = el;
-        *counter += 1;
-        out.push(Some(element));
-    }
-    out
+/// The [`HierarchyNode`] for a [`SceneElement`] — the inverse of [`scene_element_for_node`]
+/// for the kinds that appear in the element graph (#524/#531). `None` for sub-element
+/// selections (points, edges, vertices) that aren't graph nodes.
+pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNode> {
+    Some(match element {
+        SceneElement::ConstructionPlane(i) => HierarchyNode::ConstructionPlane(*i),
+        SceneElement::Sketch(i) => HierarchyNode::Sketch(*i),
+        SceneElement::Line(i) => HierarchyNode::Line(*i),
+        SceneElement::Circle(i) => HierarchyNode::Circle(*i),
+        SceneElement::Constraint(i) => HierarchyNode::Constraint(*i),
+        SceneElement::Extrusion(i) => HierarchyNode::Extrusion(*i),
+        SceneElement::Body(i) => HierarchyNode::Body(*i),
+        SceneElement::Image(i) => HierarchyNode::Image(*i),
+        SceneElement::BooleanOp(i) => HierarchyNode::BooleanOp(*i),
+        SceneElement::MoveOp(i) => HierarchyNode::MoveOp(*i),
+        SceneElement::MirrorOp(i) => HierarchyNode::MirrorOp(*i),
+        SceneElement::RepeatOp(i) => HierarchyNode::RepeatOp(*i),
+        SceneElement::SketchRepeatOp(i) => HierarchyNode::SketchRepeatOp(*i),
+        SceneElement::SketchOffsetOp(i) => HierarchyNode::SketchOffsetOp(*i),
+        SceneElement::SketchMirrorOp(i) => HierarchyNode::SketchMirrorOp(*i),
+        SceneElement::SketchSliceOp(i) => HierarchyNode::SketchSliceOp(*i),
+        SceneElement::SketchText(i) => HierarchyNode::SketchText(*i),
+        SceneElement::SliceOp(i) => HierarchyNode::SliceOp(*i),
+        SceneElement::Revolution(i) => HierarchyNode::Revolution(*i),
+        SceneElement::SweepOp(i) => HierarchyNode::SweepOp(*i),
+        SceneElement::Component(i) => HierarchyNode::Component(*i),
+        SceneElement::Point(_)
+        | SceneElement::FaceEdge(_)
+        | SceneElement::Origin
+        | SceneElement::BodyEdge { .. }
+        | SceneElement::BodyVertex { .. } => return None,
+    })
 }
 
-/// Every element created **after** the rollback marker (#524): the set the timeline marker
-/// suppresses (hidden in the viewport, faded in the pane). Empty when the marker isn't found.
+/// Every element that **depends on** the rollback marker (#524/#531): its descendants in the
+/// element graph, found by walking forward from the marker along both the nesting tree (an op
+/// to its output bodies, a sketch to its geometry, …) and the dashed dependency edges (an
+/// input feeding a consuming operation). The marker itself is **not** included. Unlike a
+/// creation-order cutoff, this hides only what genuinely derives from the marker — two
+/// independent branches don't affect each other (matches matt's steer on #531/#276).
 pub fn rolled_back_elements(doc: &Document, marker: &SceneElement) -> HashSet<SceneElement> {
-    let timeline = shape_order_timeline(doc);
-    let Some(pos) = timeline.iter().position(|e| e.as_ref() == Some(marker)) else {
+    let Some(marker_node) = hierarchy_node_for_element(marker) else {
         return HashSet::new();
     };
-    timeline
-        .into_iter()
-        .skip(pos + 1)
-        .flatten()
-        .collect()
+    let tree = build_hierarchy(doc, None);
+    // Forward dependency adjacency: source node -> the operations that consume it.
+    let mut consumers: HashMap<HierarchyNode, Vec<HierarchyNode>> = HashMap::new();
+    for (source, consumer) in graph_dependency_edges(doc) {
+        consumers.entry(source).or_default().push(consumer);
+    }
+
+    let mut result: HashSet<HierarchyNode> = HashSet::new();
+    let mut seen: HashSet<HierarchyNode> = HashSet::from([marker_node]);
+    let mut stack = vec![marker_node];
+    while let Some(node) = stack.pop() {
+        // Nesting descendants (e.g. an op's output bodies, a sketch's geometry).
+        if let Some(entry) = find_hierarchy_entry(&tree, node) {
+            let mut kids = HashSet::new();
+            collect_entry_descendants(entry, &mut kids);
+            for k in kids {
+                if seen.insert(k) {
+                    result.insert(k);
+                    stack.push(k);
+                }
+            }
+        }
+        // Operations that consume this node.
+        if let Some(cs) = consumers.get(&node) {
+            for &c in cs {
+                if seen.insert(c) {
+                    result.insert(c);
+                    stack.push(c);
+                }
+            }
+        }
+    }
+    result.iter().filter_map(|&n| scene_element_for_node(n)).collect()
 }
 
 fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
@@ -5233,32 +5249,24 @@ label_hidden: false,
 
     /// Drive the force layout to rest and return the final state, using the same fixture as the
     /// static-layout tests (plane → sketch → rect + extrusion → body).
-    /// #524: the rollback marker suppresses every element created after it in the timeline
-    /// (`shape_order`), not the marker itself or anything before it.
+    /// #524/#531: the rollback marker suppresses the marker's **graph descendants** — what
+    /// nests under it and what depends on it — not everything created after it in time.
     #[test]
-    fn rollback_suppresses_later_timeline_elements() {
-        use crate::model::ShapeKind;
-        let mut doc = Document::default();
-        // Timeline: Sketch(0), Line(0), Extrusion(0), Body(0), Body(1).
-        doc.shape_order = vec![
-            ShapeKind::Sketch,
-            ShapeKind::Line,
-            ShapeKind::Extrusion,
-            ShapeKind::Body,
-            ShapeKind::Body,
-        ];
+    fn rollback_suppresses_graph_descendants() {
+        let (doc, sketch) = doc_with_plane_sketch_rect_and_extrusion();
+        // Rolling back to the sketch hides everything built from it: its rect lines, the
+        // extrusion, and the body — but not the sketch itself or its host plane.
+        let rb = rolled_back_elements(&doc, &SceneElement::Sketch(sketch));
+        assert!(rb.contains(&SceneElement::Extrusion(0)), "extrusion depends on the sketch");
+        assert!(rb.contains(&SceneElement::Body(0)), "body depends on the extrusion");
+        assert!(!rb.contains(&SceneElement::Sketch(sketch)), "the marker itself stays");
+        assert!(!rb.contains(&SceneElement::ConstructionPlane(0)), "ancestors stay active");
 
-        let rb = rolled_back_elements(&doc, &SceneElement::Extrusion(0));
-        assert!(rb.contains(&SceneElement::Body(0)), "the body is after the extrusion");
-        assert!(rb.contains(&SceneElement::Body(1)));
-        assert!(!rb.contains(&SceneElement::Sketch(0)), "earlier elements stay active");
-        assert!(!rb.contains(&SceneElement::Line(0)));
-        assert!(!rb.contains(&SceneElement::Extrusion(0)), "the marker itself isn't rolled back");
-
-        // Marker at the last element: nothing is suppressed.
-        assert!(rolled_back_elements(&doc, &SceneElement::Body(1)).is_empty());
-        // An unknown marker suppresses nothing.
+        // Rolling back to the body (a leaf nothing consumes) suppresses nothing.
+        assert!(rolled_back_elements(&doc, &SceneElement::Body(0)).is_empty());
+        // An unknown / non-graph marker suppresses nothing.
         assert!(rolled_back_elements(&doc, &SceneElement::Sketch(99)).is_empty());
+        assert!(rolled_back_elements(&doc, &SceneElement::Origin).is_empty());
     }
 
     fn doc_with_plane_sketch_rect_and_extrusion() -> (Document, SketchId) {
