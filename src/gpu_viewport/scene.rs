@@ -333,6 +333,41 @@ pub enum ViewportHoverHighlight {
     ClosedLoop { world_loop: Vec<Vec3> },
 }
 
+/// Whether curved line `li`'s tangent handles should be drawn (#550): only when the curve or
+/// one of its endpoints is selected or hovered, or one of its handles is being manipulated.
+/// Keeps handles from cluttering and obscuring every curve in the sketch at rest.
+pub(crate) fn bezier_handles_relevant(
+    li: usize,
+    selection: &SceneSelection,
+    hover: &Option<ViewportHoverHighlight>,
+    highlighted_handles: &[(usize, bool)],
+) -> bool {
+    use crate::hierarchy::SceneElement;
+    use crate::model::ConstraintPoint;
+    if highlighted_handles.iter().any(|&(l, _)| l == li) {
+        return true;
+    }
+    if selection.is_selected(SceneElement::Line(li)) {
+        return true;
+    }
+    if selection.iter().any(|e| {
+        matches!(e, SceneElement::Point(ConstraintPoint::LineEndpoint { line, .. }) if line == li)
+    }) {
+        return true;
+    }
+    match hover {
+        Some(ViewportHoverHighlight::Element(SceneElement::Line(l))) => *l == li,
+        Some(ViewportHoverHighlight::PickTarget(kind)) => matches!(
+            kind,
+            PickTargetKind::Line(l) if *l == li
+        ) || matches!(
+            kind,
+            PickTargetKind::Point(ConstraintPoint::LineEndpoint { line, .. }) if *line == li
+        ),
+        _ => false,
+    }
+}
+
 /// Prospective construction plane while creating or editing.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ViewportPlanePreview {
@@ -1014,6 +1049,17 @@ impl ViewportScene {
                 let Some([c0, c1]) = line.bezier else {
                     continue;
                 };
+                // Only show a curve's tangent handles when it's relevant (#550): the curve or one
+                // of its endpoints is selected or hovered, or a handle is being manipulated —
+                // otherwise the handles clutter and obscure the curve.
+                if !bezier_handles_relevant(
+                    li,
+                    input.selection,
+                    &input.hover_highlight,
+                    &input.highlighted_bezier_handles,
+                ) {
+                    continue;
+                }
                 let Some(frame) = sketch_geometry_frame(input.doc, line.sketch) else {
                     continue;
                 };
@@ -4644,6 +4690,40 @@ mod tests {
             with_preview.overlay_indices.len() > base.overlay_indices.len(),
             "plane creation preview should add outline triangles"
         );
+    }
+
+    /// #550: a curve's tangent handles show only when the curve/its endpoints are selected or
+    /// hovered, or a handle is being manipulated — not for every curve at rest.
+    #[test]
+    fn bezier_handles_show_only_when_relevant() {
+        use crate::construction::PickTargetKind;
+        use crate::hierarchy::SceneElement;
+        use crate::model::{ConstraintPoint, LineEnd};
+        use crate::selection::SceneSelection;
+
+        let empty = SceneSelection::default();
+        // At rest: nothing selected or hovered → no handles.
+        assert!(!bezier_handles_relevant(0, &empty, &None, &[]));
+        // A dragged/selected handle keeps its curve's handles up.
+        assert!(bezier_handles_relevant(0, &empty, &None, &[(0, true)]));
+        assert!(!bezier_handles_relevant(1, &empty, &None, &[(0, true)]));
+        // The curve selected.
+        let mut sel = SceneSelection::default();
+        sel.insert(SceneElement::Line(0));
+        assert!(bezier_handles_relevant(0, &sel, &None, &[]));
+        assert!(!bezier_handles_relevant(1, &sel, &None, &[]));
+        // One of its endpoints selected.
+        let mut sel_pt = SceneSelection::default();
+        sel_pt.insert(SceneElement::Point(ConstraintPoint::LineEndpoint {
+            line: 2,
+            end: LineEnd::End,
+        }));
+        assert!(bezier_handles_relevant(2, &sel_pt, &None, &[]));
+        assert!(!bezier_handles_relevant(3, &sel_pt, &None, &[]));
+        // Hovering the curve (as a pick target).
+        let hover = Some(ViewportHoverHighlight::PickTarget(PickTargetKind::Line(4)));
+        assert!(bezier_handles_relevant(4, &empty, &hover, &[]));
+        assert!(!bezier_handles_relevant(5, &empty, &hover, &[]));
     }
 
     #[test]
