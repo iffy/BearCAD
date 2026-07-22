@@ -41,6 +41,8 @@ pub enum IconId {
     /// Rectangle anchor-mode radio icons (#532).
     RectCorner,
     RectCenter,
+    CircleCenter,
+    CircleEdge,
     Repeat,
     Offset,
     Slice,
@@ -108,7 +110,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 71] = [
+    pub const ALL: [Self; 73] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -136,6 +138,8 @@ impl IconId {
         Self::Mirror,
         Self::RectCorner,
         Self::RectCenter,
+        Self::CircleCenter,
+        Self::CircleEdge,
         Self::Repeat,
         Self::Offset,
         Self::Slice,
@@ -211,6 +215,8 @@ impl IconId {
             Self::Mirror => include_str!("assets/icons/mirror.svg"),
             Self::RectCorner => include_str!("assets/icons/rect_corner.svg"),
             Self::RectCenter => include_str!("assets/icons/rect_center.svg"),
+            Self::CircleCenter => include_str!("assets/icons/circle_center.svg"),
+            Self::CircleEdge => include_str!("assets/icons/circle_edge.svg"),
             Self::Repeat => include_str!("assets/icons/repeat.svg"),
             Self::Offset => include_str!("assets/icons/offset.svg"),
             Self::Slice => include_str!("assets/icons/slice.svg"),
@@ -290,6 +296,8 @@ impl IconId {
             Self::Mirror => "Mirror",
             Self::RectCorner => "Corner-anchored",
             Self::RectCenter => "Centre-anchored",
+            Self::CircleCenter => "Centre + radius",
+            Self::CircleEdge => "Edge to opposite edge",
             Self::Repeat => "Repeat",
             Self::Offset => "Offset",
             Self::Slice => "Slice",

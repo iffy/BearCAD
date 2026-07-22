@@ -5184,6 +5184,7 @@ mod tests {
             user_edited: true,
             pending_focus: false,
             construction: false,
+            anchor: crate::actions::CircleAnchor::Center,
         });
         state.apply(crate::actions::Action::CommitCircle);
     }
@@ -5689,6 +5690,7 @@ mod tests {
             user_edited: true,
             pending_focus: false,
             construction: false,
+            anchor: crate::actions::CircleAnchor::Center,
         });
         state.apply(crate::actions::Action::CommitCircle);
         let cam = state.cam.clone();

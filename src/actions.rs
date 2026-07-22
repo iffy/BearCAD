@@ -199,6 +199,16 @@ pub enum RectAnchor {
     Center,
 }
 
+/// Which point the first circle click pins: the **centre** (drag out the radius — the classic
+/// behavior) or one **edge** (drag to the diametrically opposite edge, the circle spanning the
+/// two clicks). The diameter input constrains the circle either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CircleAnchor {
+    #[default]
+    Center,
+    Edge,
+}
+
 /// State for the in-progress (pre-Enter) rectangle creation.
 #[derive(Clone, Debug)]
 pub struct CreatingRect {
@@ -310,7 +320,8 @@ pub struct CreatingLine {
 /// State for the in-progress (pre-Enter) circle creation.
 #[derive(Clone, Debug)]
 pub struct CreatingCircle {
-    /// Fixed center in ground coords.
+    /// The pinned first click in ground coords: the centre (`CircleAnchor::Center`) or one edge
+    /// of the circle (`CircleAnchor::Edge`).
     pub origin: Vec3,
     /// Text content of the diameter input.
     pub text: String,
@@ -322,27 +333,47 @@ pub struct CreatingCircle {
     pub pending_focus: bool,
     /// Committed circle is construction geometry when true.
     pub construction: bool,
+    /// Whether `origin` is the centre or one edge (edge-to-opposite-edge mode).
+    pub anchor: CircleAnchor,
 }
 
 impl CreatingCircle {
-    pub fn radius(&self, frame: &SketchFrame, doc: &Document) -> f32 {
-        let (cu, cv) = world_to_local(frame, self.origin);
+    /// The distance from `origin` to the cursor in local mm (the radius in centre mode, the
+    /// full diameter in edge mode).
+    fn cursor_span(&self, frame: &SketchFrame) -> f32 {
+        let (ou, ov) = world_to_local(frame, self.origin);
         let (mu, mv) = world_to_local(frame, self.last_mouse);
-        let du = mu - cu;
-        let dv = mv - cv;
-        let dist = (du * du + dv * dv).sqrt();
-        if self.user_edited {
-            parse_positive_length_or_in_doc(&self.text, doc, dist * 2.0) / 2.0
-        } else {
-            dist
+        ((mu - ou).powi(2) + (mv - ov).powi(2)).sqrt()
+    }
+
+    pub fn radius(&self, frame: &SketchFrame, doc: &Document) -> f32 {
+        let span = self.cursor_span(frame);
+        match self.anchor {
+            // `origin` is the centre: the cursor span is the radius, the text the diameter.
+            CircleAnchor::Center => {
+                if self.user_edited {
+                    parse_positive_length_or_in_doc(&self.text, doc, span * 2.0) / 2.0
+                } else {
+                    span
+                }
+            }
+            // `origin` is an edge: the cursor span is the full diameter, and so is the text.
+            CircleAnchor::Edge => {
+                let diameter = if self.user_edited {
+                    parse_positive_length_or_in_doc(&self.text, doc, span)
+                } else {
+                    span
+                };
+                diameter * 0.5
+            }
         }
     }
 
     pub fn diameter_dim_angle(&self, frame: &SketchFrame) -> f32 {
-        let (cu, cv) = world_to_local(frame, self.origin);
+        let (ou, ov) = world_to_local(frame, self.origin);
         let (mu, mv) = world_to_local(frame, self.last_mouse);
-        let du = mu - cu;
-        let dv = mv - cv;
+        let du = mu - ou;
+        let dv = mv - ov;
         if du * du + dv * dv < 1e-12 {
             0.0
         } else {
@@ -350,16 +381,34 @@ impl CreatingCircle {
         }
     }
 
-    /// Point on the circle rim in world space, respecting any locked diameter.
+    /// The circle centre in local (u, v) mm, honouring the anchor mode and any locked diameter.
+    /// In centre mode this is `origin`; in edge mode it's half a diameter along the cursor
+    /// direction from the pinned edge.
+    pub fn center_local(&self, frame: &SketchFrame, doc: &Document) -> (f32, f32) {
+        let (ou, ov) = world_to_local(frame, self.origin);
+        match self.anchor {
+            CircleAnchor::Center => (ou, ov),
+            CircleAnchor::Edge => {
+                let (mu, mv) = world_to_local(frame, self.last_mouse);
+                let (du, dv) = (mu - ou, mv - ov);
+                let span = (du * du + dv * dv).sqrt();
+                let r = self.radius(frame, doc);
+                if span > 1e-9 {
+                    (ou + du / span * r, ov + dv / span * r)
+                } else {
+                    (ou, ov)
+                }
+            }
+        }
+    }
+
+    /// Point on the circle rim in world space (the cursor-side edge), respecting any locked
+    /// diameter — the far end of the diameter-dimension line drawn from `origin`.
     pub fn rim_point(&self, frame: &SketchFrame, doc: &Document) -> Vec3 {
         let r = self.radius(frame, doc);
         let angle = self.diameter_dim_angle(frame);
-        let (cu, cv) = world_to_local(frame, self.origin);
-        crate::face::local_to_world(
-            frame,
-            cu + angle.cos() * r,
-            cv + angle.sin() * r,
-        )
+        let (cu, cv) = self.center_local(frame, doc);
+        crate::face::local_to_world(frame, cu + angle.cos() * r, cv + angle.sin() * r)
     }
 }
 
@@ -1338,6 +1387,10 @@ pub enum Action {
     /// Set the rectangle tool's anchor mode (#532): corner- or centre-anchored.
     SetRectAnchor {
         anchor: RectAnchor,
+    },
+    /// Set the circle tool's anchor mode: centre- or edge-anchored (edge to opposite edge).
+    SetCircleAnchor {
+        anchor: CircleAnchor,
     },
     /// Toggle construction/substantial on the active draw op or each constructable selected target.
     ToggleConstruction,
@@ -2421,6 +2474,8 @@ pub struct AppState {
     pub draw_construction: bool,
     /// Persisted rectangle anchor mode (#532): the first click is a corner or the centre.
     pub rect_anchor: RectAnchor,
+    /// Persisted circle anchor mode: the first click is the centre or one edge.
+    pub circle_anchor: CircleAnchor,
     /// Persisted "next point gets bezier handles" toggle for the line tool (`B`, #73); mirrors
     /// how `draw_construction` persists across chained segments.
     pub draw_curve_mode: bool,
@@ -2545,6 +2600,7 @@ impl Default for AppState {
             viewport_aspect: 16.0 / 9.0,
             draw_construction: false,
             rect_anchor: RectAnchor::default(),
+            circle_anchor: CircleAnchor::default(),
             draw_curve_mode: false,
             draw_tangent_constraint: true,
             creating_plane: None,
@@ -6213,7 +6269,7 @@ impl AppState {
                         return ActionResult::Err(e);
                     }
                 }
-                let (cu, cv) = world_to_local(&frame, cc.origin);
+                let (cu, cv) = cc.center_local(&frame, &self.doc);
                 let r = cc.radius(&frame, &self.doc);
                 let angle = cc.diameter_dim_angle(&frame);
                 let mut circle =
@@ -10482,6 +10538,22 @@ label_hidden: false,
                 };
                 ActionResult::Ok
             }
+            Action::SetCircleAnchor { anchor } => {
+                self.circle_anchor = anchor;
+                // A circle already in progress switches anchor live; its pinned first click is
+                // reinterpreted (centre ↔ edge), so the diameter input's snap follows suit.
+                if let Some(cc) = &mut self.creating_circle {
+                    cc.anchor = anchor;
+                    if anchor == CircleAnchor::Edge {
+                        self.circle_center_snap = None;
+                    }
+                }
+                self.status = match anchor {
+                    CircleAnchor::Center => "Circle — centre + radius".to_string(),
+                    CircleAnchor::Edge => "Circle — edge to opposite edge".to_string(),
+                };
+                ActionResult::Ok
+            }
             Action::ToggleConstruction => {
                 if let Some(cr) = &mut self.creating_rect {
                     cr.construction = !cr.construction;
@@ -14719,6 +14791,7 @@ mod tests {
             user_edited: false,
             pending_focus: false,
             construction: false,
+            anchor: crate::actions::CircleAnchor::Center,
         });
         state.apply(Action::CommitCircle);
 
@@ -18497,6 +18570,7 @@ mod tests {
             user_edited: true,
             pending_focus: false,
             construction: false,
+            anchor: crate::actions::CircleAnchor::Center,
         });
         state.apply(Action::CommitCircle);
         assert_eq!(state.doc.circles.len(), 1);
@@ -18504,6 +18578,52 @@ mod tests {
         assert_eq!(state.doc.constraints.len(), 1);
         assert!(state.doc.circles[0].diameter_locked);
         assert!(state.creating_circle.is_none());
+    }
+
+    /// Edge-to-opposite-edge circle mode: the two clicks pin opposite rim points, so the centre
+    /// is their midpoint and the diameter is the distance between them.
+    #[test]
+    fn commit_circle_edge_mode_spans_the_two_clicks_as_a_diameter() {
+        let mut state = AppState::default();
+        begin_default_sketch(&mut state);
+        // First edge at the origin, opposite edge 12 mm along +X (free-drag, no typed value).
+        state.creating_circle = Some(CreatingCircle {
+            origin: Vec3::ZERO,
+            text: String::new(),
+            last_mouse: Vec3::new(12.0, 0.0, 0.0),
+            user_edited: false,
+            pending_focus: false,
+            construction: false,
+            anchor: crate::actions::CircleAnchor::Edge,
+        });
+        state.apply(Action::CommitCircle);
+        assert_eq!(state.doc.circles.len(), 1);
+        let c = &state.doc.circles[0];
+        assert!((c.diameter() - 12.0).abs() < 1e-4, "the span is the diameter: {}", c.diameter());
+        // Centre is the midpoint of the two edges → local (6, 0).
+        assert!((c.cx - 6.0).abs() < 1e-3 && c.cy.abs() < 1e-3, "centre at midpoint: ({}, {})", c.cx, c.cy);
+    }
+
+    /// Edge mode still honours a typed diameter, constraining the circle from the two clicks.
+    #[test]
+    fn commit_circle_edge_mode_locks_a_typed_diameter() {
+        let mut state = AppState::default();
+        begin_default_sketch(&mut state);
+        state.creating_circle = Some(CreatingCircle {
+            origin: Vec3::ZERO,
+            text: "20".to_string(),
+            last_mouse: Vec3::new(8.0, 0.0, 0.0),
+            user_edited: true,
+            pending_focus: false,
+            construction: false,
+            anchor: crate::actions::CircleAnchor::Edge,
+        });
+        state.apply(Action::CommitCircle);
+        assert_eq!(state.doc.circles.len(), 1);
+        assert!((state.doc.circles[0].diameter() - 20.0).abs() < 1e-4);
+        assert!(state.doc.circles[0].diameter_locked);
+        // Centre sits half the locked diameter along the click direction from the pinned edge.
+        assert!((state.doc.circles[0].cx - 10.0).abs() < 1e-3);
     }
 
     /// #138: typing `name=value` into a dimension text input (here a circle's diameter) creates
@@ -18520,6 +18640,7 @@ mod tests {
             user_edited: true,
             pending_focus: false,
             construction: false,
+            anchor: crate::actions::CircleAnchor::Center,
         });
         state.apply(Action::CommitCircle);
         assert_eq!(state.doc.circles.len(), 1);
@@ -18552,6 +18673,7 @@ mod tests {
             user_edited: true,
             pending_focus: false,
             construction: false,
+            anchor: crate::actions::CircleAnchor::Center,
         });
         state.apply(Action::CommitCircle);
         assert_eq!(state.doc.circles.len(), 1, "commit must not fail: {}", state.status);

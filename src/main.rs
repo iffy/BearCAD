@@ -2388,6 +2388,13 @@ impl App {
             {
                 if self.state.tool != Tool::Circle {
                     self.state.apply(Action::SetTool(Tool::Circle));
+                } else {
+                    // Already on the Circle tool: repeated O toggles the anchor mode.
+                    let next = match self.state.circle_anchor {
+                        actions::CircleAnchor::Center => actions::CircleAnchor::Edge,
+                        actions::CircleAnchor::Edge => actions::CircleAnchor::Center,
+                    };
+                    self.state.apply(Action::SetCircleAnchor { anchor: next });
                 }
             }
 
@@ -6731,6 +6738,8 @@ impl eframe::App for App {
                 draw_rect_construction: self.state.rect_draw_construction_mode(),
                 rect_anchor: (self.state.tool == Tool::Rectangle)
                     .then_some(self.state.rect_anchor),
+                circle_anchor: (self.state.tool == Tool::Circle)
+                    .then_some(self.state.circle_anchor),
                 draw_line_construction: self.state.line_draw_construction_mode(),
                 draw_circle_construction: self.state.circle_draw_construction_mode(),
                 draw_line_curve_mode: self.state.line_curve_mode(),
@@ -7578,6 +7587,7 @@ impl eframe::App for App {
             context::sync_calibrate_draft(&mut self.state.context_pane, &self.state.doc, &content);
             let mut construction_change: Option<bool> = None;
             let mut rect_anchor_change: Option<actions::RectAnchor> = None;
+            let mut circle_anchor_change: Option<actions::CircleAnchor> = None;
             let mut curve_mode_change: Option<bool> = None;
             let mut tangent_constraint_change: Option<bool> = None;
             let mut name_commit: Option<(SceneElement, String)> = None;
@@ -7639,6 +7649,7 @@ impl eframe::App for App {
                             construction_change = Some(construction);
                         },
                         &mut |anchor| rect_anchor_change = Some(anchor),
+                        &mut |anchor| circle_anchor_change = Some(anchor),
                         &mut |kind| constraint_apply = Some(kind),
                         &mut |enabled| snapping_change = Some(enabled),
                         &mut |mode| extrude_body_mode_change = Some(mode),
@@ -8574,6 +8585,9 @@ impl eframe::App for App {
             if let Some(anchor) = rect_anchor_change {
                 self.state.apply(Action::SetRectAnchor { anchor });
             }
+            if let Some(anchor) = circle_anchor_change {
+                self.state.apply(Action::SetCircleAnchor { anchor });
+            }
             if let Some(construction) = construction_change {
                 self.state
                     .apply(Action::ApplyConstruction { construction });
@@ -9437,7 +9451,7 @@ fn build_viewport_scene_input<'a>(
     let preview_circle = creating_circle.and_then(|cc| {
         let session = sketch_session?;
         let frame = sketch_geometry_frame(doc, session.sketch)?;
-        let (cu, cv) = world_to_local(&frame, cc.origin);
+        let (cu, cv) = cc.center_local(&frame, doc);
         let r = cc.radius(&frame, doc);
         let angle = cc.diameter_dim_angle(&frame);
         let mut preview = Circle::from_local_center_radius(
@@ -14769,18 +14783,25 @@ impl App {
                     let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
 
                     if !was_creating && primary_pressed && !over_committed_dim_label {
-                        // Snap the center; the rim follows the cursor freely.
-                        let (center, center_snap) =
+                        // Snap the first click; the opposite point follows the cursor freely. In
+                        // centre mode the snap pins the circle's centre; in edge mode `origin` is
+                        // a rim point, so there's no centre to pin (the centre is derived).
+                        let anchor = self.state.circle_anchor;
+                        let (origin, origin_snap) =
                             snap_ground_point(&self.state, session, &frame, &project, gp, &[]);
-                        update_extension_anchors(&mut self.state, center_snap.clone());
-                        self.state.circle_center_snap = center_snap;
+                        update_extension_anchors(&mut self.state, origin_snap.clone());
+                        self.state.circle_center_snap = match anchor {
+                            actions::CircleAnchor::Center => origin_snap,
+                            actions::CircleAnchor::Edge => None,
+                        };
                         self.state.creating_circle = Some(CreatingCircle {
-                            origin: center,
+                            origin,
                             text: String::new(),
                             last_mouse: gp,
                             user_edited: false,
                             pending_focus: true,
                             construction: self.state.draw_construction,
+                            anchor,
                         });
                         self.state.status = "Move mouse • type to lock diameter • click/Enter commit • Esc cancel"
                             .to_string();

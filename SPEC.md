@@ -158,6 +158,17 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   inputs always read the **full** extents in both modes (centre mode's cursor sits half a side
   from the centre). `CreatingRect::corners` resolves the two opposite corners for the preview,
   the live dimensions, and the commit, honoring the anchor and any locked width/height.
+- **Circle anchor mode:** the Circle tool's context pane has the same two-icon radio —
+  **centre + radius** (`CircleAnchor::Center`, the classic behavior: the first click is the
+  centre, drag out the radius) or **edge to opposite edge** (`CircleAnchor::Edge`: the first
+  click pins one point on the rim and the cursor drags to the diametrically opposite rim point,
+  the two clicks spanning a diameter). It is a persisted tool setting
+  (`AppState::circle_anchor`, `Action::SetCircleAnchor`); pressing **O** while already on the
+  Circle tool (and not mid-draw) **toggles** it (the same key that selects the tool). The
+  diameter input constrains the circle in both modes. `CreatingCircle::center_local`/`radius`
+  resolve the centre and radius for the preview, the live diameter, and the commit — in edge
+  mode the centre is the midpoint of the two rim points, so a snapped first edge only positions
+  the rim (there's no centre to pin).
 - **Sketching on body faces:** the planar cap faces of an extruded body (the base and
   offset ends of each extruded profile) are selectable sketch faces. Clicking one with the
   Sketch tool starts a sketch on that face — its frame inherits the profile's in-plane axes,
