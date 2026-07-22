@@ -631,8 +631,19 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   the tool with its plane + bodies loaded; outputs grow/shrink with the target list (removed
   ones tombstone). Scripting: `bearcad.mirror_bodies{ plane = <face>, bodies = {…}, name? }`
   and `bearcad.edit_mirror{ index, plane, bodies }`. In the elements graph the plane's body and
-  every input body feed the Mirror node, and each reflected body nests beneath it. *(The
-  in-sketch Mirror — reflecting sketch shapes across a line/axis — is tracked separately, #528.)*
+  every input body feed the Mirror node, and each reflected body nests beneath it.
+  - **In a sketch (#528):** the Mirror tool reflects **sketch geometry** instead. The first
+    click picks a **straight sketch line** as the mirror axis; further clicks toggle lines and
+    circles into the reflected set; a translucent preview shows the reflections; **Enter**
+    commits. Committing creates a **`SketchMirrorOperation`** (`ShapeKind::SketchMirrorOperation`,
+    `Document::sketch_mirror_ops`) whose reflected lines/circles are separate entries nested
+    under the op and regenerated (`rebuild_sketch_mirror`) whenever the sources or the mirror
+    line change — the same output-slot reuse as the offset op, so indices stay stable. A line
+    reflects endpoint-for-endpoint (bezier handles included); a circle reflects its centre,
+    radius unchanged; the mirror line itself is never reflected. The context pane shows the
+    mirror-line label (with a ✕ to re-pick) and a Shapes element picker. Editable via
+    double-click / "Edit mirror". Scripting: `bearcad.mirror_sketch{ sketch, line, lines,
+    circles }` / `bearcad.edit_sketch_mirror{ index, … }`.
 
 - **Linear repeat tool (#182/#257):** copies of whole bodies spaced along an axis, chosen with
   an **element picker** of one edge/axis (a global X/Y/Z axis or a clicked straight sketch

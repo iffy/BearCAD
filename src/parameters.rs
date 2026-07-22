@@ -653,6 +653,8 @@ pub fn recompute_document_geometry(doc: &mut Document) -> Result<(), String> {
     rebake_extrusion_distances(doc);
     // Offset outputs track their sources and distance expressions.
     crate::actions::rebuild_sketch_offsets(doc);
+    // Mirror outputs track their sources and mirror line (#523).
+    crate::actions::rebuild_sketch_mirrors(doc);
     result
 }
 

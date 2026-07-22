@@ -79,6 +79,10 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             .sketch_offset_ops
             .get(index)
             .is_some_and(|op| !op.deleted),
+        SceneElement::SketchMirrorOp(index) => doc
+            .sketch_mirror_ops
+            .get(index)
+            .is_some_and(|op| !op.deleted),
         SceneElement::SketchRepeatOp(index) => doc
             .sketch_repeat_ops
             .get(index)
@@ -316,6 +320,26 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                     op.deleted = true;
                     // The parallel lines/circles go with the op.
                     let op = doc.sketch_offset_ops[index].clone();
+                    for &out in &op.line_outputs {
+                        if let Some(l) = doc.lines.get_mut(out) {
+                            l.deleted = true;
+                        }
+                    }
+                    for &out in &op.circle_outputs {
+                        if let Some(c) = doc.circles.get_mut(out) {
+                            c.deleted = true;
+                        }
+                    }
+                    changed = true;
+                }
+            }
+        }
+        SceneElement::SketchMirrorOp(index) => {
+            if let Some(op) = doc.sketch_mirror_ops.get_mut(index) {
+                if !op.deleted {
+                    op.deleted = true;
+                    // The reflected lines/circles go with the op (#523).
+                    let op = doc.sketch_mirror_ops[index].clone();
                     for &out in &op.line_outputs {
                         if let Some(l) = doc.lines.get_mut(out) {
                             l.deleted = true;

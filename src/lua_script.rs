@@ -103,6 +103,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::RepeatOp(_) => "repeat_op",
         SceneElement::SketchRepeatOp(_) => "sketch_repeat_op",
         SceneElement::SketchOffsetOp(_) => "sketch_offset_op",
+        SceneElement::SketchMirrorOp(_) => "sketch_mirror_op",
         SceneElement::SketchSliceOp(_) => "sketch_slice_op",
         SceneElement::SketchText(_) => "sketch_text",
         SceneElement::SliceOp(_) => "slice_op",
@@ -128,6 +129,7 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::RepeatOp(i)
         | SceneElement::SketchRepeatOp(i)
         | SceneElement::SketchOffsetOp(i)
+        | SceneElement::SketchMirrorOp(i)
         | SceneElement::SketchSliceOp(i)
         | SceneElement::SketchText(i)
         | SceneElement::SliceOp(i)
@@ -156,6 +158,7 @@ pub fn scene_element_from_kind(kind: &str, index: usize) -> Option<SceneElement>
         "sketch_text" | "text" => Some(SceneElement::SketchText(index)),
         "component" => Some(SceneElement::Component(index)),
         "sketch_offset_op" | "offset" => Some(SceneElement::SketchOffsetOp(index)),
+        "sketch_mirror_op" => Some(SceneElement::SketchMirrorOp(index)),
         "mirror_op" | "mirror" => Some(SceneElement::MirrorOp(index)),
         _ => None,
     }
@@ -799,6 +802,20 @@ fn parse_slice_op_args(
     }
     let extend_infinite: bool = opts.get::<Option<bool>>("extend")?.unwrap_or(true);
     Ok((targets, cutters, extend_infinite))
+}
+
+/// Parse a `bearcad.mirror_sketch`/`edit_sketch_mirror` table into
+/// `(sketch, mirror_line, lines, circles)` (#523/#528).
+fn parse_sketch_mirror_op_args(
+    opts: &Table,
+) -> mlua::Result<(crate::model::SketchId, usize, Vec<usize>, Vec<usize>)> {
+    let sketch: usize = opts.get::<Option<usize>>("sketch")?.unwrap_or(0);
+    let line: usize = opts
+        .get::<Option<usize>>("line")?
+        .ok_or_else(|| mlua::Error::external("mirror_sketch requires a `line` (the mirror axis)"))?;
+    let lines: Vec<usize> = opts.get::<Option<Vec<usize>>>("lines")?.unwrap_or_default();
+    let circles: Vec<usize> = opts.get::<Option<Vec<usize>>>("circles")?.unwrap_or_default();
+    Ok((sketch, line, lines, circles))
 }
 
 /// Parse a `bearcad.mirror_bodies`/`edit_mirror` table into `(plane_face, bodies)` (#523).
@@ -3087,6 +3104,54 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     circle_targets: circles,
                     distance,
                     construction,
+                })
+            };
+            if let crate::actions::ActionResult::Err(e) = result {
+                return Err(mlua::Error::external(e));
+            }
+            Ok(())
+        })?,
+    )?;
+
+    // 2D in-sketch mirror (#523/#528): reflect sketch lines/circles across a straight `line`.
+    api.set(
+        "mirror_sketch",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(&opts, "mirror_sketch", &["sketch", "line", "lines", "circles"])?;
+            let (sketch, line, lines, circles) = parse_sketch_mirror_op_args(&opts)?;
+            let result = unsafe {
+                tick.state().apply(crate::actions::Action::CreateSketchMirrorOperation {
+                    sketch,
+                    line,
+                    line_targets: lines,
+                    circle_targets: circles,
+                })
+            };
+            if let crate::actions::ActionResult::Err(e) = result {
+                return Err(mlua::Error::external(e));
+            }
+            Ok(())
+        })?,
+    )?;
+
+    api.set(
+        "edit_sketch_mirror",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(
+                &opts,
+                "edit_sketch_mirror",
+                &["index", "sketch", "line", "lines", "circles"],
+            )?;
+            let op: usize = opts.get("index")?;
+            let (_sketch, line, lines, circles) = parse_sketch_mirror_op_args(&opts)?;
+            let result = unsafe {
+                tick.state().apply(crate::actions::Action::EditSketchMirrorOperation {
+                    op,
+                    line,
+                    line_targets: lines,
+                    circle_targets: circles,
                 })
             };
             if let crate::actions::ActionResult::Err(e) = result {

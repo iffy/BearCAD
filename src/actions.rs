@@ -816,6 +816,39 @@ pub struct CreatingMove {
     pub editing: Option<usize>,
 }
 
+/// In-progress in-sketch mirror (Mirror tool inside a sketch, #523): the mirror line, the
+/// picked source lines/circles, and the op being re-edited.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreatingSketchMirror {
+    pub sketch: crate::model::SketchId,
+    /// The mirror line (a straight sketch line); `None` until picked.
+    pub line: Option<usize>,
+    pub line_targets: Vec<usize>,
+    pub circle_targets: Vec<usize>,
+    pub editing: Option<usize>,
+}
+
+impl CreatingSketchMirror {
+    pub fn new(sketch: crate::model::SketchId) -> Self {
+        Self {
+            sketch,
+            line: None,
+            line_targets: Vec::new(),
+            circle_targets: Vec::new(),
+            editing: None,
+        }
+    }
+
+    pub fn has_targets(&self) -> bool {
+        !self.line_targets.is_empty() || !self.circle_targets.is_empty()
+    }
+
+    /// Ready to commit once a mirror line and at least one source are picked.
+    pub fn can_commit(&self) -> bool {
+        self.line.is_some() && self.has_targets()
+    }
+}
+
 /// In-progress mirror operation (Mirror tool, #523): the mirror plane (a construction plane
 /// or a planar body face), the picked input bodies, and the op being re-edited.
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -1697,6 +1730,22 @@ pub enum Action {
         plane: crate::model::FaceId,
         targets: Vec<usize>,
     },
+    /// Commit the in-progress in-sketch mirror (#523/#528).
+    CommitSketchMirror,
+    /// Scripted/replayed in-sketch mirror.
+    CreateSketchMirrorOperation {
+        sketch: crate::model::SketchId,
+        line: usize,
+        line_targets: Vec<usize>,
+        circle_targets: Vec<usize>,
+    },
+    /// Re-target an existing in-sketch mirror.
+    EditSketchMirrorOperation {
+        op: usize,
+        line: usize,
+        line_targets: Vec<usize>,
+        circle_targets: Vec<usize>,
+    },
     /// Commit the in-progress Repeat-tool operation.
     CommitRepeat,
     /// Scripted/replayed linear repeat with an explicit payload.
@@ -2278,6 +2327,8 @@ pub struct AppState {
     pub creating_move: Option<CreatingMove>,
     /// In-progress mirror operation (Mirror tool, #523).
     pub creating_mirror: Option<CreatingMirror>,
+    /// In-progress in-sketch mirror (Mirror tool inside a sketch, #523).
+    pub creating_sketch_mirror: Option<CreatingSketchMirror>,
     /// In-progress linear repeat (Repeat tool).
     pub creating_repeat: Option<CreatingRepeat>,
     /// In-progress in-sketch linear repeat (#232), active when the Repeat tool runs with a
@@ -2428,6 +2479,7 @@ impl Default for AppState {
             creating_boolean: None,
             creating_move: None,
             creating_mirror: None,
+            creating_sketch_mirror: None,
             creating_repeat: None,
             creating_sketch_repeat: None,
             creating_sketch_offset: None,
@@ -3996,6 +4048,26 @@ fn validate_sketch_repeat_inputs(
     Ok(())
 }
 
+/// Validate a 2D in-sketch mirror's operands (#523): the mirror line must be a live, straight
+/// line in the sketch, plus the usual ≥1 live source belonging to that sketch.
+fn validate_sketch_mirror_inputs(
+    doc: &Document,
+    sketch: crate::model::SketchId,
+    line: usize,
+    line_targets: &[usize],
+    circle_targets: &[usize],
+) -> Result<(), String> {
+    let ml = doc
+        .lines
+        .get(line)
+        .filter(|l| !l.deleted && l.sketch == sketch)
+        .ok_or_else(|| "Mirror line not found in this sketch".to_string())?;
+    if ml.bezier.is_some() {
+        return Err("The mirror line must be a straight line".to_string());
+    }
+    validate_sketch_repeat_inputs(doc, sketch, line_targets, circle_targets)
+}
+
 /// Validate a 2D in-sketch slice's operands (#224): a live sketch, ≥1 target line and ≥1 cutter
 /// line, all live and belonging to that sketch.
 fn validate_sketch_slice_inputs(
@@ -4185,6 +4257,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::RepeatOp(i) => format!("Repeat operation {i}"),
         SceneElement::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
         SceneElement::SketchOffsetOp(i) => format!("Sketch offset {i}"),
+        SceneElement::SketchMirrorOp(i) => format!("Sketch mirror {i}"),
         SceneElement::SketchSliceOp(i) => format!("Sketch slice {i}"),
         SceneElement::SketchText(i) => format!("Text {i}"),
         SceneElement::SliceOp(i) => format!("Slice operation {i}"),
@@ -5093,9 +5166,39 @@ impl AppState {
                 if self.creating_mirror.is_some() && tool != Tool::Mirror {
                     self.creating_mirror = None;
                 }
-                if tool == Tool::Mirror && self.creating_mirror.is_none() {
-                    // Seed the target set from the current selection (#523/#439): a body
-                    // selected before entering the tool is what you want to mirror.
+                if self.creating_sketch_mirror.is_some() && tool != Tool::Mirror {
+                    self.creating_sketch_mirror = None;
+                }
+                if tool == Tool::Mirror && self.sketch_session.is_some() {
+                    // Inside a sketch the Mirror tool reflects sketch geometry (#523/#528):
+                    // seed sources from the current selection's lines/circles.
+                    if let Some(session) = self.sketch_session {
+                        if self.creating_sketch_mirror.is_none() {
+                            let mut sm = CreatingSketchMirror::new(session.sketch);
+                            for element in self.scene_selection.iter() {
+                                match element {
+                                    crate::hierarchy::SceneElement::Line(li)
+                                        if self.doc.lines.get(li).is_some_and(|l| {
+                                            !l.deleted && l.sketch == session.sketch
+                                        }) =>
+                                    {
+                                        sm.line_targets.push(li);
+                                    }
+                                    crate::hierarchy::SceneElement::Circle(ci)
+                                        if self.doc.circles.get(ci).is_some_and(|c| {
+                                            !c.deleted && c.sketch == session.sketch
+                                        }) =>
+                                    {
+                                        sm.circle_targets.push(ci);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            self.creating_sketch_mirror = Some(sm);
+                        }
+                    }
+                } else if tool == Tool::Mirror && self.creating_mirror.is_none() {
+                    // Outside a sketch: mirror whole bodies. Seed from the selection (#523/#439).
                     let mut cm = CreatingMirror::default();
                     for element in self.scene_selection.iter() {
                         if let crate::hierarchy::SceneElement::Body(bi) = element {
@@ -8842,6 +8945,117 @@ label_hidden: false,
                 self.status = "Edited offset".to_string();
                 ActionResult::Ok
             }
+            Action::CommitSketchMirror => {
+                let Some(sm) = self.creating_sketch_mirror.take() else {
+                    return ActionResult::Err("No mirror in progress".to_string());
+                };
+                let Some(line) = sm.line else {
+                    let e = "Pick a mirror line".to_string();
+                    self.status = e.clone();
+                    self.creating_sketch_mirror = Some(sm);
+                    return ActionResult::Err(e);
+                };
+                let result = match sm.editing {
+                    Some(op) => self.apply(Action::EditSketchMirrorOperation {
+                        op,
+                        line,
+                        line_targets: sm.line_targets.clone(),
+                        circle_targets: sm.circle_targets.clone(),
+                    }),
+                    None => self.apply(Action::CreateSketchMirrorOperation {
+                        sketch: sm.sketch,
+                        line,
+                        line_targets: sm.line_targets.clone(),
+                        circle_targets: sm.circle_targets.clone(),
+                    }),
+                };
+                if matches!(result, ActionResult::Err(_)) {
+                    self.creating_sketch_mirror = Some(sm);
+                } else {
+                    self.creating_sketch_mirror = Some(CreatingSketchMirror::new(sm.sketch));
+                }
+                result
+            }
+            Action::CreateSketchMirrorOperation {
+                sketch,
+                line,
+                line_targets,
+                circle_targets,
+            } => {
+                if let Err(e) = validate_sketch_mirror_inputs(
+                    &self.doc,
+                    sketch,
+                    line,
+                    &line_targets,
+                    &circle_targets,
+                ) {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let n = line_targets.len() + circle_targets.len();
+                let op_index = self.doc.sketch_mirror_ops.len();
+                self.doc.sketch_mirror_ops.push(crate::model::SketchMirrorOperation {
+                    sketch,
+                    line,
+                    line_targets,
+                    circle_targets,
+                    line_outputs: Vec::new(),
+                    circle_outputs: Vec::new(),
+                    name: None,
+                    deleted: false,
+                });
+                self.doc.shape_order.push(ShapeKind::SketchMirrorOperation);
+                if !rebuild_sketch_mirror(&mut self.doc, op_index) {
+                    self.doc.sketch_mirror_ops.pop();
+                    self.doc.shape_order.pop();
+                    let e = "Mirror line is degenerate or missing".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                self.refresh_document_health();
+                self.status = format!("Mirrored {n} sketch entity(ies)");
+                ActionResult::Ok
+            }
+            Action::EditSketchMirrorOperation {
+                op,
+                line,
+                line_targets,
+                circle_targets,
+            } => {
+                let Some(sketch) =
+                    self.doc.sketch_mirror_ops.get(op).filter(|o| !o.deleted).map(|o| o.sketch)
+                else {
+                    let e = format!("Sketch mirror {op} not found");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                };
+                if let Err(e) = validate_sketch_mirror_inputs(
+                    &self.doc,
+                    sketch,
+                    line,
+                    &line_targets,
+                    &circle_targets,
+                ) {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let old = self.doc.sketch_mirror_ops[op].clone();
+                {
+                    let entry = &mut self.doc.sketch_mirror_ops[op];
+                    entry.line = line;
+                    entry.line_targets = line_targets;
+                    entry.circle_targets = circle_targets;
+                }
+                if !rebuild_sketch_mirror(&mut self.doc, op) {
+                    self.doc.sketch_mirror_ops[op] = old;
+                    let e = "Mirror line is degenerate or missing".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                self.refresh_document_health();
+                self.status = "Edited sketch mirror".to_string();
+                ActionResult::Ok
+            }
             Action::CreateSketchText {
                 sketch,
                 text,
@@ -11923,6 +12137,123 @@ pub fn rebuild_sketch_offsets(doc: &mut crate::model::Document) {
     }
 }
 
+/// Reflect 2D point `p` across the infinite line through `a` with unit direction `dir`.
+fn reflect_point_2d(p: glam::Vec2, a: glam::Vec2, dir: glam::Vec2) -> glam::Vec2 {
+    let v = p - a;
+    a + 2.0 * v.dot(dir) * dir - v
+}
+
+/// (Re)generate the reflected copies for in-sketch mirror op `op_index` (#523): every target
+/// line/circle reflected across the mirror line, reusing output slots so their indices stay
+/// stable across rebuilds. `false` when the mirror line or sources are gone/degenerate.
+pub(crate) fn rebuild_sketch_mirror(doc: &mut crate::model::Document, op_index: usize) -> bool {
+    let Some(op) = doc.sketch_mirror_ops.get(op_index).filter(|o| !o.deleted).cloned() else {
+        return false;
+    };
+    let Some(ml) = doc.lines.get(op.line).filter(|l| !l.deleted) else {
+        return false;
+    };
+    let a = glam::Vec2::new(ml.x0, ml.y0);
+    let dir = (glam::Vec2::new(ml.x1, ml.y1) - a).normalize_or_zero();
+    if dir.length_squared() < 1e-9 {
+        return false;
+    }
+
+    // Lines: never reflect the mirror line itself.
+    let want_lines: Vec<usize> = op
+        .line_targets
+        .iter()
+        .copied()
+        .filter(|&li| li != op.line && doc.lines.get(li).is_some_and(|l| !l.deleted))
+        .collect();
+    let mut line_outputs = op.line_outputs.clone();
+    while line_outputs.len() < want_lines.len() {
+        line_outputs.push(doc.lines.len());
+        let seed = doc.lines[want_lines[0]].clone();
+        doc.lines.push(seed);
+        doc.shape_order.push(crate::model::ShapeKind::Line);
+    }
+    for extra in line_outputs.split_off(want_lines.len()) {
+        if let Some(l) = doc.lines.get_mut(extra) {
+            l.deleted = true;
+        }
+    }
+    for (&li, &out) in want_lines.iter().zip(&line_outputs) {
+        let src = doc.lines[li].clone();
+        let p0 = reflect_point_2d(glam::Vec2::new(src.x0, src.y0), a, dir);
+        let p1 = reflect_point_2d(glam::Vec2::new(src.x1, src.y1), a, dir);
+        let bezier = src.bezier.map(|[c0, c1]| {
+            let r0 = reflect_point_2d(glam::Vec2::new(c0.0, c0.1), a, dir);
+            let r1 = reflect_point_2d(glam::Vec2::new(c1.0, c1.1), a, dir);
+            [(r0.x, r0.y), (r1.x, r1.y)]
+        });
+        doc.lines[out] = crate::model::Line {
+            x0: p0.x,
+            y0: p0.y,
+            x1: p1.x,
+            y1: p1.y,
+            length_locked: false,
+            length_dim_offset: None,
+            length_expr: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+            bezier,
+            chamfer_fillet_parent: None,
+            projection: None,
+            ..src
+        };
+    }
+
+    // Circles: reflect the centre, radius unchanged.
+    let want_circles: Vec<usize> = op
+        .circle_targets
+        .iter()
+        .copied()
+        .filter(|&ci| doc.circles.get(ci).is_some_and(|c| !c.deleted))
+        .collect();
+    let mut circle_outputs = op.circle_outputs.clone();
+    while circle_outputs.len() < want_circles.len() {
+        circle_outputs.push(doc.circles.len());
+        let seed = doc.circles[want_circles[0]].clone();
+        doc.circles.push(seed);
+        doc.shape_order.push(crate::model::ShapeKind::Circle);
+    }
+    for extra in circle_outputs.split_off(want_circles.len()) {
+        if let Some(c) = doc.circles.get_mut(extra) {
+            c.deleted = true;
+        }
+    }
+    for (&ci, &out) in want_circles.iter().zip(&circle_outputs) {
+        let src = doc.circles[ci].clone();
+        let center = reflect_point_2d(glam::Vec2::new(src.cx, src.cy), a, dir);
+        doc.circles[out] = crate::model::Circle {
+            cx: center.x,
+            cy: center.y,
+            diameter_locked: false,
+            diameter_dim_offset: None,
+            diameter_expr: None,
+            name: None,
+            deleted: false,
+            shadow: false,
+            ..src
+        };
+    }
+
+    let entry = &mut doc.sketch_mirror_ops[op_index];
+    entry.line_outputs = line_outputs;
+    entry.circle_outputs = circle_outputs;
+    true
+}
+
+/// Re-run every live in-sketch mirror op so outputs track their sources/mirror line; called
+/// from `recompute_document_geometry`.
+pub fn rebuild_sketch_mirrors(doc: &mut crate::model::Document) {
+    for i in 0..doc.sketch_mirror_ops.len() {
+        let _ = rebuild_sketch_mirror(doc, i);
+    }
+}
+
 /// (Re)generate the offset copies of sketches repeated along an axis (#226) for repeat op
 /// `op_index`. Each copy rides a fresh construction plane parallel to the source's, translated by
 /// the instance offset, and carries copies of the source's lines/circles (plane-local coords
@@ -12475,6 +12806,43 @@ mod tests {
         state.apply(Action::DeleteElement { element: SceneElement::MirrorOp(0) });
         assert!(state.doc.bodies[out].deleted, "reflection removed");
         assert!(!state.doc.bodies[body].deleted, "source kept");
+    }
+
+    /// #523/#528: an in-sketch mirror reflects the picked lines/circles across the mirror
+    /// line, keeps the originals, and its outputs are removed when the op is deleted.
+    #[test]
+    fn sketch_mirror_reflects_geometry_across_a_line() {
+        use crate::hierarchy::SceneElement;
+        use crate::model::Line;
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        // Mirror axis: the vertical line x = 0.
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, -10.0, 0.0, 10.0)); // 0
+        // Target: a segment on the +x side.
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 5.0, 0.0, 8.0, 3.0)); // 1
+
+        let r = state.apply(Action::CreateSketchMirrorOperation {
+            sketch,
+            line: 0,
+            line_targets: vec![1],
+            circle_targets: vec![],
+        });
+        assert!(matches!(r, ActionResult::Ok), "sketch mirror should succeed: {r:?}");
+        assert_eq!(state.doc.sketch_mirror_ops.len(), 1);
+        assert_eq!(state.doc.sketch_mirror_ops[0].line_outputs.len(), 1);
+
+        // Reflected across x = 0: (5,0)→(-5,0), (8,3)→(-8,3).
+        let out = state.doc.sketch_mirror_ops[0].line_outputs[0];
+        let o = &state.doc.lines[out];
+        assert!((o.x0 + 5.0).abs() < 1e-3 && o.y0.abs() < 1e-3, "start {:?}", (o.x0, o.y0));
+        assert!((o.x1 + 8.0).abs() < 1e-3 && (o.y1 - 3.0).abs() < 1e-3, "end {:?}", (o.x1, o.y1));
+        // The original stays.
+        assert!(!state.doc.lines[1].deleted);
+
+        // Deleting the op removes the reflection.
+        state.apply(Action::DeleteElement { element: SceneElement::SketchMirrorOp(0) });
+        assert!(state.doc.lines[out].deleted, "reflected line removed with the op");
+        assert!(!state.doc.lines[1].deleted, "source kept");
     }
 
     /// #521: exporting a component gathers every body filed into it and its nested

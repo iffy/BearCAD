@@ -4584,7 +4584,9 @@ impl App {
         vp: &glam::Mat4,
         pick_occlusion: Option<&construction::PickOcclusion>,
     ) {
-        if self.state.sketch_session.is_some() {
+        // Inside a sketch, Mirror reflects sketch geometry across a line (#523/#528).
+        if let Some(session) = self.state.sketch_session {
+            self.handle_sketch_mirror_tool(ui, painter, project, pointer_screen, session);
             return;
         }
         let cm = self
@@ -4686,6 +4688,156 @@ impl App {
                     .collect();
                 if let Some(pts) = pts {
                     painter.add(egui::Shape::convex_polygon(pts, fill, egui::Stroke::NONE));
+                }
+            }
+        }
+    }
+
+    /// In-sketch Mirror (#523/#528): the first click picks a straight sketch line as the
+    /// mirror axis; further clicks toggle lines/circles into the reflected set; Enter commits.
+    /// Draws a translucent preview of the reflected geometry.
+    fn handle_sketch_mirror_tool(
+        &mut self,
+        ui: &egui::Ui,
+        painter: &egui::Painter,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        session: SketchSession,
+    ) {
+        let sm = self
+            .state
+            .creating_sketch_mirror
+            .get_or_insert_with(|| actions::CreatingSketchMirror::new(session.sketch));
+
+        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+            && !ui.ctx().wants_keyboard_input()
+            && sm.can_commit()
+        {
+            self.state.apply(Action::CommitSketchMirror);
+            return;
+        }
+
+        // Preview: reflect each target's geometry across the mirror line and draw it faintly.
+        self.draw_sketch_mirror_ghosts(painter, project, session);
+
+        if !ui.input(|i| i.pointer.primary_pressed()) {
+            return;
+        }
+        let Some(pp) = pointer_screen else {
+            return;
+        };
+        let Some(target) = resolve_pick_target(pp, project, None, &self.state.doc, None) else {
+            return;
+        };
+        let sm = self
+            .state
+            .creating_sketch_mirror
+            .get_or_insert_with(|| actions::CreatingSketchMirror::new(session.sketch));
+        match target.kind {
+            construction::PickTargetKind::Line(li) => {
+                // First straight-line pick becomes the mirror axis; later line picks toggle
+                // into the reflected set (the mirror line itself never reflects).
+                if sm.line.is_none() {
+                    let straight = self
+                        .state
+                        .doc
+                        .lines
+                        .get(li)
+                        .is_some_and(|l| !l.deleted && l.bezier.is_none());
+                    if straight {
+                        if let Some(sm) = self.state.creating_sketch_mirror.as_mut() {
+                            sm.line = Some(li);
+                        }
+                        self.state.status =
+                            "Mirror: axis set — now click shapes to mirror".to_string();
+                        return;
+                    }
+                }
+                if sm.line == Some(li) {
+                    return;
+                }
+                if let Some(pos) = sm.line_targets.iter().position(|x| *x == li) {
+                    sm.line_targets.remove(pos);
+                } else {
+                    sm.line_targets.push(li);
+                }
+                self.state.status = format!(
+                    "Mirror: {} shape(s) picked",
+                    sm.line_targets.len() + sm.circle_targets.len()
+                );
+            }
+            construction::PickTargetKind::Circle(ci) => {
+                if let Some(pos) = sm.circle_targets.iter().position(|x| *x == ci) {
+                    sm.circle_targets.remove(pos);
+                } else {
+                    sm.circle_targets.push(ci);
+                }
+                self.state.status = format!(
+                    "Mirror: {} shape(s) picked",
+                    sm.line_targets.len() + sm.circle_targets.len()
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// Draw the translucent preview of an in-progress in-sketch mirror (#528): each target
+    /// line/circle reflected across the mirror line, in the sketch plane.
+    fn draw_sketch_mirror_ghosts(
+        &self,
+        painter: &egui::Painter,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        session: SketchSession,
+    ) {
+        let Some(sm) = self.state.creating_sketch_mirror.as_ref() else { return };
+        let Some(line_idx) = sm.line else { return };
+        if !sm.has_targets() {
+            return;
+        }
+        let doc = &self.state.doc;
+        let Some(frame) = sketch_geometry_frame(doc, session.sketch) else { return };
+        let Some(ml) = doc.lines.get(line_idx).filter(|l| !l.deleted) else { return };
+        let a = glam::Vec2::new(ml.x0, ml.y0);
+        let dir = (glam::Vec2::new(ml.x1, ml.y1) - a).normalize_or_zero();
+        if dir.length_squared() < 1e-9 {
+            return;
+        }
+        let reflect = |p: glam::Vec2| {
+            let v = p - a;
+            a + 2.0 * v.dot(dir) * dir - v
+        };
+        let stroke = egui::Stroke::new(1.5, col::PREVIEW);
+        // Lines (bezier sampled).
+        for &li in &sm.line_targets {
+            let Some(l) = doc.lines.get(li).filter(|l| !l.deleted) else { continue };
+            if li == line_idx {
+                continue;
+            }
+            let mut prev: Option<egui::Pos2> = None;
+            for (u, v) in l.sample_local(model::BEZIER_SEGMENTS) {
+                let r = reflect(glam::Vec2::new(u, v));
+                if let Some(p) = project(local_to_world(&frame, r.x, r.y)) {
+                    if let Some(q) = prev {
+                        painter.line_segment([q, p], stroke);
+                    }
+                    prev = Some(p);
+                }
+            }
+        }
+        // Circles (sampled).
+        for &ci in &sm.circle_targets {
+            let Some(c) = doc.circles.get(ci).filter(|c| !c.deleted) else { continue };
+            let center = reflect(glam::Vec2::new(c.cx, c.cy));
+            const N: usize = 48;
+            let mut prev: Option<egui::Pos2> = None;
+            for k in 0..=N {
+                let t = k as f32 / N as f32 * std::f32::consts::TAU;
+                let p = local_to_world(&frame, center.x + c.r * t.cos(), center.y + c.r * t.sin());
+                if let Some(sp) = project(p) {
+                    if let Some(q) = prev {
+                        painter.line_segment([q, sp], stroke);
+                    }
+                    prev = Some(sp);
                 }
             }
         }
@@ -6892,6 +7044,48 @@ impl eframe::App for App {
                         })
                     })
                     .flatten(),
+                sketch_mirror: (self.state.tool == Tool::Mirror
+                    && self.state.sketch_session.is_some())
+                .then(|| {
+                    let c = self.state.creating_sketch_mirror.as_ref();
+                    let mut picked = Vec::new();
+                    if let Some(c) = c {
+                        for &li in &c.line_targets {
+                            picked.push(SceneElement::Line(li));
+                        }
+                        for &ci in &c.circle_targets {
+                            picked.push(SceneElement::Circle(ci));
+                        }
+                    }
+                    context::SketchMirrorControl {
+                        line_label: c.and_then(|c| c.line).map(|li| {
+                            names::element_name(&self.state.doc, SceneElement::Line(li))
+                                .map(|n| n.to_string())
+                                .unwrap_or_else(|| format!("Line {li}"))
+                        }),
+                        picked,
+                        editing: c.map(|c| c.editing.is_some()).unwrap_or(false),
+                        can_commit: c.map(|c| c.can_commit()).unwrap_or(false),
+                    }
+                }),
+                sketch_mirror_edit_start: (self.state.tool != Tool::Mirror)
+                    .then(|| {
+                        let mut only = None;
+                        for element in self.state.scene_selection.iter() {
+                            match (element, only) {
+                                (SceneElement::SketchMirrorOp(i), None) => only = Some(i),
+                                _ => return None,
+                            }
+                        }
+                        only.filter(|&i| {
+                            self.state
+                                .doc
+                                .sketch_mirror_ops
+                                .get(i)
+                                .is_some_and(|o| !o.deleted)
+                        })
+                    })
+                    .flatten(),
                 sketch_slice: (self.state.tool == Tool::Slice
                     && self.state.sketch_session.is_some())
                 .then(|| {
@@ -7332,6 +7526,7 @@ impl eframe::App for App {
             let mut repeat_edit: Option<context::RepeatEdit> = None;
             let mut sketch_repeat_edit: Option<context::SketchRepeatEdit> = None;
             let mut sketch_offset_edit: Option<context::SketchOffsetEdit> = None;
+            let mut sketch_mirror_edit: Option<context::SketchMirrorEdit> = None;
             let mut sketch_slice_edit: Option<context::SketchSliceEdit> = None;
             let mut sketch_text_edit: Option<context::SketchTextEdit> = None;
             let mut drawing_view_edit: Option<context::DrawingViewEdit> = None;
@@ -7384,6 +7579,7 @@ impl eframe::App for App {
                         &mut |edit| repeat_edit = Some(edit),
                         &mut |edit| sketch_repeat_edit = Some(edit),
                         &mut |edit| sketch_offset_edit = Some(edit),
+                        &mut |edit| sketch_mirror_edit = Some(edit),
                         &mut |edit| sketch_slice_edit = Some(edit),
                         &mut |edit| sketch_text_edit = Some(edit),
                         &mut |edit| drawing_view_edit = Some(edit),
@@ -7683,6 +7879,52 @@ impl eframe::App for App {
                                 }
                                 _ => unreachable!(),
                             }
+                        }
+                    }
+                }
+            }
+            if let Some(edit) = sketch_mirror_edit {
+                match edit {
+                    context::SketchMirrorEdit::Commit => {
+                        self.state.apply(Action::CommitSketchMirror);
+                    }
+                    context::SketchMirrorEdit::EditStart(op) => {
+                        if let Some(existing) = self.state.doc.sketch_mirror_ops.get(op).cloned() {
+                            self.state.creating_sketch_mirror =
+                                Some(actions::CreatingSketchMirror {
+                                    sketch: existing.sketch,
+                                    line: Some(existing.line),
+                                    line_targets: existing.line_targets,
+                                    circle_targets: existing.circle_targets,
+                                    editing: Some(op),
+                                });
+                            self.state.apply(Action::SetTool(Tool::Mirror));
+                            if self.state.sketch_session.is_none() {
+                                self.state.apply(Action::OpenSketch {
+                                    sketch: existing.sketch,
+                                    viewport: None,
+                                });
+                            }
+                        }
+                    }
+                    context::SketchMirrorEdit::ClearLine => {
+                        if let Some(sm) = self.state.creating_sketch_mirror.as_mut() {
+                            sm.line = None;
+                        }
+                    }
+                    context::SketchMirrorEdit::Remove(el) => {
+                        if let Some(sm) = self.state.creating_sketch_mirror.as_mut() {
+                            match el {
+                                SceneElement::Line(li) => sm.line_targets.retain(|&x| x != li),
+                                SceneElement::Circle(ci) => sm.circle_targets.retain(|&x| x != ci),
+                                _ => {}
+                            }
+                        }
+                    }
+                    context::SketchMirrorEdit::Clear => {
+                        if let Some(sm) = self.state.creating_sketch_mirror.as_mut() {
+                            sm.line_targets.clear();
+                            sm.circle_targets.clear();
                         }
                     }
                 }
@@ -15554,6 +15796,14 @@ impl App {
             Tool::Mirror => {
                 if let Some(cm) = self.state.creating_mirror.as_ref() {
                     folded.extend(cm.targets.iter().map(|&bi| SceneElement::Body(bi)));
+                }
+                // In-sketch mirror sources (#528).
+                if let Some(sm) = self.state.creating_sketch_mirror.as_ref() {
+                    folded.extend(sm.line_targets.iter().map(|&li| SceneElement::Line(li)));
+                    folded.extend(sm.circle_targets.iter().map(|&ci| SceneElement::Circle(ci)));
+                    if let Some(li) = sm.line {
+                        folded.push(SceneElement::Line(li));
+                    }
                 }
             }
             Tool::Repeat => {

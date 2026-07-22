@@ -1836,6 +1836,33 @@ pub struct SketchOffsetOperation {
     pub deleted: bool,
 }
 
+/// A 2D in-sketch mirror (Mirror tool inside a sketch, #523): reflects the picked lines and
+/// circles across a mirror line, emitting the reflections as separate `Line`/`Circle` entries
+/// grouped under the op and regenerated whenever the sources or the mirror line change.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SketchMirrorOperation {
+    /// The sketch the sources live in; outputs land in the same sketch.
+    pub sketch: SketchId,
+    /// The mirror line: a straight sketch line whose infinite extension is the mirror axis.
+    pub line: usize,
+    /// Source line indices to reflect.
+    #[serde(default)]
+    pub line_targets: Vec<usize>,
+    /// Source circle indices to reflect.
+    #[serde(default)]
+    pub circle_targets: Vec<usize>,
+    /// Generated line indices, aligned with `line_targets`.
+    #[serde(default)]
+    pub line_outputs: Vec<usize>,
+    /// Generated circle indices, aligned with `circle_targets`.
+    #[serde(default)]
+    pub circle_outputs: Vec<usize>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
 /// A 2D in-sketch slice (#224): splits the target sketch **lines** at their interior crossings
 /// with the cutter lines, shadowing each split original and emitting its fragments as new lines
 /// in the same sketch, grouped under the operation. The sketch-space analogue of the 3D
@@ -2051,6 +2078,8 @@ pub enum ShapeKind {
     SketchSliceOperation,
     /// A 2D in-sketch offset: its parallel lines/circles are separate entries.
     SketchOffsetOperation,
+    /// A 2D in-sketch mirror (#523): its reflected lines/circles are separate entries.
+    SketchMirrorOperation,
     /// A sketch text element (#282): baked glyph outlines + embedded font.
     SketchText,
     /// An in-place edit of an existing construction plane (undo restores the prior planes).
@@ -2638,6 +2667,9 @@ pub struct Document {
     /// 2D in-sketch offsets: parallel sketch entities grouped under an op.
     #[serde(default)]
     pub sketch_offset_ops: Vec<SketchOffsetOperation>,
+    /// 2D in-sketch mirrors (#523): reflected sketch entities grouped under an op.
+    #[serde(default)]
+    pub sketch_mirror_ops: Vec<SketchMirrorOperation>,
     /// Sketch text elements (#282): baked glyph outlines + embedded font, per sketch.
     #[serde(default)]
     pub sketch_texts: Vec<SketchText>,
@@ -2829,6 +2861,7 @@ impl Default for Document {
             slice_ops: Vec::new(),
             sketch_repeat_ops: Vec::new(),
             sketch_offset_ops: Vec::new(),
+            sketch_mirror_ops: Vec::new(),
             sketch_slice_ops: Vec::new(),
             sketch_texts: Vec::new(),
             drawings: Vec::new(),

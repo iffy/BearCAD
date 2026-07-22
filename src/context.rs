@@ -86,6 +86,10 @@ pub struct ContextInput<'a> {
     pub sketch_offset: Option<SketchOffsetControl>,
     /// "Edit offset" entry point: the selected committed offset op.
     pub sketch_offset_edit_start: Option<usize>,
+    /// In-sketch Mirror tool control (#523/#528).
+    pub sketch_mirror: Option<SketchMirrorControl>,
+    /// "Edit sketch mirror" entry point: the selected committed sketch-mirror op.
+    pub sketch_mirror_edit_start: Option<usize>,
     /// In-sketch Slice tool control (#238).
     pub sketch_slice: Option<SketchSliceControl>,
     /// Selected sketch-text editor (#286).
@@ -340,6 +344,31 @@ pub enum SketchOffsetEdit {
     Remove(SceneElement),
     /// Clear all picked entities (#493).
     Clear,
+}
+
+/// The in-sketch Mirror tool's context section (#523/#528).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SketchMirrorControl {
+    /// Label of the picked mirror line, or `None` until one is chosen.
+    pub line_label: Option<String>,
+    /// Lines/circles currently in the reflected set, for the element picker.
+    pub picked: Vec<SceneElement>,
+    pub editing: bool,
+    pub can_commit: bool,
+}
+
+/// One edit from the in-sketch Mirror context section (#523/#528).
+#[derive(Clone, Debug, PartialEq)]
+pub enum SketchMirrorEdit {
+    /// Clear the picked mirror line so a new one can be clicked.
+    ClearLine,
+    /// Remove one picked source from the reflected set.
+    Remove(SceneElement),
+    /// Clear all picked sources.
+    Clear,
+    Commit,
+    /// Re-open a committed sketch-mirror op for editing.
+    EditStart(usize),
 }
 
 /// One edit from the Repeat context section (#257): the three interlinked variables and the two
@@ -692,6 +721,10 @@ pub struct ContextPaneContent {
     pub sketch_offset: Option<SketchOffsetControl>,
     /// "Edit offset" entry point: the selected committed offset op.
     pub sketch_offset_edit_start: Option<usize>,
+    /// In-sketch Mirror tool control (#523/#528).
+    pub sketch_mirror: Option<SketchMirrorControl>,
+    /// "Edit sketch mirror" entry point: the selected committed sketch-mirror op.
+    pub sketch_mirror_edit_start: Option<usize>,
     /// In-sketch Slice tool control (#238).
     pub sketch_slice: Option<SketchSliceControl>,
     /// Selected sketch-text editor (#286).
@@ -1139,6 +1172,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let sketch_repeat = input.sketch_repeat.clone();
     let sketch_offset = input.sketch_offset.clone();
     let sketch_offset_edit_start = input.sketch_offset_edit_start;
+    let sketch_mirror = input.sketch_mirror.clone();
+    let sketch_mirror_edit_start = input.sketch_mirror_edit_start;
     let sketch_slice = input.sketch_slice.clone();
     let sketch_text = input.sketch_text.clone();
     // With the Text tool active, the pane belongs to placing/editing text — a projection that
@@ -1191,6 +1226,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             sketch_repeat: sketch_repeat.clone(),
             sketch_offset: sketch_offset.clone(),
             sketch_offset_edit_start,
+            sketch_mirror: sketch_mirror.clone(),
+            sketch_mirror_edit_start,
             sketch_slice: sketch_slice.clone(),
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
@@ -1239,6 +1276,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             sketch_repeat: sketch_repeat.clone(),
             sketch_offset: sketch_offset.clone(),
             sketch_offset_edit_start,
+            sketch_mirror: sketch_mirror.clone(),
+            sketch_mirror_edit_start,
             sketch_slice: sketch_slice.clone(),
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
@@ -1287,6 +1326,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             sketch_repeat: sketch_repeat.clone(),
             sketch_offset: sketch_offset.clone(),
             sketch_offset_edit_start,
+            sketch_mirror: sketch_mirror.clone(),
+            sketch_mirror_edit_start,
             sketch_slice: sketch_slice.clone(),
             sketch_text: sketch_text.clone(),
             drawing_view: drawing_view.clone(),
@@ -1338,6 +1379,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         sketch_repeat,
         sketch_offset,
         sketch_offset_edit_start,
+        sketch_mirror,
+        sketch_mirror_edit_start,
         sketch_slice,
         sketch_text,
         drawing_view,
@@ -1726,6 +1769,7 @@ pub fn show_pane(
     on_repeat_edit: &mut impl FnMut(RepeatEdit),
     on_sketch_repeat_edit: &mut impl FnMut(SketchRepeatEdit),
     on_sketch_offset_edit: &mut impl FnMut(SketchOffsetEdit),
+    on_sketch_mirror_edit: &mut impl FnMut(SketchMirrorEdit),
     on_sketch_slice_edit: &mut impl FnMut(SketchSliceEdit),
     on_sketch_text_edit: &mut impl FnMut(SketchTextEdit),
     on_drawing_view_edit: &mut impl FnMut(DrawingViewEdit),
@@ -2916,6 +2960,76 @@ pub fn show_pane(
         );
     }
 
+    if let Some(control) = &content.sketch_mirror {
+        any_control = true;
+        ui.separator();
+        section_label(ui, if control.editing { "Edit mirror" } else { "Mirror" });
+        // Primary: the mirror line (picked in the viewport), shown with a ✕ to re-pick.
+        labeled_row(ui, "Mirror line", |ui| match &control.line_label {
+            Some(label) => {
+                ui.label(egui::RichText::new(label).color(egui::Color32::from_gray(200)));
+                if ui.small_button("✕").on_hover_text("Pick a different line").clicked() {
+                    on_sketch_mirror_edit(SketchMirrorEdit::ClearLine);
+                }
+            }
+            None => {
+                ui.label(
+                    egui::RichText::new("click a straight line")
+                        .color(egui::Color32::from_gray(140))
+                        .size(11.0),
+                );
+            }
+        });
+        // Secondary: the reflected shapes (unified element picker).
+        let mut picker = ElementPicker::new(
+            ElementFilter::kinds(&[ElementKind::Line, ElementKind::Circle]),
+            PickLimit::Infinite,
+        );
+        picker.set_focused(control.line_label.is_some());
+        picker.set_picked(control.picked.iter().cloned());
+        labeled_row_top(ui, "Shapes", |ui| {
+            ui.add_enabled_ui(controls_enabled, |ui| {
+                if let Some(event) =
+                    crate::element_picker::show(ui, &picker, doc, "sketch_mirror_picker")
+                {
+                    match event {
+                        crate::element_picker::PickerEvent::Focus => {}
+                        crate::element_picker::PickerEvent::Remove(i) => {
+                            if let Some(el) = control.picked.get(i).cloned() {
+                                on_sketch_mirror_edit(SketchMirrorEdit::Remove(el));
+                            }
+                        }
+                        crate::element_picker::PickerEvent::Clear => {
+                            on_sketch_mirror_edit(SketchMirrorEdit::Clear);
+                        }
+                    }
+                }
+            });
+        });
+        if ui
+            .add_enabled(
+                control.can_commit && controls_enabled,
+                egui::Button::new(if control.editing { "Apply changes" } else { "Mirror" }),
+            )
+            .clicked()
+        {
+            on_sketch_mirror_edit(SketchMirrorEdit::Commit);
+        }
+    }
+
+    if let Some(op) = content.sketch_mirror_edit_start {
+        any_control = true;
+        ui.separator();
+        if ui.button("Edit mirror").clicked() {
+            on_sketch_mirror_edit(SketchMirrorEdit::EditStart(op));
+        }
+        ui.label(
+            egui::RichText::new("Re-open the Mirror tool to change this operation")
+                .color(egui::Color32::from_gray(140))
+                .size(11.0),
+        );
+    }
+
     if let Some(op) = content.repeat_edit_start {
         any_control = true;
         ui.separator();
@@ -4024,6 +4138,8 @@ mod tests {
             sketch_repeat: None,
             sketch_offset: None,
             sketch_offset_edit_start: None,
+            sketch_mirror: None,
+            sketch_mirror_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
@@ -4180,6 +4296,8 @@ mod tests {
             sketch_repeat: None,
             sketch_offset: None,
             sketch_offset_edit_start: None,
+            sketch_mirror: None,
+            sketch_mirror_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
@@ -4258,6 +4376,8 @@ mod tests {
             sketch_repeat: None,
             sketch_offset: None,
             sketch_offset_edit_start: None,
+            sketch_mirror: None,
+            sketch_mirror_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
@@ -4541,6 +4661,8 @@ mod tests {
             sketch_repeat: None,
             sketch_offset: None,
             sketch_offset_edit_start: None,
+            sketch_mirror: None,
+            sketch_mirror_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
@@ -4605,6 +4727,8 @@ mod tests {
             sketch_repeat: None,
             sketch_offset: None,
             sketch_offset_edit_start: None,
+            sketch_mirror: None,
+            sketch_mirror_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
@@ -4653,6 +4777,8 @@ mod tests {
             sketch_repeat: None,
             sketch_offset: None,
             sketch_offset_edit_start: None,
+            sketch_mirror: None,
+            sketch_mirror_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
@@ -4717,6 +4843,8 @@ mod tests {
             sketch_repeat: None,
             sketch_offset: None,
             sketch_offset_edit_start: None,
+            sketch_mirror: None,
+            sketch_mirror_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
@@ -4783,6 +4911,8 @@ mod tests {
             sketch_repeat: None,
             sketch_offset: None,
             sketch_offset_edit_start: None,
+            sketch_mirror: None,
+            sketch_mirror_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
@@ -4895,6 +5025,8 @@ mod tests {
             sketch_repeat: None,
             sketch_offset: None,
             sketch_offset_edit_start: None,
+            sketch_mirror: None,
+            sketch_mirror_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
@@ -4957,6 +5089,8 @@ mod tests {
             sketch_repeat: None,
             sketch_offset: None,
             sketch_offset_edit_start: None,
+            sketch_mirror: None,
+            sketch_mirror_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
@@ -5007,6 +5141,8 @@ mod tests {
             sketch_repeat: None,
             sketch_offset: None,
             sketch_offset_edit_start: None,
+            sketch_mirror: None,
+            sketch_mirror_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,
@@ -5062,6 +5198,8 @@ mod tests {
             sketch_repeat: None,
             sketch_offset: None,
             sketch_offset_edit_start: None,
+            sketch_mirror: None,
+            sketch_mirror_edit_start: None,
             sketch_slice: None,
             sketch_text: None,
             drawing_view: None,

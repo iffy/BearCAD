@@ -2781,6 +2781,7 @@ impl<'a> SceneMesh<'a> {
             | SceneElement::RepeatOp(_)
             | SceneElement::SketchRepeatOp(_)
             | SceneElement::SketchOffsetOp(_)
+            | SceneElement::SketchMirrorOp(_)
             | SceneElement::SketchSliceOp(_)
             | SceneElement::SliceOp(_)
             | SceneElement::Revolution(_)

@@ -86,6 +86,7 @@ impl ElementKind {
             | SceneElement::RepeatOp(_)
             | SceneElement::SketchRepeatOp(_)
             | SceneElement::SketchOffsetOp(_)
+            | SceneElement::SketchMirrorOp(_)
             | SceneElement::SketchSliceOp(_)
             | SceneElement::SketchText(_)
             | SceneElement::SliceOp(_)
