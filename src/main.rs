@@ -3412,7 +3412,13 @@ impl App {
             }
             return;
         }
-        if !ctx.memory(|m| m.has_focus(id)) {
+        // Typing while the field is unfocused grabs it, so the user can just start typing a
+        // distance. Skip while another field (e.g. the Context pane's own Distance input, or a
+        // Parameters name) holds the keyboard (#516) — otherwise every keystroke there is also
+        // swallowed here, making the other field impossible to type into.
+        let field_focused = ctx.memory(|m| m.has_focus(id));
+        let other_wants_kb = ctx.wants_keyboard_input() && !field_focused;
+        if should_grab_unfocused_tool_typing(field_focused, other_wants_kb) {
             let typed: String = ctx.input(|i| {
                 i.events
                     .iter()
@@ -3438,7 +3444,6 @@ impl App {
             .as_ref()
             .map(|c| c.distance.clone())
         {
-            let mut edited = false;
             egui::Area::new(egui::Id::new("sketch_offset_distance_area"))
                 .fixed_pos(pos)
                 .order(egui::Order::Foreground)
@@ -3449,17 +3454,16 @@ impl App {
                     )
                     .width(72.0)
                     .show(ui, &mut text, &self.state.doc);
-                    if resp.changed() {
-                        edited = true;
-                    }
                     if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         commit = true;
                     }
                 });
-            if edited {
-                if let Some(co) = self.state.creating_sketch_offset.as_mut() {
-                    co.distance = text;
-                }
+            // Persist unconditionally, not only when `resp.changed()` fired: Tab/Space
+            // parameter autocomplete rewrites the buffer *before* the text edit runs, so egui
+            // never reports it as a change — gating on `changed()` dropped the completion and
+            // the field reverted next frame (#517).
+            if let Some(co) = self.state.creating_sketch_offset.as_mut() {
+                co.distance = text;
             }
             if commit
                 && self

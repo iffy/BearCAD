@@ -2760,13 +2760,16 @@ pub fn show_pane(
         ui.horizontal(|ui| {
             ui.label("Distance");
             let mut text = control.distance.clone();
-            let resp = crate::expression_input::ValueInput::new(
+            crate::expression_input::ValueInput::new(
                 "sketch_offset_distance",
                 crate::expression_input::ValueKind::Length,
             )
             .width(110.0)
             .show(ui, &mut text, doc);
-            if resp.changed() {
+            // Emit whenever the buffer differs, not only on `resp.changed()`: Tab/Space
+            // parameter autocomplete rewrites the buffer before the text edit runs, so egui
+            // doesn't flag it as a change and the completion would otherwise be lost (#517).
+            if text != control.distance {
                 pending = Some(SketchOffsetEdit::Distance(text.clone()));
             }
         });
