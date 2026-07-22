@@ -4009,6 +4009,20 @@ impl AppState {
 
     /// Start editing a dimension on the current selection, if applicable.
     pub fn try_begin_dimension_from_selection(&mut self) -> bool {
+        self.begin_dimension_from_selection(true)
+    }
+
+    /// After a viewport click while the Dimension tool is active (#486/#487): start
+    /// multi-target dimensions (angle, point-point, …) immediately, but leave a lone
+    /// line selected so a second edge can still be picked for an angle.
+    pub fn try_begin_dimension_from_selection_after_click(&mut self) -> bool {
+        self.begin_dimension_from_selection(false)
+    }
+
+    /// `include_single_line_length`: when true (tool activation / Enter / re-click), a
+    /// single selected line opens its length editor. When false (first pick under the
+    /// Dimension tool), single-line length is deferred so a second click can form an angle.
+    fn begin_dimension_from_selection(&mut self, include_single_line_length: bool) -> bool {
         let Some(session) = self.sketch_session else {
             return false;
         };
@@ -4017,6 +4031,16 @@ impl AppState {
         else {
             return false;
         };
+        if !include_single_line_length {
+            if matches!(
+                &target,
+                DimensionTarget::Distance(DistanceTarget::LineLength(_))
+            ) {
+                self.status =
+                    "Dimension: click another edge for angle, or Enter to set length".to_string();
+                return false;
+            }
+        }
         if let DimensionTarget::Angle {
             line_a,
             line_b,
@@ -4933,7 +4957,8 @@ impl AppState {
                     Tool::Circle if self.sketch_session.is_some() => "Circle tool".to_string(),
                     Tool::Circle => "Circle tool — click a face".to_string(),
                     Tool::Dimension if self.sketch_session.is_some() => {
-                        "Dimension tool — select geometry, then D, or click a segment".to_string()
+                        "Dimension tool — click edges for length/angle (second edge = angle)"
+                            .to_string()
                     }
                     Tool::Dimension => {
                         "Dimension tool — click a line to capture its length as a parameter"
@@ -9433,6 +9458,24 @@ label_hidden: false,
                     if let SceneElement::Component(ci) = &element {
                         self.active_component = Some(*ci);
                     }
+                    // Dimension tool in a sketch (#486/#487): accumulate a second pick without
+                    // Shift so two edges form an angle; re-clicking the sole selected edge
+                    // opens its length editor.
+                    let mut additive = additive;
+                    if self.tool == Tool::Dimension
+                        && self.sketch_session.is_some()
+                        && self.editing_committed_dim.is_none()
+                        && self.placing_angle_dimension.is_none()
+                    {
+                        let ordered = self.scene_selection.ordered();
+                        if ordered.len() == 1 && ordered[0] == element {
+                            self.try_begin_dimension_from_selection();
+                            return ActionResult::Ok;
+                        }
+                        if ordered.len() == 1 && ordered[0] != element {
+                            additive = true;
+                        }
+                    }
                     click_scene_selection(&mut self.scene_selection, element, additive);
                     if let Some((health_status, reason)) =
                         selection_frozen_summary(&self.document_health, &self.scene_selection)
@@ -9442,6 +9485,13 @@ label_hidden: false,
                             health_status_label(health_status),
                             reason
                         );
+                    }
+                    if self.tool == Tool::Dimension
+                        && self.sketch_session.is_some()
+                        && self.editing_committed_dim.is_none()
+                        && self.placing_angle_dimension.is_none()
+                    {
+                        self.try_begin_dimension_from_selection_after_click();
                     }
                 }
                 ActionResult::Ok
@@ -17215,6 +17265,79 @@ mod tests {
         assert_eq!(
             state.editing_committed_dim.as_ref().unwrap().target,
             DimEditTarget::New(target)
+        );
+    }
+
+    /// #487: while the Dimension tool is active, the first edge click only selects;
+    /// a second edge (without Shift) starts the angle placement phase.
+    #[test]
+    fn dimension_tool_click_two_edges_places_angle() {
+        use crate::model::ConstraintLine;
+
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state
+            .doc
+            .lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        state
+            .doc
+            .lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0));
+        state.doc.shape_order.push(ShapeKind::Line);
+        state.doc.shape_order.push(ShapeKind::Line);
+        state.apply(Action::SetTool(Tool::Dimension));
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Line(0),
+            additive: false,
+        });
+        assert!(
+            state.editing_committed_dim.is_none(),
+            "first edge must not open a length editor"
+        );
+        assert!(state.placing_angle_dimension.is_none());
+        assert!(state.scene_selection.is_selected(SceneElement::Line(0)));
+
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Line(1),
+            additive: false, // no Shift — tool accumulates the second edge
+        });
+        assert!(state.editing_committed_dim.is_none());
+        assert_eq!(
+            state.placing_angle_dimension,
+            Some(PlacingAngleDimension {
+                line_a: ConstraintLine::Line(0),
+                line_b: ConstraintLine::Line(1),
+                rotation_sign: 1,
+                arc_offset: None,
+            })
+        );
+    }
+
+    /// #486/#487: re-clicking the sole selected edge under Dimension opens length edit.
+    #[test]
+    fn dimension_tool_reclick_single_line_opens_length() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        state
+            .doc
+            .lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 8.0, 0.0));
+        state.doc.shape_order.push(ShapeKind::Line);
+        state.apply(Action::SetTool(Tool::Dimension));
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Line(0),
+            additive: false,
+        });
+        assert!(state.editing_committed_dim.is_none());
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Line(0),
+            additive: false,
+        });
+        assert!(state.editing_committed_dim.is_some());
+        assert_eq!(
+            state.editing_committed_dim.as_ref().unwrap().target,
+            DimEditTarget::New(DimensionTarget::Distance(DistanceTarget::LineLength(0)))
         );
     }
 

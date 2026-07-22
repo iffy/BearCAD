@@ -836,9 +836,10 @@ fn selection_picker_for(tool: Tool, selection: &SceneSelection) -> Option<Elemen
     let mut picker = match tool {
         // Select: accepts everything, always shown, never loses focus.
         Tool::Select => ElementPicker::select_everything(),
-        // Constraint: only sketch geometry is constrainable, so restrict the picker to points,
-        // lines, circles, and body/face edges (bodies, planes, operations are rejected).
-        Tool::Constraint => {
+        // Constraint / Dimension: sketch geometry only (points, lines, circles, body/face
+        // edges). Dimension's picker mirrors the live selection so a pre-selected line or
+        // pair shows up and the tool can proceed as if those were just picked (#486).
+        Tool::Constraint | Tool::Dimension => {
             let mut p = ElementPicker::new(
                 ElementFilter::kinds(&[
                     ElementKind::Vertex,
@@ -3874,6 +3875,30 @@ mod tests {
         });
         assert!(text.drawing_view.is_none(), "Text tool hides the projection editor (#329)");
         assert!(text.units.is_none(), "Text tool hides the Default-units section (#330)");
+    }
+
+    /// #486: the Dimension tool shows the same sketch-geometry element picker as Constraint.
+    #[test]
+    fn dimension_tool_shows_selection_picker() {
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.lines
+            .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.shape_order.push(crate::model::ShapeKind::Line);
+        let mut selection = SceneSelection::default();
+        click_scene_selection(&mut selection, SceneElement::Line(0), false);
+        let content = context_pane_content(&ContextInput {
+            tool: Tool::Dimension,
+            in_sketch: true,
+            ..input(&doc, &selection)
+        });
+        let picker = content
+            .selection_picker
+            .expect("Dimension tool should show a selection picker");
+        assert!(
+            picker.picked().iter().any(|e| *e == SceneElement::Line(0)),
+            "pre-selected line should appear in the Dimension picker"
+        );
     }
 
     /// #328: the drawing-element picker only shows under the Select tool.

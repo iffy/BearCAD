@@ -10542,6 +10542,60 @@ fn handle_vertex_drag(
     false
 }
 
+/// Dimension tool: pick a sketch line into the selection (no drag). Returns true when a
+/// press was consumed so the general Select-style click path doesn't double-fire (#487).
+fn handle_dimension_line_pick(
+    ui: &egui::Ui,
+    state: &mut AppState,
+    session: SketchSession,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    pointer_screen: Option<egui::Pos2>,
+) -> bool {
+    if !ui.input(|i| i.pointer.primary_pressed()) {
+        return false;
+    }
+    let Some(pp) = pointer_screen else {
+        return false;
+    };
+    if nearest_sketch_point_in_sketch(pp, project, &state.doc, session.sketch).is_some() {
+        return false; // let the point-pick handler take vertices
+    }
+    let Some((target, _)) =
+        nearest_sketch_line_in_sketch(pp, project, &state.doc, session.sketch)
+    else {
+        return false;
+    };
+    let element = vertex_drag::scene_element_for_line(target);
+    let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+    state.apply(Action::ClickSceneElement { element, additive });
+    true
+}
+
+/// Dimension tool: pick a sketch point into the selection (no drag) (#487).
+fn handle_dimension_point_pick(
+    ui: &egui::Ui,
+    state: &mut AppState,
+    session: SketchSession,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    pointer_screen: Option<egui::Pos2>,
+) -> bool {
+    if !ui.input(|i| i.pointer.primary_pressed()) {
+        return false;
+    }
+    let Some(pp) = pointer_screen else {
+        return false;
+    };
+    let Some((point, _)) =
+        nearest_sketch_point_in_sketch(pp, project, &state.doc, session.sketch)
+    else {
+        return false;
+    };
+    let element = vertex_drag::scene_element_for_point(point);
+    let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+    state.apply(Action::ClickSceneElement { element, additive });
+    true
+}
+
 fn handle_line_drag(
     ui: &egui::Ui,
     state: &mut AppState,
@@ -13134,29 +13188,39 @@ impl App {
             self.calibration_point_drag = None;
         }
 
-        if matches!(self.state.tool, Tool::Select | Tool::Constraint)
-            && self.state.creating_calibration.is_none()
+        // Select/Constraint drag geometry; Dimension only needs the same pick→select path
+        // so edges can accumulate for length/angle (#486/#487) — never start a drag.
+        if matches!(
+            self.state.tool,
+            Tool::Select | Tool::Constraint | Tool::Dimension
+        ) && self.state.creating_calibration.is_none()
             && self.state.editing_committed_dim.is_none()
+            && self.state.placing_angle_dimension.is_none()
             && !over_committed_dim_label
             && self.dim_label_drag.is_none()
             && !angle_gizmo_dragging
             && self.angle_gizmo_drag.is_none()
         {
             if let Some(session) = sketch_session {
-                let selected_text = self.single_selected_sketch_text();
-                text_width_dragging = handle_text_width_drag(
-                    ui,
-                    &mut self.text_width_drag,
-                    &mut self.state,
-                    selected_text,
-                    session,
-                    viewport,
-                    &vp,
-                    &cam,
-                    &project,
-                    pointer_screen,
+                let allow_geometry_drag = matches!(
+                    self.state.tool,
+                    Tool::Select | Tool::Constraint
                 );
-                if !text_width_dragging {
+                let selected_text = self.single_selected_sketch_text();
+                text_width_dragging = allow_geometry_drag
+                    && handle_text_width_drag(
+                        ui,
+                        &mut self.text_width_drag,
+                        &mut self.state,
+                        selected_text,
+                        session,
+                        viewport,
+                        &vp,
+                        &cam,
+                        &project,
+                        pointer_screen,
+                    );
+                if allow_geometry_drag && !text_width_dragging {
                 bezier_handle_dragging = handle_bezier_handle_drag(
                     ui,
                     &mut self.bezier_handle_drag,
@@ -13174,7 +13238,7 @@ impl App {
                     // release) so a plain click — not just a drag — selects the handle (#75).
                     self.selected_bezier_handle = Some((active.line, active.near_start));
                 }
-                if !bezier_handle_dragging {
+                if allow_geometry_drag && !bezier_handle_dragging {
                     line_dragging = handle_line_drag(
                         ui,
                         &mut self.state,
@@ -13185,8 +13249,18 @@ impl App {
                         &project,
                         pointer_screen,
                     );
+                } else if self.state.tool == Tool::Dimension && !bezier_handle_dragging {
+                    // Selection-only line pick for the Dimension tool (#487).
+                    line_dragging = handle_dimension_line_pick(
+                        ui,
+                        &mut self.state,
+                        session,
+                        &project,
+                        pointer_screen,
+                    );
                 }
-                if !text_width_dragging
+                if allow_geometry_drag
+                    && !text_width_dragging
                     && !bezier_handle_dragging
                     && !line_dragging
                     && self.state.line_drag_session.is_none()
@@ -13199,6 +13273,17 @@ impl App {
                         viewport,
                         &vp,
                         &cam,
+                        &project,
+                        pointer_screen,
+                    );
+                } else if self.state.tool == Tool::Dimension
+                    && !line_dragging
+                    && self.state.line_drag_session.is_none()
+                {
+                    vertex_dragging = handle_dimension_point_pick(
+                        ui,
+                        &mut self.state,
+                        session,
                         &project,
                         pointer_screen,
                     );
@@ -13300,9 +13385,13 @@ impl App {
             });
         }
 
-        if (matches!(self.state.tool, Tool::Select | Tool::Constraint)
-            || (self.state.tool == Tool::Dimension && self.state.sketch_session.is_none()))
-            && self.state.editing_committed_dim.is_none()
+        // Dimension tool also selects in sketch mode (#486/#487): clicks accumulate edges for
+        // an angle (or re-click / Enter for a length) instead of immediately locking length.
+        if matches!(
+            self.state.tool,
+            Tool::Select | Tool::Constraint | Tool::Dimension
+        ) && self.state.editing_committed_dim.is_none()
+            && self.state.placing_angle_dimension.is_none()
             && !over_committed_dim_label
             && self.dim_label_drag.is_none()
             && self.angle_gizmo_drag.is_none()
@@ -13861,50 +13950,30 @@ impl App {
             self.show_edge_treatment_amount_input(ui, &project);
         }
 
-        if self.state.tool == Tool::Dimension {
-            if let (Some(session), Some(pp)) =
-                (self.state.sketch_session, pointer_screen)
-            {
+        // Dimension tool sketch hover: dimensionable segments highlight via the shared
+        // pick path above (selection clicks). GPU mode uses `resolve_viewport_hover_highlight`
+        // (#190); non-GPU still paints a dimmable segment under the cursor here.
+        if self.state.tool == Tool::Dimension
+            && self.state.editing_committed_dim.is_none()
+            && self.state.placing_angle_dimension.is_none()
+            && !suppress_hover_highlight
+            && !self.gpu_viewport
+        {
+            if let (Some(session), Some(pp)) = (self.state.sketch_session, pointer_screen) {
                 if let Some(gp) =
                     sketch_plane_point(&cam, viewport, &vp, &self.state.doc, session, pp)
                 {
-                    let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
-                    if self.state.editing_committed_dim.is_none()
-                        && primary_pressed
-                        && !over_committed_dim_label
+                    if let Some(target) =
+                        resolve_pick_target(pp, &project, Some(gp), &self.state.doc, pick_occlusion)
                     {
-                        if let Some(target) =
-                            resolve_pick_target(pp, &project, Some(gp), &self.state.doc, pick_occlusion)
+                        if distance_target_from_pick(
+                            &self.state.doc,
+                            session.sketch,
+                            &target.kind,
+                        )
+                        .is_some()
                         {
-                            if let Some(distance_target) = distance_target_from_pick(
-                                &self.state.doc,
-                                session.sketch,
-                                &target.kind,
-                            ) {
-                                self.state.apply(Action::BeginDimensionEdit {
-                                    target: model::DimensionTarget::Distance(distance_target),
-                                });
-                            }
-                        }
-                    } else if self.state.editing_committed_dim.is_none()
-                        && !suppress_hover_highlight
-                        // In GPU mode the dimensionable segment glows through the shared
-                        // `resolve_viewport_hover_highlight` path (#190); this painter overlay
-                        // is only the fallback for the non-GPU renderer.
-                        && !self.gpu_viewport
-                    {
-                        if let Some(target) =
-                            resolve_pick_target(pp, &project, Some(gp), &self.state.doc, pick_occlusion)
-                        {
-                            if distance_target_from_pick(
-                                &self.state.doc,
-                                session.sketch,
-                                &target.kind,
-                            )
-                            .is_some()
-                            {
-                                target.draw_highlight(&painter, &project, &self.state.doc);
-                            }
+                            target.draw_highlight(&painter, &project, &self.state.doc);
                         }
                     }
                 }
@@ -16117,10 +16186,12 @@ impl App {
             Tool::Dimension => {
                 if self.state.editing_committed_dim.is_some() {
                     "Edit dimension • Enter to commit • Esc to cancel"
+                } else if self.state.placing_angle_dimension.is_some() {
+                    "d: dimension  •  Move mouse to choose the angle side • click to set value"
                 } else if self.state.sketch_session.is_none() {
                     "d: dimension  •  Click a line to capture its length as a parameter • Shift+click two points or lines for a distance/angle"
                 } else {
-                    "d: dimension  •  Select geometry, press D, or click a segment • Enter commit"
+                    "d: dimension  •  Click an edge (re-click or D for length) • second edge for angle"
                 }
             }
             Tool::ConstructionPlane => {
