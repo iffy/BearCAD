@@ -838,14 +838,18 @@ pub enum SelectionEdit {
 /// The selection element picker to show for `tool`, if any — the unified control every
 /// selection-driven tool uses. Both variants mirror the live `selection`; they differ only in
 /// which kinds they accept and their placeholder, demonstrating the per-instance configuration.
-fn selection_picker_for(tool: Tool, selection: &SceneSelection) -> Option<ElementPicker> {
+fn selection_picker_for(
+    tool: Tool,
+    in_sketch: bool,
+    selection: &SceneSelection,
+) -> Option<ElementPicker> {
     let mut picker = match tool {
         // Select: accepts everything, always shown, never loses focus.
         Tool::Select => ElementPicker::select_everything(),
         // Constraint / Dimension: sketch geometry only (points, lines, circles, body/face
         // edges). Dimension's picker mirrors the live selection so a pre-selected line or
         // pair shows up and the tool can proceed as if those were just picked (#486).
-        Tool::Constraint | Tool::Dimension => {
+        Tool::Constraint | Tool::Dimension if in_sketch => {
             let mut p = ElementPicker::new(
                 ElementFilter::kinds(&[
                     ElementKind::Vertex,
@@ -858,10 +862,46 @@ fn selection_picker_for(tool: Tool, selection: &SceneSelection) -> Option<Elemen
             p.set_focused(true);
             p
         }
+        // Dimension outside a sketch: lines / points for derived measures (#499).
+        Tool::Dimension if !in_sketch => {
+            let mut p = ElementPicker::new(
+                ElementFilter::kinds(&[
+                    ElementKind::Line,
+                    ElementKind::Vertex,
+                    ElementKind::Edge,
+                ]),
+                PickLimit::Finite(2),
+            );
+            p.set_focused(true);
+            p
+        }
         // Chamfer/Fillet in-sketch: vertices only (#492).
-        Tool::Chamfer | Tool::Fillet => {
+        Tool::Chamfer | Tool::Fillet if in_sketch => {
             let mut p = ElementPicker::new(
                 ElementFilter::kind(ElementKind::Vertex),
+                PickLimit::Infinite,
+            );
+            p.set_focused(true);
+            p
+        }
+        // Sketch / Text outside a sketch: pick a single face plane to open (#497).
+        Tool::Sketch | Tool::Text if !in_sketch => {
+            let mut p = ElementPicker::new(
+                ElementFilter::kind(ElementKind::Plane),
+                PickLimit::Finite(1),
+            );
+            p.set_focused(true);
+            p
+        }
+        // Project in a sketch: points, lines, edges (#498).
+        Tool::Project if in_sketch => {
+            let mut p = ElementPicker::new(
+                ElementFilter::kinds(&[
+                    ElementKind::Vertex,
+                    ElementKind::Line,
+                    ElementKind::Edge,
+                    ElementKind::Body,
+                ]),
                 PickLimit::Infinite,
             );
             p.set_focused(true);
@@ -941,7 +981,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         || input.draw_line_construction.is_some()
         || input.draw_circle_construction.is_some();
     let selection_picker = (!drawing && !input.in_drawing_workbench)
-        .then(|| selection_picker_for(input.tool, input.selection))
+        .then(|| selection_picker_for(input.tool, input.in_sketch, input.selection))
         .flatten();
     // The drawing workbench's Select tool gets its own always-visible element picker (#346),
     // mirroring the multi-selection of projections/text/dimensions.

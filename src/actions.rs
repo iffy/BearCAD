@@ -9542,6 +9542,18 @@ label_hidden: false,
                     {
                         self.try_begin_dimension_from_selection_after_click();
                     }
+                    // Sketch / Text outside a sketch: selecting a construction plane
+                    // opens a sketch on that face (#497).
+                    if matches!(self.tool, Tool::Sketch | Tool::Text)
+                        && self.sketch_session.is_none()
+                    {
+                        if let SceneElement::ConstructionPlane(pi) = element {
+                            return self.apply(Action::BeginSketch {
+                                face: crate::model::FaceId::ConstructionPlane(pi),
+                                viewport: None,
+                            });
+                        }
+                    }
                 }
                 ActionResult::Ok
             }
