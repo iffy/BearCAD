@@ -163,8 +163,12 @@ fn line_intersection(p1: Vec2, d1: Vec2, p2: Vec2, d2: Vec2) -> Option<Vec2> {
 }
 
 /// Offset a cubic bezier by `distance` to the left of its start→end orientation
-/// (or right when `distance` is negative). First-order parallel-curve approx: move
-/// endpoints along end normals and keep handle lengths along the end tangents (#494).
+/// (or right when `distance` is negative).
+///
+/// Circular-arc fillets (equal endpoint radii to a shared center) offset exactly by
+/// changing radius so the distance stays constant along the arc (#513). Otherwise a
+/// first-order parallel-curve approx moves endpoints along end normals and keeps
+/// handle lengths along the end tangents (#494).
 pub fn offset_cubic_bezier(
     p0: Vec2,
     c0: Vec2,
@@ -172,6 +176,31 @@ pub fn offset_cubic_bezier(
     p1: Vec2,
     distance: f32,
 ) -> (Vec2, Vec2, Vec2, Vec2) {
+    if let Some((center, r)) = circular_arc_fit(p0, c0, c1, p1) {
+        let sign = {
+            // Left of start→end: positive distance grows the side of n0.
+            let t0 = (c0 - p0).normalize_or_zero();
+            let t0 = if t0 == Vec2::ZERO {
+                (p1 - p0).normalize_or_zero()
+            } else {
+                t0
+            };
+            let n0 = Vec2::new(-t0.y, t0.x);
+            let radial = (p0 - center).normalize_or_zero();
+            if radial.dot(n0) >= 0.0 {
+                1.0
+            } else {
+                -1.0
+            }
+        };
+        let new_r = (r + distance * sign).max(MIN_CIRCLE_RADIUS);
+        let scale = new_r / r.max(1e-6);
+        let op0 = center + (p0 - center) * scale;
+        let op1 = center + (p1 - center) * scale;
+        let oc0 = center + (c0 - center) * scale;
+        let oc1 = center + (c1 - center) * scale;
+        return (op0, oc0, oc1, op1);
+    }
     let t0 = (c0 - p0).normalize_or_zero();
     let t1 = (p1 - c1).normalize_or_zero();
     // Fall back to the chord when a handle collapses onto its endpoint.
@@ -196,77 +225,159 @@ pub fn offset_cubic_bezier(
     (op0, oc0, oc1, op1)
 }
 
+/// If the cubic is a circular arc (equal radii from endpoints and mid-sample to a
+/// common center within tolerance), return `(center, radius)`.
+fn circular_arc_fit(p0: Vec2, c0: Vec2, c1: Vec2, p1: Vec2) -> Option<(Vec2, f32)> {
+    // Chord perpendicular bisector ∩ handle-normal estimate.
+    let mid = {
+        let t = 0.5f32;
+        let u = 1.0 - t;
+        p0 * u.powi(3) + c0 * 3.0 * u.powi(2) * t + c1 * 3.0 * u * t.powi(2) + p1 * t.powi(3)
+    };
+    // Center = intersection of perp bisectors of p0–mid and mid–p1.
+    let m01 = (p0 + mid) * 0.5;
+    let m12 = (mid + p1) * 0.5;
+    let d01 = (mid - p0).perp(); // glam Vec2::perp is rotate 90° CCW
+    let d12 = (p1 - mid).perp();
+    let center = line_intersection(m01, d01, m12, d12)?;
+    let r0 = (p0 - center).length();
+    let r1 = (p1 - center).length();
+    let rm = (mid - center).length();
+    if r0 < 1e-4 {
+        return None;
+    }
+    let tol = (r0 * 0.02).max(1e-2);
+    if (r1 - r0).abs() > tol || (rm - r0).abs() > tol {
+        return None;
+    }
+    // Handles should also lie near the same circle (fillet cubics do).
+    let rc0 = (c0 - center).length();
+    let rc1 = (c1 - center).length();
+    // Cubic handles of a circle are outside the radius; allow more slack.
+    if (rc0 - r0).abs() > r0 * 0.5 && (rc1 - r0).abs() > r0 * 0.5 {
+        // Still accept if endpoints+mid match — handles get scaled with center.
+    }
+    Some((center, r0))
+}
+
+/// One offset piece before mitering: endpoints, walk-direction unit tangent at each end,
+/// and optional bezier handles in walk orientation.
+struct OffsetPiece {
+    a: Vec2,
+    b: Vec2,
+    /// Unit tangent at `a` pointing along the walk (into the segment).
+    ta: Vec2,
+    /// Unit tangent at `b` pointing along the walk (out of the segment).
+    tb: Vec2,
+    bezier: Option<[Vec2; 2]>,
+}
+
 /// Offset every source segment by `distance`, mitering shared endpoints so chains and
-/// closed loops stay connected. Outputs keep their source's stored orientation and
-/// come back in source order. Curved (bezier) sources are offset as independent
-/// parallel curves rather than chord-mitered (#494).
+/// closed loops stay connected — including mixed straight + fillet (bezier) corners
+/// (#513). Outputs keep their source's stored orientation and come back in source order.
 pub fn offset_segments(sources: &[OffsetSource], distance: f32) -> Vec<OffsetSegment> {
     let mut out: Vec<Option<OffsetSegment>> = vec![None; sources.len()];
 
-    // Straight sources: existing chain + miter path.
-    let straight: Vec<(usize, OffsetSource)> = sources
-        .iter()
-        .copied()
-        .enumerate()
-        .filter(|(_, s)| s.bezier.is_none())
-        .collect();
-    if !straight.is_empty() {
-        let straight_only: Vec<OffsetSource> = straight.iter().map(|(_, s)| *s).collect();
-        let index_map: Vec<usize> = straight.iter().map(|(i, _)| *i).collect();
-        for (walk, closed) in chains(&straight_only) {
-            let flip = if closed && signed_area(&walk, &straight_only) > 0.0 {
-                -1.0
+    for (walk, closed) in chains(sources) {
+        let flip = if closed && signed_area(&walk, sources) > 0.0 {
+            -1.0
+        } else {
+            1.0
+        };
+        let signed_d = distance * flip;
+
+        let mut pieces: Vec<OffsetPiece> = Vec::with_capacity(walk.len());
+        for w in &walk {
+            let s = sources[w.index];
+            let (a, b, bezier) = if w.flipped {
+                (
+                    s.b,
+                    s.a,
+                    s.bezier.map(|[c0, c1]| [c1, c0]),
+                )
             } else {
-                1.0
+                (s.a, s.b, s.bezier)
             };
-            let mut pieces: Vec<(Vec2, Vec2, Vec2)> = Vec::with_capacity(walk.len());
-            for w in &walk {
-                let a = w.tail(&straight_only);
-                let b = w.head(&straight_only);
-                let dir = (b - a).normalize_or_zero();
-                let normal = Vec2::new(-dir.y, dir.x) * flip;
-                let shift = normal * distance;
-                pieces.push((a + shift, b + shift, dir));
-            }
-            let n = pieces.len();
-            let joints = if closed { n } else { n.saturating_sub(1) };
-            for j in 0..joints {
-                let i0 = j;
-                let i1 = (j + 1) % n;
-                let (a0, b0, d0) = pieces[i0];
-                let (a1, _b1, d1) = pieces[i1];
-                let miter = line_intersection(a0, d0, a1, d1)
-                    .filter(|m| (*m - b0).length() <= MITER_LIMIT * distance.abs().max(JOIN_EPS));
-                if let Some(m) = miter {
-                    pieces[i0].1 = m;
-                    pieces[i1].0 = m;
+            let piece = if let Some([c0, c1]) = bezier {
+                let (oa, oc0, oc1, ob) = offset_cubic_bezier(a, c0, c1, b, signed_d);
+                let ta = (oc0 - oa).normalize_or_zero();
+                let tb = (ob - oc1).normalize_or_zero();
+                let ta = if ta == Vec2::ZERO {
+                    (ob - oa).normalize_or_zero()
+                } else {
+                    ta
+                };
+                let tb = if tb == Vec2::ZERO {
+                    (ob - oa).normalize_or_zero()
+                } else {
+                    tb
+                };
+                OffsetPiece {
+                    a: oa,
+                    b: ob,
+                    ta,
+                    tb,
+                    bezier: Some([oc0, oc1]),
                 }
-            }
-            for (w, (a, b, _)) in walk.iter().zip(pieces) {
-                let (a, b) = if w.flipped { (b, a) } else { (a, b) };
-                let src_i = index_map[w.index];
-                out[src_i] = Some(OffsetSegment {
-                    id: sources[src_i].id,
-                    a,
-                    b,
+            } else {
+                let dir = (b - a).normalize_or_zero();
+                let normal = Vec2::new(-dir.y, dir.x);
+                let shift = normal * signed_d;
+                OffsetPiece {
+                    a: a + shift,
+                    b: b + shift,
+                    ta: dir,
+                    tb: dir,
                     bezier: None,
-                });
+                }
+            };
+            pieces.push(piece);
+        }
+
+        // Miter joints so consecutive offset pieces meet (#513 — rounded-rect corners).
+        let n = pieces.len();
+        let joints = if closed { n } else { n.saturating_sub(1) };
+        for j in 0..joints {
+            let i0 = j;
+            let i1 = (j + 1) % n;
+            let b0 = pieces[i0].b;
+            let a1 = pieces[i1].a;
+            let d0 = pieces[i0].tb;
+            let d1 = pieces[i1].ta;
+            let miter = line_intersection(b0, d0, a1, d1)
+                .filter(|m| (*m - b0).length() <= MITER_LIMIT * distance.abs().max(JOIN_EPS));
+            if let Some(m) = miter {
+                // Slide bezier handles with their endpoints so the curve shape stays.
+                if let Some([c0, c1]) = pieces[i0].bezier {
+                    let delta = m - pieces[i0].b;
+                    pieces[i0].bezier = Some([c0, c1 + delta]);
+                }
+                if let Some([c0, c1]) = pieces[i1].bezier {
+                    let delta = m - pieces[i1].a;
+                    pieces[i1].bezier = Some([c0 + delta, c1]);
+                }
+                pieces[i0].b = m;
+                pieces[i1].a = m;
             }
         }
-    }
 
-    // Curved sources: independent parallel-curve offset (no chord fallback).
-    for (i, s) in sources.iter().enumerate() {
-        let Some([c0, c1]) = s.bezier else {
-            continue;
-        };
-        let (a, oc0, oc1, b) = offset_cubic_bezier(s.a, c0, c1, s.b, distance);
-        out[i] = Some(OffsetSegment {
-            id: s.id,
-            a,
-            b,
-            bezier: Some([oc0, oc1]),
-        });
+        for (w, piece) in walk.iter().zip(pieces) {
+            let (a, b, bezier) = if w.flipped {
+                (
+                    piece.b,
+                    piece.a,
+                    piece.bezier.map(|[c0, c1]| [c1, c0]),
+                )
+            } else {
+                (piece.a, piece.b, piece.bezier)
+            };
+            out[w.index] = Some(OffsetSegment {
+                id: sources[w.index].id,
+                a,
+                b,
+                bezier,
+            });
+        }
     }
 
     out.into_iter().flatten().collect()
@@ -388,6 +499,92 @@ mod tests {
         assert!((offset_circle_radius(5.0, 2.0) - 7.0).abs() < 1e-6);
         assert!((offset_circle_radius(5.0, -2.0) - 3.0).abs() < 1e-6);
         assert!((offset_circle_radius(5.0, -9.0) - MIN_CIRCLE_RADIUS).abs() < 1e-6);
+    }
+
+    /// #513: a rounded rectangle (straights + circular fillet cubics) offsets so the
+    /// gap between source and offset stays approximately `distance` along the whole loop,
+    /// including across the rounded corners — not a flat chamfer-style shortcut.
+    #[test]
+    fn rounded_rectangle_offset_keeps_constant_distance_at_fillets() {
+        // Axis-aligned box from (0,0)–(40,20) with r=5 circular fillets at each corner.
+        // Each fillet is a cubic approximating a quarter circle (standard k≈0.552).
+        let k = 0.5522847498f32;
+        let r = 5.0;
+        let sources = [
+            // Bottom: (5,0) → (35,0)
+            src(0, (5.0, 0.0), (35.0, 0.0)),
+            // Bottom-right fillet: (35,0) → (40,5), center (35,5)
+            src_curve(
+                1,
+                (35.0, 0.0),
+                (35.0 + k * r, 0.0),
+                (40.0, 5.0 - k * r),
+                (40.0, 5.0),
+            ),
+            // Right: (40,5) → (40,15)
+            src(2, (40.0, 5.0), (40.0, 15.0)),
+            // Top-right fillet: (40,15) → (35,20), center (35,15)
+            src_curve(
+                3,
+                (40.0, 15.0),
+                (40.0, 15.0 + k * r),
+                (35.0 + k * r, 20.0),
+                (35.0, 20.0),
+            ),
+            // Top: (35,20) → (5,20)
+            src(4, (35.0, 20.0), (5.0, 20.0)),
+            // Top-left fillet: (5,20) → (0,15), center (5,15)
+            src_curve(
+                5,
+                (5.0, 20.0),
+                (5.0 - k * r, 20.0),
+                (0.0, 15.0 + k * r),
+                (0.0, 15.0),
+            ),
+            // Left: (0,15) → (0,5)
+            src(6, (0.0, 15.0), (0.0, 5.0)),
+            // Bottom-left fillet: (0,5) → (5,0), center (5,5)
+            src_curve(
+                7,
+                (0.0, 5.0),
+                (0.0, 5.0 - k * r),
+                (5.0 - k * r, 0.0),
+                (5.0, 0.0),
+            ),
+        ];
+        let d = 3.0;
+        let out = offset_segments(&sources, d);
+        assert_eq!(out.len(), 8);
+        // Outer bottom should sit at y = -d.
+        let bottom = out.iter().find(|s| s.id == 0).unwrap();
+        assert!(
+            (bottom.a.y + d).abs() < 0.15 && (bottom.b.y + d).abs() < 0.15,
+            "bottom offset y≈{}, got {bottom:?}",
+            -d
+        );
+        // Fillet mid-sample should be ~r+d from the corner center (35,5).
+        let fillet = out.iter().find(|s| s.id == 1).unwrap();
+        let bez = fillet.bezier.expect("fillet stays curved");
+        let t = 0.5f32;
+        let u = 1.0 - t;
+        let mid = fillet.a * u.powi(3)
+            + bez[0] * 3.0 * u.powi(2) * t
+            + bez[1] * 3.0 * u * t.powi(2)
+            + fillet.b * t.powi(3);
+        let center = Vec2::new(35.0, 5.0);
+        let dist = (mid - center).length();
+        assert!(
+            (dist - (r + d)).abs() < 0.5,
+            "fillet mid should sit at r+d={}; got dist={dist} mid={mid:?}",
+            r + d
+        );
+        // Adjacent pieces meet at joints (no gap between bottom and fillet).
+        assert!(
+            (bottom.b - fillet.a).length() < 0.2,
+            "bottom→fillet joint must miter, bottom.b={:?} fillet.a={:?}",
+            bottom.b,
+            fillet.a
+        );
     }
 
     /// #494: a cubic-bezier source must produce a curved offset (handles preserved),
