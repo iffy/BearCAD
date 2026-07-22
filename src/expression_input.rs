@@ -655,17 +655,16 @@ impl<'a> ValueInput<'a> {
                 self.exclude_names,
             ),
         };
-        // The computed value floats *above* the field (like the rectangle's floating
-        // dimension inputs, #458) instead of sitting beside it in the layout — so it
-        // appearing or disappearing while typing never shifts anything around. Shown
-        // only while the field is focused (idle rows stay unobscured); error tooltips
-        // use the same spot and win when present.
+        // The computed value floats *below* the field (#501) instead of sitting beside
+        // it in the layout — so it appearing or disappearing while typing never shifts
+        // anything around. Shown only while the field is focused (idle rows stay
+        // unobscured); error tooltips use the same spot and win when present.
         if errors.is_empty() && resp.has_focus() {
             if let Some(computed) = value_input_computed_display(text, self.kind, doc) {
                 egui::Area::new(self.id.with("value_input_computed"))
                     .order(egui::Order::Tooltip)
-                    .pivot(egui::Align2::LEFT_BOTTOM)
-                    .fixed_pos(resp.rect.left_top() - egui::vec2(0.0, 2.0))
+                    .pivot(egui::Align2::LEFT_TOP)
+                    .fixed_pos(resp.rect.left_bottom() + egui::vec2(0.0, 2.0))
                     .interactable(false)
                     .show(ui.ctx(), |ui| {
                         egui::Frame::default()

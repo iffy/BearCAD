@@ -9261,21 +9261,13 @@ fn show_sketch_dimension_field(
     };
     let text_width = dim_input_text_width(text);
 
+    // #501: computed value sits *below* the typed expression (not above).
     let frame_output = frame.show(ui, |ui| {
         ui.set_width(text_width);
         ui.vertical_centered(|ui| {
-            if let Some(v) = computed {
-                ui.label(
-                    egui::RichText::new(v)
-                        .font(egui::FontId::monospace(11.0))
-                        .color(col::DIM_INPUT_TEXT.gamma_multiply(0.65)),
-                );
-            } else if show_computed_row {
-                ui.add_space(14.0);
-            }
             ui.style_mut().spacing.text_edit_width = text_width;
             ui.visuals_mut().selection.bg_fill = col::DIM_INPUT_SELECTION;
-            egui::TextEdit::singleline(text)
+            let edit = egui::TextEdit::singleline(text)
                 .id(id)
                 .frame(false)
                 .desired_width(text_width)
@@ -9288,7 +9280,17 @@ fn show_sketch_dimension_field(
                     col::DIM_INPUT_TEXT
                 })
                 .margin(egui::vec2(0.0, 0.0))
-                .show(ui)
+                .show(ui);
+            if let Some(v) = computed {
+                ui.label(
+                    egui::RichText::new(v)
+                        .font(egui::FontId::monospace(11.0))
+                        .color(col::DIM_INPUT_TEXT.gamma_multiply(0.65)),
+                );
+            } else if show_computed_row {
+                ui.add_space(14.0);
+            }
+            edit
         })
         .inner
     });
