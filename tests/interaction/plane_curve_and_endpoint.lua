@@ -15,8 +15,10 @@ bearcad.ui.wait(5)
 bearcad.ui.zoom_fit()
 bearcad.ui.wait(2)
 
--- Curve body first (midpoint ~16,9), then the start endpoint.
-bearcad.ui.click_ground(16, 9)
+-- Curve body first (t=0.5 of the cubic is (13,12), not the chord mid (16,9)),
+-- then the start endpoint. Clicking the chord misses the arc and lands on the
+-- ground plane — producing a Z-normal plane that fails the assert below.
+bearcad.ui.click_ground(13, 12)
 bearcad.ui.wait(8)
 bearcad.ui.click_ground(6, 4)
 bearcad.ui.wait(8)
