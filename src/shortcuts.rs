@@ -97,6 +97,7 @@ pub fn tool_shortcut(tool: Tool) -> Option<ShortcutHint> {
         | Tool::Sweep
         | Tool::Combine
         | Tool::Move
+        | Tool::Mirror
         | Tool::Repeat
         | Tool::Slice
         | Tool::DrawingAdd

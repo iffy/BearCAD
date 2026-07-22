@@ -4569,6 +4569,128 @@ impl App {
         self.state.status = format!("Move: {} body(ies) picked", cm.targets.len());
     }
 
+    /// Mirror tool (#523): first click a construction plane or a flat body face to set the
+    /// mirror plane, then click bodies to add/remove them from the reflected set; Enter
+    /// commits. Draws the mirror-plane highlight and a translucent ghost of each reflection.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_mirror_tool(
+        &mut self,
+        ui: &egui::Ui,
+        painter: &egui::Painter,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        cam: &camera::Camera,
+        viewport: egui::Rect,
+        vp: &glam::Mat4,
+        pick_occlusion: Option<&construction::PickOcclusion>,
+    ) {
+        if self.state.sketch_session.is_some() {
+            return;
+        }
+        let cm = self
+            .state
+            .creating_mirror
+            .get_or_insert_with(actions::CreatingMirror::default);
+
+        // Enter commits once a plane and at least one body are picked.
+        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+            && !ui.ctx().wants_keyboard_input()
+            && cm.can_commit()
+        {
+            self.state.apply(Action::CommitMirror);
+            return;
+        }
+
+        // Highlight the chosen mirror plane, and ghost each reflected body across it.
+        if let Some(plane) = self.state.creating_mirror.as_ref().and_then(|c| c.plane.clone()) {
+            draw_face_highlight(painter, project, &self.state.doc, plane.clone(), col::PREVIEW);
+            self.draw_mirror_ghosts(painter, project, &plane);
+        }
+
+        if !ui.input(|i| i.pointer.primary_pressed()) {
+            return;
+        }
+        let Some(pp) = pointer_screen else {
+            return;
+        };
+
+        // No plane yet: the first click picks the mirror plane (a construction plane or a flat
+        // face). Once set, clicks pick bodies (use the context pane's ✕ to change the plane).
+        if self.state.creating_mirror.as_ref().is_some_and(|c| c.plane.is_none()) {
+            if let Some(face) = pick_sketch_face(pp, project, &self.state.doc, self.state.cam.eye()) {
+                if let Some(cm) = self.state.creating_mirror.as_mut() {
+                    cm.plane = Some(face);
+                }
+                self.state.status = "Mirror: plane set — now click bodies to mirror".to_string();
+            }
+            return;
+        }
+
+        let gp = cam.ground_point(pp, viewport, vp);
+        let Some(target) = resolve_pick_target(pp, project, gp, &self.state.doc, pick_occlusion)
+        else {
+            return;
+        };
+        let Some(bi) = self.pick_whole_body(pp, project, cam, &target.kind) else {
+            return;
+        };
+        if self.state.doc.bodies.get(bi).is_some_and(|b| b.shadow) {
+            self.state.status =
+                "That body is already consumed by another operation".to_string();
+            return;
+        }
+        let cm = self
+            .state
+            .creating_mirror
+            .get_or_insert_with(actions::CreatingMirror::default);
+        if let Some(pos) = cm.targets.iter().position(|b| *b == bi) {
+            cm.targets.remove(pos);
+        } else {
+            cm.targets.push(bi);
+        }
+        self.state.status = format!("Mirror: {} body(ies) picked", cm.targets.len());
+    }
+
+    /// Draw a translucent ghost of each in-progress mirror reflection (#523): every picked
+    /// body's mesh, reflected across the plane, filled faintly so the result previews before
+    /// commit (like the Repeat tool's ghosts).
+    fn draw_mirror_ghosts(
+        &self,
+        painter: &egui::Painter,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        plane: &model::FaceId,
+    ) {
+        let Some(cm) = self.state.creating_mirror.as_ref() else { return };
+        if cm.targets.is_empty() {
+            return;
+        }
+        let probe = model::MirrorOperation {
+            plane: plane.clone(),
+            targets: cm.targets.clone(),
+            outputs: Vec::new(),
+            name: None,
+            deleted: false,
+        };
+        let Some(m) = crate::extrude::mirror_op_transform(&self.state.doc, &probe) else {
+            return;
+        };
+        let fill = col::PREVIEW.gamma_multiply(0.18);
+        for &bi in &cm.targets {
+            let Some(mesh) = crate::extrude::body_solid_mesh(&self.state.doc, bi) else {
+                continue;
+            };
+            for tri in &mesh.triangles {
+                let pts: Option<Vec<egui::Pos2>> = tri
+                    .iter()
+                    .map(|&p| project(m.transform_point3(p)))
+                    .collect();
+                if let Some(pts) = pts {
+                    painter.add(egui::Shape::convex_polygon(pts, fill, egui::Stroke::NONE));
+                }
+            }
+        }
+    }
+
     /// The visible tracing image whose quad is under the cursor (#425), nearest plane hit
     /// first.
     fn pick_tracing_image(
@@ -5841,6 +5963,7 @@ impl eframe::App for App {
                 );
                 self.tool_button(ui, icons::IconId::Combine, Tool::Combine, "Combine");
                 self.tool_button(ui, icons::IconId::Move, Tool::Move, "Move");
+                self.tool_button(ui, icons::IconId::Mirror, Tool::Mirror, "Mirror");
                 self.tool_button(ui, icons::IconId::Repeat, Tool::Repeat, "Repeat");
                 self.tool_button(ui, icons::IconId::Slice, Tool::Slice, "Slice");
                 self.tool_button(ui, icons::IconId::Dimension, Tool::Dimension, "Dimension");
@@ -6586,6 +6709,33 @@ impl eframe::App for App {
                         })
                     })
                     .flatten(),
+                mirror_op: (self.state.tool == Tool::Mirror
+                    && self.state.sketch_session.is_none())
+                .then(|| {
+                    let cm = self.state.creating_mirror.as_ref();
+                    context::MirrorControl {
+                        plane_label: cm.and_then(|c| c.plane.clone()).map(|face| {
+                            crate::face::face_label(&self.state.doc, face)
+                        }),
+                        targets: cm.map(|c| c.targets.clone()).unwrap_or_default(),
+                        editing: cm.map(|c| c.editing.is_some()).unwrap_or(false),
+                        can_commit: cm.map(|c| c.can_commit()).unwrap_or(false),
+                    }
+                }),
+                mirror_edit_start: (self.state.tool != Tool::Mirror)
+                    .then(|| {
+                        let mut only = None;
+                        for element in self.state.scene_selection.iter() {
+                            match (element, only) {
+                                (SceneElement::MirrorOp(i), None) => only = Some(i),
+                                _ => return None,
+                            }
+                        }
+                        only.filter(|&i| {
+                            self.state.doc.mirror_ops.get(i).is_some_and(|o| !o.deleted)
+                        })
+                    })
+                    .flatten(),
                 repeat_op: (self.state.tool == Tool::Repeat
                     && self.state.sketch_session.is_none())
                 .then(|| {
@@ -7177,6 +7327,8 @@ impl eframe::App for App {
             let mut boolean_edit_begin: Option<usize> = None;
             let mut move_edit: Option<context::MoveEdit> = None;
             let mut move_edit_begin: Option<usize> = None;
+            let mut mirror_edit: Option<context::MirrorEdit> = None;
+            let mut mirror_edit_begin: Option<usize> = None;
             let mut repeat_edit: Option<context::RepeatEdit> = None;
             let mut sketch_repeat_edit: Option<context::SketchRepeatEdit> = None;
             let mut sketch_offset_edit: Option<context::SketchOffsetEdit> = None;
@@ -7227,6 +7379,8 @@ impl eframe::App for App {
                         &mut |op| boolean_edit_begin = Some(op),
                         &mut |edit| move_edit = Some(edit),
                         &mut |op| move_edit_begin = Some(op),
+                        &mut |edit| mirror_edit = Some(edit),
+                        &mut |op| mirror_edit_begin = Some(op),
                         &mut |edit| repeat_edit = Some(edit),
                         &mut |edit| sketch_repeat_edit = Some(edit),
                         &mut |edit| sketch_offset_edit = Some(edit),
@@ -7409,6 +7563,28 @@ impl eframe::App for App {
                         editing: Some(op),
                     });
                     self.state.apply(Action::SetTool(Tool::Move));
+                }
+            }
+            if let Some(edit) = mirror_edit {
+                match edit {
+                    context::MirrorEdit::Commit => {
+                        self.state.apply(Action::CommitMirror);
+                    }
+                    context::MirrorEdit::ClearPlane => {
+                        if let Some(cm) = self.state.creating_mirror.as_mut() {
+                            cm.plane = None;
+                        }
+                    }
+                }
+            }
+            if let Some(op) = mirror_edit_begin {
+                if let Some(existing) = self.state.doc.mirror_ops.get(op).cloned() {
+                    self.state.creating_mirror = Some(actions::CreatingMirror {
+                        plane: Some(existing.plane),
+                        targets: existing.targets,
+                        editing: Some(op),
+                    });
+                    self.state.apply(Action::SetTool(Tool::Mirror));
                 }
             }
             if let Some(edit) = repeat_edit {
@@ -7968,6 +8144,11 @@ impl eframe::App for App {
                     }
                     context::PickerTarget::MoveTargets => {
                         if let Some(cm) = self.state.creating_move.as_mut() {
+                            remove_or_clear(&mut cm.targets, edit);
+                        }
+                    }
+                    context::PickerTarget::MirrorTargets => {
+                        if let Some(cm) = self.state.creating_mirror.as_mut() {
                             remove_or_clear(&mut cm.targets, edit);
                         }
                     }
@@ -14414,6 +14595,12 @@ impl App {
             self.handle_move_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
         }
 
+        if self.state.tool == Tool::Mirror {
+            self.handle_mirror_tool(
+                ui, &painter, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion,
+            );
+        }
+
         if self.state.tool == Tool::Repeat {
             self.handle_repeat_tool(ui, &project, pointer_screen, &cam, viewport, &vp, pick_occlusion);
         }
@@ -15361,6 +15548,11 @@ impl App {
             }
             Tool::Move => {
                 if let Some(cm) = self.state.creating_move.as_ref() {
+                    folded.extend(cm.targets.iter().map(|&bi| SceneElement::Body(bi)));
+                }
+            }
+            Tool::Mirror => {
+                if let Some(cm) = self.state.creating_mirror.as_ref() {
                     folded.extend(cm.targets.iter().map(|&bi| SceneElement::Body(bi)));
                 }
             }
@@ -16715,6 +16907,16 @@ impl App {
                     "Move — click bodies to add/remove • set offset/rotation in the context pane • Enter: commit"
                 } else {
                     "Move — click one or more bodies to move"
+                }
+            }
+            Tool::Mirror => {
+                let cm = self.state.creating_mirror.as_ref();
+                if cm.is_some_and(|c| c.plane.is_none()) {
+                    "Mirror — click a construction plane or a flat face to mirror across"
+                } else if cm.is_some_and(|c| c.targets.is_empty()) {
+                    "Mirror — now click one or more bodies to mirror • Enter: commit"
+                } else {
+                    "Mirror — click bodies to add/remove • Enter: commit • Esc: cancel"
                 }
             }
             Tool::Repeat => {

@@ -156,6 +156,7 @@ pub fn scene_element_from_kind(kind: &str, index: usize) -> Option<SceneElement>
         "sketch_text" | "text" => Some(SceneElement::SketchText(index)),
         "component" => Some(SceneElement::Component(index)),
         "sketch_offset_op" | "offset" => Some(SceneElement::SketchOffsetOp(index)),
+        "mirror_op" | "mirror" => Some(SceneElement::MirrorOp(index)),
         _ => None,
     }
 }
@@ -798,6 +799,14 @@ fn parse_slice_op_args(
     }
     let extend_infinite: bool = opts.get::<Option<bool>>("extend")?.unwrap_or(true);
     Ok((targets, cutters, extend_infinite))
+}
+
+/// Parse a `bearcad.mirror_bodies`/`edit_mirror` table into `(plane_face, bodies)` (#523).
+fn parse_mirror_op_args(opts: &Table) -> mlua::Result<(FaceId, Vec<usize>)> {
+    let plane_table: Table = opts.get("plane")?;
+    let plane = parse_face_id_table(plane_table)?;
+    let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
+    Ok((plane, targets))
 }
 
 fn parse_geometric_constraint(name: &str) -> Option<GeometricConstraintType> {
@@ -3232,6 +3241,37 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let (targets, tx, ty, tz, axis, angle) = parse_move_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle })?;
+            }
+            Ok(())
+        })?,
+    )?;
+
+    api.set(
+        "mirror_bodies",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(&opts, "mirror_bodies", &["plane", "bodies", "name"])?;
+            let (plane, targets) = parse_mirror_op_args(&opts)?;
+            unsafe {
+                tick.exec(Instruction::CreateMirrorOp { plane, targets })?;
+            }
+            let element = SceneElement::MirrorOp(unsafe {
+                tick.state().doc.mirror_ops.len().saturating_sub(1)
+            });
+            drop(tick);
+            apply_optional_name(lua, element, Some(opts))
+        })?,
+    )?;
+
+    api.set(
+        "edit_mirror",
+        lua.create_function(|lua, opts: Table| {
+            let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
+            check_keys(&opts, "edit_mirror", &["index", "plane", "bodies"])?;
+            let op: usize = opts.get("index")?;
+            let (plane, targets) = parse_mirror_op_args(&opts)?;
+            unsafe {
+                tick.exec(Instruction::EditMirrorOp { op, plane, targets })?;
             }
             Ok(())
         })?,

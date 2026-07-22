@@ -74,6 +74,7 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
         SceneElement::Image(_) => "image",
         SceneElement::BooleanOp(_) => "boolean_op",
         SceneElement::MoveOp(_) => "move_op",
+        SceneElement::MirrorOp(_) => "mirror_op",
         SceneElement::RepeatOp(_) => "repeat_op",
         SceneElement::SketchRepeatOp(_) => "sketch_repeat_op",
         SceneElement::SketchOffsetOp(_) => "sketch_offset_op",
@@ -102,6 +103,7 @@ pub fn scene_element_selection_index(element: &SceneElement) -> Option<usize> {
         | SceneElement::Image(i)
         | SceneElement::BooleanOp(i)
         | SceneElement::MoveOp(i)
+        | SceneElement::MirrorOp(i)
         | SceneElement::RepeatOp(i)
         | SceneElement::SketchRepeatOp(i)
         | SceneElement::SketchOffsetOp(i)
@@ -377,6 +379,15 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             let op = req_usize(o, "index", "edit_move")?;
             let (targets, tx, ty, tz, axis, angle) = move_op_args(o)?;
             Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle })
+        }
+        "mirror_bodies" => {
+            let (plane, targets) = mirror_op_args(o)?;
+            Ok(Instruction::CreateMirrorOp { plane, targets })
+        }
+        "edit_mirror" => {
+            let op = req_usize(o, "index", "edit_mirror")?;
+            let (plane, targets) = mirror_op_args(o)?;
+            Ok(Instruction::EditMirrorOp { op, plane, targets })
         }
         "repeat_bodies" => {
             let (targets, axis, mode, count, spacing, length) = repeat_op_args(o)?;
@@ -1093,6 +1104,16 @@ fn slice_op_args(o: &Map<String, Value>) -> Result<(Vec<usize>, Vec<FaceId>, boo
         Some(_) => return Err("slice `cutters` must be a list of face specs".into()),
     }
     Ok((targets, cutters, opt_bool(o, "extend")?.unwrap_or(true)))
+}
+
+/// `mirror_bodies`/`edit_mirror` shared arguments (#523): the mirror plane (a face spec) and
+/// the target bodies.
+fn mirror_op_args(o: &Map<String, Value>) -> Result<(FaceId, Vec<usize>), String> {
+    let plane = match o.get("plane") {
+        Some(v) if !v.is_null() => face_id_from_json(v)?,
+        _ => return Err("mirror `plane` (a face spec) is required".into()),
+    };
+    Ok((plane, usize_list(o, "bodies")?))
 }
 
 /// A rotation/revolve axis from `"x"`/`"y"`/`"z"` or an object `{ line = i }`.
@@ -1868,6 +1889,33 @@ mod tests {
             })
         );
         assert!(instruction_from_json("combine", &json!({ "op": "nope" })).is_err());
+    }
+
+    #[test]
+    fn mirror_bodies_parses_plane_and_bodies() {
+        assert_eq!(
+            instruction_from_json(
+                "mirror_bodies",
+                &json!({ "plane": { "kind": "construction_plane", "index": 0 }, "bodies": [0, 1] })
+            ),
+            Ok(Instruction::CreateMirrorOp {
+                plane: FaceId::ConstructionPlane(0),
+                targets: vec![0, 1],
+            })
+        );
+        assert_eq!(
+            instruction_from_json(
+                "edit_mirror",
+                &json!({ "index": 2, "plane": { "kind": "construction_plane", "index": 1 }, "bodies": [3] })
+            ),
+            Ok(Instruction::EditMirrorOp {
+                op: 2,
+                plane: FaceId::ConstructionPlane(1),
+                targets: vec![3],
+            })
+        );
+        // A missing plane is an error.
+        assert!(instruction_from_json("mirror_bodies", &json!({ "bodies": [0] })).is_err());
     }
 
     #[test]

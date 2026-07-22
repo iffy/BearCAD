@@ -74,6 +74,10 @@ pub struct ContextInput<'a> {
     pub move_op: Option<MoveControl>,
     /// "Edit move" entry point: `Some(op)` when exactly one move operation is selected.
     pub move_edit_start: Option<usize>,
+    /// Mirror tool state (#523): `Some` while the Mirror tool is active.
+    pub mirror_op: Option<MirrorControl>,
+    /// "Edit mirror" entry point: `Some(op)` when exactly one mirror operation is selected.
+    pub mirror_edit_start: Option<usize>,
     /// Repeat tool state: `Some` while the Repeat tool is active.
     pub repeat_op: Option<RepeatControl>,
     /// In-sketch Repeat tool control (#232).
@@ -220,6 +224,28 @@ pub enum MoveEdit {
     Tz(String),
     Angle(String),
     Axis(Option<crate::model::RevolveAxis>),
+    Commit,
+}
+
+/// What the Mirror tool's context section shows (#523): the mirror plane's label, the
+/// picked bodies, and whether it's an edit / ready to commit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MirrorControl {
+    /// Label of the picked mirror plane/face, or `None` until one is picked.
+    pub plane_label: Option<String>,
+    /// Picked bodies to mirror (rendered through the unified element picker).
+    pub targets: Vec<usize>,
+    pub editing: bool,
+    pub can_commit: bool,
+}
+
+/// One edit from the Mirror context section (#523). Picked bodies are removed through the
+/// unified element picker (`PickerTarget::MirrorTargets`), so this only covers the plane and
+/// the commit button.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MirrorEdit {
+    /// Clear the picked mirror plane so a new one can be clicked.
+    ClearPlane,
     Commit,
 }
 
@@ -654,6 +680,10 @@ pub struct ContextPaneContent {
     pub move_op: Option<MoveControl>,
     /// "Edit move" entry point: `Some(op)` when exactly one move operation is selected.
     pub move_edit_start: Option<usize>,
+    /// Mirror tool state (#523): `Some` while the Mirror tool is active.
+    pub mirror_op: Option<MirrorControl>,
+    /// "Edit mirror" entry point: `Some(op)` when exactly one mirror operation is selected.
+    pub mirror_edit_start: Option<usize>,
     /// Repeat tool state: `Some` while the Repeat tool is active.
     pub repeat_op: Option<RepeatControl>,
     /// In-sketch Repeat tool control (#232).
@@ -811,6 +841,8 @@ pub enum PickerTarget {
     LoftCut,
     /// The Move tool's target bodies (`CreatingMove::targets`).
     MoveTargets,
+    /// The Mirror tool's target bodies (`CreatingMirror::targets`, #523).
+    MirrorTargets,
     /// The Repeat tool's target bodies (`CreatingRepeat::targets`).
     RepeatTargets,
     /// The Combine tool's side-A bodies (`CreatingBoolean::a`).
@@ -1042,6 +1074,17 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             true,
         ));
     }
+    if let Some(m) = input.mirror_op.as_ref() {
+        // The bodies picker reads as focused only once a mirror plane is chosen — the plane
+        // is the first pick (#523).
+        tool_pickers.push(body_tool_picker(
+            "Bodies",
+            PickerTarget::MirrorTargets,
+            &m.targets,
+            None,
+            m.plane_label.is_some(),
+        ));
+    }
     if let Some(r) = input.repeat_op.as_ref() {
         // Only one Repeat picker reads as focused (#439): the axis while it's unset and
         // there's already something to repeat (the axis is the next pick), the bodies
@@ -1090,6 +1133,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let boolean_edit_start = input.boolean_edit_start;
     let move_op = input.move_op.clone();
     let move_edit_start = input.move_edit_start;
+    let mirror_op = input.mirror_op.clone();
+    let mirror_edit_start = input.mirror_edit_start;
     let repeat_op = input.repeat_op.clone();
     let sketch_repeat = input.sketch_repeat.clone();
     let sketch_offset = input.sketch_offset.clone();
@@ -1140,6 +1185,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             boolean_edit_start,
             move_op: move_op.clone(),
             move_edit_start,
+            mirror_op: mirror_op.clone(),
+            mirror_edit_start,
             repeat_op: repeat_op.clone(),
             sketch_repeat: sketch_repeat.clone(),
             sketch_offset: sketch_offset.clone(),
@@ -1186,6 +1233,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             boolean_edit_start,
             move_op: move_op.clone(),
             move_edit_start,
+            mirror_op: mirror_op.clone(),
+            mirror_edit_start,
             repeat_op: repeat_op.clone(),
             sketch_repeat: sketch_repeat.clone(),
             sketch_offset: sketch_offset.clone(),
@@ -1232,6 +1281,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             boolean_edit_start,
             move_op: move_op.clone(),
             move_edit_start,
+            mirror_op: mirror_op.clone(),
+            mirror_edit_start,
             repeat_op: repeat_op.clone(),
             sketch_repeat: sketch_repeat.clone(),
             sketch_offset: sketch_offset.clone(),
@@ -1281,6 +1332,8 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         boolean_edit_start,
         move_op,
         move_edit_start,
+        mirror_op,
+        mirror_edit_start,
         repeat_op,
         sketch_repeat,
         sketch_offset,
@@ -1668,6 +1721,8 @@ pub fn show_pane(
     on_boolean_edit_start: &mut impl FnMut(usize),
     on_move_edit: &mut impl FnMut(MoveEdit),
     on_move_edit_start: &mut impl FnMut(usize),
+    on_mirror_edit: &mut impl FnMut(MirrorEdit),
+    on_mirror_edit_start: &mut impl FnMut(usize),
     on_repeat_edit: &mut impl FnMut(RepeatEdit),
     on_sketch_repeat_edit: &mut impl FnMut(SketchRepeatEdit),
     on_sketch_offset_edit: &mut impl FnMut(SketchOffsetEdit),
@@ -2388,6 +2443,58 @@ pub fn show_pane(
         }
         ui.label(
             egui::RichText::new("Re-open the Move tool to change this operation")
+                .color(egui::Color32::from_gray(140))
+                .size(11.0),
+        );
+    }
+
+    if let Some(control) = &content.mirror_op {
+        any_control = true;
+        ui.separator();
+        section_label(ui, if control.editing { "Edit mirror" } else { "Mirror" });
+        // Primary picker: the mirror plane/face. Picked in the viewport; shown here as a label
+        // with a button to clear it and pick another (#523).
+        labeled_row(ui, "Mirror plane", |ui| match &control.plane_label {
+            Some(label) => {
+                ui.label(egui::RichText::new(label).color(egui::Color32::from_gray(200)));
+                if ui.small_button("✕").on_hover_text("Pick a different plane").clicked() {
+                    on_mirror_edit(MirrorEdit::ClearPlane);
+                }
+            }
+            None => {
+                ui.label(
+                    egui::RichText::new("click a plane or flat face")
+                        .color(egui::Color32::from_gray(140))
+                        .size(11.0),
+                );
+            }
+        });
+        // Secondary picker: the bodies to mirror (unified element picker, see `tool_pickers`).
+        ui.add_space(2.0);
+        if ui
+            .add_enabled(
+                control.can_commit && controls_enabled,
+                egui::Button::new(if control.editing { "Apply changes" } else { "Mirror" }),
+            )
+            .clicked()
+        {
+            on_mirror_edit(MirrorEdit::Commit);
+        }
+        ui.label(
+            egui::RichText::new("The originals stay; each reflection is a new body")
+                .color(egui::Color32::from_gray(140))
+                .size(11.0),
+        );
+    }
+
+    if let Some(op) = content.mirror_edit_start {
+        any_control = true;
+        ui.separator();
+        if ui.button("Edit mirror").clicked() {
+            on_mirror_edit_start(op);
+        }
+        ui.label(
+            egui::RichText::new("Re-open the Mirror tool to change this operation")
                 .color(egui::Color32::from_gray(140))
                 .size(11.0),
         );
@@ -3911,6 +4018,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            mirror_op: None,
+            mirror_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
             sketch_offset: None,
@@ -4065,6 +4174,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            mirror_op: None,
+            mirror_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
             sketch_offset: None,
@@ -4141,6 +4252,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            mirror_op: None,
+            mirror_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
             sketch_offset: None,
@@ -4422,6 +4535,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            mirror_op: None,
+            mirror_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
             sketch_offset: None,
@@ -4484,6 +4599,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            mirror_op: None,
+            mirror_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
             sketch_offset: None,
@@ -4530,6 +4647,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            mirror_op: None,
+            mirror_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
             sketch_offset: None,
@@ -4592,6 +4711,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            mirror_op: None,
+            mirror_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
             sketch_offset: None,
@@ -4656,6 +4777,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            mirror_op: None,
+            mirror_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
             sketch_offset: None,
@@ -4766,6 +4889,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            mirror_op: None,
+            mirror_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
             sketch_offset: None,
@@ -4826,6 +4951,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            mirror_op: None,
+            mirror_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
             sketch_offset: None,
@@ -4874,6 +5001,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            mirror_op: None,
+            mirror_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
             sketch_offset: None,
@@ -4927,6 +5056,8 @@ mod tests {
             boolean_edit_start: None,
             move_op: None,
             move_edit_start: None,
+            mirror_op: None,
+            mirror_edit_start: None,
             repeat_op: None,
             sketch_repeat: None,
             sketch_offset: None,

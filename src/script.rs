@@ -293,6 +293,17 @@ pub enum Instruction {
         axis: Option<crate::model::RevolveAxis>,
         angle: String,
     },
+    /// Mirror bodies across a plane/face (Mirror tool, #523).
+    CreateMirrorOp {
+        plane: FaceId,
+        targets: Vec<usize>,
+    },
+    /// Re-point an existing mirror operation (#523).
+    EditMirrorOp {
+        op: usize,
+        plane: FaceId,
+        targets: Vec<usize>,
+    },
     /// Linear repeat of bodies along an axis (Repeat tool).
     CreateRepeatOp {
         targets: Vec<usize>,
@@ -951,6 +962,12 @@ impl Instruction {
             }
             Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle } => {
                 move_op_lua("bearcad.edit_move", Some(*op), targets, tx, ty, tz, *axis, angle)
+            }
+            Instruction::CreateMirrorOp { plane, targets } => {
+                mirror_op_lua("bearcad.mirror_bodies", None, plane, targets)
+            }
+            Instruction::EditMirrorOp { op, plane, targets } => {
+                mirror_op_lua("bearcad.edit_mirror", Some(*op), plane, targets)
             }
             Instruction::CreateRepeatOp { targets, axis, mode, count, spacing, length } => {
                 repeat_op_lua("bearcad.repeat_bodies", None, targets, *axis, *mode, count, spacing, length)
@@ -1620,6 +1637,15 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 angle: angle.clone(),
             })
         }
+        Action::CreateMirrorOperation { plane, targets } => Some(Instruction::CreateMirrorOp {
+            plane: plane.clone(),
+            targets: targets.clone(),
+        }),
+        Action::EditMirrorOperation { op, plane, targets } => Some(Instruction::EditMirrorOp {
+            op: *op,
+            plane: plane.clone(),
+            targets: targets.clone(),
+        }),
         // The scripting Instruction DSL doesn't carry plane targets (#221), same as it omits
         // the Move op's plane/image targets — they replay as body-only operations.
         Action::CreateRepeatOperation { targets, plane_targets: _, extrusion_targets: _, sketch_targets: _, axis, mode, count, spacing, length } => {
@@ -2160,6 +2186,20 @@ fn move_op_lua(
     format!("{call}{{ {} }}", parts.join(", "))
 }
 
+/// Render a mirror-operation call (`bearcad.mirror_bodies{}` / `bearcad.edit_mirror{}`, #523).
+fn mirror_op_lua(call: &str, op: Option<usize>, plane: &FaceId, targets: &[usize]) -> String {
+    let mut parts = Vec::new();
+    if let Some(op) = op {
+        parts.push(format!("index = {op}"));
+    }
+    parts.push(format!("plane = {}", face_id_lua_ref(plane)));
+    parts.push(format!(
+        "bodies = {{{}}}",
+        targets.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+    ));
+    format!("{call}{{ {} }}", parts.join(", "))
+}
+
 /// Render a repeat-operation call (`bearcad.repeat_bodies{}` / `bearcad.edit_repeat{}`).
 #[allow(clippy::too_many_arguments)]
 fn repeat_op_lua(
@@ -2453,6 +2493,7 @@ fn tool_lua_name(tool: Tool) -> &'static str {
         Tool::Sweep => "sweep",
         Tool::Combine => "combine",
         Tool::Move => "move",
+        Tool::Mirror => "mirror",
         Tool::Repeat => "repeat",
         Tool::Slice => "slice",
         Tool::Text => "text",
@@ -4032,6 +4073,16 @@ impl ScriptRunner {
                     axis,
                     angle,
                 });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::CreateMirrorOp { plane, targets } => {
+                let result = state.apply(Action::CreateMirrorOperation { plane, targets });
+                self.record_action_error(result);
+                StepResult::Continue
+            }
+            Instruction::EditMirrorOp { op, plane, targets } => {
+                let result = state.apply(Action::EditMirrorOperation { op, plane, targets });
                 self.record_action_error(result);
                 StepResult::Continue
             }

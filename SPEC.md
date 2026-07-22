@@ -614,6 +614,26 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   geometry first (Select tool), then switch to Move — the selection persists across the tool
   switch.
 
+- **Mirror tool (#523):** reflects whole bodies across a mirror plane. The **first** viewport
+  click picks the mirror plane — a construction plane or a flat body face (`pick_sketch_face`,
+  the same planar-face pick sketching uses); subsequent clicks toggle **bodies** into the
+  reflected set. The context pane shows the picked plane (with a **✕** to clear and re-pick)
+  and the bodies through the unified element picker. A translucent **ghost** of each reflection
+  previews live before commit (`draw_mirror_ghosts`). **Enter** commits, creating an editable
+  **mirror operation element** (`Document::mirror_ops`, `ShapeKind::MirrorOperation`) with one
+  reflected output body per input (`BodySource::Mirrored { op, target }`). Unlike Move, the
+  **originals are kept** — a mirror *adds* the reflection alongside the source, so inputs are
+  never shadowed; deleting the op removes only the reflections. The reflection is a Householder
+  transform across the plane (`mirror_op_transform`, determinant −1): the BREP shape transforms
+  through the kernel (`Shape::transformed`) so mirrored bodies chain into booleans and export as
+  real BREP, and the mesh path reflects each triangle with **reversed winding** so normals stay
+  outward. "Edit mirror" (double-click / the pane button, or a lone selected mirror op) re-opens
+  the tool with its plane + bodies loaded; outputs grow/shrink with the target list (removed
+  ones tombstone). Scripting: `bearcad.mirror_bodies{ plane = <face>, bodies = {…}, name? }`
+  and `bearcad.edit_mirror{ index, plane, bodies }`. In the elements graph the plane's body and
+  every input body feed the Mirror node, and each reflected body nests beneath it. *(The
+  in-sketch Mirror — reflecting sketch shapes across a line/axis — is tracked separately, #528.)*
+
 - **Linear repeat tool (#182/#257):** copies of whole bodies spaced along an axis, chosen with
   an **element picker** of one edge/axis (a global X/Y/Z axis or a clicked straight sketch
   line; the ✕ clears it) (#257). **Pane polish (#440–#447):** the Gap/Distance

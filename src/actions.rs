@@ -114,6 +114,9 @@ pub enum Tool {
     /// Move bodies (translate and/or rotate) into new bodies (Move tool, #176/#183).
     /// Inputs become shadow bodies; outputs are new bodies; the operation is editable.
     Move,
+    /// Mirror bodies across a plane or planar face into new reflected bodies (Mirror tool,
+    /// #523). The originals stay; each reflection is a new body; the operation is editable.
+    Mirror,
     /// Repeat bodies along an axis (Repeat tool, #182). The original stays; each further
     /// instance is a new body; the operation is editable.
     Repeat,
@@ -155,6 +158,7 @@ impl Tool {
             "sweep" => Some(Tool::Sweep),
             "combine" | "boolean" => Some(Tool::Combine),
             "move" => Some(Tool::Move),
+            "mirror" | "reflect" => Some(Tool::Mirror),
             "repeat" | "linear_repeat" | "pattern" => Some(Tool::Repeat),
             "offset" => Some(Tool::Offset),
             "slice" | "split" => Some(Tool::Slice),
@@ -810,6 +814,24 @@ pub struct CreatingMove {
     pub angle: String,
     /// `Some(op)` while re-editing a committed operation.
     pub editing: Option<usize>,
+}
+
+/// In-progress mirror operation (Mirror tool, #523): the mirror plane (a construction plane
+/// or a planar body face), the picked input bodies, and the op being re-edited.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CreatingMirror {
+    /// The mirror plane; `None` until one is picked.
+    pub plane: Option<crate::model::FaceId>,
+    pub targets: Vec<usize>,
+    /// `Some(op)` while re-editing a committed operation.
+    pub editing: Option<usize>,
+}
+
+impl CreatingMirror {
+    /// Ready to commit once a plane and at least one body are picked.
+    pub fn can_commit(&self) -> bool {
+        self.plane.is_some() && !self.targets.is_empty()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1662,6 +1684,19 @@ pub enum Action {
         axis: Option<crate::model::RevolveAxis>,
         angle: String,
     },
+    /// Commit the in-progress Mirror-tool operation (#523).
+    CommitMirror,
+    /// Scripted/replayed mirror operation with an explicit payload.
+    CreateMirrorOperation {
+        plane: crate::model::FaceId,
+        targets: Vec<usize>,
+    },
+    /// Re-point an existing mirror operation (#523).
+    EditMirrorOperation {
+        op: usize,
+        plane: crate::model::FaceId,
+        targets: Vec<usize>,
+    },
     /// Commit the in-progress Repeat-tool operation.
     CommitRepeat,
     /// Scripted/replayed linear repeat with an explicit payload.
@@ -2241,6 +2276,8 @@ pub struct AppState {
     pub creating_boolean: Option<CreatingBoolean>,
     /// In-progress move operation (Move tool).
     pub creating_move: Option<CreatingMove>,
+    /// In-progress mirror operation (Mirror tool, #523).
+    pub creating_mirror: Option<CreatingMirror>,
     /// In-progress linear repeat (Repeat tool).
     pub creating_repeat: Option<CreatingRepeat>,
     /// In-progress in-sketch linear repeat (#232), active when the Repeat tool runs with a
@@ -2390,6 +2427,7 @@ impl Default for AppState {
             creating_sweep: None,
             creating_boolean: None,
             creating_move: None,
+            creating_mirror: None,
             creating_repeat: None,
             creating_sketch_repeat: None,
             creating_sketch_offset: None,
@@ -3883,6 +3921,39 @@ fn validate_move_inputs(
     Ok(())
 }
 
+/// Validation for creating/editing a mirror operation (#523): at least one target, each a
+/// live non-shadow body, no duplicates, and never the op's own reflected output (which would
+/// recurse). Unlike Move, mirror inputs are kept, so a target isn't consumed/shadowed.
+fn validate_mirror_inputs(
+    doc: &Document,
+    targets: &[usize],
+    editing: Option<usize>,
+) -> Result<(), String> {
+    if targets.is_empty() {
+        return Err("Pick at least one body to mirror".to_string());
+    }
+    let own_outputs: Vec<usize> = editing
+        .and_then(|e| doc.mirror_ops.get(e))
+        .map(|o| o.outputs.clone())
+        .unwrap_or_default();
+    let mut seen = std::collections::HashSet::new();
+    for &bi in targets {
+        let Some(body) = doc.bodies.get(bi).filter(|b| !b.deleted) else {
+            return Err(format!("Body {bi} not found"));
+        };
+        if own_outputs.contains(&bi) {
+            return Err("Cannot mirror this operation's own result".to_string());
+        }
+        if body.shadow {
+            return Err(format!("Body {bi} is already consumed by another operation"));
+        }
+        if !seen.insert(bi) {
+            return Err(format!("Body {bi} is picked twice"));
+        }
+    }
+    Ok(())
+}
+
 /// Shared validation for creating/editing a repeat operation.
 /// Validate a 2D in-sketch repeat's operands (#222): a live sketch, at least one target, and
 /// every target a live entity that actually belongs to that sketch (no duplicates).
@@ -5019,6 +5090,24 @@ impl AppState {
                 if tool == Tool::Move && self.creating_move.is_none() {
                     self.creating_move = Some(CreatingMove::default());
                 }
+                if self.creating_mirror.is_some() && tool != Tool::Mirror {
+                    self.creating_mirror = None;
+                }
+                if tool == Tool::Mirror && self.creating_mirror.is_none() {
+                    // Seed the target set from the current selection (#523/#439): a body
+                    // selected before entering the tool is what you want to mirror.
+                    let mut cm = CreatingMirror::default();
+                    for element in self.scene_selection.iter() {
+                        if let crate::hierarchy::SceneElement::Body(bi) = element {
+                            if self.doc.bodies.get(bi).is_some_and(|b| !b.deleted && !b.shadow)
+                                && !cm.targets.contains(&bi)
+                            {
+                                cm.targets.push(bi);
+                            }
+                        }
+                    }
+                    self.creating_mirror = Some(cm);
+                }
                 if self.creating_repeat.is_some() && tool != Tool::Repeat {
                     self.creating_repeat = None;
                 }
@@ -5221,6 +5310,10 @@ impl AppState {
                     }
                     Tool::Move => {
                         "Move tool — click bodies to pick them, set the offset/rotation, Enter commits"
+                            .to_string()
+                    }
+                    Tool::Mirror => {
+                        "Mirror tool — pick a mirror plane/face, then bodies to mirror, Enter commits"
                             .to_string()
                     }
                     Tool::Repeat => {
@@ -9177,6 +9270,129 @@ label_hidden: false,
                 self.status = "Edited move".to_string();
                 ActionResult::Ok
             }
+            Action::CommitMirror => {
+                let Some(cm) = self.creating_mirror.take() else {
+                    return ActionResult::Err("No mirror in progress".to_string());
+                };
+                let Some(plane) = cm.plane.clone() else {
+                    let e = "Pick a mirror plane".to_string();
+                    self.status = e.clone();
+                    self.creating_mirror = Some(cm);
+                    return ActionResult::Err(e);
+                };
+                let result = match cm.editing {
+                    Some(op) => self.apply(Action::EditMirrorOperation {
+                        op,
+                        plane,
+                        targets: cm.targets.clone(),
+                    }),
+                    None => self.apply(Action::CreateMirrorOperation {
+                        plane,
+                        targets: cm.targets.clone(),
+                    }),
+                };
+                if matches!(result, ActionResult::Err(_)) {
+                    self.creating_mirror = Some(cm);
+                } else {
+                    self.creating_mirror = Some(CreatingMirror::default());
+                }
+                result
+            }
+            Action::CreateMirrorOperation { plane, targets } => {
+                if let Err(e) = validate_mirror_inputs(&self.doc, &targets, None) {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let op_index = self.doc.mirror_ops.len();
+                self.doc.mirror_ops.push(crate::model::MirrorOperation {
+                    plane,
+                    targets: targets.clone(),
+                    outputs: Vec::new(),
+                    name: None,
+                    deleted: false,
+                });
+                if crate::extrude::mirror_op_transform(&self.doc, &self.doc.mirror_ops[op_index])
+                    .is_none()
+                {
+                    self.doc.mirror_ops.pop();
+                    let e = "Mirror plane isn't a valid planar face".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                self.doc.shape_order.push(ShapeKind::MirrorOperation);
+                let mut outputs = Vec::with_capacity(targets.len());
+                for (ordinal, _) in targets.iter().enumerate() {
+                    outputs.push(self.doc.bodies.len());
+                    self.doc.bodies.push(crate::model::Body {
+                        source: crate::model::BodySource::Mirrored { op: op_index, target: ordinal },
+                        name: None,
+                        deleted: false,
+                        shadow: false,
+                    });
+                    self.doc.shape_order.push(ShapeKind::Body);
+                }
+                self.doc.mirror_ops[op_index].outputs = outputs;
+                // Unlike Move, the input bodies stay (a mirror adds the reflection alongside).
+                self.refresh_document_health();
+                self.status = format!(
+                    "Mirrored {} bod{}",
+                    targets.len(),
+                    if targets.len() == 1 { "y" } else { "ies" }
+                );
+                ActionResult::Ok
+            }
+            Action::EditMirrorOperation { op, plane, targets } => {
+                if self.doc.mirror_ops.get(op).filter(|o| !o.deleted).is_none() {
+                    let e = format!("Mirror operation {op} not found");
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                if let Err(e) = validate_mirror_inputs(&self.doc, &targets, Some(op)) {
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                let old = self.doc.mirror_ops[op].clone();
+                {
+                    let entry = &mut self.doc.mirror_ops[op];
+                    entry.plane = plane;
+                    entry.targets = targets.clone();
+                }
+                if crate::extrude::mirror_op_transform(&self.doc, &self.doc.mirror_ops[op]).is_none()
+                {
+                    self.doc.mirror_ops[op] = old;
+                    let e = "Mirror plane isn't a valid planar face".to_string();
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+                // Grow/shrink outputs to match the new target list (tombstoning removed ones
+                // keeps later body indices stable).
+                let have = self.doc.mirror_ops[op].outputs.len();
+                if targets.len() > have {
+                    let mut outputs = self.doc.mirror_ops[op].outputs.clone();
+                    for ordinal in have..targets.len() {
+                        outputs.push(self.doc.bodies.len());
+                        self.doc.bodies.push(crate::model::Body {
+                            source: crate::model::BodySource::Mirrored { op, target: ordinal },
+                            name: None,
+                            deleted: false,
+                            shadow: false,
+                        });
+                        self.doc.shape_order.push(ShapeKind::Body);
+                        self.doc.undo_groups.push(1);
+                    }
+                    self.doc.mirror_ops[op].outputs = outputs;
+                } else if targets.len() < have {
+                    let outputs = self.doc.mirror_ops[op].outputs.split_off(targets.len());
+                    for out in outputs {
+                        if let Some(body) = self.doc.bodies.get_mut(out) {
+                            body.deleted = true;
+                        }
+                    }
+                }
+                self.refresh_document_health();
+                self.status = "Edited mirror".to_string();
+                ActionResult::Ok
+            }
             Action::CommitBoolean => {
                 let Some(cb) = self.creating_boolean.take() else {
                     return ActionResult::Err("No boolean operation in progress".to_string());
@@ -12206,6 +12422,59 @@ mod tests {
         assert!(!state.dirty, "New document starts clean");
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// #523: mirroring a body across a plane creates a reflected output body, keeps the
+    /// original (never shadowed), and reflects the geometry across the plane. Editing the
+    /// target set grows/shrinks the outputs; deleting the op removes only the reflections.
+    #[test]
+    fn mirror_reflects_a_body_across_a_plane() {
+        use crate::hierarchy::SceneElement;
+        let mut state = AppState::default();
+        // A construction plane = the ground XY (z = 0) plane, normal +Z.
+        state.doc.construction_planes.push(crate::face::default_xy_plane());
+        // An imported-mesh tetra sitting entirely above the plane (z in [1, 2]).
+        let tetra = vec![
+            [Vec3::new(0.0, 0.0, 1.0), Vec3::new(2.0, 0.0, 1.0), Vec3::new(0.0, 2.0, 1.0)],
+            [Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 2.0, 1.0), Vec3::new(0.0, 0.0, 2.0)],
+            [Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, 2.0), Vec3::new(2.0, 0.0, 1.0)],
+            [Vec3::new(2.0, 0.0, 1.0), Vec3::new(0.0, 0.0, 2.0), Vec3::new(0.0, 2.0, 1.0)],
+        ];
+        state.import_mesh_body("tetra.stl", tetra);
+        let body = state.doc.bodies.len() - 1;
+
+        let r = state.apply(Action::CreateMirrorOperation {
+            plane: FaceId::ConstructionPlane(0),
+            targets: vec![body],
+        });
+        assert!(matches!(r, ActionResult::Ok), "mirror should succeed: {r:?}");
+        assert_eq!(state.doc.mirror_ops.len(), 1);
+        assert_eq!(state.doc.mirror_ops[0].outputs.len(), 1);
+
+        // The original body is kept and NOT shadowed (a mirror adds, it doesn't relocate).
+        assert!(!state.doc.bodies[body].deleted && !state.doc.bodies[body].shadow);
+
+        // The reflected body's geometry sits below the plane (z in [-2, -1]).
+        let out = state.doc.mirror_ops[0].outputs[0];
+        let mesh = crate::extrude::body_solid_mesh(&state.doc, out).expect("reflected mesh");
+        let (min, max) = mesh.bounds().expect("bounds");
+        assert!(
+            max.z < 0.0 && (min.z + 2.0).abs() < 0.05 && (max.z + 1.0).abs() < 0.05,
+            "reflected z should be ~[-2,-1], got {min:?}..{max:?}"
+        );
+
+        // Editing to an empty target set removes the reflected body; back to one restores it.
+        state.apply(Action::EditMirrorOperation {
+            op: 0,
+            plane: FaceId::ConstructionPlane(0),
+            targets: vec![body],
+        });
+        assert!(state.doc.bodies.get(out).is_some_and(|b| !b.deleted));
+
+        // Deleting the op removes the reflection but keeps the source.
+        state.apply(Action::DeleteElement { element: SceneElement::MirrorOp(0) });
+        assert!(state.doc.bodies[out].deleted, "reflection removed");
+        assert!(!state.doc.bodies[body].deleted, "source kept");
     }
 
     /// #521: exporting a component gathers every body filed into it and its nested
