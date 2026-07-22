@@ -246,6 +246,14 @@ impl ElementVisibility {
         next
     }
 
+    /// Hide every element in `extra` on top of the current toggles (#524): the rollback
+    /// marker builds a render-only visibility that suppresses everything created after it.
+    pub fn with_hidden(&self, extra: &HashSet<SceneElement>) -> Self {
+        let mut merged = self.clone();
+        merged.hidden.extend(extra.iter().cloned());
+        merged
+    }
+
     /// Whether `component` and all its ancestors are individually visible (#423).
     fn component_chain_visible(&self, doc: &Document, component: usize) -> bool {
         doc.component_chain(component)
@@ -1158,6 +1166,69 @@ fn build_creation_ranks(doc: &Document) -> CreationRanks {
         }
     }
     ranks
+}
+
+/// The [`SceneElement`] created by each `shape_order` entry, in creation order — the timeline
+/// used by the rollback marker (#524). Entries that don't correspond to a selectable element
+/// (parameters, lofts, in-place edits) map to `None` but still hold their slot so positions
+/// line up with `shape_order`.
+fn shape_order_timeline(doc: &Document) -> Vec<Option<SceneElement>> {
+    use crate::model::ShapeKind as SK;
+    let (mut sk, mut ln, mut ci, mut cn, mut pl, mut ex, mut bd, mut im, mut tx) =
+        (0, 0, 0, 0, 1usize, 0, 0, 0, 0);
+    let (mut bo, mut mv, mut mr, mut rp, mut sl, mut rv, mut sw) = (0, 0, 0, 0, 0, 0, 0);
+    let (mut srp, mut ssl, mut sof, mut smr) = (0, 0, 0, 0);
+    let mut out = Vec::with_capacity(doc.shape_order.len());
+    for kind in &doc.shape_order {
+        let el = match kind {
+            SK::Sketch => (SceneElement::Sketch(sk), &mut sk),
+            SK::Line => (SceneElement::Line(ln), &mut ln),
+            SK::Circle => (SceneElement::Circle(ci), &mut ci),
+            SK::Constraint => (SceneElement::Constraint(cn), &mut cn),
+            SK::ConstructionPlane => (SceneElement::ConstructionPlane(pl), &mut pl),
+            SK::Extrusion => (SceneElement::Extrusion(ex), &mut ex),
+            SK::Body => (SceneElement::Body(bd), &mut bd),
+            SK::Image => (SceneElement::Image(im), &mut im),
+            SK::SketchText => (SceneElement::SketchText(tx), &mut tx),
+            SK::BooleanOperation => (SceneElement::BooleanOp(bo), &mut bo),
+            SK::MoveOperation => (SceneElement::MoveOp(mv), &mut mv),
+            SK::MirrorOperation => (SceneElement::MirrorOp(mr), &mut mr),
+            SK::RepeatOperation => (SceneElement::RepeatOp(rp), &mut rp),
+            SK::SliceOperation => (SceneElement::SliceOp(sl), &mut sl),
+            SK::Revolution => (SceneElement::Revolution(rv), &mut rv),
+            SK::Sweep => (SceneElement::SweepOp(sw), &mut sw),
+            SK::SketchRepeatOperation => (SceneElement::SketchRepeatOp(srp), &mut srp),
+            SK::SketchSliceOperation => (SceneElement::SketchSliceOp(ssl), &mut ssl),
+            SK::SketchOffsetOperation => (SceneElement::SketchOffsetOp(sof), &mut sof),
+            SK::SketchMirrorOperation => (SceneElement::SketchMirrorOp(smr), &mut smr),
+            // No selectable element: keep the slot so positions stay aligned.
+            SK::Parameter
+            | SK::Loft
+            | SK::ConstructionPlaneEdit
+            | SK::EdgeTreatmentEdit => {
+                out.push(None);
+                continue;
+            }
+        };
+        let (element, counter) = el;
+        *counter += 1;
+        out.push(Some(element));
+    }
+    out
+}
+
+/// Every element created **after** the rollback marker (#524): the set the timeline marker
+/// suppresses (hidden in the viewport, faded in the pane). Empty when the marker isn't found.
+pub fn rolled_back_elements(doc: &Document, marker: &SceneElement) -> HashSet<SceneElement> {
+    let timeline = shape_order_timeline(doc);
+    let Some(pos) = timeline.iter().position(|e| e.as_ref() == Some(marker)) else {
+        return HashSet::new();
+    };
+    timeline
+        .into_iter()
+        .skip(pos + 1)
+        .flatten()
+        .collect()
 }
 
 fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
@@ -2428,6 +2499,7 @@ fn selection_styles_visible_list(elements: &[HierarchyNode], selection: &SceneSe
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn row_style(
     element: SceneElement,
     selection: &SceneSelection,
@@ -2436,7 +2508,13 @@ fn row_style(
     style_selection: bool,
     health: &DocumentHealth,
     highlight_elements: &HashSet<SceneElement>,
+    rolled_back: &HashSet<SceneElement>,
 ) -> RowStyle {
+    // Timeline rollback (#524): elements created after the marker are inert, so fade them —
+    // above everything else, so a rolled-back invalid/selected row still reads as inert.
+    if rolled_back.contains(&element) {
+        return RowStyle::Faint;
+    }
     // Health tints the label/icon (red/amber). Selection highlight is applied separately
     // via `row_is_selected` so an invalid/unstable row can still show as selected (#511).
     match health.element_status(element.clone()) {
@@ -2871,6 +2949,10 @@ pub fn show_pane(
     active_drawing: Option<usize>,
     on_add_to_drawing: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
+    rolled_back: &HashSet<SceneElement>,
+    // The current timeline rollback marker (#524), if any, and a setter (None clears it).
+    rollback_marker: Option<&SceneElement>,
+    on_set_rollback: &mut impl FnMut(Option<SceneElement>),
     collapsed_components: &mut HashSet<usize>,
     on_add_component: &mut impl FnMut(Option<usize>),
     on_move_to_component: &mut impl FnMut(SceneElement, Option<usize>),
@@ -2920,6 +3002,41 @@ pub fn show_pane(
         });
     });
     ui.separator();
+
+    // Timeline rollback control (#524): roll the model back to just after a chosen element,
+    // suppressing everything created after it. Set from the current single selection; cleared
+    // to roll forward again.
+    if let Some(marker) = rollback_marker {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!(
+                    "⏮ Rolled back to {}",
+                    crate::names::scene_element_label(doc, marker)
+                ))
+                .color(crate::theme::FOCUS_ACCENT)
+                .size(11.5),
+            );
+            if ui
+                .small_button("Clear")
+                .on_hover_text("Roll forward — re-enable everything after this point")
+                .clicked()
+            {
+                on_set_rollback(None);
+            }
+        });
+        ui.separator();
+    } else if let Some(el) = selection.single() {
+        ui.horizontal(|ui| {
+            if ui
+                .small_button("⏮ Roll back to here")
+                .on_hover_text("Suppress everything created after the selected element")
+                .clicked()
+            {
+                on_set_rollback(Some(el.clone()));
+            }
+        });
+        ui.separator();
+    }
 
     let context = selection_context_elements(doc, selection);
     let related_constraints = selection_related_constraints(doc, selection);
@@ -2971,6 +3088,7 @@ pub fn show_pane(
                             &related_constraints,
                             style_selection,
                             highlight_elements,
+                            rolled_back,
                             collapsed_components,
                             active_component,
                             on_toggle_visibility,
@@ -3034,6 +3152,7 @@ pub fn show_pane(
                         active_drawing,
                         on_add_to_drawing,
                         highlight_elements,
+                        rolled_back,
                         on_move_to_component,
                         active_component,
                         on_activate_component,
@@ -3057,6 +3176,7 @@ pub fn show_pane(
                 on_hover_element,
                 on_delete_element,
                 highlight_elements,
+                rolled_back,
             );
         }
     }
@@ -3216,6 +3336,7 @@ fn show_graph_view(
     on_hover_element: &mut impl FnMut(SceneElement),
     on_delete_element: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
+    rolled_back: &HashSet<SceneElement>,
 ) {
     let positions = graph_node_positions(tree);
     if positions.is_empty() {
@@ -3413,6 +3534,7 @@ fn show_graph_view(
                         style_selection,
                         health,
                         highlight_elements,
+                        rolled_back,
                     )
                 });
                 // Selection fills white even when health tints the icon red/amber (#511).
@@ -3565,6 +3687,7 @@ fn show_component_row(
     related_constraints: &HashSet<usize>,
     style_selection: bool,
     highlight_elements: &HashSet<SceneElement>,
+    rolled_back: &HashSet<SceneElement>,
     collapsed_components: &mut HashSet<usize>,
     active_component: Option<usize>,
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
@@ -3585,6 +3708,7 @@ fn show_component_row(
         style_selection,
         health,
         highlight_elements,
+        rolled_back,
     );
     let row = ui.horizontal(|ui| {
         ui.add_space(depth as f32 * 18.0);
@@ -3736,6 +3860,7 @@ fn show_row(
     active_drawing: Option<usize>,
     on_add_to_drawing: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
+    rolled_back: &HashSet<SceneElement>,
     on_move_to_component: &mut impl FnMut(SceneElement, Option<usize>),
     active_component: Option<usize>,
     on_activate_component: &mut impl FnMut(Option<usize>),
@@ -3920,6 +4045,7 @@ fn show_row(
         style_selection,
         health,
         highlight_elements,
+        rolled_back,
     );
 
     ui.horizontal(|ui| {
@@ -4828,6 +4954,7 @@ label_hidden: false,
                 style_selection,
                 &health,
                 &HashSet::new(),
+                &HashSet::new(),
             ),
             RowStyle::Selected
         );
@@ -4840,6 +4967,7 @@ label_hidden: false,
                 style_selection,
                 &health,
                 &HashSet::new(),
+                &HashSet::new(),
             ),
             RowStyle::InContext
         );
@@ -4851,6 +4979,7 @@ label_hidden: false,
                 &related_constraints,
                 style_selection,
                 &health,
+                &HashSet::new(),
                 &HashSet::new(),
             ),
             RowStyle::Faint
@@ -4919,6 +5048,7 @@ label_hidden: false,
                 style_selection,
                 &health,
                 &HashSet::new(),
+                &HashSet::new(),
             ),
             RowStyle::RelatedConstraint
         );
@@ -4930,6 +5060,7 @@ label_hidden: false,
                 &related,
                 style_selection,
                 &health,
+                &HashSet::new(),
                 &HashSet::new(),
             ),
             RowStyle::Faint
@@ -4979,6 +5110,7 @@ label_hidden: false,
                 true,
                 &health,
                 &HashSet::new(),
+                &HashSet::new(),
             ),
             RowStyle::Invalid
         );
@@ -4990,6 +5122,7 @@ label_hidden: false,
                 &related,
                 true,
                 &health,
+                &HashSet::new(),
                 &HashSet::new(),
             ),
             RowStyle::Unstable
@@ -5042,6 +5175,7 @@ label_hidden: false,
                 true,
                 &health,
                 &HashSet::new(),
+                &HashSet::new(),
             ),
             RowStyle::Invalid,
             "health tint stays invalid while selected"
@@ -5058,6 +5192,7 @@ label_hidden: false,
                 &HashSet::new(),
                 true,
                 &health,
+                &HashSet::new(),
                 &HashSet::new(),
             ),
             RowStyle::Unstable
@@ -5098,6 +5233,34 @@ label_hidden: false,
 
     /// Drive the force layout to rest and return the final state, using the same fixture as the
     /// static-layout tests (plane → sketch → rect + extrusion → body).
+    /// #524: the rollback marker suppresses every element created after it in the timeline
+    /// (`shape_order`), not the marker itself or anything before it.
+    #[test]
+    fn rollback_suppresses_later_timeline_elements() {
+        use crate::model::ShapeKind;
+        let mut doc = Document::default();
+        // Timeline: Sketch(0), Line(0), Extrusion(0), Body(0), Body(1).
+        doc.shape_order = vec![
+            ShapeKind::Sketch,
+            ShapeKind::Line,
+            ShapeKind::Extrusion,
+            ShapeKind::Body,
+            ShapeKind::Body,
+        ];
+
+        let rb = rolled_back_elements(&doc, &SceneElement::Extrusion(0));
+        assert!(rb.contains(&SceneElement::Body(0)), "the body is after the extrusion");
+        assert!(rb.contains(&SceneElement::Body(1)));
+        assert!(!rb.contains(&SceneElement::Sketch(0)), "earlier elements stay active");
+        assert!(!rb.contains(&SceneElement::Line(0)));
+        assert!(!rb.contains(&SceneElement::Extrusion(0)), "the marker itself isn't rolled back");
+
+        // Marker at the last element: nothing is suppressed.
+        assert!(rolled_back_elements(&doc, &SceneElement::Body(1)).is_empty());
+        // An unknown marker suppresses nothing.
+        assert!(rolled_back_elements(&doc, &SceneElement::Sketch(99)).is_empty());
+    }
+
     fn doc_with_plane_sketch_rect_and_extrusion() -> (Document, SketchId) {
         use crate::model::{Body, BodySource, ExtrudeFace, Extrusion};
 

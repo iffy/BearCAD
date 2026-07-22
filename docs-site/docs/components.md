@@ -42,6 +42,14 @@ turn it off to freeze the layout so it holds still while you read it or drag nod
 place. The **type filter** at the bottom of the pane applies to both the list and the
 graph, so hiding a category (say, sketches) thins out either view the same way.
 
+## Rolling back
+
+Select any element and click **⏮ Roll back to here** at the top of the Elements pane to
+see the model as it was just after that element — everything created later is hidden from
+the viewport and faded in the pane, without touching your own show/hide toggles. Click
+**Clear** to roll forward again. It's a quick way to revisit an earlier point, make a
+change, and let the rest follow.
+
 ## Scripting
 
 ```lua

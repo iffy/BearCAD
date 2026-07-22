@@ -668,6 +668,10 @@ struct App {
     graph_force: bool,
     /// Collapsed component rows in the Elements pane (#423); UI-only state.
     collapsed_components: std::collections::HashSet<usize>,
+    /// Timeline rollback marker (#524): when set, everything created after this element is
+    /// suppressed in the viewport and faded in the Elements pane, so the model reads as it did
+    /// just after that element. UI-only session state (not persisted).
+    rollback_marker: Option<SceneElement>,
     /// A selected calibration reference point (#424): `(image, point index)`; Delete
     /// removes it so a click can re-place it.
     selected_calibration_point: Option<(usize, usize)>,
@@ -1398,6 +1402,7 @@ impl App {
             graph_layout: hierarchy::GraphLayout::default(),
             graph_force: true,
             collapsed_components: std::collections::HashSet::new(),
+            rollback_marker: None,
             selected_calibration_point: None,
             calibration_point_drag: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -5970,6 +5975,13 @@ impl eframe::App for App {
 
         self.process_screenshots(ctx);
         self.tick_script(ctx);
+        // Drop a stale rollback marker (#524) once its element is gone (deleted, or a
+        // new/opened document), so it doesn't linger over unrelated geometry.
+        if let Some(marker) = self.rollback_marker.clone() {
+            if !document_lifecycle::element_alive(&self.state.doc, marker) {
+                self.rollback_marker = None;
+            }
+        }
         self.tick_tutorial();
         self.tick_touch_extras(ctx);
         self.show_touch_keypad(ctx);
@@ -6395,6 +6407,8 @@ impl eframe::App for App {
             let mut add_component: Option<Option<usize>> = None;
             let mut move_to_component: Option<(SceneElement, Option<usize>)> = None;
             let mut activate_component: Option<Option<usize>> = None;
+            // Timeline rollback marker set/cleared from the pane (#524), applied after it closes.
+            let mut set_rollback: Option<Option<SceneElement>> = None;
             let pane_kept_open = show_pane_shell(ctx, "tree", "Elements", false, 220.0, None, |ui| {
                     let mut queue_edit_sketch = |sketch: SketchId| {
                         edit_sketch = Some(sketch);
@@ -6455,6 +6469,15 @@ impl eframe::App for App {
                     let highlight_elements = parameters::focused_parameter_name(ctx, &self.state.doc)
                         .map(|name| parameters::elements_using_parameter(&self.state.doc, &name))
                         .unwrap_or_default();
+                    // Everything created after the rollback marker (#524): faded in the pane.
+                    let rolled_back = self
+                        .rollback_marker
+                        .as_ref()
+                        .map(|m| hierarchy::rolled_back_elements(&self.state.doc, m))
+                        .unwrap_or_default();
+                    let mut queue_set_rollback = |m: Option<SceneElement>| {
+                        set_rollback = Some(m);
+                    };
                     let mut queue_add_component = |parent: Option<usize>| {
                         add_component = Some(parent);
                     };
@@ -6498,6 +6521,9 @@ impl eframe::App for App {
                         self.state.editing_drawing,
                         &mut queue_add_to_drawing,
                         &highlight_elements,
+                        &rolled_back,
+                        self.rollback_marker.as_ref(),
+                        &mut queue_set_rollback,
                         &mut self.collapsed_components,
                         &mut queue_add_component,
                         &mut queue_move_to_component,
@@ -6511,6 +6537,9 @@ impl eframe::App for App {
             }
             if let Some(component) = activate_component {
                 self.state.active_component = component;
+            }
+            if let Some(marker) = set_rollback {
+                self.rollback_marker = marker;
             }
             if let Some((element, component)) = move_to_component {
                 self.state.apply(Action::MoveToComponent { element, component });
@@ -15980,12 +16009,24 @@ impl App {
                 }
             }
         }
+        // Timeline rollback (#524): everything created after the marker is suppressed in the
+        // viewport by hiding it, on top of the user's own visibility toggles.
+        let rollback_hidden = self
+            .rollback_marker
+            .as_ref()
+            .map(|m| hierarchy::rolled_back_elements(doc, m))
+            .unwrap_or_default();
+        let render_visibility = if rollback_hidden.is_empty() {
+            self.state.element_visibility.clone()
+        } else {
+            self.state.element_visibility.with_hidden(&rollback_hidden)
+        };
         let scene_input = build_viewport_scene_input(
             doc,
             &cam,
             viewport,
             sketch_session,
-            &self.state.element_visibility,
+            &render_visibility,
             &render_selection,
             &self.state.document_health,
             self.state.creating_rect.as_ref(),
