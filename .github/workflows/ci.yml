@@ -119,6 +119,10 @@ jobs:
       # (raw-input synthetic events) driving click-select and drags end to end.
       # A lua assert failure exits non-zero (#125) and fails the job.
       - name: Run interaction tests
+        env:
+          # Fixed large window so ground-coordinate clicks land in the 3D viewport
+          # under Xvfb (no window manager to honor maximize). See BEARCAD_WINDOW.
+          BEARCAD_WINDOW: 1280x800
         run: |
           shopt -s nullglob
           tests=(tests/interaction/*.lua)
