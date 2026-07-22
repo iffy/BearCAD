@@ -697,6 +697,15 @@ struct App {
     /// `run_app` can translate it into a non-zero process exit code after the eframe
     /// event loop returns — a script failure must fail the process, not just the UI.
     script_failed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Last window title pushed to the OS (#522), so the `*`-dirty title is only re-sent
+    /// when it actually changes rather than every frame.
+    last_window_title: Option<String>,
+    /// The unsaved-changes quit prompt is open (#522): a close was requested with a dirty
+    /// document, so the modal is asking Save / Don't Save / Cancel.
+    showing_quit_prompt: bool,
+    /// The user has chosen to quit through the prompt (Save-then-close or Don't Save), so
+    /// the next `close_requested` is allowed through instead of re-opening the prompt (#522).
+    allow_close: bool,
 }
 
 /// One completed async browser file-dialog interaction (web build): picked file bytes to
@@ -1404,6 +1413,9 @@ impl App {
             params_visible_before_drawing: false,
             drawing_window: None,
             script_failed,
+            last_window_title: None,
+            showing_quit_prompt: false,
+            allow_close: false,
         }
     }
 
@@ -5378,6 +5390,109 @@ impl App {
         }
     }
 
+    /// The window title (#522): the current file name (or "Untitled"), prefixed with `*`
+    /// while there are unsaved changes, then " — BearCAD".
+    fn window_title(&self) -> String {
+        let name = self
+            .state
+            .path
+            .as_deref()
+            .and_then(|p| {
+                std::path::Path::new(p)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "Untitled".to_string());
+        let star = if self.state.dirty { "*" } else { "" };
+        format!("{star}{name} — BearCAD")
+    }
+
+    /// Push the window title to the OS only when it changes (#522), so the `*` appears and
+    /// disappears with the dirty flag without re-sending the same title every frame.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn sync_window_title(&mut self, ctx: &egui::Context) {
+        let title = self.window_title();
+        if self.last_window_title.as_deref() != Some(title.as_str()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.last_window_title = Some(title);
+        }
+    }
+
+    /// Whether quitting with unsaved changes should prompt (#522). Explicit env overrides win
+    /// (`BEARCAD_NO_QUIT_PROMPT` off, `BEARCAD_QUIT_PROMPT` on); otherwise script-driven and
+    /// auto-exit runs (tests, `--exit`, screenshots) never block on a modal, and debug builds
+    /// (`cargo run`) skip it so development quits aren't nagged. Release builds prompt.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn quit_prompt_enabled(&self) -> bool {
+        if std::env::var_os("BEARCAD_NO_QUIT_PROMPT").is_some() {
+            return false;
+        }
+        if std::env::var_os("BEARCAD_QUIT_PROMPT").is_some() {
+            return true;
+        }
+        if self.script.is_some() || self.exit_after_startup || self.exit_on_script_complete {
+            return false;
+        }
+        !cfg!(debug_assertions)
+    }
+
+    /// Intercept a close request when the document has unsaved changes (#522): cancel the
+    /// close and open the Save / Don't Save / Cancel prompt, which then drives the actual
+    /// exit. When the prompt is disabled, or the document is clean, the close passes through.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn handle_quit_prompt(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if self.allow_close || !self.state.dirty || !self.quit_prompt_enabled() {
+                // Let the close proceed.
+                return;
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.showing_quit_prompt = true;
+        }
+
+        if !self.showing_quit_prompt {
+            return;
+        }
+        let mut save = false;
+        let mut discard = false;
+        let mut cancel = false;
+        egui::Modal::new(egui::Id::new("quit_save_prompt")).show(ctx, |ui| {
+            ui.set_width(320.0);
+            ui.heading("Unsaved changes");
+            ui.add_space(6.0);
+            ui.label("This document has changes that haven't been saved. Save before closing?");
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    save = true;
+                }
+                if ui.button("Don't Save").clicked() {
+                    discard = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+        if save {
+            self.showing_quit_prompt = false;
+            self.save();
+            // If the save went through (or a Save As dialog completed), the document is
+            // clean and we can close; if the user cancelled the Save As dialog it's still
+            // dirty, so stay open rather than lose the changes.
+            if !self.state.dirty {
+                self.allow_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        } else if discard {
+            self.showing_quit_prompt = false;
+            self.allow_close = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if cancel {
+            self.showing_quit_prompt = false;
+        }
+    }
+
     fn tick_exit_after_startup(&mut self, ctx: &egui::Context) {
         if !self.exit_after_startup || self.exit_after_startup_sent {
             return;
@@ -5475,6 +5590,11 @@ impl eframe::App for App {
         }
         tick_launch_maximize(&mut self.launch_maximize_frames_remaining, ctx);
         theme::apply(ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.sync_window_title(ctx);
+            self.handle_quit_prompt(ctx);
+        }
 
         let dt = ctx.input(|i| i.stable_dt);
         self.tick_auto_zoom();

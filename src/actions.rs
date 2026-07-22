@@ -2199,6 +2199,13 @@ impl CommandPaletteState {
 pub struct AppState {
     pub doc: Document,
     pub path: Option<String>,
+    /// Unsaved-changes tracking (#522): a snapshot of the document as of the last
+    /// save/open/new, and a cached flag for whether the live document now differs from it.
+    /// `dirty` drives the window title's `*` marker and the quit-save prompt; it is
+    /// recomputed after every top-level action and reset to clean by save/open/new.
+    /// Transient session state, never persisted.
+    pub saved_snapshot: Document,
+    pub dirty: bool,
     /// Auto-zoom (#438): when on, in-progress geometry that outgrows (or shrinks well
     /// inside) the viewport re-frames the camera with a short animation. UI-only state.
     pub auto_zoom: bool,
@@ -2363,6 +2370,8 @@ impl Default for AppState {
             active_component: None,
             doc: Document::default(),
             path: None,
+            saved_snapshot: Document::default(),
+            dirty: false,
             tool: Tool::default(),
             sketch_session: None,
             cam: Camera::default(),
@@ -4333,7 +4342,22 @@ impl AppState {
                 self.redo_stack.clear();
             }
         }
+        // Unsaved-changes flag (#522): the document is dirty whenever it differs from the
+        // last-saved baseline. Recomputing here (rather than a monotonic "touched" flag)
+        // means undoing back to the saved state correctly reads as clean again. Only the
+        // outermost apply recomputes, so a delegating gesture compares once. Save/open/new
+        // set the baseline via `mark_saved`, which this then confirms as clean.
+        if outermost {
+            self.dirty = self.doc != self.saved_snapshot;
+        }
         result
+    }
+
+    /// Adopt the current document as the saved baseline (#522): after this the document
+    /// reads as clean until the next mutation. Called on save, open, and new.
+    fn mark_saved(&mut self) {
+        self.saved_snapshot = self.doc.clone();
+        self.dirty = false;
     }
 
     /// Make `undo_groups` sum to exactly `len` (#105): excess is trimmed from the
@@ -4398,6 +4422,7 @@ impl AppState {
                 self.scene_selection.clear();
                 self.tool = Tool::Select;
                 self.document_health = DocumentHealth::default();
+                self.mark_saved();
                 self.status = "New document".to_string();
                 ActionResult::Ok
             }
@@ -4413,6 +4438,7 @@ impl AppState {
                     self.cam.set_view_up(None);
                     self.refresh_document_health();
                     self.path = Some(path.clone());
+                    self.mark_saved();
                     self.status = format!("Opened {} ({} line(s))", path, n_lines);
                     ActionResult::Ok
                 }
@@ -10624,6 +10650,7 @@ label_hidden: false,
         match crate::storage::save(path, &self.doc) {
             Ok(()) => {
                 self.path = Some(path.to_string());
+                self.mark_saved();
                 self.status = format!(
                     "Saved {} line(s) to {}",
                     self.doc.lines.len(),
@@ -12045,6 +12072,45 @@ mod tests {
         state.apply(Action::AddConstructionPlane { from: 0, offset_mm: 40.0 });
         let plane2 = state.doc.construction_planes.len() - 1;
         assert_eq!(state.doc.component_of(CM::ConstructionPlane, plane2), None);
+    }
+
+    /// #522: the dirty flag tracks divergence from the last-saved baseline — set by a
+    /// mutation, cleared by save, and (crucially) cleared again when undo returns the
+    /// document to the saved state.
+    #[test]
+    fn dirty_flag_tracks_saved_baseline() {
+        let mut state = AppState::default();
+        assert!(!state.dirty, "a fresh empty document is clean");
+
+        // A mutation dirties it.
+        state.apply(Action::AddConstructionPlane { from: 0, offset_mm: 20.0 });
+        assert!(state.dirty, "adding geometry marks the document dirty");
+
+        // Saving clears it.
+        let path = std::env::temp_dir()
+            .join(format!("bearcad_dirty_{}.bearcad", std::process::id()))
+            .to_string_lossy()
+            .into_owned();
+        let r = state.apply(Action::Save { path: Some(path.clone()) });
+        assert!(matches!(r, ActionResult::Ok), "save should succeed");
+        assert!(!state.dirty, "saving clears the dirty flag");
+
+        // A further edit dirties it again; undoing back to the saved state clears it.
+        state.apply(Action::AddConstructionPlane { from: 0, offset_mm: 40.0 });
+        assert!(state.dirty, "the new edit is unsaved");
+        state.apply(Action::UndoLast);
+        assert!(
+            !state.dirty,
+            "undoing back to the saved state reads as clean again"
+        );
+
+        // A new document is clean.
+        state.apply(Action::AddConstructionPlane { from: 0, offset_mm: 60.0 });
+        assert!(state.dirty);
+        state.apply(Action::NewDocument);
+        assert!(!state.dirty, "New document starts clean");
+
+        let _ = std::fs::remove_file(&path);
     }
 
     /// #423: components group elements; membership, nesting, visibility cascade, and

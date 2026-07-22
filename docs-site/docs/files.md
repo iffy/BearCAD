@@ -14,6 +14,11 @@ opening picks one from disk.
 
 **Undo** (⌘/Ctrl+Z) reverts whole steps — a fillet or a boolean undoes as one unit.
 
+The window title shows the current file name and a leading **`*`** whenever there are
+unsaved changes; the `*` clears once you save (or if you undo all the way back to the last
+saved state). Quitting with unsaved changes asks whether to **Save**, **Don't Save**, or
+**Cancel** so a stray ⌘Q doesn't lose work.
+
 ## Import
 
 - **File → Import → STL…** — a triangulated mesh becomes a body.
