@@ -663,6 +663,9 @@ struct App {
     /// Persistent physics state for the Elements pane's force-directed Graph view (#94).
     /// Ephemeral view state (never persisted), like `AppState::hierarchy_view_mode`.
     graph_layout: hierarchy::GraphLayout,
+    /// Whether the Graph view runs its repel/space force simulation (#525). When off the
+    /// layout freezes so the user can read (and manually drag) a busy graph. Ephemeral.
+    graph_force: bool,
     /// Collapsed component rows in the Elements pane (#423); UI-only state.
     collapsed_components: std::collections::HashSet<usize>,
     /// A selected calibration reference point (#424): `(image, point index)`; Delete
@@ -1393,6 +1396,7 @@ impl App {
             gpu_viewport: gpu_viewport::install(cc),
             gpu_view_cube: gpu_view_cube::install(cc),
             graph_layout: hierarchy::GraphLayout::default(),
+            graph_force: true,
             collapsed_components: std::collections::HashSet::new(),
             selected_calibration_point: None,
             calibration_point_drag: None,
@@ -6121,6 +6125,7 @@ impl eframe::App for App {
                         &self.state.document_health,
                         &mut self.state.hierarchy_view_mode,
                         &mut self.graph_layout,
+                        &mut self.graph_force,
                         &mut self.element_filter,
                         &mut self.element_filter_expanded,
                         &mut queue_edit_sketch,

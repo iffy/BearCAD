@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- force layout: a central node with nodes repelling outward along arrows -->
+  <circle cx="16" cy="16" r="3" fill="currentColor" stroke="none" />
+  <circle cx="6" cy="6" r="2.5" fill="currentColor" stroke="none" />
+  <circle cx="26" cy="6" r="2.5" fill="currentColor" stroke="none" />
+  <circle cx="6" cy="26" r="2.5" fill="currentColor" stroke="none" />
+  <circle cx="26" cy="26" r="2.5" fill="currentColor" stroke="none" />
+  <line x1="12" y1="12" x2="8.5" y2="8.5" />
+  <line x1="20" y1="12" x2="23.5" y2="8.5" />
+  <line x1="12" y1="20" x2="8.5" y2="23.5" />
+  <line x1="20" y1="20" x2="23.5" y2="23.5" />
+</svg>

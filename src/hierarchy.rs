@@ -1008,6 +1008,7 @@ impl GraphLayout {
         width: f32,
         substeps: u32,
         dt: f32,
+        run_physics: bool,
     ) -> f32 {
         let present: HashSet<HierarchyNode> = positions.iter().map(|p| p.node).collect();
         self.nodes.retain(|node, _| present.contains(node));
@@ -1018,6 +1019,11 @@ impl GraphLayout {
                 pos: egui::vec2(seed_x(p.node, width), p.depth as f32 * LAYER_HEIGHT),
                 vel: egui::Vec2::ZERO,
             });
+        }
+        // Force layout off (#525): keep nodes synced (new ones seeded, gone ones dropped) but
+        // freeze them in place — no stepping — so a busy graph holds still.
+        if !run_physics {
+            return 0.0;
         }
         let edges: Vec<(HierarchyNode, HierarchyNode)> = positions
             .iter()
@@ -2733,6 +2739,7 @@ pub fn show_pane(
     health: &DocumentHealth,
     view_mode: &mut HierarchyViewMode,
     graph_layout: &mut GraphLayout,
+    graph_force: &mut bool,
     filter: &mut ElementFilter,
     filter_expanded: &mut bool,
     on_edit_sketch: &mut impl FnMut(SketchId),
@@ -2777,6 +2784,21 @@ pub fn show_pane(
                     *view_mode == mode || (mode == HierarchyViewMode::List && *view_mode == HierarchyViewMode::Tree);
                 if selectable_icon_button(ui, icon, selected, tooltip).clicked() {
                     *view_mode = mode;
+                }
+            }
+            // Force-layout toggle (#525): only meaningful in the Graph view. When on, nodes
+            // repel and space themselves; when off, the layout freezes so a busy graph holds
+            // still to read and drag.
+            if *view_mode == HierarchyViewMode::Graph {
+                if selectable_icon_button(
+                    ui,
+                    IconId::GraphForce,
+                    *graph_force,
+                    "Force layout — auto-space nodes",
+                )
+                .clicked()
+                {
+                    *graph_force = !*graph_force;
                 }
             }
             // Add menu (#423): the + opens a popup with creatable containers.
@@ -2916,6 +2938,7 @@ pub fn show_pane(
                 doc,
                 &tree,
                 graph_layout,
+                *graph_force,
                 selection,
                 health,
                 &context,
@@ -3068,11 +3091,13 @@ fn convex_hull(points: &mut Vec<egui::Pos2>) -> Vec<egui::Pos2> {
     lower
 }
 
+#[allow(clippy::too_many_arguments)]
 fn show_graph_view(
     ui: &mut egui::Ui,
     doc: &Document,
     tree: &[HierarchyEntry],
     graph_layout: &mut GraphLayout,
+    force_enabled: bool,
     selection: &SceneSelection,
     health: &DocumentHealth,
     context: &HashSet<SceneElement>,
@@ -3114,8 +3139,10 @@ fn show_graph_view(
 
     let available_width = ui.available_width().max(2.0 * GRAPH_MARGIN + 1.0);
 
-    // Advance the physics, then keep animating until it settles.
-    let kinetic = graph_layout.sync_and_step(&positions, available_width, SUBSTEPS, DT);
+    // Advance the physics, then keep animating until it settles. With the force layout off
+    // (#525) the nodes stay synced but frozen, so no repaint is scheduled.
+    let kinetic =
+        graph_layout.sync_and_step(&positions, available_width, SUBSTEPS, DT, force_enabled);
     if kinetic > SETTLE_KE {
         ui.ctx().request_repaint();
     }
@@ -4983,7 +5010,7 @@ label_hidden: false,
         let mut layout = GraphLayout::default();
         // First call seeds all nodes; subsequent calls just step.
         for _ in 0..steps {
-            layout.sync_and_step(&positions, width, 1, 0.16);
+            layout.sync_and_step(&positions, width, 1, 0.16, true);
         }
         (layout, positions)
     }
@@ -5061,7 +5088,7 @@ label_hidden: false,
         // Settle the physics, then feed its x's plus chunky uniform labels through the declutter.
         let mut layout = GraphLayout::default();
         for _ in 0..2000 {
-            layout.sync_and_step(&positions, 300.0, 1, 0.16);
+            layout.sync_and_step(&positions, 300.0, 1, 0.16, true);
         }
         let sim_x: HashMap<HierarchyNode, f32> = positions
             .iter()
@@ -5185,13 +5212,43 @@ label_hidden: false,
         }
     }
 
+    /// #525: with the force layout off, `sync_and_step` still seeds new nodes but does not
+    /// move them — positions are frozen and it reports zero kinetic energy.
+    #[test]
+    fn force_layout_off_freezes_positions() {
+        let (doc, sketch) = doc_with_plane_sketch_rect_and_extrusion();
+        let tree = build_hierarchy(&doc, Some(SketchSession { sketch }));
+        let positions = graph_node_positions(&tree);
+        let mut layout = GraphLayout::default();
+
+        // First pass seeds every node even with physics off.
+        let ke = layout.sync_and_step(&positions, 300.0, 6, 0.16, false);
+        assert_eq!(ke, 0.0, "no physics runs, so no kinetic energy");
+        assert_eq!(layout.nodes.len(), positions.len(), "all nodes are seeded");
+        let before: Vec<egui::Vec2> =
+            positions.iter().map(|p| layout.pos_of(p.node).unwrap()).collect();
+
+        // Further frozen steps never move a node.
+        for _ in 0..20 {
+            layout.sync_and_step(&positions, 300.0, 6, 0.16, false);
+        }
+        for (p, &b) in positions.iter().zip(before.iter()) {
+            let now = layout.pos_of(p.node).unwrap();
+            assert!(
+                (now - b).length() < 1e-6,
+                "frozen node {:?} moved: {b:?} -> {now:?}",
+                p.node
+            );
+        }
+    }
+
     #[test]
     fn force_layout_syncs_added_and_removed_nodes() {
         let (doc, sketch) = doc_with_plane_sketch_rect_and_extrusion();
         let tree = build_hierarchy(&doc, Some(SketchSession { sketch }));
         let positions = graph_node_positions(&tree);
         let mut layout = GraphLayout::default();
-        layout.sync_and_step(&positions, 300.0, 1, 0.16);
+        layout.sync_and_step(&positions, 300.0, 1, 0.16, true);
         assert_eq!(layout.nodes.len(), positions.len());
 
         // A smaller node set (just the Document root) drops the departed nodes.
@@ -5202,7 +5259,7 @@ label_hidden: false,
             column: 0,
             row: 0,
         }];
-        layout.sync_and_step(&root_only, 300.0, 1, 0.16);
+        layout.sync_and_step(&root_only, 300.0, 1, 0.16, true);
         assert_eq!(layout.nodes.len(), 1);
         assert!(layout.pos_of(HierarchyNode::Document).is_some());
     }
