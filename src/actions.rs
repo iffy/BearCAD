@@ -18094,6 +18094,65 @@ mod tests {
         }
     }
 
+    /// #514: opening an existing sketch reframes the camera to fit that sketch's geometry —
+    /// even when the geometry is small and far from the origin, so it fills the viewport
+    /// rather than sitting tiny and off-centre.
+    #[test]
+    fn opening_an_existing_sketch_zooms_to_fit_its_geometry() {
+        let mut state = AppState::default();
+        let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+
+        // A small rectangle far from the origin, on the ground plane.
+        let sketch = begin_default_sketch(&mut state);
+        let (cx, cy, h) = (120.0_f32, 90.0_f32, 6.0_f32);
+        for (a, b) in [
+            ((cx - h, cy - h), (cx + h, cy - h)),
+            ((cx + h, cy - h), (cx + h, cy + h)),
+            ((cx + h, cy + h), (cx - h, cy + h)),
+            ((cx - h, cy + h), (cx - h, cy - h)),
+        ] {
+            state
+                .doc
+                .lines
+                .push(Line::from_local_endpoints(sketch, a.0, a.1, b.0, b.1));
+        }
+        state.apply(Action::ExitSketch);
+        while state.cam.tick_transition(0.05) {}
+
+        // Re-enter the existing sketch with the viewport known, then settle the transition.
+        state.apply(Action::OpenSketch { sketch, viewport: Some(viewport) });
+        while state.cam.tick_transition(0.05) {}
+
+        // Project the rectangle's corners; the framed geometry should be centred and fill a
+        // healthy fraction of the viewport (a plain orient-without-zoom would leave it tiny).
+        let vp = state.cam.view_proj(viewport);
+        let corners = [
+            Vec3::new(cx - h, cy - h, 0.0),
+            Vec3::new(cx + h, cy - h, 0.0),
+            Vec3::new(cx + h, cy + h, 0.0),
+            Vec3::new(cx - h, cy + h, 0.0),
+        ];
+        let pts: Vec<egui::Pos2> = corners
+            .iter()
+            .map(|p| state.cam.project(*p, viewport, &vp).expect("corner on screen"))
+            .collect();
+        let (mut min, mut max) = (pts[0], pts[0]);
+        for p in &pts {
+            min = egui::pos2(min.x.min(p.x), min.y.min(p.y));
+            max = egui::pos2(max.x.max(p.x), max.y.max(p.y));
+        }
+        let span = (max - min).max_elem();
+        assert!(
+            span > 200.0,
+            "the fitted sketch should fill much of the 800x600 viewport, spanned only {span}px"
+        );
+        let center = ((min.to_vec2() + max.to_vec2()) * 0.5).to_pos2();
+        assert!(
+            (center - viewport.center()).length() < 80.0,
+            "the fitted sketch should be roughly centred, but its centre was {center:?}"
+        );
+    }
+
     #[test]
     fn begin_ground_plane_sketch_does_not_spin_yaw() {
         // The ground plane is a near-vertical (top-down) view, where yaw is just roll. Entry
