@@ -1076,7 +1076,35 @@ impl Camera {
 
     /// Dolly in/out from a scroll amount (positive = zoom in), keeping the point
     /// under `focal_screen` fixed on screen when possible.
+    ///
+    /// The pivot is the ray hit on the **view plane** (through `target`, facing the
+    /// camera). Prefer [`Self::zoom_toward_plane`] when the user is working on a known
+    /// plane (e.g. the active sketch under isometric view, #491) so the zoom tracks
+    /// geometry on that plane rather than a camera-facing plane through the target.
     pub fn zoom(&mut self, scroll: f32, focal_screen: Pos2, viewport: Rect) {
+        let vp = self.view_proj(viewport);
+        let pivot = self.view_plane_point(focal_screen, viewport, &vp);
+        self.zoom_toward(scroll, pivot);
+    }
+
+    /// Like [`Self::zoom`], but keep the point under `focal_screen` on `plane_origin` /
+    /// `plane_normal` fixed — the active sketch plane when sketching isometrically (#491).
+    pub fn zoom_toward_plane(
+        &mut self,
+        scroll: f32,
+        focal_screen: Pos2,
+        viewport: Rect,
+        plane_origin: Vec3,
+        plane_normal: Vec3,
+    ) {
+        let vp = self.view_proj(viewport);
+        let pivot =
+            self.ray_plane_hit(focal_screen, viewport, &vp, plane_origin, plane_normal)
+                .or_else(|| self.view_plane_point(focal_screen, viewport, &vp));
+        self.zoom_toward(scroll, pivot);
+    }
+
+    fn zoom_toward(&mut self, scroll: f32, pivot: Option<Vec3>) {
         let old_distance = self.distance;
         let new_distance =
             (old_distance * (1.0 - scroll * 0.001)).clamp(2.0, 50_000.0);
@@ -1084,8 +1112,7 @@ impl Camera {
             return;
         }
 
-        let vp = self.view_proj(viewport);
-        if let Some(pivot) = self.view_plane_point(focal_screen, viewport, &vp) {
+        if let Some(pivot) = pivot {
             let ratio = new_distance / old_distance;
             self.target += (pivot - self.target) * (1.0 - ratio);
         }
@@ -1769,6 +1796,60 @@ mod tests {
         assert!(
             motion.dot(toward) > 0.0,
             "target should move toward the point under the cursor"
+        );
+    }
+
+    /// #491: orthographic (and isometric) zoom must also keep the point under the
+    /// cursor fixed on screen — not only the perspective path.
+    #[test]
+    fn zoom_at_cursor_orthographic_isometric_preserves_screen_position() {
+        let mut cam = Camera::default();
+        cam.set_projection_mode(ProjectionMode::Orthographic);
+        // Default camera is already isometric (ISOMETRIC_YAW/PITCH).
+        let viewport = test_viewport();
+        let focal = Pos2::new(520.0, 380.0);
+        let vp = cam.view_proj(viewport);
+        let pivot = cam
+            .view_plane_point(focal, viewport, &vp)
+            .expect("cursor ray should hit the view plane in ortho");
+        let screen_before = cam.project(pivot, viewport, &vp).expect("pivot visible");
+
+        cam.zoom(120.0, focal, viewport);
+
+        let vp2 = cam.view_proj(viewport);
+        let screen_after = cam
+            .project(pivot, viewport, &vp2)
+            .expect("pivot should stay visible");
+        assert!(
+            (screen_before - screen_after).length() < 0.5,
+            "ortho/isometric pivot should stay under the cursor: before={screen_before:?} after={screen_after:?}"
+        );
+    }
+
+    /// #491: zooming toward a sketch plane (not the view plane) keeps sketch-plane
+    /// geometry under the cursor when viewing isometrically.
+    #[test]
+    fn zoom_toward_sketch_plane_keeps_plane_point_under_cursor() {
+        let mut cam = Camera::default(); // isometric natural projection
+        let viewport = test_viewport();
+        let focal = Pos2::new(520.0, 380.0);
+        let plane_origin = Vec3::ZERO;
+        let plane_normal = Vec3::Z;
+        let vp = cam.view_proj(viewport);
+        let pivot = cam
+            .ray_plane_hit(focal, viewport, &vp, plane_origin, plane_normal)
+            .expect("cursor ray should hit the ground/sketch plane");
+        let screen_before = cam.project(pivot, viewport, &vp).expect("pivot visible");
+
+        cam.zoom_toward_plane(120.0, focal, viewport, plane_origin, plane_normal);
+
+        let vp2 = cam.view_proj(viewport);
+        let screen_after = cam
+            .project(pivot, viewport, &vp2)
+            .expect("pivot should stay visible");
+        assert!(
+            (screen_before - screen_after).length() < 0.75,
+            "sketch-plane pivot should stay under the cursor: before={screen_before:?} after={screen_after:?}"
         );
     }
 

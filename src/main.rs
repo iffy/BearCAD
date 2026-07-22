@@ -12858,7 +12858,25 @@ impl App {
             let scroll = ui.input(|i| i.raw_scroll_delta.y);
             if scroll != 0.0 {
                 let focal = response.hover_pos().unwrap_or(viewport.center());
-                self.state.cam.zoom(scroll, focal, viewport);
+                // In a sketch, zoom about the sketch plane under the cursor so isometric
+                // views don't slide geometry sideways relative to the pointer (#491).
+                if let Some(session) = self.state.sketch_session {
+                    if let Some(frame) =
+                        sketch_geometry_frame(&self.state.doc, session.sketch)
+                    {
+                        self.state.cam.zoom_toward_plane(
+                            scroll,
+                            focal,
+                            viewport,
+                            frame.origin,
+                            frame.normal,
+                        );
+                    } else {
+                        self.state.cam.zoom(scroll, focal, viewport);
+                    }
+                } else {
+                    self.state.cam.zoom(scroll, focal, viewport);
+                }
                 if let Some(log) = &self.state.command_log {
                     log.borrow_mut().note_zoom(scroll);
                 }
@@ -12877,7 +12895,23 @@ impl App {
             if (pinch - 1.0).abs() > 1e-4 {
                 let focal = response.hover_pos().unwrap_or(viewport.center());
                 let scroll = touch::zoom_factor_to_scroll(pinch);
-                self.state.cam.zoom(scroll, focal, viewport);
+                if let Some(session) = self.state.sketch_session {
+                    if let Some(frame) =
+                        sketch_geometry_frame(&self.state.doc, session.sketch)
+                    {
+                        self.state.cam.zoom_toward_plane(
+                            scroll,
+                            focal,
+                            viewport,
+                            frame.origin,
+                            frame.normal,
+                        );
+                    } else {
+                        self.state.cam.zoom(scroll, focal, viewport);
+                    }
+                } else {
+                    self.state.cam.zoom(scroll, focal, viewport);
+                }
                 if let Some(log) = &self.state.command_log {
                     log.borrow_mut().note_zoom(scroll);
                 }
@@ -12913,7 +12947,23 @@ impl App {
                 }
                 if (mt.zoom_delta - 1.0).abs() > 1e-4 {
                     let scroll = touch::zoom_factor_to_scroll(mt.zoom_delta);
-                    self.state.cam.zoom(scroll, mt.center_pos, viewport);
+                    if let Some(session) = self.state.sketch_session {
+                        if let Some(frame) =
+                            sketch_geometry_frame(&self.state.doc, session.sketch)
+                        {
+                            self.state.cam.zoom_toward_plane(
+                                scroll,
+                                mt.center_pos,
+                                viewport,
+                                frame.origin,
+                                frame.normal,
+                            );
+                        } else {
+                            self.state.cam.zoom(scroll, mt.center_pos, viewport);
+                        }
+                    } else {
+                        self.state.cam.zoom(scroll, mt.center_pos, viewport);
+                    }
                     if let Some(log) = &self.state.command_log {
                         log.borrow_mut().note_zoom(scroll);
                     }
