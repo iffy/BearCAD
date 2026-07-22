@@ -4216,6 +4216,30 @@ mod tests {
         assert!(state.doc.circles[op.circle_outputs[0]].deleted);
     }
 
+    /// #495: a closed offset of a rectangle must form a pickable/extrudable inner face
+    /// (mitered corners joined by Coincident constraints).
+    #[test]
+    fn sketch_offset_closed_loop_is_extrudable_face() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 40, height = 30 }
+            bearcad.offset_sketch{ sketch = 0, lines = {0, 1, 2, 3}, distance = -5 }
+            local op_lines = {}
+            for i = 4, 7 do table.insert(op_lines, i) end
+            bearcad.extrude{ polygon = op_lines, distance = 8 }
+            assert(bearcad.get{ kind = "body", index = 0 } ~= nil, "inner face must extrude")
+            "#,
+        );
+        assert!(!state.doc.bodies.is_empty(), "inner offset face extruded a body");
+        let loops = crate::polygon::closed_line_loops(&state.doc, 0);
+        assert!(
+            loops.len() >= 2,
+            "outer + inner loops expected, got {}",
+            loops.len()
+        );
+    }
+
     /// #494: offsetting a cubic-bezier sketch line must produce a curved copy
     /// (bezier handles present), not a straight chamfer-style segment.
     #[test]

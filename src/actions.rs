@@ -11237,6 +11237,56 @@ fn rebuild_sketch_repeat(doc: &mut crate::model::Document, op_index: usize) -> b
     true
 }
 
+/// Join offset-line endpoints that sit on the same point with Coincident constraints
+/// so the offset geometry forms closed faces for extrusion (#495).
+fn ensure_offset_joint_coincidences(
+    doc: &mut crate::model::Document,
+    sketch: crate::model::SketchId,
+    line_outputs: &[usize],
+) {
+    use crate::model::{Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, LineEnd};
+    const EPS: f32 = 1e-3;
+    let mut ends: Vec<(usize, LineEnd, f32, f32)> = Vec::new();
+    for &li in line_outputs {
+        let Some(l) = doc.lines.get(li).filter(|l| !l.deleted) else {
+            continue;
+        };
+        ends.push((li, LineEnd::Start, l.x0, l.y0));
+        ends.push((li, LineEnd::End, l.x1, l.y1));
+    }
+    for i in 0..ends.len() {
+        for j in (i + 1)..ends.len() {
+            let (li, ei, xi, yi) = ends[i];
+            let (lj, ej, xj, yj) = ends[j];
+            if li == lj {
+                continue;
+            }
+            if (xi - xj).hypot(yi - yj) > EPS {
+                continue;
+            }
+            let a = ConstraintPoint::LineEndpoint { line: li, end: ei };
+            let b = ConstraintPoint::LineEndpoint { line: lj, end: ej };
+            // Already joined?
+            if crate::vertex_drag::coincident_group(doc, sketch, a.clone()).contains(&b) {
+                continue;
+            }
+            doc.constraints.push(Constraint {
+                sketch,
+                kind: ConstraintKind::Coincident {
+                    a: ConstraintEntity::Point(a),
+                    b: ConstraintEntity::Point(b),
+                },
+                expression: String::new(),
+                dim_offset: None,
+                name: None,
+                deleted: false,
+            });
+            doc.shape_order
+                .push(crate::model::ShapeKind::Constraint);
+        }
+    }
+}
+
 /// (Re)generate the parallel copies for in-sketch offset op `op_index`: every line
 /// target offsets by the op's signed distance (chains miter via
 /// [`crate::offset::offset_segments`]), every circle target's radius shifts by it.
@@ -11299,6 +11349,9 @@ pub(crate) fn rebuild_sketch_offset(doc: &mut crate::model::Document, op_index: 
             ..src
         };
     }
+    // #495: mitered offset corners share coordinates but need Coincident constraints
+    // so closed_line_loops / extrude face picking treats them as faces.
+    ensure_offset_joint_coincidences(doc, op.sketch, &line_outputs);
 
     let want_circles: Vec<usize> = op
         .circle_targets
