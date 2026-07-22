@@ -3,12 +3,28 @@
 use egui::IconData;
 use std::sync::Arc;
 
-#[cfg(any(not(target_os = "macos"), test))]
 const APP_ICON_PNG: &[u8] = include_bytes!("assets/appicon.png");
 
 /// Window icons only need a modest raster; keep the bundled 1024px asset for packaging.
 #[cfg(any(not(target_os = "macos"), test))]
 const WINDOW_ICON_SIZE: u32 = 128;
+
+/// Raw RGBA of the app icon at `size`×`size` for the macOS **About** panel (#529): without
+/// it the standard about panel shows a generic (folder-like) icon. Safe on macOS — the PNG is
+/// decoded in pure Rust (the `image` crate) and muda builds the `NSImage` from the raw bytes,
+/// avoiding the ImageIO `NSImage::initWithData` path that SIGBUSes (see `load_for_viewport`).
+#[cfg(target_os = "macos")]
+pub fn about_icon_rgba(size: u32) -> Option<(Vec<u8>, u32, u32)> {
+    let image = image::load_from_memory(APP_ICON_PNG).ok()?;
+    let rgba = image::imageops::resize(
+        &image.to_rgba8(),
+        size,
+        size,
+        image::imageops::FilterType::Lanczos3,
+    );
+    let (width, height) = rgba.dimensions();
+    Some((rgba.into_raw(), width, height))
+}
 
 /// Icon for the eframe/winit viewport (taskbar / window chrome).
 ///

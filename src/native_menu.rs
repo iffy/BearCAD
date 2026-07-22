@@ -188,6 +188,10 @@ impl NativeMenu {
                         name: Some("BearCAD".to_string()),
                         version: Some(crate::full_version()),
                         copyright: Some("On-device parametric CAD (prototype)".to_string()),
+                        // The BearCAD icon, so the About panel shows it instead of the
+                        // generic (folder-like) placeholder macOS uses otherwise (#529).
+                        icon: crate::app_icon::about_icon_rgba(256)
+                            .and_then(|(rgba, w, h)| muda::Icon::from_rgba(rgba, w, h).ok()),
                         ..Default::default()
                     }),
                 ),
