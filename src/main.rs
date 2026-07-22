@@ -9841,10 +9841,15 @@ fn draw_committed_dim_layouts<Project>(
     angle_gizmo_constraint: Option<DimLabelTarget>,
     hovered_angle_gizmo: Option<DimLabelTarget>,
     viewport: egui::Rect,
+    // Constraint open in the floating ValueInput editor (#503): skip its static arc+label.
+    skip_constraint: Option<DimLabelTarget>,
 ) where
     Project: Fn(Vec3) -> Option<egui::Pos2>,
 {
     for layout in layouts {
+        if skip_constraint == Some(layout.target) {
+            continue;
+        }
         let color = document_health::constraint_annotation_color(
             health,
             layout.target,
@@ -10049,6 +10054,42 @@ fn dim_input_layout_centered_on(label_rect: egui::Rect, text: &str) -> DimInputL
     let size = dim_input_size_for_text(text);
     let pos = label_rect.center() - size * 0.5;
     layout_at(pos, size)
+}
+
+/// Place the angle ValueInput on the wedge bisector, farther from the vertex than
+/// the dimension arc so it never covers the arc or the corner (#503).
+fn angle_dim_edit_input_layout(
+    doc: &model::Document,
+    frame: &face::SketchFrame,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    line_a: model::ConstraintLine,
+    line_b: model::ConstraintLine,
+    rotation_sign: model::ConstraintSign,
+    dim_offset: Option<f32>,
+    text: &str,
+) -> Option<DimInputLayout> {
+    let display = angle_constraint_display(doc, line_a, line_b, rotation_sign)?;
+    let arc_px = effective_arc_dim_offset(dim_offset);
+    let radius_world =
+        pixels_to_world_distance(project, display.center, display.dir_a, arc_px);
+    // Input center is past the arc by enough to clear the box's near edge and the
+    // gizmo grab circle on the ring (#40/#503).
+    let past_arc_px = ANGLE_DIM_INPUT_GIZMO_CLEARANCE_PX;
+    let label_outset_world =
+        pixels_to_world_distance(project, display.center, display.dir_a, past_arc_px);
+    let world = arc_dimension_world_geom(
+        display.center,
+        display.dir_a,
+        display.dir_b,
+        frame.normal,
+        radius_world,
+        label_outset_world,
+    )?;
+    let pc = project(world.label_center)?;
+    Some(dim_input_layout_centered_on(
+        egui::Rect::from_center_size(pc, dim_input_size_for_text(text)),
+        text,
+    ))
 }
 
 fn handle_committed_dim_label_double_click(
@@ -15403,6 +15444,16 @@ impl App {
                         )
                     })
                     .or(self.angle_gizmo_drag.map(|d| d.constraint_id));
+                let editing_angle_constraint = self
+                    .state
+                    .editing_committed_dim
+                    .as_ref()
+                    .and_then(|e| match &e.target {
+                        DimEditTarget::Constraint(id) if e.target.is_angle(&self.state.doc) => {
+                            Some(*id)
+                        }
+                        _ => None,
+                    });
                 if !gpu_drawn {
                     draw_committed_dim_layouts(
                         &painter,
@@ -15413,6 +15464,7 @@ impl App {
                         angle_gizmo_constraint,
                         hovered_angle_gizmo,
                         viewport,
+                        editing_angle_constraint,
                     );
                 } else {
                     let arc_layouts: Vec<_> = layouts
@@ -15430,6 +15482,7 @@ impl App {
                             angle_gizmo_constraint,
                             hovered_angle_gizmo,
                             viewport,
+                            editing_angle_constraint,
                         );
                     }
                 }
@@ -15439,69 +15492,46 @@ impl App {
                         DimEditTarget::Constraint(id) => Some(*id),
                         DimEditTarget::New(_) => None,
                     };
-                    let input_layout = if let Some(id) = constraint_id {
-                        layouts
-                            .iter()
-                            .find(|l| l.target == id)
-                            .map(|layout| {
-                                dim_input_layout_centered_on(layout.label_rect, &edit.text)
+                    // #503: angle ValueInput sits on the bisector, farther from the vertex
+                    // than the arc (same placement for new and existing constraints).
+                    let angle_edit = edit.target.dimension_target(&self.state.doc).and_then(
+                        |t| match t {
+                            model::DimensionTarget::Angle {
+                                line_a,
+                                line_b,
+                                rotation_sign,
+                            } => Some((line_a, line_b, rotation_sign)),
+                            _ => None,
+                        },
+                    );
+                    let arc_dim_offset = edit
+                        .dim_offset
+                        .or_else(|| {
+                            constraint_id.and_then(|id| {
+                                self.state.doc.constraints.get(id).and_then(|c| c.dim_offset)
+                            })
+                        });
+                    let input_layout = if let Some((line_a, line_b, rotation_sign)) = angle_edit.clone()
+                    {
+                        sketch_session
+                            .and_then(|s| sketch_geometry_frame(&self.state.doc, s.sketch))
+                            .and_then(|frame| {
+                                angle_dim_edit_input_layout(
+                                    &self.state.doc,
+                                    &frame,
+                                    &project,
+                                    line_a,
+                                    line_b,
+                                    rotation_sign,
+                                    arc_dim_offset,
+                                    &edit.text,
+                                )
                             })
                     } else if let Some(target) = edit.target.distance_target(&self.state.doc) {
                         distance_target_segment_endpoints(&self.state.doc, active_sketch, target)
                             .and_then(|(a, b)| {
                                 project(a).zip(project(b)).map(|(pa, pb)| {
                                     line_dim_layout(pa, pb, &edit.text)
-                                })
-                            },
-                        )
-                    } else if let Some(model::DimensionTarget::Angle {
-                        line_a,
-                        line_b,
-                        rotation_sign,
-                    }) = edit.target.dimension_target(&self.state.doc)
-                    {
-                        // Place the input inside the angle (on the bisector), not on the vertex
-                        // where it would overlap both lines.
-                        sketch_session
-                            .and_then(|s| sketch_geometry_frame(&self.state.doc, s.sketch))
-                            .zip(angle_constraint_display(
-                                &self.state.doc,
-                                line_a,
-                                line_b,
-                                rotation_sign,
-                            ))
-                            .and_then(|(frame, display)| {
-                                let radius_world = pixels_to_world_distance(
-                                    &project,
-                                    display.center,
-                                    display.dir_a,
-                                    effective_arc_dim_offset(None),
-                                );
-                                // Clear the gizmo ring/handle so it isn't hidden behind
-                                // the editable input box (#40).
-                                let label_outset_world = pixels_to_world_distance(
-                                    &project,
-                                    display.center,
-                                    display.dir_a,
-                                    ANGLE_DIM_INPUT_GIZMO_CLEARANCE_PX,
-                                );
-                                arc_dimension_world_geom(
-                                    display.center,
-                                    display.dir_a,
-                                    display.dir_b,
-                                    frame.normal,
-                                    radius_world,
-                                    label_outset_world,
-                                )
-                                .and_then(|wg| project(wg.label_center))
-                                .map(|pc| {
-                                    dim_input_layout_centered_on(
-                                        egui::Rect::from_center_size(
-                                            pc,
-                                            dim_input_size_for_text(&edit.text),
-                                        ),
-                                        &edit.text,
-                                    )
                                 })
                             })
                     } else {
@@ -15562,30 +15592,27 @@ impl App {
                             );
                         }
                     }
-                    if is_angle && matches!(&edit.target, DimEditTarget::New(_)) {
+                    // #503: while editing an angle, always draw the arc on the committed
+                    // wedge (rotation_sign) at the stored/previewed radius — not the
+                    // opposite/outside side — and without the static label (the ValueInput
+                    // is the value).
+                    if let Some((line_a, line_b, rotation_sign)) = angle_edit {
                         if let Some(frame) = sketch_session
                             .and_then(|s| sketch_geometry_frame(&self.state.doc, s.sketch))
                         {
-                            if let Some(model::DimensionTarget::Angle {
+                            draw_angle_dim_for_lines(
+                                &painter,
+                                &project,
+                                &frame,
+                                &self.state.doc,
                                 line_a,
                                 line_b,
                                 rotation_sign,
-                            }) = edit.target.dimension_target(&self.state.doc)
-                            {
-                                draw_angle_dim_for_lines(
-                                    &painter,
-                                    &project,
-                                    &frame,
-                                    &self.state.doc,
-                                    line_a,
-                                    line_b,
-                                    rotation_sign,
-                                    None,
-                                    &edit.text,
-                                    true,
-                                    false,
-                                );
-                            }
+                                arc_dim_offset,
+                                "", // value is in the floating ValueInput
+                                false,
+                                false,
+                            );
                         }
                     }
                 }
@@ -17945,6 +17972,16 @@ mod tests {
             assert!(
                 gap > AXIS_GIZMO_HANDLE_HIT_RADIUS_PX,
                 "input box must clear the gizmo handle at {deg} deg (gap {gap})"
+            );
+            // #503: the input sits farther from the vertex than the arc itself.
+            let arc_mid = project(
+                center + (dir_a + dir_b).normalize() * ARC_RADIUS,
+            );
+            let box_dist = (box_center - project(center)).length();
+            let arc_dist = (arc_mid - project(center)).length();
+            assert!(
+                box_dist > arc_dist,
+                "input must be farther from the vertex than the arc at {deg} deg (box {box_dist} arc {arc_dist})"
             );
         }
     }
