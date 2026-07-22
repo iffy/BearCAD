@@ -457,6 +457,10 @@ pub struct ViewportSceneInput<'a> {
     /// Dashed ghost world-segments previewing an in-progress in-sketch repeat's duplicates
     /// (#232) — the sketch-plane equivalent of the 3D repeat ghost meshes.
     pub sketch_repeat_ghost: Vec<(Vec3, Vec3)>,
+    /// Solid preview segments for an in-progress in-sketch mirror's reflection (#542): each
+    /// `(a, b, dashed)` draws a solid preview-coloured line (matching the repeat/extrude/revolve
+    /// preview styling), or a dashed one when its reflected source is construction geometry.
+    pub sketch_mirror_ghost: Vec<(Vec3, Vec3, bool)>,
     /// Live-updated meshes for the faded descendant bodies (#260): while a gizmo edit is being
     /// dragged, `faded_bodies[bi]` renders this preview mesh (recomputed from a scratch document
     /// with the edit applied) instead of its stale committed geometry, so downstream bodies
@@ -1217,6 +1221,19 @@ impl ViewportScene {
                 input.viewport,
                 &vp,
             );
+        }
+        // In-sketch mirror reflection preview (#542): solid preview-coloured lines like the
+        // repeat/extrude/revolve previews, dashed only when the reflected source is construction.
+        for &(a, b, dashed) in &input.sketch_mirror_ghost {
+            if dashed {
+                mesh.push_dashed_line_segment(
+                    a, b, input.palette.preview, 1.5, input.cam, input.viewport, &vp,
+                );
+            } else {
+                mesh.push_line_segment(
+                    a, b, input.palette.preview, 1.5, input.cam, input.viewport, &vp,
+                );
+            }
         }
         if let Some(preview) = input.plane_preview.as_ref() {
             mesh.push_plane_creation_preview(
@@ -4052,6 +4069,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
@@ -4547,6 +4565,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
@@ -4587,6 +4606,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
@@ -4641,6 +4661,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
@@ -4680,6 +4701,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
@@ -4738,6 +4760,7 @@ mod tests {
                 cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
                 element_visibility: &state.element_visibility,
                 preview_rect: None,
@@ -4804,6 +4827,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
@@ -4854,6 +4878,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
@@ -4905,6 +4930,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
@@ -4986,6 +5012,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
@@ -5046,6 +5073,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
@@ -5216,6 +5244,7 @@ mod tests {
                 cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
                 element_visibility: &state.element_visibility,
                 preview_rect: None,
@@ -5397,6 +5426,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
@@ -5528,6 +5558,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
@@ -5643,6 +5674,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
@@ -5704,6 +5736,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
@@ -5874,6 +5907,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
@@ -5913,6 +5947,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
@@ -5996,6 +6031,7 @@ mod tests {
                 cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
                 element_visibility: &state.element_visibility,
                 preview_rect: None,
@@ -6083,6 +6119,7 @@ mod tests {
                 cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
                 element_visibility: &state.element_visibility,
                 preview_rect: None,
@@ -6152,6 +6189,7 @@ mod tests {
                 cut_highlight_bodies: cut,
                 faded_bodies: Vec::new(),
                 sketch_repeat_ghost: Vec::new(),
+                sketch_mirror_ghost: Vec::new(),
                 edit_preview_meshes: std::collections::HashMap::new(),
                 element_visibility: &state.element_visibility,
                 preview_rect: None,
@@ -6240,6 +6278,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
@@ -6279,6 +6318,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
@@ -6461,6 +6501,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
@@ -6504,6 +6545,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: &state.element_visibility,
             preview_rect: None,
@@ -6614,6 +6656,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: scene_fields.5,
             preview_rect: None,
@@ -6655,6 +6698,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: scene_fields.5,
             preview_rect: None,
@@ -6694,6 +6738,7 @@ mod tests {
             cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             element_visibility: scene_fields.5,
             preview_rect: None,
@@ -6787,6 +6832,7 @@ mod perf_probe {
                 cut_highlight_bodies: Vec::new(),
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
                 preview_rect: None,
                 preview_line: None,
@@ -6873,6 +6919,7 @@ mod cut_preview_tests {
             cut_highlight_bodies,
             faded_bodies: Vec::new(),
             sketch_repeat_ghost: Vec::new(),
+            sketch_mirror_ghost: Vec::new(),
             edit_preview_meshes: std::collections::HashMap::new(),
             preview_rect: None,
             preview_line: None,

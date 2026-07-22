@@ -4818,10 +4818,11 @@ impl App {
     /// Draw the translucent preview of an in-progress in-sketch mirror (#528): each target
     /// line/circle reflected across the mirror line, in the sketch plane.
     /// World-space preview segments for the in-progress in-sketch mirror (#528/#535): each
-    /// target line/circle reflected across the mirror line. Routed through the GPU scene's
-    /// `sketch_repeat_ghost` (like the offset/repeat ghosts) so it renders *in* the scene
-    /// rather than as a painter overlay the GPU pass hides.
-    fn sketch_mirror_ghost_segments(&self) -> Vec<(Vec3, Vec3)> {
+    /// target line/circle reflected across the mirror line, tagged with whether its source is
+    /// construction geometry. Rendered through the GPU scene's own solid `sketch_mirror_ghost`
+    /// (#542) — a solid preview line matching the repeat/extrude/revolve preview styling, dashed
+    /// only when the reflected source is itself a (dashed) construction line.
+    fn sketch_mirror_ghost_segments(&self) -> Vec<(Vec3, Vec3, bool)> {
         let Some(sm) = self.state.creating_sketch_mirror.as_ref() else {
             return Vec::new();
         };
@@ -4853,18 +4854,20 @@ impl App {
             if li == line_idx {
                 continue;
             }
+            let dashed = l.construction;
             let mut prev: Option<Vec3> = None;
             for (u, v) in l.sample_local(model::BEZIER_SEGMENTS) {
                 let r = reflect(glam::Vec2::new(u, v));
                 let w = local_to_world(&frame, r.x, r.y);
                 if let Some(q) = prev {
-                    segs.push((q, w));
+                    segs.push((q, w, dashed));
                 }
                 prev = Some(w);
             }
         }
         for &ci in &sm.circle_targets {
             let Some(c) = doc.circles.get(ci).filter(|c| !c.deleted) else { continue };
+            let dashed = c.construction;
             let center = reflect(glam::Vec2::new(c.cx, c.cy));
             const N: usize = 48;
             let mut prev: Option<Vec3> = None;
@@ -4872,7 +4875,7 @@ impl App {
                 let t = k as f32 / N as f32 * std::f32::consts::TAU;
                 let w = local_to_world(&frame, center.x + c.r * t.cos(), center.y + c.r * t.sin());
                 if let Some(q) = prev {
-                    segs.push((q, w));
+                    segs.push((q, w, dashed));
                 }
                 prev = Some(w);
             }
@@ -9426,6 +9429,7 @@ fn build_viewport_scene_input<'a>(
     cut_highlight_bodies: Vec<usize>,
     faded_bodies: Vec<usize>,
     sketch_repeat_ghost: Vec<(Vec3, Vec3)>,
+    sketch_mirror_ghost: Vec<(Vec3, Vec3, bool)>,
     edit_preview_meshes: std::collections::HashMap<usize, extrude::SolidMesh>,
 ) -> gpu_viewport::ViewportSceneInput<'a> {
     let preview_rect = creating_rect.and_then(|cr| {
@@ -9709,6 +9713,7 @@ fn build_viewport_scene_input<'a>(
         cut_highlight_bodies,
         faded_bodies,
         sketch_repeat_ghost,
+        sketch_mirror_ghost,
         edit_preview_meshes,
         element_visibility,
         preview_rect,
@@ -16133,7 +16138,10 @@ impl App {
         // the picked lines/circles at every computed offset, so the result previews before commit.
         let mut sketch_repeat_ghost = self.sketch_repeat_ghost_segments();
         sketch_repeat_ghost.extend(self.sketch_offset_ghost_segments());
-        sketch_repeat_ghost.extend(self.sketch_mirror_ghost_segments());
+        // The mirror reflection previews as a solid line (dashed only for construction sources),
+        // matching the repeat/extrude/revolve preview styling (#542) — its own ghost, not the
+        // dashed sketch-repeat path.
+        let sketch_mirror_ghost = self.sketch_mirror_ghost_segments();
         // Live-updated descendant geometry for the operation being edited (#260): recomputed from
         // a scratch doc so faded downstream bodies follow the gizmo drag in preview styling.
         let edit_preview_meshes = self.edit_preview_descendant_meshes();
@@ -16202,6 +16210,7 @@ impl App {
             cut_highlight_bodies,
             faded_bodies,
             sketch_repeat_ghost,
+            sketch_mirror_ghost,
             edit_preview_meshes,
         );
         let scene = gpu_viewport::ViewportScene::build(&scene_input);
@@ -18378,6 +18387,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
             std::collections::HashMap::new(),
         );
         assert_eq!(
@@ -18455,6 +18465,7 @@ mod tests {
             &[],
             None,
             None,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -18552,6 +18563,7 @@ mod tests {
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
                 std::collections::HashMap::new(),
             )
             .preview_solid
@@ -18642,6 +18654,7 @@ mod tests {
             &[],
             None,
             None,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
