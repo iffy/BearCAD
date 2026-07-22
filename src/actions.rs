@@ -11293,14 +11293,17 @@ label_hidden: false,
             self.cam.view_up_hint(),
         );
         let corners = bounds.world_corners(&frame);
-        Some(self.cam.distance_to_fit_corners_with_up(
+        let fit = self.cam.distance_to_fit_corners_with_up(
             frame_target.target,
             view_direction,
             sketch_up,
             &corners,
             frame_padding_px,
             viewport,
-        ))
+        );
+        // Match zoom-to-fit's breathing room (#544) so entering a sketch frames its contents the
+        // same amount zoom-to-fit would, instead of sitting flush and reading as "too zoomed in".
+        Some(fit * crate::camera::ZOOM_FIT_MARGIN)
     }
 
     /// Apply deferred sketch framing once the viewport rect is available.

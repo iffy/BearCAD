@@ -191,6 +191,11 @@ struct ViewTransition {
 /// Screen-space padding when framing existing sketch contents in the viewport.
 pub const SKETCH_EDIT_FRAME_PADDING_PX: f32 = 15.0;
 
+/// Extra breathing room multiplier applied when framing a bounding box, so the fitted content
+/// never sits flush against the viewport edge. Shared by zoom-to-fit ([`Camera::
+/// frame_bounds_instant`]) and sketch entry so both frame content the same amount (#544).
+pub const ZOOM_FIT_MARGIN: f32 = 1.15;
+
 /// How the ground plane renders in the viewport (#159): the classic line grid, or a solid
 /// filled plane in the grid's grey.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -846,7 +851,7 @@ impl Camera {
                 }
             }
         }
-        self.set_pose_instant(None, None, Some(distance * 1.15), Some(center));
+        self.set_pose_instant(None, None, Some(distance * ZOOM_FIT_MARGIN), Some(center));
     }
 
     /// Frame a bounding box like [`frame_bounds_instant`](Self::frame_bounds_instant),
