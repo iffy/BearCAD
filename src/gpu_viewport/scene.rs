@@ -5089,6 +5089,7 @@ mod tests {
             user_edited: [true, true],
             pending_focus: false,
             construction: false,
+            anchor: crate::actions::RectAnchor::Corner,
         });
         state.apply(crate::actions::Action::CommitRectangle);
     }
@@ -5172,6 +5173,7 @@ mod tests {
             user_edited: [true, true],
             pending_focus: false,
             construction: false,
+            anchor: crate::actions::RectAnchor::Corner,
         });
         state.apply(crate::actions::Action::CommitRectangle);
         state.creating_circle = Some(crate::actions::CreatingCircle {
@@ -5625,6 +5627,7 @@ mod tests {
             user_edited: [true, true],
             pending_focus: false,
             construction: false,
+            anchor: crate::actions::RectAnchor::Corner,
         });
         state.apply(crate::actions::Action::CommitRectangle);
         let cam = state.cam.clone();
@@ -6402,6 +6405,7 @@ mod tests {
             user_edited: [true, true],
             pending_focus: false,
             construction: false,
+            anchor: crate::actions::RectAnchor::Corner,
         });
         state.apply(crate::actions::Action::CommitRectangle);
         let session = state.sketch_session.unwrap();

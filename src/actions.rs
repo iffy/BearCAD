@@ -189,12 +189,23 @@ impl Tool {
     }
 }
 
+/// Where the first click of the rectangle tool lands (#532): a corner (drag to the opposite
+/// corner — the classic behavior) or the centre (drag to a corner, the rectangle growing
+/// symmetrically).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RectAnchor {
+    #[default]
+    Corner,
+    Center,
+}
+
 /// State for the in-progress (pre-Enter) rectangle creation.
 #[derive(Clone, Debug)]
 pub struct CreatingRect {
-    /// Fixed first corner in ground coords.
+    /// Fixed first click in ground coords: a corner (`RectAnchor::Corner`) or the centre
+    /// (`RectAnchor::Center`, #532).
     pub origin: Vec3,
-    /// Text content of the two dimension inputs (width, height).
+    /// Text content of the two dimension inputs (width, height) — always the **full** extents.
     pub texts: [String; 2],
     /// 0 = width (horiz side), 1 = height (vert side)
     pub focused: usize,
@@ -206,28 +217,62 @@ pub struct CreatingRect {
     pub pending_focus: bool,
     /// New rectangle edges are committed as construction geometry when true.
     pub construction: bool,
+    /// Whether `origin` is a corner or the centre (#532).
+    pub anchor: RectAnchor,
 }
 
 impl CreatingRect {
-    /// Current opposite corner in world space, respecting locked dimensions.
-    pub fn end_point(&self, frame: &SketchFrame, doc: &Document) -> Vec3 {
+    /// The two opposite corners of the in-progress rectangle in world space, honouring the
+    /// anchor mode and any locked width/height (#532). In corner mode `origin` is the first
+    /// corner; in centre mode `origin` is the centre and the box grows symmetrically.
+    pub fn corners(&self, frame: &SketchFrame, doc: &Document) -> (Vec3, Vec3) {
         let (ou, ov) = world_to_local(frame, self.origin);
         let (mu, mv) = world_to_local(frame, self.last_mouse);
         let du = mu - ou;
         let dv = mv - ov;
-        let w = if self.user_edited[0] {
-            parse_positive_length_or_in_doc(&self.texts[0], doc, du.abs())
-        } else {
-            du.abs()
-        };
-        let h = if self.user_edited[1] {
-            parse_positive_length_or_in_doc(&self.texts[1], doc, dv.abs())
-        } else {
-            dv.abs()
-        };
         let su = if du < 0.0 { -1.0 } else { 1.0 };
         let sv = if dv < 0.0 { -1.0 } else { 1.0 };
-        crate::face::local_to_world(frame, ou + su * w, ov + sv * h)
+        match self.anchor {
+            RectAnchor::Corner => {
+                let w = if self.user_edited[0] {
+                    parse_positive_length_or_in_doc(&self.texts[0], doc, du.abs())
+                } else {
+                    du.abs()
+                };
+                let h = if self.user_edited[1] {
+                    parse_positive_length_or_in_doc(&self.texts[1], doc, dv.abs())
+                } else {
+                    dv.abs()
+                };
+                (
+                    crate::face::local_to_world(frame, ou, ov),
+                    crate::face::local_to_world(frame, ou + su * w, ov + sv * h),
+                )
+            }
+            RectAnchor::Center => {
+                // The dimension texts are the full width/height; the cursor sits half a side away.
+                let w = if self.user_edited[0] {
+                    parse_positive_length_or_in_doc(&self.texts[0], doc, 2.0 * du.abs())
+                } else {
+                    2.0 * du.abs()
+                };
+                let h = if self.user_edited[1] {
+                    parse_positive_length_or_in_doc(&self.texts[1], doc, 2.0 * dv.abs())
+                } else {
+                    2.0 * dv.abs()
+                };
+                let (hw, hh) = (w * 0.5, h * 0.5);
+                (
+                    crate::face::local_to_world(frame, ou - hw, ov - hh),
+                    crate::face::local_to_world(frame, ou + hw, ov + hh),
+                )
+            }
+        }
+    }
+
+    /// The corner the cursor is dragging toward (used for the moving-corner snap preview).
+    pub fn end_point(&self, frame: &SketchFrame, doc: &Document) -> Vec3 {
+        self.corners(frame, doc).1
     }
 }
 
@@ -1289,6 +1334,10 @@ pub enum Action {
     /// Set construction/substantial on the active draw op or all constructable selected targets.
     ApplyConstruction {
         construction: bool,
+    },
+    /// Set the rectangle tool's anchor mode (#532): corner- or centre-anchored.
+    SetRectAnchor {
+        anchor: RectAnchor,
     },
     /// Toggle construction/substantial on the active draw op or each constructable selected target.
     ToggleConstruction,
@@ -2366,6 +2415,8 @@ pub struct AppState {
     pub viewport_aspect: f32,
     /// Shared construction draw mode for rectangle, line, and circle tools.
     pub draw_construction: bool,
+    /// Persisted rectangle anchor mode (#532): the first click is a corner or the centre.
+    pub rect_anchor: RectAnchor,
     /// Persisted "next point gets bezier handles" toggle for the line tool (`B`, #73); mirrors
     /// how `draw_construction` persists across chained segments.
     pub draw_curve_mode: bool,
@@ -2493,6 +2544,7 @@ impl Default for AppState {
             creating_calibration: None,
             viewport_aspect: 16.0 / 9.0,
             draw_construction: false,
+            rect_anchor: RectAnchor::default(),
             draw_curve_mode: false,
             draw_tangent_constraint: true,
             creating_plane: None,
@@ -5624,9 +5676,9 @@ impl AppState {
                         }
                     }
                 }
-                let (ou, ov) = world_to_local(&frame, cr.origin);
-                let end = cr.end_point(&frame, &self.doc);
-                let (eu, ev) = world_to_local(&frame, end);
+                let (c0, c1) = cr.corners(&frame, &self.doc);
+                let (ou, ov) = world_to_local(&frame, c0);
+                let (eu, ev) = world_to_local(&frame, c1);
                 let x = ou.min(eu);
                 let y = ov.min(ev);
                 let w = (eu - ou).abs();
@@ -10318,6 +10370,18 @@ label_hidden: false,
                     Err(e) => ActionResult::Err(e),
                 }
             }
+            Action::SetRectAnchor { anchor } => {
+                self.rect_anchor = anchor;
+                // A rectangle already in progress switches anchor live.
+                if let Some(cr) = &mut self.creating_rect {
+                    cr.anchor = anchor;
+                }
+                self.status = match anchor {
+                    RectAnchor::Corner => "Rectangle — corner-anchored".to_string(),
+                    RectAnchor::Center => "Rectangle — centre-anchored".to_string(),
+                };
+                ActionResult::Ok
+            }
             Action::ToggleConstruction => {
                 if let Some(cr) = &mut self.creating_rect {
                     cr.construction = !cr.construction;
@@ -14529,6 +14593,7 @@ mod tests {
             user_edited: [false, false],
             pending_focus: false,
             construction: false,
+            anchor: RectAnchor::Corner,
         });
         state.apply(Action::CommitRectangle);
         state.creating_line = Some(CreatingLine {
@@ -14690,6 +14755,7 @@ mod tests {
             user_edited: [true, false],
             pending_focus: false,
             construction: false,
+            anchor: RectAnchor::Corner,
         };
         let frame = xy_frame();
         let end = cr.end_point(&frame, &doc);
@@ -14710,6 +14776,7 @@ mod tests {
             user_edited: [false, false],
             pending_focus: false,
             construction: false,
+            anchor: RectAnchor::Corner,
         });
         let result = state.apply(Action::BeginEditCommittedDim { target: 0 });
         assert!(matches!(result, ActionResult::Err(_)));
@@ -18670,6 +18737,7 @@ mod tests {
             user_edited: [true, true],
             pending_focus: false,
             construction: false,
+            anchor: RectAnchor::Corner,
         };
         let frame = xy_frame();
         let doc = Document::default();
@@ -18797,6 +18865,7 @@ mod tests {
             user_edited: [false, false],
             pending_focus: false,
             construction: false,
+            anchor: RectAnchor::Corner,
         });
         state.apply(Action::CancelOperation);
         assert!(state.sketch_session.is_some());
@@ -19388,6 +19457,7 @@ mod tests {
             user_edited: [false, false],
             pending_focus: false,
             construction: false,
+            anchor: RectAnchor::Corner,
         });
         assert_eq!(state.apply(Action::ToggleConstruction), ActionResult::Ok);
         assert!(state.creating_rect.as_ref().unwrap().construction);

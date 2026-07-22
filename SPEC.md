@@ -148,6 +148,15 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
 - **Draw tools begin sketches:** with no sketch open, the Rectangle, Line, Circle, and Text
   (#383) tools hover-highlight sketchable faces and a click begins a sketch on the clicked
   face — the tool then draws there immediately, no separate Sketch-tool step needed.
+- **Rectangle anchor mode (#532):** the Rectangle tool's context pane has a two-icon radio
+  — **corner-anchored** (`RectAnchor::Corner`, the classic behavior: the first click is one
+  corner, drag to the opposite) or **centre-anchored** (`RectAnchor::Center`: the first click
+  is the centre and the rectangle grows symmetrically as the cursor picks a corner). It is a
+  persisted tool setting (`AppState::rect_anchor`, `Action::SetRectAnchor`). Keys **1**/**2**
+  switch to corner/centre while the tool is active and not mid-draw. The width/height dimension
+  inputs always read the **full** extents in both modes (centre mode's cursor sits half a side
+  from the centre). `CreatingRect::corners` resolves the two opposite corners for the preview,
+  the live dimensions, and the commit, honoring the anchor and any locked width/height.
 - **Sketching on body faces:** the planar cap faces of an extruded body (the base and
   offset ends of each extruded profile) are selectable sketch faces. Clicking one with the
   Sketch tool starts a sketch on that face — its frame inherits the profile's in-plane axes,

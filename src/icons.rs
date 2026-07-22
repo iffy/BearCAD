@@ -38,6 +38,9 @@ pub enum IconId {
     Combine,
     Move,
     Mirror,
+    /// Rectangle anchor-mode radio icons (#532).
+    RectCorner,
+    RectCenter,
     Repeat,
     Offset,
     Slice,
@@ -105,7 +108,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 69] = [
+    pub const ALL: [Self; 71] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -131,6 +134,8 @@ impl IconId {
         Self::Combine,
         Self::Move,
         Self::Mirror,
+        Self::RectCorner,
+        Self::RectCenter,
         Self::Repeat,
         Self::Offset,
         Self::Slice,
@@ -204,6 +209,8 @@ impl IconId {
             Self::Combine => include_str!("assets/icons/combine.svg"),
             Self::Move => include_str!("assets/icons/move.svg"),
             Self::Mirror => include_str!("assets/icons/mirror.svg"),
+            Self::RectCorner => include_str!("assets/icons/rect_corner.svg"),
+            Self::RectCenter => include_str!("assets/icons/rect_center.svg"),
             Self::Repeat => include_str!("assets/icons/repeat.svg"),
             Self::Offset => include_str!("assets/icons/offset.svg"),
             Self::Slice => include_str!("assets/icons/slice.svg"),
@@ -281,6 +288,8 @@ impl IconId {
             Self::Combine => "Combine",
             Self::Move => "Move",
             Self::Mirror => "Mirror",
+            Self::RectCorner => "Corner-anchored",
+            Self::RectCenter => "Centre-anchored",
             Self::Repeat => "Repeat",
             Self::Offset => "Offset",
             Self::Slice => "Slice",

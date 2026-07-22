@@ -788,9 +788,9 @@ impl App {
         {
             if let Some(frame) = sketch_geometry_frame(doc, session.sketch) {
                 active = true;
-                let end = cr.end_point(&frame, doc);
-                let (ou, ov) = world_to_local(&frame, cr.origin);
-                let (eu, ev) = world_to_local(&frame, end);
+                let (c0, c1) = cr.corners(&frame, doc);
+                let (ou, ov) = world_to_local(&frame, c0);
+                let (eu, ev) = world_to_local(&frame, c1);
                 for (u, v) in [(ou, ov), (eu, ov), (ou, ev), (eu, ev)] {
                     extend(local_to_world(&frame, u, v));
                 }
@@ -2428,6 +2428,19 @@ impl App {
 
             if ctx.input(|i| i.key_pressed(egui::Key::X)) {
                 self.state.apply(Action::ToggleConstruction);
+            }
+
+            // Rectangle anchor mode (#532): 1 = corner-anchored, 2 = centre-anchored, while the
+            // Rectangle tool is active and not mid-draw.
+            if self.state.tool == Tool::Rectangle && self.state.creating_rect.is_none() {
+                if ctx.input(|i| i.key_pressed(egui::Key::Num1)) {
+                    self.state
+                        .apply(Action::SetRectAnchor { anchor: actions::RectAnchor::Corner });
+                }
+                if ctx.input(|i| i.key_pressed(egui::Key::Num2)) {
+                    self.state
+                        .apply(Action::SetRectAnchor { anchor: actions::RectAnchor::Center });
+                }
             }
 
             // Z: zoom to fit — the selection if anything is selected, else everything (#279).
@@ -6671,6 +6684,8 @@ impl eframe::App for App {
                 tool: self.state.tool,
                 in_drawing_workbench: self.state.editing_drawing.is_some(),
                 draw_rect_construction: self.state.rect_draw_construction_mode(),
+                rect_anchor: (self.state.tool == Tool::Rectangle)
+                    .then_some(self.state.rect_anchor),
                 draw_line_construction: self.state.line_draw_construction_mode(),
                 draw_circle_construction: self.state.circle_draw_construction_mode(),
                 draw_line_curve_mode: self.state.line_curve_mode(),
@@ -7521,6 +7536,7 @@ impl eframe::App for App {
             context::sync_name_draft(&mut self.state.context_pane, &self.state.doc, &content);
             context::sync_calibrate_draft(&mut self.state.context_pane, &self.state.doc, &content);
             let mut construction_change: Option<bool> = None;
+            let mut rect_anchor_change: Option<actions::RectAnchor> = None;
             let mut curve_mode_change: Option<bool> = None;
             let mut tangent_constraint_change: Option<bool> = None;
             let mut name_commit: Option<(SceneElement, String)> = None;
@@ -7581,6 +7597,7 @@ impl eframe::App for App {
                         &mut |construction| {
                             construction_change = Some(construction);
                         },
+                        &mut |anchor| rect_anchor_change = Some(anchor),
                         &mut |kind| constraint_apply = Some(kind),
                         &mut |enabled| snapping_change = Some(enabled),
                         &mut |mode| extrude_body_mode_change = Some(mode),
@@ -8513,6 +8530,9 @@ impl eframe::App for App {
                 self.state
                     .apply(Action::CommitElementName { element, name });
             }
+            if let Some(anchor) = rect_anchor_change {
+                self.state.apply(Action::SetRectAnchor { anchor });
+            }
             if let Some(construction) = construction_change {
                 self.state
                     .apply(Action::ApplyConstruction { construction });
@@ -9300,9 +9320,9 @@ fn build_viewport_scene_input<'a>(
     let preview_rect = creating_rect.and_then(|cr| {
         let session = sketch_session?;
         let frame = sketch_geometry_frame(doc, session.sketch)?;
-        let end = cr.end_point(&frame, doc);
-        let (ou, ov) = world_to_local(&frame, cr.origin);
-        let (eu, ev) = world_to_local(&frame, end);
+        let (c0, c1) = cr.corners(&frame, doc);
+        let (ou, ov) = world_to_local(&frame, c0);
+        let (eu, ev) = world_to_local(&frame, c1);
         let x = ou.min(eu);
         let y = ov.min(ev);
         let xr = ou.max(eu);
@@ -14571,7 +14591,13 @@ impl App {
                     update_extension_anchors(&mut self.state, snap_target.clone());
 
                     if !was_creating && primary_pressed && !over_committed_dim_label {
-                        self.state.rect_origin_snap = snap_target.clone();
+                        // Centre-anchored rectangles (#532) grow symmetrically, so the first
+                        // click is the centre, not a corner — don't pin it to a corner vertex.
+                        self.state.rect_origin_snap =
+                            match self.state.rect_anchor {
+                                actions::RectAnchor::Corner => snap_target.clone(),
+                                actions::RectAnchor::Center => None,
+                            };
                         self.state.rect_opposite_snap = None;
                         self.state.creating_rect = Some(CreatingRect {
                             origin: sgp,
@@ -14581,6 +14607,7 @@ impl App {
                             user_edited: [false, false],
                             pending_focus: true,
                             construction: self.state.draw_construction,
+                            anchor: self.state.rect_anchor,
                         });
                         self.state.status = "Move mouse • type to lock dim • Tab cycle • click/Enter commit • Esc cancel"
                             .to_string();
@@ -14588,9 +14615,9 @@ impl App {
 
                     let mut commit_click = false;
                     if let Some(cr) = &mut self.state.creating_rect {
-                        let end = cr.end_point(&frame, &self.state.doc);
-                        let (ou, ov) = world_to_local(&frame, cr.origin);
-                        let (eu, ev) = world_to_local(&frame, end);
+                        let (c0, c1) = cr.corners(&frame, &self.state.doc);
+                        let (ou, ov) = world_to_local(&frame, c0);
+                        let (eu, ev) = world_to_local(&frame, c1);
                         let corners = preview_rect_world_corners(&frame, ou, ov, eu, ev);
                         let dim_layouts = rectangle_dim_layout_from_corners(
                             &project,
@@ -14612,11 +14639,17 @@ impl App {
                             cr.last_mouse = sgp;
                             let (au, av) = world_to_local(&frame, cr.origin);
                             let (bu, bv) = world_to_local(&frame, sgp);
+                            // Centre-anchored: the cursor is half a side from the centre, so the
+                            // free width/height is twice the cursor delta (#532).
+                            let scale = match cr.anchor {
+                                actions::RectAnchor::Corner => 1.0,
+                                actions::RectAnchor::Center => 2.0,
+                            };
                             if !cr.user_edited[0] {
-                                cr.texts[0] = format_live_dimension((bu - au).abs());
+                                cr.texts[0] = format_live_dimension(scale * (bu - au).abs());
                             }
                             if !cr.user_edited[1] {
-                                cr.texts[1] = format_live_dimension((bv - av).abs());
+                                cr.texts[1] = format_live_dimension(scale * (bv - av).abs());
                             }
                             // The opposite corner only tracks the cursor when both dims are free.
                             self.state.rect_opposite_snap =
@@ -16615,9 +16648,9 @@ impl App {
             (&mut self.state.creating_rect, self.state.sketch_session)
         {
             let frame = sketch_geometry_frame(&self.state.doc, session.sketch).unwrap();
-            let end = cr.end_point(&frame, &self.state.doc);
-            let (ou, ov) = world_to_local(&frame, cr.origin);
-            let (eu, ev) = world_to_local(&frame, end);
+            let (c0, c1) = cr.corners(&frame, &self.state.doc);
+            let (ou, ov) = world_to_local(&frame, c0);
+            let (eu, ev) = world_to_local(&frame, c1);
             let corners = preview_rect_world_corners(&frame, ou, ov, eu, ev);
             if let Some((width_layout, height_layout)) = rectangle_dim_layout_from_corners(
                 &project,
@@ -19233,7 +19266,37 @@ mod tests {
             user_edited: [true, true],
             pending_focus: false,
             construction: false,
+            anchor: actions::RectAnchor::Corner,
         }
+    }
+
+    /// #532: a centre-anchored rectangle grows symmetrically — its two corners straddle the
+    /// origin by the cursor delta (free) or half the locked width/height.
+    #[test]
+    fn center_anchored_rect_grows_symmetrically() {
+        let doc = crate::model::Document::default();
+        let frame = xy_frame();
+        let mut cr = make_cr((10.0, 10.0), ["", ""], (14.0, 13.0));
+        cr.anchor = actions::RectAnchor::Corner;
+        cr.user_edited = [false, false];
+        // Corner mode: origin is a corner, box is (10,10)→(14,13).
+        let (c0, c1) = cr.corners(&frame, &doc);
+        assert!((c0.x - 10.0).abs() < 1e-4 && (c1.x - 14.0).abs() < 1e-4);
+
+        // Centre mode: origin is the centre, box straddles it by (4,3): (6,7)→(14,13).
+        cr.anchor = actions::RectAnchor::Center;
+        let (c0, c1) = cr.corners(&frame, &doc);
+        assert!((c0.x - 6.0).abs() < 1e-4 && (c0.y - 7.0).abs() < 1e-4, "c0 {c0:?}");
+        assert!((c1.x - 14.0).abs() < 1e-4 && (c1.y - 13.0).abs() < 1e-4, "c1 {c1:?}");
+
+        // Locked full width/height in centre mode: 20 x 10 → half-extents 10 x 5.
+        cr.user_edited = [true, true];
+        cr.texts = ["20".to_string(), "10".to_string()];
+        let (c0, c1) = cr.corners(&frame, &doc);
+        assert!((c1.x - c0.x - 20.0).abs() < 1e-3, "full width 20: {c0:?} {c1:?}");
+        assert!((c1.y - c0.y - 10.0).abs() < 1e-3, "full height 10");
+        // Still centred on the origin.
+        assert!(((c0.x + c1.x) * 0.5 - 10.0).abs() < 1e-4);
     }
 
     #[test]

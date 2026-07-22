@@ -24,6 +24,8 @@ pub struct ContextInput<'a> {
     /// is suppressed, since drawing projections/annotations have their own selection state.
     pub in_drawing_workbench: bool,
     pub draw_rect_construction: Option<bool>,
+    /// Rectangle anchor mode (#532): `Some` while the Rectangle tool is active.
+    pub rect_anchor: Option<crate::actions::RectAnchor>,
     pub draw_line_construction: Option<bool>,
     pub draw_circle_construction: Option<bool>,
     /// Curve-mode (`B`) toggle while the line tool is active (#73): the next point drawn gets
@@ -669,6 +671,8 @@ pub struct ContextPaneContent {
     /// Tangent-constraint (`T`) checkbox while the line tool is active (#73).
     pub tangent_constraint: Option<bool>,
     pub construction: Option<ConstructionControl>,
+    /// Rectangle anchor radio (#532): `Some` while the Rectangle tool is active.
+    pub rect_anchor: Option<crate::actions::RectAnchor>,
     pub constraints: Option<Vec<ConstraintPaneRow>>,
     /// `Some(enabled)` when the current tool snaps; renders an enable/disable toggle.
     pub snapping: Option<bool>,
@@ -1198,6 +1202,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         return ContextPaneContent {
             name,
             curve_mode: None,
+            rect_anchor: input.rect_anchor,
             tangent_constraint: None,
             construction: Some(ConstructionControl {
                 value: tri_state_from_bool(construction),
@@ -1248,6 +1253,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         return ContextPaneContent {
             name,
             curve_mode: input.draw_line_curve_mode,
+            rect_anchor: input.rect_anchor,
             tangent_constraint: input.draw_line_tangent_constraint,
             construction: Some(ConstructionControl {
                 value: tri_state_from_bool(construction),
@@ -1298,6 +1304,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         return ContextPaneContent {
             name,
             curve_mode: None,
+            rect_anchor: None,
             tangent_constraint: None,
             construction: Some(ConstructionControl {
                 value: tri_state_from_bool(construction),
@@ -1351,6 +1358,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     ContextPaneContent {
         name,
         curve_mode: None,
+        rect_anchor: input.rect_anchor,
         tangent_constraint: None,
         construction: (!targets.is_empty()).then(|| ConstructionControl {
             value: construction_tri_state(input.doc, &targets),
@@ -1747,6 +1755,7 @@ pub fn show_pane(
     on_curve_mode_changed: &mut impl FnMut(bool),
     on_tangent_constraint_changed: &mut impl FnMut(bool),
     on_construction_changed: &mut impl FnMut(bool),
+    on_rect_anchor_changed: &mut impl FnMut(crate::actions::RectAnchor),
     on_constraint_clicked: &mut impl FnMut(crate::geometric_constraints::GeometricConstraintType),
     on_snapping_changed: &mut impl FnMut(bool),
     on_extrude_body_mode_changed: &mut impl FnMut(ExtrudeBodyMode),
@@ -2023,6 +2032,25 @@ pub fn show_pane(
             }
         });
         ui.add_space(4.0);
+    }
+
+    if let Some(anchor) = content.rect_anchor {
+        use crate::actions::RectAnchor;
+        any_control = true;
+        ui.horizontal(|ui| {
+            ui.label("Anchor");
+            for (value, icon, tooltip) in [
+                (RectAnchor::Corner, crate::icons::IconId::RectCorner, "Corner-anchored (1)"),
+                (RectAnchor::Center, crate::icons::IconId::RectCenter, "Centre-anchored (2)"),
+            ] {
+                if crate::icons::selectable_icon_button(ui, icon, anchor == value, tooltip)
+                    .clicked()
+                    && anchor != value
+                {
+                    on_rect_anchor_changed(value);
+                }
+            }
+        });
     }
 
     if let Some(control) = &content.construction {
@@ -4111,6 +4139,7 @@ mod tests {
             tool: Tool::Select,
             in_drawing_workbench: false,
             draw_rect_construction: None,
+            rect_anchor: None,
             draw_line_construction: None,
             draw_circle_construction: None,
             draw_line_curve_mode: None,
@@ -4269,6 +4298,7 @@ mod tests {
             tool: Tool::Fillet,
             in_drawing_workbench: false,
             draw_rect_construction: None,
+            rect_anchor: None,
             draw_line_construction: None,
             draw_circle_construction: None,
             draw_line_curve_mode: None,
@@ -4349,6 +4379,7 @@ mod tests {
             tool: Tool::Select,
             in_drawing_workbench: false,
             draw_rect_construction: None,
+            rect_anchor: None,
             draw_line_construction: None,
             draw_circle_construction: None,
             draw_line_curve_mode: None,
@@ -4637,6 +4668,7 @@ mod tests {
             ContextPaneContent {
                 name: None,
                 curve_mode: None,
+            rect_anchor: None,
                 tangent_constraint: None,
                 construction: None,
                 constraints: None,
@@ -4700,6 +4732,7 @@ mod tests {
             tool: Tool::Select,
             in_drawing_workbench: false,
             draw_rect_construction: Some(true),
+            rect_anchor: None,
             draw_line_construction: None,
             draw_circle_construction: None,
             draw_line_curve_mode: None,
@@ -4750,6 +4783,7 @@ mod tests {
             ContextPaneContent {
                 name: None,
                 curve_mode: None,
+            rect_anchor: None,
                 tangent_constraint: None,
                 construction: Some(ConstructionControl {
                     value: TriState::On,
@@ -4816,6 +4850,7 @@ mod tests {
             tool: Tool::Line,
             in_drawing_workbench: false,
             draw_rect_construction: None,
+            rect_anchor: None,
             draw_line_construction: Some(false),
             draw_circle_construction: None,
             draw_line_curve_mode: Some(true),
@@ -4879,6 +4914,7 @@ mod tests {
                     element: SceneElement::Line(0),
                 }),
                 curve_mode: None,
+            rect_anchor: None,
                 tangent_constraint: None,
                 construction: Some(ConstructionControl {
                     value: TriState::Off,
@@ -4998,6 +5034,7 @@ mod tests {
             tool: Tool::Select,
             in_drawing_workbench: false,
             draw_rect_construction: Some(false),
+            rect_anchor: None,
             draw_line_construction: None,
             draw_circle_construction: None,
             draw_line_curve_mode: None,
@@ -5062,6 +5099,7 @@ mod tests {
             tool: Tool::Select,
             in_drawing_workbench: false,
             draw_rect_construction: Some(true),
+            rect_anchor: None,
             draw_line_construction: None,
             draw_circle_construction: None,
             draw_line_curve_mode: None,
@@ -5114,6 +5152,7 @@ mod tests {
                     element: SceneElement::Line(0),
                 }),
                 curve_mode: None,
+            rect_anchor: None,
                 tangent_constraint: None,
                 construction: Some(ConstructionControl {
                     value: TriState::On,
@@ -5171,6 +5210,7 @@ mod tests {
             tool: Tool::Constraint,
             in_drawing_workbench: false,
             draw_rect_construction: None,
+            rect_anchor: None,
             draw_line_construction: None,
             draw_circle_construction: None,
             draw_line_curve_mode: None,
