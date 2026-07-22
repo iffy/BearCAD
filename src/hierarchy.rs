@@ -2376,6 +2376,16 @@ fn styled_label(label: &str, style: RowStyle) -> RichText {
     }
 }
 
+/// Paint the "active" marker (#429) inline as a small filled circle in the accent colour,
+/// drawn by hand rather than as a `●` glyph: the default font lacks that codepoint, so the
+/// glyph rendered as a tofu box before the active component/root name (#520). Allocates
+/// roughly the footprint the `● ` prefix took so the label lines up as before.
+fn active_marker_dot(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 14.0), egui::Sense::hover());
+    ui.painter()
+        .circle_filled(rect.center(), 3.0, crate::theme::FOCUS_ACCENT);
+}
+
 fn icon_tint_for_row_style(style: RowStyle) -> Color32 {
     match style {
         RowStyle::Selected | RowStyle::InContext | RowStyle::Normal => Color32::WHITE,
@@ -3487,9 +3497,10 @@ fn show_component_row(
         );
         let label = node_label(doc, HierarchyNode::Component(ci));
         // The active component (#429) — where new elements land — reads in the accent
-        // colour with a dot marker.
+        // colour with a painted dot marker (#520).
         let text = if active_component == Some(ci) {
-            RichText::new(format!("● {label}")).color(crate::theme::FOCUS_ACCENT)
+            active_marker_dot(ui);
+            RichText::new(label).color(crate::theme::FOCUS_ACCENT)
         } else {
             styled_label(&label, style)
         };
@@ -3589,11 +3600,16 @@ fn show_row(
             if let Some(icon) = icon_for_hierarchy_node(doc, node) {
                 ui.add(egui::Image::new(sized_texture(ui.ctx(), icon)));
             }
-            let text = if active_component.is_none() && doc.components.iter().any(|c| !c.deleted)
-            {
+            let active_root =
+                active_component.is_none() && doc.components.iter().any(|c| !c.deleted);
+            if active_root {
                 // With components present, mark where new elements land (#429): the
-                // document root, unless a component is active.
-                RichText::new(format!("● {}", node_label(doc, node)))
+                // document root, unless a component is active. Painted dot, not a `●`
+                // glyph, so it renders even when the font lacks that codepoint (#520).
+                active_marker_dot(ui);
+            }
+            let text = if active_root {
+                RichText::new(node_label(doc, node))
                     .color(crate::theme::FOCUS_ACCENT)
                     .strong()
             } else {
