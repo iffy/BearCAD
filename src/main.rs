@@ -3314,6 +3314,111 @@ impl App {
         self.state.apply(action);
     }
 
+    /// Floating distance field next to the offset push-pull gizmo (#493), like extrude.
+    fn show_sketch_offset_distance_input(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    ) {
+        let pos = {
+            let Some(co) = self.state.creating_sketch_offset.as_ref() else {
+                return;
+            };
+            if !co.has_targets() {
+                return;
+            }
+            let Some(session) = self.state.sketch_session else {
+                return;
+            };
+            let Some(frame) = sketch_geometry_frame(&self.state.doc, session.sketch) else {
+                return;
+            };
+            let Some((anchor, normal)) = co.gizmo_frame(&self.state.doc) else {
+                return;
+            };
+            let dist = co.distance_mm(&self.state.doc).unwrap_or(0.0);
+            let handle_uv = anchor + normal * dist;
+            let handle_w = local_to_world(&frame, handle_uv.x, handle_uv.y);
+            project(handle_w).map(|p| p + egui::vec2(14.0, -12.0))
+        };
+        let Some(pos) = pos else {
+            return;
+        };
+        let ctx = ui.ctx();
+        let id = egui::Id::new(SKETCH_OFFSET_DISTANCE_FIELD_ID);
+        let mut commit = false;
+        if !ctx.memory(|m| m.has_focus(id)) && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+            if self
+                .state
+                .creating_sketch_offset
+                .as_ref()
+                .is_some_and(|c| c.has_targets())
+            {
+                self.commit_sketch_offset();
+            }
+            return;
+        }
+        if !ctx.memory(|m| m.has_focus(id)) {
+            let typed: String = ctx.input(|i| {
+                i.events
+                    .iter()
+                    .filter_map(|e| match e {
+                        egui::Event::Text(t) => Some(t.as_str()),
+                        _ => None,
+                    })
+                    .collect()
+            });
+            let typed: String = typed
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || "._-+*/()= ".contains(*c))
+                .collect();
+            if !typed.is_empty() {
+                if let Some(co) = self.state.creating_sketch_offset.as_mut() {
+                    co.distance = typed;
+                }
+            }
+        }
+        if let Some(mut text) = self
+            .state
+            .creating_sketch_offset
+            .as_ref()
+            .map(|c| c.distance.clone())
+        {
+            let mut edited = false;
+            egui::Area::new(egui::Id::new("sketch_offset_distance_area"))
+                .fixed_pos(pos)
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    let resp = crate::expression_input::ValueInput::from_id(
+                        id,
+                        crate::expression_input::ValueKind::Length,
+                    )
+                    .width(72.0)
+                    .show(ui, &mut text, &self.state.doc);
+                    if resp.changed() {
+                        edited = true;
+                    }
+                    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        commit = true;
+                    }
+                });
+            if edited {
+                if let Some(co) = self.state.creating_sketch_offset.as_mut() {
+                    co.distance = text;
+                }
+            }
+            if commit
+                && self
+                    .state
+                    .creating_sketch_offset
+                    .as_ref()
+                    .is_some_and(|c| c.has_targets())
+            {
+                self.commit_sketch_offset();
+            }
+        }
+    }
+
     fn edited_operation_output_bodies(&self) -> Vec<usize> {
         let s = &self.state;
         // Editing an extrusion: its body (bodies whose source owns that extrusion).
@@ -6314,8 +6419,16 @@ impl eframe::App for App {
                     }
                 }),
                 sketch_offset: self.state.creating_sketch_offset.as_ref().map(|c| {
+                    let mut picked = Vec::new();
+                    for &li in &c.line_targets {
+                        picked.push(SceneElement::Line(li));
+                    }
+                    for &ci in &c.circle_targets {
+                        picked.push(SceneElement::Circle(ci));
+                    }
                     context::SketchOffsetControl {
-                        entity_count: c.line_targets.len() + c.circle_targets.len(),
+                        entity_count: picked.len(),
+                        picked,
                         distance: c.distance.clone(),
                         construction: c.construction,
                         editing: c.editing.is_some(),
@@ -7088,6 +7201,19 @@ impl eframe::App for App {
                                 context::SketchOffsetEdit::Distance(v) => co.distance = v,
                                 context::SketchOffsetEdit::Construction(v) => {
                                     co.construction = v
+                                }
+                                context::SketchOffsetEdit::Remove(el) => match el {
+                                    SceneElement::Line(li) => {
+                                        co.line_targets.retain(|&x| x != li);
+                                    }
+                                    SceneElement::Circle(ci) => {
+                                        co.circle_targets.retain(|&x| x != ci);
+                                    }
+                                    _ => {}
+                                },
+                                context::SketchOffsetEdit::Clear => {
+                                    co.line_targets.clear();
+                                    co.circle_targets.clear();
                                 }
                                 _ => unreachable!(),
                             }
@@ -10044,6 +10170,7 @@ const EXTRUDE_DISTANCE_FIELD_ID: &str = "extrude_distance_input";
 
 /// egui id of the floating chamfer/fillet amount text field.
 const VERTEX_TREATMENT_AMOUNT_FIELD_ID: &str = "vertex_treatment_amount_input";
+const SKETCH_OFFSET_DISTANCE_FIELD_ID: &str = "sketch_offset_distance_input";
 
 /// egui id of the floating 3D edge chamfer/fillet amount text field (#77).
 const EDGE_TREATMENT_AMOUNT_FIELD_ID: &str = "edge_treatment_amount_input";
@@ -13923,6 +14050,7 @@ impl App {
                 self.handle_sketch_offset_tool(
                     ui, &painter, &project, pointer_screen, &cam, viewport, &vp, session,
                 );
+                self.show_sketch_offset_distance_input(ui, &project);
             } else if let Some(pp) = pointer_screen {
                 // Outside a sketch the Offset tool clicks a face to begin sketching there,
                 // like the draw tools.

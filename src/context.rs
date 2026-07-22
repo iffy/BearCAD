@@ -291,6 +291,8 @@ pub enum SketchRepeatEdit {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SketchOffsetControl {
     pub entity_count: usize,
+    /// Lines/circles currently in the offset set (#493), for the element picker.
+    pub picked: Vec<SceneElement>,
     /// Signed distance expression (positive grows a closed loop/circle).
     pub distance: String,
     pub construction: bool,
@@ -306,6 +308,10 @@ pub enum SketchOffsetEdit {
     Commit,
     /// Re-open a committed offset op for editing.
     EditStart(usize),
+    /// Remove one picked entity from the offset set (#493).
+    Remove(SceneElement),
+    /// Clear all picked entities (#493).
+    Clear,
 }
 
 /// One edit from the Repeat context section (#257): the three interlinked variables and the two
@@ -2666,11 +2672,32 @@ pub fn show_pane(
         any_control = true;
         ui.separator();
         section_label(ui, if control.editing { "Edit offset" } else { "Offset" });
-        ui.label(
-            egui::RichText::new(format!("{} entities picked", control.entity_count))
-                .color(egui::Color32::from_gray(140))
-                .size(11.0),
+        // Element picker of lines/circles in the offset set (#493).
+        let mut picker = ElementPicker::new(
+            ElementFilter::kinds(&[ElementKind::Line, ElementKind::Circle]),
+            PickLimit::Infinite,
         );
+        picker.set_focused(true);
+        picker.set_picked(control.picked.iter().cloned());
+        labeled_row_top(ui, "Entities", |ui| {
+            ui.add_enabled_ui(controls_enabled, |ui| {
+                if let Some(event) =
+                    crate::element_picker::show(ui, &picker, doc, "sketch_offset_picker")
+                {
+                    match event {
+                        crate::element_picker::PickerEvent::Focus => {}
+                        crate::element_picker::PickerEvent::Remove(i) => {
+                            if let Some(el) = control.picked.get(i).cloned() {
+                                on_sketch_offset_edit(SketchOffsetEdit::Remove(el));
+                            }
+                        }
+                        crate::element_picker::PickerEvent::Clear => {
+                            on_sketch_offset_edit(SketchOffsetEdit::Clear);
+                        }
+                    }
+                }
+            });
+        });
         let mut pending: Option<SketchOffsetEdit> = None;
         ui.horizontal(|ui| {
             ui.label("Distance");
