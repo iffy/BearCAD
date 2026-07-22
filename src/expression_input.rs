@@ -376,12 +376,15 @@ fn autocomplete_handle_keys_with(
         ui_state.highlight = (ui_state.highlight + 1).min(candidates.len() - 1);
         ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::ArrowDown));
     } else if space || tab {
-        // Space or Tab accepts the highlighted (top by default) candidate and keeps editing.
+        // Space or Tab accepts the highlighted (top by default) candidate and keeps editing
+        // with the caret at the end of the completed name (#50/#507).
         let name = candidates[ui_state.highlight].name.clone();
         apply_parameter_completion(text, token, &name, &mut text_state);
         text_state.store(ctx, id);
         let key = if space { Key::Space } else { Key::Tab };
         ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key));
+        // Keep focus on this field even if Tab's focus-navigation already fired this frame.
+        ctx.memory_mut(|m| m.request_focus(id));
         changed = true;
     } else if enter {
         // Enter accepts the highlighted candidate too, but is left unconsumed so the field's
@@ -512,12 +515,15 @@ pub fn show_length_expression_text_edit(
     let invalid = !errors.is_empty();
     let output = length_expression_text_edit_frame(ui, id, invalid)
         .show(ui, |ui| {
+            // lock_focus so Tab is available for parameter autocomplete (#507) instead of
+            // moving keyboard focus to the next widget (egui's singleline default).
             let mut edit = TextEdit::singleline(text)
                 .id(id)
                 .hint_text(hint_text)
                 .desired_width(f32::INFINITY)
                 .frame(false)
-                .margin(Margin::ZERO);
+                .margin(Margin::ZERO)
+                .lock_focus(true);
             if invalid {
                 edit = edit.text_color(INVALID_TEXT);
             }
@@ -916,6 +922,27 @@ mod tests {
         let mut state = TextEditState::default();
         apply_parameter_completion(&mut text, token, "width", &mut state);
         assert_eq!(text, "10mm + width");
+    }
+
+    /// #507: after Tab completes a parameter, the caret sits at the end so typing `/2`
+    /// appends rather than replacing the completed name.
+    #[test]
+    fn apply_parameter_completion_places_cursor_at_end_of_name() {
+        let mut text = "larg".to_string();
+        let token = identifier_token_at_cursor(&text, text.chars().count()).unwrap();
+        let mut state = TextEditState::default();
+        apply_parameter_completion(&mut text, token, "largeWidth", &mut state);
+        assert_eq!(text, "largeWidth");
+        let cursor = state
+            .cursor
+            .char_range()
+            .expect("cursor after completion")
+            .primary
+            .index;
+        assert_eq!(cursor, "largeWidth".chars().count());
+        // Simulate appending `/2` at that caret (what TextEdit does for unselected input).
+        text.insert_str(cursor, "/2");
+        assert_eq!(text, "largeWidth/2");
     }
 
     #[test]

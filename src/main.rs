@@ -2676,8 +2676,11 @@ impl App {
         // Typing while the field is unfocused grabs focus and overwrites the current value,
         // so the user can just start typing a depth. Any expression character is accepted —
         // not only digits — so a unit or parameter expression like `15mm` or `width=2` can be
-        // typed from the first keystroke (#196).
-        if !ctx.memory(|m| m.has_focus(id)) {
+        // typed from the first keystroke (#196). Skip when another field (e.g. Parameters
+        // name) has the keyboard (#506).
+        let field_focused = ctx.memory(|m| m.has_focus(id));
+        let other_wants_kb = ctx.wants_keyboard_input() && !field_focused;
+        if should_grab_unfocused_tool_typing(field_focused, other_wants_kb) {
             let typed: String = ctx.input(|i| {
                 i.events
                     .iter()
@@ -2707,6 +2710,7 @@ impl App {
         {
             let mut edited = false;
             let mut focus_landed = false;
+            let mut drop_pending = false;
             egui::Area::new(egui::Id::new("extrude_distance_area"))
                 .fixed_pos(pos)
                 .order(egui::Order::Foreground)
@@ -2721,7 +2725,10 @@ impl App {
                         if resp.changed() {
                             edited = true;
                         }
-                        if want_focus {
+                        let other_focused = ctx.memory(|m| {
+                            m.focused().is_some_and(|f| f != id)
+                        });
+                        if should_request_pending_tool_focus(want_focus, other_focused) {
                             // Clicking a face focuses the field with the default distance
                             // selected (#437), so typing `4ft` replaces it immediately.
                             // Focus can take a frame to land (the face click itself clears
@@ -2740,6 +2747,9 @@ impl App {
                                 st.store(ctx, id);
                                 focus_landed = true;
                             }
+                        } else if want_focus && other_focused {
+                            // User moved focus to the parameter pane / another field (#506).
+                            drop_pending = true;
                         }
                         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             commit = true;
@@ -2760,7 +2770,7 @@ impl App {
                 if edited {
                     ce.user_edited = true;
                 }
-                if focus_landed {
+                if focus_landed || drop_pending {
                     ce.pending_focus = false;
                 }
             }
@@ -2972,7 +2982,10 @@ impl App {
         }
 
         // Typing a number while unfocused grabs focus and overwrites the current value.
-        if !ctx.memory(|m| m.has_focus(id)) {
+        // Skip when another field has the keyboard (#506).
+        let field_focused = ctx.memory(|m| m.has_focus(id));
+        let other_wants_kb = ctx.wants_keyboard_input() && !field_focused;
+        if should_grab_unfocused_tool_typing(field_focused, other_wants_kb) {
             let typed: String = ctx.input(|i| {
                 i.events
                     .iter()
@@ -3005,6 +3018,7 @@ impl App {
                 VertexTreatmentKind::Fillet => "mm r",
             };
             let mut edited = false;
+            let mut clear_pending = false;
             egui::Area::new(egui::Id::new("vertex_treatment_amount_area"))
                 .fixed_pos(pos)
                 .order(egui::Order::Foreground)
@@ -3019,8 +3033,13 @@ impl App {
                         if resp.changed() {
                             edited = true;
                         }
-                        if want_focus {
+                        let other_focused =
+                            ctx.memory(|m| m.focused().is_some_and(|f| f != id));
+                        if should_request_pending_tool_focus(want_focus, other_focused) {
                             resp.request_focus();
+                            clear_pending = true;
+                        } else if want_focus && other_focused {
+                            clear_pending = true;
                         }
                         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             commit = true;
@@ -3033,7 +3052,7 @@ impl App {
                 if edited {
                     cvt.user_edited = true;
                 }
-                if want_focus {
+                if clear_pending {
                     cvt.pending_focus = false;
                 }
             }
@@ -4997,20 +5016,28 @@ impl App {
             .map(|cr| (cr.text.clone(), cr.pending_focus))
         {
             let mut edited = false;
+            let mut clear_pending = false;
+            let revolve_id = egui::Id::new(REVOLVE_ANGLE_FIELD_ID);
             egui::Area::new(egui::Id::new("revolve_angle_input"))
                 .fixed_pos(pos)
                 .show(ui.ctx(), |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
                         ui.horizontal(|ui| {
                             let response = crate::expression_input::ValueInput::from_id(
-                                egui::Id::new(REVOLVE_ANGLE_FIELD_ID),
+                                revolve_id,
                                 crate::expression_input::ValueKind::Angle,
                             )
                             .hint("360")
                             .width(64.0)
                             .show(ui, &mut text, &self.state.doc);
-                            if want_focus {
+                            let other_focused = ui.ctx().memory(|m| {
+                                m.focused().is_some_and(|f| f != revolve_id)
+                            });
+                            if should_request_pending_tool_focus(want_focus, other_focused) {
                                 response.request_focus();
+                                clear_pending = true;
+                            } else if want_focus && other_focused {
+                                clear_pending = true;
                             }
                             if response.changed() {
                                 edited = true;
@@ -5029,7 +5056,7 @@ impl App {
                 if edited {
                     cr.user_edited = true;
                 }
-                if want_focus {
+                if clear_pending {
                     cr.pending_focus = false;
                 }
             }
@@ -5263,7 +5290,9 @@ impl App {
             commit = true;
         }
 
-        if !ctx.memory(|m| m.has_focus(id)) {
+        let field_focused = ctx.memory(|m| m.has_focus(id));
+        let other_wants_kb = ctx.wants_keyboard_input() && !field_focused;
+        if should_grab_unfocused_tool_typing(field_focused, other_wants_kb) {
             let typed: String = ctx.input(|i| {
                 i.events
                     .iter()
@@ -5296,6 +5325,7 @@ impl App {
                 VertexTreatmentKind::Fillet => "mm r",
             };
             let mut edited = false;
+            let mut clear_pending = false;
             egui::Area::new(egui::Id::new("edge_treatment_amount_area"))
                 .fixed_pos(pos)
                 .order(egui::Order::Foreground)
@@ -5310,8 +5340,13 @@ impl App {
                         if resp.changed() {
                             edited = true;
                         }
-                        if want_focus {
+                        let other_focused =
+                            ctx.memory(|m| m.focused().is_some_and(|f| f != id));
+                        if should_request_pending_tool_focus(want_focus, other_focused) {
                             resp.request_focus();
+                            clear_pending = true;
+                        } else if want_focus && other_focused {
+                            clear_pending = true;
                         }
                         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             commit = true;
@@ -5324,7 +5359,7 @@ impl App {
                 if edited {
                     cet.user_edited = true;
                 }
-                if want_focus {
+                if clear_pending {
                     cet.pending_focus = false;
                 }
             }
@@ -9157,6 +9192,19 @@ fn should_select_all_rect_value(
     gained_focus
         || (is_focus_target && pending_focus && has_focus)
         || (is_focus_target && has_focus && !user_edited)
+}
+
+/// Unfocused type-to-edit for floating tool fields (extrude depth, etc.): only grab
+/// keystrokes when *no* other widget wants the keyboard (#506). Otherwise typing a
+/// parameter name steals into the tool field every character.
+fn should_grab_unfocused_tool_typing(field_has_focus: bool, wants_keyboard_input: bool) -> bool {
+    !field_has_focus && !wants_keyboard_input
+}
+
+/// Keep requesting focus for a floating tool field only until it lands — never
+/// steal focus back from another focused widget (parameter pane, etc.) (#506).
+fn should_request_pending_tool_focus(pending_focus: bool, other_widget_focused: bool) -> bool {
+    pending_focus && !other_widget_focused
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -17865,6 +17913,25 @@ mod tests {
     #[test]
     fn select_all_while_focused_and_not_user_edited() {
         assert!(should_select_all_rect_value(false, true, true, false, false, false));
+    }
+
+    /// #506: typing into the parameter pane (or any other field) must not feed the
+    /// floating extrude/revolve amount field.
+    #[test]
+    fn unfocused_tool_typing_skips_when_another_widget_wants_keyboard() {
+        assert!(should_grab_unfocused_tool_typing(false, false));
+        assert!(!should_grab_unfocused_tool_typing(true, false));
+        assert!(!should_grab_unfocused_tool_typing(false, true));
+        assert!(!should_grab_unfocused_tool_typing(true, true));
+    }
+
+    /// #506: pending focus must not yank keyboard focus off the parameter pane.
+    #[test]
+    fn pending_tool_focus_does_not_steal_from_other_widgets() {
+        assert!(should_request_pending_tool_focus(true, false));
+        assert!(!should_request_pending_tool_focus(true, true));
+        assert!(!should_request_pending_tool_focus(false, false));
+        assert!(!should_request_pending_tool_focus(false, true));
     }
 
     #[test]
