@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="#7d838c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
   <!-- A square with one corner chamfered (#131): a light fill covers the whole square minus
        the cut corner, and the outline is drawn only on the two edges leading into the
        chamfer (top, left) plus the diagonal cut itself — the far edges (bottom, right) are
@@ -6,8 +6,8 @@
        cut corner is the clear focal point. -->
   <path
     d="M 19 6 L 26 6 L 26 26 L 6 26 L 6 19 Z"
-    fill="#7d838c"
-    fill-opacity="0.35"
+    fill="currentColor"
+    fill-opacity="0.8"
     stroke="none"
   />
   <path d="M 19 6 L 26 6" />

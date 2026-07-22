@@ -7,7 +7,7 @@
   <path
     d="M 19 6 L 26 6 L 26 26 L 6 26 L 6 19 A 13 13 0 0 1 19 6 Z"
     fill="currentColor"
-    fill-opacity="0.35"
+    fill-opacity="0.8"
     stroke="none"
   />
   <path d="M 19 6 L 26 6" />
