@@ -730,7 +730,7 @@ pub fn value_input_computed_display(
 
 /// Canonical form for comparing a typed value against its computed display: lowercase,
 /// whitespace dropped, and the leading number normalized (`45.0 deg` == `45deg`).
-fn canonical_value_text(s: &str) -> String {
+pub(crate) fn canonical_value_text(s: &str) -> String {
     let squashed: String = s
         .chars()
         .filter(|c| !c.is_whitespace())

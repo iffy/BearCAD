@@ -81,10 +81,26 @@ pub fn format_parameter_value_display(doc: &Document, expression: &str) -> Strin
     }
     match eval_parameter_in_doc(expr, doc) {
         Some(EvaluatedParameter::LengthMm(v)) => {
-            format!("{} ({expr})", format_length_display_in(v, doc.default_length_unit))
+            let computed = format_length_display_in(v, doc.default_length_unit);
+            // #484: when the typed text is numerically identical to the computed
+            // display (e.g. `10mm` vs `10.0 mm`), show only the stored expression.
+            if crate::expression_input::canonical_value_text(expr)
+                == crate::expression_input::canonical_value_text(&computed)
+            {
+                expr.to_string()
+            } else {
+                format!("{} ({expr})", computed)
+            }
         }
         Some(EvaluatedParameter::AngleRad(v)) => {
-            format!("{} ({expr})", format_angle_display_in(v, doc.default_angle_unit))
+            let computed = format_angle_display_in(v, doc.default_angle_unit);
+            if crate::expression_input::canonical_value_text(expr)
+                == crate::expression_input::canonical_value_text(&computed)
+            {
+                expr.to_string()
+            } else {
+                format!("{} ({expr})", computed)
+            }
         }
         None => expr.to_string(),
     }
@@ -1526,6 +1542,24 @@ mod tests {
         let doc = Document::default();
         assert_eq!(format_parameter_value_display(&doc, "10mm"), "10mm");
         assert_eq!(format_parameter_value_display(&doc, "50"), "50");
+    }
+
+    /// #484: a bare angle literal is numerically identical to its computed display, so
+    /// show only one form — not `92.0 deg (92deg)`.
+    #[test]
+    fn format_parameter_value_display_hides_identical_angle_literal() {
+        let doc = Document::default();
+        assert_eq!(format_parameter_value_display(&doc, "92deg"), "92deg");
+        assert_eq!(format_parameter_value_display(&doc, "45 deg"), "45 deg");
+        assert_eq!(format_parameter_value_display(&doc, "90.0deg"), "90.0deg");
+        // Unit conversion still dual-displays when the typed unit differs from default.
+        assert_eq!(
+            format_parameter_value_display(&doc, "1rad"),
+            format!(
+                "{} (1rad)",
+                crate::value::format_angle_display_in(1.0, doc.default_angle_unit)
+            )
+        );
     }
 
     #[test]
