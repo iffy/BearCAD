@@ -6117,14 +6117,9 @@ impl eframe::App for App {
                 }
                 self.tool_button(ui, icons::IconId::Plane, Tool::ConstructionPlane, "Plane");
                 self.tool_button(ui, icons::IconId::Extrude, Tool::Extrude, "Extrude");
+                self.tool_button(ui, icons::IconId::Sweep, Tool::Sweep, "Sweep");
                 self.tool_button(ui, icons::IconId::Loft, Tool::Loft, "Loft");
                 self.tool_button(ui, icons::IconId::Revolve, Tool::Revolve, "Revolve");
-                self.tool_button(
-                    ui,
-                    icons::IconId::Sweep,
-                    Tool::Sweep,
-                    "Sweep",
-                );
                 self.tool_button(ui, icons::IconId::Combine, Tool::Combine, "Combine");
                 self.tool_button(ui, icons::IconId::Move, Tool::Move, "Move");
                 self.tool_button(ui, icons::IconId::Mirror, Tool::Mirror, "Mirror");
