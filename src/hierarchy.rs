@@ -59,6 +59,9 @@ pub enum HierarchyNode {
     SketchText(usize),
     /// A slice operation on bodies (Slice tool); its fragment bodies nest under it.
     SliceOp(usize),
+    /// An edge chamfer/fillet operation on bodies (#531); its beveled output bodies nest under
+    /// it and its input bodies + treated edges feed it as graph inputs.
+    EdgeTreatmentOp(usize),
     /// A revolved solid (Revolve tool); its output body nests under it (#211).
     Revolution(usize),
     /// A sweep (Sweep tool); its output body nests under it.
@@ -146,6 +149,8 @@ pub enum SceneElement {
     SketchText(usize),
     /// A slice operation on bodies (Slice tool).
     SliceOp(usize),
+    /// An edge chamfer/fillet operation on bodies (#531).
+    EdgeTreatmentOp(usize),
     /// A revolved solid (Revolve tool, #211).
     Revolution(usize),
     /// A sweep (Sweep tool).
@@ -205,6 +210,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::SketchSliceOp(i) => SceneElement::SketchSliceOp(i),
         HierarchyNode::SketchText(i) => SceneElement::SketchText(i),
         HierarchyNode::SliceOp(i) => SceneElement::SliceOp(i),
+        HierarchyNode::EdgeTreatmentOp(i) => SceneElement::EdgeTreatmentOp(i),
         HierarchyNode::Revolution(i) => SceneElement::Revolution(i),
         HierarchyNode::SweepOp(i) => SceneElement::SweepOp(i),
         HierarchyNode::Component(i) => SceneElement::Component(i),
@@ -348,6 +354,7 @@ impl ElementVisibility {
                 .get(index)
                 .is_some_and(|t| self.effective_visible(doc, SceneElement::Sketch(t.sketch))),
             SceneElement::SliceOp(_) => true,
+            SceneElement::EdgeTreatmentOp(_) => true,
             SceneElement::Revolution(_) => true,
             SceneElement::SweepOp(_) => true,
             // The origin is always visible while sketching (#189).
@@ -569,6 +576,16 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
         }
         for &bi in &op.targets {
             edges.push((HierarchyNode::Body(bi), HierarchyNode::SliceOp(oi)));
+        }
+    }
+    // An edge-treatment op consumes the input bodies whose edges it bevels (#531). The treated
+    // edges themselves have no persistent node, so the body carries the dependency.
+    for (oi, op) in doc.edge_treatment_ops.iter().enumerate() {
+        if op.deleted {
+            continue;
+        }
+        for &bi in &op.targets {
+            edges.push((HierarchyNode::Body(bi), HierarchyNode::EdgeTreatmentOp(oi)));
         }
     }
 
@@ -1156,6 +1173,7 @@ fn build_creation_ranks(doc: &Document) -> CreationRanks {
             | ShapeKind::MirrorOperation
             | ShapeKind::RepeatOperation
             | ShapeKind::SliceOperation
+            | ShapeKind::EdgeTreatmentOperation
             | ShapeKind::SketchRepeatOperation
             | ShapeKind::SketchSliceOperation
             | ShapeKind::SketchOffsetOperation
@@ -1191,6 +1209,7 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
         SceneElement::SketchSliceOp(i) => HierarchyNode::SketchSliceOp(*i),
         SceneElement::SketchText(i) => HierarchyNode::SketchText(*i),
         SceneElement::SliceOp(i) => HierarchyNode::SliceOp(*i),
+        SceneElement::EdgeTreatmentOp(i) => HierarchyNode::EdgeTreatmentOp(*i),
         SceneElement::Revolution(i) => HierarchyNode::Revolution(*i),
         SceneElement::SweepOp(i) => HierarchyNode::SweepOp(*i),
         SceneElement::Component(i) => HierarchyNode::Component(*i),
@@ -1273,6 +1292,7 @@ fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
         HierarchyNode::SketchSliceOp(_) => usize::MAX,
         HierarchyNode::SketchText(_) => usize::MAX,
         HierarchyNode::SliceOp(_) => usize::MAX,
+        HierarchyNode::EdgeTreatmentOp(_) => usize::MAX,
         HierarchyNode::Revolution(_) => usize::MAX,
         HierarchyNode::SweepOp(_) => usize::MAX,
         HierarchyNode::Loft(_) => usize::MAX,
@@ -1354,6 +1374,8 @@ pub fn build_hierarchy(
                     | crate::model::BodySource::Moved { .. }
                     | crate::model::BodySource::Repeated { .. }
                     | crate::model::BodySource::Sliced { .. }
+                    // A beveled body nests under its edge-treatment op (#531), not the root.
+                    | crate::model::BodySource::EdgeTreated { .. }
                     | crate::model::BodySource::Loft(_)
                     // A revolved body nests under its Revolution node (#305), not the root.
                     | crate::model::BodySource::Revolve(_)
@@ -1586,6 +1608,26 @@ pub fn build_hierarchy(
             .collect();
         roots.push(HierarchyEntry {
             node: HierarchyNode::SliceOp(oi),
+            children,
+        });
+    }
+    // Edge chamfer/fillet operations (#531): the operation is its own element, with its beveled
+    // output bodies nested beneath it (the shadowed input bodies stay listed, dimmed).
+    for (oi, op) in doc.edge_treatment_ops.iter().enumerate() {
+        if op.deleted {
+            continue;
+        }
+        let children = op
+            .outputs
+            .iter()
+            .filter(|&&bi| doc.bodies.get(bi).is_some_and(|b| !b.deleted))
+            .map(|&bi| HierarchyEntry {
+                node: HierarchyNode::Body(bi),
+                children: Vec::new(),
+            })
+            .collect();
+        roots.push(HierarchyEntry {
+            node: HierarchyNode::EdgeTreatmentOp(oi),
             children,
         });
     }
@@ -1886,6 +1928,7 @@ impl ElementFilter {
             | HierarchyNode::SketchMirrorOp(_)
             | HierarchyNode::SketchSliceOp(_)
             | HierarchyNode::SliceOp(_)
+            | HierarchyNode::EdgeTreatmentOp(_)
             | HierarchyNode::Revolution(_)
             | HierarchyNode::SweepOp(_)
             | HierarchyNode::Loft(_) => self.operations,
@@ -1979,6 +2022,7 @@ pub fn component_member_element(
         CM::MirrorOp => SceneElement::MirrorOp(index),
         CM::RepeatOp => SceneElement::RepeatOp(index),
         CM::SliceOp => SceneElement::SliceOp(index),
+        CM::EdgeTreatmentOp => SceneElement::EdgeTreatmentOp(index),
         CM::Revolution => SceneElement::Revolution(index),
         CM::Sweep => SceneElement::SweepOp(index),
         CM::Loft | CM::Drawing => return None,
@@ -2024,6 +2068,9 @@ pub fn owning_component(doc: &Document, element: &SceneElement) -> Option<usize>
                 BodySource::Mirrored { op, .. } => doc.component_of(CM::MirrorOp, *op),
                 BodySource::Boolean { op, .. } => doc.component_of(CM::BooleanOp, *op),
                 BodySource::Sliced { op, .. } => doc.component_of(CM::SliceOp, *op),
+                BodySource::EdgeTreated { op, .. } => {
+                    doc.component_of(CM::EdgeTreatmentOp, *op)
+                }
                 BodySource::Solid { .. } => None,
             }
         }),
@@ -2036,6 +2083,7 @@ pub fn owning_component(doc: &Document, element: &SceneElement) -> Option<usize>
         SceneElement::MirrorOp(i) => doc.component_of(CM::MirrorOp, *i),
         SceneElement::RepeatOp(i) => doc.component_of(CM::RepeatOp, *i),
         SceneElement::SliceOp(i) => doc.component_of(CM::SliceOp, *i),
+        SceneElement::EdgeTreatmentOp(i) => doc.component_of(CM::EdgeTreatmentOp, *i),
         SceneElement::Revolution(i) => doc.component_of(CM::Revolution, *i),
         SceneElement::SweepOp(i) => doc.component_of(CM::Sweep, *i),
         // In-sketch geometry cascades through its sketch's plane (handled by the sketch's
@@ -2110,6 +2158,7 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
             .get(index)
             .map(|t| SceneElement::Sketch(t.sketch)),
         SceneElement::SliceOp(_) => None,
+        SceneElement::EdgeTreatmentOp(_) => None,
         SceneElement::Revolution(_) => None,
         SceneElement::SweepOp(_) => None,
     }
@@ -2307,6 +2356,14 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         }
         SceneElement::SliceOp(index) => {
             if let Some(op) = doc.slice_ops.get(index) {
+                for &output in &op.outputs {
+                    out.insert(SceneElement::Body(output));
+                    collect_descendants(doc, SceneElement::Body(output), out);
+                }
+            }
+        }
+        SceneElement::EdgeTreatmentOp(index) => {
+            if let Some(op) = doc.edge_treatment_ops.get(index) {
                 for &output in &op.outputs {
                     out.insert(SceneElement::Body(output));
                     collect_descendants(doc, SceneElement::Body(output), out);
@@ -2636,6 +2693,12 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         HierarchyNode::SketchSliceOp(_) => IconId::Slice,
         HierarchyNode::SketchText(_) => IconId::Text,
         HierarchyNode::SliceOp(_) => IconId::Slice,
+        HierarchyNode::EdgeTreatmentOp(index) => {
+            match doc.edge_treatment_ops.get(index).map(|o| o.kind) {
+                Some(crate::model::VertexTreatmentKind::Fillet) => IconId::Fillet,
+                _ => IconId::Chamfer,
+            }
+        }
         HierarchyNode::Revolution(_) => IconId::Revolve,
         HierarchyNode::SweepOp(_) => IconId::Sweep,
         HierarchyNode::Loft(_) => IconId::Loft,
@@ -2947,6 +3010,7 @@ pub fn show_pane(
     on_import_image_on_plane: &mut impl FnMut(usize),
     on_edit_extrusion: &mut impl FnMut(usize),
     on_edit_edge_treatment: &mut impl FnMut(usize, usize),
+    on_edit_edge_treatment_op: &mut impl FnMut(usize),
     on_edit_drawing: &mut impl FnMut(usize),
     on_select_drawing_element: &mut impl FnMut(HierarchyNode),
     on_hover_drawing_element: &mut impl FnMut(Option<HierarchyNode>),
@@ -3154,6 +3218,7 @@ pub fn show_pane(
                         on_import_image_on_plane,
                         on_edit_extrusion,
                         on_edit_edge_treatment,
+                        on_edit_edge_treatment_op,
                         on_edit_drawing,
                         on_select_drawing_element,
                         on_hover_drawing_element,
@@ -3862,6 +3927,7 @@ fn show_row(
     on_import_image_on_plane: &mut impl FnMut(usize),
     on_edit_extrusion: &mut impl FnMut(usize),
     on_edit_edge_treatment: &mut impl FnMut(usize, usize),
+    on_edit_edge_treatment_op: &mut impl FnMut(usize),
     on_edit_drawing: &mut impl FnMut(usize),
     on_select_drawing_element: &mut impl FnMut(HierarchyNode),
     on_hover_drawing_element: &mut impl FnMut(Option<HierarchyNode>),
@@ -4140,6 +4206,14 @@ fn show_row(
                     on_click_element(element.clone(), additive);
                 }
             }
+            HierarchyNode::EdgeTreatmentOp(index) => {
+                if row_primary_double_clicked(&response, ui) {
+                    on_edit_edge_treatment_op(index);
+                } else if response.clicked() {
+                    let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+                    on_click_element(element.clone(), additive);
+                }
+            }
             // Handled by the early return above (no SceneElement).
             HierarchyNode::EdgeTreatment { .. } | HierarchyNode::Drawing(_) => unreachable!(),
             _ => {
@@ -4177,6 +4251,16 @@ fn show_row(
                 HierarchyNode::Extrusion(index) => {
                     if ui.button("Edit extrusion").clicked() {
                         on_edit_extrusion(index);
+                        ui.close();
+                    }
+                }
+                HierarchyNode::EdgeTreatmentOp(index) => {
+                    let noun = match doc.edge_treatment_ops.get(index).map(|o| o.kind) {
+                        Some(crate::model::VertexTreatmentKind::Fillet) => "fillet",
+                        _ => "chamfer",
+                    };
+                    if ui.button(format!("Edit {noun}")).clicked() {
+                        on_edit_edge_treatment_op(index);
                         ui.close();
                     }
                 }

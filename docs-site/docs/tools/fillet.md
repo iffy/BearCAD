@@ -27,11 +27,17 @@ can be removed before committing.
 
 ![A box with its four vertical edges rounded](/img/screenshots/fillet.png)
 
+Committing creates a **Fillet operation** in the Elements pane: the original body becomes a
+faded input and a new rounded body appears as the operation's output, with the input feeding
+it in the graph. This is the same input → operation → output shape every other body
+operation uses, so a fillet takes part in [rolling back](/docs/components#rolling-back) and
+undo like anything else.
+
 ## Good to know
 
 - The radius field takes expressions.
 - A radius that can't physically fit is rejected at commit rather than producing broken
   geometry.
 - Rounding solid edges works on bodies made from sketch profiles.
-- **Edit the amount later:** double-click the fillet's Elements pane row (or right-click →
-  **Edit fillet**) to bring back its gizmo and amount input.
+- **Edit later:** double-click the fillet operation's Elements pane row (or right-click →
+  **Edit fillet**) to bring back its gizmo and amount input, then commit a new radius.

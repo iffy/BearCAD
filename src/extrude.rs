@@ -571,6 +571,9 @@ pub fn occt_body_shape(doc: &Document, body_index: usize) -> Option<crate::kerne
         crate::model::BodySource::Sliced { op, target, piece } => {
             return occt_sliced_output_shape(doc, op, target, piece);
         }
+        crate::model::BodySource::EdgeTreated { op, target } => {
+            return occt_edge_treated_output_shape(doc, op, target);
+        }
         _ => occt_body_shape_from_indices(
             doc,
             body.source.extrusion_indices(),
@@ -686,6 +689,45 @@ fn occt_moved_output_shape(
     let shape = occt_body_shape(doc, input)?;
     let m = move_op_transform(doc, op)?;
     shape.transformed(&mat4_to_rows_3x4(&m))
+}
+
+/// A clone of `doc` with the edge-treatment op's treatments spliced onto the target input
+/// body's extrusions, together with that input body's index (#531). Building or meshing the
+/// input body in this clone then reuses the whole extrusion chamfer/fillet machinery — so an
+/// edge-treatment op's output is exactly its input body, beveled. `None` when the op or target
+/// is gone, or an output body was fed back as its own input.
+fn edge_treated_input_doc(
+    doc: &Document,
+    op_index: usize,
+    target: usize,
+) -> Option<(Document, usize)> {
+    let op = doc.edge_treatment_ops.get(op_index).filter(|o| !o.deleted)?;
+    let &input = op.targets.get(target)?;
+    if op.outputs.contains(&input) {
+        return None;
+    }
+    let mut clone = doc.clone();
+    for te in op.edges.iter().filter(|e| e.target == target) {
+        if let Some(ext) = clone.extrusions.get_mut(te.extrusion) {
+            ext.edge_treatments.push(crate::model::EdgeTreatment {
+                edge: te.edge,
+                kind: op.kind,
+                amount: op.amount,
+            });
+        }
+    }
+    Some((clone, input))
+}
+
+/// The BREP solid of one edge-treatment output (#531): the input body's shape built with the
+/// op's chamfer/fillet edges spliced onto its extrusions.
+fn occt_edge_treated_output_shape(
+    doc: &Document,
+    op_index: usize,
+    target: usize,
+) -> Option<crate::kernel::Shape> {
+    let (clone, input) = edge_treated_input_doc(doc, op_index, target)?;
+    occt_body_shape(&clone, input)
 }
 
 /// World-space reflection (a `Mat4` with determinant −1) across a mirror operation's plane
@@ -2138,6 +2180,19 @@ pub fn selection_world_bounds(
                     }
                 }
             }
+            SceneElement::EdgeTreatmentOp(op) => {
+                let outputs = doc
+                    .edge_treatment_ops
+                    .get(op)
+                    .map(|o| o.outputs.clone())
+                    .unwrap_or_default();
+                for bi in outputs {
+                    if let Some((min, max)) = body_solid_mesh(doc, bi).and_then(|m| m.bounds()) {
+                        extend(min);
+                        extend(max);
+                    }
+                }
+            }
             SceneElement::Revolution(op) => {
                 // The revolved solid's body is linked by `BodySource::Revolve` (NewBody mode).
                 for bi in 0..doc.bodies.len() {
@@ -2413,6 +2468,13 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
             let tris = shape.tessellate(OCCT_DEFLECTION as f64);
             return (!tris.is_empty()).then_some(SolidMesh { triangles: tris });
         }
+    }
+    if let crate::model::BodySource::EdgeTreated { op, target } = body.source {
+        // A beveled output is exactly its input body meshed with the op's treatments spliced
+        // in — reusing the extrusion chamfer/fillet path (mesh or kernel), so the default
+        // (kernel-off) build still bevels.
+        let (clone, input) = edge_treated_input_doc(doc, op, target)?;
+        return body_solid_mesh_uncached(&clone, input);
     }
     if let crate::model::BodySource::Sliced { op, target, piece } = body.source {
         // Slice fragments are kernel-computed; shadow inputs keep their own meshes.

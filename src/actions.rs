@@ -1456,11 +1456,15 @@ pub enum Action {
         kind: VertexTreatmentKind,
         amount: f32,
     },
-    /// Re-open a committed chamfer/fillet for editing with its push/pull gizmo + amount input
-    /// (#259), instead of a context-menu drag value. Reloads the treatment's edge, kind, and
-    /// current amount into `creating_edge_treatment` and switches to the matching tool; the
-    /// gizmo commit then updates the same edge in place.
+    /// Re-open a legacy (extrusion-baked) chamfer/fillet for editing with its push/pull gizmo +
+    /// amount input (#259). Removes the baked treatment from the extrusion and reloads its edge,
+    /// kind, and amount into `creating_edge_treatment` so re-commit re-creates it as a
+    /// first-class operation (#531) rather than an in-place extrusion edit.
     EditEdgeTreatment { extrusion: usize, index: usize },
+    /// Re-open a committed edge-treatment **operation** (#531) for editing: reloads its edges,
+    /// kind, and amount into `creating_edge_treatment`, tombstones the op (releasing its shadow
+    /// inputs and outputs) so the gizmo commit rebuilds it, and switches to the matching tool.
+    EditEdgeTreatmentOp { op: usize },
     /// Create a rectangle directly in the active sketch (face-local mm) with locked dimensions.
     CreateRectangle {
         x: f32,
@@ -2495,10 +2499,6 @@ pub struct AppState {
     /// Snapshots of `construction_planes` taken before each in-place plane edit, so that
     /// `UndoLast` can revert the edit. Kept in lockstep with `ShapeKind::ConstructionPlaneEdit`
     /// markers in `shape_order` (one payload per marker, same LIFO order).
-    /// Snapshots of an extrusion's `edge_treatments` taken before each chamfer/fillet
-    /// commit, so `UndoLast` can revert the edit (#168). Kept in lockstep with
-    /// `ShapeKind::EdgeTreatmentEdit` markers, mirroring `construction_plane_edit_undo`.
-    pub edge_treatment_undo: Vec<(usize, Vec<EdgeTreatment>)>,
     pub construction_plane_edit_undo: Vec<Vec<ConstructionPlane>>,
     /// Elements-pane layout (List/Tree/Graph, #34). Ephemeral UI view state like
     /// `extension_anchors` — never persisted; lives here (not on `App`) so scripts can
@@ -2581,7 +2581,6 @@ impl Default for AppState {
             fps_memory: None,
             normal_inference_anchor: None,
             construction_plane_edit_undo: Vec::new(),
-            edge_treatment_undo: Vec::new(),
             hierarchy_view_mode: crate::hierarchy::HierarchyViewMode::default(),
         }
     }
@@ -3092,7 +3091,7 @@ impl AppState {
                     .bodies
                     .iter()
                     .enumerate()
-                    .filter(|(_, b)| !b.deleted);
+                    .filter(|(_, b)| !b.deleted && !b.shadow);
                 match (live.next(), live.next()) {
                     (Some((bi, _)), None) => Some(bi),
                     _ => None,
@@ -3135,6 +3134,168 @@ impl AppState {
     /// an empty explicit list finds bodies whose mesh bounds intersect the revolve's;
     /// `Cut` requires a non-empty body list.
     #[allow(clippy::too_many_arguments)]
+    /// Commit a chamfer/fillet as a first-class operation (#531): validate the picked edges,
+    /// then create one [`EdgeTreatmentOperation`] whose input bodies become shadows and whose
+    /// beveled output bodies (`BodySource::EdgeTreated`) carry the treatment. Invalid edges are
+    /// skipped; an all-invalid selection is an error. Undo is the standard document checkpoint.
+    fn commit_edge_treatment_op(
+        &mut self,
+        edges: Vec<(usize, ExtrusionEdgeRef)>,
+        kind: VertexTreatmentKind,
+        amount: f32,
+    ) -> ActionResult {
+        use crate::model::{Body, BodySource, EdgeTreatmentOperation, ShapeKind, TreatedEdge};
+        if edges.is_empty() {
+            return ActionResult::Err("No edges to treat".to_string());
+        }
+        if !(amount > 0.0) {
+            let e = "Amount must be positive".to_string();
+            self.status = e.clone();
+            return ActionResult::Err(e);
+        }
+        let mut targets: Vec<usize> = Vec::new();
+        let mut treated: Vec<TreatedEdge> = Vec::new();
+        // Per-extrusion treatment lists, accumulated so an intra-operation corner conflict is
+        // caught (two treated edges meeting at one corner), mirroring the old in-place check.
+        let mut per_extrusion: std::collections::HashMap<usize, Vec<EdgeTreatment>> =
+            std::collections::HashMap::new();
+        let mut first_error: Option<String> = None;
+        for (extrusion, edge) in edges {
+            let reject = |e: String, first: &mut Option<String>| {
+                if first.is_none() {
+                    *first = Some(e);
+                }
+            };
+            if require_element_editable(&self.document_health, SceneElement::Extrusion(extrusion))
+                .is_err()
+            {
+                reject(format!("Extrusion {extrusion} isn't editable"), &mut first_error);
+                continue;
+            }
+            if !crate::extrude::extrusion_edge_exists(&self.doc, extrusion, edge) {
+                reject(
+                    "Edge no longer exists or isn't chamfer/fillet-able".to_string(),
+                    &mut first_error,
+                );
+                continue;
+            }
+            let n = self
+                .doc
+                .extrusions
+                .get(extrusion)
+                .and_then(|ext| ext.faces.get(edge.face()))
+                .map(crate::extrude::side_face_count)
+                .unwrap_or(0);
+            let existing = per_extrusion.entry(extrusion).or_default();
+            if crate::extrude::edge_treatment_conflicts(existing, edge, n) {
+                reject(
+                    "Edges share a corner (blending 3+ bevels at one corner isn't supported)"
+                        .to_string(),
+                    &mut first_error,
+                );
+                continue;
+            }
+            if !crate::extrude::edge_treatment_would_bevel(&self.doc, extrusion, edge, kind, amount)
+            {
+                reject("Corner is degenerate".to_string(), &mut first_error);
+                continue;
+            }
+            let Some(body) = crate::model::body_index_for_extrusion(&self.doc, extrusion) else {
+                reject(
+                    format!("Extrusion {extrusion} has no body to treat"),
+                    &mut first_error,
+                );
+                continue;
+            };
+            let target = targets.iter().position(|&b| b == body).unwrap_or_else(|| {
+                targets.push(body);
+                targets.len() - 1
+            });
+            existing.push(EdgeTreatment { edge, kind, amount });
+            treated.push(TreatedEdge { target, extrusion, edge });
+        }
+        if treated.is_empty() {
+            let e = first_error.unwrap_or_else(|| "No treatable edges".to_string());
+            self.status = e.clone();
+            return ActionResult::Err(e);
+        }
+        // Kernel feasibility trial (#103): build the operation in a throwaway clone and reject
+        // if any beveled output fails to build while its input built — otherwise the body would
+        // silently drop onto the un-beveled fallback. A no-kernel build has nothing to consult
+        // (inputs don't build via the kernel there), so the mesh-bevel clamp stands.
+        let op_index = self.doc.edge_treatment_ops.len();
+        let operation = EdgeTreatmentOperation {
+            targets: targets.clone(),
+            edges: treated,
+            kind,
+            amount,
+            outputs: Vec::new(),
+            name: None,
+            deleted: false,
+        };
+        {
+            let mut trial = self.doc.clone();
+            trial.edge_treatment_ops.push(operation.clone());
+            let mut trial_outputs = Vec::new();
+            for target in 0..targets.len() {
+                trial_outputs.push(trial.bodies.len());
+                trial.bodies.push(Body {
+                    source: BodySource::EdgeTreated { op: op_index, target },
+                    name: None,
+                    deleted: false,
+                    shadow: false,
+                });
+            }
+            trial.edge_treatment_ops[op_index].outputs = trial_outputs.clone();
+            for (t, &input) in targets.iter().enumerate() {
+                if crate::extrude::occt_body_shape(&self.doc, input).is_some()
+                    && crate::extrude::occt_body_shape(&trial, trial_outputs[t]).is_none()
+                {
+                    let (noun, param) = match kind {
+                        VertexTreatmentKind::Chamfer => ("chamfer", "distance"),
+                        VertexTreatmentKind::Fillet => ("fillet", "radius"),
+                    };
+                    let e = format!(
+                        "{noun} of {amount:.1} mm doesn't fit (kernel can't build it) — try a \
+                         smaller {param}"
+                    );
+                    self.status = e.clone();
+                    return ActionResult::Err(e);
+                }
+            }
+        }
+        // Commit: push the op, its beveled outputs, and shadow the inputs.
+        self.doc.edge_treatment_ops.push(operation);
+        self.doc.shape_order.push(ShapeKind::EdgeTreatmentOperation);
+        let mut outputs = Vec::new();
+        for target in 0..targets.len() {
+            outputs.push(self.doc.bodies.len());
+            self.doc.bodies.push(Body {
+                source: BodySource::EdgeTreated { op: op_index, target },
+                name: None,
+                deleted: false,
+                shadow: false,
+            });
+            self.doc.shape_order.push(ShapeKind::Body);
+        }
+        self.doc.edge_treatment_ops[op_index].outputs = outputs;
+        for &input in &targets {
+            if let Some(body) = self.doc.bodies.get_mut(input) {
+                body.shadow = true;
+            }
+        }
+        self.refresh_document_health();
+        let noun = match kind {
+            VertexTreatmentKind::Chamfer => "Chamfered",
+            VertexTreatmentKind::Fillet => "Filleted",
+        };
+        self.status = match first_error {
+            Some(e) => format!("{noun} {} body(ies); skipped some: {e}", targets.len()),
+            None => format!("{noun} {} body(ies) ({amount:.1} mm)", targets.len()),
+        };
+        ActionResult::Ok
+    }
+
     fn resolve_revolve_mode(
         &mut self,
         sketch: SketchId,
@@ -4313,6 +4474,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::SketchSliceOp(i) => format!("Sketch slice {i}"),
         SceneElement::SketchText(i) => format!("Text {i}"),
         SceneElement::SliceOp(i) => format!("Slice operation {i}"),
+        SceneElement::EdgeTreatmentOp(i) => format!("Edge treatment operation {i}"),
         SceneElement::Revolution(i) => format!("Revolve operation {i}"),
         SceneElement::SweepOp(i) => format!("Sweep operation {i}"),
         SceneElement::Origin => "Origin".to_string(),
@@ -4805,12 +4967,15 @@ impl AppState {
                 // keep the hand-rolled faceted concatenation (OCCT export is per single
                 // body — see `write_step_body_file`).
                 None => {
+                    // Shadow bodies are consumed operation inputs, not deliverables — skip
+                    // them so a single real output (e.g. a beveled body, #531) still writes
+                    // real BREP rather than the faceted multi-body fallback.
                     let mut live = self
                         .doc
                         .bodies
                         .iter()
                         .enumerate()
-                        .filter(|(_, b)| !b.deleted);
+                        .filter(|(_, b)| !b.deleted && !b.shadow);
                     match (live.next(), live.next()) {
                         (Some((bi, b)), None) => {
                             let name = b
@@ -7105,39 +7270,11 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::CommitEdgeTreatments { edges, kind, amount } => {
-                if edges.is_empty() {
-                    return ActionResult::Err("No edges to treat".to_string());
-                }
-                let mut applied = 0usize;
-                let mut first_error: Option<String> = None;
-                for (extrusion, edge) in edges {
-                    match self.apply(Action::CommitEdgeTreatment { extrusion, edge, kind, amount }) {
-                        ActionResult::Ok | ActionResult::NeedsDialog => applied += 1,
-                        ActionResult::Err(e) => {
-                            if first_error.is_none() {
-                                first_error = Some(e);
-                            }
-                        }
-                    }
-                }
-                match (applied, first_error) {
-                    (0, Some(e)) => {
-                        self.status = e.clone();
-                        ActionResult::Err(e)
-                    }
-                    (n, Some(e)) => {
-                        self.status = format!("Treated {n} edge(s); skipped some: {e}");
-                        ActionResult::Ok
-                    }
-                    (n, None) => {
-                        let noun = match kind {
-                            VertexTreatmentKind::Chamfer => "Chamfered",
-                            VertexTreatmentKind::Fillet => "Filleted",
-                        };
-                        self.status = format!("{noun} {n} edge(s)");
-                        ActionResult::Ok
-                    }
-                }
+                self.commit_edge_treatment_op(edges, kind, amount)
+            }
+            Action::CommitEdgeTreatment { extrusion, edge, kind, amount } => {
+                // Single-edge entry point (scripting): one edge → a one-edge operation.
+                self.commit_edge_treatment_op(vec![(extrusion, edge)], kind, amount)
             }
             Action::EditEdgeTreatment { extrusion, index } => {
                 let Some(treatment) = self
@@ -7156,6 +7293,9 @@ impl AppState {
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
+                // Migrate the legacy baked treatment off the extrusion so re-commit rebuilds it
+                // as a first-class operation (#531) rather than duplicating it.
+                self.doc.extrusions[extrusion].edge_treatments.remove(index);
                 self.creating_edge_treatment = Some(CreatingEdgeTreatment {
                     edges: vec![(extrusion, treatment.edge)],
                     kind: treatment.kind,
@@ -7172,89 +7312,49 @@ impl AppState {
                     VertexTreatmentKind::Chamfer => "chamfer",
                     VertexTreatmentKind::Fillet => "fillet",
                 };
+                self.refresh_document_health();
                 self.status = format!("Editing {noun}");
                 ActionResult::Ok
             }
-            Action::CommitEdgeTreatment { extrusion, edge, kind, amount } => {
-                if !(amount > 0.0) {
-                    let e = "Amount must be positive".to_string();
-                    self.status = e.clone();
-                    return ActionResult::Err(e);
-                }
-                if let Err(e) = require_element_editable(
-                    &self.document_health,
-                    SceneElement::Extrusion(extrusion),
-                ) {
-                    self.status = e.clone();
-                    return ActionResult::Err(e);
-                }
-                if !crate::extrude::extrusion_edge_exists(&self.doc, extrusion, edge) {
-                    let e = "Edge no longer exists or isn't chamfer/fillet-able (vertical and \
-                        side/cap edges of Rect/Polygon-profiled extrusions, or the cap rims \
-                        of Circle-profiled ones, are supported)"
-                        .to_string();
-                    self.status = e.clone();
-                    return ActionResult::Err(e);
-                }
-                let n = self
+            Action::EditEdgeTreatmentOp { op } => {
+                let Some(operation) = self
                     .doc
-                    .extrusions
-                    .get(extrusion)
-                    .and_then(|ext| ext.faces.get(edge.face()))
-                    .map(crate::extrude::side_face_count)
-                    .unwrap_or(0);
-                let existing = &self.doc.extrusions[extrusion].edge_treatments;
-                if crate::extrude::edge_treatment_conflicts(existing, edge, n) {
-                    let e = "Cannot treat this edge: it shares a corner with another treated \
-                        edge (blending 3+ bevels at a shared corner isn't supported)"
-                        .to_string();
-                    self.status = e.clone();
-                    return ActionResult::Err(e);
-                }
-                if !crate::extrude::edge_treatment_would_bevel(&self.doc, extrusion, edge, kind, amount)
-                {
-                    let e = "Cannot treat this edge: corner is degenerate".to_string();
-                    self.status = e.clone();
-                    return ActionResult::Err(e);
-                }
-                let treatment = EdgeTreatment { edge, kind, amount };
-                let Some(updated) =
-                    crate::extrude::extrusion_with_edge_treatment(&self.doc, extrusion, treatment)
+                    .edge_treatment_ops
+                    .get(op)
+                    .filter(|o| !o.deleted)
+                    .cloned()
                 else {
-                    return ActionResult::Err("Extrusion no longer exists".to_string());
+                    return ActionResult::Err("Edge treatment not found".to_string());
                 };
-                // #103: kernel feasibility trial. If the kernel builds this extrusion today
-                // but can't build it with the new treatment (an impossible fillet radius /
-                // chamfer distance), storing it would silently knock the whole body onto the
-                // additive-only mesh fallback — deleting its cut holes from the render — so
-                // reject at commit instead. Runs only here (the final commit path shared by
-                // the gizmo, the amount input, and scripting), never per-frame: the live drag
-                // preview is a separate ghost mesh that doesn't go through this action. In a
-                // no-kernel build there's nothing to consult; the mesh-bevel clamp stands.
-                if !crate::extrude::occt_edge_treatments_feasible(&self.doc, extrusion, &updated) {
-                    let (noun, param) = match kind {
-                        VertexTreatmentKind::Chamfer => ("chamfer", "distance"),
-                        VertexTreatmentKind::Fillet => ("fillet", "radius"),
-                    };
-                    let e = format!(
-                        "{noun} of {amount:.1} mm doesn't fit this edge (kernel can't build \
-                         it) — try a smaller {param}"
-                    );
-                    self.status = e.clone();
-                    return ActionResult::Err(e);
-                }
-                // #168: snapshot the prior treatment list so this in-place edit undoes.
-                self.edge_treatment_undo.push((
-                    extrusion,
-                    self.doc.extrusions[extrusion].edge_treatments.clone(),
-                ));
-                self.doc.shape_order.push(crate::model::ShapeKind::EdgeTreatmentEdit);
-                self.doc.extrusions[extrusion] = updated;
+                let edges = operation
+                    .edges
+                    .iter()
+                    .map(|te| (te.extrusion, te.edge))
+                    .collect();
+                // Tombstone the op (releasing its shadow inputs and beveled outputs) so the
+                // gizmo commit rebuilds it from the reloaded edges/amount.
+                crate::document_lifecycle::tombstone_element(
+                    &mut self.doc,
+                    SceneElement::EdgeTreatmentOp(op),
+                );
+                self.creating_edge_treatment = Some(CreatingEdgeTreatment {
+                    edges,
+                    kind: operation.kind,
+                    amount_live: operation.amount,
+                    text: crate::value::format_length_display(operation.amount),
+                    user_edited: false,
+                    pending_focus: true,
+                });
+                self.tool = match operation.kind {
+                    VertexTreatmentKind::Chamfer => Tool::Chamfer,
+                    VertexTreatmentKind::Fillet => Tool::Fillet,
+                };
+                let noun = match operation.kind {
+                    VertexTreatmentKind::Chamfer => "chamfer",
+                    VertexTreatmentKind::Fillet => "fillet",
+                };
                 self.refresh_document_health();
-                self.status = match kind {
-                    VertexTreatmentKind::Chamfer => format!("Chamfered edge ({amount:.1} mm)"),
-                    VertexTreatmentKind::Fillet => format!("Filleted edge ({amount:.1} mm)"),
-                };
+                self.status = format!("Editing {noun}");
                 ActionResult::Ok
             }
             Action::CreateRectangle {
@@ -9498,7 +9598,7 @@ label_hidden: false,
                     }
                 }
                 for &input in old.targets.iter() {
-                    if crate::model::body_shadowed_by_other_ops(&self.doc, input, None, Some(op), None) {
+                    if crate::model::body_shadowed_by_other_ops(&self.doc, input, None, Some(op), None, None) {
                         if let Some(body) = self.doc.bodies.get_mut(input) {
                             body.shadow = true;
                         }
@@ -9905,7 +10005,7 @@ label_hidden: false,
                 // Inputs shadowed by other live ops must stay shadows even if this op just
                 // dropped them.
                 for &input in old_targets.iter() {
-                    if crate::model::body_shadowed_by_other_ops(&self.doc, input, None, None, Some(op)) {
+                    if crate::model::body_shadowed_by_other_ops(&self.doc, input, None, None, Some(op), None) {
                         if let Some(body) = self.doc.bodies.get_mut(input) {
                             body.shadow = true;
                         }
@@ -10622,6 +10722,7 @@ label_hidden: false,
                     SceneElement::MoveOp(i) => Some((CM::MoveOp, *i)),
                     SceneElement::RepeatOp(i) => Some((CM::RepeatOp, *i)),
                     SceneElement::SliceOp(i) => Some((CM::SliceOp, *i)),
+                    SceneElement::EdgeTreatmentOp(i) => Some((CM::EdgeTreatmentOp, *i)),
                     SceneElement::Revolution(i) => Some((CM::Revolution, *i)),
                     _ => None,
                 };
@@ -12541,7 +12642,7 @@ pub fn single_selected_sketch_text(state: &AppState) -> Option<usize> {
 /// Element counts per component-member kind (#429), read before an action to detect what
 /// it created. Bodies are skipped: their component derives from the producing
 /// op/extrusion (`hierarchy::owning_component`), and rebuilds churn the body list.
-fn member_vec_lens(doc: &Document) -> [(crate::model::ComponentMember, usize); 10] {
+fn member_vec_lens(doc: &Document) -> [(crate::model::ComponentMember, usize); 11] {
     use crate::model::ComponentMember as CM;
     [
         (CM::ConstructionPlane, doc.construction_planes.len()),
@@ -12552,6 +12653,7 @@ fn member_vec_lens(doc: &Document) -> [(crate::model::ComponentMember, usize); 1
         (CM::MirrorOp, doc.mirror_ops.len()),
         (CM::RepeatOp, doc.repeat_ops.len()),
         (CM::SliceOp, doc.slice_ops.len()),
+        (CM::EdgeTreatmentOp, doc.edge_treatment_ops.len()),
         (CM::Revolution, doc.revolutions.len()),
         (CM::Sweep, doc.sweeps.len()),
     ]
@@ -12574,6 +12676,7 @@ fn assign_new_members(
             CM::MirrorOp => doc.mirror_ops.len(),
             CM::RepeatOp => doc.repeat_ops.len(),
             CM::SliceOp => doc.slice_ops.len(),
+            CM::EdgeTreatmentOp => doc.edge_treatment_ops.len(),
             CM::Revolution => doc.revolutions.len(),
             CM::Sweep => doc.sweeps.len(),
             CM::Body | CM::Drawing => continue,
@@ -17815,8 +17918,9 @@ mod tests {
         );
     }
 
-    /// #166: one plural commit treats every edge in the set with the shared amount, as a
-    /// single undo group (one Undo removes them all).
+    /// #166/#531: one plural commit builds a single edge-treatment operation carrying every
+    /// edge in the set (shared kind + amount), shadowing the input body and producing one
+    /// beveled output — as a single undo group (one Undo removes the whole operation).
     #[test]
     fn commit_edge_treatments_applies_the_whole_set_in_one_undo_group() {
         let mut state = box_extrusion_state();
@@ -17830,30 +17934,32 @@ mod tests {
             amount: 2.0,
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
-        let treated: Vec<_> = state.doc.extrusions[0]
-            .edge_treatments
-            .iter()
-            .map(|t| t.edge)
-            .collect();
+        assert_eq!(state.doc.edge_treatment_ops.len(), 1, "one operation created");
+        let op = &state.doc.edge_treatment_ops[0];
+        let treated: Vec<_> = op.edges.iter().map(|t| t.edge).collect();
         assert_eq!(treated.len(), 2, "both edges treated: {treated:?}");
         for (_, edge) in &edges {
             assert!(treated.contains(edge), "missing {edge:?} in {treated:?}");
         }
-        assert!(state.status.contains("2 edge"), "status: {}", state.status);
+        assert_eq!(op.targets, vec![0], "the one input body is the target");
+        assert_eq!(op.outputs.len(), 1, "one beveled output body");
+        assert!(state.doc.bodies[0].shadow, "the input body becomes a shadow");
+        assert!(!state.doc.bodies[op.outputs[0]].shadow, "the output is a real body");
 
-        // #168: the plural commit is one undo group — a single Undo reverts both
-        // treatments while leaving the extrusion itself intact.
+        // #168: the plural commit is one undo group — a single Undo reverts the whole
+        // operation while leaving the extrusion (and un-shadowing the input body).
         state.apply(Action::UndoLast);
-        assert_eq!(
-            state.doc.extrusions[0].edge_treatments.len(),
-            0,
-            "one undo must remove the whole treated set"
+        assert!(
+            state.doc.edge_treatment_ops.is_empty()
+                || state.doc.edge_treatment_ops[0].deleted,
+            "one undo must remove the whole operation"
         );
         assert!(!state.doc.extrusions[0].deleted, "the extrusion must survive the undo");
+        assert!(!state.doc.bodies[0].shadow, "the input body is no longer shadowed");
     }
 
-    /// #168: undoing a single committed chamfer removes just that treatment (and restores
-    /// any prior treatment list), never the extrusion.
+    /// #168/#531: undoing a committed chamfer removes its whole operation (releasing the
+    /// shadow input and beveled output), never the extrusion.
     #[test]
     fn undo_reverts_a_single_edge_treatment() {
         let mut state = box_extrusion_state();
@@ -17864,26 +17970,16 @@ mod tests {
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.0,
         });
-        assert_eq!(state.doc.extrusions[0].edge_treatments.len(), 1);
+        assert_eq!(state.doc.edge_treatment_ops.len(), 1);
+        assert!(state.doc.bodies[0].shadow);
 
-        // Re-treating the same edge replaces it; undo restores the *previous* treatment.
-        state.apply(Action::CommitEdgeTreatment {
-            extrusion: 0,
-            edge,
-            kind: VertexTreatmentKind::Chamfer,
-            amount: 3.0,
-        });
-        assert!((state.doc.extrusions[0].edge_treatments[0].amount - 3.0).abs() < 1e-4);
         state.apply(Action::UndoLast);
-        assert_eq!(state.doc.extrusions[0].edge_treatments.len(), 1);
         assert!(
-            (state.doc.extrusions[0].edge_treatments[0].amount - 2.0).abs() < 1e-4,
-            "undo restores the prior treatment, got {}",
-            state.doc.extrusions[0].edge_treatments[0].amount
+            state.doc.edge_treatment_ops.is_empty()
+                || state.doc.edge_treatment_ops[0].deleted,
+            "undo removes the operation"
         );
-
-        state.apply(Action::UndoLast);
-        assert!(state.doc.extrusions[0].edge_treatments.is_empty());
+        assert!(!state.doc.bodies[0].shadow, "the input body is released from shadow");
         assert!(!state.doc.extrusions[0].deleted, "the extrusion must survive");
     }
 
@@ -17924,7 +18020,7 @@ mod tests {
     fn commit_edge_treatment_chamfers_a_vertical_edge() {
         let mut state = box_extrusion_state();
         let edge = crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
-        let untreated_tris = crate::extrude::extrusion_mesh(&state.doc, &state.doc.extrusions[0])
+        let untreated_tris = crate::extrude::body_solid_mesh(&state.doc, 0)
             .unwrap()
             .triangles
             .len();
@@ -17935,13 +18031,17 @@ mod tests {
             amount: 2.0,
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
-        assert_eq!(state.doc.extrusions[0].edge_treatments.len(), 1);
-        assert_eq!(state.doc.extrusions[0].edge_treatments[0].edge, edge);
-        let treated_tris = crate::extrude::extrusion_mesh(&state.doc, &state.doc.extrusions[0])
+        assert_eq!(state.doc.edge_treatment_ops.len(), 1);
+        let op = &state.doc.edge_treatment_ops[0];
+        assert_eq!(op.edges[0].edge, edge);
+        assert_eq!(op.kind, VertexTreatmentKind::Chamfer);
+        // The beveled output body's mesh differs from the (unshadowed) input's original mesh.
+        let output = op.outputs[0];
+        let treated_tris = crate::extrude::body_solid_mesh(&state.doc, output)
             .unwrap()
             .triangles
             .len();
-        assert_ne!(untreated_tris, treated_tris, "mesh should visibly change");
+        assert_ne!(untreated_tris, treated_tris, "the beveled output mesh should differ");
     }
 
     #[test]
@@ -17955,12 +18055,12 @@ mod tests {
             amount: 1.5,
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
-        assert_eq!(state.doc.extrusions[0].edge_treatments[0].kind, VertexTreatmentKind::Fillet);
+        assert_eq!(state.doc.edge_treatment_ops[0].kind, VertexTreatmentKind::Fillet);
     }
 
-    /// #259: re-opening a committed chamfer/fillet reloads it into the gizmo-driven
-    /// `creating_edge_treatment` (edge, kind, amount) and switches to the matching tool, so the
-    /// user adjusts it with the push/pull gizmo instead of a context-menu drag value.
+    /// #259/#531: re-opening a committed chamfer/fillet **operation** reloads it into the
+    /// gizmo-driven `creating_edge_treatment` (edges, kind, amount), tombstones the old op, and
+    /// switches to the matching tool; the gizmo commit rebuilds it as a fresh operation.
     #[test]
     fn edit_edge_treatment_reopens_the_gizmo() {
         let mut state = box_extrusion_state();
@@ -17972,9 +18072,10 @@ mod tests {
             amount: 3.0,
         });
 
-        let result = state.apply(Action::EditEdgeTreatment { extrusion: 0, index: 0 });
+        let result = state.apply(Action::EditEdgeTreatmentOp { op: 0 });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         assert_eq!(state.tool, Tool::Chamfer);
+        assert!(state.doc.edge_treatment_ops[0].deleted, "the old op is tombstoned on edit");
         let cet = state
             .creating_edge_treatment
             .as_ref()
@@ -17984,19 +18085,27 @@ mod tests {
         assert_eq!(cet.amount_live, 3.0);
         assert!(cet.pending_focus);
 
-        // Committing a new amount replaces the same edge in place rather than stacking.
+        // Committing a new amount rebuilds the operation (the old one stays tombstoned).
         state.apply(Action::CommitEdgeTreatment {
             extrusion: 0,
             edge,
             kind: VertexTreatmentKind::Chamfer,
             amount: 1.5,
         });
-        assert_eq!(state.doc.extrusions[0].edge_treatments.len(), 1);
-        assert_eq!(state.doc.extrusions[0].edge_treatments[0].amount, 1.5);
+        let live: Vec<_> = state
+            .doc
+            .edge_treatment_ops
+            .iter()
+            .filter(|o| !o.deleted)
+            .collect();
+        assert_eq!(live.len(), 1, "exactly one live operation");
+        assert_eq!(live[0].amount, 1.5);
     }
 
+    /// #531: editing an operation then committing a new kind/amount leaves exactly one live
+    /// operation (the rebuild), not a growing stack.
     #[test]
-    fn commit_edge_treatment_re_editing_the_same_edge_replaces_rather_than_stacks() {
+    fn commit_edge_treatment_re_editing_replaces_rather_than_stacks() {
         let mut state = box_extrusion_state();
         let edge = crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
         state.apply(Action::CommitEdgeTreatment {
@@ -18005,36 +18114,46 @@ mod tests {
             kind: VertexTreatmentKind::Chamfer,
             amount: 1.0,
         });
+        state.apply(Action::EditEdgeTreatmentOp { op: 0 });
         state.apply(Action::CommitEdgeTreatment {
             extrusion: 0,
             edge,
             kind: VertexTreatmentKind::Fillet,
             amount: 2.5,
         });
-        assert_eq!(state.doc.extrusions[0].edge_treatments.len(), 1);
-        assert_eq!(state.doc.extrusions[0].edge_treatments[0].kind, VertexTreatmentKind::Fillet);
-        assert_eq!(state.doc.extrusions[0].edge_treatments[0].amount, 2.5);
+        let live: Vec<_> = state
+            .doc
+            .edge_treatment_ops
+            .iter()
+            .filter(|o| !o.deleted)
+            .collect();
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].kind, VertexTreatmentKind::Fillet);
+        assert_eq!(live[0].amount, 2.5);
     }
 
+    /// #531: within one operation, two edges sharing a corner can't both be beveled (a vertex
+    /// miter is out of scope, SPEC §3.4) — the conflicting edge is skipped, the other applies.
     #[test]
     fn commit_edge_treatment_rejects_a_conflicting_shared_vertex() {
         let mut state = box_extrusion_state();
-        state.apply(Action::CommitEdgeTreatment {
-            extrusion: 0,
-            edge: crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 },
+        // Vertical edge 0 and base cap edge 0 share profile vertex 1.
+        let result = state.apply(Action::CommitEdgeTreatments {
+            edges: vec![
+                (0, crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 }),
+                (0, crate::model::ExtrusionEdgeRef::Cap { face: 0, edge: 0, top: false }),
+            ],
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.0,
         });
-        // Cap edge 0 (base) touches profile vertices 0 and 1, sharing vertex 1 with the
-        // vertical edge already treated above — a vertex miter, out of scope (SPEC §3.4).
-        let result = state.apply(Action::CommitEdgeTreatment {
-            extrusion: 0,
-            edge: crate::model::ExtrusionEdgeRef::Cap { face: 0, edge: 0, top: false },
-            kind: VertexTreatmentKind::Chamfer,
-            amount: 2.0,
-        });
-        assert!(matches!(result, ActionResult::Err(_)));
-        assert_eq!(state.doc.extrusions[0].edge_treatments.len(), 1);
+        // The first edge applies, the conflicting second is skipped — still Ok overall.
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        assert_eq!(state.doc.edge_treatment_ops.len(), 1);
+        assert_eq!(
+            state.doc.edge_treatment_ops[0].edges.len(),
+            1,
+            "the conflicting edge is skipped"
+        );
     }
 
     #[test]
@@ -18055,7 +18174,7 @@ mod tests {
             amount: 2.0,
         });
         assert!(matches!(out_of_range, ActionResult::Err(_)));
-        assert!(state.doc.extrusions[0].edge_treatments.is_empty());
+        assert!(state.doc.edge_treatment_ops.is_empty(), "nothing committed");
     }
 
     /// #103: an edge treatment the OCCT kernel can't actually build (e.g. a fillet radius
@@ -18073,7 +18192,7 @@ mod tests {
         });
         assert!(matches!(result, ActionResult::Err(_)), "{result:?}");
         assert!(
-            state.doc.extrusions[0].edge_treatments.is_empty(),
+            state.doc.edge_treatment_ops.is_empty(),
             "infeasible treatment must not be stored"
         );
         assert!(

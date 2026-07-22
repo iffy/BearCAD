@@ -107,6 +107,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::SketchSliceOp(_) => "sketch_slice_op",
         SceneElement::SketchText(_) => "sketch_text",
         SceneElement::SliceOp(_) => "slice_op",
+        SceneElement::EdgeTreatmentOp(_) => "edge_treatment_op",
         SceneElement::Revolution(_) => "revolution",
         SceneElement::SweepOp(_) => "sweep",
         SceneElement::Component(_) => "component",
@@ -133,6 +134,7 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::SketchSliceOp(i)
         | SceneElement::SketchText(i)
         | SceneElement::SliceOp(i)
+        | SceneElement::EdgeTreatmentOp(i)
         | SceneElement::Revolution(i)
         | SceneElement::SweepOp(i)
         | SceneElement::Component(i) => i,
@@ -5065,13 +5067,11 @@ mod tests {
             }
         "#,
         );
-        assert_eq!(state.doc.extrusions[0].edge_treatments.len(), 1);
-        assert_eq!(
-            state.doc.extrusions[0].edge_treatments[0].kind,
-            VertexTreatmentKind::Chamfer
-        );
-        let mesh = crate::extrude::extrusion_mesh(&state.doc, &state.doc.extrusions[0]).unwrap();
-        // An untreated 10x10x5 box extrusion is 12 triangles; the chamfer adds geometry.
+        assert_eq!(state.doc.edge_treatment_ops.len(), 1);
+        assert_eq!(state.doc.edge_treatment_ops[0].kind, VertexTreatmentKind::Chamfer);
+        // The chamfer's beveled output body has more than the 12 triangles of the plain box.
+        let output = state.doc.edge_treatment_ops[0].outputs[0];
+        let mesh = crate::extrude::body_solid_mesh(&state.doc, output).unwrap();
         assert_ne!(mesh.triangles.len(), 12);
     }
 
@@ -5088,22 +5088,19 @@ mod tests {
             }
         "#,
         );
-        assert_eq!(state.doc.extrusions[0].edge_treatments.len(), 1);
-        assert_eq!(
-            state.doc.extrusions[0].edge_treatments[0].kind,
-            VertexTreatmentKind::Fillet
-        );
+        assert_eq!(state.doc.edge_treatment_ops.len(), 1);
+        assert_eq!(state.doc.edge_treatment_ops[0].kind, VertexTreatmentKind::Fillet);
         assert!(matches!(
-            state.doc.extrusions[0].edge_treatments[0].edge,
+            state.doc.edge_treatment_ops[0].edges[0].edge,
             ExtrusionEdgeRef::Cap { face: 0, edge: 1, top: true }
         ));
     }
 
-    /// #192: a filleted edge shows in the Elements pane as a node nested under its extrusion,
-    /// labelled with its kind and amount, and re-committing the same edge updates the amount in
-    /// place (the "edit fillet amount after the fact" path) rather than adding a second treatment.
+    /// #192/#531: a fillet shows in the Elements pane as its own operation node (with its
+    /// beveled output body nested under it), labelled by kind; re-opening it for edit and
+    /// committing a new amount rebuilds the operation rather than stacking a second one.
     #[test]
-    fn edge_treatment_is_an_editable_element_under_its_extrusion() {
+    fn edge_treatment_is_an_editable_operation_element() {
         let mut state = run_lua(
             r#"
             bearcad.rect{ x = 0, y = 0, width = 10, height = 10 }
@@ -5115,38 +5112,43 @@ mod tests {
             }
         "#,
         );
-        // It appears as a hierarchy node, and its default label names kind + amount.
-        let node = crate::hierarchy::HierarchyNode::EdgeTreatment {
-            extrusion: 0,
-            index: 0,
-        };
+        // It appears as a top-level operation node, labelled by its kind.
+        let node = crate::hierarchy::HierarchyNode::EdgeTreatmentOp(0);
         let nodes = crate::hierarchy::build_element_list(&state.doc, state.sketch_session);
-        assert!(nodes.contains(&node), "fillet should show in the elements pane");
+        assert!(nodes.contains(&node), "fillet op should show in the elements pane");
         assert!(crate::names::node_label(&state.doc, node).starts_with("Fillet"));
-        // The node nests under its extrusion in the real tree.
+        // Its beveled output body nests under the operation node in the real tree.
         let tree = crate::hierarchy::build_hierarchy(&state.doc, state.sketch_session);
-        let ext = crate::hierarchy::find_hierarchy_entry(
-            &tree,
-            crate::hierarchy::HierarchyNode::Extrusion(0),
-        )
-        .expect("extrusion entry");
-        assert!(ext.children.iter().any(|c| c.node == node));
+        let op_entry = crate::hierarchy::find_hierarchy_entry(&tree, node).expect("op entry");
+        let output = state.doc.edge_treatment_ops[0].outputs[0];
+        assert!(op_entry
+            .children
+            .iter()
+            .any(|c| c.node == crate::hierarchy::HierarchyNode::Body(output)));
 
-        // Editing the amount re-commits the same edge; the treatment count stays 1 and the
-        // amount updates — exactly what the pane's right-click editor dispatches (#192).
-        let edge = state.doc.extrusions[0].edge_treatments[0].edge;
-        let kind = state.doc.extrusions[0].edge_treatments[0].kind;
+        // Re-opening the op for edit and committing a new amount leaves one live operation.
+        assert_eq!(
+            state.apply(crate::actions::Action::EditEdgeTreatmentOp { op: 0 }),
+            crate::actions::ActionResult::Ok
+        );
+        let edge = crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
         assert_eq!(
             state.apply(crate::actions::Action::CommitEdgeTreatment {
                 extrusion: 0,
                 edge,
-                kind,
+                kind: VertexTreatmentKind::Fillet,
                 amount: 2.75,
             }),
             crate::actions::ActionResult::Ok
         );
-        assert_eq!(state.doc.extrusions[0].edge_treatments.len(), 1);
-        assert!((state.doc.extrusions[0].edge_treatments[0].amount - 2.75).abs() < 1e-4);
+        let live: Vec<_> = state
+            .doc
+            .edge_treatment_ops
+            .iter()
+            .filter(|o| !o.deleted)
+            .collect();
+        assert_eq!(live.len(), 1);
+        assert!((live[0].amount - 2.75).abs() < 1e-4);
     }
 
     #[test]
@@ -5281,7 +5283,8 @@ mod tests {
             bearcad.rect{{ width = 40, height = 30 }}
             bearcad.extrude{{ polygon = {{0,1,2,3}}, distance = 20 }}
             bearcad.fillet_edge{{ extrusion = 0, edge = {{ kind = "vertical", face = 0, edge = 1 }}, radius = 8 }}
-            local v0 = bearcad.body_stats(0).volume
+            -- Body 0 is now the shadowed (unbeveled) input; body 1 is the filleted output (#531).
+            local v0 = bearcad.body_stats(1).volume
             bearcad.export_step("{path_str}")
             bearcad.new()
             bearcad.import_step("{path_str}")

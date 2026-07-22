@@ -1077,6 +1077,16 @@ pub enum BodySource {
         #[serde(default)]
         piece: usize,
     },
+    /// The chamfered/filleted output of one input of an edge-treatment operation (#531): `op`
+    /// indexes `Document::edge_treatment_ops`, `target` is the input's position within that
+    /// operation's target list. The input body becomes a shadow body; this output carries the
+    /// bevel.
+    EdgeTreated {
+        #[serde(rename = "edge_treatment_op")]
+        op: usize,
+        #[serde(default)]
+        target: usize,
+    },
     /// Additive extrusions with one or more extrusions **subtracted** (cut) from them (#35).
     /// Purely-additive bodies stay in the `Extrusion`/`Extrusions` forms; a body only takes
     /// this shape once it has a cut. `cut` is `#[serde(default)]` so any future add-only
@@ -1107,7 +1117,8 @@ impl BodySource {
             | Self::Moved { .. }
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
-            | Self::Sliced { .. } => &[],
+            | Self::Sliced { .. }
+            | Self::EdgeTreated { .. } => &[],
             Self::Imported(_) => &[],
         }
     }
@@ -1126,7 +1137,8 @@ impl BodySource {
             | Self::Moved { .. }
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
-            | Self::Sliced { .. } => &[],
+            | Self::Sliced { .. }
+            | Self::EdgeTreated { .. } => &[],
         }
     }
 
@@ -1143,7 +1155,8 @@ impl BodySource {
             | Self::Moved { .. }
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
-            | Self::Sliced { .. } => None,
+            | Self::Sliced { .. }
+            | Self::EdgeTreated { .. } => None,
         }
     }
 
@@ -1170,7 +1183,8 @@ impl BodySource {
             | Self::Moved { .. }
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
-            | Self::Sliced { .. } => {}
+            | Self::Sliced { .. }
+            | Self::EdgeTreated { .. } => {}
         }
     }
 
@@ -1200,7 +1214,8 @@ impl BodySource {
             | Self::Moved { .. }
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
-            | Self::Sliced { .. } => {}
+            | Self::Sliced { .. }
+            | Self::EdgeTreated { .. } => {}
         }
     }
 
@@ -1236,7 +1251,8 @@ impl BodySource {
             | Self::Moved { .. }
             | Self::Mirrored { .. }
             | Self::Repeated { .. }
-            | Self::Sliced { .. } => {}
+            | Self::Sliced { .. }
+            | Self::EdgeTreated { .. } => {}
         }
     }
 }
@@ -1250,6 +1266,7 @@ pub fn body_shadowed_by_other_ops(
     skip_boolean: Option<usize>,
     skip_move: Option<usize>,
     skip_slice: Option<usize>,
+    skip_edge_treatment: Option<usize>,
 ) -> bool {
     doc.boolean_ops.iter().enumerate().any(|(oi, o)| {
         skip_boolean != Some(oi)
@@ -1259,6 +1276,8 @@ pub fn body_shadowed_by_other_ops(
         skip_move != Some(oi) && !o.deleted && o.targets.contains(&body)
     }) || doc.slice_ops.iter().enumerate().any(|(oi, o)| {
         skip_slice != Some(oi) && !o.deleted && o.targets.contains(&body)
+    }) || doc.edge_treatment_ops.iter().enumerate().any(|(oi, o)| {
+        skip_edge_treatment != Some(oi) && !o.deleted && o.targets.contains(&body)
     })
 }
 
@@ -1764,6 +1783,46 @@ pub struct SliceOperation {
     pub deleted: bool,
 }
 
+/// One edge treated by an [`EdgeTreatmentOperation`] (#531): the stable, parametric edge
+/// identity is the extrusion-relative [`ExtrusionEdgeRef`] (a topological face/edge address
+/// that re-resolves to live world coordinates on every rebuild), **not** a coordinate snapshot
+/// — so a chamfer/fillet follows its edge when a parameter reshapes the body. `target` says
+/// which of the op's input bodies the edge lives on.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TreatedEdge {
+    /// Index into the owning op's `targets` list (which input body this edge belongs to).
+    pub target: usize,
+    /// The extrusion whose analytic edge is treated.
+    pub extrusion: usize,
+    pub edge: ExtrusionEdgeRef,
+}
+
+/// A 3D edge chamfer/fillet as a first-class operation (#531): its inputs are the bodies whose
+/// edges are beveled plus the edges themselves; on commit each input body is turned into a
+/// **shadow** body and a new output body (`BodySource::EdgeTreated`) carries the modification.
+/// Modeled on [`MoveOperation`] — one shadowed input and one output per `targets` entry — so it
+/// participates in the graph, the timeline, rollback, and undo like every other body operation.
+/// The bevel itself reuses the extrusion mesh/kernel machinery: the output's shape is the input
+/// body built with these treatments spliced onto its extrusions (see
+/// `crate::extrude::occt_edge_treated_output_shape`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EdgeTreatmentOperation {
+    /// Input body indices — each is shadowed and gets one chamfered/filleted output.
+    pub targets: Vec<usize>,
+    /// Edges to treat, each tagged with the `targets` entry it lives on.
+    pub edges: Vec<TreatedEdge>,
+    pub kind: VertexTreatmentKind,
+    /// Chamfer distance / fillet radius (mm); must be positive to have any effect.
+    pub amount: f32,
+    /// Output body indices, matching `targets` order.
+    #[serde(default)]
+    pub outputs: Vec<usize>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
 /// A 2D in-sketch linear repeat (#222): duplicates selected sketch entities along an in-plane
 /// direction as generated entities in the *same* sketch, grouped under the operation. The
 /// sketch-space analogue of the 3D body [`RepeatOperation`] — operands and results are sketch
@@ -2071,6 +2130,9 @@ pub enum ShapeKind {
     RepeatOperation,
     /// A slice operation on bodies (its fragment bodies are separate `Body` entries).
     SliceOperation,
+    /// An edge chamfer/fillet operation on bodies (#531): its beveled output bodies are
+    /// separate `Body` entries; the originals become shadow bodies.
+    EdgeTreatmentOperation,
     /// A 2D in-sketch linear repeat (#222): its duplicated lines/circles are separate
     /// `Line`/`Circle` entries.
     SketchRepeatOperation,
@@ -2658,6 +2720,10 @@ pub struct Document {
     /// Slice operations on bodies (the Slice tool, #181).
     #[serde(default)]
     pub slice_ops: Vec<SliceOperation>,
+    /// Edge chamfer/fillet operations on bodies (#531): each shadows its input bodies and
+    /// produces beveled output bodies.
+    #[serde(default)]
+    pub edge_treatment_ops: Vec<EdgeTreatmentOperation>,
     /// 2D in-sketch linear repeats (#222): duplicated sketch entities grouped under an op.
     #[serde(default)]
     pub sketch_repeat_ops: Vec<SketchRepeatOperation>,
@@ -2742,6 +2808,7 @@ pub enum ComponentMember {
     MirrorOp,
     RepeatOp,
     SliceOp,
+    EdgeTreatmentOp,
     Revolution,
     Sweep,
     Drawing,
@@ -2859,6 +2926,7 @@ impl Default for Document {
             mirror_ops: Vec::new(),
             repeat_ops: Vec::new(),
             slice_ops: Vec::new(),
+            edge_treatment_ops: Vec::new(),
             sketch_repeat_ops: Vec::new(),
             sketch_offset_ops: Vec::new(),
             sketch_mirror_ops: Vec::new(),

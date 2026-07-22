@@ -6420,6 +6420,7 @@ impl eframe::App for App {
             let mut import_image_on_plane: Option<usize> = None;
             let mut edit_extrusion: Option<usize> = None;
             let mut edit_edge_treatment: Option<(usize, usize)> = None;
+            let mut edit_edge_treatment_op: Option<usize> = None;
             let mut edit_drawing: Option<usize> = None;
             let mut select_drawing_element: Option<hierarchy::HierarchyNode> = None;
             let mut hover_drawing_element: Option<hierarchy::HierarchyNode> = None;
@@ -6468,6 +6469,9 @@ impl eframe::App for App {
                     };
                     let mut queue_edit_edge_treatment = |extrusion: usize, index: usize| {
                         edit_edge_treatment = Some((extrusion, index));
+                    };
+                    let mut queue_edit_edge_treatment_op = |op: usize| {
+                        edit_edge_treatment_op = Some(op);
                     };
                     let mut queue_edit_drawing = |index: usize| {
                         edit_drawing = Some(index);
@@ -6549,6 +6553,7 @@ impl eframe::App for App {
                         &mut queue_import_image_on_plane,
                         &mut queue_edit_extrusion,
                         &mut queue_edit_edge_treatment,
+                        &mut queue_edit_edge_treatment_op,
                         &mut queue_edit_drawing,
                         &mut queue_select_drawing_element,
                         &mut queue_hover_drawing_element,
@@ -6685,8 +6690,12 @@ impl eframe::App for App {
                 }
             }
             if let Some((extrusion, index)) = edit_edge_treatment {
-                // Re-open the chamfer/fillet with its push/pull gizmo + amount input (#259).
+                // Re-open a legacy (extrusion-baked) chamfer/fillet with its gizmo + amount (#259).
                 self.state.apply(Action::EditEdgeTreatment { extrusion, index });
+            }
+            if let Some(op) = edit_edge_treatment_op {
+                // Re-open a committed chamfer/fillet operation for editing (#531).
+                self.state.apply(Action::EditEdgeTreatmentOp { op });
             }
             if let Some(index) = export_body {
                 self.export_stl_body(index);

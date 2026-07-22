@@ -182,24 +182,33 @@ fn extruded(app: &AppState) -> bool {
     app.doc.extrusions.iter().any(|e| !e.deleted)
 }
 
-fn fillet_count(app: &AppState) -> usize {
-    app.doc
+/// Count treated edges of `kind` across both the first-class edge-treatment operations (#531)
+/// and any legacy extrusion-baked treatments (old files), so tutorial progress tracks either.
+fn edge_treatment_count(app: &AppState, kind: VertexTreatmentKind) -> usize {
+    let ops: usize = app
+        .doc
+        .edge_treatment_ops
+        .iter()
+        .filter(|o| !o.deleted && o.kind == kind)
+        .map(|o| o.edges.len())
+        .sum();
+    let legacy = app
+        .doc
         .extrusions
         .iter()
         .filter(|e| !e.deleted)
         .flat_map(|e| &e.edge_treatments)
-        .filter(|t| t.kind == VertexTreatmentKind::Fillet)
-        .count()
+        .filter(|t| t.kind == kind)
+        .count();
+    ops + legacy
+}
+
+fn fillet_count(app: &AppState) -> usize {
+    edge_treatment_count(app, VertexTreatmentKind::Fillet)
 }
 
 fn chamfer_count(app: &AppState) -> usize {
-    app.doc
-        .extrusions
-        .iter()
-        .filter(|e| !e.deleted)
-        .flat_map(|e| &e.edge_treatments)
-        .filter(|t| t.kind == VertexTreatmentKind::Chamfer)
-        .count()
+    edge_treatment_count(app, VertexTreatmentKind::Chamfer)
 }
 
 fn bend_rounded(app: &AppState) -> bool {

@@ -870,13 +870,21 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     **vertex miter** where 3+ treated edges would meet at a shared corner — rejected at commit
     time (`crate::extrude::edge_treatment_conflicts`) rather than attempting to blend three
     bevels together, a documented limitation rather than a crash or wrong-looking result.
-  - **Data model**: parametric, like everything else in this app (re-evaluated from the document
-    every frame, not a one-time mesh edit). Each `Extrusion` carries `edge_treatments: Vec<
-    EdgeTreatment>`, where `EdgeTreatment { edge: ExtrusionEdgeRef, kind: VertexTreatmentKind,
-    amount: f32 }` and `ExtrusionEdgeRef` names the analytic edge family + index (`Vertical {
-    face, edge }` or `Cap { face, edge, top }`, `face` indexing `Extrusion::faces`). `kind`
-    reuses `VertexTreatmentKind` (Chamfer/Fillet) from the 2D case directly. `crate::extrude::
-    extrusion_mesh` applies every treatment on a face while building its mesh.
+  - **Data model (operation, #531)**: a 3D chamfer/fillet is a **first-class operation** —
+    `Document::edge_treatment_ops: Vec<EdgeTreatmentOperation>`, where `EdgeTreatmentOperation
+    { targets: Vec<usize>, edges: Vec<TreatedEdge>, kind: VertexTreatmentKind, amount: f32,
+    outputs, .. }`. Its **inputs** are the bodies whose edges it bevels (`targets`) plus the
+    edges (`TreatedEdge { target, extrusion, edge }`, the edge addressed by the stable analytic
+    `ExtrusionEdgeRef` so it re-resolves parametrically, not by coordinate snapshot). On commit
+    each input body becomes a **shadow** body and one new **output** body per input carries the
+    bevel (`BodySource::EdgeTreated { op, target }`); the operation is its own graph/timeline
+    node with its outputs nested under it and its inputs feeding it (shown, editable, rollback-
+    able, undoable like every other body op). Geometrically the output *is* the input body built
+    with these treatments spliced onto its extrusions — reusing the extrusion chamfer/fillet
+    machinery (mesh **and** kernel), so the default kernel-off build still bevels
+    (`crate::extrude::occt_edge_treated_output_shape`). `kind` reuses `VertexTreatmentKind`
+    (Chamfer/Fillet) from the 2D case. Legacy files with baked `Extrusion::edge_treatments`
+    still render (that path is intact) and editing one migrates it into an operation.
   - **Interactive tool**: the same Chamfer/Fillet tool (`K`/`F`) as the 2D case — when a sketch
     is open it behaves exactly as §3.1 describes; when no sketch is open, clicking a body's
     analytic edge (picked directly from the edge list, not the generic mesh-feature-edge
@@ -896,25 +904,23 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     one amount/gizmo. Shift/⌘+click toggles additional treatable edges into the set (a plain
     click restarts with just the clicked edge); switching to Chamfer/Fillet with body edges
     already selected (Select mode, #156) **preloads** the selection — filtered to treatable
-    edges — and shows the gizmo immediately. Commit applies every edge in one undo group;
-    edges that individually fail (e.g. a vertex-miter conflict) are skipped with a status
-    note while the rest apply. Each commit pushes a transient `EdgeTreatmentEdit` marker
-    with a snapshot of the prior treatment list (#168, mirroring construction-plane edits),
-    so **Undo reverts the whole treated set** — restoring any replaced treatments — without
-    touching the extrusion itself. The ghost preview shows the gizmo-anchoring extrusion's edges
+    edges — and shows the gizmo immediately. One commit builds **one operation** carrying every
+    edge in the set; edges that individually fail (e.g. a vertex-miter conflict) are skipped
+    with a status note while the rest apply. Because the whole operation is a single undo group,
+    **Undo removes it entirely** (releasing its shadow inputs and beveled outputs) without
+    touching the extrusion. The ghost preview shows the gizmo-anchoring extrusion's edges
     (a set spanning several extrusions still commits everywhere, but only the primary
     extrusion gets a ghost — the preview mechanism shows one extrusion at a time).
   - Scriptable via `bearcad.chamfer_edge{ extrusion =, edge = {...}, distance = }` and
     `bearcad.fillet_edge{ extrusion =, edge = {...}, radius = }`, where `edge` is `{ kind =
     "vertical", face =, edge = }` or `{ kind = "cap", face =, edge =, top = }`.
-  - **Elements-pane node + edit-after-the-fact (#192/#259):** each committed edge treatment shows
-    as a display-only row (`HierarchyNode::EdgeTreatment`, chamfer/fillet icon, "Chamfer/Fillet
-    (amount)" label) nested under its extrusion. It has no `SceneElement` — it isn't
-    individually selectable or hideable — but double-clicking the row (or right-click → "Edit
-    chamfer/fillet") reopens it with its push/pull gizmo and amount input via
-    `EditEdgeTreatment`; adjusting and committing re-commits that same edge through
-    `CommitEdgeTreatment` (which updates the existing treatment in place, undoably), so a
-    fillet/chamfer radius can be changed after it's made without re-picking the edge.
+  - **Elements-pane node + edit-after-the-fact (#192/#259/#531):** each committed chamfer/fillet
+    is its own selectable operation row (`HierarchyNode::EdgeTreatmentOp`, chamfer/fillet icon,
+    "Chamfer/Fillet N" label) with its beveled output body nested under it and its shadowed input
+    dimmed. Double-clicking the row (or right-click → "Edit chamfer/fillet") reopens it via
+    `EditEdgeTreatmentOp` — reloading its edges/amount into the push/pull gizmo and tombstoning
+    the old operation — so committing a new amount rebuilds it, changing a radius after the fact
+    without re-picking edges. It can be renamed, hidden, and deleted like any operation.
 - **Shell** — hollow a solid to a wall thickness, removing selected faces.
 
 ### 3.4.1 Tracing images (#163)

@@ -95,6 +95,10 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             .slice_ops
             .get(index)
             .is_some_and(|op| !op.deleted),
+        SceneElement::EdgeTreatmentOp(index) => doc
+            .edge_treatment_ops
+            .get(index)
+            .is_some_and(|op| !op.deleted),
         SceneElement::Revolution(index) => doc
             .revolutions
             .get(index)
@@ -390,7 +394,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                         }
                     }
                     for &input in &op.targets {
-                        if !crate::model::body_shadowed_by_other_ops(doc, input, None, Some(index), None)
+                        if !crate::model::body_shadowed_by_other_ops(doc, input, None, Some(index), None, None)
                         {
                             if let Some(body) = doc.bodies.get_mut(input) {
                                 body.shadow = false;
@@ -430,8 +434,38 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                         }
                     }
                     for &input in &op.targets {
-                        if !crate::model::body_shadowed_by_other_ops(doc, input, None, None, Some(index))
+                        if !crate::model::body_shadowed_by_other_ops(doc, input, None, None, Some(index), None)
                         {
+                            if let Some(body) = doc.bodies.get_mut(input) {
+                                body.shadow = false;
+                            }
+                        }
+                    }
+                    changed = true;
+                }
+            }
+        }
+        SceneElement::EdgeTreatmentOp(index) => {
+            // Deleting the chamfer/fillet removes its beveled outputs and releases its input
+            // bodies from shadow (unless another live operation still consumes them) (#531).
+            if let Some(op) = doc.edge_treatment_ops.get_mut(index) {
+                if !op.deleted {
+                    op.deleted = true;
+                    let op = doc.edge_treatment_ops[index].clone();
+                    for &out in &op.outputs {
+                        if let Some(body) = doc.bodies.get_mut(out) {
+                            body.deleted = true;
+                        }
+                    }
+                    for &input in &op.targets {
+                        if !crate::model::body_shadowed_by_other_ops(
+                            doc,
+                            input,
+                            None,
+                            None,
+                            None,
+                            Some(index),
+                        ) {
                             if let Some(body) = doc.bodies.get_mut(input) {
                                 body.shadow = false;
                             }
@@ -485,7 +519,7 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                         }
                     }
                     for &input in op.a.iter().chain(op.b.iter()) {
-                        if !crate::model::body_shadowed_by_other_ops(doc, input, Some(index), None, None)
+                        if !crate::model::body_shadowed_by_other_ops(doc, input, Some(index), None, None, None)
                         {
                             if let Some(body) = doc.bodies.get_mut(input) {
                                 body.shadow = false;

@@ -82,6 +82,7 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
         SceneElement::SketchSliceOp(_) => "sketch_slice_op",
         SceneElement::SketchText(_) => "sketch_text",
         SceneElement::SliceOp(_) => "slice_op",
+        SceneElement::EdgeTreatmentOp(_) => "edge_treatment_op",
         SceneElement::Revolution(_) => "revolution",
         SceneElement::SweepOp(_) => "sweep",
         SceneElement::Component(_) => "component",
@@ -112,6 +113,7 @@ pub fn scene_element_selection_index(element: &SceneElement) -> Option<usize> {
         | SceneElement::SketchSliceOp(i)
         | SceneElement::SketchText(i)
         | SceneElement::SliceOp(i)
+        | SceneElement::EdgeTreatmentOp(i)
         | SceneElement::Revolution(i)
         | SceneElement::SweepOp(i)
         | SceneElement::Component(i) => Some(*i),

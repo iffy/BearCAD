@@ -2784,6 +2784,7 @@ impl<'a> SceneMesh<'a> {
             | SceneElement::SketchMirrorOp(_)
             | SceneElement::SketchSliceOp(_)
             | SceneElement::SliceOp(_)
+            | SceneElement::EdgeTreatmentOp(_)
             | SceneElement::Revolution(_)
             | SceneElement::SweepOp(_)
             | SceneElement::Component(_) => {}

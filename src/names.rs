@@ -26,6 +26,7 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::SketchSliceOp(_)
         | SceneElement::SketchText(_)
         | SceneElement::SliceOp(_)
+        | SceneElement::EdgeTreatmentOp(_)
         | SceneElement::Revolution(_)
         | SceneElement::SweepOp(_)
         | SceneElement::Component(_) => Some(element),
@@ -122,6 +123,9 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         SceneElement::SketchSliceOp(index) => doc.sketch_slice_ops.get(index)?.name.as_deref(),
         SceneElement::SketchText(index) => doc.sketch_texts.get(index)?.name.as_deref(),
         SceneElement::SliceOp(index) => doc.slice_ops.get(index)?.name.as_deref(),
+        SceneElement::EdgeTreatmentOp(index) => {
+            doc.edge_treatment_ops.get(index)?.name.as_deref()
+        }
         SceneElement::Revolution(index) => doc.revolutions.get(index)?.name.as_deref(),
         SceneElement::SweepOp(index) => doc.sweeps.get(index)?.name.as_deref(),
         SceneElement::Component(index) => doc.components.get(index)?.name.as_deref(),
@@ -268,6 +272,13 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 .ok_or_else(|| format!("slice operation {index} not found"))?;
             op.name = stored;
         }
+        SceneElement::EdgeTreatmentOp(index) => {
+            let op = doc
+                .edge_treatment_ops
+                .get_mut(index)
+                .ok_or_else(|| format!("edge treatment operation {index} not found"))?;
+            op.name = stored;
+        }
         SceneElement::Component(index) => {
             let component = doc
                 .components
@@ -391,6 +402,12 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
             format!("Text {i} (\"{short}\")")
         }
         HierarchyNode::SliceOp(i) => format!("Slice {i}"),
+        HierarchyNode::EdgeTreatmentOp(i) => {
+            match doc.edge_treatment_ops.get(i).map(|o| o.kind) {
+                Some(crate::model::VertexTreatmentKind::Fillet) => format!("Fillet {i}"),
+                _ => format!("Chamfer {i}"),
+            }
+        }
         HierarchyNode::Revolution(i) => format!("Revolve {i}"),
         HierarchyNode::SweepOp(i) => format!("Sweep {i}"),
         HierarchyNode::Drawing(i) => doc
@@ -506,6 +523,10 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::SketchSliceOp(i) => format!("Sketch slice {i}"),
         SceneElement::SketchText(i) => format!("Text {i}"),
         SceneElement::SliceOp(i) => format!("Slice {i}"),
+        SceneElement::EdgeTreatmentOp(i) => match doc.edge_treatment_ops.get(*i).map(|o| o.kind) {
+            Some(crate::model::VertexTreatmentKind::Fillet) => format!("Fillet {i}"),
+            _ => format!("Chamfer {i}"),
+        },
         SceneElement::Revolution(i) => format!("Revolve {i}"),
         SceneElement::SweepOp(i) => format!("Sweep {i}"),
     }

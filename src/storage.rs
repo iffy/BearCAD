@@ -241,6 +241,7 @@ pub fn save(path: &str, doc: &Document) -> Result<()> {
     save_indexed_nodes(&tx, &mut row_id, "mirror_op", &doc.mirror_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "repeat_op", &doc.repeat_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "slice_op", &doc.slice_ops)?;
+    save_indexed_nodes(&tx, &mut row_id, "edge_treatment_op", &doc.edge_treatment_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "sketch_repeat_op", &doc.sketch_repeat_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "sketch_offset_op", &doc.sketch_offset_ops)?;
     save_indexed_nodes(&tx, &mut row_id, "sketch_mirror_op", &doc.sketch_mirror_ops)?;
@@ -524,6 +525,7 @@ pub fn open(path: &str) -> Result<Document> {
     let mirror_ops = load_indexed_entities(&conn, "mirror_op")?;
     let repeat_ops = load_indexed_entities(&conn, "repeat_op")?;
     let slice_ops = load_indexed_entities(&conn, "slice_op")?;
+    let edge_treatment_ops = load_indexed_entities(&conn, "edge_treatment_op")?;
     let sketch_repeat_ops = load_indexed_entities(&conn, "sketch_repeat_op")?;
     let sketch_offset_ops = load_indexed_entities(&conn, "sketch_offset_op")?;
     let sketch_mirror_ops = load_indexed_entities(&conn, "sketch_mirror_op")?;
@@ -556,6 +558,7 @@ pub fn open(path: &str) -> Result<Document> {
         mirror_ops,
         repeat_ops,
         slice_ops,
+        edge_treatment_ops,
         sketch_repeat_ops,
         sketch_offset_ops,
         sketch_mirror_ops,

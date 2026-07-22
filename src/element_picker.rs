@@ -90,6 +90,7 @@ impl ElementKind {
             | SceneElement::SketchSliceOp(_)
             | SceneElement::SketchText(_)
             | SceneElement::SliceOp(_)
+            | SceneElement::EdgeTreatmentOp(_)
             | SceneElement::Revolution(_)
             | SceneElement::SweepOp(_) => ElementKind::Operation,
         }
@@ -140,6 +141,7 @@ pub enum OperationKind {
     Mirror,
     Repeat,
     Slice,
+    EdgeTreatment,
     Revolution,
 }
 
@@ -153,6 +155,7 @@ impl OperationKind {
             SceneElement::MirrorOp(_) => OperationKind::Mirror,
             SceneElement::RepeatOp(_) => OperationKind::Repeat,
             SceneElement::SliceOp(_) => OperationKind::Slice,
+            SceneElement::EdgeTreatmentOp(_) => OperationKind::EdgeTreatment,
             SceneElement::Revolution(_) => OperationKind::Revolution,
             _ => return None,
         })

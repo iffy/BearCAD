@@ -1562,6 +1562,11 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        SceneElement::EdgeTreatmentOp(i) => ElementScriptTokens {
+            kind: "edge_treatment_op",
+            index: i,
+            point: None,
+        },
         SceneElement::Revolution(i) => ElementScriptTokens {
             kind: "revolution",
             index: i,
@@ -2117,6 +2122,26 @@ pub fn instruction_for_new_sweep(doc: &crate::model::Document) -> Option<Instruc
         body,
         bodies,
     })
+}
+
+/// Command-log instructions for a just-committed edge-treatment operation (#531): one
+/// `chamfer_edge`/`fillet_edge` per treated edge on the last operation (an interactive
+/// multi-edge commit records as several single-edge script calls).
+pub fn instructions_for_new_edge_treatment_op(
+    doc: &crate::model::Document,
+) -> Vec<Instruction> {
+    let Some(op) = doc.edge_treatment_ops.last() else {
+        return Vec::new();
+    };
+    op.edges
+        .iter()
+        .map(|te| Instruction::EdgeTreatment {
+            extrusion: te.extrusion,
+            edge: te.edge,
+            kind: op.kind,
+            amount: op.amount,
+        })
+        .collect()
 }
 
 /// Render a boolean-operation call (`bearcad.combine{}` / `bearcad.edit_boolean{}`).

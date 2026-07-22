@@ -24,6 +24,7 @@ pub struct CommandLog {
     loft_count_before: usize,
     revolution_count_before: usize,
     sweep_count_before: usize,
+    edge_treatment_op_count_before: usize,
     constraint_count_before: usize,
 }
 
@@ -118,6 +119,12 @@ impl CommandLog {
         if matches!(action, Action::CommitSweep) {
             self.sweep_count_before = doc.sweeps.len();
         }
+        if matches!(
+            action,
+            Action::CommitEdgeTreatments { .. } | Action::CommitEdgeTreatment { .. }
+        ) {
+            self.edge_treatment_op_count_before = doc.edge_treatment_ops.len();
+        }
         if Self::can_add_snap_constraint(action) {
             self.constraint_count_before = doc.constraints.len();
         }
@@ -153,6 +160,18 @@ impl CommandLog {
             (doc.sweeps.len() > self.sweep_count_before)
                 .then(|| crate::script::instruction_for_new_sweep(doc))
                 .flatten()
+        } else if matches!(
+            action,
+            Action::CommitEdgeTreatments { .. } | Action::CommitEdgeTreatment { .. }
+        ) {
+            // A chamfer/fillet commit records one script call per treated edge on the new
+            // operation (#531); emit them here and yield no single instruction below.
+            if doc.edge_treatment_ops.len() > self.edge_treatment_op_count_before {
+                for instr in crate::script::instructions_for_new_edge_treatment_op(doc) {
+                    self.emit(instr);
+                }
+            }
+            None
         } else {
             instruction_from_action(&action, doc)
         };
