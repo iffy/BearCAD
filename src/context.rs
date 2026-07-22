@@ -4153,6 +4153,7 @@ mod tests {
         crate::selection::click_scene_selection(&mut selection, SceneElement::Body(3), true);
         let input = ContextInput {
             tool: Tool::Constraint,
+            in_sketch: true,
             in_drawing_workbench: false,
             ..input(&doc, &selection)
         };
