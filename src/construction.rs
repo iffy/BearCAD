@@ -1856,6 +1856,47 @@ pub fn draw_polygon_face_highlight(
     }
 }
 
+/// Like [`draw_polygon_face_highlight`], but with hole loops cut out (#519). A hovered
+/// boolean-difference face (an inset border) or text glyph is an annular region: filling only
+/// its outer ring painted a solid patch across the opening in the middle. This fills the true
+/// holed region and outlines the outer ring and each hole boundary.
+pub fn draw_region_face_highlight(
+    painter: &egui::Painter,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    outer: &[Vec3],
+    holes: &[Vec<Vec3>],
+    color: egui::Color32,
+) {
+    if outer.len() < 3 {
+        return;
+    }
+    if holes.is_empty() {
+        draw_polygon_face_highlight(painter, project, outer, color);
+        return;
+    }
+    let normal = (outer[1] - outer[0]).cross(outer[2] - outer[0]).normalize_or_zero();
+    // Fill the region between the outer ring and the holes.
+    for tri in crate::polygon::triangulate_planar_with_holes(outer, holes, normal) {
+        let pts: Option<Vec<egui::Pos2>> = tri.iter().map(|&p| project(p)).collect();
+        if let Some(pts) = pts {
+            painter.add(egui::Shape::convex_polygon(
+                pts,
+                color.gamma_multiply(FACE_HOVER_FILL_MULTIPLIER),
+                egui::Stroke::NONE,
+            ));
+        }
+    }
+    // Outline the outer ring and every hole, so both boundaries of the border read.
+    for ring in std::iter::once(outer).chain(holes.iter().map(|h| h.as_slice())) {
+        let pts: Option<Vec<egui::Pos2>> = ring.iter().map(|&p| project(p)).collect();
+        if let Some(pts) = pts {
+            if pts.len() >= 2 {
+                painter.add(egui::Shape::closed_line(pts, egui::Stroke::new(2.0, color)));
+            }
+        }
+    }
+}
+
 fn draw_plane_face_highlight(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,

@@ -107,7 +107,7 @@ use selection::additive_click_modifiers;
 use construction::{
     angle_from_axis_plane_hit, axis_angle_handle, axis_gizmo_hit, axis_normal,
     axis_offset_handle, draw_axis_plane_gizmo, draw_circle_face_highlight, draw_offset_gizmo,
-    draw_polygon_face_highlight, draw_quad_face_highlight,
+    draw_polygon_face_highlight, draw_quad_face_highlight, draw_region_face_highlight,
     nearest_sketch_line_in_sketch, nearest_sketch_point_in_sketch, offset_from_normal_drag,
     offset_gizmo_hit, offset_handle,
     parent_from_pick_target, plane_corners, point_world_position, preview_plane_edit_dependents,
@@ -11573,7 +11573,10 @@ fn draw_face_highlight(
             top,
         } => {
             if let Some(poly) = extrude::cap_polygon_world(doc, extrusion, &profile, top) {
-                draw_polygon_face_highlight(painter, project, &poly, color);
+                // A boolean-difference (inset border) or text-glyph cap is annular; highlight
+                // it with its holes cut out instead of filling across them (#519).
+                let holes = extrude::cap_hole_loops_world(doc, extrusion, &profile, top);
+                draw_region_face_highlight(painter, project, &poly, &holes, color);
             }
         }
         FaceId::ExtrudeSide {

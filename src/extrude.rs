@@ -3150,6 +3150,44 @@ pub fn cap_polygon_world(
     Some(if top { free } else { base })
 }
 
+/// The hole loops of a cap face, in world space at the base/top cap position (#519). A
+/// boolean-difference (inset border) or text-glyph face has an outer ring plus one or more
+/// holes; the outer ring comes from [`cap_polygon_world`], and these are the openings inside
+/// it. Empty for a plain simply-connected face. Each hole vertex is lifted to the cap by the
+/// same base/free-end mapping [`cap_polygon_world`] applies to the outer ring, so the two
+/// stay coplanar.
+pub fn cap_hole_loops_world(
+    doc: &Document,
+    extrusion: usize,
+    profile: &ExtrudeFace,
+    top: bool,
+) -> Vec<Vec<Vec3>> {
+    let Some(ext) = doc.extrusions.get(extrusion) else {
+        return Vec::new();
+    };
+    if ext.deleted || !ext.faces.contains(profile) {
+        return Vec::new();
+    }
+    let distance = effective_distance(doc, ext);
+    let Some((_, holes0, normal)) = face_region_world(doc, profile) else {
+        return Vec::new();
+    };
+    holes0
+        .into_iter()
+        .map(|h| {
+            h.into_iter()
+                .map(|p| {
+                    if top {
+                        extruded_free_end_point(doc, ext, normal, p, distance)
+                    } else {
+                        extruded_base_point(doc, ext, normal, p, distance)
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
 /// Number of flat, sketchable side walls of a profile (rectangles have 4, polygons have
 /// one per edge; circular profiles are curved and have none).
 /// True when `edge` names the circular cap rim of a Circle-profile face (#177): the one
@@ -4527,6 +4565,41 @@ mod tests {
             (vol - expected).abs() / expected < 0.02,
             "tube volume {vol} should be ~{expected} (π(R²−r²)h), not the full disc",
         );
+    }
+
+    /// #519: hovering an annular (boolean-difference) cap for extrusion must report its hole
+    /// so the highlight cuts the opening out instead of filling across it. `cap_hole_loops_world`
+    /// returns the ring's one hole, lifted to the requested cap along the extrusion normal.
+    #[test]
+    fn cap_hole_loops_report_the_ring_hole_at_the_cap() {
+        let (mut doc, sketch) = sketch_doc();
+        let h = 20.0_f32;
+        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.circles.push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 4.0, 0.0));
+        let ring = ExtrudeFace::Boolean {
+            op: crate::model::BooleanOp::Difference,
+            a: Box::new(ExtrudeFace::Circle(0)),
+            b: Box::new(ExtrudeFace::Circle(1)),
+        };
+        doc.extrusions.push(extrusion(sketch, vec![ring.clone()], h));
+
+        let base = cap_hole_loops_world(&doc, 0, &ring, false);
+        let top = cap_hole_loops_world(&doc, 0, &ring, true);
+        assert_eq!(base.len(), 1, "the ring has one hole on the base cap");
+        assert_eq!(top.len(), 1, "and one hole on the top cap");
+
+        // The two caps' holes are the same ring, separated by the extrusion height along z.
+        let base_z = base[0][0].z;
+        let top_z = top[0][0].z;
+        assert!(
+            (base_z - top_z).abs() - h < 0.05,
+            "top hole should sit ~{h} above the base hole (base z={base_z}, top z={top_z})",
+        );
+
+        // A simply-connected cap (a plain disc) has no holes.
+        doc.extrusions.push(extrusion(sketch, vec![ExtrudeFace::Circle(0)], h));
+        let disc = cap_hole_loops_world(&doc, 1, &ExtrudeFace::Circle(0), true);
+        assert!(disc.is_empty(), "a solid disc cap reports no holes");
     }
 
     /// #177: chamfering a cylinder's top rim through the kernel removes an annular ring
