@@ -705,9 +705,9 @@ pub fn arc_dimension_world_geom(
     radius_world: f32,
     label_outset_world: f32,
 ) -> Option<ArcDimensionWorldGeom> {
-    if radius_world <= 1e-6 {
-        return None;
-    }
+    // A zero radius (degenerate pixel→world scale) still places a tiny arc so callers
+    // that only need a label anchor (angle ValueInput layout) keep working.
+    let radius_world = radius_world.max(1e-3);
     let dir_a = dir_a.normalize_or_zero();
     let dir_b = dir_b.normalize_or_zero();
     let plane_n = plane_normal.normalize_or_zero();

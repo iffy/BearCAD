@@ -6,9 +6,13 @@ bearcad.line{ x = 0, y = 0, x1 = 40, y1 = 0 }
 bearcad.line{ x = 0, y = 0, x1 = 0, y1 = 30 }
 bearcad.clear_selection()
 bearcad.ui.tool("dimension")
+-- Hide the side panes: under CI's WM-less Xvfb the window can't maximize, and with
+-- all three panes open the 3D viewport is too narrow for the ground-coordinate
+-- clicks below to land inside it.
 bearcad.ui.pane("elements", "hide")
 bearcad.ui.pane("context", "hide")
 bearcad.ui.pane("parameters", "hide")
+bearcad.ui.auto_zoom(false)
 bearcad.ui.view("top")
 bearcad.ui.wait(5)
 bearcad.ui.zoom_fit()

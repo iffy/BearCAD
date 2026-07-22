@@ -15618,47 +15618,57 @@ impl App {
                     } else {
                         None
                     };
-                    if let Some(input_layout) = input_layout {
-                        let ctx = ui.ctx();
-                        let id = egui::Id::new(("committed_dim", format!("{:?}", edit.target)));
-                        let mut commit_dim = false;
-                        let mut dim_field_result = SketchDimFieldResult::default();
-                        let doc = &mut self.state.doc;
-                        egui::Area::new(egui::Id::new((
-                            "committed_dim_area",
-                            format!("{:?}", edit.target),
-                        )))
-                        .fixed_pos(input_layout.pos)
-                        .order(egui::Order::Foreground)
-                        .show(ctx, |ui| {
-                            dim_field_result = show_sketch_dimension_field(
-                                ui,
-                                ctx,
-                                id,
-                                &mut edit.text,
-                                doc,
-                                Some(active_sketch),
-                                true,
-                                &mut edit.pending_focus,
-                                true,
-                                is_angle,
-                            );
-                            commit_dim = dim_field_result.enter_commit;
-                        });
-                        inline_parameter_field_results.push(dim_field_result);
-                        let dim_focused = ctx.memory(|m| m.focused()) == Some(id);
-                        if edit.pending_focus {
-                            ctx.memory_mut(|m| m.request_focus(id));
-                        }
-                        commit_committed_dim = should_commit_sketch_on_enter(
-                            commit_dim,
-                            dim_focused,
-                            sketch_dimension_enter_pressed(ui),
+                    // Fall back to a screen-center field if the arc layout can't project
+                    // (edge-on views / transient zero scale) so type+Enter still commit.
+                    let input_layout = input_layout.unwrap_or_else(|| {
+                        dim_input_layout_centered_on(
+                            egui::Rect::from_center_size(
+                                viewport.center(),
+                                dim_input_size_for_text(&edit.text),
+                            ),
+                            &edit.text,
+                        )
+                    });
+                    let ctx = ui.ctx();
+                    let id = egui::Id::new(("committed_dim", format!("{:?}", edit.target)));
+                    let mut commit_dim = false;
+                    let mut dim_field_result = SketchDimFieldResult::default();
+                    let doc = &mut self.state.doc;
+                    egui::Area::new(egui::Id::new((
+                        "committed_dim_area",
+                        format!("{:?}", edit.target),
+                    )))
+                    .fixed_pos(input_layout.pos)
+                    .order(egui::Order::Foreground)
+                    .show(ctx, |ui| {
+                        dim_field_result = show_sketch_dimension_field(
+                            ui,
+                            ctx,
+                            id,
+                            &mut edit.text,
+                            doc,
+                            Some(active_sketch),
+                            true,
+                            &mut edit.pending_focus,
+                            true,
+                            is_angle,
                         );
-                        if commit_committed_dim && !commit_dim {
-                            consume_sketch_dimension_enter(ui);
-                        }
+                        commit_dim = dim_field_result.enter_commit;
+                    });
+                    inline_parameter_field_results.push(dim_field_result);
+                    let dim_focused = ctx.memory(|m| m.focused()) == Some(id);
+                    if edit.pending_focus {
+                        ctx.memory_mut(|m| m.request_focus(id));
                     }
+                    // Enter always commits an open dim edit (focused field or not), matching
+                    // the other sketch dim inputs — required for scripted interaction tests.
+                    let enter = sketch_dimension_enter_pressed(ui);
+                    commit_committed_dim =
+                        commit_dim || enter;
+                    if commit_committed_dim {
+                        consume_sketch_dimension_enter(ui);
+                    }
+                    let _ = dim_focused;
                     if let Some(target) = edit.target.distance_target(&self.state.doc) {
                         if let Some((a, b)) =
                             distance_target_segment_endpoints(&self.state.doc, active_sketch, target)
@@ -15697,6 +15707,15 @@ impl App {
                         }
                     }
                 }
+            }
+            // Enter commits even if the floating field failed to layout this frame
+            // (e.g. transient projection issues) so scripted type/Enter always works.
+            if !commit_committed_dim
+                && self.state.editing_committed_dim.is_some()
+                && sketch_dimension_enter_pressed(ui)
+            {
+                commit_committed_dim = true;
+                consume_sketch_dimension_enter(ui);
             }
             if commit_committed_dim {
                 self.state.apply(Action::CommitCommittedDim);
