@@ -383,7 +383,7 @@ pub fn drag_point(
         set_point_uv(doc, sketch, point.clone(), u, v)?;
     }
 
-    apply_length_constraints_for_drag(doc, dragged, u, v, &group)?;
+    apply_length_constraints_for_drag(doc, sketch, dragged, u, v, &group)?;
     let pins: Vec<(ConstraintPoint, (f32, f32))> =
         group.iter().map(|point| (point.clone(), (u, v))).collect();
     solve_document_constraints_with_pins(doc, &pins)
@@ -541,19 +541,35 @@ fn project_drag_uv(
             let line = ConstraintLine::Line(line_index);
             let mut projected_u = u;
             let mut projected_v = v;
+            // H/V locks the dragged end against the *other* end only when that end
+            // cannot move. If the partner is free, the solver keeps H/V by moving both
+            // endpoints (translation) — projecting here freezes the vertex (#485).
+            let other = ConstraintPoint::LineEndpoint {
+                line: line_index,
+                end: match end {
+                    LineEnd::Start => LineEnd::End,
+                    LineEnd::End => LineEnd::Start,
+                },
+            };
+            let other_fixed =
+                !crate::sketch_solver::sketch_point_movable(doc, sketch, other).unwrap_or(true);
             for constraint in &doc.constraints {
                 if constraint.deleted {
                     continue;
                 }
                 match &constraint.kind {
-                    ConstraintKind::Horizontal { line: constrained } if *constrained == line => {
+                    ConstraintKind::Horizontal { line: constrained }
+                        if *constrained == line && other_fixed =>
+                    {
                         let ((_x0, y0), (_x1, y1)) = line_uv_endpoints(doc, sketch, line.clone())?;
                         projected_v = match end {
                             LineEnd::Start => y1,
                             LineEnd::End => y0,
                         };
                     }
-                    ConstraintKind::Vertical { line: constrained } if *constrained == line => {
+                    ConstraintKind::Vertical { line: constrained }
+                        if *constrained == line && other_fixed =>
+                    {
                         let ((x0, _y0), (x1, _y1)) = line_uv_endpoints(doc, sketch, line.clone())?;
                         projected_u = match end {
                             LineEnd::Start => x1,
@@ -868,6 +884,7 @@ fn entity_point(entity: ConstraintEntity) -> Option<ConstraintPoint> {
 
 fn apply_length_constraints_for_drag(
     doc: &mut Document,
+    sketch: SketchId,
     dragged: ConstraintPoint,
     u: f32,
     v: f32,
@@ -909,13 +926,35 @@ fn apply_length_constraints_for_drag(
             end: LineEnd::End,
         });
 
-        let (fixed_u, fixed_v, move_start) = if start_in_group && !end_in_group {
-            (line.x1, line.y1, true)
+        let (fixed_u, fixed_v, move_start, fixed_point) = if start_in_group && !end_in_group {
+            (
+                line.x1,
+                line.y1,
+                true,
+                ConstraintPoint::LineEndpoint {
+                    line: line_index,
+                    end: LineEnd::End,
+                },
+            )
         } else if end_in_group && !start_in_group {
-            (line.x0, line.y0, false)
+            (
+                line.x0,
+                line.y0,
+                false,
+                ConstraintPoint::LineEndpoint {
+                    line: line_index,
+                    end: LineEnd::Start,
+                },
+            )
         } else {
             continue;
         };
+        // Only pre-rotate around a truly fixed partner. When the other end is free the
+        // solver will rebalance length (and H/V) by translating — pre-pinning against the
+        // old partner position freezes a dimensioned horizontal line (#485).
+        if crate::sketch_solver::sketch_point_movable(doc, sketch, fixed_point).unwrap_or(true) {
+            continue;
+        }
 
         let (nu, nv) = project_endpoint_with_length((fixed_u, fixed_v), (u, v), length);
         let entity = doc
@@ -1174,6 +1213,98 @@ mod tests {
         let line = &doc.lines[0];
         assert!((line.length() - 10.0).abs() < 1e-2, "length was {}", line.length());
         assert!((line.x0).abs() < 1e-3 && (line.y0).abs() < 1e-3);
+    }
+
+    /// #485: a horizontal, length-dimensioned line is still free to translate. Dragging
+    /// either endpoint must move the whole line (length + horizontal preserved), not
+    /// freeze the vertex against the other endpoint's current coordinates.
+    #[test]
+    fn drag_vertex_translates_horizontal_dimensioned_line() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 50.0, 0.0));
+        add_distance_constraint(
+            &mut doc,
+            sketch,
+            DistanceTarget::LineLength(0),
+            "50mm".to_string(),
+        )
+        .unwrap();
+        let mut sel = SceneSelection::default();
+        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        add_geometric_constraint_from_selection(
+            &mut doc,
+            sketch,
+            GeometricConstraintType::Horizontal,
+            &sel,
+        )
+        .unwrap();
+
+        drag_point(
+            &mut doc,
+            sketch,
+            ConstraintPoint::LineEndpoint {
+                line: 0,
+                end: LineEnd::End,
+            },
+            50.0,
+            20.0,
+        )
+        .unwrap();
+        let line = &doc.lines[0];
+        assert!(
+            (line.chord_length() - 50.0).abs() < 0.5,
+            "length must stay 50, got {}",
+            line.chord_length()
+        );
+        assert!(
+            (line.y0 - line.y1).abs() < 0.5,
+            "must stay horizontal, y0={} y1={}",
+            line.y0,
+            line.y1
+        );
+        assert!(
+            line.y1.abs() > 5.0,
+            "endpoint drag must translate the line in y, still at y={}",
+            line.y1
+        );
+    }
+
+    /// #485: even without a length dimension, a free horizontal line's vertex must
+    /// follow a perpendicular drag (the other endpoint rides along).
+    #[test]
+    fn drag_vertex_translates_free_horizontal_line() {
+        let (mut doc, sketch) = sketch_doc();
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 50.0, 0.0));
+        let mut sel = SceneSelection::default();
+        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        add_geometric_constraint_from_selection(
+            &mut doc,
+            sketch,
+            GeometricConstraintType::Horizontal,
+            &sel,
+        )
+        .unwrap();
+
+        drag_point(
+            &mut doc,
+            sketch,
+            ConstraintPoint::LineEndpoint {
+                line: 0,
+                end: LineEnd::End,
+            },
+            50.0,
+            20.0,
+        )
+        .unwrap();
+        let line = &doc.lines[0];
+        assert!((line.y0 - line.y1).abs() < 0.5, "must stay horizontal");
+        assert!(
+            line.y1.abs() > 5.0,
+            "free H-line vertex must move in y, still at y={}",
+            line.y1
+        );
     }
 
     #[test]
