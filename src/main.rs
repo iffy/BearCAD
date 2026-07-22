@@ -3277,18 +3277,32 @@ impl App {
         });
         if let Some((anchor, normal, dist)) = gizmo {
             let anchor_w = local_to_world(&frame, anchor.x, anchor.y);
-            let handle_uv = anchor + normal * dist;
-            let handle_w = local_to_world(&frame, handle_uv.x, handle_uv.y);
-            if let (Some(a_px), Some(h_px)) = (project(anchor_w), project(handle_w)) {
-                let hovered =
-                    pointer_screen.is_some_and(|pp| (pp - h_px).length() <= HIT_PX);
-                let active = hovered || self.offset_gizmo_drag;
-                let color = if active { col::DIM_INPUT_BORDER_FOCUS } else { col::PREVIEW };
-                painter.line_segment([a_px, h_px], egui::Stroke::new(1.5, color));
-                painter.circle_filled(h_px, if active { 6.5 } else { 5.0 }, color);
-                if hovered && ui.input(|i| i.pointer.primary_pressed()) {
-                    self.offset_gizmo_drag = true;
-                }
+            // Offset direction in world (unit): the sketch-plane basis applied to the UV normal.
+            let normal_w =
+                (local_to_world(&frame, anchor.x + normal.x, anchor.y + normal.y) - anchor_w)
+                    .normalize_or_zero();
+            // The handle sits at a minimum *display* distance so the push-pull gizmo stays
+            // visible and grabbable even at a small or zero offset (#515), matching the
+            // extrude and construction-plane gizmos. Dragging still maps to the true distance.
+            let handle_w = construction::offset_handle(
+                anchor_w,
+                normal_w,
+                construction::gizmo_display_offset(dist),
+            );
+            let hovered = pointer_screen
+                .zip(project(handle_w))
+                .is_some_and(|(pp, h)| (pp - h).length() <= HIT_PX);
+            draw_offset_gizmo(
+                painter,
+                project,
+                anchor_w,
+                normal_w,
+                dist,
+                col::PREVIEW,
+                hovered || self.offset_gizmo_drag,
+            );
+            if hovered && ui.input(|i| i.pointer.primary_pressed()) {
+                self.offset_gizmo_drag = true;
             }
             if self.offset_gizmo_drag {
                 if !ui.input(|i| i.pointer.primary_down()) {
