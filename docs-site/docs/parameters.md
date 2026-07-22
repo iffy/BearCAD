@@ -53,7 +53,7 @@ from selection** button. Valid selections:
 
 Derived values are read-only in the pane (the name stays editable) and re-measure as the
 geometry changes. Focusing a derived parameter's row highlights the geometry that defines
-it.
+it; clicking into its **name** field draws that source geometry in **green** in the 3D view.
 
 ```lua
 bearcad.derive_parameter{ kind = "line_length", a = 0, name = "leg" }

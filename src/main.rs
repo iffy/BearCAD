@@ -4856,6 +4856,47 @@ impl App {
         segs
     }
 
+    /// Green-highlight the source geometry of a derived parameter whose **name** field is
+    /// focused (#536): a derived parameter's value is measured from a line, a pair of lines,
+    /// or two points, so drawing those in green shows what drives the value. Painter-based and
+    /// drawn late in `draw_viewport`, so it sits on top of the GPU scene.
+    fn draw_derived_source_highlight(
+        &self,
+        painter: &egui::Painter,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        ctx: &egui::Context,
+    ) {
+        let sources = parameters::focused_derived_parameter_source(ctx, &self.state.doc);
+        if sources.is_empty() {
+            return;
+        }
+        const GREEN: egui::Color32 = egui::Color32::from_rgb(90, 220, 120);
+        for el in sources {
+            match el {
+                SceneElement::Line(li) => {
+                    if let Some((a, b)) = self
+                        .state
+                        .doc
+                        .lines
+                        .get(li)
+                        .filter(|l| !l.deleted)
+                        .and_then(|l| crate::face::line_world_endpoints(&self.state.doc, l))
+                    {
+                        draw_world_segment(painter, project, a, b, GREEN, 3.5);
+                    }
+                }
+                SceneElement::Point(p) => {
+                    if let Some(sp) =
+                        construction::point_world_position(&self.state.doc, p).and_then(project)
+                    {
+                        painter.circle_filled(sp, 5.0, GREEN);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// The visible tracing image whose quad is under the cursor (#425), nearest plane hit
     /// first.
     fn pick_tracing_image(
@@ -16194,6 +16235,10 @@ impl App {
                 }
             }
         }
+
+        // Green-highlight the source geometry of a derived parameter whose name field is
+        // focused (#536), so it's clear which geometry drives the value being renamed.
+        self.draw_derived_source_highlight(&painter, &project, ui.ctx());
 
         if !constraint_graphics.is_empty() {
             if !gpu_drawn {

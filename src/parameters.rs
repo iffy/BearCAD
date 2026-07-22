@@ -106,6 +106,28 @@ pub fn format_parameter_value_display(doc: &Document, expression: &str) -> Strin
     }
 }
 
+/// Source geometry of the derived parameter whose **name** field currently holds keyboard
+/// focus (#536): the elements its value is measured from, to green-highlight in the viewport.
+/// Empty unless a derived parameter's name field (not its read-only value) is focused.
+pub fn focused_derived_parameter_source(
+    ctx: &egui::Context,
+    doc: &Document,
+) -> Vec<crate::hierarchy::SceneElement> {
+    let Some(focused) = ctx.memory(|m| m.focused()) else {
+        return Vec::new();
+    };
+    doc.parameters
+        .iter()
+        .enumerate()
+        .find_map(|(index, param)| {
+            if param.deleted || focused != param_name_id(index) {
+                return None;
+            }
+            param.source.as_ref().map(derived_source_elements)
+        })
+        .unwrap_or_default()
+}
+
 /// Name of the parameter whose name/value field currently holds keyboard focus, if any.
 pub fn focused_parameter_name(ctx: &egui::Context, doc: &Document) -> Option<String> {
     let focused = ctx.memory(|m| m.focused())?;

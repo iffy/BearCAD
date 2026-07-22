@@ -1633,6 +1633,10 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
   in the document length unit, angles in the document angle unit).
 - Focusing a derived parameter's row highlights its defining elements
   (`derived_source_elements` feeds `elements_using_parameter`).
+- Focusing a derived parameter's **name field** (not its read-only value) additionally draws
+  the source geometry — the measured line, line pair, or two points — in **green** in the 3D
+  view (#536, `focused_derived_parameter_source` → `draw_derived_source_highlight`), so it's
+  clear which geometry drives the value being renamed.
 - The **Dimension tool measures in 3D mode** (#453): outside a sketch it selects like the
   Select tool (measurable lines/points hover-glow), and as soon as the selection measures
   something the derived parameter is created and the selection clears
