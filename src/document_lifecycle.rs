@@ -354,6 +354,12 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                             c.deleted = true;
                         }
                     }
+                    // The reflected corner-coincidences go with it too (#547).
+                    for &ci in &op.constraint_outputs {
+                        if let Some(c) = doc.constraints.get_mut(ci) {
+                            c.deleted = true;
+                        }
+                    }
                     changed = true;
                 }
             }

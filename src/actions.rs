@@ -9220,6 +9220,7 @@ label_hidden: false,
                     circle_targets,
                     line_outputs: Vec::new(),
                     circle_outputs: Vec::new(),
+                    constraint_outputs: Vec::new(),
                     name: None,
                     deleted: false,
                 });
@@ -12491,9 +12492,65 @@ pub(crate) fn rebuild_sketch_mirror(doc: &mut crate::model::Document, op_index: 
         };
     }
 
+    // Reflect the sources' shared corners onto the outputs (#547) so a mirrored polygon's
+    // reflected edges join into a fillable face. Face detection keys vertices by coincidence
+    // constraints (see `polygon::vertex_key`), and the reflection preserves coincidence, so a
+    // `Coincident` between two mirrored source endpoints maps to one between the matching output
+    // endpoints. Old ones are tombstoned first, so a rebuild stays idempotent.
+    for &ci in &op.constraint_outputs {
+        if let Some(c) = doc.constraints.get_mut(ci) {
+            c.deleted = true;
+        }
+    }
+    let src_to_out: std::collections::HashMap<usize, usize> =
+        want_lines.iter().copied().zip(line_outputs.iter().copied()).collect();
+    let map_end = |p: &ConstraintPoint| -> Option<ConstraintPoint> {
+        match p {
+            ConstraintPoint::LineEndpoint { line, end } => src_to_out
+                .get(line)
+                .map(|&out| ConstraintPoint::LineEndpoint { line: out, end: *end }),
+            _ => None,
+        }
+    };
+    let mut constraint_outputs: Vec<usize> = Vec::new();
+    let existing: Vec<crate::model::Constraint> = doc
+        .constraints
+        .iter()
+        .filter(|c| {
+            !c.deleted
+                && c.sketch == op.sketch
+                && matches!(&c.kind, ConstraintKind::Coincident { .. })
+        })
+        .cloned()
+        .collect();
+    for c in existing {
+        if let ConstraintKind::Coincident {
+            a: ConstraintEntity::Point(pa),
+            b: ConstraintEntity::Point(pb),
+        } = &c.kind
+        {
+            if let (Some(oa), Some(ob)) = (map_end(pa), map_end(pb)) {
+                constraint_outputs.push(doc.constraints.len());
+                doc.constraints.push(crate::model::Constraint {
+                    sketch: op.sketch,
+                    kind: ConstraintKind::Coincident {
+                        a: ConstraintEntity::Point(oa),
+                        b: ConstraintEntity::Point(ob),
+                    },
+                    expression: String::new(),
+                    dim_offset: None,
+                    name: None,
+                    deleted: false,
+                });
+                doc.shape_order.push(crate::model::ShapeKind::Constraint);
+            }
+        }
+    }
+
     let entry = &mut doc.sketch_mirror_ops[op_index];
     entry.line_outputs = line_outputs;
     entry.circle_outputs = circle_outputs;
+    entry.constraint_outputs = constraint_outputs;
     true
 }
 
@@ -13096,6 +13153,66 @@ mod tests {
         state.apply(Action::DeleteElement { element: SceneElement::SketchMirrorOp(0) });
         assert!(state.doc.lines[out].deleted, "reflected line removed with the op");
         assert!(!state.doc.lines[1].deleted, "source kept");
+    }
+
+    /// #547: mirroring a rectangle reflects its corner-coincidences too, so the reflected edges
+    /// join into a closed loop (a fillable/extrudable face) — face detection keys vertices by
+    /// coincidence, not position.
+    #[test]
+    fn sketch_mirror_of_a_rectangle_forms_a_face() {
+        use crate::model::{Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, Line, LineEnd};
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        // Line 0: the mirror axis x = 0. Lines 1..=4: a square on the +x side.
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, -20.0, 0.0, 20.0)); // 0 axis
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 2.0, 2.0, 6.0, 2.0)); // 1
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 6.0, 2.0, 6.0, 6.0)); // 2
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 6.0, 6.0, 2.0, 6.0)); // 3
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 2.0, 6.0, 2.0, 2.0)); // 4
+        // Stitch the square's four corners with coincidences.
+        for (la, ea, lb, eb) in [
+            (1, LineEnd::End, 2, LineEnd::Start),
+            (2, LineEnd::End, 3, LineEnd::Start),
+            (3, LineEnd::End, 4, LineEnd::Start),
+            (4, LineEnd::End, 1, LineEnd::Start),
+        ] {
+            state.doc.constraints.push(Constraint {
+                sketch,
+                kind: ConstraintKind::Coincident {
+                    a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint { line: la, end: ea }),
+                    b: ConstraintEntity::Point(ConstraintPoint::LineEndpoint { line: lb, end: eb }),
+                },
+                expression: String::new(),
+                dim_offset: None,
+                name: None,
+                deleted: false,
+            });
+        }
+        // Before mirroring: exactly one closed loop (the square).
+        assert_eq!(crate::polygon::closed_line_loops(&state.doc, sketch).len(), 1);
+
+        state.apply(Action::CreateSketchMirrorOperation {
+            sketch,
+            line: 0,
+            line_targets: vec![1, 2, 3, 4],
+            circle_targets: vec![],
+        });
+        assert_eq!(state.doc.sketch_mirror_ops[0].line_outputs.len(), 4);
+        assert_eq!(
+            state.doc.sketch_mirror_ops[0].constraint_outputs.len(),
+            4,
+            "the four corner-coincidences are reflected"
+        );
+        // Now two closed loops exist: the source square and its reflection.
+        let loops = crate::polygon::closed_line_loops(&state.doc, sketch);
+        assert_eq!(loops.len(), 2, "the reflected rectangle forms its own face: {loops:?}");
+        // One loop is made entirely of the reflected output lines.
+        let outs: std::collections::HashSet<usize> =
+            state.doc.sketch_mirror_ops[0].line_outputs.iter().copied().collect();
+        assert!(
+            loops.iter().any(|l| l.iter().all(|li| outs.contains(li))),
+            "a face is formed from the reflected lines: {loops:?}"
+        );
     }
 
     /// #543: dragging the mirror line re-reflects the sources live — the drag solve doesn't run

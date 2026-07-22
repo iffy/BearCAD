@@ -1916,6 +1916,11 @@ pub struct SketchMirrorOperation {
     /// Generated circle indices, aligned with `circle_targets`.
     #[serde(default)]
     pub circle_outputs: Vec<usize>,
+    /// Generated coincidence-constraint indices reflecting the sources' shared corners onto the
+    /// outputs (#547), so a mirrored polygon's reflected edges join into a fillable face.
+    /// Tombstoned and regenerated on every rebuild, like the output geometry.
+    #[serde(default)]
+    pub constraint_outputs: Vec<usize>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
