@@ -1,6 +1,6 @@
 //! Pure 2D offset geometry for the sketch Offset operation: parallel copies of line
-//! chains (mitered at shared endpoints) and concentric copies of circles, all in
-//! sketch-local (u, v) coordinates.
+//! chains (mitered at shared endpoints), cubic-bezier curves (#494), and concentric
+//! copies of circles, all in sketch-local (u, v) coordinates.
 //!
 //! Sign convention: **positive grows** — a closed loop offsets outward, a circle's
 //! radius increases; an open chain offsets to the left of its first segment's stored
@@ -9,11 +9,16 @@
 use glam::Vec2;
 
 /// A source segment to offset, tagged with its caller-side id (line index).
+///
+/// When `bezier` is set, the segment is a cubic curve with handles near `a` and `b`
+/// (same convention as [`crate::model::Line::bezier`]). Curved sources are offset as
+/// independent parallel curves (#494), not chord-mitered as straight segments.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OffsetSource {
     pub id: usize,
     pub a: Vec2,
     pub b: Vec2,
+    pub bezier: Option<[Vec2; 2]>,
 }
 
 /// An offset output segment, in the same stored orientation as its source.
@@ -22,6 +27,7 @@ pub struct OffsetSegment {
     pub id: usize,
     pub a: Vec2,
     pub b: Vec2,
+    pub bezier: Option<[Vec2; 2]>,
 }
 
 /// Endpoints within this distance chain together (sketch coords are millimetres).
@@ -156,48 +162,113 @@ fn line_intersection(p1: Vec2, d1: Vec2, p2: Vec2, d2: Vec2) -> Option<Vec2> {
     Some(p1 + d1 * t)
 }
 
+/// Offset a cubic bezier by `distance` to the left of its start→end orientation
+/// (or right when `distance` is negative). First-order parallel-curve approx: move
+/// endpoints along end normals and keep handle lengths along the end tangents (#494).
+pub fn offset_cubic_bezier(
+    p0: Vec2,
+    c0: Vec2,
+    c1: Vec2,
+    p1: Vec2,
+    distance: f32,
+) -> (Vec2, Vec2, Vec2, Vec2) {
+    let t0 = (c0 - p0).normalize_or_zero();
+    let t1 = (p1 - c1).normalize_or_zero();
+    // Fall back to the chord when a handle collapses onto its endpoint.
+    let t0 = if t0 == Vec2::ZERO {
+        (p1 - p0).normalize_or_zero()
+    } else {
+        t0
+    };
+    let t1 = if t1 == Vec2::ZERO {
+        (p1 - p0).normalize_or_zero()
+    } else {
+        t1
+    };
+    let n0 = Vec2::new(-t0.y, t0.x);
+    let n1 = Vec2::new(-t1.y, t1.x);
+    let len0 = (c0 - p0).length();
+    let len1 = (p1 - c1).length();
+    let op0 = p0 + n0 * distance;
+    let op1 = p1 + n1 * distance;
+    let oc0 = op0 + t0 * len0;
+    let oc1 = op1 - t1 * len1;
+    (op0, oc0, oc1, op1)
+}
+
 /// Offset every source segment by `distance`, mitering shared endpoints so chains and
 /// closed loops stay connected. Outputs keep their source's stored orientation and
-/// come back in source order.
+/// come back in source order. Curved (bezier) sources are offset as independent
+/// parallel curves rather than chord-mitered (#494).
 pub fn offset_segments(sources: &[OffsetSource], distance: f32) -> Vec<OffsetSegment> {
     let mut out: Vec<Option<OffsetSegment>> = vec![None; sources.len()];
-    for (walk, closed) in chains(sources) {
-        // Positive grows: closed CCW loops flip the left normal (which points inward).
-        let flip = if closed && signed_area(&walk, sources) > 0.0 {
-            -1.0
-        } else {
-            1.0
-        };
-        // Offset each walked segment to its (possibly flipped) left side.
-        let mut pieces: Vec<(Vec2, Vec2, Vec2)> = Vec::with_capacity(walk.len()); // (a, b, dir)
-        for w in &walk {
-            let a = w.tail(sources);
-            let b = w.head(sources);
-            let dir = (b - a).normalize_or_zero();
-            let normal = Vec2::new(-dir.y, dir.x) * flip;
-            let shift = normal * distance;
-            pieces.push((a + shift, b + shift, dir));
-        }
-        // Miter interior joints (and the wrap joint of a closed loop).
-        let n = pieces.len();
-        let joints = if closed { n } else { n.saturating_sub(1) };
-        for j in 0..joints {
-            let i0 = j;
-            let i1 = (j + 1) % n;
-            let (a0, b0, d0) = pieces[i0];
-            let (a1, _b1, d1) = pieces[i1];
-            let miter = line_intersection(a0, d0, a1, d1)
-                .filter(|m| (*m - b0).length() <= MITER_LIMIT * distance.abs().max(JOIN_EPS));
-            if let Some(m) = miter {
-                pieces[i0].1 = m;
-                pieces[i1].0 = m;
+
+    // Straight sources: existing chain + miter path.
+    let straight: Vec<(usize, OffsetSource)> = sources
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(_, s)| s.bezier.is_none())
+        .collect();
+    if !straight.is_empty() {
+        let straight_only: Vec<OffsetSource> = straight.iter().map(|(_, s)| *s).collect();
+        let index_map: Vec<usize> = straight.iter().map(|(i, _)| *i).collect();
+        for (walk, closed) in chains(&straight_only) {
+            let flip = if closed && signed_area(&walk, &straight_only) > 0.0 {
+                -1.0
+            } else {
+                1.0
+            };
+            let mut pieces: Vec<(Vec2, Vec2, Vec2)> = Vec::with_capacity(walk.len());
+            for w in &walk {
+                let a = w.tail(&straight_only);
+                let b = w.head(&straight_only);
+                let dir = (b - a).normalize_or_zero();
+                let normal = Vec2::new(-dir.y, dir.x) * flip;
+                let shift = normal * distance;
+                pieces.push((a + shift, b + shift, dir));
+            }
+            let n = pieces.len();
+            let joints = if closed { n } else { n.saturating_sub(1) };
+            for j in 0..joints {
+                let i0 = j;
+                let i1 = (j + 1) % n;
+                let (a0, b0, d0) = pieces[i0];
+                let (a1, _b1, d1) = pieces[i1];
+                let miter = line_intersection(a0, d0, a1, d1)
+                    .filter(|m| (*m - b0).length() <= MITER_LIMIT * distance.abs().max(JOIN_EPS));
+                if let Some(m) = miter {
+                    pieces[i0].1 = m;
+                    pieces[i1].0 = m;
+                }
+            }
+            for (w, (a, b, _)) in walk.iter().zip(pieces) {
+                let (a, b) = if w.flipped { (b, a) } else { (a, b) };
+                let src_i = index_map[w.index];
+                out[src_i] = Some(OffsetSegment {
+                    id: sources[src_i].id,
+                    a,
+                    b,
+                    bezier: None,
+                });
             }
         }
-        for (w, (a, b, _)) in walk.iter().zip(pieces) {
-            let (a, b) = if w.flipped { (b, a) } else { (a, b) };
-            out[w.index] = Some(OffsetSegment { id: sources[w.index].id, a, b });
-        }
     }
+
+    // Curved sources: independent parallel-curve offset (no chord fallback).
+    for (i, s) in sources.iter().enumerate() {
+        let Some([c0, c1]) = s.bezier else {
+            continue;
+        };
+        let (a, oc0, oc1, b) = offset_cubic_bezier(s.a, c0, c1, s.b, distance);
+        out[i] = Some(OffsetSegment {
+            id: s.id,
+            a,
+            b,
+            bezier: Some([oc0, oc1]),
+        });
+    }
+
     out.into_iter().flatten().collect()
 }
 
@@ -210,6 +281,22 @@ mod tests {
             id,
             a: Vec2::new(a.0, a.1),
             b: Vec2::new(b.0, b.1),
+            bezier: None,
+        }
+    }
+
+    fn src_curve(
+        id: usize,
+        a: (f32, f32),
+        c0: (f32, f32),
+        c1: (f32, f32),
+        b: (f32, f32),
+    ) -> OffsetSource {
+        OffsetSource {
+            id,
+            a: Vec2::new(a.0, a.1),
+            b: Vec2::new(b.0, b.1),
+            bezier: Some([Vec2::new(c0.0, c0.1), Vec2::new(c1.0, c1.1)]),
         }
     }
 
@@ -301,5 +388,45 @@ mod tests {
         assert!((offset_circle_radius(5.0, 2.0) - 7.0).abs() < 1e-6);
         assert!((offset_circle_radius(5.0, -2.0) - 3.0).abs() < 1e-6);
         assert!((offset_circle_radius(5.0, -9.0) - MIN_CIRCLE_RADIUS).abs() < 1e-6);
+    }
+
+    /// #494: a cubic-bezier source must produce a curved offset (handles preserved),
+    /// not a straight chord/"chamfer-style" segment.
+    #[test]
+    fn curved_line_offset_keeps_bezier_handles() {
+        // Horizontal-ish S-curve: endpoints on y=0, handles pull up then down.
+        let out = offset_segments(
+            &[src_curve(0, (0.0, 0.0), (10.0, 20.0), (30.0, 20.0), (40.0, 0.0))],
+            5.0,
+        );
+        assert_eq!(out.len(), 1);
+        let seg = &out[0];
+        let bezier = seg.bezier.expect("offset of a curve must stay a curve");
+        // Endpoints moved, not coincident with the source chord offset alone.
+        assert!(
+            (seg.a - Vec2::new(0.0, 0.0)).length() > 1.0,
+            "start should move off the source, got {:?}",
+            seg.a
+        );
+        assert!(
+            (bezier[0] - seg.a).length() > 1.0 && (bezier[1] - seg.b).length() > 1.0,
+            "handles must remain off the endpoints so the offset is curved: {seg:?}"
+        );
+        // A pure chord offset of the endpoints would be a straight line; the mid
+        // sample of the offset curve must leave that chord.
+        let mid = {
+            let t = 0.5f32;
+            let p0 = seg.a;
+            let p1 = bezier[0];
+            let p2 = bezier[1];
+            let p3 = seg.b;
+            let u = 1.0 - t;
+            p0 * u.powi(3) + p1 * 3.0 * u.powi(2) * t + p2 * 3.0 * u * t.powi(2) + p3 * t.powi(3)
+        };
+        let chord_mid = (seg.a + seg.b) * 0.5;
+        assert!(
+            (mid - chord_mid).length() > 2.0,
+            "offset must bow (not be a straight chamfer), mid={mid:?} chord_mid={chord_mid:?}"
+        );
     }
 }

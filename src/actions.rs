@@ -613,6 +613,9 @@ impl CreatingSketchOffset {
                         id: i,
                         a: glam::Vec2::new(l.x0, l.y0),
                         b: glam::Vec2::new(l.x1, l.y1),
+                        bezier: l.bezier.map(|[c0, c1]| {
+                            [glam::Vec2::new(c0.0, c0.1), glam::Vec2::new(c1.0, c1.1)]
+                        }),
                     })
                 })
                 .collect();
@@ -11255,6 +11258,9 @@ pub(crate) fn rebuild_sketch_offset(doc: &mut crate::model::Document, op_index: 
                 id: li,
                 a: glam::Vec2::new(l.x0, l.y0),
                 b: glam::Vec2::new(l.x1, l.y1),
+                bezier: l.bezier.map(|[c0, c1]| {
+                    [glam::Vec2::new(c0.0, c0.1), glam::Vec2::new(c1.0, c1.1)]
+                }),
             })
         })
         .collect();
@@ -11286,7 +11292,8 @@ pub(crate) fn rebuild_sketch_offset(doc: &mut crate::model::Document, op_index: 
             name: None,
             deleted: false,
             shadow: false,
-            bezier: None,
+            // #494: curved sources produce curved offsets (handles included).
+            bezier: seg.bezier.map(|[c0, c1]| [(c0.x, c0.y), (c1.x, c1.y)]),
             chamfer_fillet_parent: None,
             projection: None,
             ..src

@@ -3130,15 +3130,37 @@ impl App {
                     id: i,
                     a: glam::Vec2::new(l.x0, l.y0),
                     b: glam::Vec2::new(l.x1, l.y1),
+                    bezier: l.bezier.map(|[c0, c1]| {
+                        [glam::Vec2::new(c0.0, c0.1), glam::Vec2::new(c1.0, c1.1)]
+                    }),
                 })
             })
             .collect();
         let mut segs = Vec::new();
         for seg in crate::offset::offset_segments(&sources, distance) {
-            segs.push((
-                crate::face::local_to_world(&frame, seg.a.x, seg.a.y),
-                crate::face::local_to_world(&frame, seg.b.x, seg.b.y),
-            ));
+            // Ghost preview: sample curved offsets so they don't look like straight chords (#494).
+            if let Some([c0, c1]) = seg.bezier {
+                const N: usize = 16;
+                let mut prev = None;
+                for k in 0..=N {
+                    let t = k as f32 / N as f32;
+                    let u = 1.0 - t;
+                    let p = seg.a * u.powi(3)
+                        + c0 * 3.0 * u.powi(2) * t
+                        + c1 * 3.0 * u * t.powi(2)
+                        + seg.b * t.powi(3);
+                    let w = crate::face::local_to_world(&frame, p.x, p.y);
+                    if let Some(q) = prev {
+                        segs.push((q, w));
+                    }
+                    prev = Some(w);
+                }
+            } else {
+                segs.push((
+                    crate::face::local_to_world(&frame, seg.a.x, seg.a.y),
+                    crate::face::local_to_world(&frame, seg.b.x, seg.b.y),
+                ));
+            }
         }
         for &ci in &co.circle_targets {
             if let Some(c) = doc.circles.get(ci).filter(|c| !c.deleted) {

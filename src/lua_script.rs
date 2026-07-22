@@ -4216,6 +4216,35 @@ mod tests {
         assert!(state.doc.circles[op.circle_outputs[0]].deleted);
     }
 
+    /// #494: offsetting a cubic-bezier sketch line must produce a curved copy
+    /// (bezier handles present), not a straight chamfer-style segment.
+    #[test]
+    fn sketch_offset_of_curve_stays_curved() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.line{
+              x = 0, y = 0, x1 = 40, y1 = 0,
+              bezier = {{10, 20}, {30, 20}},
+            }
+            bearcad.offset_sketch{ sketch = 0, lines = {0}, distance = 5 }
+            "#,
+        );
+        let op = &state.doc.sketch_offset_ops[0];
+        assert_eq!(op.line_outputs.len(), 1);
+        let out = &state.doc.lines[op.line_outputs[0]];
+        assert!(
+            out.bezier.is_some(),
+            "offset of a curved line must keep bezier handles"
+        );
+        let [c0, c1] = out.bezier.unwrap();
+        let mid_handle_y = (c0.1 + c1.1) * 0.5;
+        assert!(
+            mid_handle_y.abs() > 1.0,
+            "offset handles should leave the chord, mid_y={mid_handle_y}"
+        );
+    }
+
     /// A parameter expression drives the offset distance and re-syncs on parameter edits.
     #[test]
     fn sketch_offset_distance_follows_parameter() {
