@@ -1573,6 +1573,46 @@ impl App {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Export every body inside a component (and its nested components) to an STL file (#521).
+    fn export_stl_component(&mut self, component: usize) {
+        if self.state.component_body_indices(component).is_empty() {
+            self.state.status = "This component has no bodies to export".to_string();
+            return;
+        }
+        let default_name = self.state.component_export_name(component);
+        let picked = rfd::FileDialog::new()
+            .add_filter("STL mesh", &["stl"])
+            .set_file_name(format!("{default_name}.stl"))
+            .save_file();
+        if let Some(path) = picked {
+            self.state.apply(Action::ExportComponentStl {
+                path: path.to_string_lossy().to_string(),
+                component,
+            });
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Export every body inside a component (and its nested components) to a STEP file (#521).
+    fn export_step_component(&mut self, component: usize) {
+        if self.state.component_body_indices(component).is_empty() {
+            self.state.status = "This component has no bodies to export".to_string();
+            return;
+        }
+        let default_name = self.state.component_export_name(component);
+        let picked = rfd::FileDialog::new()
+            .add_filter("STEP model", &["step", "stp"])
+            .set_file_name(format!("{default_name}.step"))
+            .save_file();
+        if let Some(path) = picked {
+            self.state.apply(Action::ExportComponentStep {
+                path: path.to_string_lossy().to_string(),
+                component,
+            });
+        }
+    }
+
     /// Open the Document JSON dialog pre-filled with the current document, serialized with
     /// the same JSON codec the web build saves with (`storage::to_json_bytes`). The text is
     /// meant to travel through a bug report: copy it out to attach a document state, or
@@ -1873,6 +1913,32 @@ impl App {
     fn export_step_body(&mut self, body: usize) {
         let name = self.web_body_export_name(body, "step");
         match self.state.export_step_bytes(Some(body)) {
+            Ok(bytes) => self.web_save_bytes(
+                "STEP model",
+                &["step", "stp"],
+                name,
+                bytes,
+                "Exported STEP".to_string(),
+            ),
+            Err(e) => self.state.status = format!("Export failed: {e}"),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn export_stl_component(&mut self, component: usize) {
+        let name = format!("{}.stl", self.state.component_export_name(component));
+        match self.state.export_component_stl_bytes(component) {
+            Ok(bytes) => {
+                self.web_save_bytes("STL mesh", &["stl"], name, bytes, "Exported STL".to_string())
+            }
+            Err(e) => self.state.status = format!("Export failed: {e}"),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn export_step_component(&mut self, component: usize) {
+        let name = format!("{}.step", self.state.component_export_name(component));
+        match self.state.export_component_step_bytes(component) {
             Ok(bytes) => self.web_save_bytes(
                 "STEP model",
                 &["step", "stp"],
@@ -6044,6 +6110,8 @@ impl eframe::App for App {
                 });
             let mut export_body: Option<usize> = None;
             let mut export_body_step: Option<usize> = None;
+            let mut export_component: Option<usize> = None;
+            let mut export_component_step: Option<usize> = None;
             let mut click_element: Option<(SceneElement, bool)> = None;
             let mut delete_element: Option<SceneElement> = None;
             let mut add_to_drawing: Option<SceneElement> = None;
@@ -6088,6 +6156,12 @@ impl eframe::App for App {
                     };
                     let mut queue_export_body_step = |index: usize| {
                         export_body_step = Some(index);
+                    };
+                    let mut queue_export_component = |index: usize| {
+                        export_component = Some(index);
+                    };
+                    let mut queue_export_component_step = |index: usize| {
+                        export_component_step = Some(index);
                     };
                     let mut noop_visibility = |_: SceneElement, _: bool| {};
                     let mut queue_click = |element: SceneElement, additive: bool| {
@@ -6140,6 +6214,8 @@ impl eframe::App for App {
                         &mut queue_rename_drawing,
                         &mut queue_export_body,
                         &mut queue_export_body_step,
+                        &mut queue_export_component,
+                        &mut queue_export_component_step,
                         &mut noop_visibility,
                         &mut queue_click,
                         &mut queue_hover,
@@ -6269,6 +6345,12 @@ impl eframe::App for App {
             }
             if let Some(index) = export_body_step {
                 self.export_step_body(index);
+            }
+            if let Some(index) = export_component {
+                self.export_stl_component(index);
+            }
+            if let Some(index) = export_component_step {
+                self.export_step_component(index);
             }
         }
 

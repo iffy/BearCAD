@@ -11,7 +11,7 @@ geometry.
 
 - The pane header's **+** button adds a component; right-click a component for **New
   component inside**.
-- A new component is selected and becomes **active** (marked with a ● dot): elements you
+- A new component is selected and becomes **active** (marked with an accent-colored dot): elements you
   create land inside it. Selecting a component activates it; click the **Document** row
   to go back to creating at the root.
 - Contents indent under the component; the **triangle** collapses/expands them.
@@ -20,6 +20,9 @@ geometry.
   out. Components drag into each other to nest.
 - **Hiding** a component hides everything inside it, nested components included.
 - Deleting a component keeps its contents — they move to its parent.
+- **Export** a component straight to **STL** or **STEP** from its right-click menu: every
+  body inside it (and its nested components) is written to one file, named after the
+  component.
 
 ## Units
 

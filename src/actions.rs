@@ -1058,6 +1058,10 @@ pub enum Action {
     ExportStep { path: String, body: Option<String> },
     /// Export a single body (by index) to a STEP file — used by the body row's context menu.
     ExportStepBody { path: String, body: usize },
+    /// Export every body inside a component (and its nested components) to an STL/STEP file
+    /// (#521) — used by the component row's context menu.
+    ExportComponentStl { path: String, component: usize },
+    ExportComponentStep { path: String, component: usize },
     /// Import an STL file (ASCII or binary, #70) as a new body.
     ImportStl { path: String },
     /// Import a PNG/JPEG as a tracing image (#163/#169) on a construction plane (defaults
@@ -2964,6 +2968,27 @@ impl AppState {
         Ok(crate::step::write_step(&name, &mesh).into_bytes())
     }
 
+    /// STL of every body in a component (and its nested components) as bytes (#521), for the
+    /// web build's download path.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn export_component_stl_bytes(&self, ci: usize) -> Result<Vec<u8>, String> {
+        let bodies = self.component_body_indices(ci);
+        let mesh = self
+            .combined_body_mesh(&bodies)
+            .ok_or_else(|| "no solid geometry to export".to_string())?;
+        Ok(crate::stl::write_ascii_stl(&self.component_export_name(ci), &mesh).into_bytes())
+    }
+
+    /// STEP (faceted BREP) of every body in a component as bytes (#521), for the web build.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn export_component_step_bytes(&self, ci: usize) -> Result<Vec<u8>, String> {
+        let bodies = self.component_body_indices(ci);
+        let mesh = self
+            .combined_body_mesh(&bodies)
+            .ok_or_else(|| "no solid geometry to export".to_string())?;
+        Ok(crate::step::write_step(&self.component_export_name(ci), &mesh).into_bytes())
+    }
+
     /// Resolve a revolve body choice into a concrete [`RevolveMode`]. `AddTouching` with
     /// an empty explicit list finds bodies whose mesh bounds intersect the revolve's;
     /// `Cut` requires a non-empty body list.
@@ -3297,6 +3322,45 @@ impl AppState {
         self.refresh_document_health();
         self.status = "Sweep updated".to_string();
         ActionResult::Ok
+    }
+
+    /// Every live body that belongs to component `ci` or one of its nested components (#521),
+    /// in body-index order. A body's component is resolved through its producing operation, so
+    /// this covers bodies filed into the component directly and via their source.
+    pub fn component_body_indices(&self, ci: usize) -> Vec<usize> {
+        (0..self.doc.bodies.len())
+            .filter(|&bi| {
+                self.doc.bodies.get(bi).is_some_and(|b| !b.deleted)
+                    && crate::hierarchy::owning_component(
+                        &self.doc,
+                        &crate::hierarchy::SceneElement::Body(bi),
+                    )
+                    // The body's owning component is `ci` itself or nested beneath it — its
+                    // parent chain (self first) passes through `ci`.
+                    .is_some_and(|owner| self.doc.component_chain(owner).contains(&ci))
+            })
+            .collect()
+    }
+
+    /// A filename-friendly default name for a component export (#521): its name, or a fallback.
+    pub fn component_export_name(&self, ci: usize) -> String {
+        self.doc
+            .components
+            .get(ci)
+            .and_then(|c| c.name.clone())
+            .unwrap_or_else(|| format!("component-{ci}"))
+    }
+
+    /// Concatenate the solid meshes of `bodies` into one mesh (#521). Like the non-kernel
+    /// document-export fallback, disjoint bodies simply co-exist; no boolean union is attempted.
+    fn combined_body_mesh(&self, bodies: &[usize]) -> Option<crate::extrude::SolidMesh> {
+        let mut mesh = crate::extrude::SolidMesh::default();
+        for &bi in bodies {
+            if let Some(solid) = crate::extrude::body_solid_mesh(&self.doc, bi) {
+                mesh.triangles.extend(solid.triangles);
+            }
+        }
+        (!mesh.is_empty()).then_some(mesh)
     }
 
     fn export_mesh_for(
@@ -4575,6 +4639,34 @@ impl AppState {
                     .clone()
                     .unwrap_or_else(|| format!("body-{body}"));
                 self.write_step_body_file(&path, &name, body)
+            }
+            Action::ExportComponentStl { path, component } => {
+                let bodies = self.component_body_indices(component);
+                if bodies.is_empty() {
+                    self.status = "Export failed: component has no bodies".to_string();
+                    return ActionResult::Err(self.status.clone());
+                }
+                let name = self.component_export_name(component);
+                let mesh = self.combined_body_mesh(&bodies);
+                self.write_stl_file(&path, &name, mesh)
+            }
+            Action::ExportComponentStep { path, component } => {
+                let bodies = self.component_body_indices(component);
+                let name = self.component_export_name(component);
+                match bodies.as_slice() {
+                    [] => {
+                        self.status = "Export failed: component has no bodies".to_string();
+                        ActionResult::Err(self.status.clone())
+                    }
+                    // One body: route through the per-body path so kernel builds write real
+                    // BREP (curved surfaces survive), mirroring the whole-document STEP export.
+                    [bi] => self.write_step_body_file(&path, &name, *bi),
+                    // Multiple bodies concatenate as faceted BREP (OCCT export is per body).
+                    many => {
+                        let mesh = self.combined_body_mesh(many);
+                        self.write_step_file(&path, &name, mesh)
+                    }
+                }
             }
             Action::CalibrateImage { image, a, b, length } => {
                 let Some(img) = self
@@ -12111,6 +12203,54 @@ mod tests {
         assert!(!state.dirty, "New document starts clean");
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// #521: exporting a component gathers every body filed into it and its nested
+    /// components (not bodies in unrelated components), and produces non-empty STL/STEP bytes.
+    #[test]
+    fn component_export_gathers_nested_bodies() {
+        use crate::model::ComponentMember as CM;
+        let mut state = AppState::default();
+        state.apply(Action::CreateComponent { name: Some("Frame".to_string()), parent: None }); // 0
+        state.apply(Action::CreateComponent { name: None, parent: Some(0) }); // 1 (nested in 0)
+        state.apply(Action::CreateComponent { name: Some("Other".to_string()), parent: None }); // 2
+
+        // Three imported-mesh bodies (each a tetrahedron so meshing yields triangles).
+        let tetra = vec![
+            [Vec3::ZERO, Vec3::X, Vec3::Y],
+            [Vec3::ZERO, Vec3::Y, Vec3::Z],
+            [Vec3::ZERO, Vec3::Z, Vec3::X],
+            [Vec3::X, Vec3::Z, Vec3::Y],
+        ];
+        for name in ["a.stl", "b.stl", "c.stl"] {
+            state.import_mesh_body(name, tetra.clone());
+        }
+        // Body 0 → Frame (0), body 1 → nested (1), body 2 → the unrelated Other (2).
+        state.doc.set_component_member(CM::Body, 0, Some(0));
+        state.doc.set_component_member(CM::Body, 1, Some(1));
+        state.doc.set_component_member(CM::Body, 2, Some(2));
+
+        // Exporting Frame gathers its own body and the nested component's, not Other's.
+        let mut frame = state.component_body_indices(0);
+        frame.sort_unstable();
+        assert_eq!(frame, vec![0, 1], "Frame export = its body + the nested body");
+        assert_eq!(state.component_body_indices(1), vec![1], "the nested component alone");
+        assert_eq!(state.component_body_indices(2), vec![2], "Other is independent");
+
+        // The export produces real geometry.
+        let stl = state
+            .export_component_stl_bytes(0)
+            .expect("frame STL export");
+        assert!(!stl.is_empty(), "STL bytes produced");
+        assert!(
+            state.export_component_step_bytes(0).is_ok_and(|b| !b.is_empty()),
+            "STEP bytes produced"
+        );
+
+        // An empty component reports an error rather than an empty file.
+        state.apply(Action::CreateComponent { name: Some("Empty".to_string()), parent: None }); // 3
+        assert!(state.component_body_indices(3).is_empty());
+        assert!(state.export_component_stl_bytes(3).is_err());
     }
 
     /// #423: components group elements; membership, nesting, visibility cascade, and

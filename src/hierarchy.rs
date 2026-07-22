@@ -2754,6 +2754,8 @@ pub fn show_pane(
     on_rename_drawing: &mut impl FnMut(usize, String),
     on_export_body: &mut impl FnMut(usize),
     on_export_body_step: &mut impl FnMut(usize),
+    on_export_component: &mut impl FnMut(usize),
+    on_export_component_step: &mut impl FnMut(usize),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_hover_element: &mut impl FnMut(SceneElement),
@@ -2870,6 +2872,8 @@ pub fn show_pane(
                             on_delete_element,
                             on_add_component,
                             on_move_to_component,
+                            on_export_component,
+                            on_export_component_step,
                         );
                         continue;
                     }
@@ -3462,6 +3466,8 @@ fn show_component_row(
     on_delete_element: &mut impl FnMut(SceneElement),
     on_add_component: &mut impl FnMut(Option<usize>),
     on_move_to_component: &mut impl FnMut(SceneElement, Option<usize>),
+    on_export_component: &mut impl FnMut(usize),
+    on_export_component_step: &mut impl FnMut(usize),
 ) {
     let element = SceneElement::Component(ci);
     let visible = visibility.effective_visible(doc, element.clone());
@@ -3547,6 +3553,16 @@ fn show_component_row(
         response.context_menu(|ui| {
             if ui.button("New component inside").clicked() {
                 on_add_component(Some(ci));
+                ui.close();
+            }
+            // Export the component's bodies (#521): everything filed into it and its nested
+            // components, as one STL/STEP file.
+            if ui.button("Export STL…").clicked() {
+                on_export_component(ci);
+                ui.close();
+            }
+            if ui.button("Export STEP…").clicked() {
+                on_export_component_step(ci);
                 ui.close();
             }
             if ui.button("Move to document root").clicked() {
