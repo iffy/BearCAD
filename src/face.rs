@@ -97,13 +97,14 @@ pub fn sketch_frame(doc: &Document, face: FaceId) -> Option<SketchFrame> {
                 let poly = crate::extrude::cap_polygon_world(doc, extrusion, &profile, true)?;
                 return frame_from_polygon(&poly, base.normal);
             }
-            // Otherwise the cap shares the profile's in-plane axes, shifted along the
-            // extrusion normal to the base or offset end.
-            let dist = if top {
-                crate::extrude::effective_distance(doc, ext)
-            } else {
-                0.0
-            };
+            // Otherwise the cap shares the profile's in-plane axes, shifted along the extrusion
+            // normal to its actual end. A **symmetric** extrusion spans [−d/2, +d/2] about the
+            // sketch plane, so its caps sit half a distance to either side — not at 0 and d
+            // (#504/#548). Using the real end offsets keeps snap-to-cap targets (extrude-to-face)
+            // and sketching-on-cap aligned with the built geometry.
+            let (start, end) =
+                crate::extrude::extrusion_end_offsets(doc, ext, crate::extrude::effective_distance(doc, ext));
+            let dist = if top { end } else { start };
             Some(SketchFrame {
                 origin: base.origin + base.normal * dist,
                 u_axis: base.u_axis,

@@ -5667,6 +5667,29 @@ mod tests {
         assert!((top_pt.z - 10.0).abs() < 1e-4, "top z={}", top_pt.z);
     }
 
+    /// #504/#548: the extrude-to-face distance to a **symmetric** extrusion's cap reaches its
+    /// real position — half the height to either side of the sketch plane — not the full height.
+    /// (Extruding a rectangle up to a symmetric cylinder's face used to overshoot by d/2.)
+    #[test]
+    fn extrude_target_to_a_symmetric_cap_is_half_the_height() {
+        use crate::model::{ExtrudeTarget, FaceId};
+        let (mut doc, sketch) = sketch_doc();
+        let profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
+        let mut ext = extrusion(sketch, vec![profile.clone()], 20.0);
+        ext.symmetric = true;
+        doc.extrusions.push(ext);
+        let ei = doc.extrusions.len() - 1;
+        let base = glam::Vec3::ZERO;
+        let normal = glam::Vec3::Z;
+        // The sketch sits on z = 0; the symmetric caps are at +10 and -10, not +20 and 0.
+        let top = FaceId::ExtrudeCap { extrusion: ei, profile: profile.clone(), top: true };
+        let d_top = target_distance(&doc, base, normal, &ExtrudeTarget::BodyFace(top)).unwrap();
+        assert!((d_top - 10.0).abs() < 1e-3, "top cap at +d/2, got {d_top}");
+        let bot = FaceId::ExtrudeCap { extrusion: ei, profile, top: false };
+        let d_bot = target_distance(&doc, base, normal, &ExtrudeTarget::BodyFace(bot)).unwrap();
+        assert!((d_bot + 10.0).abs() < 1e-3, "base cap at -d/2, got {d_bot}");
+    }
+
     /// #200: a cut tool built with overshoot extends past both ends by `2 * overshoot`, so
     /// its caps clear any body face they would otherwise sit exactly on (which leaves a
     /// coincident seam face — a wall that renders capped even though the material is gone).
