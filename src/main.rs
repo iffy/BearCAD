@@ -671,7 +671,7 @@ struct App {
     /// Timeline rollback marker (#524): when set, everything created after this element is
     /// suppressed in the viewport and faded in the Elements pane, so the model reads as it did
     /// just after that element. UI-only session state (not persisted).
-    rollback_marker: Option<SceneElement>,
+    rollback_marker: Option<hierarchy::RollbackMarker>,
     /// A selected calibration reference point (#424): `(image, point index)`; Delete
     /// removes it so a click can re-place it.
     selected_calibration_point: Option<(usize, usize)>,
@@ -6223,7 +6223,7 @@ impl eframe::App for App {
         // Drop a stale rollback marker (#524) once its element is gone (deleted, or a
         // new/opened document), so it doesn't linger over unrelated geometry.
         if let Some(marker) = self.rollback_marker.clone() {
-            if !document_lifecycle::element_alive(&self.state.doc, marker) {
+            if !document_lifecycle::element_alive(&self.state.doc, marker.element) {
                 self.rollback_marker = None;
             }
         }
@@ -6650,7 +6650,7 @@ impl eframe::App for App {
             let mut move_to_component: Option<(SceneElement, Option<usize>)> = None;
             let mut activate_component: Option<Option<usize>> = None;
             // Timeline rollback marker set/cleared from the pane (#524), applied after it closes.
-            let mut set_rollback: Option<Option<SceneElement>> = None;
+            let mut set_rollback: Option<Option<hierarchy::RollbackMarker>> = None;
             let pane_kept_open = show_pane_shell(ctx, "tree", "Elements", false, 220.0, None, |ui| {
                     let mut queue_edit_sketch = |sketch: SketchId| {
                         edit_sketch = Some(sketch);
@@ -6723,7 +6723,7 @@ impl eframe::App for App {
                         .as_ref()
                         .map(|m| hierarchy::rolled_back_elements(&self.state.doc, m))
                         .unwrap_or_default();
-                    let mut queue_set_rollback = |m: Option<SceneElement>| {
+                    let mut queue_set_rollback = |m: Option<hierarchy::RollbackMarker>| {
                         set_rollback = Some(m);
                     };
                     let mut queue_add_component = |parent: Option<usize>| {

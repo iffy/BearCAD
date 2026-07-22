@@ -1165,14 +1165,24 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
     })
 }
 
-/// Every element that **depends on** the rollback marker (#524/#531): its descendants in the
-/// element graph, found by walking forward from the marker along both the nesting tree (an op
-/// to its output bodies, a sketch to its geometry, …) and the dashed dependency edges (an
-/// input feeding a consuming operation). The marker itself is **not** included. Unlike a
-/// creation-order cutoff, this hides only what genuinely derives from the marker — two
-/// independent branches don't affect each other (matches matt's steer on #531/#276).
-pub fn rolled_back_elements(doc: &Document, marker: &SceneElement) -> HashSet<SceneElement> {
-    let Some(marker_node) = hierarchy_node_for_element(marker) else {
+/// A timeline rollback point (#524/#545): the element to roll back to, plus whether the
+/// rollback is **inclusive** — "rollback to just before here" hides the element itself along
+/// with its descendants, whereas the default "rollback to here" keeps the element and hides
+/// only what depends on it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RollbackMarker {
+    pub element: SceneElement,
+    pub inclusive: bool,
+}
+
+/// Every element suppressed by a rollback marker (#524/#531/#545): the marker element's
+/// descendants in the element graph — found by walking forward from it along both the nesting
+/// tree (an op to its output bodies, a sketch to its geometry, …) and the dashed dependency
+/// edges (an input feeding a consuming operation) — plus the marker element itself when the
+/// marker is **inclusive** ("just before here"). Unlike a creation-order cutoff, this hides only
+/// what genuinely derives from the marker — two independent branches don't affect each other.
+pub fn rolled_back_elements(doc: &Document, marker: &RollbackMarker) -> HashSet<SceneElement> {
+    let Some(marker_node) = hierarchy_node_for_element(&marker.element) else {
         return HashSet::new();
     };
     let tree = build_hierarchy(doc, None);
@@ -1207,7 +1217,13 @@ pub fn rolled_back_elements(doc: &Document, marker: &SceneElement) -> HashSet<Sc
             }
         }
     }
-    result.iter().filter_map(|&n| scene_element_for_node(n)).collect()
+    let mut elements: HashSet<SceneElement> =
+        result.iter().filter_map(|&n| scene_element_for_node(n)).collect();
+    // "Rollback to just before here" also hides the marker element itself.
+    if marker.inclusive {
+        elements.insert(marker.element.clone());
+    }
+    elements
 }
 
 /// Build the hierarchy tree for the current view context.
@@ -2949,8 +2965,8 @@ pub fn show_pane(
     highlight_elements: &HashSet<SceneElement>,
     rolled_back: &HashSet<SceneElement>,
     // The current timeline rollback marker (#524), if any, and a setter (None clears it).
-    rollback_marker: Option<&SceneElement>,
-    on_set_rollback: &mut impl FnMut(Option<SceneElement>),
+    rollback_marker: Option<&RollbackMarker>,
+    on_set_rollback: &mut impl FnMut(Option<RollbackMarker>),
     collapsed_components: &mut HashSet<usize>,
     on_add_component: &mut impl FnMut(Option<usize>),
     on_move_to_component: &mut impl FnMut(SceneElement, Option<usize>),
@@ -3001,15 +3017,16 @@ pub fn show_pane(
     });
     ui.separator();
 
-    // Timeline rollback control (#524): roll the model back to just after a chosen element,
-    // suppressing everything created after it. Set from the current single selection; cleared
-    // to roll forward again.
+    // Timeline rollback status (#524/#545): when rolled back, show the marker and a Clear button
+    // to roll forward. Setting a rollback point is done per-element from the row's right-click
+    // "Rollback" submenu (#545), not a header button.
     if let Some(marker) = rollback_marker {
         ui.horizontal(|ui| {
+            let noun = if marker.inclusive { "just before" } else { "" };
             ui.label(
                 egui::RichText::new(format!(
-                    "⏮ Rolled back to {}",
-                    crate::names::scene_element_label(doc, marker)
+                    "⏮ Rolled back to {noun} {}",
+                    crate::names::scene_element_label(doc, &marker.element)
                 ))
                 .color(crate::theme::FOCUS_ACCENT)
                 .size(11.5),
@@ -3020,17 +3037,6 @@ pub fn show_pane(
                 .clicked()
             {
                 on_set_rollback(None);
-            }
-        });
-        ui.separator();
-    } else if let Some(el) = selection.single() {
-        ui.horizontal(|ui| {
-            if ui
-                .small_button("⏮ Roll back to here")
-                .on_hover_text("Suppress everything created after the selected element")
-                .clicked()
-            {
-                on_set_rollback(Some(el.clone()));
             }
         });
         ui.separator();
@@ -3145,6 +3151,7 @@ pub fn show_pane(
                         on_rename_drawing,
                         on_export_body,
                         on_export_body_step,
+                        on_set_rollback,
                         on_toggle_visibility,
                         on_click_element,
                         on_hover_element,
@@ -3855,6 +3862,7 @@ fn show_row(
     on_rename_drawing: &mut impl FnMut(usize, String),
     on_export_body: &mut impl FnMut(usize),
     on_export_body_step: &mut impl FnMut(usize),
+    on_set_rollback: &mut impl FnMut(Option<RollbackMarker>),
     on_toggle_visibility: &mut impl FnMut(SceneElement, bool),
     on_click_element: &mut impl FnMut(SceneElement, bool),
     on_hover_element: &mut impl FnMut(SceneElement),
@@ -4239,6 +4247,27 @@ fn show_row(
                             on_move_to_component(element.clone(), Some(ci));
                             ui.close();
                         }
+                    }
+                });
+            }
+            // Timeline rollback (#545): roll the model back relative to this element — to just
+            // after it (keeping it, hiding its dependents) or to just before it (hiding it too).
+            // Only elements that are graph nodes can be rollback points.
+            if hierarchy_node_for_element(&element).is_some() {
+                ui.menu_button("Rollback", |ui| {
+                    if ui.button("Rollback to here").clicked() {
+                        on_set_rollback(Some(RollbackMarker {
+                            element: element.clone(),
+                            inclusive: false,
+                        }));
+                        ui.close();
+                    }
+                    if ui.button("Rollback to just before here").clicked() {
+                        on_set_rollback(Some(RollbackMarker {
+                            element: element.clone(),
+                            inclusive: true,
+                        }));
+                        ui.close();
                     }
                 });
             }
@@ -5300,24 +5329,36 @@ label_hidden: false,
 
     /// Drive the force layout to rest and return the final state, using the same fixture as the
     /// static-layout tests (plane → sketch → rect + extrusion → body).
-    /// #524/#531: the rollback marker suppresses the marker's **graph descendants** — what
-    /// nests under it and what depends on it — not everything created after it in time.
+    /// #524/#531/#545: "rollback to here" suppresses the marker's **graph descendants** — what
+    /// nests under it and what depends on it — not everything created after it in time; and not
+    /// the marker itself, unless the rollback is **inclusive** ("just before here").
     #[test]
     fn rollback_suppresses_graph_descendants() {
         let (doc, sketch) = doc_with_plane_sketch_rect_and_extrusion();
+        let here = |el: SceneElement| RollbackMarker { element: el, inclusive: false };
+        let before = |el: SceneElement| RollbackMarker { element: el, inclusive: true };
         // Rolling back to the sketch hides everything built from it: its rect lines, the
         // extrusion, and the body — but not the sketch itself or its host plane.
-        let rb = rolled_back_elements(&doc, &SceneElement::Sketch(sketch));
+        let rb = rolled_back_elements(&doc, &here(SceneElement::Sketch(sketch)));
         assert!(rb.contains(&SceneElement::Extrusion(0)), "extrusion depends on the sketch");
         assert!(rb.contains(&SceneElement::Body(0)), "body depends on the extrusion");
         assert!(!rb.contains(&SceneElement::Sketch(sketch)), "the marker itself stays");
         assert!(!rb.contains(&SceneElement::ConstructionPlane(0)), "ancestors stay active");
 
-        // Rolling back to the body (a leaf nothing consumes) suppresses nothing.
-        assert!(rolled_back_elements(&doc, &SceneElement::Body(0)).is_empty());
+        // "Just before here" additionally hides the marker element itself.
+        let rb_before = rolled_back_elements(&doc, &before(SceneElement::Sketch(sketch)));
+        assert!(rb_before.contains(&SceneElement::Sketch(sketch)), "inclusive hides the marker");
+        assert!(rb_before.contains(&SceneElement::Extrusion(0)), "and its descendants");
+
+        // Rolling back to the body (a leaf nothing consumes) suppresses nothing — unless
+        // inclusive, which hides just the body.
+        assert!(rolled_back_elements(&doc, &here(SceneElement::Body(0))).is_empty());
+        let body_before = rolled_back_elements(&doc, &before(SceneElement::Body(0)));
+        assert_eq!(body_before.len(), 1);
+        assert!(body_before.contains(&SceneElement::Body(0)));
         // An unknown / non-graph marker suppresses nothing.
-        assert!(rolled_back_elements(&doc, &SceneElement::Sketch(99)).is_empty());
-        assert!(rolled_back_elements(&doc, &SceneElement::Origin).is_empty());
+        assert!(rolled_back_elements(&doc, &here(SceneElement::Sketch(99))).is_empty());
+        assert!(rolled_back_elements(&doc, &here(SceneElement::Origin)).is_empty());
     }
 
     fn doc_with_plane_sketch_rect_and_extrusion() -> (Document, SketchId) {
