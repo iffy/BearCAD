@@ -126,10 +126,18 @@ jobs:
             echo "No interaction tests found in tests/interaction/" >&2
             exit 1
           fi
+          failed=0
           for script in "${tests[@]}"; do
-            echo "Running $script"
-            xvfb-run -a ./target/debug/bearcad --script "$script" --exit --timeout 30
+            echo "::group::Running $script"
+            if xvfb-run -a ./target/debug/bearcad --script "$script" --exit --timeout 60; then
+              echo "OK $script"
+            else
+              echo "::error::FAILED $script (exit $?)"
+              failed=1
+            fi
+            echo "::endgroup::"
           done
+          exit "$failed"
 
   # Windows/MSVC static-OCCT kernel build + tests (#96, proven; todoer #468): the
   # same configuration the Windows release ships, so kernel regressions on

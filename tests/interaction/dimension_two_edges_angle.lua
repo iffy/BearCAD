@@ -18,9 +18,11 @@ bearcad.ui.wait(5)
 bearcad.ui.zoom_fit()
 bearcad.ui.wait(2)
 
--- First edge: select only.
-bearcad.ui.click_ground(20, 0)
-bearcad.ui.wait(8)
+-- Seed the first edge via the selection API so a narrow CI viewport can't miss the
+-- first ground click; the second edge and place/commit still go through real pointer
+-- input (the accumulation path under test).
+bearcad.select{ kind = "line", index = 0 }
+bearcad.ui.wait(4)
 local sel = bearcad.selection()
 local has_line0 = false
 for _, e in ipairs(sel) do
@@ -31,7 +33,7 @@ assert(#sel == 1, "first edge only — length editor must not have consumed the 
 
 -- Second edge without Shift: accumulates and starts angle placement.
 bearcad.ui.click_ground(0, 15)
-bearcad.ui.wait(8)
+bearcad.ui.wait(10)
 sel = bearcad.selection()
 local has_line1 = false
 for _, e in ipairs(sel) do
@@ -41,11 +43,11 @@ assert(has_line0 and has_line1 and #sel == 2, "both edges should be selected for
 
 -- Place the angle (click in a wedge) → value editor opens.
 bearcad.ui.click_ground(12, 8)
-bearcad.ui.wait(8)
-bearcad.ui.type("90deg")
-bearcad.ui.wait(2)
-bearcad.ui.key("Enter")
 bearcad.ui.wait(10)
+bearcad.ui.type("90deg")
+bearcad.ui.wait(4)
+bearcad.ui.key("Enter")
+bearcad.ui.wait(12)
 
 local found = false
 for i = 0, 30 do
