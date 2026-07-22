@@ -12,7 +12,7 @@ use crate::document_health::{DocumentHealth, HealthStatus};
 use crate::document_lifecycle::{element_alive, sketch_alive};
 use crate::model::{
     ConstraintEntity, ConstraintKind, ConstraintLine, ConstraintPoint, ConstructionPlaneParent,
-    DistanceTarget, Document, FaceId, ShapeKind, SketchId,
+    DistanceTarget, Document, FaceId, SketchId,
 };
 use crate::names;
 use crate::selection::{additive_click_modifiers, SceneSelection};
@@ -21,8 +21,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// A node in the scene hierarchy.
 ///
-/// The derived `Ord` (variant order, then index) gives a stable, creation-ordered
-/// tiebreak when two nodes share a creation rank, so sibling ordering is deterministic.
+/// The derived `Ord` (variant order, then index) is the flat list's tiebreak among nodes with
+/// no input-dependency relationship (#540): a stable, kind-then-index ordering that never
+/// depends on when an element was created.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum HierarchyNode {
     /// Synthetic singleton root shown at the top of the Elements pane; every other
@@ -1110,82 +1111,6 @@ impl GraphLayout {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-struct CreationRanks {
-    sketches: HashMap<SketchId, usize>,
-    lines: HashMap<usize, usize>,
-    circles: HashMap<usize, usize>,
-    constraints: HashMap<usize, usize>,
-    planes: HashMap<usize, usize>,
-    extrusions: HashMap<usize, usize>,
-    bodies: HashMap<usize, usize>,
-}
-
-fn build_creation_ranks(doc: &Document) -> CreationRanks {
-    let mut ranks = CreationRanks::default();
-    ranks.planes.insert(0, 0);
-    let mut sketch_n = 0usize;
-    let mut line_n = 0usize;
-    let mut circle_n = 0usize;
-    let mut constraint_n = 0usize;
-    let mut plane_n = 1usize;
-    let mut extrusion_n = 0usize;
-    let mut body_n = 0usize;
-    for (rank, kind) in doc.shape_order.iter().enumerate() {
-        match kind {
-            ShapeKind::Sketch => {
-                ranks.sketches.insert(sketch_n, rank);
-                sketch_n += 1;
-            }
-            ShapeKind::Line => {
-                ranks.lines.insert(line_n, rank);
-                line_n += 1;
-            }
-            ShapeKind::Circle => {
-                ranks.circles.insert(circle_n, rank);
-                circle_n += 1;
-            }
-            ShapeKind::Constraint => {
-                ranks.constraints.insert(constraint_n, rank);
-                constraint_n += 1;
-            }
-            ShapeKind::ConstructionPlane => {
-                ranks.planes.insert(plane_n, rank);
-                plane_n += 1;
-            }
-            ShapeKind::Extrusion => {
-                ranks.extrusions.insert(extrusion_n, rank);
-                extrusion_n += 1;
-            }
-            ShapeKind::Body => {
-                ranks.bodies.insert(body_n, rank);
-                body_n += 1;
-            }
-            ShapeKind::Parameter => {}
-            // Tracing images (#169) and lofts don't participate in creation-rank ordering
-            // yet (they list after the ranked nodes).
-            ShapeKind::Image
-            | ShapeKind::Loft
-            | ShapeKind::Revolution
-            | ShapeKind::Sweep
-            | ShapeKind::BooleanOperation
-            | ShapeKind::MoveOperation
-            | ShapeKind::MirrorOperation
-            | ShapeKind::RepeatOperation
-            | ShapeKind::SliceOperation
-            | ShapeKind::EdgeTreatmentOperation
-            | ShapeKind::SketchRepeatOperation
-            | ShapeKind::SketchSliceOperation
-            | ShapeKind::SketchOffsetOperation
-            | ShapeKind::SketchMirrorOperation
-            | ShapeKind::SketchText => {}
-            // Edits are not created shapes; they only mark undoable in-place changes.
-            ShapeKind::ConstructionPlaneEdit | ShapeKind::EdgeTreatmentEdit => {}
-        }
-    }
-    ranks
-}
-
 /// The [`HierarchyNode`] for a [`SceneElement`] — the inverse of [`scene_element_for_node`]
 /// for the kinds that appear in the element graph (#524/#531). `None` for sub-element
 /// selections (points, edges, vertices) that aren't graph nodes.
@@ -1264,52 +1189,6 @@ pub fn rolled_back_elements(doc: &Document, marker: &SceneElement) -> HashSet<Sc
         }
     }
     result.iter().filter_map(|&n| scene_element_for_node(n)).collect()
-}
-
-fn creation_rank(ranks: &CreationRanks, node: HierarchyNode) -> usize {
-    match node {
-        // Always the sole tree root; rank is irrelevant since it has no siblings.
-        HierarchyNode::Document => 0,
-        HierarchyNode::ConstructionPlane(i) => *ranks.planes.get(&i).unwrap_or(&i),
-        HierarchyNode::Sketch(i) => *ranks.sketches.get(&i).unwrap_or(&i),
-        HierarchyNode::Line(i) => *ranks.lines.get(&i).unwrap_or(&i),
-        HierarchyNode::Circle(i) => *ranks.circles.get(&i).unwrap_or(&i),
-        HierarchyNode::Constraint(i) => *ranks.constraints.get(&i).unwrap_or(&i),
-        HierarchyNode::Extrusion(i) => *ranks.extrusions.get(&i).unwrap_or(&i),
-        HierarchyNode::Body(i) => *ranks.bodies.get(&i).unwrap_or(&i),
-        // Tracing images list after ranked nodes (#169).
-        HierarchyNode::Image(_) => usize::MAX,
-        // Components group their contents; their own order is by index.
-        HierarchyNode::Component(i) => i,
-        // Boolean/move operations likewise list after ranked nodes.
-        HierarchyNode::BooleanOp(_) => usize::MAX,
-        HierarchyNode::MoveOp(_) => usize::MAX,
-        HierarchyNode::MirrorOp(_) => usize::MAX,
-        HierarchyNode::RepeatOp(_) => usize::MAX,
-        HierarchyNode::SketchRepeatOp(_) => usize::MAX,
-        HierarchyNode::SketchOffsetOp(_) => usize::MAX,
-        HierarchyNode::SketchMirrorOp(_) => usize::MAX,
-        HierarchyNode::SketchSliceOp(_) => usize::MAX,
-        HierarchyNode::SketchText(_) => usize::MAX,
-        HierarchyNode::SliceOp(_) => usize::MAX,
-        HierarchyNode::EdgeTreatmentOp(_) => usize::MAX,
-        HierarchyNode::Revolution(_) => usize::MAX,
-        HierarchyNode::SweepOp(_) => usize::MAX,
-        HierarchyNode::Loft(_) => usize::MAX,
-        // Edge treatments order by their index within the extrusion, after the bodies/sketches.
-        HierarchyNode::EdgeTreatment { index, .. } => index,
-        // Drawings list after ranked nodes (#180), like images and operations.
-        HierarchyNode::Drawing(_) => usize::MAX,
-        // Projections order by their view index within the drawing (#281).
-        HierarchyNode::DrawingProjection { view, .. } => view,
-        // Text notes list after all projections within the drawing (#333).
-        HierarchyNode::DrawingAnnotation { annotation, .. } => annotation.saturating_add(1_000_000),
-        // Dimensions order within their projection by their appearance in the view's set (#341);
-        // the exact rank only tiebreaks siblings, so a stable hash of the endpoints suffices.
-        HierarchyNode::DrawingDimension { a, b, .. } => {
-            (a[0].wrapping_add(b[0]).wrapping_mul(31)) as usize
-        }
-    }
 }
 
 /// Build the hierarchy tree for the current view context.
@@ -1829,15 +1708,21 @@ pub fn build_element_list(
 }
 
 /// Flatten an already-built (and possibly [`filter_hierarchy`]-pruned) tree into the List
-/// view's creation-ordered node list.
+/// view's node list. Ordering depends only on the element graph — the nesting tree plus the
+/// dependency edges (inputs) — never on when elements were created (#540); `shape_order`
+/// stays purely an undo/redo concern.
 fn element_list_from_tree(tree: &[HierarchyEntry], doc: &Document) -> Vec<HierarchyNode> {
-    let ranks = build_creation_ranks(doc);
     let mut nodes = Vec::new();
     let mut parent_of = HashMap::new();
     for entry in tree {
         collect_with_parents(entry, None, &mut nodes, &mut parent_of);
     }
-    topological_flat_sort(nodes, parent_of, |node| creation_rank(&ranks, node))
+    // Input dependencies: each consumer must follow every input it's built from.
+    let mut input_sources: HashMap<HierarchyNode, Vec<HierarchyNode>> = HashMap::new();
+    for (source, consumer) in graph_dependency_edges(doc) {
+        input_sources.entry(consumer).or_default().push(source);
+    }
+    topological_flat_sort(nodes, parent_of, input_sources)
 }
 
 /// User-facing element-type toggles for the Elements-pane filter (#275). Absent categories are
@@ -1977,10 +1862,15 @@ fn collect_with_parents(
     }
 }
 
+/// Flatten the element graph into a stable, **input-driven** order (#540): a node is emitted
+/// only once its tree parent and every input it depends on have been emitted, so consumers
+/// always follow their inputs. Among nodes with no such relationship the tiebreak is the node
+/// itself (kind then index, via `HierarchyNode`'s derived `Ord`) — deterministic and
+/// independent of creation time. `shape_order` is intentionally not consulted.
 fn topological_flat_sort(
     nodes: Vec<HierarchyNode>,
     parent_of: HashMap<HierarchyNode, HierarchyNode>,
-    rank: impl Fn(HierarchyNode) -> usize,
+    input_sources: HashMap<HierarchyNode, Vec<HierarchyNode>>,
 ) -> Vec<HierarchyNode> {
     let mut remaining: HashSet<HierarchyNode> = nodes.into_iter().collect();
     let mut result = Vec::new();
@@ -1988,16 +1878,24 @@ fn topological_flat_sort(
         let mut ready: Vec<HierarchyNode> = remaining
             .iter()
             .filter(|node| {
-                parent_of
+                let parent_ready = parent_of
                     .get(node)
                     .map(|parent| !remaining.contains(parent))
-                    .unwrap_or(true)
+                    .unwrap_or(true);
+                let inputs_ready = input_sources
+                    .get(node)
+                    .map(|sources| sources.iter().all(|s| !remaining.contains(s)))
+                    .unwrap_or(true);
+                parent_ready && inputs_ready
             })
             .copied()
             .collect();
-        // Rank orders by creation; the node itself is a deterministic, creation-ordered
-        // tiebreak when ranks collide (e.g. the default plane vs. the first shape_order slot).
-        ready.sort_by_key(|node| (rank(*node), *node));
+        // Defensive: a dependency cycle (never expected in a valid graph) would leave nothing
+        // ready — release everything left, ordered deterministically, rather than looping.
+        if ready.is_empty() {
+            ready = remaining.iter().copied().collect();
+        }
+        ready.sort();
         for node in ready {
             remaining.remove(&node);
             result.push(node);
@@ -4332,6 +4230,7 @@ fn component_member_node(node: HierarchyNode) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ShapeKind;
 
     /// #448/#449: every operation's inputs appear as graph dependency edges — the
     /// repeat's input body was the reported gap.
@@ -4787,11 +4686,11 @@ label_hidden: false,
     }
 
     #[test]
-    fn construction_plane_ordering_is_deterministic_by_creation() {
+    fn construction_plane_ordering_is_deterministic_by_index() {
         let mut doc = Document::default();
-        // Two planes created before any other geometry: the first shape_order slot is
-        // rank 0, which used to tie with the default plane's hardcoded rank 0 and order
-        // randomly (HashSet iteration). Ordering must be stable and by creation order.
+        // Independent planes (no input relationship) order by kind+index (#540), which is
+        // stable across the randomized HashSet iteration order — never by creation time.
+        // shape_order is populated only to prove it no longer influences pane ordering.
         doc.construction_planes.push(default_xy_plane());
         doc.shape_order.push(ShapeKind::ConstructionPlane);
         doc.construction_planes.push(default_xy_plane());
@@ -4808,6 +4707,35 @@ label_hidden: false,
         for _ in 0..50 {
             assert_eq!(build_element_list(&doc, None), expected);
         }
+    }
+
+    /// #540: the flat list orders purely by the element graph — a consumer follows every input
+    /// it's built from, and independent nodes tiebreak by kind+index — never by creation time
+    /// (`shape_order` is not consulted here at all).
+    #[test]
+    fn flat_sort_orders_by_inputs_then_kind_index() {
+        let nodes = vec![
+            HierarchyNode::BooleanOp(0),
+            HierarchyNode::Body(5),
+            HierarchyNode::Body(2),
+        ];
+        let parent_of = HashMap::new();
+        let mut input_sources = HashMap::new();
+        // The boolean consumes both bodies, so it must come after them regardless of the
+        // enum order (a Body sorts before a BooleanOp only because inputs come first here).
+        input_sources.insert(
+            HierarchyNode::BooleanOp(0),
+            vec![HierarchyNode::Body(5), HierarchyNode::Body(2)],
+        );
+        let out = topological_flat_sort(nodes, parent_of, input_sources);
+        assert_eq!(
+            out,
+            vec![
+                HierarchyNode::Body(2), // input, lower index first
+                HierarchyNode::Body(5), // input
+                HierarchyNode::BooleanOp(0), // consumer, after its inputs
+            ]
+        );
     }
 
     #[test]
