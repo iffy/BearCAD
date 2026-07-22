@@ -4598,7 +4598,7 @@ impl App {
     ) {
         // Inside a sketch, Mirror reflects sketch geometry across a line (#523/#528).
         if let Some(session) = self.state.sketch_session {
-            self.handle_sketch_mirror_tool(ui, painter, project, pointer_screen, session);
+            self.handle_sketch_mirror_tool(ui, project, pointer_screen, session);
             return;
         }
         let cm = self
@@ -4711,7 +4711,6 @@ impl App {
     fn handle_sketch_mirror_tool(
         &mut self,
         ui: &egui::Ui,
-        painter: &egui::Painter,
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         pointer_screen: Option<egui::Pos2>,
         session: SketchSession,
@@ -4729,9 +4728,8 @@ impl App {
             return;
         }
 
-        // Preview: reflect each target's geometry across the mirror line and draw it faintly.
-        self.draw_sketch_mirror_ghosts(painter, project, session);
-
+        // The reflected preview is rendered through the GPU scene's ghost path (see
+        // `sketch_mirror_ghost_segments`), so nothing to draw here.
         if !ui.input(|i| i.pointer.primary_pressed()) {
             return;
         }
@@ -4795,64 +4793,67 @@ impl App {
 
     /// Draw the translucent preview of an in-progress in-sketch mirror (#528): each target
     /// line/circle reflected across the mirror line, in the sketch plane.
-    fn draw_sketch_mirror_ghosts(
-        &self,
-        painter: &egui::Painter,
-        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
-        session: SketchSession,
-    ) {
-        let Some(sm) = self.state.creating_sketch_mirror.as_ref() else { return };
-        let Some(line_idx) = sm.line else { return };
+    /// World-space preview segments for the in-progress in-sketch mirror (#528/#535): each
+    /// target line/circle reflected across the mirror line. Routed through the GPU scene's
+    /// `sketch_repeat_ghost` (like the offset/repeat ghosts) so it renders *in* the scene
+    /// rather than as a painter overlay the GPU pass hides.
+    fn sketch_mirror_ghost_segments(&self) -> Vec<(Vec3, Vec3)> {
+        let Some(sm) = self.state.creating_sketch_mirror.as_ref() else {
+            return Vec::new();
+        };
+        let Some(line_idx) = sm.line else {
+            return Vec::new();
+        };
         if !sm.has_targets() {
-            return;
+            return Vec::new();
         }
         let doc = &self.state.doc;
-        let Some(frame) = sketch_geometry_frame(doc, session.sketch) else { return };
-        let Some(ml) = doc.lines.get(line_idx).filter(|l| !l.deleted) else { return };
+        let Some(frame) = sketch_geometry_frame(doc, sm.sketch) else {
+            return Vec::new();
+        };
+        let Some(ml) = doc.lines.get(line_idx).filter(|l| !l.deleted) else {
+            return Vec::new();
+        };
         let a = glam::Vec2::new(ml.x0, ml.y0);
         let dir = (glam::Vec2::new(ml.x1, ml.y1) - a).normalize_or_zero();
         if dir.length_squared() < 1e-9 {
-            return;
+            return Vec::new();
         }
         let reflect = |p: glam::Vec2| {
             let v = p - a;
             a + 2.0 * v.dot(dir) * dir - v
         };
-        let stroke = egui::Stroke::new(1.5, col::PREVIEW);
-        // Lines (bezier sampled).
+        let mut segs = Vec::new();
         for &li in &sm.line_targets {
             let Some(l) = doc.lines.get(li).filter(|l| !l.deleted) else { continue };
             if li == line_idx {
                 continue;
             }
-            let mut prev: Option<egui::Pos2> = None;
+            let mut prev: Option<Vec3> = None;
             for (u, v) in l.sample_local(model::BEZIER_SEGMENTS) {
                 let r = reflect(glam::Vec2::new(u, v));
-                if let Some(p) = project(local_to_world(&frame, r.x, r.y)) {
-                    if let Some(q) = prev {
-                        painter.line_segment([q, p], stroke);
-                    }
-                    prev = Some(p);
+                let w = local_to_world(&frame, r.x, r.y);
+                if let Some(q) = prev {
+                    segs.push((q, w));
                 }
+                prev = Some(w);
             }
         }
-        // Circles (sampled).
         for &ci in &sm.circle_targets {
             let Some(c) = doc.circles.get(ci).filter(|c| !c.deleted) else { continue };
             let center = reflect(glam::Vec2::new(c.cx, c.cy));
             const N: usize = 48;
-            let mut prev: Option<egui::Pos2> = None;
+            let mut prev: Option<Vec3> = None;
             for k in 0..=N {
                 let t = k as f32 / N as f32 * std::f32::consts::TAU;
-                let p = local_to_world(&frame, center.x + c.r * t.cos(), center.y + c.r * t.sin());
-                if let Some(sp) = project(p) {
-                    if let Some(q) = prev {
-                        painter.line_segment([q, sp], stroke);
-                    }
-                    prev = Some(sp);
+                let w = local_to_world(&frame, center.x + c.r * t.cos(), center.y + c.r * t.sin());
+                if let Some(q) = prev {
+                    segs.push((q, w));
                 }
+                prev = Some(w);
             }
         }
+        segs
     }
 
     /// The visible tracing image whose quad is under the cursor (#425), nearest plane hit
@@ -7091,11 +7092,7 @@ impl eframe::App for App {
                         }
                     }
                     context::SketchMirrorControl {
-                        line_label: c.and_then(|c| c.line).map(|li| {
-                            names::element_name(&self.state.doc, SceneElement::Line(li))
-                                .map(|n| n.to_string())
-                                .unwrap_or_else(|| format!("Line {li}"))
-                        }),
+                        line: c.and_then(|c| c.line),
                         picked,
                         editing: c.map(|c| c.editing.is_some()).unwrap_or(false),
                         can_commit: c.map(|c| c.can_commit()).unwrap_or(false),
@@ -16037,6 +16034,7 @@ impl App {
         // the picked lines/circles at every computed offset, so the result previews before commit.
         let mut sketch_repeat_ghost = self.sketch_repeat_ghost_segments();
         sketch_repeat_ghost.extend(self.sketch_offset_ghost_segments());
+        sketch_repeat_ghost.extend(self.sketch_mirror_ghost_segments());
         // Live-updated descendant geometry for the operation being edited (#260): recomputed from
         // a scratch doc so faded downstream bodies follow the gizmo drag in preview styling.
         let edit_preview_meshes = self.edit_preview_descendant_meshes();

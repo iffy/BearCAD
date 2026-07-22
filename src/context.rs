@@ -351,8 +351,8 @@ pub enum SketchOffsetEdit {
 /// The in-sketch Mirror tool's context section (#523/#528).
 #[derive(Clone, Debug, PartialEq)]
 pub struct SketchMirrorControl {
-    /// Label of the picked mirror line, or `None` until one is chosen.
-    pub line_label: Option<String>,
+    /// The picked mirror line's index, or `None` until one is chosen.
+    pub line: Option<usize>,
     /// Lines/circles currently in the reflected set, for the element picker.
     pub picked: Vec<SceneElement>,
     pub editing: bool,
@@ -2992,28 +2992,33 @@ pub fn show_pane(
         any_control = true;
         ui.separator();
         section_label(ui, if control.editing { "Edit mirror" } else { "Mirror" });
-        // Primary: the mirror line (picked in the viewport), shown with a ✕ to re-pick.
-        labeled_row(ui, "Mirror line", |ui| match &control.line_label {
-            Some(label) => {
-                ui.label(egui::RichText::new(label).color(egui::Color32::from_gray(200)));
-                if ui.small_button("✕").on_hover_text("Pick a different line").clicked() {
-                    on_sketch_mirror_edit(SketchMirrorEdit::ClearLine);
+        // Primary: the mirror line, as a single-line element picker (#534). Removing it lets
+        // the next viewport click pick a new mirror line.
+        let mut line_picker =
+            ElementPicker::new(ElementFilter::kinds(&[ElementKind::Line]), PickLimit::Finite(1));
+        line_picker.set_focused(control.line.is_none());
+        line_picker.set_picked(control.line.map(SceneElement::Line));
+        labeled_row_top(ui, "Mirror line", |ui| {
+            ui.add_enabled_ui(controls_enabled, |ui| {
+                if let Some(event) =
+                    crate::element_picker::show(ui, &line_picker, doc, "sketch_mirror_line_picker")
+                {
+                    match event {
+                        crate::element_picker::PickerEvent::Focus => {}
+                        crate::element_picker::PickerEvent::Remove(_)
+                        | crate::element_picker::PickerEvent::Clear => {
+                            on_sketch_mirror_edit(SketchMirrorEdit::ClearLine);
+                        }
+                    }
                 }
-            }
-            None => {
-                ui.label(
-                    egui::RichText::new("click a straight line")
-                        .color(egui::Color32::from_gray(140))
-                        .size(11.0),
-                );
-            }
+            });
         });
         // Secondary: the reflected shapes (unified element picker).
         let mut picker = ElementPicker::new(
             ElementFilter::kinds(&[ElementKind::Line, ElementKind::Circle]),
             PickLimit::Infinite,
         );
-        picker.set_focused(control.line_label.is_some());
+        picker.set_focused(control.line.is_some());
         picker.set_picked(control.picked.iter().cloned());
         labeled_row_top(ui, "Shapes", |ui| {
             ui.add_enabled_ui(controls_enabled, |ui| {
