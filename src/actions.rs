@@ -383,7 +383,8 @@ pub const DEFAULT_VERTEX_TREATMENT_AMOUNT: f32 = 2.0;
 /// shape closely — same click-to-grab gizmo drag and floating text-input pattern.
 #[derive(Clone, Debug)]
 pub struct CreatingVertexTreatment {
-    pub point: ConstraintPoint,
+    /// One or more treatable sketch vertices sharing the same amount (#492).
+    pub points: Vec<ConstraintPoint>,
     pub kind: VertexTreatmentKind,
     /// Live amount (mm), gizmo-driven; always clamped non-negative.
     pub amount_live: f32,
@@ -5027,6 +5028,51 @@ impl AppState {
                         "Aligned view — click a projection, then move the mouse and click to place a lined-up view".to_string()
                     }
                 };
+                // #492: Chamfer/Fillet in a sketch keep only treatable vertices selected
+                // and seed the multi-vertex treatment set from them.
+                if matches!(tool, Tool::Chamfer | Tool::Fillet) {
+                    if let Some(session) = self.sketch_session {
+                        let sketch = session.sketch;
+                        let kind = match tool {
+                            Tool::Chamfer => VertexTreatmentKind::Chamfer,
+                            _ => VertexTreatmentKind::Fillet,
+                        };
+                        let mut keep = Vec::new();
+                        for el in self.scene_selection.ordered() {
+                            if let SceneElement::Point(p) = el {
+                                if crate::vertex_drag::incident_two_lines(
+                                    &self.doc,
+                                    sketch,
+                                    p.clone(),
+                                )
+                                .is_some()
+                                {
+                                    keep.push(p);
+                                }
+                            }
+                        }
+                        self.scene_selection.clear();
+                        for p in &keep {
+                            click_scene_selection(
+                                &mut self.scene_selection,
+                                SceneElement::Point(p.clone()),
+                                true,
+                            );
+                        }
+                        if !keep.is_empty() {
+                            let unit = crate::model::effective_length_unit(&self.doc, sketch);
+                            let amount = 3.0_f32;
+                            self.creating_vertex_treatment = Some(CreatingVertexTreatment {
+                                points: keep,
+                                kind,
+                                amount_live: amount,
+                                text: crate::value::format_length_display_in(amount, unit),
+                                user_edited: false,
+                                pending_focus: true,
+                            });
+                        }
+                    }
+                }
                 if tool == Tool::Dimension {
                     self.try_begin_dimension_from_selection();
                     // 3D mode (#453): switching to the tool with a measuring selection

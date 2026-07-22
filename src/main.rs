@@ -2808,22 +2808,30 @@ impl App {
             self.vertex_treatment_gizmo_drag = None;
         }
 
-        let anchor = self
+        // Gizmos for every selected treatable vertex; dragging any one drives the shared amount (#492).
+        let following = self.vertex_treatment_gizmo_drag.is_some();
+        let mut gizmo_active = false;
+        let anchors: Vec<(Vec3, Vec3)> = self
             .state
             .creating_vertex_treatment
             .as_ref()
-            .and_then(|cvt| vertex_treatment_anchor(&self.state.doc, session.sketch, cvt.point.clone()));
-
-        let following = self.vertex_treatment_gizmo_drag.is_some();
-        let mut gizmo_active = false;
-        if let Some((origin, normal)) = anchor {
-            let amount = self
-                .state
-                .creating_vertex_treatment
-                .as_ref()
-                .map(|cvt| cvt.evaluated_amount(&self.state.doc))
-                .unwrap_or(0.0);
-            let handle_offset = construction::gizmo_display_offset(amount);
+            .map(|cvt| {
+                cvt.points
+                    .iter()
+                    .filter_map(|p| {
+                        vertex_treatment_anchor(&self.state.doc, session.sketch, p.clone())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let amount = self
+            .state
+            .creating_vertex_treatment
+            .as_ref()
+            .map(|cvt| cvt.evaluated_amount(&self.state.doc))
+            .unwrap_or(0.0);
+        let handle_offset = construction::gizmo_display_offset(amount);
+        for &(origin, normal) in &anchors {
             let hovered = pointer_screen.is_some_and(|pp| {
                 construction::offset_gizmo_hit(pp, project, origin, normal, handle_offset)
             });
@@ -2841,9 +2849,12 @@ impl App {
                     });
                 }
             }
-            if let Some(drag) = self.vertex_treatment_gizmo_drag {
-                gizmo_active = true;
-                if let Some(pp) = pointer_screen {
+        }
+        if let Some(drag) = self.vertex_treatment_gizmo_drag {
+            gizmo_active = true;
+            if let Some(pp) = pointer_screen {
+                // Use the first anchor's axis for the drag projection (all share the amount).
+                if let Some(&(origin, normal)) = anchors.first() {
                     let new_amount = construction::offset_from_normal_drag(
                         origin,
                         normal,
@@ -2867,17 +2878,18 @@ impl App {
             }
         }
 
-        // A click while following commits the treatment.
+        // A click while following commits the treatment(s).
         if following && primary_pressed {
             if let Some(mut cvt) = self.state.creating_vertex_treatment.take() {
-                // #201: a typed amount can define a parameter (`name = expr`).
                 let _ = actions::commit_inline_parameter_defs(&mut self.state.doc, [&mut cvt.text]);
                 let amount = cvt.evaluated_amount(&self.state.doc);
-                self.state.apply(Action::CommitVertexTreatment {
-                    point: cvt.point,
-                    kind: cvt.kind,
-                    amount,
-                });
+                for point in cvt.points {
+                    let _ = self.state.apply(Action::CommitVertexTreatment {
+                        point,
+                        kind: cvt.kind,
+                        amount,
+                    });
+                }
             }
             self.vertex_treatment_gizmo_drag = None;
             return;
@@ -2886,8 +2898,8 @@ impl App {
             return;
         }
 
-        // Click a vertex where exactly two plain lines meet to begin.
-        if primary_pressed && self.state.creating_vertex_treatment.is_none() {
+        // Click a treatable vertex to add it (#492), or start the set if empty.
+        if primary_pressed {
             if let Some(pp) = pointer_screen {
                 if let Some((point, _)) =
                     nearest_sketch_point_in_sketch(pp, project, &self.state.doc, session.sketch)
@@ -2897,17 +2909,23 @@ impl App {
                             &self.state.doc,
                             session.sketch,
                         );
-                        self.state.creating_vertex_treatment = Some(CreatingVertexTreatment {
-                            point,
-                            kind,
-                            amount_live: DEFAULT_VERTEX_TREATMENT_AMOUNT,
-                            text: crate::value::format_length_display_in(
-                                DEFAULT_VERTEX_TREATMENT_AMOUNT,
-                                unit,
-                            ),
-                            user_edited: false,
-                            pending_focus: true,
-                        });
+                        if let Some(cvt) = self.state.creating_vertex_treatment.as_mut() {
+                            if !cvt.points.iter().any(|p| p == &point) {
+                                cvt.points.push(point);
+                            }
+                        } else {
+                            self.state.creating_vertex_treatment = Some(CreatingVertexTreatment {
+                                points: vec![point],
+                                kind,
+                                amount_live: DEFAULT_VERTEX_TREATMENT_AMOUNT,
+                                text: crate::value::format_length_display_in(
+                                    DEFAULT_VERTEX_TREATMENT_AMOUNT,
+                                    unit,
+                                ),
+                                user_edited: false,
+                                pending_focus: true,
+                            });
+                        }
                     }
                 }
             }
@@ -2928,8 +2946,11 @@ impl App {
             let Some(cvt) = self.state.creating_vertex_treatment.as_ref() else {
                 return;
             };
+            let Some(first) = cvt.points.first() else {
+                return;
+            };
             let Some((origin, normal)) =
-                vertex_treatment_anchor(&self.state.doc, session.sketch, cvt.point.clone())
+                vertex_treatment_anchor(&self.state.doc, session.sketch, first.clone())
             else {
                 return;
             };
@@ -3022,11 +3043,13 @@ impl App {
                 // #201: a typed amount can define a parameter (`name = expr`).
                 let _ = actions::commit_inline_parameter_defs(&mut self.state.doc, [&mut cvt.text]);
                 let amount = cvt.evaluated_amount(&self.state.doc);
-                self.state.apply(Action::CommitVertexTreatment {
-                    point: cvt.point,
-                    kind: cvt.kind,
-                    amount,
-                });
+                for point in cvt.points {
+                    let _ = self.state.apply(Action::CommitVertexTreatment {
+                        point,
+                        kind: cvt.kind,
+                        amount,
+                    });
+                }
             }
         }
     }
@@ -7752,6 +7775,19 @@ impl eframe::App for App {
                     }
                     context::SelectionEdit::Clear => self.state.scene_selection.clear(),
                 }
+                // Keep multi-vertex chamfer/fillet in sync with the picker (#492).
+                if matches!(self.state.tool, Tool::Chamfer | Tool::Fillet) {
+                    if let Some(cvt) = self.state.creating_vertex_treatment.as_mut() {
+                        cvt.points.retain(|p| {
+                            self.state
+                                .scene_selection
+                                .is_selected(SceneElement::Point(p.clone()))
+                        });
+                        if cvt.points.is_empty() {
+                            self.state.creating_vertex_treatment = None;
+                        }
+                    }
+                }
             }
             if let Some(enabled) = snapping_change {
                 self.state.apply(Action::SetSnapping(enabled));
@@ -10218,25 +10254,30 @@ fn vertex_treatment_preview_points(
     cvt: &CreatingVertexTreatment,
 ) -> Option<Vec<Vec3>> {
     let frame = sketch_geometry_frame(doc, sketch)?;
-    let corner = vertex_drag::treatment_corner(doc, sketch, cvt.point.clone())?;
     let amount = cvt.evaluated_amount(doc);
-    let geom = model::vertex_treatment_geometry(corner.v, corner.a, corner.b, cvt.kind, amount)?;
-
-    let mut bridge =
-        Line::from_local_endpoints(sketch, geom.p1.0, geom.p1.1, geom.p2.0, geom.p2.1);
-    bridge.bezier = geom.bezier;
-
-    let mut local_points = Vec::with_capacity(model::BEZIER_SEGMENTS + 3);
-    local_points.push(corner.a);
-    local_points.extend(bridge.sample_local(model::BEZIER_SEGMENTS));
-    local_points.push(corner.b);
-
-    Some(
-        local_points
-            .into_iter()
-            .map(|(u, v)| face::local_to_world(&frame, u, v))
-            .collect(),
-    )
+    let mut world = Vec::new();
+    for point in &cvt.points {
+        let corner = vertex_drag::treatment_corner(doc, sketch, point.clone())?;
+        let geom =
+            model::vertex_treatment_geometry(corner.v, corner.a, corner.b, cvt.kind, amount)?;
+        let mut bridge =
+            Line::from_local_endpoints(sketch, geom.p1.0, geom.p1.1, geom.p2.0, geom.p2.1);
+        bridge.bezier = geom.bezier;
+        let mut local_points = Vec::with_capacity(model::BEZIER_SEGMENTS + 3);
+        local_points.push(corner.a);
+        local_points.extend(bridge.sample_local(model::BEZIER_SEGMENTS));
+        local_points.push(corner.b);
+        world.extend(
+            local_points
+                .into_iter()
+                .map(|(u, v)| local_to_world(&frame, u, v)),
+        );
+    }
+    if world.is_empty() {
+        None
+    } else {
+        Some(world)
+    }
 }
 
 /// Where the extrude gizmo handle is drawn along the normal: the actual extrude
@@ -14912,8 +14953,10 @@ impl App {
             if let (Some(session), Some(cvt)) =
                 (self.state.sketch_session, self.state.creating_vertex_treatment.as_ref())
             {
+                // GPU path: draw a gizmo at the first treatable vertex (all share the amount).
+                if let Some(first) = cvt.points.first() {
                 if let Some((origin, normal)) =
-                    vertex_treatment_anchor(doc, session.sketch, cvt.point.clone())
+                    vertex_treatment_anchor(doc, session.sketch, first.clone())
                 {
                     let handle_offset =
                         construction::gizmo_display_offset(cvt.evaluated_amount(doc));
@@ -14929,9 +14972,8 @@ impl App {
                         hovered,
                     });
                 }
-                // Live geometry preview of the treated corner (#76): recomputed every frame
-                // from the live gizmo amount, both while first placing the gizmo and while
-                // dragging it.
+                }
+                // Live geometry preview of the treated corner(s) (#76/#492).
                 vertex_treatment_preview =
                     vertex_treatment_preview_points(doc, session.sketch, cvt);
             } else if let Some(cet) = self.state.creating_edge_treatment.as_ref() {
@@ -17659,7 +17701,7 @@ mod tests {
         let (sketch, point) = two_coincident_lines_at_a_right_angle(&mut state);
 
         let cvt = CreatingVertexTreatment {
-            point,
+            points: vec![point],
             kind: VertexTreatmentKind::Chamfer,
             amount_live: 3.0,
             text: "3".to_string(),

@@ -858,6 +858,15 @@ fn selection_picker_for(tool: Tool, selection: &SceneSelection) -> Option<Elemen
             p.set_focused(true);
             p
         }
+        // Chamfer/Fillet in-sketch: vertices only (#492).
+        Tool::Chamfer | Tool::Fillet => {
+            let mut p = ElementPicker::new(
+                ElementFilter::kind(ElementKind::Vertex),
+                PickLimit::Infinite,
+            );
+            p.set_focused(true);
+            p
+        }
         _ => return None,
     };
     // Mirror the live selection, keeping only what this picker accepts (its filter drops the
