@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <!-- Import: an arrow dropping into an open tray (#352). -->
-  <polyline points="9,14 16,21 23,14" />
-  <line x1="16" y1="21" x2="16" y2="6" />
+  <!-- Import: a small arrow dropping toward an open tray (#352/#539). -->
+  <polyline points="11,11 16,16 21,11" />
+  <line x1="16" y1="7" x2="16" y2="16" />
   <path d="M7 19 L7 25 L25 25 L25 19" />
 </svg>
