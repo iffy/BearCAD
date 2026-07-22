@@ -1,7 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-  <!-- auto-zoom: a magnifier with outward arrows, "A" implied by automation arrows -->
-  <circle cx="14" cy="14" r="7" />
-  <line x1="19.5" y1="19.5" x2="26" y2="26" stroke-width="2.5" />
-  <path d="M11 7 L7 7 L7 11" />
-  <path d="M17 21 L21 21 L21 17" />
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Auto-zoom (#438): the zoom-to-fit magnifier, but with a refresh symbol inside for "auto". -->
+  <circle cx="14" cy="14" r="8.5" />
+  <line x1="20.2" y1="20.2" x2="27" y2="27" />
+  <path d="M17.09 14.83 A 3.2 3.2 0 0 1 10.91 14.83" stroke-width="1.7" />
+  <polyline points="10.23,16.71 10.91,14.83 12.44,16.12" stroke-width="1.7" />
+  <path d="M10.91 13.17 A 3.2 3.2 0 0 1 17.09 13.17" stroke-width="1.7" />
+  <polyline points="17.77,11.29 17.09,13.17 15.56,11.88" stroke-width="1.7" />
 </svg>

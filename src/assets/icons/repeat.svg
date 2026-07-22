@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
   <!-- Linear repeat: the original and two copies along an axis, copies just barely dimmer (#390/#426). -->
   <rect x="3" y="11" width="7" height="10" fill="currentColor" stroke="none" />
-  <rect x="13" y="11" width="7" height="10" fill="currentColor" fill-opacity="0.9" stroke="none" />
-  <rect x="23" y="11" width="7" height="10" fill="currentColor" fill-opacity="0.9" stroke="none" />
+  <rect x="13" y="11" width="7" height="10" fill="currentColor" fill-opacity="0.8" stroke="none" />
+  <rect x="23" y="11" width="7" height="10" fill="currentColor" fill-opacity="0.8" stroke="none" />
   <line x1="3" y1="26" x2="30" y2="26" stroke-dasharray="2.5 2.5" />
 </svg>

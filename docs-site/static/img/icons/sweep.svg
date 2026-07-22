@@ -1,6 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <!-- Sweep: the same planar profile as Extrude, but the arrow follows a serpentine path. -->
+  <!-- Sweep: the same planar profile as Extrude, but the arrow follows a serpentine path
+       and finishes pointing diagonally. -->
   <path d="M6 24 L20 24 L26 19 L12 19 Z" />
-  <path d="M16 21 C 25 17, 7 12, 16 6" />
-  <polyline points="11,11 16,6 21,11" />
+  <path d="M16 20 C 23 16, 11 12, 21 9" />
+  <polyline points="16,9 21,9 21,14" />
 </svg>
