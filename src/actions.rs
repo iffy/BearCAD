@@ -17930,6 +17930,59 @@ mod tests {
         );
     }
 
+    /// #502: deleting an offset-generated line must stick — recompute must not revive it.
+    #[test]
+    fn delete_selection_removes_offset_output_line_permanently() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch,
+            0.0,
+            0.0,
+            40.0,
+            30.0,
+            [false; 4],
+        );
+        assert!(matches!(
+            state.apply(Action::CreateSketchOffsetOperation {
+                sketch,
+                line_targets: vec![0, 1, 2, 3],
+                circle_targets: vec![],
+                distance: "-5".to_string(),
+                construction: false,
+            }),
+            ActionResult::Ok
+        ));
+        let out = state.doc.sketch_offset_ops[0].line_outputs[0];
+        assert!(!state.doc.lines[out].deleted, "offset output exists");
+        state.apply(Action::ClickSceneElement {
+            element: SceneElement::Line(out),
+            additive: false,
+        });
+        state.apply(Action::DeleteSelection);
+        assert!(
+            state.doc.lines[out].deleted,
+            "offset output must stay deleted after DeleteSelection"
+        );
+        crate::parameters::recompute_document_geometry(&mut state.doc).unwrap();
+        assert!(
+            state.doc.lines[out].deleted,
+            "rebuild must not revive a user-deleted offset line"
+        );
+        assert!(
+            !state.doc.sketch_offset_ops[0]
+                .line_outputs
+                .contains(&out),
+            "deleted output must leave the offset op's output list"
+        );
+        assert_eq!(
+            state.doc.sketch_offset_ops[0].line_targets.len(),
+            3,
+            "paired source target must be dropped with the output"
+        );
+    }
+
     #[test]
     fn delete_selection_status_reports_invalid_and_unstable_counts() {
         use crate::model::{Constraint, ConstraintKind, ConstraintLine};

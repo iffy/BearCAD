@@ -621,7 +621,71 @@ fn tombstone_line(doc: &mut Document, index: usize) -> bool {
     }
     line.deleted = true;
     remove_shape_order_entry(doc, ShapeKind::Line, index);
+    // #502: detach from parametric ops that would re-create this line on recompute
+    // (offset/repeat rebuild overwrites `deleted: false` for live outputs).
+    detach_line_from_sketch_ops(doc, index);
     true
+}
+
+/// When a line is deleted, drop it from any sketch offset/repeat target or output
+/// lists so rebuild does not revive it (#502). Empties the op if it has no sources left.
+fn detach_line_from_sketch_ops(doc: &mut Document, line: usize) {
+    let mut orphan_outputs: Vec<usize> = Vec::new();
+    let mut empty_ops: Vec<usize> = Vec::new();
+    for (oi, op) in doc.sketch_offset_ops.iter_mut().enumerate() {
+        if op.deleted {
+            continue;
+        }
+        // Parallel target/output slots: drop whichever end references this line.
+        let mut i = 0;
+        while i < op.line_targets.len() {
+            let is_target = op.line_targets[i] == line;
+            let is_output = op.line_outputs.get(i).copied() == Some(line);
+            if is_target || is_output {
+                // Deleting a source also tombstones its generated output.
+                if is_target {
+                    if let Some(&out) = op.line_outputs.get(i) {
+                        if out != line {
+                            orphan_outputs.push(out);
+                        }
+                    }
+                }
+                op.line_targets.remove(i);
+                if i < op.line_outputs.len() {
+                    op.line_outputs.remove(i);
+                }
+            } else {
+                i += 1;
+            }
+        }
+        op.line_outputs.retain(|&out| out != line);
+        if op.line_targets.is_empty() && op.circle_targets.is_empty() {
+            empty_ops.push(oi);
+        }
+    }
+    for out in orphan_outputs {
+        if let Some(l) = doc.lines.get_mut(out) {
+            if !l.deleted {
+                l.deleted = true;
+                remove_shape_order_entry(doc, ShapeKind::Line, out);
+            }
+        }
+    }
+    for oi in empty_ops {
+        if let Some(op) = doc.sketch_offset_ops.get_mut(oi) {
+            if !op.deleted {
+                op.deleted = true;
+                remove_shape_order_entry(doc, ShapeKind::SketchOffsetOperation, oi);
+            }
+        }
+    }
+    for op in &mut doc.sketch_repeat_ops {
+        if op.deleted {
+            continue;
+        }
+        op.line_targets.retain(|&t| t != line);
+        op.line_outputs.retain(|&out| out != line);
+    }
 }
 
 fn tombstone_constraint(doc: &mut Document, index: usize) -> bool {
