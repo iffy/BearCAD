@@ -4605,7 +4605,7 @@ impl App {
     ) {
         // Inside a sketch, Mirror reflects sketch geometry across a line (#523/#528).
         if let Some(session) = self.state.sketch_session {
-            self.handle_sketch_mirror_tool(ui, project, pointer_screen, session);
+            self.handle_sketch_mirror_tool(ui, painter, project, pointer_screen, session);
             return;
         }
         let cm = self
@@ -4718,6 +4718,7 @@ impl App {
     fn handle_sketch_mirror_tool(
         &mut self,
         ui: &egui::Ui,
+        painter: &egui::Painter,
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         pointer_screen: Option<egui::Pos2>,
         session: SketchSession,
@@ -4733,6 +4734,22 @@ impl App {
         {
             self.state.apply(Action::CommitSketchMirror);
             return;
+        }
+
+        // Hover highlight (#541): show the line/circle under the cursor as pickable — whether
+        // picking the mirror axis or the shapes to reflect, both are line/circle picks.
+        if !self.gpu_viewport {
+            if let Some(pp) = pointer_screen {
+                if let Some(target) = resolve_pick_target(pp, project, None, &self.state.doc, None) {
+                    if matches!(
+                        target.kind,
+                        construction::PickTargetKind::Line(_)
+                            | construction::PickTargetKind::Circle(_)
+                    ) {
+                        target.draw_highlight(painter, project, &self.state.doc);
+                    }
+                }
+            }
         }
 
         // The reflected preview is rendered through the GPU scene's ghost path (see
@@ -9194,6 +9211,17 @@ fn resolve_viewport_hover_highlight(
         }
         // Offset tool in a sketch: glow the line/circle a click would pick.
         Tool::Offset => {
+            let gp = cam.ground_point(pp, viewport, vp);
+            let target = resolve_pick_target(pp, project, gp, doc, occlusion)?;
+            matches!(
+                target.kind,
+                construction::PickTargetKind::Line(_) | construction::PickTargetKind::Circle(_)
+            )
+            .then_some(gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind))
+        }
+        // Mirror tool in a sketch (#541): glow the line/circle a click would pick — whether the
+        // mirror axis or a shape to reflect, both are line/circle picks.
+        Tool::Mirror if sketch_session.is_some() => {
             let gp = cam.ground_point(pp, viewport, vp);
             let target = resolve_pick_target(pp, project, gp, doc, occlusion)?;
             matches!(
@@ -19319,6 +19347,53 @@ mod tests {
                 ))
             ),
             "hovering a line with the Dimension tool should highlight it, got {hover:?}"
+        );
+    }
+
+    /// #541: while the Mirror tool is active in a sketch, the line under the cursor
+    /// hover-highlights (it's what a click would pick — the axis or a shape to reflect).
+    #[test]
+    fn mirror_tool_hovers_a_line_in_a_sketch() {
+        use super::gpu_viewport;
+        use super::resolve_viewport_hover_highlight;
+        use crate::actions::SketchSession;
+        use crate::construction::PickTargetKind;
+
+        let mut doc = crate::model::Document::default();
+        let sketch = doc.add_sketch(crate::model::FaceId::ConstructionPlane(0));
+        doc.lines
+            .push(crate::model::Line::from_local_endpoints(sketch, -20.0, 0.0, 20.0, 0.0));
+
+        let cam = crate::camera::Camera::default();
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let vp = cam.view_proj(viewport);
+        let project = |w: glam::Vec3| cam.project(w, viewport, &vp);
+        let mid = project(glam::Vec3::ZERO).expect("origin projects into the viewport");
+
+        let hover = resolve_viewport_hover_highlight(
+            false,
+            crate::actions::Tool::Mirror,
+            Some(SketchSession { sketch }),
+            false,
+            false,
+            false,
+            false,
+            Some(mid),
+            &cam,
+            viewport,
+            &vp,
+            &doc,
+            &project,
+            None,
+        );
+        assert!(
+            matches!(
+                hover,
+                Some(gpu_viewport::ViewportHoverHighlight::PickTarget(
+                    PickTargetKind::Line(0)
+                ))
+            ),
+            "hovering a line with the Mirror tool should highlight it, got {hover:?}"
         );
     }
 
