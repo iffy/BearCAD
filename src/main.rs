@@ -5629,7 +5629,21 @@ impl eframe::App for App {
                 .path
                 .clone()
                 .unwrap_or_else(|| "(unsaved)".to_string());
-            let status = self.state.status.clone();
+            // #490: selection measurement (length/distance/angle) in the status bar.
+            let measurement = self.state.sketch_session.and_then(|session| {
+                constraints::selection_status_measurement(
+                    &self.state.doc,
+                    session.sketch,
+                    &self.state.scene_selection,
+                )
+            });
+            let status = match measurement {
+                Some(m) if !self.state.status.is_empty() => {
+                    format!("{m}  ·  {}", self.state.status)
+                }
+                Some(m) => m,
+                None => self.state.status.clone(),
+            };
             ui.horizontal(|ui| {
                 // Compact: the filename gives way and the status truncates into the
                 // space the right-side cluster leaves, so nothing overlaps.

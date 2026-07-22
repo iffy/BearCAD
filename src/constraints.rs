@@ -516,6 +516,40 @@ pub fn dimension_edit_from_selection(
     }
 }
 
+/// Live measurement of the current selection for the status bar (#490):
+/// one line → length; two points → distance; two parallel lines → spacing;
+/// two non-parallel lines → angle.
+pub fn selection_status_measurement(
+    doc: &Document,
+    sketch: SketchId,
+    selection: &crate::selection::SceneSelection,
+) -> Option<String> {
+    let target = dimension_edit_from_selection(doc, sketch, selection)?;
+    match target {
+        DimensionTarget::Distance(dt) => {
+            let v = measured_distance(doc, sketch, dt.clone())?;
+            let unit = effective_length_unit(doc, sketch);
+            let label = match dt {
+                DistanceTarget::LineLength(_) => "Length",
+                DistanceTarget::CircleDiameter(_) => "Diameter",
+                DistanceTarget::PointPointDistance { .. } => "Distance",
+                DistanceTarget::LineLineDistance { .. } => "Spacing",
+                DistanceTarget::PointLineDistance { .. } => "Distance",
+            };
+            Some(format!("{label}: {}", format_length_display_in(v, unit)))
+        }
+        DimensionTarget::Angle {
+            line_a,
+            line_b,
+            rotation_sign,
+        } => {
+            let rad = measured_angle_between_lines(doc, line_a, line_b, rotation_sign)?;
+            let unit = effective_angle_unit(doc, sketch);
+            Some(format!("Angle: {}", format_angle_display_in(rad, unit)))
+        }
+    }
+}
+
 fn resolve_two_selection_dimension(
     doc: &Document,
     sketch: SketchId,
@@ -1860,6 +1894,30 @@ mod tests {
         )
         .unwrap();
         assert!((angle.to_degrees() - 45.0).abs() < 1.0, "angle={}", angle.to_degrees());
+    }
+
+    /// #490: status-bar measurement of the current selection.
+    #[test]
+    fn selection_status_measurement_reports_line_length_and_angle() {
+        use crate::hierarchy::SceneElement;
+        use crate::selection::{click_scene_selection, SceneSelection};
+
+        let (mut doc, sketch) = sketch_doc();
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 50.0, 0.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 50.0));
+        doc.shape_order.push(ShapeKind::Line);
+        doc.shape_order.push(ShapeKind::Line);
+
+        let mut sel = SceneSelection::default();
+        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        let m = selection_status_measurement(&doc, sketch, &sel).expect("line length");
+        assert!(m.contains("Length") && m.contains("50"), "got {m}");
+
+        click_scene_selection(&mut sel, SceneElement::Line(1), true);
+        let m = selection_status_measurement(&doc, sketch, &sel).expect("angle");
+        assert!(m.contains("Angle") && m.contains("90"), "got {m}");
     }
 
     /// #489: constraining the *supplementary* wedge (rotation_sign opposite the natural
