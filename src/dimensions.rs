@@ -644,8 +644,6 @@ pub fn linear_dimension_label_layout(
 }
 
 pub const ARC_RADIUS: f32 = 24.0;
-pub const ARC_ARROW_LENGTH: f32 = 6.0;
-pub const ARC_ARROW_WING: f32 = 3.5;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ArcDimensionWorldGeom {
@@ -739,18 +737,6 @@ pub fn project_arc_dimension_geom(
     })
 }
 
-fn draw_arc_arrowhead(painter: &Painter, tip: Pos2, tangent: Vec2, color: Color32) {
-    if tangent.length_sq() < 1e-4 {
-        return;
-    }
-    let t = tangent.normalized();
-    let side = Vec2::new(-t.y, t.x);
-    let base = tip - t * ARC_ARROW_LENGTH;
-    let stroke = Stroke::new(LINE_WIDTH, color);
-    painter.line_segment([tip, base + side * ARC_ARROW_WING], stroke);
-    painter.line_segment([tip, base - side * ARC_ARROW_WING], stroke);
-}
-
 pub fn draw_arc_dimension(
     painter: &Painter,
     geom: &ArcDimensionGeom,
@@ -783,8 +769,8 @@ pub fn draw_arc_dimension(
         painter.line_segment([prev, next], stroke);
         prev = next;
     }
-    draw_arc_arrowhead(painter, geom.start, geom.start_tangent, color);
-    draw_arc_arrowhead(painter, geom.end, geom.end_tangent, color);
+    // #489: angle dimensions are arc + number only — no arrowheads (they read
+    // as goofy/tangential against short arcs).
 
     let galley = painter.layout_no_wrap(
         label.to_string(),

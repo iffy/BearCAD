@@ -1720,18 +1720,29 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
     // Angle dimension between two lines: `bearcad.add_angle_constraint{ a = 0, b = 5,
     // value = "120" }` (bare numbers are degrees; `rad` and parameters work; `sign`
     // picks which of the two wedges, like moving the cursor does interactively).
+    // When `sign` is omitted, use the natural leg-pair sign so the expression applies
+    // to the acute/obtuse wedge the lines currently form (#489).
     api.set(
         "add_angle_constraint",
         lua.create_function(|lua, opts: Table| {
             let line_a: usize = opts.get("a")?;
             let line_b: usize = opts.get("b")?;
-            let rotation_sign: i8 = opts.get::<Option<i8>>("sign")?.unwrap_or(1);
             let expression: String = opts
                 .get::<Option<String>>("value")?
                 .or(opts.get::<Option<f64>>("angle")?.map(|a| a.to_string()))
                 .ok_or_else(|| mlua::Error::external("add_angle_constraint requires `value`"))?;
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             unsafe {
+                let rotation_sign: i8 = if let Some(s) = opts.get::<Option<i8>>("sign")? {
+                    s
+                } else {
+                    crate::constraints::angle_constraint_natural_sign(
+                        &tick.state().doc,
+                        crate::model::ConstraintLine::Line(line_a),
+                        crate::model::ConstraintLine::Line(line_b),
+                    )
+                    .unwrap_or(1)
+                };
                 tick.exec(Instruction::AddAngleConstraint {
                     line_a,
                     line_b,

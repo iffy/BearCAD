@@ -1862,6 +1862,46 @@ mod tests {
         assert!((angle.to_degrees() - 45.0).abs() < 1.0, "angle={}", angle.to_degrees());
     }
 
+    /// #489: constraining the *supplementary* wedge (rotation_sign opposite the natural
+    /// leg pair) must make that wedge match the expression — not the natural dir-angle.
+    #[test]
+    fn add_angle_constraint_respects_opposite_wedge_sign() {
+        use crate::model::ConstraintLine;
+
+        let (mut doc, sketch) = sketch_doc();
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 100.0, 0.0));
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 20.0, 50.0));
+        doc.shape_order.push(ShapeKind::Line);
+        doc.shape_order.push(ShapeKind::Line);
+        let natural =
+            angle_constraint_natural_sign(&doc, ConstraintLine::Line(0), ConstraintLine::Line(1))
+                .unwrap();
+        let opposite = -natural;
+        add_angle_constraint_with_sign(
+            &mut doc,
+            sketch,
+            ConstraintLine::Line(0),
+            ConstraintLine::Line(1),
+            opposite,
+            "92deg".to_string(),
+        )
+        .unwrap();
+        let angle = measured_angle_between_lines(
+            &doc,
+            ConstraintLine::Line(0),
+            ConstraintLine::Line(1),
+            opposite,
+        )
+        .unwrap();
+        assert!(
+            (angle.to_degrees() - 92.0).abs() < 1.5,
+            "opposite-wedge angle should be 92°, got {}",
+            angle.to_degrees()
+        );
+    }
+
     #[test]
     fn add_line_line_distance_constraint() {
         use crate::model::ConstraintLine;

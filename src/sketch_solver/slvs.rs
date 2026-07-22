@@ -13,9 +13,9 @@
 //! gauge/reference holds.
 //!
 //! Known semantic gaps (fine for the experiment, revisit before adopting):
-//! - `Angle` maps to SLVS_C_ANGLE, which constrains the *unsigned* angle between the two
-//!   line directions (cosine-based); BearCAD's equation is signed. The mirrored solution
-//!   is far from the initial guess, so Newton practically never jumps to it.
+//! - `Angle` maps to SLVS_C_ANGLE (unsigned angle between stored line directions). The
+//!   chosen wedge is recovered via `rotation_sign`: when it disagrees with the natural
+//!   leg pair we pass π−θ so the labelled wedge matches the expression (#489).
 //! - Signed distances (`side`) map to the sign of the currently measured offset, the
 //!   same natural-sign convention the constraint was created with.
 
@@ -600,7 +600,7 @@ impl<'a> Builder<'a> {
             ConstraintKind::Angle {
                 line_a,
                 line_b,
-                rotation_sign: _,
+                rotation_sign,
             } => {
                 let Some(angle) = eval_angle_rad_in_doc(expression, self.doc) else {
                     return Ok(());
@@ -608,14 +608,28 @@ impl<'a> Builder<'a> {
                 if angle <= 0.0 || angle >= std::f32::consts::PI {
                     return Ok(());
                 }
+                // SLVS_C_ANGLE constrains the unsigned angle between the two *stored*
+                // direction vectors. BearCAD's `rotation_sign` picks which of the two
+                // wedges (θ vs π−θ) the expression applies to (#40/#489): when the
+                // chosen wedge is the supplementary of the natural leg pair, pass
+                // π−angle so the drawn/labelled wedge becomes `angle`.
+                let mut slvs_angle = angle;
+                if let Some(natural) = crate::constraints::angle_constraint_natural_sign(
+                    self.doc,
+                    line_a.clone(),
+                    line_b.clone(),
+                ) {
+                    if *rotation_sign != natural {
+                        slvs_angle = (std::f32::consts::PI - angle)
+                            .clamp(1e-4, std::f32::consts::PI - 1e-4);
+                    }
+                }
                 let (a, b) = (self.ensure_line(line_a)?, self.ensure_line(line_b)?);
-                // SLVS_C_ANGLE constrains the unsigned angle between the two direction
-                // vectors (see the module comment on signedness).
                 self.constraint(doc_index, SlvsConstraint {
                     type_: SLVS_C_ANGLE,
                     entity_a: a,
                     entity_b: b,
-                    val_a: (angle as f64).to_degrees(),
+                    val_a: (slvs_angle as f64).to_degrees(),
                     ..Default::default()
                 });
             }
