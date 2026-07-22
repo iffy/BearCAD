@@ -2342,6 +2342,13 @@ impl App {
             {
                 if self.state.tool != Tool::Rectangle {
                     self.state.apply(Action::SetTool(Tool::Rectangle));
+                } else {
+                    // Already on the Rectangle tool: repeated R toggles the anchor mode (#532).
+                    let next = match self.state.rect_anchor {
+                        actions::RectAnchor::Corner => actions::RectAnchor::Center,
+                        actions::RectAnchor::Center => actions::RectAnchor::Corner,
+                    };
+                    self.state.apply(Action::SetRectAnchor { anchor: next });
                 }
             }
 
@@ -2428,19 +2435,6 @@ impl App {
 
             if ctx.input(|i| i.key_pressed(egui::Key::X)) {
                 self.state.apply(Action::ToggleConstruction);
-            }
-
-            // Rectangle anchor mode (#532): 1 = corner-anchored, 2 = centre-anchored, while the
-            // Rectangle tool is active and not mid-draw.
-            if self.state.tool == Tool::Rectangle && self.state.creating_rect.is_none() {
-                if ctx.input(|i| i.key_pressed(egui::Key::Num1)) {
-                    self.state
-                        .apply(Action::SetRectAnchor { anchor: actions::RectAnchor::Corner });
-                }
-                if ctx.input(|i| i.key_pressed(egui::Key::Num2)) {
-                    self.state
-                        .apply(Action::SetRectAnchor { anchor: actions::RectAnchor::Center });
-                }
             }
 
             // Z: zoom to fit — the selection if anything is selected, else everything (#279).

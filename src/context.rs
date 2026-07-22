@@ -2040,8 +2040,8 @@ pub fn show_pane(
         ui.horizontal(|ui| {
             ui.label("Anchor");
             for (value, icon, tooltip) in [
-                (RectAnchor::Corner, crate::icons::IconId::RectCorner, "Corner-anchored (1)"),
-                (RectAnchor::Center, crate::icons::IconId::RectCenter, "Centre-anchored (2)"),
+                (RectAnchor::Corner, crate::icons::IconId::RectCorner, "Corner-anchored (R toggles)"),
+                (RectAnchor::Center, crate::icons::IconId::RectCenter, "Centre-anchored (R toggles)"),
             ] {
                 if crate::icons::selectable_icon_button(ui, icon, anchor == value, tooltip)
                     .clicked()

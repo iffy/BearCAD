@@ -152,8 +152,9 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   — **corner-anchored** (`RectAnchor::Corner`, the classic behavior: the first click is one
   corner, drag to the opposite) or **centre-anchored** (`RectAnchor::Center`: the first click
   is the centre and the rectangle grows symmetrically as the cursor picks a corner). It is a
-  persisted tool setting (`AppState::rect_anchor`, `Action::SetRectAnchor`). Keys **1**/**2**
-  switch to corner/centre while the tool is active and not mid-draw. The width/height dimension
+  persisted tool setting (`AppState::rect_anchor`, `Action::SetRectAnchor`). Pressing **R**
+  while already on the Rectangle tool (and not mid-draw) **toggles** the anchor mode (the same
+  key that selects the tool). The width/height dimension
   inputs always read the **full** extents in both modes (centre mode's cursor sits half a side
   from the centre). `CreatingRect::corners` resolves the two opposite corners for the preview,
   the live dimensions, and the commit, honoring the anchor and any locked width/height.

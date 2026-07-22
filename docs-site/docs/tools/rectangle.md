@@ -15,8 +15,8 @@ or type the width and height (**Tab** switches fields) and press **Enter**.
 **Anchor mode.** The context pane has a two-icon toggle for where the first click lands:
 **corner-anchored** (the default — first click is a corner) or **centre-anchored** (first
 click is the centre, and the rectangle grows out symmetrically as you pick a corner). Press
-**1** for corner or **2** for centre while the tool is active. Either way, the width and
-height you type are the full size of the rectangle.
+**R** again while the tool is already active to toggle between the two. Either way, the width
+and height you type are the full size of the rectangle.
 
 ![An 80 x 50 mm rectangle on the ground plane](/img/screenshots/rectangle.png)
 
