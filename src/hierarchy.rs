@@ -2935,9 +2935,10 @@ pub fn show_pane(
         .show_inside(ui, |ui| {
             if *filter_expanded {
                 let all_on = filter.rows().iter().all(|(_, e)| **e);
-                // Icon-group toggles (#382), stacked vertically (#389): each category is a
-                // toggleable button showing the icons of the element types it covers (hover
-                // for the name).
+                // Icon-group toggles (#382): each category is a toggleable button showing the
+                // icons of the element types it covers (hover for the name). Laid out like text
+                // — flowing left-to-right and wrapping to the next line (#526) — so every button
+                // stays visible in a narrow pane instead of a tall column crowding the list.
                 {
                     use crate::icons::IconId as I;
                     let ElementFilter {
@@ -2960,7 +2961,7 @@ pub fn show_pane(
                         ("Drawings", &[I::Drawing], drawings),
                         ("Drawing components", &[I::DrawingComponents], drawing_components),
                     ];
-                    ui.vertical(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         for (label, icons, enabled) in groups {
                             if crate::icons::selectable_icon_group(ui, icons, *enabled, label)
                                 .clicked()
