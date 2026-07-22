@@ -6998,7 +6998,12 @@ impl AppState {
                     return ActionResult::Err("Vertex is fully constrained".to_string());
                 }
                 match vertex_drag::drag_point(&mut self.doc, sketch, point, u, v) {
-                    Ok(()) => ActionResult::Ok,
+                    Ok(()) => {
+                        // Reflections track their sources and the mirror line live as either is
+                        // dragged (#543) — the drag solve doesn't run the full recompute.
+                        rebuild_sketch_mirrors(&mut self.doc);
+                        ActionResult::Ok
+                    }
                     Err(e) => ActionResult::Err(e),
                 }
             }
@@ -7044,7 +7049,10 @@ impl AppState {
                     return ActionResult::Err(e);
                 }
                 match vertex_drag::drag_line(&mut self.doc, sketch, &session, (u, v)) {
-                    Ok(()) => ActionResult::Ok,
+                    Ok(()) => {
+                        rebuild_sketch_mirrors(&mut self.doc);
+                        ActionResult::Ok
+                    }
                     Err(e) => ActionResult::Err(e),
                 }
             }
@@ -7086,7 +7094,10 @@ impl AppState {
                     return ActionResult::Err("No selection drag in progress".to_string());
                 };
                 match vertex_drag::drag_selection(&mut self.doc, sketch, &session, (u, v)) {
-                    Ok(()) => ActionResult::Ok,
+                    Ok(()) => {
+                        rebuild_sketch_mirrors(&mut self.doc);
+                        ActionResult::Ok
+                    }
                     Err(e) => ActionResult::Err(e),
                 }
             }
@@ -13085,6 +13096,47 @@ mod tests {
         state.apply(Action::DeleteElement { element: SceneElement::SketchMirrorOp(0) });
         assert!(state.doc.lines[out].deleted, "reflected line removed with the op");
         assert!(!state.doc.lines[1].deleted, "source kept");
+    }
+
+    /// #543: dragging the mirror line re-reflects the sources live — the drag solve doesn't run
+    /// the full recompute, so the drag handlers rebuild the mirrors themselves.
+    #[test]
+    fn sketch_mirror_reflection_tracks_a_dragged_mirror_line() {
+        use crate::hierarchy::SceneElement;
+        use crate::model::Line;
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        // Mirror axis x = 0 (line 0), a source segment on the +x side (line 1).
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 0.0, -10.0, 0.0, 10.0)); // 0
+        state.doc.lines.push(Line::from_local_endpoints(sketch, 5.0, 0.0, 8.0, 0.0)); // 1
+        state.apply(Action::CreateSketchMirrorOperation {
+            sketch,
+            line: 0,
+            line_targets: vec![1],
+            circle_targets: vec![],
+        });
+        let out = state.doc.sketch_mirror_ops[0].line_outputs[0];
+        assert!((state.doc.lines[out].x0 + 5.0).abs() < 1e-3, "initial reflection at x=-5");
+
+        // Drag the whole mirror line to x = 2 (both endpoints shift +2 in u), by selecting it
+        // and dragging. The reflection of (5,0) across x=2 is (-1,0).
+        state.apply(Action::ClickSceneElement { element: SceneElement::Line(0), additive: false });
+        state.apply(Action::BeginLineDrag {
+            target: crate::model::ConstraintLine::Line(0),
+            anchor_u: 0.0,
+            anchor_v: 0.0,
+        });
+        state.apply(Action::DragLine { u: 2.0, v: 0.0 });
+        // Sanity: the mirror line actually moved.
+        let ml = &state.doc.lines[0];
+        assert!((ml.x0 - 2.0).abs() < 1e-3, "mirror line moved to x=2: {}", ml.x0);
+        // The reflection followed: (5,0) across x=2 → (-1,0).
+        let o = &state.doc.lines[out];
+        assert!(
+            (o.x0 + 1.0).abs() < 1e-2,
+            "reflection should track the moved line, got x0={}",
+            o.x0
+        );
     }
 
     /// #521: exporting a component gathers every body filed into it and its nested
