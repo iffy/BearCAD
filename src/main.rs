@@ -8616,6 +8616,34 @@ impl eframe::App for App {
                 }
             }
         }
+
+        // macOS ImageIO SIGBUS guard (#533): the private resize cursors winit sets for a
+        // pane-resize hover are decoded through ImageIO, which bus-errors on some macOS setups
+        // (the same corruption `app_icon` sidesteps for the window icon). Remap them to the
+        // standard arrow — resizing still works, it just loses the ↔ cursor hint on macOS.
+        #[cfg(target_os = "macos")]
+        {
+            let unsafe_cursor = matches!(
+                ctx.output(|o| o.cursor_icon),
+                egui::CursorIcon::ResizeHorizontal
+                    | egui::CursorIcon::ResizeVertical
+                    | egui::CursorIcon::ResizeNeSw
+                    | egui::CursorIcon::ResizeNwSe
+                    | egui::CursorIcon::ResizeEast
+                    | egui::CursorIcon::ResizeWest
+                    | egui::CursorIcon::ResizeNorth
+                    | egui::CursorIcon::ResizeSouth
+                    | egui::CursorIcon::ResizeNorthEast
+                    | egui::CursorIcon::ResizeNorthWest
+                    | egui::CursorIcon::ResizeSouthEast
+                    | egui::CursorIcon::ResizeSouthWest
+                    | egui::CursorIcon::ResizeColumn
+                    | egui::CursorIcon::ResizeRow
+            );
+            if unsafe_cursor {
+                ctx.set_cursor_icon(egui::CursorIcon::Default);
+            }
+        }
     }
 }
 
