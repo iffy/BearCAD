@@ -4106,6 +4106,7 @@ mod tests {
             distance: 7.0,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
+            symmetric: false,
         });
         assert_eq!(state.doc.bodies.len(), 1);
         state
@@ -5264,6 +5265,7 @@ mod tests {
             distance: 8.0,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
+            symmetric: false,
         });
 
         let scene = build_scene_for_doc(&state);
@@ -5296,6 +5298,7 @@ mod tests {
             distance: 6.0,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
+            symmetric: false,
         });
         state.doc.extrusions[0].target = Some(crate::model::ExtrudeTarget::Plane(1));
 
@@ -5373,6 +5376,7 @@ mod tests {
             expression: String::new(),
             name: None,
             deleted: false,
+            symmetric: false,
             edge_treatments: Vec::new(),
         };
 

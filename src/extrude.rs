@@ -124,22 +124,27 @@ fn extrusion_mesh_tessellated(
 ) -> Option<SolidMesh> {
     let mut mesh = SolidMesh::default();
     for (face_index, face) in extrusion.faces.iter().enumerate() {
-        if let Some((profile, normal)) = face_profile_world(doc, face) {
-            let top: Vec<Vec3> = profile
-                .iter()
-                .map(|p| extruded_top_point(doc, extrusion, normal, *p, distance))
-                .collect();
+        if let Some((profile, top, normal)) = extrusion_profile_rings(doc, extrusion, face, distance)
+        {
             // A face with holes (annulus, #268) has no edge treatments in the fallback path;
             // build it as a hollow region (hole-aware caps + inner walls).
-            let holes: Vec<Vec<Vec3>> = face_region_world(doc, face)
+            let holes0: Vec<Vec<Vec3>> = face_region_world(doc, face)
                 .map(|(_, holes, _)| holes)
                 .unwrap_or_default();
-            if !holes.is_empty() {
-                let holes_top: Vec<Vec<Vec3>> = holes
+            if !holes0.is_empty() {
+                let holes: Vec<Vec<Vec3>> = holes0
                     .iter()
                     .map(|h| {
                         h.iter()
-                            .map(|p| extruded_top_point(doc, extrusion, normal, *p, distance))
+                            .map(|p| extruded_base_point(doc, extrusion, normal, *p, distance))
+                            .collect()
+                    })
+                    .collect();
+                let holes_top: Vec<Vec<Vec3>> = holes0
+                    .iter()
+                    .map(|h| {
+                        h.iter()
+                            .map(|p| extruded_free_end_point(doc, extrusion, normal, *p, distance))
                             .collect()
                     })
                     .collect();
@@ -212,24 +217,14 @@ fn occt_face_solid(
         };
         return sa.boolean(&sb, boolop);
     }
-    let (profile, normal) = face_profile_world(doc, face)?;
-    if profile.len() < 3 {
-        return None;
-    }
-    let top: Vec<Vec3> = profile
-        .iter()
-        .map(|p| extruded_top_point(doc, extrusion, normal, *p, distance))
-        .collect();
+    let (mut profile, mut top, _normal) =
+        extrusion_profile_rings(doc, extrusion, face, distance)?;
     // Extend both ends by `overshoot` along the extrusion direction (cut tools only).
-    let (profile, top) = if overshoot > 1e-6 {
+    if overshoot > 1e-6 {
         let u = (top[0] - profile[0]).normalize_or_zero();
-        (
-            profile.iter().map(|p| *p - u * overshoot).collect::<Vec<_>>(),
-            top.iter().map(|t| *t + u * overshoot).collect::<Vec<_>>(),
-        )
-    } else {
-        (profile, top)
-    };
+        profile = profile.iter().map(|p| *p - u * overshoot).collect();
+        top = top.iter().map(|t| *t + u * overshoot).collect();
+    }
     // A pure translation is a single prism (simplest/most robust); a slanted target (per-vertex
     // top offset, e.g. extrude-to-an-angled-face) is a ruled loft between the bottom and top loops.
     let dir = top[0] - profile[0];
@@ -254,23 +249,23 @@ fn occt_face_solid(
     // A leaf face with holes (a text glyph's counters, #285): subtract each hole's prism so the
     // glyph extrudes hollow. Boolean faces get their holes via the recursion above instead.
     if let Some((_, holes, hnormal)) = face_region_world(doc, face) {
-        for hole in holes {
-            if hole.len() < 3 {
+        for hole0 in holes {
+            if hole0.len() < 3 {
                 continue;
             }
-            let htop: Vec<Vec3> = hole
+            let mut hole: Vec<Vec3> = hole0
                 .iter()
-                .map(|p| extruded_top_point(doc, extrusion, hnormal, *p, distance))
+                .map(|p| extruded_base_point(doc, extrusion, hnormal, *p, distance))
                 .collect();
-            let (hole, htop) = if overshoot > 1e-6 {
+            let mut htop: Vec<Vec3> = hole0
+                .iter()
+                .map(|p| extruded_free_end_point(doc, extrusion, hnormal, *p, distance))
+                .collect();
+            if overshoot > 1e-6 {
                 let u = (htop[0] - hole[0]).normalize_or_zero();
-                (
-                    hole.iter().map(|p| *p - u * overshoot).collect::<Vec<_>>(),
-                    htop.iter().map(|t| *t + u * overshoot).collect::<Vec<_>>(),
-                )
-            } else {
-                (hole, htop)
-            };
+                hole = hole.iter().map(|p| *p - u * overshoot).collect();
+                htop = htop.iter().map(|t| *t + u * overshoot).collect();
+            }
             let hdir = htop[0] - hole[0];
             let hole_solid = crate::kernel::Shape::prism(&hole, hdir)?;
             shape = shape.boolean(&hole_solid, crate::kernel::BoolOp::Cut)?;
@@ -349,40 +344,32 @@ fn edge_ref_world_endpoints(
     edge: &ExtrusionEdgeRef,
 ) -> Option<(Vec3, Vec3)> {
     let face = extrusion.faces.get(edge.face())?;
-    let (base, normal) = face_profile_world(doc, face)?;
+    let distance = effective_distance(doc, extrusion);
+    let (base, top, _normal) = extrusion_profile_rings(doc, extrusion, face, distance)?;
     // A circle cap rim (#177) is one closed edge: request it as two diametrically opposite
     // points on the rim — the kernel matcher's closed-edge pass matches by curve hits.
     if is_circle_cap_rim(face, *edge) {
-        let ExtrusionEdgeRef::Cap { top, .. } = edge else {
+        let ExtrusionEdgeRef::Cap { top: is_top, .. } = edge else {
             return None;
         };
         let m = base.len();
         if m < 4 {
             return None;
         }
-        let distance = effective_distance(doc, extrusion);
-        let ring: Vec<Vec3> = if *top {
-            base.iter()
-                .map(|p| extruded_top_point(doc, extrusion, normal, *p, distance))
-                .collect()
-        } else {
-            base
-        };
+        let ring = if *is_top { &top } else { &base };
         return Some((ring[0], ring[m / 2]));
     }
     let n = base.len();
     if n < 3 {
         return None;
     }
-    let distance = effective_distance(doc, extrusion);
-    let top = |i: usize| extruded_top_point(doc, extrusion, normal, base[i], distance);
     match *edge {
         ExtrusionEdgeRef::Vertical { edge, .. } => {
             if edge >= n {
                 return None;
             }
             let v = (edge + 1) % n;
-            Some((base[v], top(v)))
+            Some((base[v], top[v]))
         }
         ExtrusionEdgeRef::Cap { edge, top: is_top, .. } => {
             if edge >= n {
@@ -390,7 +377,7 @@ fn edge_ref_world_endpoints(
             }
             let e2 = (edge + 1) % n;
             if is_top {
-                Some((top(edge), top(e2)))
+                Some((top[edge], top[e2]))
             } else {
                 Some((base[edge], base[e2]))
             }
@@ -2647,7 +2634,73 @@ pub fn extruded_top_point(
     v + dir * uniform
 }
 
+/// Start/end offsets along the normal for an extrusion of signed `distance` (#504).
+/// Non-symmetric: `[0, distance]`. Symmetric (no target): `[-|d|/2, +|d|/2]` with the
+/// sign of `distance` applied so flipping the gizmo still flips the axis.
+pub fn extrusion_end_offsets(_doc: &Document, extrusion: &Extrusion, distance: f32) -> (f32, f32) {
+    if extrusion.symmetric && extrusion.target.is_none() {
+        let half = distance.abs() * 0.5;
+        let sign = if distance < 0.0 { -1.0 } else { 1.0 };
+        (-half * sign, half * sign)
+    } else {
+        (0.0, distance)
+    }
+}
+
+/// Base-plane point for a profile vertex under the current extrusion (symmetric shifts
+/// the start off the sketch plane).
+pub fn extruded_base_point(
+    doc: &Document,
+    extrusion: &Extrusion,
+    dir: Vec3,
+    v: Vec3,
+    distance: f32,
+) -> Vec3 {
+    let (start, _) = extrusion_end_offsets(doc, extrusion, distance);
+    v + dir * start
+}
+
+/// Free-end (top) point for a profile vertex — symmetric ends at `+|d|/2`; otherwise
+/// the same as [`extruded_top_point`] (including slanted targets).
+pub fn extruded_free_end_point(
+    doc: &Document,
+    extrusion: &Extrusion,
+    dir: Vec3,
+    v: Vec3,
+    distance: f32,
+) -> Vec3 {
+    let (_, end) = extrusion_end_offsets(doc, extrusion, distance);
+    if extrusion.symmetric && extrusion.target.is_none() {
+        v + dir * end
+    } else {
+        extruded_top_point(doc, extrusion, dir, v, end)
+    }
+}
+
+/// Base and free-end loops for a profile face under this extrusion's distance/target.
+fn extrusion_profile_rings(
+    doc: &Document,
+    extrusion: &Extrusion,
+    face: &ExtrudeFace,
+    distance: f32,
+) -> Option<(Vec<Vec3>, Vec<Vec3>, Vec3)> {
+    let (profile0, normal) = face_profile_world(doc, face)?;
+    if profile0.len() < 3 {
+        return None;
+    }
+    let base: Vec<Vec3> = profile0
+        .iter()
+        .map(|p| extruded_base_point(doc, extrusion, normal, *p, distance))
+        .collect();
+    let top: Vec<Vec3> = profile0
+        .iter()
+        .map(|p| extruded_free_end_point(doc, extrusion, normal, *p, distance))
+        .collect();
+    Some((base, top, normal))
+}
+
 /// The effective signed depth: derived from `target`'s extended plane when set, else `distance`.
+/// For a symmetric extrusion this is still the *total* height (end-to-end).
 pub fn effective_distance(doc: &Document, extrusion: &Extrusion) -> f32 {
     if let Some(target) = &extrusion.target {
         if let Some((base, normal)) = faces_anchor(doc, &extrusion.faces) {
@@ -3080,8 +3133,8 @@ fn polygon_profile_world(doc: &Document, lines: &[usize]) -> Option<(Vec<Vec3>, 
     Some((profile, frame.normal))
 }
 
-/// World-space boundary loop of an extrusion cap. `top` selects the offset end
-/// (base + distance·normal); otherwise the base end at the sketch plane.
+/// World-space boundary loop of an extrusion cap. `top` selects the free end;
+/// otherwise the base end (sketch plane, or `−|d|/2` when symmetric, #504).
 pub fn cap_polygon_world(
     doc: &Document,
     extrusion: usize,
@@ -3092,17 +3145,9 @@ pub fn cap_polygon_world(
     if ext.deleted || !ext.faces.contains(profile) {
         return None;
     }
-    let (poly, normal) = face_profile_world(doc, profile)?;
-    if !top {
-        return Some(poly);
-    }
-    // The top cap follows the (possibly slanted) target plane, vertex by vertex.
     let distance = effective_distance(doc, ext);
-    Some(
-        poly.into_iter()
-            .map(|p| extruded_top_point(doc, ext, normal, p, distance))
-            .collect(),
-    )
+    let (base, free, _) = extrusion_profile_rings(doc, ext, profile, distance)?;
+    Some(if top { free } else { base })
 }
 
 /// Number of flat, sketchable side walls of a profile (rectangles have 4, polygons have
@@ -3161,16 +3206,18 @@ pub fn side_quad_world(
     if edge >= n {
         return None;
     }
-    let a = local_to_world(&frame, corners[edge].0, corners[edge].1);
-    let b = {
+    let a0 = local_to_world(&frame, corners[edge].0, corners[edge].1);
+    let b0 = {
         let (u, v) = corners[(edge + 1) % n];
         local_to_world(&frame, u, v)
     };
     let normal = frame.normal;
-    // The top edge follows the (possibly slanted) target plane, so the wall stays planar.
+    // Base/free ends follow symmetric offsets and (possibly slanted) targets (#504).
     let distance = effective_distance(doc, ext);
-    let top_a = extruded_top_point(doc, ext, normal, a, distance);
-    let top_b = extruded_top_point(doc, ext, normal, b, distance);
+    let a = extruded_base_point(doc, ext, normal, a0, distance);
+    let b = extruded_base_point(doc, ext, normal, b0, distance);
+    let top_a = extruded_free_end_point(doc, ext, normal, a0, distance);
+    let top_b = extruded_free_end_point(doc, ext, normal, b0, distance);
     Some([a, b, top_b, top_a])
 }
 
@@ -3505,12 +3552,8 @@ pub fn treatable_edges(doc: &Document) -> Vec<(usize, ExtrusionEdgeRef, Vec3, Ve
                 // all naming the same `Cap {{ edge: 0 }}` reference, so segment-based
                 // picking works on the whole circle.
                 if matches!(face, ExtrudeFace::Circle(_)) {
-                    if let Some((base, normal)) = face_profile_world(doc, face) {
-                        let distance = effective_distance(doc, ext);
-                        let top: Vec<Vec3> = base
-                            .iter()
-                            .map(|p| extruded_top_point(doc, ext, normal, *p, distance))
-                            .collect();
+                    let distance = effective_distance(doc, ext);
+                    if let Some((base, top, _)) = extrusion_profile_rings(doc, ext, face, distance) {
                         let m = base.len();
                         for k in 0..m {
                             let k2 = (k + 1) % m;
@@ -3531,14 +3574,10 @@ pub fn treatable_edges(doc: &Document) -> Vec<(usize, ExtrusionEdgeRef, Vec3, Ve
                 }
                 continue;
             }
-            let Some((base, normal)) = face_profile_world(doc, face) else {
+            let distance = effective_distance(doc, ext);
+            let Some((base, top, _)) = extrusion_profile_rings(doc, ext, face, distance) else {
                 continue;
             };
-            let distance = effective_distance(doc, ext);
-            let top: Vec<Vec3> = base
-                .iter()
-                .map(|p| extruded_top_point(doc, ext, normal, *p, distance))
-                .collect();
             for edge in 0..n {
                 let v = (edge + 1) % n;
                 out.push((ei, ExtrusionEdgeRef::Vertical { face: fi, edge }, base[v], top[v]));
@@ -3578,15 +3617,9 @@ pub fn extrusion_edge_anchor(doc: &Document, extrusion: usize, edge: ExtrusionEd
         let ExtrusionEdgeRef::Cap { top: is_top, .. } = edge else {
             return None;
         };
-        let (base, normal) = face_profile_world(doc, face)?;
         let distance = effective_distance(doc, ext);
-        let ring: Vec<Vec3> = if is_top {
-            base.iter()
-                .map(|p| extruded_top_point(doc, ext, normal, *p, distance))
-                .collect()
-        } else {
-            base
-        };
+        let (base, top, normal) = extrusion_profile_rings(doc, ext, face, distance)?;
+        let ring = if is_top { &top } else { &base };
         let m = ring.len();
         if m < 3 {
             return None;
@@ -3605,12 +3638,8 @@ pub fn extrusion_edge_anchor(doc: &Document, extrusion: usize, edge: ExtrusionEd
     if n < 3 {
         return None;
     }
-    let (base, normal) = face_profile_world(doc, face)?;
     let distance = effective_distance(doc, ext);
-    let top: Vec<Vec3> = base
-        .iter()
-        .map(|p| extruded_top_point(doc, ext, normal, *p, distance))
-        .collect();
+    let (base, top, _) = extrusion_profile_rings(doc, ext, face, distance)?;
     match edge {
         ExtrusionEdgeRef::Vertical { edge, .. } => {
             if edge >= n {
@@ -3689,14 +3718,10 @@ pub fn edge_treatment_would_bevel(
     if n < 3 {
         return false;
     }
-    let Some((base, normal)) = face_profile_world(doc, face) else {
+    let distance = effective_distance(doc, ext);
+    let Some((base, top, _)) = extrusion_profile_rings(doc, ext, face, distance) else {
         return false;
     };
-    let distance = effective_distance(doc, ext);
-    let top: Vec<Vec3> = base
-        .iter()
-        .map(|p| extruded_top_point(doc, ext, normal, *p, distance))
-        .collect();
     match edge {
         ExtrusionEdgeRef::Vertical { edge, .. } => {
             if edge >= n {
@@ -4109,7 +4134,7 @@ fn extrude_profile_with_treatments(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Circle, Document, FaceId};
+    use crate::model::{Circle, Document, FaceId, Line};
 
     /// #260: descendants walk forward through operations — a body feeding a boolean whose output
     /// feeds a move op yields both downstream bodies, but not unrelated bodies.
@@ -5068,7 +5093,7 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         let profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
         let path_sketch = vertical_path_sketch(&mut doc);
-        doc.lines.push(crate::model::Line::from_local_endpoints(path_sketch, 5.0, 0.0, 5.0, 30.0));
+        doc.lines.push(Line::from_local_endpoints(path_sketch, 5.0, 0.0, 5.0, 30.0));
         let fp = crate::model::Sweep {
             sketch,
             faces: vec![profile],
@@ -5091,8 +5116,8 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         let profile = rect_profile(&mut doc, sketch, -2.0, -2.0, 4.0, 4.0);
         let ps = vertical_path_sketch(&mut doc);
-        doc.lines.push(crate::model::Line::from_local_endpoints(ps, 0.0, 20.0, 15.0, 20.0));
-        doc.lines.push(crate::model::Line::from_local_endpoints(ps, 0.0, 0.0, 0.0, 20.0));
+        doc.lines.push(Line::from_local_endpoints(ps, 0.0, 20.0, 15.0, 20.0));
+        doc.lines.push(Line::from_local_endpoints(ps, 0.0, 0.0, 0.0, 20.0));
         let fp = crate::model::Sweep {
             sketch,
             faces: vec![profile],
@@ -5123,8 +5148,8 @@ mod tests {
         let (mut doc, sketch) = sketch_doc();
         let profile = rect_profile(&mut doc, sketch, -2.0, -2.0, 4.0, 4.0);
         let ps = vertical_path_sketch(&mut doc);
-        doc.lines.push(crate::model::Line::from_local_endpoints(ps, 0.0, 0.0, 0.0, 20.0));
-        doc.lines.push(crate::model::Line::from_local_endpoints(ps, 40.0, 0.0, 40.0, 20.0));
+        doc.lines.push(Line::from_local_endpoints(ps, 0.0, 0.0, 0.0, 20.0));
+        doc.lines.push(Line::from_local_endpoints(ps, 40.0, 0.0, 40.0, 20.0));
         let fp = crate::model::Sweep {
             sketch,
             faces: vec![profile],
@@ -5153,7 +5178,7 @@ mod tests {
         // Cut tool: a 4x4 profile swept straight through the plate (z -10..10).
         let bit = rect_profile(&mut doc, sketch, -2.0, -2.0, 4.0, 4.0);
         let ps = vertical_path_sketch(&mut doc);
-        doc.lines.push(crate::model::Line::from_local_endpoints(ps, 0.0, -10.0, 0.0, 10.0));
+        doc.lines.push(Line::from_local_endpoints(ps, 0.0, -10.0, 0.0, 10.0));
         doc.sweeps.push(crate::model::Sweep {
             sketch,
             faces: vec![bit],
@@ -5404,10 +5429,33 @@ mod tests {
             distance,
             target: None,
             expression: String::new(),
+            symmetric: false,
             name: None,
             deleted: false,
             edge_treatments: Vec::new(),
         }
+    }
+
+    /// #504: a symmetric extrude of total height `d` spans `[-d/2, +d/2]` along the normal.
+    #[test]
+    fn symmetric_extrusion_spans_both_sides_of_sketch_plane() {
+        let (mut doc, sketch) = sketch_doc();
+        let profile = rect_profile(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0);
+        let mut ext = extrusion(sketch, vec![profile], 20.0);
+        ext.symmetric = true;
+        let (start, end) = extrusion_end_offsets(&doc, &ext, 20.0);
+        assert!((start - (-10.0)).abs() < 1e-4, "start={start}");
+        assert!((end - 10.0).abs() < 1e-4, "end={end}");
+        let mesh = extrusion_mesh(&doc, &ext).expect("symmetric mesh");
+        let (min, max) = mesh.bounds().expect("bounds");
+        assert!(
+            (min.z + 10.0).abs() < 0.5 && (max.z - 10.0).abs() < 0.5,
+            "solid should span z≈[-10,10], min={min:?} max={max:?}"
+        );
+        let base_pt = extruded_base_point(&doc, &ext, glam::Vec3::Z, glam::Vec3::ZERO, 20.0);
+        let top_pt = extruded_free_end_point(&doc, &ext, glam::Vec3::Z, glam::Vec3::ZERO, 20.0);
+        assert!((base_pt.z + 10.0).abs() < 1e-4, "base z={}", base_pt.z);
+        assert!((top_pt.z - 10.0).abs() < 1e-4, "top z={}", top_pt.z);
     }
 
     /// #200: a cut tool built with overshoot extends past both ends by `2 * overshoot`, so
@@ -5442,9 +5490,9 @@ mod tests {
         use crate::model::{Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, LineEnd};
 
         let (mut doc, sketch) = sketch_doc();
-        doc.lines.push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
-        doc.lines.push(crate::model::Line::from_local_endpoints(sketch, 10.0, 0.0, 5.0, 8.0));
-        doc.lines.push(crate::model::Line::from_local_endpoints(sketch, 5.0, 8.0, 0.0, 0.0));
+        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        doc.lines.push(Line::from_local_endpoints(sketch, 10.0, 0.0, 5.0, 8.0));
+        doc.lines.push(Line::from_local_endpoints(sketch, 5.0, 8.0, 0.0, 0.0));
         let coincident = |a, b| Constraint {
             sketch,
             kind: ConstraintKind::Coincident {

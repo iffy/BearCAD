@@ -788,7 +788,16 @@ pub fn extrude_instruction(name: &str, args: &Value, doc: &Document) -> Result<I
             let body = body_choice(o);
             let sketch = crate::actions::extrude_face_sketch(doc, &faces[0])
                 .ok_or("extrude face does not exist")?;
-            Ok(Instruction::Extrude { sketch, faces, distance, body, target, expression })
+            let symmetric = opt_bool(o, "symmetric")?.unwrap_or(false);
+            Ok(Instruction::Extrude {
+                sketch,
+                faces,
+                distance,
+                body,
+                target,
+                expression,
+                symmetric,
+            })
         }
         "extrude_face" => {
             let face = face_id_from_json(
@@ -2409,6 +2418,7 @@ mod tests {
                 distance: 10.0,
                 body: ExtrudeBodyChoice::New,
                 target: None,
+                symmetric: false,
             })
         );
         // A `to` target lets distance default to 0.

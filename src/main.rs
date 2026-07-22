@@ -6128,6 +6128,11 @@ impl eframe::App for App {
                     .creating_extrusion
                     .as_ref()
                     .map(|ce| ce.body_mode),
+                extrude_symmetric: self
+                    .state
+                    .creating_extrusion
+                    .as_ref()
+                    .map(|ce| ce.symmetric),
                 // Extrude face element picker rows (#268): one per picked profile face.
                 extrude_faces: (self.state.tool == Tool::Extrude).then(|| {
                     self.state
@@ -6895,6 +6900,7 @@ impl eframe::App for App {
                 None;
             let mut snapping_change: Option<bool> = None;
             let mut extrude_body_mode_change: Option<actions::ExtrudeBodyMode> = None;
+            let mut extrude_symmetric_change: Option<bool> = None;
             let mut extrude_face_remove: Option<Option<usize>> = None;
             let mut units_change: Option<context::UnitsChoice> = None;
             let mut edge_picker_edit: Option<Option<usize>> = None;
@@ -6947,6 +6953,7 @@ impl eframe::App for App {
                         &mut |kind| constraint_apply = Some(kind),
                         &mut |enabled| snapping_change = Some(enabled),
                         &mut |mode| extrude_body_mode_change = Some(mode),
+                        &mut |symmetric| extrude_symmetric_change = Some(symmetric),
                         &mut |remove| extrude_face_remove = Some(remove),
                         &mut |choice| units_change = Some(choice),
                         &mut |edit| edge_picker_edit = Some(edit),
@@ -7811,6 +7818,9 @@ impl eframe::App for App {
             }
             if let Some(mode) = extrude_body_mode_change {
                 self.state.apply(Action::SetExtrudeBodyMode { mode });
+            }
+            if let Some(symmetric) = extrude_symmetric_change {
+                self.state.apply(Action::SetExtrudeSymmetric { symmetric });
             }
             if let Some(choice) = units_change {
                 match choice {
@@ -8756,6 +8766,7 @@ fn build_viewport_scene_input<'a>(
                 // shape it will land in, instead of a generic blind extrude (#63).
                 target: ce.target.clone().or(pending_extrude_target),
                 expression: String::new(),
+                symmetric: ce.symmetric,
                 name: None,
                 deleted: false,
                 edge_treatments: Vec::new(),

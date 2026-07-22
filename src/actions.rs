@@ -357,9 +357,11 @@ pub struct CreatingExtrusion {
     pub edit_index: Option<usize>,
     /// How this extrusion should attach to the document's bodies on commit.
     pub body_mode: ExtrudeBodyMode,
-    /// Body that `body_mode` can merge into (the other option always being `NewBody`); `None`
-    /// when there's no candidate body, in which case the context pane hides the choice.
+    /// Body that `body_mode` can merge into / cut (the host body of the sketch face);
+    /// `None` when there's no candidate — Add/Cut stay disabled.
     pub merge_candidate: Option<usize>,
+    /// Extrude half the distance each way from the sketch plane (#504).
+    pub symmetric: bool,
 }
 
 impl CreatingExtrusion {
@@ -1397,6 +1399,8 @@ pub enum Action {
         /// Distance expression stored on the extrusion (#251/#402) so a parameter-driven
         /// depth re-bakes when the parameter changes; `distance` is its evaluated value.
         expression: Option<String>,
+        /// Extrude half the distance each way from the sketch plane (#504).
+        symmetric: bool,
     },
     /// Semantic push/pull of an existing extrusion (#114): set a new fixed distance
     /// (clears any snap target — a plain typed distance is a blind extrude) and/or
@@ -1805,6 +1809,8 @@ pub enum Action {
         extend_infinite: bool,
     },
     SetExtrudeBodyMode { mode: ExtrudeBodyMode },
+    /// Toggle symmetric extrude (half distance each way from the sketch plane, #504).
+    SetExtrudeSymmetric { symmetric: bool },
     /// Enable or disable snapping while drawing/dragging.
     SetSnapping(bool),
     /// Add the constraint implied by leaving `point` on a snap target.
@@ -6927,6 +6933,7 @@ impl AppState {
                 body,
                 target,
                 expression,
+                symmetric,
             } => {
                 if faces.is_empty() {
                     return ActionResult::Err("Extrusion needs at least one face".to_string());
@@ -6983,6 +6990,7 @@ impl AppState {
                     distance,
                     target,
                     expression: expression.unwrap_or_default(),
+                    symmetric,
                     name: None,
                     deleted: false,
                     edge_treatments: Vec::new(),
@@ -7097,6 +7105,7 @@ impl AppState {
                                 .map(ExtrudeBodyMode::MergeInto)
                                 .unwrap_or(ExtrudeBodyMode::NewBody),
                             merge_candidate,
+                            symmetric: false,
                         });
                     }
                 }
@@ -7132,6 +7141,7 @@ impl AppState {
                         .map(ExtrudeBodyMode::MergeInto)
                         .unwrap_or(ExtrudeBodyMode::NewBody),
                     merge_candidate,
+                    symmetric: false,
                 });
                 ActionResult::Ok
             }
@@ -7155,6 +7165,7 @@ impl AppState {
                     body,
                     target,
                     expression: None,
+                    symmetric: false,
                 })
             }
             Action::SetExtrudeDistance { distance } => {
@@ -7210,6 +7221,18 @@ impl AppState {
                 ce.body_mode = mode;
                 ActionResult::Ok
             }
+            Action::SetExtrudeSymmetric { symmetric } => {
+                let Some(ce) = &mut self.creating_extrusion else {
+                    return ActionResult::Err("No extrusion in progress".to_string());
+                };
+                ce.symmetric = symmetric;
+                self.status = if symmetric {
+                    "Extrude: symmetric".to_string()
+                } else {
+                    "Extrude: one direction".to_string()
+                };
+                ActionResult::Ok
+            }
             Action::EditExtrusion { index } => {
                 let Some(extrusion) = self.doc.extrusions.get(index) else {
                     return ActionResult::Err("Extrusion not found".to_string());
@@ -7243,6 +7266,7 @@ impl AppState {
                     edit_index: Some(index),
                     body_mode,
                     merge_candidate,
+                    symmetric: extrusion.symmetric,
                 });
                 self.tool = Tool::Extrude;
                 self.status = format!("Editing extrusion {index}");
@@ -7304,6 +7328,7 @@ impl AppState {
                             extrusion.expression = distance_expr.clone();
                         }
                         extrusion.target = ce.target;
+                        extrusion.symmetric = ce.symmetric;
                     }
                     self.apply_extrude_body_mode(idx, ce.body_mode);
                     self.status = format!(
@@ -7321,6 +7346,7 @@ impl AppState {
                         distance,
                         target: ce.target,
                         expression: distance_expr,
+                        symmetric: ce.symmetric,
                         name: None,
                         deleted: false,
                         edge_treatments: Vec::new(),
@@ -12026,6 +12052,7 @@ mod tests {
             distance: 0.0,
             body: ExtrudeBodyChoice::New,
             target: Some(ExtrudeTarget::Plane(1)),
+            symmetric: false,
         });
         assert_eq!(state.doc.extrusions.len(), 1, "extrude failed: {}", state.status);
         assert_eq!(
@@ -12055,6 +12082,7 @@ mod tests {
             distance: 5.0,
             body: ExtrudeBodyChoice::New,
             target: None,
+            symmetric: false,
         });
         assert_eq!(state.doc.bodies.len(), 1);
 
@@ -14382,6 +14410,7 @@ mod tests {
             distance: 5.0,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
+            symmetric: false,
         });
         state
     }
@@ -14416,6 +14445,7 @@ mod tests {
             distance: 5.0,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
+            symmetric: false,
         });
         state.apply(Action::CreateExtrusion {
             expression: None,
@@ -14424,6 +14454,7 @@ mod tests {
             distance: 5.0,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
+            symmetric: false,
         });
         assert_eq!(state.doc.bodies.len(), 2);
         state
@@ -15699,6 +15730,7 @@ mod tests {
             distance: 10.0,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
+            symmetric: false,
         });
         let cap = FaceId::ExtrudeCap { extrusion: 0, profile, top: true };
         state.apply(Action::BeginSketch { face: cap.clone(), viewport: None });
@@ -16056,6 +16088,7 @@ mod tests {
             distance: 4.0,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
+            symmetric: false,
         });
         let circles_before = state.doc.circles.len();
         let face_id = FaceId::ExtrudeCap {
@@ -16132,6 +16165,7 @@ mod tests {
             distance: 4.0,
             body: crate::actions::ExtrudeBodyChoice::Cut,
             target: None,
+            symmetric: false,
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         let cut = state.doc.extrusions.last().unwrap();
@@ -16158,6 +16192,7 @@ mod tests {
             distance: 4.0,
             body: crate::actions::ExtrudeBodyChoice::Cut,
             target: None,
+            symmetric: false,
         });
         let cut = state.doc.extrusions.last().unwrap();
         assert!((cut.distance - 4.0).abs() < 1e-6, "a hopeless cut keeps its distance");
@@ -16184,6 +16219,7 @@ mod tests {
             distance: 5.0,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
+            symmetric: false,
         });
         state.apply(Action::ExtrudeBodyFace {
             face_id: FaceId::ExtrudeCap { extrusion: 0, profile, top: true },
@@ -16917,7 +16953,8 @@ mod tests {
                 expression: String::new(),
                 name: None,
                 deleted: false,
-                edge_treatments: Vec::new(),
+                symmetric: false,
+            edge_treatments: Vec::new(),
             });
             state.doc.shape_order.push(ShapeKind::Extrusion);
         }
@@ -16988,6 +17025,7 @@ mod tests {
             distance: 6.0,
             body: crate::actions::ExtrudeBodyChoice::New,
             target: None,
+            symmetric: false,
         });
         let result = state.apply(Action::CommitEdgeTreatment {
             extrusion: 0,

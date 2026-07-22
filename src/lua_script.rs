@@ -2760,7 +2760,18 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "extrude",
-                &["distance", "to", "circle", "circles", "polygon", "text", "boolean", "body", "name"],
+                &[
+                    "distance",
+                    "to",
+                    "circle",
+                    "circles",
+                    "polygon",
+                    "text",
+                    "boolean",
+                    "body",
+                    "name",
+                    "symmetric",
+                ],
             )?;
             // `to = { plane = i } | { face = <face spec> } | { vertex = <point> }` snaps the
             // extrusion to that object's extended plane (#114) — the scripted equivalent of
@@ -2830,6 +2841,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 crate::actions::extrude_face_sketch(doc, &faces[0])
             }
             .ok_or_else(|| mlua::Error::external("extrude face does not exist"))?;
+            let symmetric: bool = opts.get::<Option<bool>>("symmetric")?.unwrap_or(false);
             unsafe {
                 tick.exec(Instruction::Extrude {
                     sketch,
@@ -2838,6 +2850,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     body,
                     target,
                     expression,
+                    symmetric,
                 })?;
             }
             let element = SceneElement::Extrusion(unsafe {
@@ -5307,6 +5320,27 @@ mod tests {
         let mesh =
             crate::extrude::extrusion_mesh(&state.doc, &state.doc.extrusions[0]).unwrap();
         assert_eq!(mesh.triangles.len(), 12);
+    }
+
+    /// #504: `symmetric = true` extrudes half the distance each side of the sketch plane.
+    #[test]
+    fn lua_extrude_symmetric_straddles_sketch_plane() {
+        let state = run_lua(
+            r#"
+            bearcad.new()
+            bearcad.rect{ width = 40, height = 30 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20, symmetric = true }
+        "#,
+        );
+        assert_eq!(state.doc.extrusions.len(), 1);
+        assert!(state.doc.extrusions[0].symmetric);
+        let mesh =
+            crate::extrude::extrusion_mesh(&state.doc, &state.doc.extrusions[0]).unwrap();
+        let (min, max) = mesh.bounds().unwrap();
+        assert!(
+            (min.z + 10.0).abs() < 0.5 && (max.z - 10.0).abs() < 0.5,
+            "symmetric extrude should span z≈[-10,10], min={min:?} max={max:?}"
+        );
     }
 
     #[test]

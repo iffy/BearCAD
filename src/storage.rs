@@ -995,6 +995,7 @@ mod tests {
             target: None,
             expression: String::new(),
             name: Some("Boss".to_string()),
+            symmetric: false,
             deleted: false,
             edge_treatments: Vec::new(),
         });
@@ -1050,6 +1051,7 @@ mod tests {
                 target: None,
                 expression: String::new(),
                 name: None,
+                symmetric: false,
                 deleted: false,
                 edge_treatments: Vec::new(),
             });

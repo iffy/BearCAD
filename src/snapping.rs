@@ -583,6 +583,7 @@ mod tests {
             target: None,
             expression: String::new(),
             name: None,
+            symmetric: false,
             deleted: false,
             edge_treatments: Vec::new(),
         });

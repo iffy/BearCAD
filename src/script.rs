@@ -132,6 +132,8 @@ pub enum Instruction {
         /// Distance as a parameter expression (#402): wins over `distance` and is stored
         /// on the extrusion so it re-bakes when parameters change.
         expression: Option<String>,
+        /// Extrude half the distance each way from the sketch plane (#504).
+        symmetric: bool,
     },
     /// Scripted push/pull of a bare body face (#130/#122): the declarative equivalent of
     /// clicking the face with the Extrude tool and pulling it (optionally onto `target`).
@@ -658,6 +660,7 @@ impl Instruction {
                 body,
                 target,
                 expression,
+                symmetric,
                 ..
             } => {
                 let body = match body {
@@ -673,8 +676,9 @@ impl Instruction {
                     Some(e) => format!("{e:?}"),
                     None => distance.to_string(),
                 };
+                let sym = if *symmetric { ", symmetric = true" } else { "" };
                 format!(
-                    "bearcad.extrude{{ {}, distance = {distance}{body}{to} }}",
+                    "bearcad.extrude{{ {}, distance = {distance}{body}{to}{sym} }}",
                     extrude_face_args(faces)
                 )
             }
@@ -2010,6 +2014,7 @@ pub fn instruction_for_new_extrusion(doc: &crate::model::Document) -> Option<Ins
         target: extrusion.target.clone(),
         expression: (!extrusion.expression.trim().is_empty())
             .then(|| extrusion.expression.clone()),
+        symmetric: extrusion.symmetric,
     })
 }
 
@@ -3694,6 +3699,7 @@ impl ScriptRunner {
                 body,
                 target,
                 expression,
+                symmetric,
             } => {
                 let distance = match eval_scalar_input(
                     &state.doc,
@@ -3714,6 +3720,7 @@ impl ScriptRunner {
                     body,
                     target,
                     expression,
+                    symmetric,
                 });
                 self.record_action_error(result);
                 StepResult::Continue

@@ -40,6 +40,8 @@ pub struct ContextInput<'a> {
     pub extrude_merge_candidate: Option<usize>,
     /// Current new-body/merge-into choice for the in-progress/edited extrusion.
     pub extrude_body_mode: Option<ExtrudeBodyMode>,
+    /// Symmetric extrude toggle while an extrusion is in progress (#504).
+    pub extrude_symmetric: Option<bool>,
     /// One label per picked extrude profile face, shown in the Extrude tool's face element
     /// picker (#268); `None` when the Extrude tool isn't active.
     pub extrude_faces: Option<Vec<String>>,
@@ -751,8 +753,11 @@ pub enum UnitsChoice {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExtrudeBodyControl {
     pub mode: ExtrudeBodyMode,
-    pub merge_body: usize,
+    /// Host body for Add/Cut when the sketch sits on a body face; `None` disables those modes.
+    pub merge_body: Option<usize>,
     pub merge_body_label: String,
+    /// Symmetric extrude (#504).
+    pub symmetric: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -943,16 +948,19 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     let name = single_nameable_from_selection(input.selection).map(|element| NameControl { element });
     let snapping =
         (input.in_sketch && tool_uses_snapping(input.tool)).then_some(input.snapping_enabled);
-    let extrude_body = match (input.extrude_merge_candidate, input.extrude_body_mode) {
-        (Some(bi), Some(mode)) => Some(ExtrudeBodyControl {
+    // #505: always show New/Add/Cut while extruding (Add/Cut need a host body candidate).
+    let extrude_body = input.extrude_body_mode.map(|mode| {
+        let merge_body = input.extrude_merge_candidate;
+        let merge_body_label = merge_body
+            .and_then(|bi| element_name(input.doc, SceneElement::Body(bi)).map(|n| n.to_string()))
+            .unwrap_or_else(|| "body".to_string());
+        ExtrudeBodyControl {
             mode,
-            merge_body: bi,
-            merge_body_label: element_name(input.doc, SceneElement::Body(bi))
-                .map(|n| n.to_string())
-                .unwrap_or_else(|| format!("Body {bi}")),
-        }),
-        _ => None,
-    };
+            merge_body,
+            merge_body_label,
+            symmetric: input.extrude_symmetric.unwrap_or(false),
+        }
+    });
     let extrude_faces = input.extrude_faces.clone();
     // The Repeat tool's own context is busy enough; its distances are plain lengths, so the
     // Default-units section isn't shown while it's active (#257). The Text tool has nothing to do
@@ -1646,6 +1654,7 @@ pub fn show_pane(
     on_constraint_clicked: &mut impl FnMut(crate::geometric_constraints::GeometricConstraintType),
     on_snapping_changed: &mut impl FnMut(bool),
     on_extrude_body_mode_changed: &mut impl FnMut(ExtrudeBodyMode),
+    on_extrude_symmetric_changed: &mut impl FnMut(bool),
     on_extrude_face_remove: &mut impl FnMut(Option<usize>),
     on_units_changed: &mut impl FnMut(UnitsChoice),
     on_edge_picker_edit: &mut impl FnMut(Option<usize>),
@@ -3455,39 +3464,63 @@ pub fn show_pane(
     if let Some(control) = &content.extrude_body {
         any_control = true;
         let mut mode = control.mode;
-        // The same segmented icon group the Revolve/Sweep/Loft tools use (#479).
+        // The same segmented icon group the Revolve/Sweep/Loft tools use (#479/#505).
         labeled_row_top(ui, "Extrude into", |ui| {
             ui.add_enabled_ui(controls_enabled, |ui| {
                 ui.horizontal(|ui| {
-                    for (value, icon, tooltip) in [
+                    let add_cut_enabled = control.merge_body.is_some();
+                    for (value, icon, tooltip, enabled) in [
                         (
                             ExtrudeBodyMode::NewBody,
                             crate::icons::IconId::NewBody,
                             "New body".to_string(),
+                            true,
                         ),
                         (
-                            ExtrudeBodyMode::MergeInto(control.merge_body),
+                            ExtrudeBodyMode::MergeInto(control.merge_body.unwrap_or(0)),
                             crate::icons::IconId::AddToBody,
-                            format!("Add to {}", control.merge_body_label),
+                            if add_cut_enabled {
+                                format!("Add to {}", control.merge_body_label)
+                            } else {
+                                "Add to body (sketch must sit on a body face)".to_string()
+                            },
+                            add_cut_enabled,
                         ),
                         (
-                            ExtrudeBodyMode::Cut(control.merge_body),
+                            ExtrudeBodyMode::Cut(control.merge_body.unwrap_or(0)),
                             crate::icons::IconId::CutBody,
-                            format!("Cut {}", control.merge_body_label),
+                            if add_cut_enabled {
+                                format!("Cut {}", control.merge_body_label)
+                            } else {
+                                "Cut body (sketch must sit on a body face)".to_string()
+                            },
+                            add_cut_enabled,
                         ),
                     ] {
-                        if crate::icons::selectable_icon_button(ui, icon, mode == value, tooltip)
+                        ui.add_enabled_ui(enabled, |ui| {
+                            if crate::icons::selectable_icon_button(
+                                ui,
+                                icon,
+                                mode == value,
+                                tooltip,
+                            )
                             .clicked()
-                            && mode != value
-                        {
-                            mode = value;
-                        }
+                                && mode != value
+                                && enabled
+                            {
+                                mode = value;
+                            }
+                        });
                     }
                 });
             });
         });
         if mode != control.mode {
             on_extrude_body_mode_changed(mode);
+        }
+        let mut symmetric = control.symmetric;
+        if ui.checkbox(&mut symmetric, "Symmetric").changed() {
+            on_extrude_symmetric_changed(symmetric);
         }
         ui.add_space(4.0);
     }
@@ -3862,6 +3895,7 @@ mod tests {
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
+            extrude_symmetric: None,
             extrude_faces: None,
             edge_treatment_rows: None,
             loft_rows: None,
@@ -4015,6 +4049,7 @@ mod tests {
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
+            extrude_symmetric: None,
             extrude_faces: None,
             edge_treatment_rows: Some(vec!["Block — vertical 0".to_string()]),
             loft_rows: None,
@@ -4090,6 +4125,7 @@ mod tests {
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
+            extrude_symmetric: None,
             extrude_faces: None,
             edge_treatment_rows: None,
             loft_rows: None,
@@ -4432,6 +4468,7 @@ mod tests {
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
+            extrude_symmetric: None,
             extrude_faces: None,
             edge_treatment_rows: None,
             loft_rows: None,
@@ -4539,6 +4576,7 @@ mod tests {
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
+            extrude_symmetric: None,
             extrude_faces: None,
             edge_treatment_rows: None,
             loft_rows: None,
@@ -4712,6 +4750,7 @@ mod tests {
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
+            extrude_symmetric: None,
             extrude_faces: None,
             edge_treatment_rows: None,
             loft_rows: None,
@@ -4771,6 +4810,7 @@ mod tests {
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
+            extrude_symmetric: None,
             extrude_faces: None,
             edge_treatment_rows: None,
             loft_rows: None,
@@ -4871,6 +4911,7 @@ mod tests {
             snapping_enabled: true,
             extrude_merge_candidate: None,
             extrude_body_mode: None,
+            extrude_symmetric: None,
             extrude_faces: None,
             edge_treatment_rows: None,
             loft_rows: None,
@@ -4907,5 +4948,35 @@ mod tests {
             content.constraints.as_ref().map(|rows| rows.len()),
             Some(crate::geometric_constraints::GeometricConstraintType::ALL.len())
         );
+    }
+
+    /// #505: New/Add/Cut stay visible while extruding even without a host body; Add/Cut
+    /// simply have no merge target until the sketch sits on a body face.
+    #[test]
+    fn extrude_body_modes_always_shown_while_extruding() {
+        let doc = Document::default();
+        let selection = SceneSelection::default();
+        let content = context_pane_content(&ContextInput {
+            tool: Tool::Extrude,
+            extrude_body_mode: Some(ExtrudeBodyMode::NewBody),
+            extrude_merge_candidate: None,
+            extrude_symmetric: Some(false),
+            ..input(&doc, &selection)
+        });
+        let control = content.extrude_body.expect("body control while extruding");
+        assert_eq!(control.mode, ExtrudeBodyMode::NewBody);
+        assert!(control.merge_body.is_none());
+        assert!(!control.symmetric);
+
+        let with_host = context_pane_content(&ContextInput {
+            tool: Tool::Extrude,
+            extrude_body_mode: Some(ExtrudeBodyMode::MergeInto(0)),
+            extrude_merge_candidate: Some(0),
+            extrude_symmetric: Some(true),
+            ..input(&doc, &selection)
+        });
+        let control = with_host.extrude_body.expect("body control with host");
+        assert_eq!(control.merge_body, Some(0));
+        assert!(control.symmetric);
     }
 }

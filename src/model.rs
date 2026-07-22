@@ -989,6 +989,7 @@ pub struct Extrusion {
     pub faces: Vec<ExtrudeFace>,
     /// Signed extrusion distance along the plane normal (mm); negative goes the other way.
     /// When `target` is set this is the cached/last value; the effective distance is derived.
+    /// When [`Self::symmetric`] is true, this is the *total* height (half each side).
     pub distance: f32,
     /// When set, the depth is constrained to reach this object's extended plane.
     #[serde(default)]
@@ -996,6 +997,10 @@ pub struct Extrusion {
     /// Optional expression driving `distance` (empty = free/gizmo-driven, no constraint).
     #[serde(default)]
     pub expression: String,
+    /// Extrude half the distance to each side of the sketch plane (#504). Ignored when
+    /// `target` is set (depth is plane-to-plane).
+    #[serde(default)]
+    pub symmetric: bool,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]

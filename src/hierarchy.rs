@@ -4326,6 +4326,7 @@ label_hidden: false,
             expression: String::new(),
             name: None,
             deleted: false,
+            symmetric: false,
             edge_treatments: Vec::new(),
         });
         assert!(tombstone_element(&mut doc, SceneElement::Sketch(sketch)));
@@ -4861,6 +4862,7 @@ label_hidden: false,
             expression: String::new(),
             name: None,
             deleted: false,
+            symmetric: false,
             edge_treatments: Vec::new(),
         });
         doc.bodies.push(Body {
