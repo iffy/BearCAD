@@ -4910,6 +4910,36 @@ impl AppState {
                 if self.creating_sketch_offset.is_some() && tool != Tool::Offset {
                     self.creating_sketch_offset = None;
                 }
+                // Offset tool always has a draft so its Entities picker shows empty on
+                // enable, not only after the first edge pick (#512). Seed from the current
+                // sketch selection when present so pre-picked lines/circles show up.
+                if tool == Tool::Offset {
+                    if let Some(session) = self.sketch_session {
+                        if self.creating_sketch_offset.is_none() {
+                            let mut co = CreatingSketchOffset::new(session.sketch);
+                            for element in self.scene_selection.iter() {
+                                match element {
+                                    crate::hierarchy::SceneElement::Line(li)
+                                        if self.doc.lines.get(li).is_some_and(|l| {
+                                            !l.deleted && l.sketch == session.sketch
+                                        }) =>
+                                    {
+                                        co.line_targets.push(li);
+                                    }
+                                    crate::hierarchy::SceneElement::Circle(ci)
+                                        if self.doc.circles.get(ci).is_some_and(|c| {
+                                            !c.deleted && c.sketch == session.sketch
+                                        }) =>
+                                    {
+                                        co.circle_targets.push(ci);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            self.creating_sketch_offset = Some(co);
+                        }
+                    }
+                }
                 if tool == Tool::Repeat && self.creating_repeat.is_none() {
                     // Seed the target set from the current selection (#439): a body
                     // selected before picking the tool is what you want to repeat, so
@@ -12977,6 +13007,48 @@ mod tests {
         let mut state = AppState::default();
         state.apply(Action::SetTool(Tool::ConstructionPlane));
         assert_eq!(state.tool, Tool::ConstructionPlane);
+    }
+
+    /// #512: enabling Offset in a sketch creates an empty draft so the Entities picker
+    /// is visible before the first edge is clicked.
+    #[test]
+    fn set_tool_offset_in_sketch_starts_empty_draft() {
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        state.apply(Action::SetTool(Tool::Offset));
+        let co = state
+            .creating_sketch_offset
+            .as_ref()
+            .expect("Offset tool creates a draft immediately");
+        assert!(co.line_targets.is_empty());
+        assert!(co.circle_targets.is_empty());
+        assert_eq!(co.sketch, state.sketch_session.unwrap().sketch);
+    }
+
+    /// #512: pre-selected sketch lines seed the Offset draft when the tool is enabled.
+    #[test]
+    fn set_tool_offset_seeds_from_selection() {
+        let mut state = AppState::default();
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        let sketch = state.sketch_session.unwrap().sketch;
+        state.doc.lines.push(crate::model::Line::from_local_endpoints(
+            sketch, 0.0, 0.0, 10.0, 0.0,
+        ));
+        state.doc.shape_order.push(crate::model::ShapeKind::Line);
+        crate::selection::click_scene_selection(
+            &mut state.scene_selection,
+            crate::hierarchy::SceneElement::Line(0),
+            false,
+        );
+        state.apply(Action::SetTool(Tool::Offset));
+        let co = state.creating_sketch_offset.as_ref().unwrap();
+        assert_eq!(co.line_targets, vec![0]);
     }
 
     /// Revolve (SPEC §3.5): committing a face + axis creates the revolution and its body

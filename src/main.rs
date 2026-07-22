@@ -15138,6 +15138,15 @@ impl App {
                 if let Some(cr) = self.state.creating_repeat.as_ref() {
                     folded.extend(cr.targets.iter().map(|&bi| SceneElement::Body(bi)));
                 }
+                // In-sketch Repeat targets (#232).
+                if let Some(cr) = self.state.creating_sketch_repeat.as_ref() {
+                    folded.extend(cr.line_targets.iter().map(|&li| SceneElement::Line(li)));
+                    folded.extend(
+                        cr.circle_targets
+                            .iter()
+                            .map(|&ci| SceneElement::Circle(ci)),
+                    );
+                }
             }
             Tool::Slice => {
                 if let Some(cs) = self.state.creating_slice.as_ref() {
@@ -15170,6 +15179,17 @@ impl App {
                     folded.extend(cf.path.iter().map(|&li| SceneElement::Line(li)));
                     // The cut bodies are consumed destructively → red.
                     cut_highlight_bodies.extend(cf.cut_bodies.iter().copied());
+                }
+            }
+            Tool::Offset => {
+                // Entities in the offset set highlight like selected geometry (#512).
+                if let Some(co) = self.state.creating_sketch_offset.as_ref() {
+                    folded.extend(co.line_targets.iter().map(|&li| SceneElement::Line(li)));
+                    folded.extend(
+                        co.circle_targets
+                            .iter()
+                            .map(|&ci| SceneElement::Circle(ci)),
+                    );
                 }
             }
             _ => {}
