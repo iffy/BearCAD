@@ -13806,10 +13806,12 @@ impl App {
                     } else if !additive {
                         self.state.apply(Action::ClearSceneSelection);
                     }
-                    // Dimension tool in 3D mode (#453): the click above just updated the
-                    // selection — if it now measures something, capture it as a derived
-                    // parameter and clear for the next measurement.
-                    if self.state.tool == Tool::Dimension {
+                    // Dimension tool in 3D mode only (#453): capture a derived parameter
+                    // and clear for the next measurement. In a sketch the same tool
+                    // accumulates edges for length/angle constraints (#486/#487/#488) —
+                    // auto-creating a line-length parameter would clear the first edge
+                    // and break two-edge angle picks (CI interaction tests).
+                    if self.state.tool == Tool::Dimension && self.state.sketch_session.is_none() {
                         if let Some(source) = parameters::dimension_click_derived_source(
                             &self.state.doc,
                             &self.state.scene_selection,
