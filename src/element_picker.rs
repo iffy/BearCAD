@@ -40,6 +40,9 @@ pub enum ElementKind {
     Vertex,
     /// An edge of a body/face boundary (as opposed to a free sketch [`Line`](ElementKind::Line)).
     Edge,
+    /// A flat face of a solid body (#555/#566), distinct from the whole [`Body`](ElementKind::Body):
+    /// a picker can accept planes-or-faces without also taking whole bodies.
+    Face,
     Constraint,
     /// A solid body.
     Body,
@@ -52,13 +55,14 @@ pub enum ElementKind {
 impl ElementKind {
     /// Kinds in the canonical order used for filter membership and the collapsed summary, so a
     /// picker accepting several kinds always renders them in the same, stable order.
-    pub const ORDER: [ElementKind; 9] = [
+    pub const ORDER: [ElementKind; 10] = [
         ElementKind::Plane,
         ElementKind::Sketch,
         ElementKind::Line,
         ElementKind::Circle,
         ElementKind::Vertex,
         ElementKind::Edge,
+        ElementKind::Face,
         ElementKind::Constraint,
         ElementKind::Body,
         ElementKind::Operation,
@@ -77,8 +81,10 @@ impl ElementKind {
             }
             SceneElement::FaceEdge(_) | SceneElement::BodyEdge { .. } => ElementKind::Edge,
             SceneElement::Constraint(_) => ElementKind::Constraint,
-            // A body face (#555) has no dedicated kind; the closest is the body/face icon.
-            SceneElement::Body(_) | SceneElement::BodyFace { .. } => ElementKind::Body,
+            // A flat body face (#555/#566) is its own kind, so a "planes or faces" picker can
+            // accept it without also accepting whole bodies.
+            SceneElement::BodyFace { .. } => ElementKind::Face,
+            SceneElement::Body(_) => ElementKind::Body,
             SceneElement::Component(_) => ElementKind::Operation,
             SceneElement::Extrusion(_)
             | SceneElement::BooleanOp(_)
@@ -109,6 +115,8 @@ impl ElementKind {
             // No dedicated point glyph; the coincident icon reads as "a point".
             ElementKind::Vertex => IconId::Coincident,
             ElementKind::Edge => IconId::Line,
+            // No dedicated face glyph; the body icon reads as "a surface of a body".
+            ElementKind::Face => IconId::Body,
             ElementKind::Constraint => IconId::Constraint,
             ElementKind::Body => IconId::Body,
             ElementKind::Operation => IconId::Gear,
@@ -125,6 +133,7 @@ impl ElementKind {
             ElementKind::Circle => "circle",
             ElementKind::Vertex => "vertex",
             ElementKind::Edge => "edge",
+            ElementKind::Face => "face",
             ElementKind::Constraint => "constraint",
             ElementKind::Body => "body",
             ElementKind::Operation => "operation",
@@ -744,6 +753,32 @@ mod tests {
             ElementKind::of(&SceneElement::ConstructionPlane(0)),
             ElementKind::Plane
         );
+    }
+
+    fn body_face(body: usize) -> SceneElement {
+        SceneElement::BodyFace {
+            body,
+            centroid: [0, 0, 0],
+            normal: [0, 0, 1],
+        }
+    }
+
+    #[test]
+    fn body_face_is_its_own_face_kind() {
+        // #566: a flat body face is `Face`, not `Body`, so a planes-or-faces picker can take it
+        // without also swallowing whole bodies.
+        assert_eq!(ElementKind::of(&body_face(3)), ElementKind::Face);
+        assert_eq!(ElementKind::of(&SceneElement::Body(3)), ElementKind::Body);
+    }
+
+    #[test]
+    fn plane_or_face_filter_takes_planes_and_faces_not_bodies() {
+        // The Mirror tool's plane picker (#566): construction planes and flat faces, never a
+        // whole body.
+        let f = ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Face]);
+        assert!(f.accepts(&SceneElement::ConstructionPlane(0)));
+        assert!(f.accepts(&body_face(0)));
+        assert!(!f.accepts(&SceneElement::Body(0)));
     }
 
     #[test]

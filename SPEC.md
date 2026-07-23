@@ -648,11 +648,14 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   geometry first (Select tool), then switch to Move — the selection persists across the tool
   switch.
 
-- **Mirror tool (#523):** reflects whole bodies across a mirror plane. The **first** viewport
+- **Mirror tool (#523/#566):** reflects whole bodies across a mirror plane. The **first** viewport
   click picks the mirror plane — a construction plane or a flat body face (`pick_sketch_face`,
   the same planar-face pick sketching uses); subsequent clicks toggle **bodies** into the
-  reflected set. The context pane shows the picked plane (with a **✕** to clear and re-pick)
-  and the bodies through the unified element picker. A translucent **ghost** of each reflection
+  reflected set. The context pane shows **both** the plane and the bodies through the unified
+  element picker: a single-pick **Mirror plane** picker accepting planes or flat faces
+  (`ElementKind::Plane`/`ElementKind::Face`, `PickerTarget::MirrorPlane`) sits above the bodies
+  picker, each with the standard **✕**-to-clear rows. The plane picker is the focused one until a
+  plane is set, then focus moves to the bodies picker. A translucent **ghost** of each reflection
   previews live before commit (`draw_mirror_ghosts`). **Enter** commits, creating an editable
   **mirror operation element** (`Document::mirror_ops`, `ShapeKind::MirrorOperation`) with one
   reflected output body per input (`BodySource::Mirrored { op, target }`). Unlike Move, the

@@ -7926,8 +7926,8 @@ impl eframe::App for App {
                 .then(|| {
                     let cm = self.state.creating_mirror.as_ref();
                     context::MirrorControl {
-                        plane_label: cm.and_then(|c| c.plane.clone()).map(|face| {
-                            crate::face::face_label(&self.state.doc, face)
+                        plane: cm.and_then(|c| c.plane.clone()).map(|face| {
+                            mirror_plane_scene_element(&self.state.doc, &face)
                         }),
                         targets: cm.map(|c| c.targets.clone()).unwrap_or_default(),
                         editing: cm.map(|c| c.editing.is_some()).unwrap_or(false),
@@ -8714,11 +8714,6 @@ impl eframe::App for App {
                     context::MirrorEdit::Commit => {
                         self.state.apply(Action::CommitMirror);
                     }
-                    context::MirrorEdit::ClearPlane => {
-                        if let Some(cm) = self.state.creating_mirror.as_mut() {
-                            cm.plane = None;
-                        }
-                    }
                 }
             }
             if let Some(op) = mirror_edit_begin {
@@ -9210,6 +9205,16 @@ impl eframe::App for App {
                     context::PickerTarget::MoveTargets => {
                         if let Some(cm) = self.state.creating_move.as_mut() {
                             remove_or_clear(&mut cm.targets, edit);
+                        }
+                    }
+                    context::PickerTarget::MirrorPlane => {
+                        // The plane is single-pick: Focus is a no-op (viewport clicks land on
+                        // the plane first anyway), Remove/Clear drop it so a new one can be
+                        // picked (#566).
+                        if let Some(cm) = self.state.creating_mirror.as_mut() {
+                            if edit != context::ToolPickerAction::Focus {
+                                cm.plane = None;
+                            }
                         }
                     }
                     context::PickerTarget::MirrorTargets => {
@@ -9749,6 +9754,32 @@ fn body_index_from_pick(kind: &construction::PickTargetKind) -> Option<usize> {
         | construction::PickTargetKind::BodyVertex { body, .. }
         | construction::PickTargetKind::BodyFace { body, .. } => Some(*body),
         _ => None,
+    }
+}
+
+/// The scene element that stands in for a picked mirror plane (#566), so the Mirror tool's
+/// plane element picker can show it as a row. A construction-plane `FaceId` maps to that
+/// construction plane; every other flat-face `FaceId` (extrusion cap/side) maps to the body
+/// face it belongs to. The centroid/normal are placeholders — this row is display-only (the
+/// plane's real viewport highlight is drawn separately), so only the body index needs to be
+/// right for the "Face of Body N" label.
+fn mirror_plane_scene_element(
+    doc: &model::Document,
+    face: &model::FaceId,
+) -> hierarchy::SceneElement {
+    match face {
+        model::FaceId::ConstructionPlane(i) => hierarchy::SceneElement::ConstructionPlane(*i),
+        other => {
+            let body = other
+                .extrusion_index()
+                .and_then(|e| model::body_index_for_extrusion(doc, e))
+                .unwrap_or(0);
+            hierarchy::SceneElement::BodyFace {
+                body,
+                centroid: [0, 0, 0],
+                normal: [0, 0, 0],
+            }
+        }
     }
 }
 

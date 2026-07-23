@@ -235,25 +235,24 @@ pub enum MoveEdit {
     Commit,
 }
 
-/// What the Mirror tool's context section shows (#523): the mirror plane's label, the
-/// picked bodies, and whether it's an edit / ready to commit.
+/// What the Mirror tool's context section shows (#523/#566): the mirror plane (rendered through
+/// the unified element picker), the picked bodies, and whether it's an edit / ready to commit.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MirrorControl {
-    /// Label of the picked mirror plane/face, or `None` until one is picked.
-    pub plane_label: Option<String>,
+    /// The picked mirror plane/face as a scene element (a construction plane or a flat body
+    /// face, #566), or `None` until one is picked. Drives the plane element picker.
+    pub plane: Option<SceneElement>,
     /// Picked bodies to mirror (rendered through the unified element picker).
     pub targets: Vec<usize>,
     pub editing: bool,
     pub can_commit: bool,
 }
 
-/// One edit from the Mirror context section (#523). Picked bodies are removed through the
-/// unified element picker (`PickerTarget::MirrorTargets`), so this only covers the plane and
-/// the commit button.
+/// One edit from the Mirror context section (#523). The plane and the picked bodies are both
+/// handled through the unified element pickers (`PickerTarget::MirrorPlane` /
+/// `PickerTarget::MirrorTargets`), so this only covers the commit button.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MirrorEdit {
-    /// Clear the picked mirror plane so a new one can be clicked.
-    ClearPlane,
     Commit,
 }
 
@@ -882,6 +881,8 @@ pub enum PickerTarget {
     LoftCut,
     /// The Move tool's target bodies (`CreatingMove::targets`).
     MoveTargets,
+    /// The Mirror tool's mirror plane (`CreatingMirror::plane`, #566): a plane or flat face.
+    MirrorPlane,
     /// The Mirror tool's target bodies (`CreatingMirror::targets`, #523).
     MirrorTargets,
     /// The Repeat tool's target bodies (`CreatingRepeat::targets`).
@@ -1116,14 +1117,29 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         ));
     }
     if let Some(m) = input.mirror_op.as_ref() {
-        // The bodies picker reads as focused only once a mirror plane is chosen — the plane
-        // is the first pick (#523).
+        // Primary picker: the mirror plane — a construction plane or a flat body face (#566).
+        // Single-pick, and focused (the pick target) until a plane is chosen.
+        let mut plane_picker = ElementPicker::new(
+            ElementFilter::kinds(&[ElementKind::Plane, ElementKind::Face]),
+            PickLimit::Finite(1),
+        );
+        plane_picker.set_focused(m.plane.is_none());
+        if let Some(element) = m.plane.clone() {
+            plane_picker.set_picked([element]);
+        }
+        tool_pickers.push(ToolPickerView {
+            heading: "Mirror plane",
+            picker: plane_picker,
+            target: PickerTarget::MirrorPlane,
+        });
+        // Secondary picker: the bodies picker reads as focused only once a mirror plane is
+        // chosen — the plane is the first pick (#523).
         tool_pickers.push(body_tool_picker(
             "Bodies",
             PickerTarget::MirrorTargets,
             &m.targets,
             None,
-            m.plane_label.is_some(),
+            m.plane.is_some(),
         ));
     }
     if let Some(r) = input.repeat_op.as_ref() {
@@ -2552,24 +2568,8 @@ pub fn show_pane(
         any_control = true;
         ui.separator();
         section_label(ui, if control.editing { "Edit mirror" } else { "Mirror" });
-        // Primary picker: the mirror plane/face. Picked in the viewport; shown here as a label
-        // with a button to clear it and pick another (#523).
-        labeled_row(ui, "Mirror plane", |ui| match &control.plane_label {
-            Some(label) => {
-                ui.label(egui::RichText::new(label).color(egui::Color32::from_gray(200)));
-                if ui.small_button("✕").on_hover_text("Pick a different plane").clicked() {
-                    on_mirror_edit(MirrorEdit::ClearPlane);
-                }
-            }
-            None => {
-                ui.label(
-                    egui::RichText::new("click a plane or flat face")
-                        .color(egui::Color32::from_gray(140))
-                        .size(11.0),
-                );
-            }
-        });
-        // Secondary picker: the bodies to mirror (unified element picker, see `tool_pickers`).
+        // The mirror plane and the bodies to mirror both render above through the unified
+        // element pickers (see `tool_pickers`: `MirrorPlane` then `MirrorTargets`, #566).
         ui.add_space(2.0);
         if ui
             .add_enabled(
