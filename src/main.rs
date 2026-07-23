@@ -694,6 +694,11 @@ struct App {
     /// Ephemeral view state; reset (fit) by the Zoom tool / `Z`.
     drawing_zoom: f32,
     drawing_pan: egui::Vec2,
+    /// The view card currently being dragged on the drawing page `(drawing, view)`, tracked
+    /// across frames so the grab survives the card moving out from under the finger — and so a
+    /// press that began on a card is resolved touch-safely, without egui's hover-based overlap
+    /// arbitration (which touch can't provide before the press).
+    drawing_view_drag: Option<(usize, usize)>,
     /// Whether the Parameters pane was visible before entering the Drawing workbench (#398):
     /// it hides by default there (still re-showable from the View menu) and this restores it
     /// on the way back to the model.
@@ -1419,6 +1424,7 @@ impl App {
             element_filter_drawing_workbench: false,
             drawing_zoom: 1.0,
             drawing_pan: egui::Vec2::ZERO,
+            drawing_view_drag: None,
             params_visible_before_drawing: false,
             drawing_window: None,
             script_failed,
@@ -12334,17 +12340,36 @@ impl App {
         // Pointer position for edge hover / label drag (#294).
         let pointer_screen = ui.input(|i| i.pointer.hover_pos());
 
+        // Where the current press began and how far the pointer moved this frame. On touch a
+        // press arrives with no prior hover, so egui can't lean on hover to decide whether the
+        // finger landed on a view card or the empty sheet — we resolve card-vs-sheet dragging
+        // ourselves from the press origin, which works identically for mouse and touch (mobile/touch).
+        let (press_origin, pointer_delta, primary_down) = ui.input(|i| {
+            (
+                i.pointer.press_origin(),
+                i.pointer.delta(),
+                i.pointer.primary_down(),
+            )
+        });
+        // The grab ends when the finger/button lifts.
+        if !primary_down {
+            self.drawing_view_drag = None;
+        }
+
         // Pan/zoom the sheet like the 3D viewport, but never rotate (#273). Drag the empty
-        // background to pan; scroll to zoom about the cursor. Card drags (#274) sit on top and
-        // take priority, so this only fires on empty sheet.
+        // background to pan; scroll to zoom about the cursor. A press that landed on a view card
+        // grabs the card instead (resolved in the loop below), suppressing the pan.
         let bg = ui.interact(
             area,
             ui.make_persistent_id(("drawing_page_bg", drawing)),
             egui::Sense::click_and_drag(),
         );
-        if bg.dragged() {
-            self.drawing_pan += bg.drag_delta();
-        }
+        // Pan is applied after the card loop, once we know whether a card was grabbed. Use the
+        // raw pointer delta (not `bg.drag_delta()`) so it's correct even when egui hands the drag
+        // to a card on top instead of the background.
+        let bg_pan_delta = (bg.dragged() || (primary_down && press_origin.is_some()))
+            .then_some(pointer_delta);
+        let mut pan_suppressed_by_card = self.drawing_view_drag.is_some();
         let scroll = if bg.hovered() { ui.input(|i| i.raw_scroll_delta.y) } else { 0.0 };
         if scroll != 0.0 {
             let f = (1.0 + scroll * 0.0015).clamp(0.5, 2.0);
@@ -12543,14 +12568,26 @@ impl App {
                     ui.make_persistent_id(("drawing_view_drag", drawing, vi)),
                     egui::Sense::click_and_drag(),
                 );
-                // Only the Select tool moves views (#374): with e.g. the Dimension tool a
-                // drag across a card must not relocate it (the interact still swallows the
-                // drag so it doesn't fall through and pan the page).
-                if drag.dragged() && self.state.tool == Tool::Select {
+                // Resolve card grabbing from the press origin, not egui's drag arbitration, so
+                // it works on touch (no pre-press hover) as well as mouse (mobile/touch). A press that
+                // began inside this card claims it for the duration of the press; the grab is
+                // remembered across frames so it survives the card sliding under the finger.
+                if self.drawing_view_drag.is_none()
+                    && primary_down
+                    && press_origin.is_some_and(|o| cell.contains(o))
+                {
+                    self.drawing_view_drag = Some((drawing, vi));
+                    pan_suppressed_by_card = true;
+                }
+                let grabbed = self.drawing_view_drag == Some((drawing, vi));
+                // Only the Select tool moves views (#374): with e.g. the Dimension tool a drag
+                // across a card must not relocate it (the grab still suppresses the page pan so
+                // it doesn't fall through).
+                if grabbed && self.state.tool == Tool::Select {
                     // Relative drag: keep the grab point under the cursor instead of snapping
                     // the card's centre to it. An aligned child (#296) only slides along its
                     // free axis — the shared axis stays locked to its parent.
-                    let mut delta = drag.drag_delta();
+                    let mut delta = pointer_delta;
                     if let Some(dir) = view.aligned_dir.filter(|_| view.aligned_parent.is_some()) {
                         if dir.shares_pos_x() {
                             delta.x = 0.0;
@@ -13703,6 +13740,13 @@ impl App {
         }
         if let Some((view, pos_x, pos_y)) = move_view {
             self.state.apply(Action::MoveDrawingView { drawing, view, pos_x, pos_y });
+        }
+        // Pan the sheet only when the drag didn't grab a view card (mobile/touch): a card grab
+        // suppresses the pan so moving a view never also scrolls the page.
+        if let Some(delta) = bg_pan_delta {
+            if !pan_suppressed_by_card && delta != egui::Vec2::ZERO {
+                self.drawing_pan += delta;
+            }
         }
         if let Some((view, orientation)) = set_orientation {
             self.state
