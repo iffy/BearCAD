@@ -2425,40 +2425,51 @@ pub fn nearest_body_vertex(
 
 /// One selectable thing found in the crowd under the cursor, for the Selection Exploder (#551).
 pub struct CrowdCandidate {
-    /// The scene element a click on this candidate selects.
-    pub element: crate::hierarchy::SceneElement,
-    /// A world point the exploder's connecting line attaches to — the vertex itself, or the
-    /// point on an edge/line/circle nearest the cursor.
+    /// The pick target this handle stands for — its screen anchor is where the exploder
+    /// redirects the tool's pick, and its kind drives the handle icon.
+    pub kind: PickTargetKind,
+    /// A world point the exploder's connecting line attaches to (and where the tool re-picks) —
+    /// the vertex itself, the point on an edge/line/circle nearest the cursor, or a face point.
     pub anchor: Vec3,
     /// Pixel distance from the cursor to the candidate.
     pub dist_px: f32,
 }
 
-/// Every directly-selectable thing whose pick hitbox the cursor is within (#551) — the "crowd"
-/// the Selection Exploder fans out. Unlike [`resolve_pick_target`], which keeps only the nearest,
-/// this returns all of them (deduped per scene element, keeping the nearest touch point). Covers
-/// the sharp kinds that map to a [`SceneElement`] — sketch points/lines/circles and body
-/// vertices/edges; faces, planes, axes, and ground are excluded (they aren't scene-selectable).
+/// A stable dedup key per crowd candidate (one handle per distinct thing).
+fn crowd_key(kind: &PickTargetKind) -> String {
+    match scene_element_from_pick(kind) {
+        Some(el) => format!("{el:?}"),
+        None => match kind {
+            PickTargetKind::BodyFace { body, .. } => format!("face:{body}"),
+            PickTargetKind::ConstructionPlane(i) => format!("plane:{i}"),
+            other => format!("{other:?}"),
+        },
+    }
+}
+
+/// Every selectable thing whose pick hitbox the cursor is within (#551) — the "crowd" the
+/// Selection Exploder fans out. Unlike [`resolve_pick_target`] (which keeps only the nearest),
+/// this returns all of them, deduped per thing, ordered nearest-first. Covers everything a tool
+/// might pick at the cursor: sketch points/lines/circles, body vertices/edges, and the body face
+/// under the cursor — so the exploder can redirect any tool's pick to the chosen one.
 pub fn collect_pick_candidates(
     screen: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     doc: &Document,
+    eye: Vec3,
     occlusion: Option<&PickOcclusion>,
 ) -> Vec<CrowdCandidate> {
-    use crate::hierarchy::SceneElement;
     let visible = |p: Vec3| occlusion.is_none_or(|occ| !occ.occluded(p));
     let pickable = |kind: &PickTargetKind| occlusion.is_none_or(|occ| occ.pickable(doc, kind));
     let point_r = crate::touch::hit(POINT_PICK_RADIUS_PX);
-    let mut raw: Vec<(SceneElement, Vec3, f32)> = Vec::new();
+    let mut raw: Vec<(PickTargetKind, Vec3, f32)> = Vec::new();
 
-    let push_point = |raw: &mut Vec<(SceneElement, Vec3, f32)>, cp: ConstraintPoint, world: Vec3| {
+    let push_point = |raw: &mut Vec<(PickTargetKind, Vec3, f32)>, cp: ConstraintPoint, world: Vec3| {
         let Some(sp) = project(world) else { return };
         let dist = (screen - sp).length();
-        if dist <= point_r
-            && pickable(&PickTargetKind::Point(cp.clone()))
-            && visible(world)
-        {
-            raw.push((SceneElement::Point(cp), world, dist));
+        let kind = PickTargetKind::Point(cp);
+        if dist <= point_r && pickable(&kind) && visible(world) {
+            raw.push((kind, world, dist));
         }
     };
 
@@ -2514,13 +2525,11 @@ pub fn collect_pick_candidates(
     }
 
     // Edges: sketch lines/circles and body mesh feature edges.
-    let push_edge = |raw: &mut Vec<(SceneElement, Vec3, f32)>, kind: PickTargetKind, a: Vec3, b: Vec3| {
+    let push_edge = |raw: &mut Vec<(PickTargetKind, Vec3, f32)>, kind: PickTargetKind, a: Vec3, b: Vec3| {
         let Some(dist) = segment_pick_distance(screen, project, a, b) else { return };
         let anchor = segment_point_nearest_screen(screen, project, a, b);
         if pickable(&kind) && visible(anchor) {
-            if let Some(element) = scene_element_from_pick(&kind) {
-                raw.push((element, anchor, dist));
-            }
+            raw.push((kind, anchor, dist));
         }
     };
     for (li, line) in doc.lines.iter().enumerate() {
@@ -2560,30 +2569,43 @@ pub fn collect_pick_candidates(
                 if dist <= point_r {
                     let kind = PickTargetKind::BodyVertex { body: bi, position: p };
                     if pickable(&kind) && visible(p) {
-                        if let Some(element) = scene_element_from_pick(&kind) {
-                            raw.push((element, p, dist));
-                        }
+                        raw.push((kind, p, dist));
                     }
                 }
             }
         }
     }
 
-    // Dedupe per element, keeping the nearest touch, then order nearest-first.
-    let mut best: std::collections::HashMap<SceneElement, (Vec3, f32)> =
+    // The body face under the cursor (#551): one candidate for whatever solid face the ray hits,
+    // so a face buried among a corner's edges/vertices can be exploded out and picked too.
+    if let Some(kind) = crate::face::pick_body_face(screen, project, doc, eye) {
+        if let PickTargetKind::BodyFace { triangles, .. } = &kind {
+            if pickable(&kind) {
+                let count = (triangles.len() * 3).max(1) as f32;
+                let centroid =
+                    triangles.iter().flat_map(|t| t.iter()).copied().sum::<Vec3>() / count;
+                // Sort faces after the sharp kinds (broad targets), but still in the crowd.
+                raw.push((kind.clone(), centroid, point_r));
+            }
+        }
+    }
+
+    // Dedupe per distinct thing (keeping the nearest touch), then order nearest-first.
+    let mut best: std::collections::HashMap<String, (PickTargetKind, Vec3, f32)> =
         std::collections::HashMap::new();
-    for (el, anchor, dist) in raw {
-        best.entry(el)
+    for (kind, anchor, dist) in raw {
+        let key = crowd_key(&kind);
+        best.entry(key)
             .and_modify(|e| {
-                if dist < e.1 {
-                    *e = (anchor, dist);
+                if dist < e.2 {
+                    *e = (kind.clone(), anchor, dist);
                 }
             })
-            .or_insert((anchor, dist));
+            .or_insert((kind, anchor, dist));
     }
     let mut out: Vec<CrowdCandidate> = best
-        .into_iter()
-        .map(|(element, (anchor, dist_px))| CrowdCandidate { element, anchor, dist_px })
+        .into_values()
+        .map(|(kind, anchor, dist_px)| CrowdCandidate { kind, anchor, dist_px })
         .collect();
     out.sort_by(|a, b| a.dist_px.partial_cmp(&b.dist_px).unwrap_or(std::cmp::Ordering::Equal));
     out
@@ -2991,30 +3013,29 @@ mod tests {
     /// the Selection Exploder can fan them out. Deduped per element and ordered nearest-first.
     #[test]
     fn collect_pick_candidates_returns_the_whole_crowd() {
-        use crate::hierarchy::SceneElement;
         use crate::model::{ConstraintPoint, Line, LineEnd};
         let (mut doc, sketch) = doc_with_plane_sketch();
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0)); // line 0
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0)); // line 1
         // XY-plane sketch → world (x, y, 0); project drops z. The cursor sits on the shared corner.
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
-        let cands = collect_pick_candidates(Pos2::new(0.0, 0.0), &project, &doc, None);
-        let els: Vec<SceneElement> = cands.iter().map(|c| c.element.clone()).collect();
+        let cands = collect_pick_candidates(Pos2::new(0.0, 0.0), &project, &doc, Vec3::ZERO, None);
+        let kinds: Vec<&PickTargetKind> = cands.iter().map(|c| &c.kind).collect();
         // Both segments and both coincident start endpoints are within the hitbox.
-        assert!(els.contains(&SceneElement::Line(0)), "{els:?}");
-        assert!(els.contains(&SceneElement::Line(1)), "{els:?}");
-        assert!(els.contains(&SceneElement::Point(ConstraintPoint::LineEndpoint {
-            line: 0,
-            end: LineEnd::Start
-        })));
-        assert!(els.contains(&SceneElement::Point(ConstraintPoint::LineEndpoint {
-            line: 1,
-            end: LineEnd::Start
-        })));
+        assert!(kinds.iter().any(|k| matches!(k, PickTargetKind::Line(0))), "{kinds:?}");
+        assert!(kinds.iter().any(|k| matches!(k, PickTargetKind::Line(1))), "{kinds:?}");
+        assert!(kinds.iter().any(|k| matches!(
+            k,
+            PickTargetKind::Point(ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::Start })
+        )));
+        assert!(kinds.iter().any(|k| matches!(
+            k,
+            PickTargetKind::Point(ConstraintPoint::LineEndpoint { line: 1, end: LineEnd::Start })
+        )));
         assert!(cands.len() >= 4, "a crowd, not just the nearest: {}", cands.len());
-        // No duplicates.
+        // No duplicates (deduped per thing).
         let mut seen = std::collections::HashSet::new();
-        assert!(cands.iter().all(|c| seen.insert(c.element.clone())), "deduped per element");
+        assert!(cands.iter().all(|c| seen.insert(crowd_key(&c.kind))), "deduped per thing");
         // Ordered nearest-first.
         assert!(cands.windows(2).all(|w| w[0].dist_px <= w[1].dist_px));
     }
@@ -3026,7 +3047,10 @@ mod tests {
         let (mut doc, sketch) = doc_with_plane_sketch();
         doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
-        assert!(collect_pick_candidates(Pos2::new(500.0, 500.0), &project, &doc, None).is_empty());
+        assert!(
+            collect_pick_candidates(Pos2::new(500.0, 500.0), &project, &doc, Vec3::ZERO, None)
+                .is_empty()
+        );
     }
 
     fn doc_with_plane_sketch() -> (Document, usize) {

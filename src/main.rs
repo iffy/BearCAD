@@ -530,11 +530,11 @@ struct BezierHandleDrag {
 /// spot with a leader line back to it, so it can be picked without ambiguity.
 #[derive(Clone)]
 struct ExploderHandle {
-    /// The scene element a click on this handle selects.
-    element: hierarchy::SceneElement,
-    /// The kind, for the handle's icon when the crowd holds more than one kind.
-    kind: element_picker::ElementKind,
-    /// World point the leader line attaches to (re-projected each frame).
+    /// The pick target this handle stands for — the exploder redirects the tool's pick to its
+    /// anchor, so *any* tool selects it via its own normal path.
+    target: construction::PickTargetKind,
+    /// World point the leader line attaches to, and where the tool re-picks (re-projected each
+    /// frame for the leader; the redirect uses its projection).
     anchor: Vec3,
     /// Fixed screen position of the handle, computed once when the crowd exploded.
     handle_pos: egui::Pos2,
@@ -564,6 +564,21 @@ mod exploder {
     pub const SPACING_PX: f32 = 30.0;
     /// The ring never collapses tighter than this, so a 2-3 item crowd still fans clearly.
     pub const MIN_RING_PX: f32 = 46.0;
+}
+
+/// The element kind (for the exploder handle's icon) a pick target reads as (#551).
+fn pick_target_element_kind(kind: &construction::PickTargetKind) -> element_picker::ElementKind {
+    use construction::PickTargetKind as PK;
+    use element_picker::ElementKind as EK;
+    match kind {
+        PK::Point(_) | PK::BodyVertex { .. } => EK::Vertex,
+        PK::Line(_) => EK::Line,
+        PK::Circle(_) => EK::Circle,
+        PK::BodyEdge { .. } => EK::Edge,
+        PK::BodyFace { .. } => EK::Body,
+        PK::ConstructionPlane(_) => EK::Plane,
+        PK::GlobalAxis(_) | PK::Ground(_) => EK::Vertex,
+    }
 }
 
 /// What the viewport's right-click context menu should offer (#54/#75).
@@ -13921,8 +13936,7 @@ impl App {
             .map(|(i, (c, _))| {
                 let ang = base + i as f32 * TAU / n;
                 ExploderHandle {
-                    element: c.element.clone(),
-                    kind: element_picker::ElementKind::of(&c.element),
+                    target: c.kind.clone(),
                     anchor: c.anchor,
                     handle_pos: origin + egui::vec2(ang.cos(), ang.sin()) * ring,
                 }
@@ -13930,12 +13944,12 @@ impl App {
             .collect()
     }
 
-    /// Advance the Selection Exploder (#551). Returns `(active, available_center)`: `active` is
-    /// true while a crowd is fanned out (the caller then suppresses normal picking), and when the
-    /// exploder is *not* active `available_center` is `Some` if a crowd sits under the cursor (the
-    /// caller draws the faint "press space" hint there). Owns hover + selection while active so
-    /// only the handles are pickable; space toggles it, a handle click selects (Shift keeps it
-    /// open for multi-select), and an empty click or a non-selecting tool dismisses it.
+    /// Advance the Selection Exploder (#551). Returns `(active, available_center, close_after)`:
+    /// while `active`, the caller redirects the tool's pick to the hovered handle's anchor so
+    /// *any* tool selects that thing via its own normal path; `available_center` (when inactive)
+    /// is the faint "press-Space" hint under a crowd; `close_after` asks the caller to collapse
+    /// the fan after this frame's pick lands. Space explodes on demand (a crowd, a single thing,
+    /// or nothing — a frozen hitbox circle); Space again, or an empty click, dismisses it.
     fn tick_exploder(
         &mut self,
         ui: &egui::Ui,
@@ -13943,24 +13957,20 @@ impl App {
         pointer_screen: Option<egui::Pos2>,
         occlusion: Option<&construction::PickOcclusion>,
         suppress: bool,
-    ) -> (bool, Option<egui::Pos2>) {
-        let selecting = matches!(
-            self.state.tool,
-            Tool::Select | Tool::Constraint | Tool::Dimension
-        );
-        if suppress || !selecting {
+    ) -> (bool, Option<egui::Pos2>, bool) {
+        if suppress {
             self.exploder = None;
-            return (false, None);
+            return (false, None, false);
         }
         let space = ui.input(|i| i.key_pressed(egui::Key::Space));
         let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
         let shift = ui.input(|i| i.modifiers.shift);
 
-        // Active: own hover + selection over the handles only.
+        // Active: own the hover; the pick itself is done by the tool at the redirected pointer.
         if self.exploder.is_some() {
             if space {
                 self.exploder = None;
-                return (false, None);
+                return (false, None, false);
             }
             let hovered = pointer_screen.and_then(|pp| {
                 let ex = self.exploder.as_ref()?;
@@ -13978,36 +13988,45 @@ impl App {
             if let Some(ex) = self.exploder.as_mut() {
                 ex.hovered = hovered;
             }
+            let mut close_after = false;
             if primary_pressed {
                 match hovered {
-                    Some(i) => {
-                        let element = self.exploder.as_ref().unwrap().handles[i].element.clone();
-                        self.state
-                            .apply(Action::ClickSceneElement { element, additive: shift });
-                        // Shift keeps the fan open for more picks; otherwise it collapses.
-                        if !shift {
-                            self.exploder = None;
-                        }
+                    // The tool picks the hovered handle's thing via the redirected pointer; then
+                    // collapse the fan — unless Shift holds it open for multi-select.
+                    Some(_) => close_after = !shift,
+                    // An empty click just dismisses the exploder.
+                    None => {
+                        self.exploder = None;
+                        return (false, None, false);
                     }
-                    None => self.exploder = None,
                 }
             }
-            return (self.exploder.is_some(), None);
+            return (true, None, close_after);
         }
 
         // Inactive: Space explodes whatever sits under the cursor — even nothing (the hitbox
         // circle just freezes there) or a single thing (one handle). Otherwise, when a crowd sits
         // here, show the faint availability hint.
         let Some(pp) = pointer_screen else {
-            return (false, None);
+            return (false, None, false);
         };
-        let candidates =
-            construction::collect_pick_candidates(pp, project, &self.state.doc, occlusion);
+        let candidates = construction::collect_pick_candidates(
+            pp,
+            project,
+            &self.state.doc,
+            self.state.cam.eye(),
+            occlusion,
+        );
         if space {
             let handles = self.exploder_layout(pp, &candidates, project);
             let multi_kind = handles
                 .first()
-                .map(|first| handles.iter().any(|h| h.kind != first.kind))
+                .map(|first| {
+                    let first_kind = pick_target_element_kind(&first.target);
+                    handles
+                        .iter()
+                        .any(|h| pick_target_element_kind(&h.target) != first_kind)
+                })
                 .unwrap_or(false);
             self.exploder = Some(ExploderState {
                 origin: pp,
@@ -14015,16 +14034,20 @@ impl App {
                 multi_kind,
                 hovered: None,
             });
-            return (true, None);
+            return (true, None, false);
         }
-        (false, (candidates.len() >= 2).then_some(pp))
+        (false, (candidates.len() >= 2).then_some(pp), false)
     }
 
-    /// The scene element the hovered exploder handle points at (#551), so the real thing lights
-    /// up while a handle is hovered.
-    fn exploder_hovered_element(&self) -> Option<hierarchy::SceneElement> {
+    /// The screen point the exploder redirects the active tool's pick to (#551) — the hovered
+    /// handle's real thing — or `None` (nothing pickable) when no handle is hovered.
+    fn exploder_pick_pointer(
+        &self,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    ) -> Option<egui::Pos2> {
         let ex = self.exploder.as_ref()?;
-        ex.handles.get(ex.hovered?).map(|h| h.element.clone())
+        let h = ex.handles.get(ex.hovered?)?;
+        project(h.anchor)
     }
 
     /// Draw the Selection Exploder overlay (#551): the faint availability hint, or the fanned-out
@@ -14094,7 +14117,13 @@ impl App {
                 } else {
                     egui::Color32::from_gray(220)
                 };
-                crate::icons::paint_icon(painter, ctx, h.kind.icon(), rect, tint);
+                crate::icons::paint_icon(
+                    painter,
+                    ctx,
+                    pick_target_element_kind(&h.target).icon(),
+                    rect,
+                    tint,
+                );
             }
         }
     }
@@ -14335,7 +14364,8 @@ impl App {
             || self.angle_gizmo_drag.is_some()
             || response.dragged_by(egui::PointerButton::Secondary)
             || touch_navigating;
-        let pointer_screen = viewport_pointer_pos(&response, viewport_owns_pointer);
+        // Mutable so the Selection Exploder (#551) can redirect it to a chosen handle's thing.
+        let mut pointer_screen = viewport_pointer_pos(&response, viewport_owns_pointer);
         let layouts_slice = committed_dim_layouts.as_deref().unwrap_or(&[]);
         let angle_gizmo_constraint = angle_gizmo_constraint_for_edit(
             self.state.editing_committed_dim.as_ref(),
@@ -14704,22 +14734,30 @@ impl App {
             self.bezier_handle_drag.is_some(),
         );
 
-        // Selection Exploder (#551): fan a crowd of overlapping candidates out into pickable
-        // handles on space. While active it owns hover + selection; when merely available it draws
-        // a faint hint under the cursor and leaves normal picking alone.
-        let (exploder_active, exploder_available) = self.tick_exploder(
+        // Selection Exploder (#551): Space fans the crowd of pickable things under the cursor out
+        // into spaced-apart handles for *any* tool. While active, the pointer is redirected to the
+        // hovered handle's real thing, so the tool's own pick selects it via its normal path.
+        let (exploder_active, exploder_available, exploder_close_after) = self.tick_exploder(
             ui,
             &project,
             pointer_screen,
             pick_occlusion,
-            // Off during any drag/gizmo (via `suppress_hover_highlight`) and any Dimension-tool
-            // sub-state where picking is already suspended.
+            // Off during any drag/gizmo, in-progress creation, or dim sub-state where picking is
+            // already suspended.
             suppress_hover_highlight
                 || self.state.editing_committed_dim.is_some()
                 || self.state.placing_angle_dimension.is_some()
                 || over_committed_dim_label
-                || self.dim_label_drag.is_some(),
+                || self.dim_label_drag.is_some()
+                || self.state.creating_rect.is_some()
+                || self.state.creating_line.is_some()
+                || self.state.creating_circle.is_some(),
         );
+        // Redirect the tool's pick/hover to the hovered handle's real thing (or nothing when no
+        // handle is hovered). The exploder itself already hit-tested the real cursor above.
+        if exploder_active {
+            pointer_screen = self.exploder_pick_pointer(&project);
+        }
 
         // Right-click a bezier handle to offer deleting it, a two-line vertex to offer
         // converting it to a smooth bezier joint, or a curved line to offer straightening it
@@ -14795,8 +14833,6 @@ impl App {
             && self.state.line_drag_session.is_none()
             && self.bezier_handle_drag.is_none()
             && self.text_width_drag.is_none()
-            // While a crowd is exploded, only handles are pickable (#551).
-            && !exploder_active
         {
             if let Some(pp) = pointer_screen {
                 let gp = cam.ground_point(pp, viewport, &vp);
@@ -15962,13 +15998,6 @@ impl App {
             &project,
             pick_occlusion,
         );
-        // While a crowd is exploded (#551), only the hovered handle's real thing lights up — the
-        // raw crowd underneath is suppressed, so the normal pick hover is replaced entirely.
-        if exploder_active {
-            hover_highlight = self
-                .exploder_hovered_element()
-                .map(gpu_viewport::ViewportHoverHighlight::Element);
-        }
         // Elements-pane hover wins (#161): the mouse is over the pane, so no viewport pick
         // is active anyway; show the hovered row's element instead.
         if let Some(element) = self.pane_hovered_element.take() {
@@ -16544,6 +16573,10 @@ impl App {
         // Selection Exploder overlay (#551): the faint availability hint, or the fanned-out
         // handles + leader lines + kind icons, drawn over the GPU scene.
         self.draw_exploder(&painter, ui.ctx(), &project, exploder_available);
+        // Collapse the fan after this frame's pick landed (a non-Shift handle click, #551).
+        if exploder_close_after {
+            self.exploder = None;
+        }
 
         if !constraint_graphics.is_empty() {
             if !gpu_drawn {

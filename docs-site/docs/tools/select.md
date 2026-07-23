@@ -37,6 +37,10 @@ You can hit **Space** any time: over a crowd it fans out several handles, over a
 just one, and over empty space it simply parks the hitbox circle there. A faint circle appears
 under the cursor whenever two or more things are stacked, hinting that exploding will help.
 
+It works with **any tool**, not just Select — vertices, edges, lines, and faces all get
+handles, and picking one feeds it to whatever tool you're using (extrude that buried face,
+combine that overlapping body, and so on).
+
 ## Selection feeds the other tools
 
 Most tools act on the selection: select two lines and Constraint's Parallel lights up;

@@ -1750,14 +1750,18 @@ modeled on SolveSpace (https://solvespace.com).
   rebuild moves the edge, the selection simply drops — acceptable for ephemeral, never-
   persisted selection state. Selected body edges/vertices draw depth-test-disabled like
   their hover highlights (#153).
-- **Selection Exploder (#551):** pressing **Space** (with a selection tool active) fans the crowd
-  of selectable things inside the cursor's pick hitbox out into spaced-apart **handles** arranged
-  on a ring around it — each a small disc joined by a 1-px leader line back to its thing — so a
-  tiny buried vertex/edge/line can be picked unambiguously. It activates **on demand**: over a
-  crowd it fans several handles, over a single thing just one, and over nothing it simply freezes
-  the hitbox circle at the cursor with no handles. A faint borderless disc the size of the hitbox
-  still appears under the cursor when **two or more** things are there, as a hint that exploding
-  will help. Handles sit at least the hitbox distance apart
+- **Selection Exploder (#551):** pressing **Space** fans the crowd of pickable things inside the
+  cursor's hitbox out into spaced-apart **handles** arranged on a ring around it — each a small
+  disc joined by a 1-px leader line back to its thing — so a tiny buried vertex/edge/line/face can
+  be picked unambiguously. It works for **every tool**: while exploded, the pick pointer is
+  **redirected** to the hovered handle's real thing (`construction::collect_pick_candidates`
+  returns the crowd as `PickTargetKind`s with a world anchor), so each tool selects that thing via
+  its own normal pick path — the exploder needs no per-tool dispatch. The crowd spans everything a
+  tool might pick there: sketch points/lines/circles, body vertices/edges, and the body face under
+  the cursor. It activates **on demand**: over a crowd it fans several handles, over a single
+  thing just one, and over nothing it freezes the hitbox circle at the cursor with no handles. A
+  faint borderless disc the size of the hitbox still appears under the cursor when **two or more**
+  things are there, as a hint. Handles sit at least the hitbox distance apart
   (chord, not arc) so there's never ambiguity about which one a click means. When the crowd
   spans more than one kind, each handle carries its kind's icon. While exploded **only handles**
   are hoverable/selectable — the raw crowd underneath is suppressed — and hovering a handle
@@ -1765,8 +1769,8 @@ modeled on SolveSpace (https://solvespace.com).
   the fan; holding **Shift** keeps it open for multi-select; pressing Space again, clicking empty
   space, or switching to a non-selecting tool dismisses it. The enumerator
   (`construction::collect_pick_candidates`) is the crowd-returning counterpart to
-  `resolve_pick_target` (which keeps only the nearest). Active for the selection tools (Select,
-  Constraint, Dimension); a keyboard trigger, so desktop-oriented.
+  `resolve_pick_target` (which keeps only the nearest). Suppressed only during a drag/gizmo, an
+  in-progress draw, or a dimension sub-state. A keyboard trigger, so desktop-oriented.
 - **Element picker for the Select tool (#202/#213):** while the Select tool is active the
   context pane shows the unified **element picker** — a focusable, combo-box-style input that
   is the single, consistent way every tool gathers the elements it operates on. Collapsed it
