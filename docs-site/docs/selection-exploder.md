@@ -12,12 +12,14 @@ handles so you can pick the right one with a single, unambiguous click.
 
 Park your cursor over the cluster and press **Space**:
 
-![The Selection Exploder fanned open over a crowded corner: each stacked vertex, line, and circle gets its own spaced handle with a kind icon and a thin leader line back to where it really is](/img/screenshots/exploder.png)
+![The Selection Exploder fanned open over a crowded corner: each stacked thing gets its own round loupe — a 2× magnified view of the pick region with that one element highlighted — joined by a thin leader line back to where it really is](/img/screenshots/exploder.png)
 
 Everything inside your cursor's pick radius pops out to its own handle, arranged in a ring
-and joined by a thin leader line back to where it really lives. When the crowd is a mix of
-kinds, each handle carries a small icon — a vertex, a line, a circle, a face — so you can
-tell them apart at a glance.
+and joined by a thin leader line back to where it really lives. Each handle is a little round
+**loupe**: a 2× magnified view of the pick region, twice the size of the hitbox, with the one
+element that handle stands for **highlighted** and the rest of the crowd dimmed behind it. So
+even when several things overlap almost perfectly, you can see exactly which one each handle
+will pick.
 
 ## Picking from the fan
 

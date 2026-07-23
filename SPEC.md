@@ -1764,24 +1764,30 @@ modeled on SolveSpace (https://solvespace.com).
   persisted selection state. Selected body edges/vertices draw depth-test-disabled like
   their hover highlights (#153).
 - **Selection Exploder (#551):** pressing **Space** fans the crowd of pickable things inside the
-  cursor's hitbox out into spaced-apart **handles** arranged on a ring around it — each a small
-  disc joined by a 1-px leader line back to its thing — so a tiny buried vertex/edge/line/face can
-  be picked unambiguously. It works for **every tool**: while exploded, the pick pointer is
-  **redirected** to the hovered handle's real thing (`construction::collect_pick_candidates`
-  returns the crowd as `PickTargetKind`s with a world anchor), so each tool selects that thing via
-  its own normal pick path — the exploder needs no per-tool dispatch. The crowd spans everything a
-  tool might pick there: sketch points/lines/circles, body vertices/edges, and the body face under
-  the cursor. It activates **on demand**: over a crowd it fans several handles, over a single
-  thing just one, and over nothing it freezes the hitbox circle at the cursor with no handles. A
-  faint borderless disc the size of the hitbox still appears under the cursor when **two or more**
-  things are there, as a hint. Handles sit at least the hitbox distance apart
-  (chord, not arc) so there's never ambiguity about which one a click means. When the crowd
-  spans more than one kind, each handle carries its kind's icon. While exploded **only handles**
-  are hoverable/selectable — the raw crowd underneath is suppressed — and hovering a handle
-  lights up its real thing (and its leader). Clicking a handle selects that thing and collapses
-  the fan; holding **Shift** keeps it open for multi-select; pressing **Space** or **Esc** again,
-  or clicking empty space, dismisses it. While it's open the **camera is frozen** (orbit/pan/zoom
-  stand down) so the handles stay put while you aim. The enumerator
+  cursor's hitbox out into spaced-apart **handles** arranged on a ring around it, so a tiny buried
+  vertex/edge/line/face can be picked unambiguously. Each handle is a round **loupe** — twice the
+  hitbox radius (`exploder::loupe_radius() = ZOOM · touch::hit(12)`, `ZOOM = 2`) — that draws the
+  hitbox region **magnified 2×** with the one element that handle stands for **highlighted** (the
+  yellow pick colour) and the rest of the crowd dimmed behind it, joined by a 1-px leader line back
+  to where it really is; geometry is painter-drawn and clipped to the loupe disc
+  (`draw_pick_target_loupe` / `clip_segment_to_disc`), so overlapping things read clearly.
+  The crowd spans everything a tool might pick there: sketch points/lines/circles, body
+  vertices/edges, and the body face under the cursor (`construction::collect_pick_candidates`
+  returns them as `PickTargetKind`s with a world anchor). It activates **on demand**: over a crowd
+  it fans several handles, over a single thing just one, and over nothing it freezes the hitbox
+  circle at the cursor with no handles. A faint **light-green** disc the size of the hitbox
+  (`construction::EXPLODER_HINT_RGBA`, distinct from the yellow pick-hover) appears under the
+  cursor when **two or more** things are there, as a hint. Handles sit at least a loupe apart
+  (chord, not arc) so there's never ambiguity about which one a click means. While exploded **only
+  handles** are hoverable/selectable — the raw crowd underneath is suppressed (the positional
+  sketch pick/drag handlers stand down) — and hovering a handle brightens its loupe frame and its
+  leader. **Clicking a handle selects that handle's exact target** (`scene_element_from_pick` for
+  the selection-family tools) rather than re-resolving a pick at the redirected anchor, which would
+  be ambiguous for an overlapping crowd or land on something outside the hitbox; for other tools
+  the pointer is still **redirected** to the hovered handle's anchor so their own pick path runs.
+  Clicking collapses the fan; holding **Shift** keeps it open for multi-select; pressing **Space**
+  or **Esc** again, or clicking empty space, dismisses it. While it's open the **camera is frozen**
+  (orbit/pan/zoom stand down) so the handles stay put while you aim. The enumerator
   (`construction::collect_pick_candidates`) is the crowd-returning counterpart to
   `resolve_pick_target` (which keeps only the nearest). Suppressed only during a drag/gizmo, an
   in-progress draw, or a dimension sub-state. A keyboard trigger, so desktop-oriented.

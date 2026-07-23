@@ -547,37 +547,137 @@ struct ExploderState {
     /// Where Space was pressed — the frozen hitbox centre, shown when the crowd was empty.
     origin: egui::Pos2,
     handles: Vec<ExploderHandle>,
-    /// Whether the crowd spans more than one kind, so handles show a per-kind icon.
-    multi_kind: bool,
     /// The handle currently under the cursor, if any.
     hovered: Option<usize>,
 }
 
 /// Selection-Exploder tuning (#551).
 mod exploder {
-    /// Handle disc radius (px); a touch under the pick hitbox so handles read as distinct dots.
-    pub const HANDLE_RADIUS_PX: f32 = 11.0;
+    /// The magnification each handle-loupe applies to the hitbox (#551).
+    pub const ZOOM: f32 = 2.0;
     /// Extra px around a handle that still counts as a hit.
     pub const HANDLE_HIT_PAD_PX: f32 = 3.0;
-    /// Minimum centre-to-centre spacing between handles — comfortably more than a handle
-    /// diameter so their hitboxes never overlap (no ambiguity, per the spec).
-    pub const SPACING_PX: f32 = 30.0;
+    /// The pick hitbox radius (px), touch-aware — the region each loupe magnifies.
+    pub fn hitbox_radius() -> f32 {
+        crate::touch::hit(12.0)
+    }
+    /// Each handle is a round loupe twice the hitbox size, showing the hitbox magnified `ZOOM`× so
+    /// a `hitbox_radius`-wide region exactly fills the loupe.
+    pub fn loupe_radius() -> f32 {
+        ZOOM * hitbox_radius()
+    }
+    /// Centre-to-centre spacing between handles: two loupe radii plus a gap, so the discs never
+    /// touch (no ambiguity, per the spec).
+    pub fn spacing() -> f32 {
+        2.0 * loupe_radius() + 12.0
+    }
     /// The ring never collapses tighter than this, so a 2-3 item crowd still fans clearly.
-    pub const MIN_RING_PX: f32 = 46.0;
+    pub fn min_ring() -> f32 {
+        spacing()
+    }
 }
 
-/// The element kind (for the exploder handle's icon) a pick target reads as (#551).
-fn pick_target_element_kind(kind: &construction::PickTargetKind) -> element_picker::ElementKind {
+/// Clip a screen-space segment to a disc, returning the visible sub-segment (or `None` if it
+/// misses the disc entirely). Keeps a Selection Exploder loupe's magnified geometry inside its
+/// round frame (#551) without needing a circular clip region (egui only clips to rects).
+fn clip_segment_to_disc(
+    a: egui::Pos2,
+    b: egui::Pos2,
+    c: egui::Pos2,
+    r: f32,
+) -> Option<(egui::Pos2, egui::Pos2)> {
+    let a_in = (a - c).length() <= r;
+    let b_in = (b - c).length() <= r;
+    if a_in && b_in {
+        return Some((a, b));
+    }
+    let d = b - a;
+    let aa = d.dot(d);
+    if aa < 1e-6 {
+        return a_in.then_some((a, b));
+    }
+    let f = a - c;
+    let bb = 2.0 * f.dot(d);
+    let cc = f.dot(f) - r * r;
+    let disc = bb * bb - 4.0 * aa * cc;
+    if disc < 0.0 {
+        return None;
+    }
+    let sq = disc.sqrt();
+    let t0 = ((-bb - sq) / (2.0 * aa)).clamp(0.0, 1.0);
+    let t1 = ((-bb + sq) / (2.0 * aa)).clamp(0.0, 1.0);
+    if t1 - t0 <= 1e-4 {
+        return None;
+    }
+    Some((a + d * t0, a + d * t1))
+}
+
+/// Draw one pick target's geometry inside a Selection Exploder loupe (#551): world geometry is
+/// projected, magnified by the loupe transform, clipped to the loupe disc, and stroked in `color`.
+/// Points/vertices draw as a filled dot; lines/circles/edges as clipped segments; a face as its
+/// boundary. A faint dot at `anchor` guarantees every handle shows something even for kinds with
+/// no drawable silhouette here.
+#[allow(clippy::too_many_arguments)]
+fn draw_pick_target_loupe(
+    painter: &egui::Painter,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    loupe: &impl Fn(egui::Pos2) -> egui::Pos2,
+    center: egui::Pos2,
+    radius: f32,
+    doc: &model::Document,
+    kind: &construction::PickTargetKind,
+    anchor: Vec3,
+    color: egui::Color32,
+    width: f32,
+) {
     use construction::PickTargetKind as PK;
-    use element_picker::ElementKind as EK;
+    let lp = |w: Vec3| project(w).map(loupe);
+    let seg = |a: Vec3, b: Vec3| {
+        if let (Some(pa), Some(pb)) = (lp(a), lp(b)) {
+            if let Some((ca, cb)) = clip_segment_to_disc(pa, pb, center, radius) {
+                painter.line_segment([ca, cb], egui::Stroke::new(width, color));
+            }
+        }
+    };
+    let dot = |w: Vec3, rad: f32| {
+        if let Some(p) = lp(w) {
+            if (p - center).length() <= radius {
+                painter.circle_filled(p, rad, color);
+            }
+        }
+    };
     match kind {
-        PK::Point(_) | PK::BodyVertex { .. } => EK::Vertex,
-        PK::Line(_) => EK::Line,
-        PK::Circle(_) => EK::Circle,
-        PK::BodyEdge { .. } => EK::Edge,
-        PK::BodyFace { .. } => EK::Body,
-        PK::ConstructionPlane(_) => EK::Plane,
-        PK::GlobalAxis(_) | PK::Ground(_) => EK::Vertex,
+        PK::Point(cp) => {
+            if let Some(w) = construction::point_world_position(doc, cp.clone()) {
+                dot(w, width + 1.5);
+            }
+        }
+        PK::Line(i) => {
+            if let Some(poly) = doc.lines.get(*i).and_then(|l| crate::face::line_world_polyline(doc, l)) {
+                for w in poly.windows(2) {
+                    seg(w[0], w[1]);
+                }
+            }
+        }
+        PK::Circle(i) => {
+            if let Some(poly) = doc.circles.get(*i).and_then(|c| crate::face::circle_world_perimeter(doc, c, 48)) {
+                for w in poly.windows(2) {
+                    seg(w[0], w[1]);
+                }
+            }
+        }
+        PK::BodyEdge { a, b, .. } => seg(*a, *b),
+        PK::BodyVertex { position, .. } => dot(*position, width + 1.5),
+        PK::BodyFace { triangles, .. } => {
+            for (a, b) in construction::coplanar_face_boundary(triangles) {
+                seg(a, b);
+            }
+        }
+        PK::GlobalAxis(axis) => {
+            let (a, b) = construction::global_axis_segment(*axis);
+            seg(a, b);
+        }
+        PK::ConstructionPlane(_) | PK::Ground(_) => dot(anchor, width + 1.0),
     }
 }
 
@@ -13934,8 +14034,8 @@ impl App {
         // Ring radius so the straight-line distance (chord) between adjacent handles is at least
         // SPACING_PX — chord = 2·R·sin(π/n), so R = SPACING / (2·sin(π/n)). The arc-length form
         // under-spaces small crowds (chord < arc), which the spec's "no ambiguity" forbids.
-        let ring = (exploder::SPACING_PX / (2.0 * (std::f32::consts::PI / n).sin()))
-            .max(exploder::MIN_RING_PX);
+        let ring = (exploder::spacing() / (2.0 * (std::f32::consts::PI / n).sin()))
+            .max(exploder::min_ring());
         let base = items.first().map(|(_, a)| *a).unwrap_or(0.0);
         items
             .iter()
@@ -13986,7 +14086,7 @@ impl App {
                     .enumerate()
                     .filter_map(|(i, h)| {
                         let d = (pp - h.handle_pos).length();
-                        (d <= exploder::HANDLE_RADIUS_PX + exploder::HANDLE_HIT_PAD_PX)
+                        (d <= exploder::loupe_radius() + exploder::HANDLE_HIT_PAD_PX)
                             .then_some((i, d))
                     })
                     .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
@@ -14026,19 +14126,9 @@ impl App {
         );
         if space {
             let handles = self.exploder_layout(pp, &candidates, project);
-            let multi_kind = handles
-                .first()
-                .map(|first| {
-                    let first_kind = pick_target_element_kind(&first.target);
-                    handles
-                        .iter()
-                        .any(|h| pick_target_element_kind(&h.target) != first_kind)
-                })
-                .unwrap_or(false);
             self.exploder = Some(ExploderState {
                 origin: pp,
                 handles,
-                multi_kind,
                 hovered: None,
             });
             return (true, None, false);
@@ -14063,7 +14153,6 @@ impl App {
     fn draw_exploder(
         &self,
         painter: &egui::Painter,
-        ctx: &egui::Context,
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         available_at: Option<egui::Pos2>,
     ) {
@@ -14096,45 +14185,71 @@ impl App {
                 egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 120)),
             );
         }
+        let r_loupe = exploder::loupe_radius();
         for (i, h) in ex.handles.iter().enumerate() {
             let hot = ex.hovered == Some(i);
-            // Leader line from the real thing to its handle.
+            let center = h.handle_pos;
+            // Leader line from the real thing to its loupe.
             if let Some(a) = project(h.anchor) {
                 let line = if hot {
                     accent
                 } else {
                     egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 130)
                 };
-                painter.line_segment([a, h.handle_pos], egui::Stroke::new(1.0, line));
+                painter.line_segment([a, center], egui::Stroke::new(1.0, line));
                 if hot {
-                    painter.circle_filled(a, 4.0, accent);
+                    painter.circle_filled(a, 3.5, accent);
                 }
             }
-            // Handle disc: brighter when hovered.
-            let fill = if hot { accent } else { egui::Color32::from_gray(55) };
-            painter.circle_filled(h.handle_pos, exploder::HANDLE_RADIUS_PX, fill);
-            painter.circle_stroke(
-                h.handle_pos,
-                exploder::HANDLE_RADIUS_PX,
-                egui::Stroke::new(1.5, accent),
+            // Loupe background: a dark, mostly opaque disc so the magnified geometry reads clearly
+            // over the GPU scene behind it.
+            painter.circle_filled(
+                center,
+                r_loupe,
+                egui::Color32::from_rgba_unmultiplied(20, 22, 28, 236),
             );
-            // A per-kind icon inside the handle when the crowd mixes kinds.
-            if ex.multi_kind {
-                let s = exploder::HANDLE_RADIUS_PX * 1.35;
-                let rect = egui::Rect::from_center_size(h.handle_pos, egui::vec2(s, s));
-                let tint = if hot {
-                    egui::Color32::BLACK
-                } else {
-                    egui::Color32::from_gray(220)
-                };
-                crate::icons::paint_icon(
+            // The magnifier transform: the pick hitbox (around the cursor at `ex.origin`) mapped
+            // ZOOM× into this loupe, so the loupe is a 2× view of exactly what the hitbox covers.
+            let loupe = |s: egui::Pos2| center + (s - ex.origin) * exploder::ZOOM;
+            // The rest of the crowd draws dimmed for context; this handle's own thing draws on top
+            // in the highlight colour, so it's unmistakable which one the loupe stands for.
+            for (j, other) in ex.handles.iter().enumerate() {
+                if j == i {
+                    continue;
+                }
+                draw_pick_target_loupe(
                     painter,
-                    ctx,
-                    pick_target_element_kind(&h.target).icon(),
-                    rect,
-                    tint,
+                    project,
+                    &loupe,
+                    center,
+                    r_loupe,
+                    &self.state.doc,
+                    &other.target,
+                    other.anchor,
+                    egui::Color32::from_gray(115),
+                    1.4,
                 );
             }
+            draw_pick_target_loupe(
+                painter,
+                project,
+                &loupe,
+                center,
+                r_loupe,
+                &self.state.doc,
+                &h.target,
+                h.anchor,
+                accent,
+                2.4,
+            );
+            // A faint centre mark = the cursor's hitbox centre, for orientation.
+            painter.circle_filled(center, 1.0, egui::Color32::from_gray(90));
+            // Loupe frame — brighter/thicker when hovered.
+            painter.circle_stroke(
+                center,
+                r_loupe,
+                egui::Stroke::new(if hot { 2.5 } else { 1.5 }, accent),
+            );
         }
     }
 
@@ -16616,7 +16731,7 @@ impl App {
 
         // Selection Exploder overlay (#551): the faint availability hint, or the fanned-out
         // handles + leader lines + kind icons, drawn over the GPU scene.
-        self.draw_exploder(&painter, ui.ctx(), &project, exploder_available);
+        self.draw_exploder(&painter, &project, exploder_available);
         // Collapse the fan after this frame's pick landed (a non-Shift handle click, #551).
         if exploder_close_after {
             self.exploder = None;
