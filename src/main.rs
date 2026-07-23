@@ -8598,6 +8598,8 @@ impl eframe::App for App {
                     context::LoftBodyControl {
                         body_choice: cl.map(|c| c.body_choice).unwrap_or_default(),
                         cut_bodies: cl.map(|c| c.cut_bodies.clone()).unwrap_or_default(),
+                        // Ready to loft once at least two sections are picked (#586).
+                        can_commit: cl.is_some_and(|c| c.sections.len() >= 2),
                     }
                 }),
                 plane_tool: (self.state.tool == Tool::ConstructionPlane).then(|| {
@@ -8755,6 +8757,7 @@ impl eframe::App for App {
             let mut sweep_edit: Option<context::SweepEdit> = None;
             let mut plane_tool_edit: Option<context::PlaneToolEdit> = None;
             let mut loft_body_choice: Option<actions::RevolveBodyChoice> = None;
+            let mut loft_commit = false;
             let mut boolean_edit: Option<context::BooleanEdit> = None;
             let mut boolean_edit_begin: Option<usize> = None;
             let mut move_edit: Option<context::MoveEdit> = None;
@@ -8811,6 +8814,7 @@ impl eframe::App for App {
                         &mut |edit| sweep_edit = Some(edit),
                         &mut |edit| plane_tool_edit = Some(edit),
                         &mut |choice| loft_body_choice = Some(choice),
+                        &mut || loft_commit = true,
                         &mut |edit| boolean_edit = Some(edit),
                         &mut |op| boolean_edit_begin = Some(op),
                         &mut |edit| move_edit = Some(edit),
@@ -8840,26 +8844,35 @@ impl eframe::App for App {
                 self.state.apply(Action::SetPaneVisible { pane: Pane::Context, visible: false });
             }
             if let Some(edit) = revolve_edit {
-                let cr = self
-                    .state
-                    .creating_revolve
-                    .get_or_insert_with(actions::CreatingRevolve::default);
                 match edit {
-                    context::RevolveEdit::Symmetric(v) => cr.symmetric = v,
-                    context::RevolveEdit::BodyChoice(choice) => cr.body_choice = choice,
-                    context::RevolveEdit::RemoveFace(Some(i)) => {
-                        if i < cr.faces.len() {
-                            cr.faces.remove(i);
-                        }
-                        if cr.faces.is_empty() {
-                            cr.sketch = None;
+                    // The blue primary button / Enter commits the revolve (#586).
+                    context::RevolveEdit::Commit => {
+                        self.state.apply(Action::CommitRevolve);
+                    }
+                    other => {
+                        let cr = self
+                            .state
+                            .creating_revolve
+                            .get_or_insert_with(actions::CreatingRevolve::default);
+                        match other {
+                            context::RevolveEdit::Symmetric(v) => cr.symmetric = v,
+                            context::RevolveEdit::BodyChoice(choice) => cr.body_choice = choice,
+                            context::RevolveEdit::RemoveFace(Some(i)) => {
+                                if i < cr.faces.len() {
+                                    cr.faces.remove(i);
+                                }
+                                if cr.faces.is_empty() {
+                                    cr.sketch = None;
+                                }
+                            }
+                            context::RevolveEdit::RemoveFace(None) => {
+                                cr.faces.clear();
+                                cr.sketch = None;
+                            }
+                            context::RevolveEdit::ClearAxis => cr.axis = None,
+                            context::RevolveEdit::Commit => unreachable!(),
                         }
                     }
-                    context::RevolveEdit::RemoveFace(None) => {
-                        cr.faces.clear();
-                        cr.sketch = None;
-                    }
-                    context::RevolveEdit::ClearAxis => cr.axis = None,
                 }
             }
             if let Some(choice) = loft_body_choice {
@@ -8868,6 +8881,9 @@ impl eframe::App for App {
                     .creating_loft
                     .get_or_insert_with(actions::CreatingLoft::default);
                 cl.body_choice = choice;
+            }
+            if loft_commit {
+                self.state.apply(Action::CommitLoft);
             }
             if let Some(edit) = plane_tool_edit {
                 match edit {
@@ -8897,30 +8913,39 @@ impl eframe::App for App {
                 }
             }
             if let Some(edit) = sweep_edit {
-                let cf = self
-                    .state
-                    .creating_sweep
-                    .get_or_insert_with(actions::CreatingSweep::default);
                 match edit {
-                    context::SweepEdit::BodyChoice(choice) => cf.body_choice = choice,
-                    context::SweepEdit::RemoveFace(Some(i)) => {
-                        if i < cf.faces.len() {
-                            cf.faces.remove(i);
-                        }
-                        if cf.faces.is_empty() {
-                            cf.sketch = None;
+                    // The blue primary button / Enter commits the sweep (#586).
+                    context::SweepEdit::Commit => {
+                        self.state.apply(Action::CommitSweep);
+                    }
+                    other => {
+                        let cf = self
+                            .state
+                            .creating_sweep
+                            .get_or_insert_with(actions::CreatingSweep::default);
+                        match other {
+                            context::SweepEdit::BodyChoice(choice) => cf.body_choice = choice,
+                            context::SweepEdit::RemoveFace(Some(i)) => {
+                                if i < cf.faces.len() {
+                                    cf.faces.remove(i);
+                                }
+                                if cf.faces.is_empty() {
+                                    cf.sketch = None;
+                                }
+                            }
+                            context::SweepEdit::RemoveFace(None) => {
+                                cf.faces.clear();
+                                cf.sketch = None;
+                            }
+                            context::SweepEdit::RemovePath(Some(i)) => {
+                                if i < cf.path.len() {
+                                    cf.path.remove(i);
+                                }
+                            }
+                            context::SweepEdit::RemovePath(None) => cf.path.clear(),
+                            context::SweepEdit::Commit => unreachable!(),
                         }
                     }
-                    context::SweepEdit::RemoveFace(None) => {
-                        cf.faces.clear();
-                        cf.sketch = None;
-                    }
-                    context::SweepEdit::RemovePath(Some(i)) => {
-                        if i < cf.path.len() {
-                            cf.path.remove(i);
-                        }
-                    }
-                    context::SweepEdit::RemovePath(None) => cf.path.clear(),
                 }
             }
             if let Some(remove) = extrude_face_remove {

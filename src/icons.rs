@@ -74,6 +74,8 @@ pub enum IconId {
     NewBody,
     AddToBody,
     CutBody,
+    /// Checkmark on the blue **primary button** that commits a tool's action (#586).
+    Confirm,
     /// Small "remove" ✕ used by the element picker's row-remove button (#256).
     Close,
     /// Boolean-operation icons for the Combine tool (#267): two circles with kept regions
@@ -110,7 +112,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 73] = [
+    pub const ALL: [Self; 74] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -165,6 +167,7 @@ impl IconId {
         Self::NewBody,
         Self::AddToBody,
         Self::CutBody,
+        Self::Confirm,
         Self::Close,
         Self::BooleanUnion,
         Self::BooleanCut,
@@ -246,6 +249,7 @@ impl IconId {
             Self::NewBody => include_str!("assets/icons/new_body.svg"),
             Self::AddToBody => include_str!("assets/icons/add_to_body.svg"),
             Self::CutBody => include_str!("assets/icons/cut_body.svg"),
+            Self::Confirm => include_str!("assets/icons/confirm.svg"),
             Self::Close => include_str!("assets/icons/x.svg"),
             Self::BooleanUnion => include_str!("assets/icons/boolean_union.svg"),
             Self::BooleanCut => include_str!("assets/icons/boolean_cut.svg"),
@@ -327,6 +331,7 @@ impl IconId {
             Self::NewBody => "New body",
             Self::AddToBody => "Add to body",
             Self::CutBody => "Cut body",
+            Self::Confirm => "Confirm",
             Self::Close => "Close",
             Self::BooleanUnion => "Combine",
             Self::BooleanCut => "Cut",

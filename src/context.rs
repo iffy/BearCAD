@@ -186,6 +186,8 @@ pub struct PlaneToolControl {
 pub struct LoftBodyControl {
     pub body_choice: crate::actions::RevolveBodyChoice,
     pub cut_bodies: Vec<usize>,
+    /// Ready to commit — at least two sections picked (#586).
+    pub can_commit: bool,
 }
 
 /// One edit from the Construction Plane tool's context section (#474).
@@ -596,6 +598,8 @@ pub enum RevolveEdit {
     RemoveFace(Option<usize>),
     /// Clear the picked revolve axis (#261).
     ClearAxis,
+    /// The blue primary button / Enter — commit the revolve (#586).
+    Commit,
 }
 
 /// One edit from the Sweep context section.
@@ -606,6 +610,8 @@ pub enum SweepEdit {
     RemoveFace(Option<usize>),
     /// Remove path line row `i` from the path picker (`None` clears them all).
     RemovePath(Option<usize>),
+    /// The blue primary button / Enter — commit the sweep (#586).
+    Commit,
 }
 
 /// The "Calibrate scale" control's inputs (#171): the target image and the reference
@@ -1755,6 +1761,34 @@ fn preview_font_family(ctx: &egui::Context, family: &str) -> Option<egui::FontFa
     })
 }
 
+/// The **primary button** (#586): the blue, no-text commit button that a tool's context section
+/// shows to complete its action. It sits in the **right column** of the 2-column layout (empty
+/// label) and also fires on **Enter** — but only while `enabled` and no widget has the keyboard, so
+/// Enter goes to a focused field first. `enabled` is the tool's "ready" flag (all inputs valid);
+/// when not ready the button stays visible but disabled. Returns true when it should commit.
+fn primary_button(ui: &mut egui::Ui, enabled: bool, tooltip: &str) -> bool {
+    let clicked = labeled_row(ui, "", |ui| {
+        let blue = egui::Color32::from_rgb(56, 120, 224);
+        let img = egui::Image::new(crate::icons::sized_texture_at(
+            ui.ctx(),
+            crate::icons::IconId::Confirm,
+            16.0,
+        ));
+        ui.add_enabled(
+            enabled,
+            egui::Button::image(img)
+                .fill(blue)
+                .min_size(egui::vec2(56.0, 22.0)),
+        )
+        .on_hover_text(format!("{tooltip} (Enter)"))
+        .clicked()
+    });
+    let enter = enabled
+        && ui.input(|i| i.key_pressed(egui::Key::Enter))
+        && ui.memory(|m| m.focused().is_none());
+    clicked || enter
+}
+
 /// A faint section heading (#393): quieter than the field labels beneath it, so sections
 /// read as grouping rather than competing with the label column.
 fn section_label(ui: &mut egui::Ui, text: impl Into<String>) {
@@ -1849,6 +1883,7 @@ pub fn show_pane(
     on_sweep_edit: &mut impl FnMut(SweepEdit),
     on_plane_tool_edit: &mut impl FnMut(PlaneToolEdit),
     on_loft_body_choice: &mut impl FnMut(crate::actions::RevolveBodyChoice),
+    on_loft_commit: &mut impl FnMut(),
     on_boolean_edit: &mut impl FnMut(BooleanEdit),
     on_boolean_edit_start: &mut impl FnMut(usize),
     on_move_edit: &mut impl FnMut(MoveEdit),
@@ -2298,6 +2333,11 @@ pub fn show_pane(
                 }
             }
         });
+        // Ready once a profile face and an axis are picked (#586).
+        let ready = control.face_count > 0 && control.axis_label.is_some();
+        if primary_button(ui, ready && controls_enabled, "Revolve") {
+            on_revolve_edit(RevolveEdit::Commit);
+        }
     }
 
     if let Some(control) = &content.sweep {
@@ -2381,6 +2421,11 @@ pub fn show_pane(
                 }
             }
         });
+        // Ready once a profile face and a path are picked (#586).
+        let ready = !control.face_rows.is_empty() && !control.path_rows.is_empty();
+        if primary_button(ui, ready && controls_enabled, "Sweep") {
+            on_sweep_edit(SweepEdit::Commit);
+        }
     }
 
     if let Some(control) = &content.loft_body {
@@ -2415,6 +2460,10 @@ pub fn show_pane(
                 }
             }
         });
+        // Ready once at least two sections are picked (#586).
+        if primary_button(ui, control.can_commit && controls_enabled, "Loft") {
+            on_loft_commit();
+        }
     }
 
     if let Some(control) = &content.plane_tool {
@@ -2506,13 +2555,11 @@ pub fn show_pane(
             }
         }
         ui.add_space(2.0);
-        if ui
-            .add_enabled(
-                control.can_commit && controls_enabled,
-                egui::Button::new(if control.editing { "Apply changes" } else { "Create" }),
-            )
-            .clicked()
-        {
+        if primary_button(
+            ui,
+            control.can_commit && controls_enabled,
+            if control.editing { "Apply changes" } else { "Create" },
+        ) {
             on_boolean_edit(BooleanEdit::Commit);
         }
         ui.label(
@@ -2590,13 +2637,11 @@ pub fn show_pane(
             on_move_edit(edit);
         }
         ui.add_space(2.0);
-        if ui
-            .add_enabled(
-                control.can_commit && controls_enabled,
-                egui::Button::new(if control.editing { "Apply changes" } else { "Move" }),
-            )
-            .clicked()
-        {
+        if primary_button(
+            ui,
+            control.can_commit && controls_enabled,
+            if control.editing { "Apply changes" } else { "Move" },
+        ) {
             on_move_edit(MoveEdit::Commit);
         }
         ui.label(
@@ -2626,13 +2671,11 @@ pub fn show_pane(
         // The mirror plane and the bodies to mirror both render above through the unified
         // element pickers (see `tool_pickers`: `MirrorPlane` then `MirrorTargets`, #566).
         ui.add_space(2.0);
-        if ui
-            .add_enabled(
-                control.can_commit && controls_enabled,
-                egui::Button::new(if control.editing { "Apply changes" } else { "Mirror" }),
-            )
-            .clicked()
-        {
+        if primary_button(
+            ui,
+            control.can_commit && controls_enabled,
+            if control.editing { "Apply changes" } else { "Mirror" },
+        ) {
             on_mirror_edit(MirrorEdit::Commit);
         }
         ui.label(
@@ -2870,17 +2913,13 @@ pub fn show_pane(
         }
         ui.add_space(2.0);
         // The commit button sits in the input (right) column (#447), aligned with the fields.
-        labeled_row(ui, "", |ui| {
-            if ui
-                .add_enabled(
-                    control.can_commit && controls_enabled,
-                    egui::Button::new(if control.editing { "Apply changes" } else { "Repeat" }),
-                )
-                .clicked()
-            {
-                on_repeat_edit(RepeatEdit::Commit);
-            }
-        });
+        if primary_button(
+            ui,
+            control.can_commit && controls_enabled,
+            if control.editing { "Apply changes" } else { "Repeat" },
+        ) {
+            on_repeat_edit(RepeatEdit::Commit);
+        }
     }
 
     // In-sketch Repeat tool (#232): entities + direction + count/gap/distance.
@@ -3210,13 +3249,11 @@ pub fn show_pane(
             on_slice_edit(edit);
         }
         ui.add_space(2.0);
-        if ui
-            .add_enabled(
-                control.can_commit && controls_enabled,
-                egui::Button::new(if control.editing { "Apply changes" } else { "Slice" }),
-            )
-            .clicked()
-        {
+        if primary_button(
+            ui,
+            control.can_commit && controls_enabled,
+            if control.editing { "Apply changes" } else { "Slice" },
+        ) {
             on_slice_edit(SliceEdit::Commit);
         }
     }
@@ -3841,11 +3878,9 @@ pub fn show_pane(
                 }
             }
         });
-        ui.add_enabled_ui(controls_enabled && control.can_commit, |ui| {
-            if ui.button("Extrude").clicked() {
-                on_extrude_edit(ExtrudeEdit::Commit);
-            }
-        });
+        if primary_button(ui, controls_enabled && control.can_commit, "Extrude") {
+            on_extrude_edit(ExtrudeEdit::Commit);
+        }
         ui.add_space(4.0);
     }
 
