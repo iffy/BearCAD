@@ -35,6 +35,19 @@ one each handle will pick.
 While the fan is open the **camera holds still**, so the handles stay put under your cursor
 instead of drifting as you reach for one.
 
+## Big crowds fan out in groups
+
+When a lot of things stack up, the fan keeps itself readable by **grouping** related handles.
+A group shows as one loupe with a count badge:
+
+- **Click a group** to drill into it — its members spring out into their own loupes while the
+  other groups gather into a small **cluster loupe** off to the side.
+- **Click the cluster loupe** to go back up a level; the members you were looking at gather
+  back into their group as the cluster fans its siblings back out.
+
+The hand-off between levels is animated, so you can always see where a group came from and
+where it went — drill in and back out as many levels as you need.
+
 ## Any time, any tool, anything
 
 Press **Space** whenever you like — you don't have to wait for a crowd:

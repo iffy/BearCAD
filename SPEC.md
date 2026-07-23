@@ -1842,11 +1842,17 @@ modeled on SolveSpace (https://solvespace.com).
     with only its own thing(s) highlighted — a leaf highlights its one target, a **group loupe**
     highlights all its members (idle blue). A group reads distinct via a **blue border** — the same
     blue as its highlighted members (#562) — and a **big count badge** (member count, bottom-right). **Clicking a group loupe
-    drills in** (`ExploderState::path` pushes its node index): the other loupes hide and the group's
-    members **spring out** of the clicked spot (a quick `DrillAnim` slide, `DRILL_ANIM_SECS`) as their
-    own loupes at the new level (recursively grouped if still too many). The **siblings** you drilled
-    away from gather into a loupe-sized **cluster loupe** — a mini-loupe per sibling (#561); clicking
-    the cluster pops one level. Any depth is supported. The current level's loupes and
+    drills in** (`ExploderState::path` pushes its node index): the group's members **spring out** of
+    the clicked spot as their own loupes at the new level (recursively grouped if still too many),
+    while the **siblings** you drilled away from converge inward and gather into a loupe-sized
+    **cluster loupe** — a mini-loupe per sibling (#561); clicking the cluster pops one level. Both
+    directions of the transition are animated over `DRILL_ANIM_SECS` by a `DrillAnim` (#567): each
+    arrived-level loupe slides out from a recorded start position (`DrillAnim::from`, index-aligned
+    with `display_items`) while the **departed** level dissolves as fading `DrillGhost` loupes that
+    slide toward the gathering point — the siblings into the Back cluster on drill-**in**, the group's
+    children into its group loupe on drill-**out**. `ExploderState::build_drill_in_anim` /
+    `build_drill_out_anim` capture the from/ghost positions from the old and new `display_centers` at
+    click time. Any depth is supported. The current level's loupes and
     their ring/stagger/fit layout come from `display_items` / `display_centers`. Only a hovered
     **leaf** loupe redirects the tool's pick, owns the press, and sets the hover highlight
     (`ExploderState::hovered_leaf`); a hovered **group** loupe instead lights up **all its members**

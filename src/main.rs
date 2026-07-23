@@ -578,12 +578,32 @@ struct DisplayItem {
     siblings: Vec<Vec<usize>>,
 }
 
-/// A quick "loupes spring out of the group loupe" animation (#559): when a group is drilled into,
-/// the new level's loupes slide from the clicked group's position (`from`) to their fanned spots
-/// over [`exploder::DRILL_ANIM_SECS`].
+/// A departing-level loupe that dissolves during a drill transition (#567): it slides from where
+/// it sat at the level we left (`from`) toward a gathering point (`to`) while fading out. On
+/// drill-**in** the non-clicked siblings converge into the new Back cluster; on drill-**out** the
+/// drilled group's children gather back into its group loupe.
+struct DrillGhost {
+    /// Crowd leaf item-indices to draw inside this ghost loupe.
+    leaves: Vec<usize>,
+    /// Screen centre at the start of the animation (its spot at the level we left).
+    from: egui::Pos2,
+    /// Screen centre it converges to (the Back cluster on drill-in, the group loupe on drill-out).
+    to: egui::Pos2,
+    /// Draw a group-style blue ring rather than a plain leaf ring.
+    is_group: bool,
+}
+
+/// A quick drill transition animation (#567). Two things move at once: the level we **arrived** at
+/// springs out — each current display item slides from `from[i]` to its packed centre — while the
+/// level we **left** dissolves via `ghosts` (siblings gathering into the Back cluster on drill-in,
+/// or the group's children gathering into its loupe on drill-out). Runs over
+/// [`exploder::DRILL_ANIM_SECS`].
 struct DrillAnim {
     start: f64,
-    from: egui::Pos2,
+    /// Per current-display-item start position (index-aligned with `display_items`).
+    from: Vec<egui::Pos2>,
+    /// Departing-level loupes that converge and fade out.
+    ghosts: Vec<DrillGhost>,
 }
 
 /// Active Selection Exploder state (#551, #559): the fanned-out loupes for a crowd of selectable
@@ -820,6 +840,97 @@ impl ExploderState {
             }
         }
         best
+    }
+
+    /// Build the drill-**in** transition (#567), called after `path.push`. The clicked group's
+    /// children (the new non-Back items) spring out of the group's old spot, while the non-clicked
+    /// siblings ghost inward and gather into the new Back cluster.
+    fn build_drill_in_anim(
+        &self,
+        now: f64,
+        clicked_display: usize,
+        old_items: &[DisplayItem],
+        old_centers: &[egui::Pos2],
+        viewport: egui::Rect,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    ) -> DrillAnim {
+        let new_items = self.display_items();
+        let new_centers = self.display_centers(viewport, project);
+        let pos_group = old_centers.get(clicked_display).copied().unwrap_or(self.origin);
+        // We just drilled in, so the new level always leads with a Back cluster at index 0.
+        let back_center = new_centers.first().copied().unwrap_or(self.origin);
+        let from: Vec<egui::Pos2> = new_items
+            .iter()
+            .enumerate()
+            .map(|(i, it)| {
+                if it.kind == DisplayKind::Back {
+                    new_centers.get(i).copied().unwrap_or(self.origin)
+                } else {
+                    pos_group
+                }
+            })
+            .collect();
+        let ghosts = old_items
+            .iter()
+            .enumerate()
+            .filter(|(j, it)| *j != clicked_display && it.kind != DisplayKind::Back)
+            .map(|(j, it)| DrillGhost {
+                leaves: it.leaves.clone(),
+                from: old_centers.get(j).copied().unwrap_or(self.origin),
+                to: back_center,
+                is_group: it.kind == DisplayKind::Group,
+            })
+            .collect();
+        DrillAnim { start: now, from, ghosts }
+    }
+
+    /// Build the drill-**out** transition (#567), called after `path.pop`. The level we left (the
+    /// drilled group's children) ghosts inward and gathers into that group's loupe, while the Back
+    /// cluster's siblings spring back out to their own spots.
+    fn build_drill_out_anim(
+        &self,
+        now: f64,
+        clicked_back_display: usize,
+        drilled_node: usize,
+        old_items: &[DisplayItem],
+        old_centers: &[egui::Pos2],
+        viewport: egui::Rect,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    ) -> DrillAnim {
+        let new_items = self.display_items();
+        let new_centers = self.display_centers(viewport, project);
+        let back_center = old_centers
+            .get(clicked_back_display)
+            .copied()
+            .unwrap_or(self.origin);
+        // The group we returned into is the parent-level node the ghosts gather onto.
+        let group_display = new_items.iter().position(|it| it.node == Some(drilled_node));
+        let pos_group = group_display
+            .and_then(|gi| new_centers.get(gi).copied())
+            .unwrap_or(self.origin);
+        let from: Vec<egui::Pos2> = new_items
+            .iter()
+            .enumerate()
+            .map(|(i, it)| {
+                if Some(i) == group_display || it.kind == DisplayKind::Back {
+                    new_centers.get(i).copied().unwrap_or(self.origin)
+                } else {
+                    back_center // siblings scatter out of where the cluster sat
+                }
+            })
+            .collect();
+        let ghosts = old_items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| it.kind != DisplayKind::Back)
+            .map(|(j, it)| DrillGhost {
+                leaves: it.leaves.clone(),
+                from: old_centers.get(j).copied().unwrap_or(self.origin),
+                to: pos_group,
+                is_group: it.kind == DisplayKind::Group,
+            })
+            .collect();
+        DrillAnim { start: now, from, ghosts }
     }
 
     /// The hovered display item's `(target, anchor)` IFF it is a single-element Leaf loupe (#559) —
@@ -14773,26 +14884,65 @@ impl App {
                     },
                 };
                 match act {
-                    // Back: pop a drill level and stay open (no select this frame).
+                    // Back: pop a drill level and stay open (no select this frame). The children we
+                    // leave gather back into their group loupe while the Back cluster's siblings
+                    // spring back out (#567).
                     Act::Back => {
+                        let old_items = self
+                            .exploder
+                            .as_ref()
+                            .map(|ex| ex.display_items())
+                            .unwrap_or_default();
+                        let old_centers = self
+                            .exploder
+                            .as_ref()
+                            .map(|ex| ex.display_centers(viewport, project))
+                            .unwrap_or_default();
+                        let drilled = self.exploder.as_ref().and_then(|ex| ex.path.last().copied());
                         if let Some(ex) = self.exploder.as_mut() {
                             ex.path.pop();
                             ex.hovered = None;
                         }
+                        let anim = match (drilled, hovered) {
+                            (Some(d), Some(h)) => self.exploder.as_ref().map(|ex| {
+                                ex.build_drill_out_anim(
+                                    now, h, d, &old_items, &old_centers, viewport, project,
+                                )
+                            }),
+                            _ => None,
+                        };
+                        if let Some(ex) = self.exploder.as_mut() {
+                            ex.drill_anim = anim;
+                        }
                         return (true, None, false);
                     }
-                    // Group: drill in — its members become the next level's loupes, springing out
-                    // of the clicked group's spot (#559); stay open.
+                    // Group: drill in — its members become the next level's loupes, springing out of
+                    // the clicked group's spot, while the non-clicked siblings gather into the Back
+                    // cluster (#567); stay open.
                     Act::Group(node) => {
-                        let from = hovered.and_then(|h| {
-                            self.exploder
-                                .as_ref()
-                                .and_then(|ex| ex.display_centers(viewport, project).get(h).copied())
-                        });
+                        let old_items = self
+                            .exploder
+                            .as_ref()
+                            .map(|ex| ex.display_items())
+                            .unwrap_or_default();
+                        let old_centers = self
+                            .exploder
+                            .as_ref()
+                            .map(|ex| ex.display_centers(viewport, project))
+                            .unwrap_or_default();
                         if let Some(ex) = self.exploder.as_mut() {
                             ex.path.push(node);
                             ex.hovered = None;
-                            ex.drill_anim = from.map(|f| DrillAnim { start: now, from: f });
+                        }
+                        let anim = hovered.and_then(|h| {
+                            self.exploder.as_ref().map(|ex| {
+                                ex.build_drill_in_anim(
+                                    now, h, &old_items, &old_centers, viewport, project,
+                                )
+                            })
+                        });
+                        if let Some(ex) = self.exploder.as_mut() {
+                            ex.drill_anim = anim;
                         }
                         return (true, None, false);
                     }
@@ -14935,11 +15085,12 @@ impl App {
         // The current drill level's loupes (Back + leaves + group loupes) and their packed centres.
         let items = ex.display_items();
         let centers = ex.display_centers(viewport, project);
-        // Drill-in animation (#559): the new level's loupes spring out of the clicked group's spot.
+        // Drill transition animation (#567): the arrived level springs out from `from[i]` while the
+        // departed level's ghost loupes gather inward and fade. `e` is the eased 0→1 progress.
         let now = painter.ctx().input(|i| i.time);
         let anim = ex.drill_anim.as_ref().map(|a| {
             let t = ((now - a.start) / exploder::DRILL_ANIM_SECS).clamp(0.0, 1.0) as f32;
-            (a.from, t * (2.0 - t)) // ease-out
+            (a, t * (2.0 - t)) // ease-out
         });
         if anim.is_some() {
             painter.ctx().request_repaint();
@@ -14948,8 +15099,11 @@ impl App {
         let dark_bg = egui::Color32::from_rgba_unmultiplied(20, 22, 28, 236);
         for (i, it) in items.iter().enumerate() {
             let hot = ex.hovered == Some(i);
-            // While the drill animation runs, every loupe slides out from the clicked group's spot.
-            let center = anim.map_or(centers[i], |(from, e)| from + (centers[i] - from) * e);
+            // While the drill animation runs, this loupe slides out from its recorded start spot.
+            let center = anim.map_or(centers[i], |(a, e)| {
+                let from = a.from.get(i).copied().unwrap_or(centers[i]);
+                from + (centers[i] - from) * e
+            });
             // The magnifier transform: the pick hitbox (around the cursor at `ex.origin`) mapped
             // `content_zoom`× into this loupe, so a loupe magnifies exactly what the hitbox covers.
             let loupe = |s: egui::Pos2| center + (s - ex.origin) * content_zoom;
@@ -15087,6 +15241,40 @@ impl App {
                     }
                 }
                 DisplayKind::Leaf => {}
+            }
+        }
+        // Ghost pass (#567): the loupes from the level we just left, sliding toward their gathering
+        // point (the new Back cluster on drill-in, the group loupe on drill-out) and fading out, so
+        // the two levels visibly morph into one another rather than snapping.
+        if let Some((a, e)) = anim {
+            let fade = (1.0 - e).clamp(0.0, 1.0);
+            let gr = r_loupe * (1.0 - 0.45 * e); // shrink slightly as it merges in
+            let ghost_col = |base: egui::Color32, mul: f32| {
+                egui::Color32::from_rgba_unmultiplied(
+                    base.r(),
+                    base.g(),
+                    base.b(),
+                    (fade * mul).clamp(0.0, 255.0) as u8,
+                )
+            };
+            for g in &a.ghosts {
+                let gc = g.from + (g.to - g.from) * e;
+                painter.circle_filled(gc, gr, ghost_col(dark_bg, 236.0));
+                let gzoom = content_zoom * gr / r_loupe;
+                let gloupe = |sp: egui::Pos2| gc + (sp - ex.origin) * gzoom;
+                for &li in &g.leaves {
+                    draw_pick_target_loupe(
+                        painter, project, &gloupe, gc, gr, &self.state.doc,
+                        &ex.items[li].target, ex.items[li].anchor,
+                        ghost_col(idle_blue, 255.0), 1.6, true,
+                    );
+                }
+                let ring = if g.is_group {
+                    ghost_col(idle_blue, 200.0)
+                } else {
+                    ghost_col(egui::Color32::from_gray(120), 200.0)
+                };
+                painter.circle_stroke(gc, gr, egui::Stroke::new(1.3, ring));
             }
         }
     }
@@ -20990,5 +21178,69 @@ mod tests {
         assert!(exploder_tool_accepts(Tool::Constraint, &c));
         assert!(exploder_tool_accepts(Tool::Dimension, &c));
         assert!(!exploder_tool_accepts(Tool::Extrude, &c));
+    }
+
+    // Two top-level groups of two leaves each, at spread-out anchors so display_centers is stable.
+    fn drill_anim_state() -> ExploderState {
+        let items: Vec<ExploderHandle> = (0..4)
+            .map(|i| ExploderHandle {
+                target: construction::PickTargetKind::Ground(Vec3::new(i as f32, 0.0, 0.0)),
+                anchor: Vec3::new((i as f32 - 1.5) * 40.0, ((i % 2) as f32 - 0.5) * 40.0, 0.0),
+            })
+            .collect();
+        let tree = vec![
+            ExploderNode::Group(vec![ExploderNode::Leaf(0), ExploderNode::Leaf(1)]),
+            ExploderNode::Group(vec![ExploderNode::Leaf(2), ExploderNode::Leaf(3)]),
+        ];
+        ExploderState {
+            origin: egui::pos2(400.0, 300.0),
+            items,
+            tree,
+            path: Vec::new(),
+            hovered: None,
+            zoom_mul: 1.0,
+            drill_anim: None,
+        }
+    }
+
+    #[test]
+    fn drill_in_anim_ghosts_the_unclicked_siblings() {
+        let mut ex = drill_anim_state();
+        let vp = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        let project = |w: Vec3| Some(egui::pos2(400.0 + w.x, 300.0 + w.y));
+        let old_items = ex.display_items();
+        let old_centers = ex.display_centers(vp, &project);
+        assert_eq!(old_items.len(), 2, "root shows two group loupes");
+        ex.path.push(0); // drill into group 0 (display index 0)
+        let anim = ex.build_drill_in_anim(0.0, 0, &old_items, &old_centers, vp, &project);
+        // New level: Back + the two children of group 0.
+        assert_eq!(ex.display_items().len(), 3);
+        assert_eq!(anim.from.len(), 3);
+        // The one non-clicked sibling (group 1, leaves [2,3]) ghosts into the Back cluster.
+        assert_eq!(anim.ghosts.len(), 1);
+        assert_eq!(anim.ghosts[0].leaves, vec![2, 3]);
+        // The clicked group's children spring out of the clicked group's old spot.
+        assert_eq!(anim.from[1], old_centers[0]);
+        assert_eq!(anim.from[2], old_centers[0]);
+    }
+
+    #[test]
+    fn drill_out_anim_gathers_children_into_the_group() {
+        let mut ex = drill_anim_state();
+        let vp = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        let project = |w: Vec3| Some(egui::pos2(400.0 + w.x, 300.0 + w.y));
+        ex.path.push(0); // drilled into group 0
+        let old_items = ex.display_items(); // [Back, Leaf0, Leaf1]
+        let old_centers = ex.display_centers(vp, &project);
+        let drilled = *ex.path.last().unwrap();
+        ex.path.pop();
+        // Back loupe is display index 0.
+        let anim = ex.build_drill_out_anim(0.0, 0, drilled, &old_items, &old_centers, vp, &project);
+        assert_eq!(ex.display_items().len(), 2, "back to the two root groups");
+        assert_eq!(anim.from.len(), 2);
+        // Both departed children gather into the group loupe.
+        assert_eq!(anim.ghosts.len(), 2);
+        // The group we returned into forms in place; its sibling springs out of the cluster spot.
+        assert_eq!(anim.from[0], ex.display_centers(vp, &project)[0]);
     }
 }
