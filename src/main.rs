@@ -14949,11 +14949,12 @@ impl App {
                     // Leaf: the tool picks its thing via the redirected pointer; then collapse the
                     // fan — unless Shift holds it open for multi-select.
                     Act::Leaf => close_after = !shift,
-                    // An empty click just dismisses the exploder.
-                    Act::Dismiss => {
-                        self.exploder = None;
-                        return (false, None, false);
-                    }
+                    // Clicking outside every loupe just dismisses the fan — it must NOT change the
+                    // selection (#575): don't deselect, don't select what's under the cursor. Report
+                    // the frame as exploder-active with close-after, so the pointer is redirected to
+                    // "nothing" (no hovered leaf → `exploder_pick_pointer` is None) and the normal
+                    // pick is skipped this frame; the fan is then removed by `exploder_close_after`.
+                    Act::Dismiss => return (true, None, true),
                 }
             }
             return (true, None, close_after);
