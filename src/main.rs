@@ -995,12 +995,11 @@ fn crowd_type_rank(kind: &construction::PickTargetKind) -> u8 {
 }
 
 /// Build the exploder's grouping tree (#559/#563): the **top level groups by element type** (all
-/// faces in one group, all edges in one, all vertices, …), and each type's members are then grouped
-/// **by proximity** (joined/touching things) via [`build_spatial_tree`]. Once **any** type forms a
-/// group, **every** type becomes a group — even a lone member — so the top level is a consistent set
-/// of one group-per-type (#567); only when the whole crowd is all-distinct-singletons are they shown
-/// as bare leaves. If the crowd spans more distinct types than `MAX_LOUPES` (rare), the whole thing
-/// falls back to pure spatial clustering so the level still fits.
+/// faces in one group, all edges in one, all vertices, …), keeping **all** of a type together in its
+/// group; each type's members are then subdivided **by proximity** (joined/touching things) via
+/// [`build_spatial_tree`]. A type with a **single** member is shown as a plain leaf, never a group of
+/// one (#567). If the crowd spans more distinct types than `MAX_LOUPES` (rare), the whole thing falls
+/// back to pure spatial clustering so the level still fits.
 fn build_exploder_tree(
     idxs: &[usize],
     pts: &[egui::Pos2],
@@ -1014,13 +1013,10 @@ fn build_exploder_tree(
     if by_type.len() > exploder::MAX_LOUPES {
         return build_spatial_tree(idxs, pts, exploder::MAX_LOUPES);
     }
-    // If any type has more than one member (so it groups), keep every type as a group — including
-    // single-member types — so the whole top level reads as one group per type (#567).
-    let any_grouped = by_type.values().any(|g| g.len() > 1);
     by_type
         .into_values()
         .map(|group| {
-            if group.len() == 1 && !any_grouped {
+            if group.len() == 1 {
                 ExploderNode::Leaf(group[0])
             } else {
                 ExploderNode::Group(build_spatial_tree(&group, pts, exploder::GROUP_ARITY))
@@ -20874,26 +20870,18 @@ mod tests {
     }
 
     #[test]
-    fn build_exploder_tree_groups_every_type_once_any_type_groups() {
+    fn build_exploder_tree_leaves_single_member_types_as_leaves() {
         use construction::PickTargetKind as K;
-        // 3 lines (multi → a group) + 1 circle (single). Since a group forms, the circle's type
-        // must also become a group, not a bare leaf (#567).
+        // 3 lines (multi → a group) + 1 circle (single). The lines group, but the lone circle stays
+        // a bare leaf — never a group of one (#567).
         let pts: Vec<egui::Pos2> = (0..4).map(|i| egui::pos2(i as f32 * 30.0, 0.0)).collect();
         let kinds = vec![K::Line(0), K::Line(1), K::Line(2), K::Circle(0)];
         let tree = build_exploder_tree(&[0, 1, 2, 3], &pts, &kinds);
         assert_eq!(tree.len(), 2, "two type nodes (lines, circle)");
-        assert!(
-            tree.iter().all(|n| matches!(n, ExploderNode::Group(_))),
-            "every type is a group once any type groups — the lone circle included"
-        );
-
-        // But an all-distinct-singleton crowd stays as bare leaves (no grouping to be consistent with).
-        let kinds2 = vec![K::Line(0), K::Circle(0)];
-        let tree2 = build_exploder_tree(&[0, 1], &pts[..2], &kinds2);
-        assert!(
-            tree2.iter().all(|n| matches!(n, ExploderNode::Leaf(_))),
-            "all-singleton crowd shows leaves"
-        );
+        let groups = tree.iter().filter(|n| matches!(n, ExploderNode::Group(_))).count();
+        let leaves = tree.iter().filter(|n| matches!(n, ExploderNode::Leaf(_))).count();
+        assert_eq!(groups, 1, "the multi-member line type is a group");
+        assert_eq!(leaves, 1, "the single-member circle type is a bare leaf, not a group of one");
     }
 
     #[test]
