@@ -564,67 +564,126 @@ impl ExploderState {
     fn loupe_radius(&self) -> f32 {
         exploder::loupe_radius() * self.zoom_mul
     }
-    /// A handle's centre before the viewport-fit shift: its base ring position pushed out from the
-    /// origin by the wheel zoom, so the fan expands in step with the growing loupes.
-    fn base_center(&self, h: &ExploderHandle) -> egui::Pos2 {
-        self.origin + (h.handle_pos - self.origin) * self.zoom_mul
-    }
-    /// Translation that slides the whole fan back inside the viewport once zooming would push a
-    /// loupe past an edge, so the loupes pack into the available space instead of clipping (#551).
-    fn fan_offset(&self, viewport: egui::Rect) -> egui::Vec2 {
-        if self.handles.is_empty() {
-            return egui::Vec2::ZERO;
+    /// Every handle's on-screen loupe centre (index-aligned with `handles`), packed to fit the
+    /// viewport (#551). While the angle-coherent single ring still fits, that's used (each loupe
+    /// sits toward its real thing). Once the growing loupes would push that ring off-screen, they
+    /// **stagger** into concentric rings — a centre loupe plus rings filling outward, so some sit
+    /// closer to the cursor — and the whole cluster is shifted to stay inside the viewport. At full
+    /// zoom the rings fill the available space.
+    fn handle_centers(&self, viewport: egui::Rect) -> Vec<egui::Pos2> {
+        let n = self.handles.len();
+        let mut centers: Vec<egui::Pos2> = Vec::with_capacity(n);
+        if n == 0 {
+            return centers;
         }
-        let r = self.loupe_radius();
-        let (mut minx, mut maxx, mut miny, mut maxy) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
-        for h in &self.handles {
-            let c = self.base_center(h);
-            minx = minx.min(c.x - r);
-            maxx = maxx.max(c.x + r);
-            miny = miny.min(c.y - r);
-            maxy = maxy.max(c.y + r);
-        }
+        let base_r = self.loupe_radius();
         let vp = viewport.shrink(exploder::VIEWPORT_MARGIN_PX);
-        let shift = |lo: f32, hi: f32, vlo: f32, vhi: f32| -> f32 {
-            if hi - lo >= vhi - vlo {
-                ((vlo + vhi) - (lo + hi)) * 0.5 // too big to fit: centre it
-            } else if lo < vlo {
-                vlo - lo
-            } else if hi > vhi {
-                vhi - hi
-            } else {
-                0.0
+        let r_max = (vp.width().min(vp.height()) / 2.0 - base_r).max(base_r);
+        let ring_r = self
+            .handles
+            .iter()
+            .map(|h| (h.handle_pos - self.origin).length())
+            .fold(0.0_f32, f32::max)
+            * self.zoom_mul;
+        if ring_r + base_r <= r_max {
+            // The single ring still fits: keep the angle-coherent layout (loupe toward its anchor).
+            for h in &self.handles {
+                centers.push(self.origin + (h.handle_pos - self.origin) * self.zoom_mul);
             }
-        };
-        egui::vec2(
-            shift(minx, maxx, vp.min.x, vp.max.x),
-            shift(miny, maxy, vp.min.y, vp.max.y),
-        )
+        } else {
+            // Stagger into concentric rings: a centre loupe, then rings of growing radius, each
+            // holding as many as fit without overlap, filled inner → outer.
+            let spacing = 2.0 * base_r + exploder::GAP;
+            let mut slots: Vec<(f32, f32)> = vec![(0.0, 0.0)]; // (radius, angle); centre first
+            let mut k = 1usize;
+            while slots.len() < n {
+                let r = k as f32 * spacing;
+                let cap = ((std::f32::consts::TAU * r / spacing).floor() as usize).max(1);
+                let take = cap.min(n - slots.len());
+                for j in 0..take {
+                    slots.push((r, std::f32::consts::TAU * j as f32 / take as f32));
+                }
+                k += 1;
+            }
+            for (r, a) in slots.into_iter().take(n) {
+                centers.push(self.origin + egui::vec2(a.cos() * r, a.sin() * r));
+            }
+        }
+        let offset = fit_offset(&centers, base_r, vp);
+        for c in &mut centers {
+            *c += offset;
+        }
+        centers
     }
-    /// The largest wheel zoom that still lets the whole fan fit inside the viewport (the fan's
-    /// extent scales linearly with the zoom). Scrolling past this is clamped, so loupes never grow
-    /// off-screen — once the space is full, zoom stops (#551).
+    /// The largest wheel zoom whose concentric packing still holds every loupe inside the viewport.
+    /// Scrolling past this does nothing — once the rings fill the space, zoom stops (#551).
     fn max_zoom_mul(&self, viewport: egui::Rect) -> f32 {
-        if self.handles.is_empty() {
+        let n = self.handles.len();
+        if n == 0 {
             return 6.0;
         }
+        let vp = viewport.shrink(exploder::VIEWPORT_MARGIN_PX);
+        let half = vp.width().min(vp.height()) / 2.0;
         let base_loupe = exploder::loupe_radius();
-        let (mut minx, mut maxx, mut miny, mut maxy) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
-        for h in &self.handles {
-            let d = h.handle_pos - self.origin;
-            minx = minx.min(d.x);
-            maxx = maxx.max(d.x);
-            miny = miny.min(d.y);
-            maxy = maxy.max(d.y);
+        // How many loupes the concentric packing holds at wheel zoom `z` (monotonically shrinks as
+        // loupes grow): a centre loupe plus one ring per `spacing` of radius out to the viewport.
+        let capacity = |z: f32| -> usize {
+            let base_r = base_loupe * z;
+            let spacing = 2.0 * base_r + exploder::GAP;
+            let r_max = half - base_r;
+            if r_max < spacing {
+                return 1;
+            }
+            let k_max = (r_max / spacing).floor() as usize;
+            let mut cap = 1usize; // centre
+            for k in 1..=k_max {
+                let r = k as f32 * spacing;
+                cap += ((std::f32::consts::TAU * r / spacing).floor() as usize).max(1);
+            }
+            cap
+        };
+        let mut best = 1.0_f32;
+        let mut z = 1.0_f32;
+        while z <= 24.0 {
+            if capacity(z) >= n {
+                best = z;
+                z += 0.1;
+            } else {
+                break;
+            }
         }
-        // Extent at zoom 1.0; at zoom z it is z× this, so the fit zoom is avail / extent.
-        let span_x = (maxx - minx) + 2.0 * base_loupe;
-        let span_y = (maxy - miny) + 2.0 * base_loupe;
-        let avail = viewport.shrink(exploder::VIEWPORT_MARGIN_PX);
-        let zw = if span_x > 1e-3 { avail.width() / span_x } else { 6.0 };
-        let zh = if span_y > 1e-3 { avail.height() / span_y } else { 6.0 };
-        zw.min(zh).clamp(1.0, 6.0)
+        best
     }
+}
+
+/// Slide a set of loupe centres (each of radius `r`) so their bounding box sits inside `vp`,
+/// returning the translation (zero when they already fit). Keeps the exploder fan on-screen (#551).
+fn fit_offset(centers: &[egui::Pos2], r: f32, vp: egui::Rect) -> egui::Vec2 {
+    if centers.is_empty() {
+        return egui::Vec2::ZERO;
+    }
+    let (mut minx, mut maxx, mut miny, mut maxy) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+    for c in centers {
+        minx = minx.min(c.x - r);
+        maxx = maxx.max(c.x + r);
+        miny = miny.min(c.y - r);
+        maxy = maxy.max(c.y + r);
+    }
+    let shift = |lo: f32, hi: f32, vlo: f32, vhi: f32| -> f32 {
+        if hi - lo >= vhi - vlo {
+            ((vlo + vhi) - (lo + hi)) * 0.5
+        } else if lo < vlo {
+            vlo - lo
+        } else if hi > vhi {
+            vhi - hi
+        } else {
+            0.0
+        }
+    };
+    egui::vec2(
+        shift(minx, maxx, vp.min.x, vp.max.x),
+        shift(miny, maxy, vp.min.y, vp.max.y),
+    )
 }
 
 /// Selection-Exploder tuning (#551).
@@ -643,10 +702,11 @@ mod exploder {
     pub fn loupe_radius() -> f32 {
         ZOOM * hitbox_radius()
     }
-    /// Centre-to-centre spacing between handles: two loupe radii plus a gap, so the discs never
-    /// touch (no ambiguity, per the spec).
+    /// Gap between adjacent loupe discs (px), so they never touch (no ambiguity, per the spec).
+    pub const GAP: f32 = 12.0;
+    /// Centre-to-centre spacing between handles: two loupe radii plus a gap.
     pub fn spacing() -> f32 {
-        2.0 * loupe_radius() + 12.0
+        2.0 * loupe_radius() + GAP
     }
     /// The ring never collapses tighter than this, so a 2-3 item crowd still fans clearly.
     pub fn min_ring() -> f32 {
@@ -14275,12 +14335,11 @@ impl App {
             let hovered = pointer_screen.and_then(|pp| {
                 let ex = self.exploder.as_ref()?;
                 let hit_r = ex.loupe_radius() + exploder::HANDLE_HIT_PAD_PX;
-                let offset = ex.fan_offset(viewport);
-                ex.handles
+                ex.handle_centers(viewport)
                     .iter()
                     .enumerate()
-                    .filter_map(|(i, h)| {
-                        let d = (pp - (ex.base_center(h) + offset)).length();
+                    .filter_map(|(i, c)| {
+                        let d = (pp - *c).length();
                         (d <= hit_r).then_some((i, d))
                     })
                     .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
@@ -14383,8 +14442,8 @@ impl App {
         }
         let r_loupe = ex.loupe_radius();
         let content_zoom = ex.content_zoom();
-        // One shift keeps the whole fan inside the viewport (computed once, applied to every loupe).
-        let fan_offset = ex.fan_offset(viewport);
+        // Packed loupe centres (single ring while it fits, else staggered concentric rings).
+        let centers = ex.handle_centers(viewport);
         // The in-loupe element (and border) read **blue** while idle, and turn the accent
         // **yellow** the moment the loupe is hovered *or* its thing is selected — matching the
         // element's own highlight out in the 3D view (hover highlight / selection colour).
@@ -14395,7 +14454,7 @@ impl App {
                 .is_some_and(|e| self.state.scene_selection.is_selected(e));
             let active = hot || selected;
             let element_color = if active { accent } else { idle_blue };
-            let center = ex.base_center(h) + fan_offset;
+            let center = centers[i];
             // Leader line from the real thing to its loupe.
             if let Some(a) = project(h.anchor) {
                 let line = if active {

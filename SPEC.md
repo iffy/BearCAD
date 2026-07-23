@@ -1785,9 +1785,12 @@ modeled on SolveSpace (https://solvespace.com).
   distinct from the yellow pick-hover) appears under the cursor when **two or more** things are
   there, as a hint. Handles sit at least a loupe apart (chord, not arc) so there's never ambiguity
   about which one a click means. While exploded the camera is frozen, so the **mouse wheel zooms the
-  loupes** instead (`ExploderState::zoom_mul`): the whole fan grows, and when it would reach a
-  viewport edge it is first **shifted** to stay inside (`fan_offset`) and then **clamped**
-  (`max_zoom_mul`) so loupes never grow off-screen — once the space is full, zoom stops. While
+  loupes** instead (`ExploderState::zoom_mul`, `handle_centers`): the fan grows, and while the
+  angle-coherent single ring still fits it just scales; once the growing loupes would push that ring
+  off-screen they **stagger** into concentric rings — a centre loupe plus rings filling outward, so
+  some sit closer to the cursor — and the whole cluster is **shifted** to stay inside the viewport
+  (`fit_offset`). Zoom is **clamped** (`max_zoom_mul`) where those rings fill the space, so loupes
+  never grow off-screen and, at full zoom, they tile the whole viewport. While
   exploded **only handles** are hoverable/selectable — the raw crowd underneath is suppressed (the
   positional sketch pick/drag handlers stand down) — and hovering a handle highlights its **exact
   target** (the whole line/edge/face) out in the 3D view, not whatever a re-resolved pick at the
