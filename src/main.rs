@@ -1165,14 +1165,15 @@ fn crowd_type_rank(kind: &construction::PickTargetKind) -> u8 {
     use construction::PickTargetKind as K;
     match kind {
         K::BodyFace { .. } => 0,
-        K::BodyEdge { .. } => 1,
-        K::Line(_) => 2,
-        K::Circle(_) => 3,
-        K::Point(_) | K::BodyVertex { .. } => 4, // vertices (sketch points + body corners)
-        K::ConstructionPlane(_) => 5,
-        K::GlobalAxis(_) => 6,
-        K::Ground(_) => 7,
-        K::Constraint(_) => 8, // annotation badges, grouped after the geometry they govern
+        // Edges: sketch line segments and body feature edges are one "edges" group — a sketch line
+        // and a shape edge are the same kind of thing for the exploder's grouping.
+        K::BodyEdge { .. } | K::Line(_) => 1,
+        K::Circle(_) => 2,
+        K::Point(_) | K::BodyVertex { .. } => 3, // vertices (sketch points + body corners)
+        K::ConstructionPlane(_) => 4,
+        K::GlobalAxis(_) => 5,
+        K::Ground(_) => 6,
+        K::Constraint(_) => 7, // annotation badges, grouped after the geometry they govern
     }
 }
 
@@ -21246,10 +21247,31 @@ mod tests {
     }
 
     #[test]
+    fn sketch_lines_and_body_edges_share_the_edge_group() {
+        use construction::PickTargetKind as K;
+        // A sketch line and a shape edge are the same "edges" kind for the exploder, so they get the
+        // same top-level rank and never split into two edge groups.
+        let line_rank = crowd_type_rank(&K::Line(0));
+        let edge_rank = crowd_type_rank(&K::BodyEdge { body: 0, a: Vec3::ZERO, b: Vec3::X });
+        assert_eq!(line_rank, edge_rank, "lines and body edges group together");
+        // ...and distinct from circles and faces.
+        assert_ne!(line_rank, crowd_type_rank(&K::Circle(0)));
+        assert_ne!(
+            line_rank,
+            crowd_type_rank(&K::BodyFace {
+                body: 0,
+                triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]],
+                normal: Vec3::Z,
+            })
+        );
+    }
+
+    #[test]
     fn build_exploder_tree_groups_top_level_by_type_then_spatially() {
         use construction::PickTargetKind as K;
-        // Three types (lines, edges, faces), `MAX_LOUPES` of each, scattered on a grid — enough
-        // total (3 × MAX_LOUPES > MAX_LOUPES) to force grouping regardless of the cap.
+        // Three distinct types (edges, circles, faces), `MAX_LOUPES` of each, scattered on a grid —
+        // enough total (3 × MAX_LOUPES > MAX_LOUPES) to force grouping regardless of the cap. (Sketch
+        // lines and body edges share one "edges" rank, so they can't be used as two of the three.)
         let per = exploder::MAX_LOUPES;
         let total = per * 3;
         let mut pts = Vec::new();
@@ -21258,7 +21280,7 @@ mod tests {
             pts.push(egui::pos2((i % per) as f32 * 50.0, (i / per) as f32 * 50.0));
             kinds.push(match i / per {
                 0 => K::Line(i),
-                1 => K::BodyEdge { body: 0, a: Vec3::ZERO, b: Vec3::X },
+                1 => K::Circle(i),
                 _ => K::BodyFace { body: 0, triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]], normal: Vec3::Z },
             });
         }

@@ -1838,8 +1838,10 @@ modeled on SolveSpace (https://solvespace.com).
     (#571) — every item is its own leaf. Only a larger crowd is grouped so the level stays within it (a mix of
     single-element and group loupes). On Space the flat crowd (`ExploderState::items`) is built into a
     grouping **tree** (`ExploderNode::Leaf` / `Group`) by `build_exploder_tree`: the **top level
-    groups by element type** (#563) — all faces in one group, all edges in one, all vertices, all
-    lines, all circles (via `crowd_type_rank`), keeping **all** of a type together in its group; a
+    groups by element type** (#563) — all faces in one group, all **edges** in one (sketch line
+    segments and body feature edges share a single "edges" rank — a sketch line and a shape edge are
+    the same kind of thing for the exploder), all circles, all vertices (via `crowd_type_rank`),
+    keeping **all** of a type together in its group; a
     type with a **single** member is shown as a bare leaf, never a group of one (#567). Each type
     group is then subdivided **by proximity** (joined/touching things) with `build_spatial_tree`,
     which partitions the screen anchors with a deterministic farthest-first `cluster_points` (no
