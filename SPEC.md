@@ -1764,7 +1764,9 @@ modeled on SolveSpace (https://solvespace.com).
   centroid+normal; if a rebuild moves it the selection simply drops — acceptable for ephemeral,
   never-persisted selection state. A selected face is re-found among the body's coplanar-face groups
   by matching that key and shaded; selected body edges/vertices/faces draw depth-test-disabled like
-  their hover highlights (#153).
+  their hover highlights (#153). `resolve_pick_target` offers a face as a **priority-1** candidate
+  (below edges/vertices at priority 0, via `PickOcclusion::eye`), so clicking near an edge still
+  picks the edge and clicking a face **interior** selects the face (#565).
 - **Selection Exploder (#551):** pressing **Space** fans the crowd of pickable things inside the
   cursor's hitbox out into spaced-apart **handles** arranged on a ring around it, so a tiny buried
   vertex/edge/line/face can be picked unambiguously. Each handle is a round **loupe** — `ZOOM ·

@@ -1255,6 +1255,11 @@ pub struct PickOcclusion {
 }
 
 impl PickOcclusion {
+    /// The camera eye this occlusion context was built with — used to depth-sort face picks (#565).
+    pub fn eye(&self) -> Vec3 {
+        self.eye
+    }
+
     pub fn new(doc: &Document, visibility: &crate::hierarchy::ElementVisibility, eye: Vec3) -> Self {
         let meshes = doc
             .bodies
@@ -1464,6 +1469,33 @@ pub fn resolve_pick_target(
                 distance_px: dist,
                 priority: 0,
             });
+        }
+    }
+
+    // A body **face** is selectable too (#565), but only where no edge/vertex is under the cursor:
+    // it's ranked below them (priority 1 vs 0), so clicking near an edge still picks the edge and
+    // clicking the face interior picks the face. Needs the camera eye to pick the front-most face,
+    // so it's only offered when an occlusion context (which carries the eye) is present.
+    if let Some(occ) = occlusion {
+        if let Some(kind) = crate::face::pick_body_face(screen, project, doc, occ.eye()) {
+            if let PickTargetKind::BodyFace { triangles, normal, .. } = &kind {
+                if pickable(&kind) {
+                    let n = (triangles.len() * 3).max(1) as f32;
+                    let centroid =
+                        triangles.iter().flat_map(|t| t.iter()).copied().sum::<Vec3>() / n;
+                    let normal = *normal;
+                    consider(PickTarget {
+                        kind: kind.clone(),
+                        reference: PlaneReference::Face {
+                            origin: centroid,
+                            normal,
+                            label: "Face".to_string(),
+                        },
+                        distance_px: 0.0,
+                        priority: 1,
+                    });
+                }
+            }
         }
     }
 
