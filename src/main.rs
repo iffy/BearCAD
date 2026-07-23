@@ -14516,10 +14516,12 @@ impl App {
             painter.circle_filled(center, 1.0, egui::Color32::from_gray(90));
             // Loupe frame: grey while idle, accent yellow once hovered or selected (thicker when
             // hovered), so the border, the in-loupe element, and the real element all read the same.
+            // The idle ring is deliberately darker/fainter than the dimmed context geometry inside
+            // the loupe (grey 115), so the frame never competes with the crowd it's showing (#558).
             let frame = if active {
                 accent
             } else {
-                egui::Color32::from_gray(130)
+                egui::Color32::from_gray(72)
             };
             painter.circle_stroke(
                 center,
