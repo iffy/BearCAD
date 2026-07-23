@@ -59,7 +59,7 @@ key:
 First pin it down: select the **bend corner** and the **origin**, press **4**
 (**Coincident**). Then:
 
-1. Bottom base line: **7** — **Horizontal**.
+1. Bottom base line **+ the X axis**: **1** — **Parallel** (this makes it horizontal).
 2. Bottom + inner base lines: **1** — **Parallel**.
 3. The two tilted leg lines: **1** — **Parallel**.
 4. Base end cap + bottom base line: **2** — **Perpendicular**.

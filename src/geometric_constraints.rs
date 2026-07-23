@@ -19,19 +19,15 @@ pub enum GeometricConstraintType {
     Equal,
     Coincident,
     Midpoint,
-    Vertical,
-    Horizontal,
 }
 
 impl GeometricConstraintType {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 5] = [
         Self::Parallel,
         Self::Perpendicular,
         Self::Equal,
         Self::Coincident,
         Self::Midpoint,
-        Self::Vertical,
-        Self::Horizontal,
     ];
 
     pub fn label(self) -> &'static str {
@@ -41,14 +37,13 @@ impl GeometricConstraintType {
             Self::Equal => "Equal",
             Self::Coincident => "Coincident",
             Self::Midpoint => "Midpoint",
-            Self::Vertical => "Vertical",
-            Self::Horizontal => "Horizontal",
         }
     }
 
-    /// Fixed context-pane shortcut (shown left of the constraint button): the digits 1–7 in
-    /// the pane's display order, only active while the Constraint tool is (#401) — numbers
-    /// can't collide with the global tool keys the old mnemonic letters had to dodge.
+    /// Fixed context-pane shortcut (shown left of the constraint button): the digits 1–5 in the
+    /// pane's display order, only active while the Constraint tool is (#401) — numbers can't collide
+    /// with the global tool keys the old mnemonic letters had to dodge. (Horizontal/Vertical were
+    /// removed in favour of constraining a line parallel to a sketch axis, #577.)
     pub fn shortcut_label(self) -> &'static str {
         match self {
             Self::Parallel => "1",
@@ -56,8 +51,6 @@ impl GeometricConstraintType {
             Self::Equal => "3",
             Self::Coincident => "4",
             Self::Midpoint => "5",
-            Self::Vertical => "6",
-            Self::Horizontal => "7",
         }
     }
 
@@ -68,8 +61,6 @@ impl GeometricConstraintType {
             '3' => Some(Self::Equal),
             '4' => Some(Self::Coincident),
             '5' => Some(Self::Midpoint),
-            '6' => Some(Self::Vertical),
-            '7' => Some(Self::Horizontal),
             _ => None,
         }
     }
@@ -135,7 +126,6 @@ fn missing_for_kind(kind: GeometricConstraintType) -> Vec<&'static str> {
         }
         GeometricConstraintType::Coincident => vec!["point", "point, line, or circle"],
         GeometricConstraintType::Midpoint => vec!["point", "line"],
-        GeometricConstraintType::Vertical | GeometricConstraintType::Horizontal => vec!["line"],
     }
 }
 
@@ -199,9 +189,6 @@ fn match_kind(
             ]
         }
         GeometricConstraintType::Midpoint => &[&[ConstraintRole::Point, ConstraintRole::Line][..]],
-        GeometricConstraintType::Vertical | GeometricConstraintType::Horizontal => {
-            &[&[ConstraintRole::Line][..]]
-        }
     };
 
     let mut best: Option<(bool, Vec<&'static str>)> = None;
@@ -444,8 +431,6 @@ fn build_constraint_kind(
             line_a: lines[0].clone(),
             line_b: lines[1].clone(),
         }),
-        GeometricConstraintType::Horizontal => Ok(ConstraintKind::Horizontal { line: lines[0].clone() }),
-        GeometricConstraintType::Vertical => Ok(ConstraintKind::Vertical { line: lines[0].clone() }),
         GeometricConstraintType::Coincident => {
             if points.len() >= 2 {
                 Ok(ConstraintKind::Coincident {
@@ -1100,9 +1085,12 @@ mod tests {
             Some(GeometricConstraintType::Parallel)
         );
         assert_eq!(
-            GeometricConstraintType::from_shortcut_key('7'),
-            Some(GeometricConstraintType::Horizontal)
+            GeometricConstraintType::from_shortcut_key('5'),
+            Some(GeometricConstraintType::Midpoint)
         );
+        // Horizontal/Vertical were removed (#577), so their old keys map to nothing now.
+        assert_eq!(GeometricConstraintType::from_shortcut_key('6'), None);
+        assert_eq!(GeometricConstraintType::from_shortcut_key('7'), None);
         // No constraint uses a global tool key, so they never collide.
         for key in ['S', 'R', 'L', 'C', 'O', 'P', 'D', 'E', 'X', 'N'] {
             assert!(
@@ -1113,32 +1101,17 @@ mod tests {
     }
 
     #[test]
-    fn single_line_enables_vertical_and_horizontal_only() {
+    fn single_line_enables_no_constraint() {
+        // #577: with Horizontal/Vertical removed, a lone line no longer enables any constraint —
+        // making a line axis-aligned now needs the line *and* an axis (Parallel).
         let (mut doc, sketch) = sketch_doc();
         doc.lines
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 5.0));
         let mut sel = SceneSelection::default();
         click_scene_selection(&mut sel, SceneElement::Line(0), false);
         let rows = constraint_pane_rows(&sel);
-        let by_kind: std::collections::HashMap<_, _> =
-            rows.iter().map(|row| (row.kind, row)).collect();
-        assert_eq!(by_kind.len(), GeometricConstraintType::ALL.len());
-        assert!(!by_kind[&GeometricConstraintType::Parallel].enabled);
-        assert!(!by_kind[&GeometricConstraintType::Perpendicular].enabled);
-        assert!(!by_kind[&GeometricConstraintType::Coincident].enabled);
-        assert!(!by_kind[&GeometricConstraintType::Midpoint].enabled);
-        assert!(by_kind[&GeometricConstraintType::Vertical].enabled);
-        assert!(by_kind[&GeometricConstraintType::Horizontal].enabled);
-        assert_eq!(
-            enabled_constraint_for_key(&rows, '6'),
-            Some(GeometricConstraintType::Vertical)
-        );
-        assert_eq!(
-            enabled_constraint_for_key(&rows, '7'),
-            Some(GeometricConstraintType::Horizontal)
-        );
-        // A non-applicable type (Parallel) is present but disabled, not hidden.
-        assert_eq!(enabled_constraint_for_key(&rows, '1'), None);
+        assert_eq!(rows.len(), GeometricConstraintType::ALL.len());
+        assert!(rows.iter().all(|row| !row.enabled));
         assert_eq!(sole_enabled_constraint_type(&rows), None);
         let _ = doc;
     }
@@ -1166,7 +1139,7 @@ mod tests {
         assert!(by_kind[&GeometricConstraintType::Coincident].enabled);
         assert!(by_kind[&GeometricConstraintType::Midpoint].enabled);
         assert!(!by_kind[&GeometricConstraintType::Parallel].enabled);
-        assert!(!by_kind[&GeometricConstraintType::Vertical].enabled);
+        assert!(!by_kind[&GeometricConstraintType::Perpendicular].enabled);
         assert_eq!(
             enabled_constraint_for_key(&rows, '4'),
             Some(GeometricConstraintType::Coincident)
@@ -1208,23 +1181,6 @@ mod tests {
             Some(GeometricConstraintType::Coincident)
         );
         let _ = doc;
-    }
-
-    #[test]
-    fn horizontal_constraint_flattens_line() {
-        let (mut doc, sketch) = sketch_doc();
-        doc.lines
-            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 5.0));
-        let mut sel = SceneSelection::default();
-        click_scene_selection(&mut sel, SceneElement::Line(0), false);
-        add_geometric_constraint_from_selection(
-            &mut doc,
-            sketch,
-            GeometricConstraintType::Horizontal,
-            &sel,
-        )
-        .unwrap();
-        assert!((doc.lines[0].y0 - doc.lines[0].y1).abs() < EPS);
     }
 
     #[test]

@@ -1618,8 +1618,6 @@ fn geometric_constraint_script_name(
         GeometricConstraintType::Equal => "equal",
         GeometricConstraintType::Coincident => "coincident",
         GeometricConstraintType::Midpoint => "midpoint",
-        GeometricConstraintType::Horizontal => "horizontal",
-        GeometricConstraintType::Vertical => "vertical",
     }
 }
 

@@ -2906,11 +2906,15 @@ pub fn add_line_rectangle(
             }),
         });
     }
-    // Horizontal on bottom (0) & top (2); Vertical on right (1) & left (3).
-    push(ConstraintKind::Horizontal { line: ConstraintLine::Line(idx[0]) });
-    push(ConstraintKind::Horizontal { line: ConstraintLine::Line(idx[2]) });
-    push(ConstraintKind::Vertical { line: ConstraintLine::Line(idx[1]) });
-    push(ConstraintKind::Vertical { line: ConstraintLine::Line(idx[3]) });
+    // Bottom (0) & top (2) parallel to the sketch X axis; right (1) & left (3) parallel to Y
+    // (#577) — the axis-based replacement for the old Horizontal/Vertical constraints.
+    use crate::model::SketchAxis;
+    let x_axis = ConstraintLine::OriginAxis(SketchAxis::X);
+    let y_axis = ConstraintLine::OriginAxis(SketchAxis::Y);
+    push(ConstraintKind::Parallel { line_a: ConstraintLine::Line(idx[0]), line_b: x_axis.clone() });
+    push(ConstraintKind::Parallel { line_a: ConstraintLine::Line(idx[2]), line_b: x_axis });
+    push(ConstraintKind::Parallel { line_a: ConstraintLine::Line(idx[1]), line_b: y_axis.clone() });
+    push(ConstraintKind::Parallel { line_a: ConstraintLine::Line(idx[3]), line_b: y_axis });
     idx
 }
 
@@ -3910,40 +3914,47 @@ mod tests {
     // ---- Rectangle-as-four-lines (#66) ----
 
     #[test]
-    fn add_line_rectangle_drops_four_lines_and_hv_coincident_constraints() {
-        use crate::model::{ConstraintKind, ConstraintLine, Document, FaceId};
+    fn add_line_rectangle_drops_four_lines_axis_parallel_and_coincident_constraints() {
+        use crate::model::{ConstraintKind, ConstraintLine, Document, FaceId, SketchAxis};
         let mut doc = Document::default();
         let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
         let lines = add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 5.0, [false; 4]);
         // Four plain lines forming a closed loop (bottom, right, top, left).
         assert_eq!(doc.lines.len(), 4);
         assert_eq!(lines, [0, 1, 2, 3]);
-        let horizontal = doc
-            .constraints
-            .iter()
-            .filter(|c| matches!(c.kind, ConstraintKind::Horizontal { .. }))
-            .count();
-        let vertical = doc
-            .constraints
-            .iter()
-            .filter(|c| matches!(c.kind, ConstraintKind::Vertical { .. }))
-            .count();
+        // #577: the edges are constrained parallel to the sketch axes (X for bottom/top, Y for
+        // left/right) rather than the old Horizontal/Vertical constraints.
+        let parallel_to = |axis: SketchAxis| {
+            doc.constraints
+                .iter()
+                .filter(|c| {
+                    matches!(&c.kind, ConstraintKind::Parallel { line_b, .. }
+                        if *line_b == ConstraintLine::OriginAxis(axis))
+                })
+                .count()
+        };
+        assert_eq!(parallel_to(SketchAxis::X), 2, "bottom + top parallel to X");
+        assert_eq!(parallel_to(SketchAxis::Y), 2, "left + right parallel to Y");
         let coincident = doc
             .constraints
             .iter()
             .filter(|c| matches!(c.kind, ConstraintKind::Coincident { .. }))
             .count();
-        assert_eq!(horizontal, 2, "bottom + top are horizontal");
-        assert_eq!(vertical, 2, "left + right are vertical");
         assert_eq!(coincident, 4, "four shared corners join the loop");
-        // Horizontal is on the bottom (0) and top (2) edges.
+        // Bottom edge (0) is parallel to X; right edge (1) parallel to Y.
         assert!(doc.constraints.iter().any(|c| matches!(
             &c.kind,
-            ConstraintKind::Horizontal { line: ConstraintLine::Line(0) }
+            ConstraintKind::Parallel {
+                line_a: ConstraintLine::Line(0),
+                line_b: ConstraintLine::OriginAxis(SketchAxis::X)
+            }
         )));
         assert!(doc.constraints.iter().any(|c| matches!(
             &c.kind,
-            ConstraintKind::Vertical { line: ConstraintLine::Line(1) }
+            ConstraintKind::Parallel {
+                line_a: ConstraintLine::Line(1),
+                line_b: ConstraintLine::OriginAxis(SketchAxis::Y)
+            }
         )));
     }
 

@@ -388,8 +388,6 @@ pub fn icon_for_constraint(kind: GeometricConstraintType) -> IconId {
         GeometricConstraintType::Equal => IconId::Equal,
         GeometricConstraintType::Coincident => IconId::Coincident,
         GeometricConstraintType::Midpoint => IconId::Midpoint,
-        GeometricConstraintType::Vertical => IconId::Vertical,
-        GeometricConstraintType::Horizontal => IconId::Horizontal,
     }
 }
 
@@ -671,14 +669,6 @@ mod tests {
         assert_eq!(
             icon_for_constraint(GeometricConstraintType::Midpoint),
             IconId::Midpoint
-        );
-        assert_eq!(
-            icon_for_constraint(GeometricConstraintType::Vertical),
-            IconId::Vertical
-        );
-        assert_eq!(
-            icon_for_constraint(GeometricConstraintType::Horizontal),
-            IconId::Horizontal
         );
     }
 

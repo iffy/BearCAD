@@ -576,6 +576,41 @@ fn project_drag_uv(
                             LineEnd::End => x0,
                         };
                     }
+                    // A line constrained **parallel to a sketch axis** (#577) is the axis-based
+                    // replacement for Horizontal/Vertical, so give it the same drag projection:
+                    // parallel to X freezes v (horizontal), parallel to Y freezes u (vertical).
+                    ConstraintKind::Parallel { line_a, line_b } if other_fixed => {
+                        let axis_of = |l: &ConstraintLine| match l {
+                            ConstraintLine::OriginAxis(a) => Some(*a),
+                            _ => None,
+                        };
+                        let axis = if *line_a == line {
+                            axis_of(line_b)
+                        } else if *line_b == line {
+                            axis_of(line_a)
+                        } else {
+                            None
+                        };
+                        match axis {
+                            Some(crate::model::SketchAxis::X) => {
+                                let ((_x0, y0), (_x1, y1)) =
+                                    line_uv_endpoints(doc, sketch, line.clone())?;
+                                projected_v = match end {
+                                    LineEnd::Start => y1,
+                                    LineEnd::End => y0,
+                                };
+                            }
+                            Some(crate::model::SketchAxis::Y) => {
+                                let ((x0, _y0), (x1, _y1)) =
+                                    line_uv_endpoints(doc, sketch, line.clone())?;
+                                projected_u = match end {
+                                    LineEnd::Start => x1,
+                                    LineEnd::End => x0,
+                                };
+                            }
+                            None => {}
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1167,10 +1202,15 @@ mod tests {
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         let mut sel = SceneSelection::default();
         click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        click_scene_selection(
+            &mut sel,
+            SceneElement::FaceEdge(ConstraintLine::OriginAxis(crate::model::SketchAxis::X)),
+            true,
+        );
         add_geometric_constraint_from_selection(
             &mut doc,
             sketch,
-            GeometricConstraintType::Horizontal,
+            GeometricConstraintType::Parallel,
             &sel,
         )
         .unwrap();
@@ -1232,10 +1272,15 @@ mod tests {
         .unwrap();
         let mut sel = SceneSelection::default();
         click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        click_scene_selection(
+            &mut sel,
+            SceneElement::FaceEdge(ConstraintLine::OriginAxis(crate::model::SketchAxis::X)),
+            true,
+        );
         add_geometric_constraint_from_selection(
             &mut doc,
             sketch,
-            GeometricConstraintType::Horizontal,
+            GeometricConstraintType::Parallel,
             &sel,
         )
         .unwrap();
@@ -1279,10 +1324,15 @@ mod tests {
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 50.0, 0.0));
         let mut sel = SceneSelection::default();
         click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        click_scene_selection(
+            &mut sel,
+            SceneElement::FaceEdge(ConstraintLine::OriginAxis(crate::model::SketchAxis::X)),
+            true,
+        );
         add_geometric_constraint_from_selection(
             &mut doc,
             sketch,
-            GeometricConstraintType::Horizontal,
+            GeometricConstraintType::Parallel,
             &sel,
         )
         .unwrap();
@@ -1715,10 +1765,15 @@ mod tests {
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
         let mut sel = SceneSelection::default();
         click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        click_scene_selection(
+            &mut sel,
+            SceneElement::FaceEdge(ConstraintLine::OriginAxis(crate::model::SketchAxis::X)),
+            true,
+        );
         add_geometric_constraint_from_selection(
             &mut doc,
             sketch,
-            GeometricConstraintType::Horizontal,
+            GeometricConstraintType::Parallel,
             &sel,
         )
         .unwrap();

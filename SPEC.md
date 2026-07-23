@@ -1964,10 +1964,10 @@ modeled on SolveSpace (https://solvespace.com).
     (e.g. `line, line` for Parallel). Buttons are **enabled** only when the selection
     satisfies that constraint.
   - **Shortcuts (#401):** each type has a fixed **digit** shown left of its button, in pane
-    order — Parallel `1`, Perpendicular `2`, Equal `3`, Coincident `4`, Midpoint `5`,
-    Vertical `6`, Horizontal `7`. Pressing the digit **while the Constraint tool is active**
-    applies that constraint if it is currently enabled; the digits do nothing on other tools,
-    so they can't collide with global tool keys.
+    order — Parallel `1`, Perpendicular `2`, Equal `3`, Coincident `4`, Midpoint `5`. Pressing the
+    digit **while the Constraint tool is active** applies that constraint if it is currently
+    enabled; the digits do nothing on other tools, so they can't collide with global tool keys.
+    (Horizontal `6`/`7` were removed in #577 — see below.)
 - **Geometric types (v1):**
   - **Parallel** — `line`, `line`
   - **Perpendicular** — `line`, `line`
@@ -1979,8 +1979,15 @@ modeled on SolveSpace (https://solvespace.com).
     A `point`/`line` operand may be the sketch's own face's vertex/edge (#26/#27, see §3.1) — or
     the origin/origin axes — picked the same way as any other sketch point/line.
   - **Midpoint** — `point`, `line`
-  - **Vertical** — `line`
-  - **Horizontal** — `line`
+  - **No separate Horizontal/Vertical (#577):** those authorable constraints were removed in favour
+    of the general **parallel-to-axis** solution — select a line **and a sketch axis** and apply
+    **Parallel** (line runs along the axis) or **Perpendicular**. Because it refers to the sketch's
+    own X/Y axes rather than the screen, it is unambiguous on any plane at any angle, so the camera
+    no longer has to force a u-right/v-up orientation. The `ConstraintKind::Horizontal`/`Vertical`
+    variants and their solver equations are **kept** so documents that already contain them still
+    load and solve; nothing creates new ones (the Rectangle tool now constrains its edges parallel
+    to the X/Y axes, and the vertex-drag projection treats a line parallel to X/Y the same way it
+    treated Horizontal/Vertical).
 - **Redundant-constraint cleanup:** when a point already constrained coincident with a line
   is then constrained to a *specific* point on that same line (one of its endpoints, or its
   midpoint), the earlier generic point-on-line coincidence is removed in favor of the more

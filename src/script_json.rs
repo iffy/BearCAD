@@ -1011,8 +1011,6 @@ fn geometric_constraint_from_name(name: &str) -> Option<GeometricConstraintType>
         "equal" => Some(GeometricConstraintType::Equal),
         "coincident" => Some(GeometricConstraintType::Coincident),
         "midpoint" => Some(GeometricConstraintType::Midpoint),
-        "horizontal" => Some(GeometricConstraintType::Horizontal),
-        "vertical" => Some(GeometricConstraintType::Vertical),
         _ => None,
     }
 }

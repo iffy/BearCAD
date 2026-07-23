@@ -160,10 +160,18 @@ fn constraint_tool_active(app: &AppState) -> bool {
 }
 
 fn profile_squared(app: &AppState) -> bool {
+    use crate::model::ConstraintLine;
     let count = |f: fn(&ConstraintKind) -> bool| live_constraints(app).filter(|c| f(&c.kind)).count();
+    // #577: "squaring up" a line means constraining it parallel to a sketch axis (the axis-based
+    // replacement for Horizontal/Vertical), so at least one Parallel-to-axis constraint is required.
+    let axis_parallel = |k: &ConstraintKind| {
+        matches!(k, ConstraintKind::Parallel { line_a, line_b }
+            if matches!(line_a, ConstraintLine::OriginAxis(_))
+                || matches!(line_b, ConstraintLine::OriginAxis(_)))
+    };
     count(|k| matches!(k, ConstraintKind::Coincident { .. })) >= 1
-        && count(|k| matches!(k, ConstraintKind::Horizontal { .. } | ConstraintKind::Vertical { .. })) >= 1
-        && count(|k| matches!(k, ConstraintKind::Parallel { .. })) >= 2
+        && count(axis_parallel) >= 1
+        && count(|k| matches!(k, ConstraintKind::Parallel { .. })) >= 3
         && count(|k| matches!(k, ConstraintKind::Perpendicular { .. })) >= 2
 }
 
@@ -306,7 +314,7 @@ static BRACKET_STEPS: &[Step] = &[
     Step {
         narration: "Square it up! Select things, then press a number:\n\
                     \u{2022} bend corner + origin \u{2192} 4 (Coincident)\n\
-                    \u{2022} bottom base line \u{2192} 7 (Horizontal)\n\
+                    \u{2022} bottom base line + the X axis \u{2192} 1 (Parallel)\n\
                     \u{2022} bottom + inner base lines \u{2192} 1 (Parallel)\n\
                     \u{2022} the two leg lines \u{2192} 1 (Parallel)\n\
                     \u{2022} each end cap + its leg \u{2192} 2 (Perpendicular)",

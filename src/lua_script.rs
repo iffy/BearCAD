@@ -856,8 +856,6 @@ fn parse_geometric_constraint(name: &str) -> Option<GeometricConstraintType> {
         "equal" => Some(GeometricConstraintType::Equal),
         "coincident" => Some(GeometricConstraintType::Coincident),
         "midpoint" => Some(GeometricConstraintType::Midpoint),
-        "horizontal" => Some(GeometricConstraintType::Horizontal),
-        "vertical" => Some(GeometricConstraintType::Vertical),
         _ => None,
     }
 }
@@ -4207,7 +4205,11 @@ mod tests {
             bearcad.select({ kind = "origin" }, true)
             bearcad.add_geometric_constraint("coincident")
             bearcad.clear_selection()
-            geo("horizontal", 0)
+            -- #577: parallel-to-X-axis replaces the old Horizontal constraint.
+            bearcad.select{ kind = "line", index = 0 }
+            bearcad.select({ kind = "axis", axis = "x" }, true)
+            bearcad.add_geometric_constraint("parallel")
+            bearcad.clear_selection()
             geo("parallel", 0, 2)
             geo("parallel", 3, 5)
             geo("perpendicular", 1, 0)

@@ -430,9 +430,9 @@ mod tests {
         );
         assert_eq!(
             format_shortcut(geometric_constraint_shortcut(
-                GeometricConstraintType::Horizontal
+                GeometricConstraintType::Midpoint
             )),
-            "7"
+            "5"
         );
     }
 

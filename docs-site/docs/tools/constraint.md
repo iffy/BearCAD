@@ -15,7 +15,7 @@ constraints pin *relationships*.
 
 Select the geometry, then click a constraint button or press its number key:
 
-![A profile squared up by parallel, perpendicular, and horizontal constraints, with the constraint pane open](/img/screenshots/constraint.png)
+![A profile squared up by parallel and perpendicular constraints, with the constraint pane open](/img/screenshots/constraint.png)
 
 | Constraint | Select first | Key |
 |---|---|---|
@@ -24,8 +24,6 @@ Select the geometry, then click a constraint button or press its number key:
 | Equal | two lines | `3` |
 | Coincident | two points; a point + a line, circle, or the origin; or two lines (made collinear) | `4` |
 | Midpoint | a point + a line | `5` |
-| Vertical | a line | `6` |
-| Horizontal | a line | `7` |
 
 Many constraints also happen automatically while drawing — snapping a line's end onto a
 point keeps them attached.
@@ -35,5 +33,13 @@ constrained against too.
 
 ## The origin and its axes
 
-The **origin** and the two **origin axes** are selectable like any other geometry: pin a
-point to the origin, or hold a point on an axis (which fixes one of its coordinates).
+Every sketch shows a **floating origin** with two axes — X (red) and Y (green) — drawn through
+the origin so you always know which way the sketch runs. Both are selectable like any other
+geometry:
+
+- Pin a point **to the origin**, or hold a point **on an axis** (which fixes one of its
+  coordinates).
+- Select a line **and an axis**, then press **Parallel** (`1`) or **Perpendicular** (`2`), to
+  make the line run along — or square to — that axis. This is how you make a line "horizontal"
+  or "vertical": parallel to the X or Y axis. It works the same on any sketch plane, at any
+  angle, because it refers to the sketch's own axes rather than the screen.
