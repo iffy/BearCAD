@@ -548,7 +548,7 @@ enum ExploderNode {
 }
 
 /// What a slot in the current display level represents (#559).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum DisplayKind {
     /// The back-arrow loupe: pops one level of drill-in. Only present when drilled in.
     Back,
@@ -576,6 +576,11 @@ struct DisplayItem {
     /// item-indices under each), so the Back loupe can draw them gathered into a mini-cluster. Empty
     /// for Leaf/Group.
     siblings: Vec<Vec<usize>>,
+    /// When a drilled level has exactly **one** sibling group (#574), that sibling is shown as a
+    /// direct Group loupe rather than a cluster-of-one Back. Clicking it **swaps**: the current group
+    /// collapses and this sibling expands. Holds the sibling's node index in the *parent* level
+    /// (`path.pop()` then `path.push(swap_to)`). `None` for every other item.
+    swap_to: Option<usize>,
 }
 
 /// A departing-level loupe that dissolves during a drill transition (#567): it slides from where
@@ -662,27 +667,68 @@ impl ExploderState {
     fn display_items(&self) -> Vec<DisplayItem> {
         let mut out: Vec<DisplayItem> = Vec::new();
         if let Some((&drilled, parent_path)) = self.path.split_last() {
-            // The Back loupe gathers the SIBLINGS we drilled away from (#561): the parent level's
-            // other nodes, each as a mini-loupe. Clicking it pops back to that level.
-            let siblings: Vec<Vec<usize>> = self
-                .nodes_at(parent_path)
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| *i != drilled)
-                .map(|(_, node)| {
-                    let mut v = Vec::new();
-                    leaf_indices(node, &mut v);
-                    v
-                })
-                .collect();
-            out.push(DisplayItem {
-                kind: DisplayKind::Back,
-                anchor: Vec3::ZERO,
-                leaves: Vec::new(),
-                target: None,
-                node: None,
-                siblings,
-            });
+            let parent_nodes = self.nodes_at(parent_path);
+            let sib_indices: Vec<usize> =
+                (0..parent_nodes.len()).filter(|&i| i != drilled).collect();
+            if sib_indices.len() == 1 {
+                // Exactly one sibling — show it as a direct loupe rather than a cluster-of-one Back
+                // (#574). A group sibling gets a swap loupe (click collapses the current group and
+                // expands this one); a lone leaf sibling is just its selectable leaf loupe.
+                let si = sib_indices[0];
+                match &parent_nodes[si] {
+                    ExploderNode::Leaf(i) => {
+                        let h = &self.items[*i];
+                        out.push(DisplayItem {
+                            kind: DisplayKind::Leaf,
+                            anchor: h.anchor,
+                            leaves: vec![*i],
+                            target: Some(h.target.clone()),
+                            node: None,
+                            siblings: Vec::new(),
+                            swap_to: None,
+                        });
+                    }
+                    node @ ExploderNode::Group(_) => {
+                        let mut leaves = Vec::new();
+                        leaf_indices(node, &mut leaves);
+                        let denom = leaves.len().max(1) as f32;
+                        let centroid = leaves
+                            .iter()
+                            .map(|&i| self.items[i].anchor)
+                            .fold(Vec3::ZERO, |a, b| a + b)
+                            / denom;
+                        out.push(DisplayItem {
+                            kind: DisplayKind::Group,
+                            anchor: centroid,
+                            leaves,
+                            target: None,
+                            node: None,
+                            siblings: Vec::new(),
+                            swap_to: Some(si),
+                        });
+                    }
+                }
+            } else {
+                // Two or more siblings: the Back loupe gathers them into a mini-cluster (#561), each
+                // as a mini-loupe. Clicking it pops back to that level.
+                let siblings: Vec<Vec<usize>> = sib_indices
+                    .iter()
+                    .map(|&i| {
+                        let mut v = Vec::new();
+                        leaf_indices(&parent_nodes[i], &mut v);
+                        v
+                    })
+                    .collect();
+                out.push(DisplayItem {
+                    kind: DisplayKind::Back,
+                    anchor: Vec3::ZERO,
+                    leaves: Vec::new(),
+                    target: None,
+                    node: None,
+                    siblings,
+                    swap_to: None,
+                });
+            }
         }
         let nodes = self.current_nodes();
         for (ni, node) in nodes.iter().enumerate() {
@@ -696,6 +742,7 @@ impl ExploderState {
                         target: Some(h.target.clone()),
                         node: None,
                         siblings: Vec::new(),
+                        swap_to: None,
                     });
                 }
                 ExploderNode::Group(_) => {
@@ -714,6 +761,7 @@ impl ExploderState {
                         target: None,
                         node: Some(ni),
                         siblings: Vec::new(),
+                        swap_to: None,
                     });
                 }
             }
@@ -758,11 +806,26 @@ impl ExploderState {
         // Ring radius so adjacent loupes are at least `spacing()` apart along the chord.
         let nf = n.max(2) as f32;
         let ring = (exploder::spacing() / (2.0 * (PI / nf).sin())).max(exploder::min_ring());
-        let base = angle_of(&items[order[0]]);
+        // Orient the evenly-spaced ring so each slot lands as close as possible to the direction of
+        // the element it stands for (#570): the loupes keep their overlap-free even spacing, but the
+        // whole ring is rotated to the circular mean of every item's (preferred angle − slot angle),
+        // so the arrangement reflects where the elements actually are instead of an arbitrary origin.
+        let slot_angle = |slot: usize| slot as f32 * TAU / nf;
+        let (mut sx, mut sy) = (0.0f32, 0.0f32);
+        for (slot, &idx) in order.iter().enumerate() {
+            let delta = angle_of(&items[idx]) - slot_angle(slot);
+            sx += delta.cos();
+            sy += delta.sin();
+        }
+        let base = if sx == 0.0 && sy == 0.0 {
+            angle_of(&items[order[0]])
+        } else {
+            sy.atan2(sx)
+        };
         // Ring positions at zoom 1, index-aligned with `items`.
         let mut ring_pos: Vec<egui::Pos2> = vec![self.origin; n];
         for (slot, &idx) in order.iter().enumerate() {
-            let ang = base + slot as f32 * TAU / nf;
+            let ang = base + slot_angle(slot);
             ring_pos[idx] = self.origin + egui::vec2(ang.cos(), ang.sin()) * ring;
         }
 
@@ -787,7 +850,9 @@ impl ExploderState {
                 let cap = ((TAU * r / spacing).floor() as usize).max(1);
                 let take = cap.min(n - slots.len());
                 for j in 0..take {
-                    slots.push((r, TAU * j as f32 / take as f32));
+                    // Rotate each concentric ring by the same `base` so the staggered cluster is
+                    // oriented toward the elements too (#570).
+                    slots.push((r, base + TAU * j as f32 / take as f32));
                 }
                 k += 1;
             }
@@ -1117,11 +1182,18 @@ fn crowd_type_rank(kind: &construction::PickTargetKind) -> u8 {
 /// [`build_spatial_tree`]. A type with a **single** member is shown as a plain leaf, never a group of
 /// one (#567). If the crowd spans more distinct types than `MAX_LOUPES` (rare), the whole thing falls
 /// back to pure spatial clustering so the level still fits.
+///
+/// When the whole crowd already fits in `MAX_LOUPES` loupes there's no need to group at all (#571):
+/// every item is shown as its own leaf, so a small crowd never hides things inside a group.
 fn build_exploder_tree(
     idxs: &[usize],
     pts: &[egui::Pos2],
     kinds: &[construction::PickTargetKind],
 ) -> Vec<ExploderNode> {
+    // Small enough to show every item directly — no grouping (#571).
+    if idxs.len() <= exploder::MAX_LOUPES {
+        return idxs.iter().map(|&i| ExploderNode::Leaf(i)).collect();
+    }
     // Partition by type rank, preserving a stable type order.
     let mut by_type: std::collections::BTreeMap<u8, Vec<usize>> = std::collections::BTreeMap::new();
     for &i in idxs {
@@ -14869,17 +14941,23 @@ impl App {
                 enum Act {
                     Back,
                     Group(usize),
+                    /// Swap to the single sibling group (#574): collapse the current group, expand it.
+                    Swap(usize),
                     Leaf,
                     Dismiss,
                 }
                 let act = match hovered {
                     None => Act::Dismiss,
                     Some(i) => match self.exploder.as_ref().and_then(|ex| {
-                        ex.display_items().into_iter().nth(i).map(|it| (it.kind, it.node))
+                        ex.display_items()
+                            .into_iter()
+                            .nth(i)
+                            .map(|it| (it.kind, it.node, it.swap_to))
                     }) {
-                        Some((DisplayKind::Back, _)) => Act::Back,
-                        Some((DisplayKind::Group, node)) => Act::Group(node.unwrap()),
-                        Some((DisplayKind::Leaf, _)) => Act::Leaf,
+                        Some((DisplayKind::Back, _, _)) => Act::Back,
+                        Some((DisplayKind::Group, _, Some(sib))) => Act::Swap(sib),
+                        Some((DisplayKind::Group, node, None)) => Act::Group(node.unwrap()),
+                        Some((DisplayKind::Leaf, _, _)) => Act::Leaf,
                         None => Act::Dismiss,
                     },
                 };
@@ -14932,6 +15010,37 @@ impl App {
                             .unwrap_or_default();
                         if let Some(ex) = self.exploder.as_mut() {
                             ex.path.push(node);
+                            ex.hovered = None;
+                        }
+                        let anim = hovered.and_then(|h| {
+                            self.exploder.as_ref().map(|ex| {
+                                ex.build_drill_in_anim(
+                                    now, h, &old_items, &old_centers, viewport, project,
+                                )
+                            })
+                        });
+                        if let Some(ex) = self.exploder.as_mut() {
+                            ex.drill_anim = anim;
+                        }
+                        return (true, None, false);
+                    }
+                    // Swap (#574): at a level whose only sibling is one other group, click that
+                    // sibling to collapse the current group and expand it instead — pop the current
+                    // drill, then drill into the sibling. Springs its members out of the clicked spot.
+                    Act::Swap(sib) => {
+                        let old_items = self
+                            .exploder
+                            .as_ref()
+                            .map(|ex| ex.display_items())
+                            .unwrap_or_default();
+                        let old_centers = self
+                            .exploder
+                            .as_ref()
+                            .map(|ex| ex.display_centers(viewport, project))
+                            .unwrap_or_default();
+                        if let Some(ex) = self.exploder.as_mut() {
+                            ex.path.pop();
+                            ex.path.push(sib);
                             ex.hovered = None;
                         }
                         let anim = hovered.and_then(|h| {
@@ -15145,12 +15254,18 @@ impl App {
             // A faint centre mark = the cursor's hitbox centre, for orientation.
             painter.circle_filled(center, 1.0, egui::Color32::from_gray(90));
             // Leader line back to the real thing — only for the hovered LEAF loupe, grey, no dot.
+            // It stops at the loupe's **edge**, not its centre (#572), so it reads as pointing at
+            // the loupe rather than piercing it.
             if it.kind == DisplayKind::Leaf && hot {
                 if let Some(a) = project(it.anchor) {
-                    painter.line_segment(
-                        [a, center],
-                        egui::Stroke::new(1.0, egui::Color32::from_gray(150)),
-                    );
+                    let to_center = center - a;
+                    if to_center.length() > r_loupe {
+                        let edge = center - to_center.normalized() * r_loupe;
+                        painter.line_segment(
+                            [a, edge],
+                            egui::Stroke::new(1.0, egui::Color32::from_gray(150)),
+                        );
+                    }
                 }
             }
             // Frame: accent yellow when hovered/selected; otherwise a **group** ring is the same blue
@@ -15238,6 +15353,34 @@ impl App {
                                 r_mini,
                                 egui::Stroke::new(1.0, egui::Color32::from_gray(120)),
                             );
+                            // A shrunken count badge on each cluster mini-loupe that stands for a
+                            // multi-member group (#573), so you can see how many things each gathered
+                            // sibling holds. Single-thing siblings get no badge.
+                            if sib.len() > 1 {
+                                let label = sib.len().to_string();
+                                let bc = mc + egui::vec2(r_mini * 0.66, r_mini * 0.66);
+                                let bh = (r_mini * 0.7).clamp(11.0, 16.0);
+                                let bw = (bh + 6.0 * (label.len() as f32 - 1.0)).max(bh);
+                                let brect = egui::Rect::from_center_size(bc, egui::vec2(bw, bh));
+                                painter.rect_filled(
+                                    brect,
+                                    bh * 0.5,
+                                    egui::Color32::from_rgba_unmultiplied(12, 14, 18, 245),
+                                );
+                                painter.rect_stroke(
+                                    brect,
+                                    bh * 0.5,
+                                    egui::Stroke::new(1.0, egui::Color32::from_gray(120)),
+                                    egui::StrokeKind::Outside,
+                                );
+                                painter.text(
+                                    bc,
+                                    egui::Align2::CENTER_CENTER,
+                                    label,
+                                    egui::FontId::proportional(bh * 0.72),
+                                    egui::Color32::from_gray(235),
+                                );
+                            }
                         }
                     }
                 }
@@ -21125,16 +21268,50 @@ mod tests {
     #[test]
     fn build_exploder_tree_leaves_single_member_types_as_leaves() {
         use construction::PickTargetKind as K;
-        // 3 lines (multi → a group) + 1 circle (single). The lines group, but the lone circle stays
-        // a bare leaf — never a group of one (#567).
-        let pts: Vec<egui::Pos2> = (0..4).map(|i| egui::pos2(i as f32 * 30.0, 0.0)).collect();
-        let kinds = vec![K::Line(0), K::Line(1), K::Line(2), K::Circle(0)];
-        let tree = build_exploder_tree(&[0, 1, 2, 3], &pts, &kinds);
+        // 5 lines (multi → a group) + 1 circle (single), 6 total so grouping kicks in (> MAX_LOUPES).
+        // The lines group, but the lone circle stays a bare leaf — never a group of one (#567).
+        let pts: Vec<egui::Pos2> = (0..6).map(|i| egui::pos2(i as f32 * 30.0, 0.0)).collect();
+        let kinds = vec![
+            K::Line(0),
+            K::Line(1),
+            K::Line(2),
+            K::Line(3),
+            K::Line(4),
+            K::Circle(0),
+        ];
+        let tree = build_exploder_tree(&[0, 1, 2, 3, 4, 5], &pts, &kinds);
         assert_eq!(tree.len(), 2, "two type nodes (lines, circle)");
         let groups = tree.iter().filter(|n| matches!(n, ExploderNode::Group(_))).count();
         let leaves = tree.iter().filter(|n| matches!(n, ExploderNode::Leaf(_))).count();
         assert_eq!(groups, 1, "the multi-member line type is a group");
         assert_eq!(leaves, 1, "the single-member circle type is a bare leaf, not a group of one");
+    }
+
+    #[test]
+    fn build_exploder_tree_does_not_group_when_crowd_fits() {
+        use construction::PickTargetKind as K;
+        // A crowd of MAX_LOUPES or fewer shows every item directly — no grouping at all (#571).
+        let n = exploder::MAX_LOUPES;
+        let pts: Vec<egui::Pos2> = (0..n).map(|i| egui::pos2(i as f32 * 20.0, 0.0)).collect();
+        // Mix several types that would otherwise each form/join a type group.
+        let kinds: Vec<K> = (0..n)
+            .map(|i| match i % 3 {
+                0 => K::Line(i),
+                1 => K::Circle(i),
+                _ => K::BodyFace {
+                    body: 0,
+                    triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]],
+                    normal: Vec3::Z,
+                },
+            })
+            .collect();
+        let idxs: Vec<usize> = (0..n).collect();
+        let tree = build_exploder_tree(&idxs, &pts, &kinds);
+        assert_eq!(tree.len(), n, "every item is its own leaf");
+        assert!(
+            tree.iter().all(|node| matches!(node, ExploderNode::Leaf(_))),
+            "no groups when the whole crowd already fits"
+        );
     }
 
     #[test]
@@ -21181,17 +21358,19 @@ mod tests {
         assert!(!exploder_tool_accepts(Tool::Extrude, &c));
     }
 
-    // Two top-level groups of two leaves each, at spread-out anchors so display_centers is stable.
+    // Three top-level groups of two leaves each (so a drilled level has ≥ 2 siblings and thus a Back
+    // cluster, per #574), at spread-out anchors so display_centers is stable.
     fn drill_anim_state() -> ExploderState {
-        let items: Vec<ExploderHandle> = (0..4)
+        let items: Vec<ExploderHandle> = (0..6)
             .map(|i| ExploderHandle {
                 target: construction::PickTargetKind::Ground(Vec3::new(i as f32, 0.0, 0.0)),
-                anchor: Vec3::new((i as f32 - 1.5) * 40.0, ((i % 2) as f32 - 0.5) * 40.0, 0.0),
+                anchor: Vec3::new((i as f32 - 2.5) * 40.0, ((i % 2) as f32 - 0.5) * 60.0, 0.0),
             })
             .collect();
         let tree = vec![
             ExploderNode::Group(vec![ExploderNode::Leaf(0), ExploderNode::Leaf(1)]),
             ExploderNode::Group(vec![ExploderNode::Leaf(2), ExploderNode::Leaf(3)]),
+            ExploderNode::Group(vec![ExploderNode::Leaf(4), ExploderNode::Leaf(5)]),
         ];
         ExploderState {
             origin: egui::pos2(400.0, 300.0),
@@ -21211,15 +21390,14 @@ mod tests {
         let project = |w: Vec3| Some(egui::pos2(400.0 + w.x, 300.0 + w.y));
         let old_items = ex.display_items();
         let old_centers = ex.display_centers(vp, &project);
-        assert_eq!(old_items.len(), 2, "root shows two group loupes");
+        assert_eq!(old_items.len(), 3, "root shows three group loupes");
         ex.path.push(0); // drill into group 0 (display index 0)
         let anim = ex.build_drill_in_anim(0.0, 0, &old_items, &old_centers, vp, &project);
         // New level: Back + the two children of group 0.
         assert_eq!(ex.display_items().len(), 3);
         assert_eq!(anim.from.len(), 3);
-        // The one non-clicked sibling (group 1, leaves [2,3]) ghosts into the Back cluster.
-        assert_eq!(anim.ghosts.len(), 1);
-        assert_eq!(anim.ghosts[0].leaves, vec![2, 3]);
+        // The two non-clicked siblings (groups 1 and 2) ghost into the Back cluster.
+        assert_eq!(anim.ghosts.len(), 2);
         // The clicked group's children spring out of the clicked group's old spot.
         assert_eq!(anim.from[1], old_centers[0]);
         assert_eq!(anim.from[2], old_centers[0]);
@@ -21232,16 +21410,84 @@ mod tests {
         let project = |w: Vec3| Some(egui::pos2(400.0 + w.x, 300.0 + w.y));
         ex.path.push(0); // drilled into group 0
         let old_items = ex.display_items(); // [Back, Leaf0, Leaf1]
+        assert_eq!(old_items[0].kind, DisplayKind::Back, "≥2 siblings ⇒ a Back cluster");
         let old_centers = ex.display_centers(vp, &project);
         let drilled = *ex.path.last().unwrap();
         ex.path.pop();
         // Back loupe is display index 0.
         let anim = ex.build_drill_out_anim(0.0, 0, drilled, &old_items, &old_centers, vp, &project);
-        assert_eq!(ex.display_items().len(), 2, "back to the two root groups");
-        assert_eq!(anim.from.len(), 2);
+        assert_eq!(ex.display_items().len(), 3, "back to the three root groups");
+        assert_eq!(anim.from.len(), 3);
         // Both departed children gather into the group loupe.
         assert_eq!(anim.ghosts.len(), 2);
-        // The group we returned into forms in place; its sibling springs out of the cluster spot.
+        // The group we returned into forms in place.
         assert_eq!(anim.from[0], ex.display_centers(vp, &project)[0]);
+    }
+
+    #[test]
+    fn loupes_are_placed_toward_their_elements() {
+        // Three leaves whose elements sit at clear, well-separated directions (0°, 120°, 240°).
+        // Each loupe should land on the SAME side as its element (#570) — a positive dot product
+        // between the loupe's offset-from-origin and the element's direction.
+        use std::f32::consts::TAU;
+        let origin = egui::pos2(400.0, 300.0);
+        let dirs: Vec<egui::Vec2> = (0..3)
+            .map(|i| {
+                let a = i as f32 * TAU / 3.0;
+                egui::vec2(a.cos(), a.sin())
+            })
+            .collect();
+        let items: Vec<ExploderHandle> = (0..3)
+            .map(|i| ExploderHandle {
+                target: construction::PickTargetKind::Ground(Vec3::new(i as f32, 0.0, 0.0)),
+                // Element world point far out in its own direction.
+                anchor: Vec3::new(dirs[i].x * 100.0, dirs[i].y * 100.0, 0.0),
+            })
+            .collect();
+        let tree = vec![
+            ExploderNode::Leaf(0),
+            ExploderNode::Leaf(1),
+            ExploderNode::Leaf(2),
+        ];
+        let ex = ExploderState {
+            origin,
+            items,
+            tree,
+            path: Vec::new(),
+            hovered: None,
+            zoom_mul: 1.0,
+            drill_anim: None,
+        };
+        let vp = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        let project = |w: Vec3| Some(egui::pos2(400.0 + w.x, 300.0 - w.y)); // screen y flips
+        let centers = ex.display_centers(vp, &project);
+        for i in 0..3 {
+            // The element's screen direction (y flipped to match `project`).
+            let want = egui::vec2(dirs[i].x, -dirs[i].y);
+            let got = (centers[i] - origin).normalized();
+            assert!(
+                got.dot(want) > 0.3,
+                "loupe {i} should sit toward its element (dot {})",
+                got.dot(want)
+            );
+        }
+    }
+
+    #[test]
+    fn drilling_into_one_of_two_groups_shows_the_sibling_as_a_swap_loupe() {
+        // With exactly one sibling group, the drilled level shows it as a direct swap loupe rather
+        // than a cluster-of-one Back (#574); clicking it swaps to that group.
+        let mut ex = drill_anim_state();
+        ex.tree.truncate(2); // two groups only
+        ex.path.push(0); // drill into group 0
+        let items = ex.display_items();
+        assert!(
+            items.iter().all(|it| it.kind != DisplayKind::Back),
+            "no Back cluster when there's a single sibling"
+        );
+        let swap = items.iter().find(|it| it.swap_to.is_some()).expect("a swap loupe");
+        assert_eq!(swap.kind, DisplayKind::Group);
+        assert_eq!(swap.swap_to, Some(1), "swaps into the other group (parent node 1)");
+        assert_eq!(swap.leaves, vec![2, 3], "shows group 1's members");
     }
 }

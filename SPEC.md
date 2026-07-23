@@ -1805,12 +1805,16 @@ modeled on SolveSpace (https://solvespace.com).
   handles. A faint **light-green** disc the size of the hitbox (`construction::EXPLODER_HINT_RGBA`,
   distinct from the yellow pick-hover) appears under the cursor when **two or more** things are
   there, as a hint. Handles sit at least a loupe apart (chord, not arc) so there's never ambiguity
-  about which one a click means. While exploded the camera is frozen, so the **mouse wheel zooms the
-  loupes** instead (`ExploderState::zoom_mul`, `display_centers`): the fan grows, and while the
-  angle-coherent single ring still fits it just scales; once the growing loupes would push that ring
-  off-screen they **stagger** into concentric rings — a centre loupe plus rings filling outward, so
-  some sit closer to the cursor — and the whole cluster is **shifted** to stay inside the viewport
-  (`fit_offset`). Zoom is **clamped** (`max_zoom_mul`) where those rings fill the space, so loupes
+  about which one a click means. The evenly-spaced ring is **rotated to align each slot with the
+  direction of the element it stands for** (#570): `display_centers` picks the ring orientation
+  (`base`) as the circular mean of every item's (preferred angle − slot angle), so the fan reflects
+  where the elements actually are rather than an arbitrary origin, while keeping the overlap-free even
+  spacing (the same `base` orients the staggered concentric rings). While exploded the camera is
+  frozen, so the **mouse wheel zooms the loupes** instead (`ExploderState::zoom_mul`,
+  `display_centers`): the fan grows, and while the angle-coherent single ring still fits it just
+  scales; once the growing loupes would push that ring off-screen they **stagger** into concentric
+  rings — a centre loupe plus rings filling outward, so some sit closer to the cursor — and the whole
+  cluster is **shifted** to stay inside the viewport (`fit_offset`). Zoom is **clamped** (`max_zoom_mul`) where those rings fill the space, so loupes
   never grow off-screen and, at full zoom, they tile the whole viewport. While
   exploded **only handles** are hoverable/selectable — the raw crowd underneath is suppressed (the
   positional sketch pick/drag handlers stand down) — and hovering a handle highlights its **exact
@@ -1819,6 +1823,10 @@ modeled on SolveSpace (https://solvespace.com).
   the selection-family tools) rather than re-resolving a pick at the redirected anchor, which would
   be ambiguous for an overlapping crowd or land on something outside the hitbox; for other tools
   the pointer is still **redirected** to the hovered handle's anchor so their own pick path runs.
+  A hovered leaf also draws a thin grey **leader line** from the element back to the **edge** of its
+  loupe (not its centre, #572). Clicking **outside** every loupe just dismisses the fan and **leaves
+  the selection untouched** (#575) — the dismiss frame redirects the pointer to nothing so the normal
+  pick is skipped.
   Clicking collapses the fan; holding **Shift** keeps it open for multi-select; pressing **Space**
   or **Esc** again, or clicking empty space, dismisses it. While it's open the **camera is frozen**
   (orbit/pan/zoom stand down) so the handles stay put while you aim. The enumerator
@@ -1826,7 +1834,8 @@ modeled on SolveSpace (https://solvespace.com).
   `resolve_pick_target` (which keeps only the nearest). Suppressed only during a drag/gizmo, an
   in-progress draw, or a dimension sub-state. A keyboard trigger, so desktop-oriented.
   - **Hierarchical loupe grouping (#559/#563):** a level never shows more than **5 loupes**
-    (`exploder::MAX_LOUPES`). When the crowd is larger it's grouped so the level shows ≤ 5 (a mix of
+    (`exploder::MAX_LOUPES`). When the crowd already fits in ≤ 5 it is **not grouped at all** (#571) —
+    every item is its own leaf. Only a larger crowd is grouped so the level shows ≤ 5 (a mix of
     single-element and group loupes). On Space the flat crowd (`ExploderState::items`) is built into a
     grouping **tree** (`ExploderNode::Leaf` / `Group`) by `build_exploder_tree`: the **top level
     groups by element type** (#563) — all faces in one group, all edges in one, all vertices, all
@@ -1845,7 +1854,12 @@ modeled on SolveSpace (https://solvespace.com).
     drills in** (`ExploderState::path` pushes its node index): the group's members **spring out** of
     the clicked spot as their own loupes at the new level (recursively grouped if still too many),
     while the **siblings** you drilled away from converge inward and gather into a loupe-sized
-    **cluster loupe** — a mini-loupe per sibling (#561); clicking the cluster pops one level. Both
+    **cluster loupe** — a mini-loupe per sibling (#561), each carrying a shrunken **count badge** when
+    it stands for a multi-member group (#573); clicking the cluster pops one level. When there is
+    exactly **one** sibling the cluster-of-one is skipped: that sibling is shown as a direct loupe
+    (`DisplayItem::swap_to`, #574) — a group sibling becomes a **swap loupe** whose click collapses the
+    current group and expands it (`path.pop()` then `path.push(sibling)`), a lone leaf sibling is just
+    its selectable leaf loupe. Both
     directions of the transition are animated over `DRILL_ANIM_SECS` by a `DrillAnim` (#567): each
     arrived-level loupe slides out from a recorded start position (`DrillAnim::from`, index-aligned
     with `display_items`) while the **departed** level dissolves as fading `DrillGhost` loupes that
