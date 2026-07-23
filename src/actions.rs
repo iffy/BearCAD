@@ -504,6 +504,18 @@ impl CreatingVertexTreatment {
             self.amount_live.max(0.0)
         }
     }
+
+    /// The amount to store on the committed operation as a parametric expression (#554): the typed
+    /// text when the user edited it (so a parameter name is kept verbatim and keeps following its
+    /// value), otherwise the gizmo-driven magnitude formatted as a plain number.
+    pub fn amount_expr(&self) -> String {
+        let text = self.text.trim();
+        if self.user_edited && !text.is_empty() {
+            text.to_string()
+        } else {
+            format!("{}", self.amount_live.max(0.0))
+        }
+    }
 }
 
 /// In-progress (pre-commit) 3D solid-edge chamfer/fillet (#77): the extrusion + analytic edge
@@ -1484,7 +1496,10 @@ pub enum Action {
     CommitVertexTreatment {
         point: ConstraintPoint,
         kind: VertexTreatmentKind,
-        amount: f32,
+        /// Chamfer distance / fillet radius as a parametric expression (mm). Stored on the corner
+        /// and re-evaluated every rebuild, so tying it to a parameter keeps the bevel following
+        /// that parameter (#538/#554).
+        amount: String,
     },
     /// Chamfer or fillet an analytic edge of an extrusion's 3D solid (#77): a mesh-bevel
     /// approximation (flat bevel quad for a chamfer, an N-segment faceted bevel for a fillet —
@@ -7201,6 +7216,11 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::CommitVertexTreatment { point, kind, amount } => {
+                // The amount is a parametric expression; evaluate it for the up-front positive and
+                // degeneracy checks, but store the raw expression so it follows its parameters.
+                let amount_expr = amount;
+                let amount = crate::value::eval_length_mm_in_doc(&amount_expr, &self.doc)
+                    .unwrap_or(0.0);
                 if !(amount > 0.0) {
                     let e = "Amount must be positive".to_string();
                     self.status = e.clone();
@@ -7249,9 +7269,9 @@ impl AppState {
                     return ActionResult::Err(e);
                 }
 
-                // The amount is stored as a formatted expression string so it can later be tied
-                // to a parameter through an edit; scripting/UI still pass a concrete `f32`.
-                let amount_expr = format!("{amount}");
+                // `amount_expr` (the raw parametric expression) is what gets stored on the corner,
+                // so an amount typed as a parameter keeps following it; the numeric `amount` above
+                // was only for the positive/degeneracy guards.
                 let a_owner = live_vertex_treatment_owner(&self.doc, line1);
                 let b_owner = live_vertex_treatment_owner(&self.doc, line2);
                 let mk_corner =
@@ -14850,7 +14870,7 @@ mod tests {
         let result = state.apply(Action::CommitVertexTreatment {
             point: ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End },
             kind: VertexTreatmentKind::Chamfer,
-            amount: 3.0,
+            amount: "3.0".to_string(),
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         // The source edge is shadowed and stays at its FULL length (virtual sharp corner intact).
@@ -14905,14 +14925,18 @@ mod tests {
             name: "cham".to_string(),
             expression: "3".to_string(),
         });
-        // Commit with a concrete amount, then retarget the op's corner to the parameter.
+        // Commit with the amount tied to the parameter by name (the real end-to-end flow): the
+        // expression is stored on the corner verbatim, so it keeps following the parameter.
         let result = state.apply(Action::CommitVertexTreatment {
             point,
             kind: VertexTreatmentKind::Chamfer,
-            amount: 3.0,
+            amount: "cham".to_string(),
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
-        state.doc.sketch_vertex_treatment_ops[0].corners[0].amount = "cham".to_string();
+        assert_eq!(
+            state.doc.sketch_vertex_treatment_ops[0].corners[0].amount, "cham",
+            "the parametric amount expression is stored verbatim on the corner"
+        );
         let _ = sketch;
 
         crate::parameters::recompute_document_geometry(&mut state.doc).unwrap();
@@ -15861,7 +15885,7 @@ mod tests {
         let result = state.apply(Action::CommitVertexTreatment {
             point,
             kind: VertexTreatmentKind::Fillet,
-            amount: 3.0,
+            amount: "3.0".to_string(),
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         // #538: two shadowed sources + two trimmed copies + one bridge.
@@ -16033,7 +16057,7 @@ mod tests {
         let result = state.apply(Action::CommitVertexTreatment {
             point,
             kind: VertexTreatmentKind::Chamfer,
-            amount: 3.0,
+            amount: "3.0".to_string(),
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         // #538: the sources are shadowed at full length; the trim lives on the op's outputs.
@@ -16059,7 +16083,7 @@ mod tests {
         let result = state.apply(Action::CommitVertexTreatment {
             point,
             kind: VertexTreatmentKind::Fillet,
-            amount: 3.0,
+            amount: "3.0".to_string(),
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
         let op = &state.doc.sketch_vertex_treatment_ops[0];
@@ -16075,7 +16099,7 @@ mod tests {
         state.apply(Action::CommitVertexTreatment {
             point,
             kind: VertexTreatmentKind::Chamfer,
-            amount: 3.0,
+            amount: "3.0".to_string(),
         });
         // The original coincidence between line 0's End and line 1's Start is still live.
         let vertex_coincidence_live = state.doc.constraints.iter().any(|c| {
@@ -16115,14 +16139,14 @@ mod tests {
         let r1 = state.apply(Action::CommitVertexTreatment {
             point: ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End },
             kind: VertexTreatmentKind::Chamfer,
-            amount: 5.0,
+            amount: "5.0".to_string(),
         });
         assert!(matches!(r1, ActionResult::Ok), "{r1:?}");
         // Corner at (30,30): joins right (1) & top (2) — right already belongs to the op.
         let r2 = state.apply(Action::CommitVertexTreatment {
             point: ConstraintPoint::LineEndpoint { line: 1, end: LineEnd::End },
             kind: VertexTreatmentKind::Chamfer,
-            amount: 5.0,
+            amount: "5.0".to_string(),
         });
         assert!(matches!(r2, ActionResult::Ok), "{r2:?}");
 
@@ -16159,7 +16183,7 @@ mod tests {
         state.apply(Action::CommitVertexTreatment {
             point,
             kind: VertexTreatmentKind::Fillet,
-            amount: 3.0,
+            amount: "3.0".to_string(),
         });
         let op = state.doc.sketch_vertex_treatment_ops[0].clone();
         assert!(state.doc.lines[0].shadow && state.doc.lines[1].shadow);
@@ -16187,7 +16211,7 @@ mod tests {
         let result = state.apply(Action::CommitVertexTreatment {
             point,
             kind: VertexTreatmentKind::Chamfer,
-            amount: 3.0,
+            amount: "3.0".to_string(),
         });
         assert!(matches!(result, ActionResult::Err(_)));
         assert_eq!(state.doc.lines.len(), 1);
@@ -16222,7 +16246,7 @@ mod tests {
         let result = state.apply(Action::CommitVertexTreatment {
             point,
             kind: VertexTreatmentKind::Chamfer,
-            amount: 3.0,
+            amount: "3.0".to_string(),
         });
         assert!(matches!(result, ActionResult::Err(_)));
         assert_eq!(state.doc.lines.len(), 2);
@@ -16235,7 +16259,7 @@ mod tests {
         let result = state.apply(Action::CommitVertexTreatment {
             point,
             kind: VertexTreatmentKind::Fillet,
-            amount: 0.0,
+            amount: "0.0".to_string(),
         });
         assert!(matches!(result, ActionResult::Err(_)));
         assert_eq!(state.doc.lines.len(), 2);
@@ -16248,7 +16272,7 @@ mod tests {
         state.apply(Action::CommitVertexTreatment {
             point,
             kind: VertexTreatmentKind::Chamfer,
-            amount: 3.0,
+            amount: "3.0".to_string(),
         });
         // #538: two shadowed sources + two trimmed copies + one bridge.
         assert_eq!(state.doc.lines.len(), 5);

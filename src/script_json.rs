@@ -529,7 +529,7 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             Ok(Instruction::VertexTreatment {
                 point,
                 kind,
-                amount: req_f32(o, amount_key, name)?,
+                amount: req_amount_expr(o, amount_key, name)?,
             })
         }
         "chamfer_edge" | "fillet_edge" => {
@@ -1510,6 +1510,16 @@ fn req_str(o: &Map<String, Value>, key: &str, cmd: &str) -> Result<String, Strin
     }
 }
 
+/// A chamfer/fillet amount as a parametric expression (#554): a JSON number is formatted, a JSON
+/// string is taken verbatim (so `"distance": "leg"` ties the treatment to a parameter).
+fn req_amount_expr(o: &Map<String, Value>, key: &str, cmd: &str) -> Result<String, String> {
+    match o.get(key) {
+        Some(Value::String(s)) => Ok(s.clone()),
+        Some(Value::Number(n)) => Ok(n.to_string()),
+        _ => Err(format!("{cmd} requires a number or string `{key}`")),
+    }
+}
+
 fn opt_str(o: &Map<String, Value>, key: &str) -> Result<Option<String>, String> {
     match o.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -2295,7 +2305,7 @@ mod tests {
             Ok(Instruction::VertexTreatment {
                 point: ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::Start },
                 kind: VertexTreatmentKind::Chamfer,
-                amount: 2.0,
+                amount: "2".to_string(),
             })
         );
         assert_eq!(
@@ -2306,7 +2316,7 @@ mod tests {
             Ok(Instruction::VertexTreatment {
                 point: ConstraintPoint::CircleCenter(1),
                 kind: VertexTreatmentKind::Fillet,
-                amount: 3.0,
+                amount: "3".to_string(),
             })
         );
         assert_eq!(

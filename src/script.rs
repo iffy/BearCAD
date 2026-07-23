@@ -429,7 +429,9 @@ pub enum Instruction {
     VertexTreatment {
         point: ConstraintPoint,
         kind: VertexTreatmentKind,
-        amount: f32,
+        /// Chamfer distance / fillet radius as a parametric expression (mm), so tying it to a
+        /// parameter keeps the bevel following that parameter (#538/#554).
+        amount: String,
     },
     /// Chamfer or fillet an analytic edge of an extrusion's 3D solid (#77) — a mesh-bevel
     /// approximation scoped to the vertical and side/cap edges of a `Rect`/`Polygon`-profiled
@@ -1146,8 +1148,14 @@ impl Instruction {
                     VertexTreatmentKind::Chamfer => ("chamfer_vertex", "distance"),
                     VertexTreatmentKind::Fillet => ("fillet_vertex", "radius"),
                 };
+                // A plain number records bare; a parametric expression records as a quoted string.
+                let amount_lua = if amount.trim().parse::<f32>().is_ok() {
+                    amount.clone()
+                } else {
+                    format!("{amount:?}")
+                };
                 format!(
-                    "bearcad.{fname}{{ point = {}, {amount_key} = {amount} }}",
+                    "bearcad.{fname}{{ point = {}, {amount_key} = {amount_lua} }}",
                     constraint_point_lua_ref(point)
                 )
             }
@@ -1972,7 +1980,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             Some(Instruction::VertexTreatment {
                 point: point.clone(),
                 kind: *kind,
-                amount: *amount,
+                amount: amount.clone(),
             })
         }
         Action::ZoomToFit => Some(Instruction::ZoomFit),
@@ -5355,20 +5363,30 @@ mod tests {
         let chamfer = Instruction::VertexTreatment {
             point: point.clone(),
             kind: VertexTreatmentKind::Chamfer,
-            amount: 3.0,
+            amount: "3".to_string(),
         };
         assert_eq!(
             chamfer.as_lua(),
             "bearcad.chamfer_vertex{ point = { kind = \"line\", index = 0, [\"end\"] = \"end\" }, distance = 3 }"
         );
         let fillet = Instruction::VertexTreatment {
-            point,
+            point: point.clone(),
             kind: VertexTreatmentKind::Fillet,
-            amount: 2.5,
+            amount: "2.5".to_string(),
         };
         assert_eq!(
             fillet.as_lua(),
             "bearcad.fillet_vertex{ point = { kind = \"line\", index = 0, [\"end\"] = \"end\" }, radius = 2.5 }"
+        );
+        // A parametric amount records as a quoted string so it survives replay.
+        let parametric = Instruction::VertexTreatment {
+            point,
+            kind: VertexTreatmentKind::Fillet,
+            amount: "r".to_string(),
+        };
+        assert_eq!(
+            parametric.as_lua(),
+            "bearcad.fillet_vertex{ point = { kind = \"line\", index = 0, [\"end\"] = \"end\" }, radius = \"r\" }"
         );
     }
 
@@ -5379,14 +5397,14 @@ mod tests {
         let action = Action::CommitVertexTreatment {
             point: point.clone(),
             kind: VertexTreatmentKind::Fillet,
-            amount: 4.0,
+            amount: "4".to_string(),
         };
         assert_eq!(
             instruction_from_action(&action, &doc),
             Some(Instruction::VertexTreatment {
                 point,
                 kind: VertexTreatmentKind::Fillet,
-                amount: 4.0,
+                amount: "4".to_string(),
             })
         );
     }

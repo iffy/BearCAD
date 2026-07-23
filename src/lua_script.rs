@@ -473,6 +473,20 @@ fn parse_constraint_line_table(table: Table) -> mlua::Result<ConstraintLine> {
     }
 }
 
+/// Read a chamfer/fillet amount argument as either a number or an expression string, returning it
+/// as a parametric expression (#554) so `distance = "leg"` ties the treatment to a parameter.
+fn lua_amount_expr(opts: &Table, key: &str) -> mlua::Result<String> {
+    match opts.get::<mlua::Value>(key)? {
+        mlua::Value::String(s) => Ok(s.to_str()?.to_string()),
+        mlua::Value::Integer(i) => Ok(i.to_string()),
+        mlua::Value::Number(n) => Ok(n.to_string()),
+        mlua::Value::Nil => Err(mlua::Error::external(format!("`{key}` is required"))),
+        _ => Err(mlua::Error::external(format!(
+            "`{key}` must be a number or an expression string"
+        ))),
+    }
+}
+
 fn parse_constraint_point_table(table: Table) -> mlua::Result<ConstraintPoint> {
     let kind: String = table.get("kind").or_else(|_| table.get("type"))?;
     if kind.eq_ignore_ascii_case("face") {
@@ -3906,7 +3920,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let point_table: Table = opts.get("point")?;
             let point = parse_constraint_point_table(point_table)?;
-            let distance: f32 = opts.get("distance")?;
+            // Number or expression string, so `distance = "leg"` ties the chamfer to a parameter.
+            let distance = lua_amount_expr(&opts, "distance")?;
             unsafe {
                 tick.exec(Instruction::VertexTreatment {
                     point,
@@ -3924,7 +3939,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let point_table: Table = opts.get("point")?;
             let point = parse_constraint_point_table(point_table)?;
-            let radius: f32 = opts.get("radius")?;
+            // Number or expression string, so `radius = "r"` ties the fillet to a parameter.
+            let radius = lua_amount_expr(&opts, "radius")?;
             unsafe {
                 tick.exec(Instruction::VertexTreatment {
                     point,

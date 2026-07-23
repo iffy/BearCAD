@@ -3062,12 +3062,13 @@ impl App {
         if following && primary_pressed {
             if let Some(mut cvt) = self.state.creating_vertex_treatment.take() {
                 let _ = actions::commit_inline_parameter_defs(&mut self.state.doc, [&mut cvt.text]);
-                let amount = cvt.evaluated_amount(&self.state.doc);
+                // Pass the raw amount expression so an amount typed as a parameter stays parametric.
+                let amount_expr = cvt.amount_expr();
                 for point in cvt.points {
                     let _ = self.state.apply(Action::CommitVertexTreatment {
                         point,
                         kind: cvt.kind,
-                        amount,
+                        amount: amount_expr.clone(),
                     });
                 }
             }
@@ -3231,12 +3232,13 @@ impl App {
             if let Some(mut cvt) = self.state.creating_vertex_treatment.take() {
                 // #201: a typed amount can define a parameter (`name = expr`).
                 let _ = actions::commit_inline_parameter_defs(&mut self.state.doc, [&mut cvt.text]);
-                let amount = cvt.evaluated_amount(&self.state.doc);
+                // Pass the raw amount expression so an amount typed as a parameter stays parametric.
+                let amount_expr = cvt.amount_expr();
                 for point in cvt.points {
                     let _ = self.state.apply(Action::CommitVertexTreatment {
                         point,
                         kind: cvt.kind,
-                        amount,
+                        amount: amount_expr.clone(),
                     });
                 }
             }
