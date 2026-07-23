@@ -897,7 +897,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     kernel-only: the no-kernel mesh fallback renders them untreated (its bevel builder is
     polygon-vertex-based), and no analytic rim edges are offered for picking in a lean
     build. Slanted-target (lofted) circle extrusions keep the sampled profile and stay
-    untreatable.
+    untreatable. The kernel extrusion mesh is **validated watertight** before use (#582): OCCT's
+    `ThruSections` loft can silently return an open shell (the side wall with no end caps — a pipe)
+    for a circle taken up to a diagonal plane, so a non-watertight kernel mesh is discarded in favour
+    of the hand-rolled mesher, which caps both ends (`mesh_is_watertight` in `extrusion_mesh`).
   - **Explicitly out of scope**: `Circle`-profile *vertical* edges (a smooth wall, nothing
     to bevel); STL/STEP-imported bodies (pure triangle soup, no analytic
     profile to derive an edge from — #31's generic mesh-feature-edge extraction still works for

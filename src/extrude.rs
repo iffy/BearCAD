@@ -53,6 +53,34 @@ pub(crate) fn mesh_signed_volume(mesh: &SolidMesh) -> f32 {
         .sum()
 }
 
+/// Whether `mesh` is a closed (watertight) manifold: every undirected edge is shared by exactly two
+/// triangles (#582). Vertices are snapped to a micrometre grid so a shared edge compares equal
+/// across independent floating-point paths. An open shell — e.g. a lofted extrusion that came back
+/// without its end caps — has boundary edges used by a single triangle, so this returns false.
+pub(crate) fn mesh_is_watertight(mesh: &SolidMesh) -> bool {
+    use std::collections::HashMap;
+    let key = |p: Vec3| {
+        (
+            (p.x * 1000.0).round() as i64,
+            (p.y * 1000.0).round() as i64,
+            (p.z * 1000.0).round() as i64,
+        )
+    };
+    let mut edge_count: HashMap<((i64, i64, i64), (i64, i64, i64)), u32> = HashMap::new();
+    for tri in &mesh.triangles {
+        for i in 0..3 {
+            let a = key(tri[i]);
+            let b = key(tri[(i + 1) % 3]);
+            if a == b {
+                return false; // degenerate zero-length edge
+            }
+            let e = if a <= b { (a, b) } else { (b, a) };
+            *edge_count.entry(e).or_insert(0) += 1;
+        }
+    }
+    !edge_count.is_empty() && edge_count.values().all(|&c| c == 2)
+}
+
 /// World-space bounding box of everything visible in the document (#108's
 /// `bearcad.ui.zoom_fit()`): every non-deleted body's solid mesh, plus every non-deleted
 /// line/circle's world-space extent on its sketch plane (curved lines use their sampled
@@ -109,6 +137,18 @@ pub fn extrusion_mesh(doc: &Document, extrusion: &Extrusion) -> Option<SolidMesh
     // to the hand-rolled mesher for everything it doesn't yet cover (slanted
     // targets, edge chamfers/fillets, multi-face bodies) so behavior is preserved.
     if let Some(mesh) = occt_extrusion_mesh(doc, extrusion, distance) {
+        // OCCT's lofted slanted extrusions can silently come back as an **open shell** — the side
+        // wall without its end caps, i.e. a pipe instead of a closed solid (#582). When the kernel
+        // mesh isn't watertight, prefer the hand-rolled mesher, which caps both ends, as long as it
+        // produces a closed solid; otherwise keep the kernel mesh as the best available.
+        if mesh_is_watertight(&mesh) {
+            return Some(mesh);
+        }
+        if let Some(fallback) = extrusion_mesh_tessellated(doc, extrusion, distance) {
+            if mesh_is_watertight(&fallback) {
+                return Some(fallback);
+            }
+        }
         return Some(mesh);
     }
     extrusion_mesh_tessellated(doc, extrusion, distance)
@@ -5980,6 +6020,35 @@ mod tests {
         assert!((max.z - 8.0).abs() < 1e-4 && min.z.abs() < 1e-4);
         // Radius 5 → diameter 10 in x and y.
         assert!((max.x - min.x - 10.0).abs() < 0.1 && (max.y - min.y - 10.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn circle_extruded_to_a_slanted_plane_is_a_closed_solid() {
+        // #582: a circle extruded up to a *diagonal* target plane takes the loft path (its top ring
+        // is slanted, not a pure translation). The result must still be a watertight, capped solid,
+        // not an open tube ("pipe").
+        use crate::construction::{definition_from_reference, plane_from_definition, PlaneReference};
+        use crate::model::ConstructionPlaneParent;
+        let (mut doc, sketch) = sketch_doc();
+        doc.construction_planes.push(plane_from_definition(
+            &definition_from_reference(
+                &PlaneReference::Axis {
+                    origin: Vec3::new(0.0, 0.0, 40.0),
+                    direction: Vec3::X,
+                    label: "X".to_string(),
+                },
+                0.0,
+                45.0,
+            ),
+            ConstructionPlaneParent::Root,
+        ));
+        let target_plane = doc.construction_planes.len() - 1;
+        doc.circles
+            .push(Circle::from_local_center_radius(sketch, 0.0, 0.0, 5.0, 0.0));
+        let mut ext = extrusion(sketch, vec![ExtrudeFace::Circle(0)], 40.0);
+        ext.target = Some(crate::model::ExtrudeTarget::Plane(target_plane));
+        let mesh = extrusion_mesh(&doc, &ext).expect("mesh built");
+        assert_watertight(&mesh);
     }
 
     // --- 3D edge chamfer/fillet (#77) ---------------------------------------------------
