@@ -1,0 +1,52 @@
+---
+sidebar_position: 7
+title: Selection Exploder
+---
+
+# Selection Exploder
+
+When several pickable things pile up under your cursor — overlapping vertices, an edge
+running through a face, a circle centre sitting on a corner — clicking the exact one you
+want is a guessing game. The **Selection Exploder** fans that crowd out into spaced-apart
+handles so you can pick the right one with a single, unambiguous click.
+
+Park your cursor over the cluster and press **Space**:
+
+![The Selection Exploder fanned open over a crowded corner: each stacked vertex, line, and circle gets its own spaced handle with a kind icon and a thin leader line back to where it really is](/img/screenshots/exploder.png)
+
+Everything inside your cursor's pick radius pops out to its own handle, arranged in a ring
+and joined by a thin leader line back to where it really lives. When the crowd is a mix of
+kinds, each handle carries a small icon — a vertex, a line, a circle, a face — so you can
+tell them apart at a glance.
+
+## Picking from the fan
+
+- **Hover** a handle and its real thing lights up in the scene, so you can confirm you've
+  got the right one before committing.
+- **Click** the handle to select it.
+- Hold **Shift** while you click to keep the fan open and gather several things in a row.
+- Press **Space** again, press **Esc**, or click empty space to dismiss the fan.
+
+While the fan is open the **camera holds still**, so the handles stay put under your cursor
+instead of drifting as you reach for one.
+
+## Any time, any tool, anything
+
+Press **Space** whenever you like — you don't have to wait for a crowd:
+
+- Over a cluster it fans out several handles.
+- Over a single thing it gives you just one handle.
+- Over empty space it simply parks the hitbox circle there.
+
+A faint circle appears under the cursor whenever two or more things are stacked, hinting
+that exploding will help.
+
+The exploder works with **every tool**, not only Select, and with **every kind** of pickable
+thing — sketch vertices, lines, and circles, and body vertices, edges, and faces. Whatever
+handle you pick is fed straight to the tool you're using, so you can extrude a buried face,
+fillet a hidden edge, or combine an overlapping body without fighting the pick.
+
+## See also
+
+- [Select](/docs/tools/select) — the default tool for looking and picking.
+- [Navigation](/docs/tools/navigation) — camera, views, and the command palette.
