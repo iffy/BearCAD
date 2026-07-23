@@ -13942,7 +13942,10 @@ impl App {
         occlusion: Option<&construction::PickOcclusion>,
         suppress: bool,
     ) -> (bool, Option<egui::Pos2>) {
-        let selecting = matches!(self.state.tool, Tool::Select | Tool::Constraint);
+        let selecting = matches!(
+            self.state.tool,
+            Tool::Select | Tool::Constraint | Tool::Dimension
+        );
         if suppress || !selecting {
             self.exploder = None;
             return (false, None);
@@ -14689,7 +14692,13 @@ impl App {
             &project,
             pointer_screen,
             pick_occlusion,
-            suppress_hover_highlight,
+            // Off during any drag/gizmo (via `suppress_hover_highlight`) and any Dimension-tool
+            // sub-state where picking is already suspended.
+            suppress_hover_highlight
+                || self.state.editing_committed_dim.is_some()
+                || self.state.placing_angle_dimension.is_some()
+                || over_committed_dim_label
+                || self.dim_label_drag.is_some(),
         );
 
         // Right-click a bezier handle to offer deleting it, a two-line vertex to offer

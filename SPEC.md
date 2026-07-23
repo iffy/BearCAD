@@ -1762,8 +1762,8 @@ modeled on SolveSpace (https://solvespace.com).
   the fan; holding **Shift** keeps it open for multi-select; pressing Space again, clicking empty
   space, or switching to a non-selecting tool dismisses it. The enumerator
   (`construction::collect_pick_candidates`) is the crowd-returning counterpart to
-  `resolve_pick_target` (which keeps only the nearest). Active for the Select and Constraint
-  tools; a keyboard trigger, so desktop-oriented.
+  `resolve_pick_target` (which keeps only the nearest). Active for the selection tools (Select,
+  Constraint, Dimension); a keyboard trigger, so desktop-oriented.
 - **Element picker for the Select tool (#202/#213):** while the Select tool is active the
   context pane shows the unified **element picker** — a focusable, combo-box-style input that
   is the single, consistent way every tool gathers the elements it operates on. Collapsed it
