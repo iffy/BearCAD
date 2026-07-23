@@ -30,8 +30,9 @@ exactly the one you want. Press **Space** and everything inside your cursor's pi
 out to its own spaced-apart handle, joined by a thin line back to where it really is (with a
 little icon of its kind when the crowd is mixed). Now every handle is far enough apart that
 there's no guessing — hover one and its real thing lights up, click it to select. Hold
-**Shift** while clicking to keep the fan open and pick several. Press **Space** again, click
-empty space, or switch tools to dismiss it.
+**Shift** while clicking to keep the fan open and pick several. Press **Space** or **Esc**
+again, or click empty space, to dismiss it. While it's open the camera holds still so the
+handles stay under your cursor.
 
 You can hit **Space** any time: over a crowd it fans out several handles, over a single thing
 just one, and over empty space it simply parks the hitbox circle there. A faint circle appears

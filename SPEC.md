@@ -1766,8 +1766,9 @@ modeled on SolveSpace (https://solvespace.com).
   spans more than one kind, each handle carries its kind's icon. While exploded **only handles**
   are hoverable/selectable — the raw crowd underneath is suppressed — and hovering a handle
   lights up its real thing (and its leader). Clicking a handle selects that thing and collapses
-  the fan; holding **Shift** keeps it open for multi-select; pressing Space again, clicking empty
-  space, or switching to a non-selecting tool dismisses it. The enumerator
+  the fan; holding **Shift** keeps it open for multi-select; pressing **Space** or **Esc** again,
+  or clicking empty space, dismisses it. While it's open the **camera is frozen** (orbit/pan/zoom
+  stand down) so the handles stay put while you aim. The enumerator
   (`construction::collect_pick_candidates`) is the crowd-returning counterpart to
   `resolve_pick_target` (which keeps only the nearest). Suppressed only during a drag/gizmo, an
   in-progress draw, or a dimension sub-state. A keyboard trigger, so desktop-oriented.

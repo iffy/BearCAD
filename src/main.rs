@@ -2387,7 +2387,12 @@ impl App {
         // tools — `tick_fps_mode` handles them before this runs.
         if !keyboard_shortcuts_suppressed(ctx) && self.state.fps.is_none() {
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                self.state.apply(Action::CancelOperation);
+                // Esc exits the Selection Exploder first (#551), else cancels the operation.
+                if self.exploder.is_some() {
+                    self.exploder = None;
+                } else {
+                    self.state.apply(Action::CancelOperation);
+                }
             }
 
             if self.state.creating_rect.is_none()
@@ -14159,9 +14164,12 @@ impl App {
         });
 
         // In FPS mode (#91) the mouse is the player's head and the wheel switches
-        // tools, so orbit/pan/zoom stand down (`tick_fps_mode` owns the camera).
+        // tools, so orbit/pan/zoom stand down (`tick_fps_mode` owns the camera). The Selection
+        // Exploder (#551) also freezes the camera so the fanned-out handles stay put while you aim.
         let fps_active = self.state.fps.is_some();
-        if response.dragged_by(egui::PointerButton::Secondary) && !fps_active {
+        let exploder_on = self.exploder.is_some();
+        let camera_frozen = fps_active || exploder_on;
+        if response.dragged_by(egui::PointerButton::Secondary) && !camera_frozen {
             if ui.input(|i| i.modifiers.shift) {
                 let delta = response.drag_delta();
                 self.state.cam.pan(delta, viewport.height());
@@ -14179,14 +14187,14 @@ impl App {
         // Middle-mouse drag always pans (#195). Shift+right-drag pans too, but Firefox forces
         // its native context menu on Shift+right-click regardless of preventDefault, eating the
         // gesture on the web — so middle-drag is the browser-safe way to pan there.
-        if response.dragged_by(egui::PointerButton::Middle) && !fps_active {
+        if response.dragged_by(egui::PointerButton::Middle) && !camera_frozen {
             let delta = response.drag_delta();
             self.state.cam.pan(delta, viewport.height());
             if let Some(log) = &self.state.command_log {
                 log.borrow_mut().note_pan(delta);
             }
         }
-        if response.hovered() && !fps_active {
+        if response.hovered() && !camera_frozen {
             let scroll = ui.input(|i| i.raw_scroll_delta.y);
             if scroll != 0.0 {
                 let focal = response.hover_pos().unwrap_or(viewport.center());
@@ -14256,7 +14264,7 @@ impl App {
             self.last_touch_press_time = ui.input(|i| i.time);
         }
         let mut touch_navigating = false;
-        if !fps_active {
+        if !camera_frozen {
             if let Some(mt) = ui.input(|i| i.multi_touch()) {
                 touch_navigating = true;
                 // A two-finger gesture's first finger lands a beat early and reads as
