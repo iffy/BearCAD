@@ -219,29 +219,10 @@ fn axis_screen_vec(axis: Vec3, look_forward: Vec3, up_hint: Vec3) -> glam::Vec2 
     glam::Vec2::new(axis.dot(right), -axis.dot(up))
 }
 
-fn axis_screen_preserve_weight(screen: glam::Vec2) -> f32 {
-    let len = screen.length();
-    if len < 1e-6 {
-        0.0
-    } else if screen.x > 0.0 {
-        // Already pointing right on screen — keep it there.
-        screen.x / len
-    } else if screen.y < 0.0 {
-        // Already pointing up on screen (egui y-down).
-        screen.y.abs() / len
-    } else {
-        0.0
-    }
-}
-
 fn axes_match_sketch_convention(u_screen: glam::Vec2, v_screen: glam::Vec2) -> bool {
     let u_right = u_screen.x > 0.0 && u_screen.x.abs() >= u_screen.y.abs();
     let v_up = v_screen.y < 0.0 && v_screen.y.abs() >= v_screen.x.abs();
     u_right && v_up
-}
-
-fn axis_is_screen_horizontal(screen: glam::Vec2) -> bool {
-    screen.x.abs() > screen.y.abs()
 }
 
 fn sketch_view_up_score(
@@ -250,26 +231,19 @@ fn sketch_view_up_score(
     u_screen_after: glam::Vec2,
     v_screen_after: glam::Vec2,
 ) -> f32 {
-    let use_minimal_roll =
-        axis_is_screen_horizontal(u_screen_before) && axis_is_screen_horizontal(v_screen_before);
-    if use_minimal_roll {
-        let delta_u = u_screen_after - u_screen_before;
-        let delta_v = v_screen_after - v_screen_before;
-        let u_preserve = axis_screen_preserve_weight(u_screen_before);
-        let v_preserve = axis_screen_preserve_weight(v_screen_before);
-        let mut score = (1.0 + 3.0 * u_preserve) * delta_u.length_squared()
-            + (1.0 + 3.0 * v_preserve) * delta_v.length_squared()
-            - 2.0 * u_preserve * u_screen_after.dot(u_screen_before)
-            - 2.0 * v_preserve * v_screen_after.dot(v_screen_before);
-        if !axes_match_sketch_convention(u_screen_after, v_screen_after) {
-            score += 0.2;
-        }
-        score
-    } else if axes_match_sketch_convention(u_screen_after, v_screen_after) {
-        0.0
-    } else {
-        1.0
+    // Minimal apparent roll (#577): how far the plane's u/v axes rotate on screen versus the
+    // current view. Entering a sketch takes the **shortest** orientation change rather than snapping
+    // to a fixed u-right/v-up convention (that forced a big spin on the ground plane). With the
+    // sketch axes now drawn and selectable, orientation no longer has to encode which way is
+    // "horizontal". A tiny nudge still favours the convention, but only to break near-ties — never
+    // enough to override a real roll difference.
+    let du = (u_screen_after - u_screen_before).length_squared();
+    let dv = (v_screen_after - v_screen_before).length_squared();
+    let mut score = du + dv;
+    if !axes_match_sketch_convention(u_screen_after, v_screen_after) {
+        score += 0.05;
     }
+    score
 }
 
 /// Camera up hint that places the sketch plane's u/v axes on the screen axes with the
@@ -331,29 +305,16 @@ pub fn sketch_view_up(
             // toward world +Z, keeping the ground at the bottom of the view.
             -cam_up.dot(Vec3::Z)
         } else {
+            // Take the axis-aligned orientation that rotates the on-screen content the least
+            // (#577), so entering a sketch is the shortest move rather than a forced spin.
             let u_screen_after = axis_screen_vec(u, target_look, hint);
             let v_screen_after = axis_screen_vec(v, target_look, hint);
-            // The plane's u-axis pointing screen-right and v-axis screen-up is
-            // authoritative (#187): a Horizontal constraint fixes a line along u and a
-            // Vertical constraint along v, so this is the only orientation where those
-            // constraints read horizontal/vertical on screen. Roll-preservation only
-            // breaks ties among convention-matching orientations (there is normally just
-            // one, so it rarely matters), never overrides the convention.
-            // Far larger than any roll score, so a convention-matching orientation
-            // always wins; roll only orders ties among matching orientations.
-            let convention_penalty =
-                if axes_match_sketch_convention(u_screen_after, v_screen_after) {
-                    0.0
-                } else {
-                    1000.0
-                };
-            convention_penalty
-                + sketch_view_up_score(
-                    u_screen_before,
-                    v_screen_before,
-                    u_screen_after,
-                    v_screen_after,
-                )
+            sketch_view_up_score(
+                u_screen_before,
+                v_screen_before,
+                u_screen_after,
+                v_screen_after,
+            )
         };
         if score < best_score {
             best_score = score;
@@ -1554,13 +1515,13 @@ mod tests {
     }
 
     #[test]
-    fn sketch_view_up_from_isometric_puts_u_axis_right_v_axis_up() {
+    fn sketch_view_up_from_isometric_takes_minimal_roll() {
         use crate::camera::Camera;
 
-        // Entering the ground (XY) sketch from the default isometric view must orient the
-        // plane's u-axis (+X) screen-right and v-axis (+Y) screen-up, so a Horizontal
-        // constraint (line along u) reads horizontal and a Vertical constraint (along v)
-        // reads vertical (#187) — not the prior roll-preserving "u-axis down" pick.
+        // Entering the ground (XY) sketch from the default isometric view keeps the plane's u/v
+        // axes screen-aligned but takes the **shortest** roll (#577) — it no longer spins around to
+        // force the u-right/v-up convention. The chosen orientation must roll no more than that
+        // convention pick would have.
         let cam = Camera::default();
         let frame = SketchFrame {
             origin: Vec3::ZERO,
@@ -1574,17 +1535,29 @@ mod tests {
         let target_look = (-view_dir).normalize_or_zero();
 
         let hint = sketch_view_up(view_dir, &frame, current_look, current_up);
-        // The v-axis (+Y) becomes screen-up.
-        assert!(
-            hint.dot(Vec3::Y) > 0.9,
-            "isometric entry should pick +Y (v-axis) up, got {hint:?}"
-        );
-        // And the u-axis (+X) lands screen-right with the v-axis screen-up.
+
+        // The axes stay screen-aligned: u and v each land on a screen axis and stay perpendicular.
         let u_screen = axis_screen_vec(frame.u_axis, target_look, hint);
         let v_screen = axis_screen_vec(frame.v_axis, target_look, hint);
+        let axis_aligned = |s: glam::Vec2| s.x.abs() < 0.05 || s.y.abs() < 0.05;
+        assert!(axis_aligned(u_screen) && axis_aligned(v_screen), "u={u_screen:?} v={v_screen:?}");
+        assert_ne!(
+            u_screen.x.abs() > u_screen.y.abs(),
+            v_screen.x.abs() > v_screen.y.abs(),
+            "u and v must lie on different screen axes"
+        );
+
+        // The pick rolls no more than forcing the +Y-up convention would have.
+        let u_before = axis_screen_vec(frame.u_axis, current_look, current_up);
+        let v_before = axis_screen_vec(frame.v_axis, current_look, current_up);
+        let roll = |h: Vec3| {
+            let ua = axis_screen_vec(frame.u_axis, target_look, h);
+            let va = axis_screen_vec(frame.v_axis, target_look, h);
+            (ua - u_before).length_squared() + (va - v_before).length_squared()
+        };
         assert!(
-            axes_match_sketch_convention(u_screen, v_screen),
-            "u should be screen-right and v screen-up: u={u_screen:?} v={v_screen:?}"
+            roll(hint) <= roll(Vec3::Y) + 1e-4,
+            "minimal-roll pick must not roll more than the convention pick"
         );
     }
 
@@ -1676,13 +1649,21 @@ mod tests {
             .project(frame.origin + frame.u_axis * 10.0, viewport, &vp)
             .unwrap();
 
-        assert!(
-            above.y < base.y,
-            "positive v should point up on screen (smaller egui y)"
-        );
-        assert!(
-            right.x > base.x,
-            "positive u should point right on screen"
+        // After the minimal-roll redesign (#577) the axes need not follow the u-right/v-up
+        // convention, but they must still be **screen-aligned**: each projects along a screen axis
+        // (not diagonal) and the two lie on different axes (stay perpendicular on screen).
+        let u_dir = right - base;
+        let v_dir = above - base;
+        let aligned = |d: egui::Vec2| {
+            let len = d.length();
+            len > 1e-3 && (d.x.abs() < 0.1 * len || d.y.abs() < 0.1 * len)
+        };
+        assert!(aligned(u_dir), "u should be screen-aligned, got {u_dir:?}");
+        assert!(aligned(v_dir), "v should be screen-aligned, got {v_dir:?}");
+        assert_ne!(
+            u_dir.x.abs() > u_dir.y.abs(),
+            v_dir.x.abs() > v_dir.y.abs(),
+            "u and v must lie on different screen axes"
         );
         let _ = sketch;
     }

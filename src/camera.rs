@@ -2062,10 +2062,10 @@ mod tests {
         );
     }
 
-    /// Sketch entry from isometric with u (X) on screen-right (#187): vertical drag should
-    /// tilt the view, not slide the X axis horizontally across the screen.
+    /// Sketch entry from isometric keeps the u (X) axis screen-**horizontal** (#577: minimal roll,
+    /// either side): a vertical drag should tilt the view, not slide the X axis across the screen.
     #[test]
-    fn sketch_orbit_vertical_drag_with_x_on_screen_right() {
+    fn sketch_orbit_vertical_drag_keeps_x_screen_horizontal() {
         use crate::actions::{Action, AppState};
         use crate::model::FaceId;
 
@@ -2078,8 +2078,8 @@ mod tests {
         while state.cam.tick_transition(0.05) {}
 
         assert!(
-            axis_along_screen_right(&state.cam, Vec3::X) > 0.7,
-            "precondition: the u-axis (X) should be on screen right in sketch"
+            axis_along_screen_right(&state.cam, Vec3::X).abs() > 0.7,
+            "precondition: the u-axis (X) should be screen-horizontal in sketch"
         );
         assert!(state.cam.has_custom_view_up());
 
@@ -2103,8 +2103,8 @@ mod tests {
              delta={delta:?}, before={before:?}, after={after:?}"
         );
         assert!(
-            axis_along_screen_right(&state.cam, Vec3::X) > 0.7,
-            "the u-axis (X) should stay on screen right after vertical orbit"
+            axis_along_screen_right(&state.cam, Vec3::X).abs() > 0.7,
+            "the u-axis (X) should stay screen-horizontal after vertical orbit"
         );
     }
 

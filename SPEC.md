@@ -182,13 +182,15 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   occludes the datum plane behind it for picking.
   When several faces project onto the cursor (e.g. the near and far faces of a solid), face
   picking resolves to the one nearest the camera, so a hover/click never selects a face hidden
-  behind the body. Entering a sketch reorients the camera head-on to the face and orients the
-  plane's own axes to the screen: the u-axis points screen-right and the v-axis screen-up, so a
-  **Horizontal** constraint (which fixes a line along u) reads horizontal and a **Vertical**
-  constraint (along v) reads vertical, regardless of the prior camera roll (#187). For a
-  near-vertical face (such as a side wall) the view instead orients with world up (+Z) toward the
-  top of the screen so the ground stays at the bottom and orbit behaves normally, rather than
-  rolling sideways.
+  behind the body. Entering a sketch reorients the camera head-on to the face and keeps the plane's
+  own axes **screen-aligned** (each u/v axis lands on a screen axis, the two perpendicular), but
+  takes the **shortest roll** from the current view rather than forcing a fixed u-right/v-up
+  convention (#577): on the ground plane the old convention spun the camera all the way around, and
+  with the sketch axes now drawn and selectable, orientation no longer has to encode which way is
+  "horizontal" (`sketch_view_up_score` minimises the on-screen rotation of the u/v axes, with a tiny
+  nudge toward the convention only to break near-ties). For a near-vertical face (such as a side
+  wall) the view instead orients with world up (+Z) toward the top of the screen so the ground stays
+  at the bottom and orbit behaves normally, rather than rolling sideways.
 - **Constraining to the sketched-on face itself (#26/#27):** while a sketch is open on one of
   a body's own faces (an extrusion cap or side wall — not a construction plane), that face's
   own analytic boundary loop (the same one used for its cap/side-wall geometry) is available as

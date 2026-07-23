@@ -14178,50 +14178,6 @@ mod tests {
         }
     }
 
-    /// Dominant screen direction of a world axis from the origin (egui y-down).
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum ScreenAxisDir {
-        Left,
-        Right,
-        Up,
-        Down,
-    }
-
-    fn axis_screen_dir(
-        cam: &crate::camera::Camera,
-        viewport: egui::Rect,
-        world_axis: Vec3,
-    ) -> Option<ScreenAxisDir> {
-        let vp = cam.view_proj(viewport);
-        let o = cam.project(Vec3::ZERO, viewport, &vp)?;
-        let p = cam.project(world_axis * 100.0, viewport, &vp)?;
-        let d = p - o;
-        if d.length() < 1.0 {
-            return None;
-        }
-        if d.x.abs() >= d.y.abs() {
-            Some(if d.x > 0.0 {
-                ScreenAxisDir::Right
-            } else {
-                ScreenAxisDir::Left
-            })
-        } else if d.y > 0.0 {
-            Some(ScreenAxisDir::Down)
-        } else {
-            Some(ScreenAxisDir::Up)
-        }
-    }
-
-    fn axis_layout(
-        cam: &crate::camera::Camera,
-        viewport: egui::Rect,
-    ) -> Option<(ScreenAxisDir, ScreenAxisDir)> {
-        Some((
-            axis_screen_dir(cam, viewport, Vec3::X)?,
-            axis_screen_dir(cam, viewport, Vec3::Y)?,
-        ))
-    }
-
     fn begin_default_sketch(state: &mut AppState) -> SketchId {
         state.apply(Action::BeginSketch {
             face: FaceId::ConstructionPlane(0),
@@ -19942,32 +19898,19 @@ mod tests {
     }
 
     #[test]
-    fn begin_sketch_from_isometric_puts_u_axis_right_v_axis_up() {
-        // #187: entering a sketch orients the plane's u-axis screen-right and v-axis
-        // screen-up, so a Horizontal constraint (line along u) reads horizontal and a
-        // Vertical constraint (along v) reads vertical — regardless of the prior roll.
+    fn begin_sketch_from_isometric_takes_minimal_roll() {
+        // #577: entering a sketch takes the shortest roll rather than forcing the u-right/v-up
+        // convention, but the plane's u/v axes still land **screen-aligned** (each along a screen
+        // axis, the two perpendicular) so sketching stays orthogonal.
         let viewport =
             egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
         let mut state = AppState::default();
-        let start = axis_layout(&state.cam, viewport).expect("startup axes visible");
-        assert_eq!(
-            start,
-            (ScreenAxisDir::Left, ScreenAxisDir::Right),
-            "isometric startup should show red left and green right"
-        );
 
         state.apply(Action::BeginSketch {
             face: FaceId::ConstructionPlane(0),
             viewport: None,
         });
         while state.cam.tick_transition(0.05) {}
-
-        let end = axis_layout(&state.cam, viewport).expect("sketch axes visible");
-        assert_eq!(
-            end,
-            (ScreenAxisDir::Right, ScreenAxisDir::Up),
-            "sketch entry should put the u-axis (red/X) right and v-axis (green/Y) up"
-        );
 
         let frame = sketch_frame(&state.doc, FaceId::ConstructionPlane(0)).unwrap();
         let vp = state.cam.view_proj(viewport);
@@ -19980,8 +19923,19 @@ mod tests {
             .cam
             .project(frame.origin + frame.v_axis * 10.0, viewport, &vp)
             .unwrap();
-        assert!(u.x > base.x + 5.0, "u should point right on screen");
-        assert!(v.y < base.y - 5.0, "v should point up on screen (egui y-down)");
+        let u_dir = u - base;
+        let v_dir = v - base;
+        let aligned = |d: egui::Vec2| {
+            let len = d.length();
+            len > 1e-3 && (d.x.abs() < 0.1 * len || d.y.abs() < 0.1 * len)
+        };
+        assert!(aligned(u_dir), "u should be screen-aligned, got {u_dir:?}");
+        assert!(aligned(v_dir), "v should be screen-aligned, got {v_dir:?}");
+        assert_ne!(
+            u_dir.x.abs() > u_dir.y.abs(),
+            v_dir.x.abs() > v_dir.y.abs(),
+            "u and v must lie on different screen axes"
+        );
     }
 
     #[test]
