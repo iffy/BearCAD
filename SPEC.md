@@ -1822,8 +1822,8 @@ modeled on SolveSpace (https://solvespace.com).
     terminates. Groups recurse with a tighter arity of **4** (`exploder::GROUP_ARITY`) so a drilled
     level (Back + ≤ 4) still totals ≤ 5. **Every loupe shows the whole crowd** dimmed for context,
     with only its own thing(s) highlighted — a leaf highlights its one target, a **group loupe**
-    highlights all its members (idle blue). A group reads distinct via a **light-grey disc** (not a
-    dashed frame) and a **big count badge** (member count, bottom-right). **Clicking a group loupe
+    highlights all its members (idle blue). A group reads distinct via a **blue border** — the same
+    blue as its highlighted members (#562) — and a **big count badge** (member count, bottom-right). **Clicking a group loupe
     drills in** (`ExploderState::path` pushes its node index): the other loupes hide and the group's
     members **spring out** of the clicked spot (a quick `DrillAnim` slide, `DRILL_ANIM_SECS`) as their
     own loupes at the new level (recursively grouped if still too many), and a **back-arrow loupe**

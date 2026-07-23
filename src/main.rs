@@ -14783,8 +14783,6 @@ impl App {
         }
         let idle_blue = egui::Color32::from_rgb(96, 165, 250);
         let dark_bg = egui::Color32::from_rgba_unmultiplied(20, 22, 28, 236);
-        // A group loupe reads distinct via a light-grey disc (rather than a dashed/doubled frame).
-        let group_bg = egui::Color32::from_rgba_unmultiplied(150, 154, 162, 240);
         for (i, it) in items.iter().enumerate() {
             let hot = ex.hovered == Some(i);
             // While the drill animation runs, every loupe slides out from the clicked group's spot.
@@ -14793,14 +14791,10 @@ impl App {
             // `content_zoom`× into this loupe, so a loupe magnifies exactly what the hitbox covers.
             let loupe = |s: egui::Pos2| center + (s - ex.origin) * content_zoom;
             let is_group = it.kind == DisplayKind::Group;
-            // Every loupe shows the WHOLE crowd dimmed for context; only this loupe's own things are
-            // highlighted (#559). On the light-grey group disc the context reads as a darker grey.
-            let (bg, context_color) = if is_group {
-                (group_bg, egui::Color32::from_gray(70))
-            } else {
-                (dark_bg, egui::Color32::from_gray(115))
-            };
-            painter.circle_filled(center, r_loupe, bg);
+            // Every loupe shows the WHOLE crowd dimmed grey for context; only this loupe's own things
+            // are highlighted (#559). Group and leaf loupes share the dark disc.
+            let context_color = egui::Color32::from_gray(115);
+            painter.circle_filled(center, r_loupe, dark_bg);
             // Context: the full crowd, minus this loupe's own leaves (drawn highlighted below).
             for (li, member) in ex.items.iter().enumerate() {
                 if it.leaves.contains(&li) {
@@ -14838,8 +14832,15 @@ impl App {
                     );
                 }
             }
-            // Frame: grey while idle, accent yellow when hovered/selected (thicker when hovered).
-            let frame = if active { accent } else { egui::Color32::from_gray(72) };
+            // Frame: accent yellow when hovered/selected; otherwise a **group** ring is the same blue
+            // as its highlighted members (#562), while a leaf/back ring is a faint grey.
+            let frame = if active {
+                accent
+            } else if is_group {
+                idle_blue
+            } else {
+                egui::Color32::from_gray(72)
+            };
             painter.circle_stroke(
                 center,
                 r_loupe,
