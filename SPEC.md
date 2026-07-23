@@ -1813,16 +1813,19 @@ modeled on SolveSpace (https://solvespace.com).
   (`construction::collect_pick_candidates`) is the crowd-returning counterpart to
   `resolve_pick_target` (which keeps only the nearest). Suppressed only during a drag/gizmo, an
   in-progress draw, or a dimension sub-state. A keyboard trigger, so desktop-oriented.
-  - **Hierarchical loupe grouping (#559):** a level never shows more than **5 loupes**
-    (`exploder::MAX_LOUPES`). When the crowd is larger, related/nearby things are **clustered into
-    group loupes** so the level shows ≤ 5 (a mix of single-element and group loupes). On Space the
-    flat crowd (`ExploderState::items`) is built into a grouping **tree** (`ExploderNode::Leaf` /
-    `Group`) by `build_exploder_tree`, which spatially partitions the screen anchors with a
-    deterministic farthest-first `cluster_points` (no RNG/clock — both throw here) into ≤ 5 clusters;
-    when clustering can't split the set into ≥ 2 non-trivial pieces (e.g. **coincident** stacked
-    endpoints) it falls back to even `chunks`, which always shrinks the input so the recursion
-    terminates. Groups recurse with a tighter arity of **4** (`exploder::GROUP_ARITY`) so a drilled
-    level (Back + ≤ 4) still totals ≤ 5. **Every loupe shows the whole crowd** dimmed for context,
+  - **Hierarchical loupe grouping (#559/#563):** a level never shows more than **5 loupes**
+    (`exploder::MAX_LOUPES`). When the crowd is larger it's grouped so the level shows ≤ 5 (a mix of
+    single-element and group loupes). On Space the flat crowd (`ExploderState::items`) is built into a
+    grouping **tree** (`ExploderNode::Leaf` / `Group`) by `build_exploder_tree`: the **top level
+    groups by element type** (#563) — all faces in one group, all edges in one, all vertices, all
+    lines, all circles (via `crowd_type_rank`); a type with a single member is a leaf. Each type
+    group is then subdivided **by proximity** (joined/touching things) with `build_spatial_tree`,
+    which partitions the screen anchors with a deterministic farthest-first `cluster_points` (no
+    RNG/clock — both throw here); when clustering can't split the set into ≥ 2 non-trivial pieces
+    (e.g. **coincident** stacked endpoints) it falls back to even `chunks`, which always shrinks the
+    input so the recursion terminates. (If the crowd spans more than 5 distinct types — rare — it
+    falls back to pure spatial clustering so the level still fits.) Spatial groups recurse with a
+    tighter arity of **4** (`exploder::GROUP_ARITY`) so a drilled level (Back + ≤ 4) still totals ≤ 5. **Every loupe shows the whole crowd** dimmed for context,
     with only its own thing(s) highlighted — a leaf highlights its one target, a **group loupe**
     highlights all its members (idle blue). A group reads distinct via a **blue border** — the same
     blue as its highlighted members (#562) — and a **big count badge** (member count, bottom-right). **Clicking a group loupe

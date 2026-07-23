@@ -946,7 +946,7 @@ fn cluster_points(points: &[egui::Pos2], k: usize) -> Vec<Vec<usize>> {
 /// cluster, so when fewer than two non-trivial clusters come back we fall back to even `chunks` of
 /// `ceil(len / max_children)`. Every chunk is strictly shorter than the input, so the recursion
 /// always shrinks and terminates.
-fn build_exploder_tree(idxs: &[usize], pts: &[egui::Pos2], max_children: usize) -> Vec<ExploderNode> {
+fn build_spatial_tree(idxs: &[usize], pts: &[egui::Pos2], max_children: usize) -> Vec<ExploderNode> {
     if idxs.len() <= max_children {
         return idxs.iter().map(|&i| ExploderNode::Leaf(i)).collect();
     }
@@ -972,7 +972,53 @@ fn build_exploder_tree(idxs: &[usize], pts: &[egui::Pos2], max_children: usize) 
             if g.len() == 1 {
                 ExploderNode::Leaf(g[0])
             } else {
-                ExploderNode::Group(build_exploder_tree(g, pts, exploder::GROUP_ARITY))
+                ExploderNode::Group(build_spatial_tree(g, pts, exploder::GROUP_ARITY))
+            }
+        })
+        .collect()
+}
+
+/// The Selection-Exploder crowd type a pick target belongs to (#563), for the **top-level** grouping
+/// (all faces together, all edges together, all vertices, …). Lower rank sorts first.
+fn crowd_type_rank(kind: &construction::PickTargetKind) -> u8 {
+    use construction::PickTargetKind as K;
+    match kind {
+        K::BodyFace { .. } => 0,
+        K::BodyEdge { .. } => 1,
+        K::Line(_) => 2,
+        K::Circle(_) => 3,
+        K::Point(_) | K::BodyVertex { .. } => 4, // vertices (sketch points + body corners)
+        K::ConstructionPlane(_) => 5,
+        K::GlobalAxis(_) => 6,
+        K::Ground(_) => 7,
+    }
+}
+
+/// Build the exploder's grouping tree (#559/#563): the **top level groups by element type** (all
+/// faces in one group, all edges in one, all vertices, …), and each type with more than one member
+/// is then grouped **by proximity** (joined/touching things) via [`build_spatial_tree`]. A type with
+/// a single member is a leaf. If the crowd spans more distinct types than `MAX_LOUPES` (rare), the
+/// whole thing falls back to pure spatial clustering so the level still fits.
+fn build_exploder_tree(
+    idxs: &[usize],
+    pts: &[egui::Pos2],
+    kinds: &[construction::PickTargetKind],
+) -> Vec<ExploderNode> {
+    // Partition by type rank, preserving a stable type order.
+    let mut by_type: std::collections::BTreeMap<u8, Vec<usize>> = std::collections::BTreeMap::new();
+    for &i in idxs {
+        by_type.entry(crowd_type_rank(&kinds[i])).or_default().push(i);
+    }
+    if by_type.len() > exploder::MAX_LOUPES {
+        return build_spatial_tree(idxs, pts, exploder::MAX_LOUPES);
+    }
+    by_type
+        .into_values()
+        .map(|group| {
+            if group.len() == 1 {
+                ExploderNode::Leaf(group[0])
+            } else {
+                ExploderNode::Group(build_spatial_tree(&group, pts, exploder::GROUP_ARITY))
             }
         })
         .collect()
@@ -1228,10 +1274,9 @@ fn draw_pick_target_loupe(
             }
         }
         PK::BodyFace { triangles, .. } => {
-            // Shade the face, not just its outline: fill the projected+magnified triangles in a
-            // translucent version of the colour (clipped to the loupe disc), then stroke the
-            // boundary on top. The highlighted face gets the blue/yellow fill; context faces stay
-            // outline-only so they don't muddy the loupe.
+            // A **highlighted** face reads as a shaded fill alone — no boundary edges, so it doesn't
+            // look like its edges are also highlighted (#564). A **context** face is outline-only so
+            // it doesn't muddy the loupe.
             if is_highlight {
                 let fill = egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 92);
                 for tri in triangles {
@@ -1246,9 +1291,10 @@ fn draw_pick_target_loupe(
                         }
                     }
                 }
-            }
-            for (a, b) in construction::coplanar_face_boundary(triangles) {
-                seg(a, b);
+            } else {
+                for (a, b) in construction::coplanar_face_boundary(triangles) {
+                    seg(a, b);
+                }
             }
         }
         PK::GlobalAxis(axis) => {
@@ -14741,7 +14787,9 @@ impl App {
                 .map(|h| project(h.anchor).unwrap_or(pp))
                 .collect();
             let idxs: Vec<usize> = (0..items.len()).collect();
-            let tree = build_exploder_tree(&idxs, &anchors_screen, exploder::MAX_LOUPES);
+            let kinds: Vec<construction::PickTargetKind> =
+                items.iter().map(|h| h.target.clone()).collect();
+            let tree = build_exploder_tree(&idxs, &anchors_screen, &kinds);
             self.exploder = Some(ExploderState {
                 origin: pp,
                 items,
@@ -20760,43 +20808,45 @@ mod tests {
     }
 
     #[test]
-    fn build_exploder_tree_respects_level_maxima_and_recovers_all_leaves() {
-        // 12 points scattered on a grid, MAX_LOUPES=5 / GROUP_ARITY=4.
+    fn build_exploder_tree_groups_top_level_by_type_then_spatially() {
+        use construction::PickTargetKind as K;
+        // 12 things across 3 types (lines, edges, faces), 4 of each, scattered on a grid.
         let mut pts = Vec::new();
+        let mut kinds = Vec::new();
         for i in 0..12u32 {
-            let x = (i % 4) as f32 * 50.0;
-            let y = (i / 4) as f32 * 50.0;
-            pts.push(egui::pos2(x, y));
+            pts.push(egui::pos2((i % 4) as f32 * 50.0, (i / 4) as f32 * 50.0));
+            kinds.push(match i / 4 {
+                0 => K::Line(i as usize),
+                1 => K::BodyEdge { body: 0, a: Vec3::ZERO, b: Vec3::X },
+                _ => K::BodyFace { body: 0, triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]], normal: Vec3::Z },
+            });
         }
         let idxs: Vec<usize> = (0..12).collect();
-        let tree = build_exploder_tree(&idxs, &pts, exploder::MAX_LOUPES);
-        assert!(
-            tree.len() <= exploder::MAX_LOUPES,
-            "root shows at most MAX_LOUPES nodes, got {}",
-            tree.len()
-        );
-        assert!(
-            max_group_arity(&tree) <= exploder::GROUP_ARITY,
-            "no group exceeds GROUP_ARITY children, got {}",
-            max_group_arity(&tree)
-        );
+        let tree = build_exploder_tree(&idxs, &pts, &kinds);
+        // Top level: one node per type (3), each a group of 4 members (all the same type).
+        assert_eq!(tree.len(), 3, "one top-level group per element type");
+        for node in &tree {
+            let mut ls = Vec::new();
+            leaf_indices(node, &mut ls);
+            let rank = crowd_type_rank(&kinds[ls[0]]);
+            assert!(ls.iter().all(|&l| crowd_type_rank(&kinds[l]) == rank), "a top group is one type");
+        }
+        assert!(max_group_arity(&tree) <= exploder::GROUP_ARITY);
         let mut leaves = tree_leaves(&tree);
         leaves.sort_unstable();
         assert_eq!(leaves, idxs, "every input leaf is recovered exactly once");
     }
 
     #[test]
-    fn build_exploder_tree_terminates_on_coincident_points() {
-        // 20 identical points can't be split spatially — the even-chunk fallback must still make
-        // progress and terminate, yielding <= MAX_LOUPES roots and recovering all leaves.
+    fn build_exploder_tree_terminates_on_coincident_same_type_points() {
+        use construction::PickTargetKind as K;
+        // 20 identical single-type points can't be split spatially — the even-chunk fallback in
+        // build_spatial_tree must still terminate, all under one type group.
         let pts = vec![egui::pos2(7.0, 7.0); 20];
+        let kinds: Vec<K> = (0..20).map(|i| K::Line(i)).collect();
         let idxs: Vec<usize> = (0..20).collect();
-        let tree = build_exploder_tree(&idxs, &pts, exploder::MAX_LOUPES);
-        assert!(
-            tree.len() <= exploder::MAX_LOUPES,
-            "coincident crowd still <= MAX_LOUPES roots, got {}",
-            tree.len()
-        );
+        let tree = build_exploder_tree(&idxs, &pts, &kinds);
+        assert_eq!(tree.len(), 1, "one type → one top group");
         assert!(max_group_arity(&tree) <= exploder::GROUP_ARITY);
         let mut leaves = tree_leaves(&tree);
         leaves.sort_unstable();
