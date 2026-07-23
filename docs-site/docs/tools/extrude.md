@@ -10,10 +10,20 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 **Shortcut:** `E`
 
 Extrude turns a flat sketch face into a solid — or carves into an existing one. Click one
-or more faces in the same sketch plane, then drag the arrow handle or type a distance
-(expressions work) and press **Enter**.
+or more faces in the same sketch plane, set a depth, and press **Enter** (or the **Extrude**
+button in the panel).
 
 ![An 80 x 50 mm rectangle extruded 20 mm into a solid block](/img/screenshots/extrude.png)
+
+Set the depth any of these ways:
+
+- **Drag** the arrow handle in the 3D view.
+- **Type** a distance (expressions work) in the **Distance** field — in the 3D view or the
+  panel; the two mirror each other.
+- **Extrude up to** a plane or face — see below.
+
+Nothing commits until you press **Enter** or the **Extrude** button, so you can keep
+adjusting the distance or target first.
 
 - With two **concentric circles**, click between them to extrude just the **ring**.
 - Double-click a finished extrusion (or right-click → **Edit**) to change its faces or
@@ -23,9 +33,11 @@ or more faces in the same sketch plane, then drag the arrow handle or type a dis
 
 ## Extrude up to something
 
-While dragging the handle, hover a face, plane, or vertex: the depth snaps to it and stays
-tied to it — if that target moves later, the extrusion follows. Works for slanted surfaces
-too.
+Drag the handle onto a face, plane, or vertex and the depth snaps to it and stays tied to
+it — if that target moves later, the extrusion follows. Works for slanted surfaces too. The
+target shows in the panel's **Up to** picker; you can also focus that picker and click the
+plane or face directly, or clear it there to go back to a plain distance. Setting a target
+clears the Distance field, since the depth then comes from the target.
 
 ## Adding to or cutting a body
 

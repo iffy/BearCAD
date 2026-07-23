@@ -490,6 +490,16 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     preview reflects the snapped target immediately while still dragging (not just after
     release), so extruding to a slanted or irregular target shows the actual resulting shape —
     e.g. a slanted top cap — rather than a generic blind/rectangular extrude (#63).
+  - **In-context distance / target / commit (#584):** the Extrude tool's context section carries a
+    full alternative to the 3D gizmo — a **Distance** value input that mirrors the floating 3D field,
+    an **"Up to"** element picker (single-select, planes/faces) for the extrude-to target, and an
+    **Extrude** button. Typing in the Distance field drives the depth and clears any target; focusing
+    the "Up to" picker arms **target-pick mode** so the next viewport click on a plane/face sets the
+    target; dragging the gizmo onto a plane/face **sets that target in the picker and nulls the
+    Distance field** (the depth then comes from the target). Crucially, a gizmo release-click no
+    longer *commits* — it just locks in the current distance/target; the extrusion is **completed
+    only on Enter or the Extrude button** (`context::ExtrudeControl`/`ExtrudeEdit`, wired through
+    `App::extrude_target_pick`).
   - **Body target (#32/#35)**: a `Body`'s source is one or more extrusions (`BodySource::Extrusion`
     for one, `BodySource::Extrusions` for several; `BodySource::Solid { add, cut }` once some of
     its extrusions are subtracted rather than added — see §3.3). Extruding from a sketch on an

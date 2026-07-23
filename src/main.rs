@@ -1602,6 +1602,9 @@ struct App {
     extrude_gizmo_drag: Option<ExtrudeGizmoDrag>,
     /// Object the extrude gizmo is currently snapped to (applied on release).
     pending_extrude_target: Option<model::ExtrudeTarget>,
+    /// Armed by the context pane's extrude-to target picker (#584): while true, the next viewport
+    /// click on a plane/face sets the extrusion's target instead of toggling a profile face.
+    extrude_target_pick: bool,
     vertex_treatment_gizmo_drag: Option<VertexTreatmentGizmoDrag>,
     /// Push/pull gizmo drag state for the 3D edge chamfer/fillet tool (#77); parallel to
     /// `vertex_treatment_gizmo_drag`.
@@ -2369,6 +2372,7 @@ impl App {
             angle_gizmo_drag: None,
             extrude_gizmo_drag: None,
             pending_extrude_target: None,
+            extrude_target_pick: false,
             vertex_treatment_gizmo_drag: None,
             edge_treatment_gizmo_drag: None,
             revolve_gizmo_drag: None,
@@ -3623,6 +3627,7 @@ impl App {
         if self.state.creating_extrusion.is_none() {
             self.extrude_gizmo_drag = None;
             self.pending_extrude_target = None;
+            self.extrude_target_pick = false;
         }
 
         // Snapshot the pending extrusion so we can mutate state without holding a borrow.
@@ -3675,10 +3680,16 @@ impl App {
                             self.state.cam.eye(),
                             self.state.creating_extrusion.as_ref().and_then(|ce| ce.edit_index),
                         ) {
-                            self.pending_extrude_target = Some(target);
+                            // Dragging the gizmo onto a plane/face sets it as the extrude-to target
+                            // (reflected in the context picker) and nulls the context distance field
+                            // (#584) — the depth now comes from the target.
+                            self.pending_extrude_target = Some(target.clone());
+                            self.state
+                                .apply(Action::SetExtrudeTarget { target: Some(target) });
                             self.state.apply(Action::SetExtrudeDistance { distance: dist });
                         } else {
                             self.pending_extrude_target = None;
+                            self.state.apply(Action::SetExtrudeTarget { target: None });
                             let new_distance = construction::offset_from_normal_drag(
                                 origin,
                                 normal,
@@ -3695,15 +3706,45 @@ impl App {
             }
         }
 
-        // A click while following commits the extrusion, snapping to any pending target.
+        // A click while following just **releases** the gizmo, locking in the current distance /
+        // target (#584). The extrusion is completed on Enter or the context "Extrude" button, not
+        // on this click, so the user can keep adjusting the distance field or target picker.
         if following && primary_pressed {
             let target = self.pending_extrude_target.take();
             self.state.apply(Action::SetExtrudeTarget { target });
-            self.state.apply(Action::CommitExtrusion);
             self.extrude_gizmo_drag = None;
             return;
         }
         if gizmo_active {
+            return;
+        }
+
+        // Target-pick mode (#584): armed by focusing the context "Up to" picker — the next click on
+        // a plane/face sets the extrude-to target instead of toggling a profile face.
+        if primary_pressed && self.extrude_target_pick {
+            if let Some(pp) = pointer_screen {
+                if let Some((faces, _)) = &pending {
+                    if let Some((origin, normal)) =
+                        extrude::faces_anchor(&self.state.doc, faces)
+                    {
+                        if let Some((target, dist)) = pick_extrude_target(
+                            pp,
+                            project,
+                            &self.state.doc,
+                            origin,
+                            normal,
+                            faces,
+                            self.state.cam.eye(),
+                            self.state.creating_extrusion.as_ref().and_then(|ce| ce.edit_index),
+                        ) {
+                            self.state
+                                .apply(Action::SetExtrudeTarget { target: Some(target) });
+                            self.state.apply(Action::SetExtrudeDistance { distance: dist });
+                        }
+                    }
+                }
+            }
+            self.extrude_target_pick = false;
             return;
         }
 
@@ -7992,6 +8033,24 @@ impl eframe::App for App {
                         })
                         .unwrap_or_default()
                 }),
+                // Extrude tool distance/target/commit controls (#584).
+                extrude: (self.state.tool == Tool::Extrude)
+                    .then(|| self.state.creating_extrusion.as_ref())
+                    .flatten()
+                    .map(|ce| {
+                        let has_target = ce.target.is_some();
+                        context::ExtrudeControl {
+                            // Null (empty) while an extrude-to target drives the depth (#584).
+                            distance: if has_target { String::new() } else { ce.text.clone() },
+                            target_rows: ce
+                                .target
+                                .as_ref()
+                                .map(|t| vec![extrude_target_label(&self.state.doc, t)])
+                                .unwrap_or_default(),
+                            target_focused: self.extrude_target_pick,
+                            can_commit: !ce.faces.is_empty(),
+                        }
+                    }),
                 // #157/#167: the Chamfer/Fillet selection picker — rows for the in-progress
                 // edge set (empty rows still show the picker with its pick hint).
                 edge_treatment_rows: (matches!(self.state.tool, Tool::Chamfer | Tool::Fillet)
@@ -8677,6 +8736,7 @@ impl eframe::App for App {
             let mut extrude_body_mode_change: Option<actions::ExtrudeBodyMode> = None;
             let mut extrude_symmetric_change: Option<bool> = None;
             let mut extrude_face_remove: Option<Option<usize>> = None;
+            let mut extrude_edit: Option<context::ExtrudeEdit> = None;
             let mut units_change: Option<context::UnitsChoice> = None;
             let mut edge_picker_edit: Option<Option<usize>> = None;
             let mut selection_edit: Option<context::SelectionEdit> = None;
@@ -8735,6 +8795,7 @@ impl eframe::App for App {
                         &mut |mode| extrude_body_mode_change = Some(mode),
                         &mut |symmetric| extrude_symmetric_change = Some(symmetric),
                         &mut |remove| extrude_face_remove = Some(remove),
+                        &mut |edit| extrude_edit = Some(edit),
                         &mut |choice| units_change = Some(choice),
                         &mut |edit| edge_picker_edit = Some(edit),
                         &mut |edit| selection_edit = Some(edit),
@@ -8864,6 +8925,34 @@ impl eframe::App for App {
                     };
                     for face in faces {
                         self.state.apply(Action::ToggleExtrudeFace { face });
+                    }
+                }
+            }
+            if let Some(edit) = extrude_edit {
+                // The Extrude tool's in-context distance/target/commit controls (#584).
+                match edit {
+                    context::ExtrudeEdit::Distance(text) => {
+                        // Typing a distance drives the depth and clears any extrude-to target.
+                        self.state.apply(Action::SetExtrudeTarget { target: None });
+                        if let Some(ce) = self.state.creating_extrusion.as_mut() {
+                            ce.text = text;
+                            ce.user_edited = true;
+                        }
+                    }
+                    context::ExtrudeEdit::TargetFocus => {
+                        // Arm target-pick mode: the next viewport click on a plane/face sets it.
+                        self.extrude_target_pick = true;
+                    }
+                    context::ExtrudeEdit::ClearTarget => {
+                        self.extrude_target_pick = false;
+                        self.pending_extrude_target = None;
+                        self.state.apply(Action::SetExtrudeTarget { target: None });
+                    }
+                    context::ExtrudeEdit::Commit => {
+                        self.state.apply(Action::CommitExtrusion);
+                        self.extrude_target_pick = false;
+                        self.extrude_gizmo_drag = None;
+                        self.pending_extrude_target = None;
                     }
                 }
             }
@@ -11941,6 +12030,19 @@ fn handle_committed_dim_label_double_click(
 /// whole picked shape — see `extrude::overlapping_partner`/`resolve_boolean_click`. Any other
 /// case (no overlap, ambiguous 3+-way overlap, or the click landing outside both loops) falls
 /// back to today's whole-shape picking.
+/// A short label for an extrude-to target, shown in the context pane's "Up to" picker (#584).
+fn extrude_target_label(doc: &model::Document, target: &model::ExtrudeTarget) -> String {
+    match target {
+        model::ExtrudeTarget::Plane(i) => {
+            crate::names::node_label(doc, hierarchy::HierarchyNode::ConstructionPlane(*i))
+        }
+        model::ExtrudeTarget::Vertex(_) => "Vertex".to_string(),
+        model::ExtrudeTarget::Face(_)
+        | model::ExtrudeTarget::BodyFace(_)
+        | model::ExtrudeTarget::RepeatedFace { .. } => "Face".to_string(),
+    }
+}
+
 fn pick_extrude_face(
     pp: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,

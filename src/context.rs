@@ -49,6 +49,9 @@ pub struct ContextInput<'a> {
     /// One label per picked extrude profile face, shown in the Extrude tool's face element
     /// picker (#268); `None` when the Extrude tool isn't active.
     pub extrude_faces: Option<Vec<String>>,
+    /// The Extrude tool's in-context distance/target/commit controls (#584); `Some` while an
+    /// extrusion is in progress.
+    pub extrude: Option<ExtrudeControl>,
     /// Selection-picker rows for the active tool (#157/#167): `Some` whenever the tool
     /// collects a selection set (Chamfer/Fillet outside a sketch — one row per edge in the
     /// in-progress treatment, empty while nothing is picked yet), `None` for other tools.
@@ -683,6 +686,8 @@ pub struct ContextPaneContent {
     pub extrude_body: Option<ExtrudeBodyControl>,
     /// Picked extrude profile faces, shown as an element picker (#268).
     pub extrude_faces: Option<Vec<String>>,
+    /// In-context distance/target/commit controls for the Extrude tool (#584).
+    pub extrude: Option<ExtrudeControl>,
     /// Default length/angle unit picker: document-level when nothing is selected, or
     /// per-sketch (with a "follow document" inherit option) when a single sketch is
     /// selected (#52).
@@ -828,6 +833,35 @@ pub struct ExtrudeBodyControl {
     pub merge_body_label: String,
     /// Symmetric extrude (#504).
     pub symmetric: bool,
+}
+
+/// The Extrude tool's in-context distance field, extrude-to target picker, and commit button
+/// (#584): a full alternative to driving the extrusion from the 3D gizmo/value field.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExtrudeControl {
+    /// Distance value-input text — mirrors the 3D field. **Empty ("" → null)** while an
+    /// extrude-to target is set, since the depth then comes from the target plane/face.
+    pub distance: String,
+    /// The extrude-to target picker's rows: one label when a plane/face target is set, else empty.
+    pub target_rows: Vec<String>,
+    /// Whether the target picker shows the focus ring (armed so the next viewport click on a
+    /// plane/face sets the target).
+    pub target_focused: bool,
+    /// Whether an extrusion is currently committable (at least one profile face picked).
+    pub can_commit: bool,
+}
+
+/// Edits driven by the Extrude tool's context section (#584).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExtrudeEdit {
+    /// The distance value-input text changed (clears any extrude-to target).
+    Distance(String),
+    /// The target picker was focused — arm target-pick mode.
+    TargetFocus,
+    /// Clear the extrude-to target (depth reverts to the distance field).
+    ClearTarget,
+    /// The "Extrude" button was pressed — commit the extrusion.
+    Commit,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1036,6 +1070,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         }
     });
     let extrude_faces = input.extrude_faces.clone();
+    let extrude = input.extrude.clone();
     // The Repeat tool's own context is busy enough; its distances are plain lengths, so the
     // Default-units section isn't shown while it's active (#257). The Text tool has nothing to do
     // with the document's default units either, so it's suppressed there too (#330).
@@ -1233,6 +1268,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             snapping,
             extrude_body,
             extrude_faces: extrude_faces.clone(),
+            extrude: extrude.clone(),
             units,
             edge_picker: edge_picker.clone(),
             selection_picker: None,
@@ -1285,6 +1321,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             snapping,
             extrude_body,
             extrude_faces: extrude_faces.clone(),
+            extrude: extrude.clone(),
             units,
             edge_picker: edge_picker.clone(),
             selection_picker: None,
@@ -1337,6 +1374,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             snapping,
             extrude_body,
             extrude_faces: extrude_faces.clone(),
+            extrude: extrude.clone(),
             units,
             edge_picker: edge_picker.clone(),
             selection_picker: None,
@@ -1392,6 +1430,7 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
         snapping,
         extrude_body,
         extrude_faces: extrude_faces.clone(),
+        extrude: extrude.clone(),
         units,
         edge_picker,
         selection_picker,
@@ -1786,6 +1825,7 @@ pub fn show_pane(
     on_extrude_body_mode_changed: &mut impl FnMut(ExtrudeBodyMode),
     on_extrude_symmetric_changed: &mut impl FnMut(bool),
     on_extrude_face_remove: &mut impl FnMut(Option<usize>),
+    on_extrude_edit: &mut impl FnMut(ExtrudeEdit),
     on_units_changed: &mut impl FnMut(UnitsChoice),
     on_edge_picker_edit: &mut impl FnMut(Option<usize>),
     on_selection_edit: &mut impl FnMut(SelectionEdit),
@@ -3746,6 +3786,54 @@ pub fn show_pane(
         });
     }
 
+    if let Some(control) = &content.extrude {
+        any_control = true;
+        // Distance value input mirroring the 3D field (#584). Shows empty ("null") while an
+        // extrude-to target drives the depth; typing here clears the target.
+        labeled_row(ui, "Distance", |ui| {
+            ui.add_enabled_ui(controls_enabled, |ui| {
+                let mut text = control.distance.clone();
+                let resp = crate::expression_input::ValueInput::new(
+                    "extrude_distance",
+                    crate::expression_input::ValueKind::Length,
+                )
+                .width(90.0)
+                .show(ui, &mut text, doc);
+                if resp.changed() {
+                    on_extrude_edit(ExtrudeEdit::Distance(text));
+                }
+            });
+        });
+        // Extrude-to target picker (#584): a plane or face to extrude up to. Focus it, then click a
+        // plane/face in the viewport — or drag the gizmo onto one, which fills this in.
+        labeled_row_top(ui, "Up to", |ui| {
+            if let Some(event) = crate::element_picker::show_labeled(
+                ui,
+                "extrude_target",
+                control.target_focused,
+                true,
+                crate::icons::IconId::Plane,
+                &control.target_rows,
+            ) {
+                match event {
+                    crate::element_picker::PickerEvent::Focus => {
+                        on_extrude_edit(ExtrudeEdit::TargetFocus)
+                    }
+                    crate::element_picker::PickerEvent::Remove(_)
+                    | crate::element_picker::PickerEvent::Clear => {
+                        on_extrude_edit(ExtrudeEdit::ClearTarget)
+                    }
+                }
+            }
+        });
+        ui.add_enabled_ui(controls_enabled && control.can_commit, |ui| {
+            if ui.button("Extrude").clicked() {
+                on_extrude_edit(ExtrudeEdit::Commit);
+            }
+        });
+        ui.add_space(4.0);
+    }
+
     if let Some(control) = &content.extrude_body {
         any_control = true;
         let mut mode = control.mode;
@@ -4184,6 +4272,7 @@ mod tests {
             extrude_body_mode: None,
             extrude_symmetric: None,
             extrude_faces: None,
+            extrude: None,
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
@@ -4320,6 +4409,43 @@ mod tests {
         );
     }
 
+    /// #584: the Extrude tool surfaces its in-context distance/target/commit controls.
+    #[test]
+    fn extrude_tool_surfaces_distance_and_target_controls() {
+        let doc = Document::default();
+        let selection = SceneSelection::default();
+        // Distance-driven: a distance value, empty target rows, committable.
+        let content = context_pane_content(&ContextInput {
+            tool: Tool::Extrude,
+            extrude: Some(ExtrudeControl {
+                distance: "15 mm".to_string(),
+                target_rows: Vec::new(),
+                target_focused: false,
+                can_commit: true,
+            }),
+            ..input(&doc, &selection)
+        });
+        let control = content.extrude.expect("extrude control present");
+        assert_eq!(control.distance, "15 mm");
+        assert!(control.target_rows.is_empty());
+        assert!(control.can_commit);
+
+        // Target-driven: a picked "Up to" target with the distance field nulled.
+        let content = context_pane_content(&ContextInput {
+            tool: Tool::Extrude,
+            extrude: Some(ExtrudeControl {
+                distance: String::new(),
+                target_rows: vec!["Plane 2".to_string()],
+                target_focused: false,
+                can_commit: true,
+            }),
+            ..input(&doc, &selection)
+        });
+        let control = content.extrude.expect("extrude control present");
+        assert!(control.distance.is_empty(), "distance is null while a target drives the depth");
+        assert_eq!(control.target_rows, vec!["Plane 2".to_string()]);
+    }
+
     /// #157/#167: the selection picker surfaces whenever the input carries rows (the
     /// Chamfer/Fillet edge set), including an empty set (which renders the pick hint).
     #[test]
@@ -4344,6 +4470,7 @@ mod tests {
             extrude_body_mode: None,
             extrude_symmetric: None,
             extrude_faces: None,
+            extrude: None,
             edge_treatment_rows: Some(vec!["Block — vertical 0".to_string()]),
             loft_rows: None,
             calibrate_image: None,
@@ -4426,6 +4553,7 @@ mod tests {
             extrude_body_mode: None,
             extrude_symmetric: None,
             extrude_faces: None,
+            extrude: None,
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
@@ -4712,6 +4840,7 @@ mod tests {
                 snapping: None,
                 extrude_body: None,
                 extrude_faces: None,
+                extrude: None,
                 edge_picker: None,
                 selection_picker: Some(ElementPicker::select_everything()),
                 tool_pickers: Vec::new(),
@@ -4781,6 +4910,7 @@ mod tests {
             extrude_body_mode: None,
             extrude_symmetric: None,
             extrude_faces: None,
+            extrude: None,
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
@@ -4832,6 +4962,7 @@ mod tests {
                 snapping: None,
                 extrude_body: None,
                 extrude_faces: None,
+                extrude: None,
                 edge_picker: None,
                 selection_picker: None,
             tool_pickers: Vec::new(),
@@ -4901,6 +5032,7 @@ mod tests {
             extrude_body_mode: None,
             extrude_symmetric: None,
             extrude_faces: None,
+            extrude: None,
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
@@ -4965,6 +5097,7 @@ mod tests {
                 snapping: None,
                 extrude_body: None,
                 extrude_faces: None,
+                extrude: None,
                 // #213: the Select tool surfaces the selection through the unified element picker.
                 edge_picker: None,
                 selection_picker: Some({
@@ -5087,6 +5220,7 @@ mod tests {
             extrude_body_mode: None,
             extrude_symmetric: None,
             extrude_faces: None,
+            extrude: None,
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
@@ -5153,6 +5287,7 @@ mod tests {
             extrude_body_mode: None,
             extrude_symmetric: None,
             extrude_faces: None,
+            extrude: None,
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
@@ -5206,6 +5341,7 @@ mod tests {
                 snapping: None,
                 extrude_body: None,
                 extrude_faces: None,
+                extrude: None,
                 edge_picker: None,
                 selection_picker: None,
             tool_pickers: Vec::new(),
@@ -5266,6 +5402,7 @@ mod tests {
             extrude_body_mode: None,
             extrude_symmetric: None,
             extrude_faces: None,
+            extrude: None,
             edge_treatment_rows: None,
             loft_rows: None,
             calibrate_image: None,
