@@ -572,6 +572,10 @@ struct DisplayItem {
     target: Option<construction::PickTargetKind>,
     /// For a Group, its index among the current level's nodes (what `path` pushes to drill in).
     node: Option<usize>,
+    /// For the Back item (#561): one entry per **sibling** loupe at the level we came from (the leaf
+    /// item-indices under each), so the Back loupe can draw them gathered into a mini-cluster. Empty
+    /// for Leaf/Group.
+    siblings: Vec<Vec<usize>>,
 }
 
 /// A quick "loupes spring out of the group loupe" animation (#559): when a group is drilled into,
@@ -614,12 +618,11 @@ impl ExploderState {
     fn loupe_radius(&self) -> f32 {
         exploder::loupe_radius() * self.zoom_mul
     }
-    /// The nodes shown at the current drill level (#559): walk `tree` following `path`, stepping
-    /// into each drilled group's children. Stops early if a `path` entry isn't a `Group` (never
-    /// happens in practice, since only groups are pushed).
-    fn current_nodes(&self) -> &[ExploderNode] {
+    /// The nodes at the level reached by following `path_prefix` from the root (#559). Stops early
+    /// if an entry isn't a `Group` (never happens in practice, since only groups are pushed).
+    fn nodes_at(&self, path_prefix: &[usize]) -> &[ExploderNode] {
         let mut nodes: &[ExploderNode] = &self.tree;
-        for &p in &self.path {
+        for &p in path_prefix {
             match nodes.get(p) {
                 Some(ExploderNode::Group(children)) => nodes = children,
                 _ => break,
@@ -628,18 +631,37 @@ impl ExploderState {
         nodes
     }
 
-    /// The loupes to show at the current drill level (#559): an optional Back arrow (when drilled
-    /// in), then one slot per current node — a `Leaf` becomes a single-element loupe, a `Group`
-    /// becomes a group loupe carrying the flat list of all leaf item-indices beneath it.
+    /// The nodes shown at the current drill level (#559).
+    fn current_nodes(&self) -> &[ExploderNode] {
+        self.nodes_at(&self.path)
+    }
+
+    /// The loupes to show at the current drill level (#559): an optional Back item (when drilled in),
+    /// then one slot per current node — a `Leaf` becomes a single-element loupe, a `Group` becomes a
+    /// group loupe carrying the flat list of all leaf item-indices beneath it.
     fn display_items(&self) -> Vec<DisplayItem> {
         let mut out: Vec<DisplayItem> = Vec::new();
-        if !self.path.is_empty() {
+        if let Some((&drilled, parent_path)) = self.path.split_last() {
+            // The Back loupe gathers the SIBLINGS we drilled away from (#561): the parent level's
+            // other nodes, each as a mini-loupe. Clicking it pops back to that level.
+            let siblings: Vec<Vec<usize>> = self
+                .nodes_at(parent_path)
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != drilled)
+                .map(|(_, node)| {
+                    let mut v = Vec::new();
+                    leaf_indices(node, &mut v);
+                    v
+                })
+                .collect();
             out.push(DisplayItem {
                 kind: DisplayKind::Back,
                 anchor: Vec3::ZERO,
                 leaves: Vec::new(),
                 target: None,
                 node: None,
+                siblings,
             });
         }
         let nodes = self.current_nodes();
@@ -653,6 +675,7 @@ impl ExploderState {
                         leaves: vec![*i],
                         target: Some(h.target.clone()),
                         node: None,
+                        siblings: Vec::new(),
                     });
                 }
                 ExploderNode::Group(_) => {
@@ -670,6 +693,7 @@ impl ExploderState {
                         leaves,
                         target: None,
                         node: Some(ni),
+                        siblings: Vec::new(),
                     });
                 }
             }
@@ -14807,19 +14831,22 @@ impl App {
             // `content_zoom`× into this loupe, so a loupe magnifies exactly what the hitbox covers.
             let loupe = |s: egui::Pos2| center + (s - ex.origin) * content_zoom;
             let is_group = it.kind == DisplayKind::Group;
-            // Every loupe shows the WHOLE crowd dimmed grey for context; only this loupe's own things
-            // are highlighted (#559). Group and leaf loupes share the dark disc.
+            let is_back = it.kind == DisplayKind::Back;
+            // Every geometry loupe shows the WHOLE crowd dimmed grey for context; only its own things
+            // are highlighted (#559). The Back loupe isn't geometry — it's a mini-cluster (below).
             let context_color = egui::Color32::from_gray(115);
             painter.circle_filled(center, r_loupe, dark_bg);
-            // Context: the full crowd, minus this loupe's own leaves (drawn highlighted below).
-            for (li, member) in ex.items.iter().enumerate() {
-                if it.leaves.contains(&li) {
-                    continue;
+            if !is_back {
+                // Context: the full crowd, minus this loupe's own leaves (drawn highlighted below).
+                for (li, member) in ex.items.iter().enumerate() {
+                    if it.leaves.contains(&li) {
+                        continue;
+                    }
+                    draw_pick_target_loupe(
+                        painter, project, &loupe, center, r_loupe, &self.state.doc,
+                        &member.target, member.anchor, context_color, 1.2, false,
+                    );
                 }
-                draw_pick_target_loupe(
-                    painter, project, &loupe, center, r_loupe, &self.state.doc,
-                    &member.target, member.anchor, context_color, 1.2, false,
-                );
             }
             // This loupe's own thing(s): a leaf's single target (accent when hovered/selected), a
             // group's members (blue, accent when hovered). Back has none.
@@ -14893,14 +14920,48 @@ impl App {
                     );
                 }
                 DisplayKind::Back => {
-                    // A left-pointing arrow: this goes up a level, it is not any geometry.
-                    let arrow = if hot { accent } else { egui::Color32::from_gray(210) };
-                    let a = r_loupe * 0.42;
-                    let tip = center + egui::vec2(-a, 0.0);
-                    let stroke = egui::Stroke::new(3.0, arrow);
-                    painter.line_segment([center + egui::vec2(a * 0.55, -a), tip], stroke);
-                    painter.line_segment([tip, center + egui::vec2(a * 0.55, a)], stroke);
-                    painter.line_segment([tip, center + egui::vec2(a, 0.0)], stroke);
+                    // A loupe-sized **cluster** of the sibling loupes we drilled away from (#561):
+                    // each sibling drawn as a small mini-loupe. Clicking anywhere on it pops back.
+                    let sibs = &it.siblings;
+                    if sibs.is_empty() {
+                        // Nothing to gather — fall back to a plain back-chevron.
+                        let arrow = if hot { accent } else { egui::Color32::from_gray(210) };
+                        let a = r_loupe * 0.42;
+                        let tip = center + egui::vec2(-a, 0.0);
+                        let stroke = egui::Stroke::new(3.0, arrow);
+                        painter.line_segment([center + egui::vec2(a * 0.55, -a), tip], stroke);
+                        painter.line_segment([tip, center + egui::vec2(a * 0.55, a)], stroke);
+                        painter.line_segment([tip, center + egui::vec2(a, 0.0)], stroke);
+                    } else {
+                        let s = sibs.len();
+                        let (ring, r_mini) = if s == 1 {
+                            (0.0, r_loupe * 0.5)
+                        } else {
+                            let rr = r_loupe * 0.44;
+                            let rm = (rr * (std::f32::consts::PI / s as f32).sin() * 0.85)
+                                .min(r_loupe * 0.36);
+                            (rr, rm)
+                        };
+                        for (k, sib) in sibs.iter().enumerate() {
+                            let ang = -std::f32::consts::FRAC_PI_2
+                                + k as f32 * std::f32::consts::TAU / s as f32;
+                            let mc = center + egui::vec2(ang.cos(), ang.sin()) * ring;
+                            let mini_zoom = content_zoom * r_mini / r_loupe;
+                            let mini_loupe = |sp: egui::Pos2| mc + (sp - ex.origin) * mini_zoom;
+                            painter.circle_filled(mc, r_mini, dark_bg);
+                            for &li in sib {
+                                draw_pick_target_loupe(
+                                    painter, project, &mini_loupe, mc, r_mini, &self.state.doc,
+                                    &ex.items[li].target, ex.items[li].anchor, idle_blue, 1.0, true,
+                                );
+                            }
+                            painter.circle_stroke(
+                                mc,
+                                r_mini,
+                                egui::Stroke::new(1.0, egui::Color32::from_gray(120)),
+                            );
+                        }
+                    }
                 }
                 DisplayKind::Leaf => {}
             }

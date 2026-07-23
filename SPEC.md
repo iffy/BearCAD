@@ -1828,8 +1828,9 @@ modeled on SolveSpace (https://solvespace.com).
     blue as its highlighted members (#562) — and a **big count badge** (member count, bottom-right). **Clicking a group loupe
     drills in** (`ExploderState::path` pushes its node index): the other loupes hide and the group's
     members **spring out** of the clicked spot (a quick `DrillAnim` slide, `DRILL_ANIM_SECS`) as their
-    own loupes at the new level (recursively grouped if still too many), and a **back-arrow loupe**
-    appears; clicking Back pops one level. Any depth is supported. The current level's loupes and
+    own loupes at the new level (recursively grouped if still too many). The **siblings** you drilled
+    away from gather into a loupe-sized **cluster loupe** — a mini-loupe per sibling (#561); clicking
+    the cluster pops one level. Any depth is supported. The current level's loupes and
     their ring/stagger/fit layout come from `display_items` / `display_centers`. Only a hovered
     **leaf** loupe redirects the tool's pick, owns the press, and sets the hover highlight
     (`ExploderState::hovered_leaf`); a hovered **group** loupe instead lights up **all its members**
