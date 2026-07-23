@@ -3020,6 +3020,9 @@ impl<'a> SceneMesh<'a> {
             PickTargetKind::Ground(p) => {
                 push_ground_hover_marker(self, *p, color, cam, viewport, view_proj, project);
             }
+            // A constraint's hover highlight is its badge glowing in the 2D annotation overlay
+            // (#568), not a world-geometry marker — nothing to push into the 3D scene here.
+            PickTargetKind::Constraint(_) => {}
         }
     }
 

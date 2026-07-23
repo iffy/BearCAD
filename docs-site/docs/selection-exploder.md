@@ -47,9 +47,14 @@ A faint circle appears under the cursor whenever two or more things are stacked,
 that exploding will help.
 
 The exploder works with **every tool**, not only Select, and with **every kind** of pickable
-thing — sketch vertices, lines, and circles, and body vertices, edges, and faces. Whatever
-handle you pick is fed straight to the tool you're using, so you can extrude a buried face,
-fillet a hidden edge, or combine an overlapping body without fighting the pick.
+thing — sketch vertices, lines, and circles, body vertices, edges, and faces, and even the
+**constraint badges** stacked over your geometry. Whatever handle you pick is fed straight to
+the tool you're using, so you can extrude a buried face, fillet a hidden edge, or combine an
+overlapping body without fighting the pick.
+
+A constraint badge's loupe shows that constraint's icon, and hovering it lights the real badge
+up in the drawing — so when several constraint icons pile onto the same corner, you can fan
+them out and click the exact one you mean to select.
 
 ## See also
 

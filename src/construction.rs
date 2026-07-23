@@ -114,6 +114,9 @@ pub fn plane_anchor_source_from_pick(kind: &PickTargetKind) -> PlaneAnchorSource
         PickTargetKind::BodyFace { .. }
         | PickTargetKind::ConstructionPlane(_)
         | PickTargetKind::Ground(_) => PlaneAnchorSource::Face,
+        // A constraint badge is never a plane anchor (it only reaches the exploder, #568); classify
+        // it as a point so the arm is total.
+        PickTargetKind::Constraint(_) => PlaneAnchorSource::Point,
     }
 }
 
@@ -734,6 +737,9 @@ pub fn sketch_from_pick_target(doc: &Document, kind: PickTargetKind) -> Option<S
             }
         }),
         PickTargetKind::Point(point) => point_sketch(doc, point),
+        // A constraint's own sketch — though a constraint is never used as a plane reference (it
+        // only reaches the exploder, #568), so this is here just to keep the match total.
+        PickTargetKind::Constraint(index) => doc.constraints.get(index).map(|c| c.sketch),
         PickTargetKind::BodyEdge { .. }
         | PickTargetKind::BodyFace { .. }
         | PickTargetKind::BodyVertex { .. }
@@ -1219,6 +1225,12 @@ pub enum PickTargetKind {
     GlobalAxis(GlobalAxis),
     ConstructionPlane(usize),
     Ground(Vec3),
+    /// A sketch constraint's annotation icon (#568), by its index into `Document::constraints`.
+    /// Constraints have no world geometry of their own — the icon is a screen-space glyph placed
+    /// near the geometry it governs — so this is only ever produced for the Selection Exploder
+    /// crowd (never by `resolve_pick_target`), letting a constraint icon buried under overlapping
+    /// geometry be fanned out and selected like anything else.
+    Constraint(usize),
 }
 
 /// A resolved pick target with its plane reference and screen-space distance.
@@ -1319,6 +1331,11 @@ impl PickOcclusion {
             }
             PickTargetKind::ConstructionPlane(i) => {
                 vis.effective_visible(doc, SceneElement::ConstructionPlane(*i))
+            }
+            // A constraint badge is pickable when it is visible (its icon is only drawn for visible
+            // constraints anyway, #568).
+            PickTargetKind::Constraint(i) => {
+                vis.effective_visible(doc, SceneElement::Constraint(*i))
             }
             PickTargetKind::GlobalAxis(_) | PickTargetKind::Ground(_) => true,
         }
@@ -1724,6 +1741,7 @@ pub fn scene_element_from_pick(kind: &PickTargetKind) -> Option<SceneElement> {
                 normal: crate::hierarchy::quantize_body_point(*normal),
             })
         }
+        PickTargetKind::Constraint(index) => Some(SceneElement::Constraint(*index)),
         _ => None,
     }
 }
@@ -1805,6 +1823,10 @@ pub fn draw_pick_highlight(
                 );
             }
         }
+        // A constraint's hover highlight is its badge lighting up in the annotation overlay (#568),
+        // driven separately via `draw_constraint_icons`'s hovered set — nothing to draw in the
+        // world-geometry layer here.
+        PickTargetKind::Constraint(_) => {}
     }
 }
 
@@ -3525,6 +3547,16 @@ mod tests {
 
     /// #156: body edges and vertices map to selectable scene elements (outside sketch
     /// mode), with a canonical, direction-independent identity for edges.
+    #[test]
+    fn constraint_pick_becomes_selectable_constraint_element() {
+        use crate::hierarchy::SceneElement;
+        // A fanned-out constraint badge (#568) selects the constraint itself.
+        assert_eq!(
+            scene_element_from_pick(&PickTargetKind::Constraint(4)),
+            Some(SceneElement::Constraint(4))
+        );
+    }
+
     #[test]
     fn body_edge_and_vertex_picks_become_selectable_elements() {
         use crate::hierarchy::SceneElement;

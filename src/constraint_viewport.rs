@@ -193,6 +193,14 @@ fn build_graphic(doc: &Document, index: usize) -> Option<ConstraintViewportGraph
     }
 }
 
+/// The world anchor of a constraint's annotation icon (#568): the point its icon is placed at
+/// (before any screen-space nudge). Used by the Selection Exploder as the crowd candidate's anchor
+/// — where the loupe's leader line attaches. `None` for constraints with no on-screen icon
+/// (dimensions, tangents) or that are deleted.
+pub fn constraint_icon_anchor(doc: &Document, index: usize) -> Option<Vec3> {
+    build_graphic(doc, index)?.icons.first().map(|p| p.world)
+}
+
 pub fn viewport_constraints_for_selection(
     doc: &Document,
     visibility: &ElementVisibility,
@@ -319,14 +327,16 @@ pub fn draw_constraint_icons(
     health: &DocumentHealth,
     selection: &SceneSelection,
     graphics: &[ConstraintViewportGraphic],
-    hovered_index: Option<usize>,
+    // Every constraint index to render highlighted: the pointer-hovered icon plus, while the
+    // Selection Exploder is open, its hovered constraint leaf and hovered group's members (#568).
+    hovered: &std::collections::HashSet<usize>,
     base_color: Color32,
     selected_color: Color32,
 ) {
     for graphic in graphics {
         let selected =
             selection.is_selected(SceneElement::Constraint(graphic.constraint_index));
-        let hovered = hovered_index == Some(graphic.constraint_index);
+        let hovered = hovered.contains(&graphic.constraint_index);
         let tint = constraint_annotation_color(
             health,
             graphic.constraint_index,

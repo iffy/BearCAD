@@ -1791,9 +1791,16 @@ modeled on SolveSpace (https://solvespace.com).
   anchor and, unlike normal picking, does **not** occlusion-filter (buried things are exactly what
   the exploder is for), only respecting user hidden/shadow visibility. Faces are found by
   `face::body_faces_near` (min screen distance to each coplanar group's projected triangles ≤ the
-  hitbox). The crowd is then pruned to what the **active tool** can actually pick
-  (`exploder_tool_accepts`, #560) — e.g. the Extrude tool operates on faces, so it fans out only
-  faces, never a corner's edges/vertices it couldn't use. It activates **on demand**: over a crowd it fans several handles, over a
+  hitbox). The crowd also includes any **constraint annotation badges** whose hitbox is under the
+  cursor (#568): `tick_exploder` appends a `PickTargetKind::Constraint(index)` for each drawn
+  constraint icon (`constraint_hits`, deduped) anchored at `constraint_viewport::constraint_icon_anchor`,
+  so a constraint icon buried beneath overlapping geometry can be fanned out and selected. Its loupe
+  shows the constraint's icon glyph (`icons::paint_icon`), and hovering it (or a group of them) glows
+  the real badge in the annotation overlay via `draw_constraint_icons`'s hovered set. The crowd is
+  then pruned to what the **active tool** can actually pick (`exploder_tool_accepts`, #560) — e.g. the
+  Extrude tool operates on faces, so it fans out only faces, never a corner's edges/vertices it
+  couldn't use; constraint badges are offered only to the element-selecting tools (Select/Constraint/
+  Dimension), which apply the pick as a `SceneElement::Constraint`. It activates **on demand**: over a crowd it fans several handles, over a
   single thing just one, and over nothing it freezes the hitbox circle at the cursor with no
   handles. A faint **light-green** disc the size of the hitbox (`construction::EXPLODER_HINT_RGBA`,
   distinct from the yellow pick-hover) appears under the cursor when **two or more** things are

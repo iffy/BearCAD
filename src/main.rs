@@ -861,6 +861,11 @@ fn exploder_tool_accepts(tool: Tool, kind: &construction::PickTargetKind) -> boo
     match tool {
         // The Extrude tool operates on faces — don't offer a corner's edges or vertices too (#560).
         Tool::Extrude => matches!(kind, K::BodyFace { .. }),
+        // A constraint badge can only be *selected*, so only the tools that act on a picked scene
+        // element accept one from the fan (#568); every other tool ignores it.
+        _ if matches!(kind, K::Constraint(_)) => {
+            matches!(tool, Tool::Select | Tool::Constraint | Tool::Dimension)
+        }
         _ => true,
     }
 }
@@ -991,6 +996,7 @@ fn crowd_type_rank(kind: &construction::PickTargetKind) -> u8 {
         K::ConstructionPlane(_) => 5,
         K::GlobalAxis(_) => 6,
         K::Ground(_) => 7,
+        K::Constraint(_) => 8, // annotation badges, grouped after the geometry they govern
     }
 }
 
@@ -1305,6 +1311,20 @@ fn draw_pick_target_loupe(
         PK::ConstructionPlane(_) | PK::Ground(_) => {
             if is_highlight {
                 dot(anchor, width + 1.0);
+            }
+        }
+        // A constraint has no world geometry to magnify — its visual *is* its badge (#568). Draw
+        // the constraint's icon glyph centred in the loupe, tinted by `color` (grey for context,
+        // blue/yellow when this loupe's own thing). Only for the highlighted loupe, like vertices.
+        PK::Constraint(ci) => {
+            if !is_highlight {
+                return;
+            }
+            if let Some(constraint) = doc.constraints.get(*ci) {
+                let icon = crate::icons::icon_for_constraint_kind(&constraint.kind);
+                let sz = radius * 1.15;
+                let rect = egui::Rect::from_center_size(center, egui::vec2(sz, sz));
+                crate::icons::paint_icon(painter, painter.ctx(), icon, rect, color);
             }
         }
     }
@@ -14686,6 +14706,8 @@ impl App {
         pointer_screen: Option<egui::Pos2>,
         occlusion: Option<&construction::PickOcclusion>,
         viewport: egui::Rect,
+        // The constraint annotation icons currently drawn (#568), so their badges can join the fan.
+        constraint_hits: &[crate::constraint_viewport::ConstraintIconHit],
         suppress: bool,
     ) -> (bool, Option<egui::Pos2>, bool) {
         if suppress {
@@ -14800,6 +14822,27 @@ impl App {
             self.state.cam.eye(),
             occlusion,
         );
+        // Constraint annotation badges whose hitbox is under the cursor join the crowd (#568), so a
+        // constraint icon buried beneath overlapping geometry can be fanned out and selected. Only
+        // the icons actually drawn this frame are offered (`constraint_hits` mirrors the overlay),
+        // deduped per constraint, anchored at the icon's world point for the leader line.
+        let mut seen_constraints = std::collections::HashSet::new();
+        for hit in constraint_hits {
+            if !hit.rect.contains(pp) || !seen_constraints.insert(hit.constraint_index) {
+                continue;
+            }
+            let Some(anchor) = crate::constraint_viewport::constraint_icon_anchor(
+                &self.state.doc,
+                hit.constraint_index,
+            ) else {
+                continue;
+            };
+            candidates.push(construction::CrowdCandidate {
+                kind: construction::PickTargetKind::Constraint(hit.constraint_index),
+                anchor,
+                dist_px: (pp - hit.rect.center()).length(),
+            });
+        }
         // Only offer what the active tool can actually pick (#560): e.g. the Extrude tool operates
         // on faces, so it must not fan out a corner's edges/vertices it could never use.
         let tool = self.state.tool;
@@ -15684,6 +15727,7 @@ impl App {
             pointer_screen,
             pick_occlusion,
             viewport,
+            &constraint_icon_hits,
             // Off during any drag/gizmo, in-progress creation, or dim sub-state where picking is
             // already suspended.
             suppress_hover_highlight
@@ -17573,6 +17617,28 @@ impl App {
                     col::DIM_EDGE_HIGHLIGHT,
                 );
             }
+            // Which constraint badges to light up: the pointer-hovered one normally, or — while the
+            // exploder is open — its hovered constraint leaf and hovered group's constraint members
+            // (#568), so hovering a constraint loupe glows its real badge in the overlay.
+            let mut hovered_constraints: HashSet<usize> = HashSet::new();
+            if exploder_active {
+                if let Some(ex) = self.exploder.as_ref() {
+                    if let Some((construction::PickTargetKind::Constraint(i), _)) =
+                        ex.hovered_leaf(viewport, &project)
+                    {
+                        hovered_constraints.insert(i);
+                    }
+                    for member in ex.hovered_group_members() {
+                        if let construction::PickTargetKind::Constraint(i) = member {
+                            hovered_constraints.insert(i);
+                        }
+                    }
+                }
+            } else if let Some(i) = pointer_screen
+                .and_then(|pp| pointer_over_constraint_icon(&constraint_icon_hits, pp))
+            {
+                hovered_constraints.insert(i);
+            }
             draw_constraint_icons(
                 &painter,
                 ui.ctx(),
@@ -17580,9 +17646,7 @@ impl App {
                 &self.state.document_health,
                 &self.state.scene_selection,
                 &constraint_graphics,
-                pointer_screen.and_then(|pp| {
-                    pointer_over_constraint_icon(&constraint_icon_hits, pp)
-                }),
+                &hovered_constraints,
                 col::DIM_ANNOTATION,
                 col::DIM_EDGE_HIGHLIGHT,
             );
@@ -20914,5 +20978,17 @@ mod tests {
         assert!(exploder_tool_accepts(Tool::Select, &edge));
         assert!(exploder_tool_accepts(Tool::Select, &vertex));
         assert!(exploder_tool_accepts(Tool::Select, &face));
+    }
+
+    #[test]
+    fn exploder_accepts_constraints_only_in_selection_tools() {
+        use construction::PickTargetKind as K;
+        let c = K::Constraint(0);
+        // A constraint badge can only be selected (#568), so only the element-selecting tools fan
+        // it out; tools that consume geometry (Extrude) ignore it.
+        assert!(exploder_tool_accepts(Tool::Select, &c));
+        assert!(exploder_tool_accepts(Tool::Constraint, &c));
+        assert!(exploder_tool_accepts(Tool::Dimension, &c));
+        assert!(!exploder_tool_accepts(Tool::Extrude, &c));
     }
 }
