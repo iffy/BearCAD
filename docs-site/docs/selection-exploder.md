@@ -16,17 +16,20 @@ Park your cursor over the cluster and press **Space**:
 
 Everything inside your cursor's pick radius pops out to its own handle, arranged in a ring
 and joined by a thin leader line back to where it really lives. Each handle is a little round
-**loupe**: a 2× magnified view of the pick region, twice the size of the hitbox, with the one
-element that handle stands for **highlighted** and the rest of the crowd dimmed behind it. So
-even when several things overlap almost perfectly, you can see exactly which one each handle
-will pick.
+**loupe**: a magnified view of the pick region, with the one element that handle stands for
+drawn on top (in **blue**) and the rest of the crowd dimmed grey behind it. Coincident line
+ends are told apart by a short stub pointing the way each line runs; faces are shaded, not
+just outlined. So even when several things overlap almost perfectly, you can see exactly which
+one each handle will pick.
 
 ## Picking from the fan
 
-- **Hover** a handle and its real thing lights up in the scene, so you can confirm you've
-  got the right one before committing.
-- **Click** the handle to select it.
+- **Hover** a handle and both it and its real thing in the scene light up **yellow** — the
+  whole line, edge, or face — so you can confirm you've got the right one before committing.
+- **Click** the handle to select it. A selected thing's loupe stays yellow.
 - Hold **Shift** while you click to keep the fan open and gather several things in a row.
+- **Scroll** the mouse wheel to zoom the loupes in for a closer look; they grow to fill the
+  space and stop once they reach the edges.
 - Press **Space** again, press **Esc**, or click empty space to dismiss the fan.
 
 While the fan is open the **camera holds still**, so the handles stay put under your cursor

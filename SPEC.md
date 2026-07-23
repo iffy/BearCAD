@@ -1765,23 +1765,33 @@ modeled on SolveSpace (https://solvespace.com).
   their hover highlights (#153).
 - **Selection Exploder (#551):** pressing **Space** fans the crowd of pickable things inside the
   cursor's hitbox out into spaced-apart **handles** arranged on a ring around it, so a tiny buried
-  vertex/edge/line/face can be picked unambiguously. Each handle is a round **loupe** — twice the
-  hitbox radius (`exploder::loupe_radius() = ZOOM · touch::hit(12)`, `ZOOM = 2`) — that draws the
-  hitbox region **magnified 2×** with the one element that handle stands for **highlighted** (the
-  yellow pick colour) and the rest of the crowd dimmed behind it, joined by a 1-px leader line back
-  to where it really is; geometry is painter-drawn and clipped to the loupe disc
-  (`draw_pick_target_loupe` / `clip_segment_to_disc`), so overlapping things read clearly.
-  The crowd spans everything a tool might pick there: sketch points/lines/circles, body
-  vertices/edges, and the body face under the cursor (`construction::collect_pick_candidates`
-  returns them as `PickTargetKind`s with a world anchor). It activates **on demand**: over a crowd
-  it fans several handles, over a single thing just one, and over nothing it freezes the hitbox
-  circle at the cursor with no handles. A faint **light-green** disc the size of the hitbox
-  (`construction::EXPLODER_HINT_RGBA`, distinct from the yellow pick-hover) appears under the
-  cursor when **two or more** things are there, as a hint. Handles sit at least a loupe apart
-  (chord, not arc) so there's never ambiguity about which one a click means. While exploded **only
-  handles** are hoverable/selectable — the raw crowd underneath is suppressed (the positional
-  sketch pick/drag handlers stand down) — and hovering a handle brightens its loupe frame and its
-  leader. **Clicking a handle selects that handle's exact target** (`scene_element_from_pick` for
+  vertex/edge/line/face can be picked unambiguously. Each handle is a round **loupe** — `ZOOM ·
+  touch::hit(12)` radius (`exploder::loupe_radius()`, `ZOOM = 4`) — that draws the hitbox region
+  **magnified `ZOOM`×** with the one element that handle stands for drawn on top and the rest of the
+  crowd dimmed grey behind it, joined by a 1-px leader line back to where it really is; geometry is
+  painter-drawn and clipped to the loupe disc (`draw_pick_target_loupe` / `clip_segment_to_disc`),
+  so overlapping things read clearly. Faces are **shaded** (translucent fill clipped to the disc via
+  `clip_convex_to_disc`), not just outlined. Only the **highlighted** vertex shows a dot; a
+  line-endpoint vertex also gets a short **stub** of its line — a *fixed on-screen length* relative
+  to the loupe, not a fraction of the line — so coincident endpoints of different lines are told
+  apart by the direction their line leaves the vertex. Colours: the in-loupe element and its ring
+  read **blue** while idle and turn the accent **yellow** the moment the loupe is hovered *or* its
+  thing is selected, matching that element's own highlight out in the 3D view. The crowd spans
+  everything a tool might pick there: sketch points/lines/circles, body vertices/edges, and the body
+  face under the cursor (`construction::collect_pick_candidates` returns them as `PickTargetKind`s
+  with a world anchor). It activates **on demand**: over a crowd it fans several handles, over a
+  single thing just one, and over nothing it freezes the hitbox circle at the cursor with no
+  handles. A faint **light-green** disc the size of the hitbox (`construction::EXPLODER_HINT_RGBA`,
+  distinct from the yellow pick-hover) appears under the cursor when **two or more** things are
+  there, as a hint. Handles sit at least a loupe apart (chord, not arc) so there's never ambiguity
+  about which one a click means. While exploded the camera is frozen, so the **mouse wheel zooms the
+  loupes** instead (`ExploderState::zoom_mul`): the whole fan grows, and when it would reach a
+  viewport edge it is first **shifted** to stay inside (`fan_offset`) and then **clamped**
+  (`max_zoom_mul`) so loupes never grow off-screen — once the space is full, zoom stops. While
+  exploded **only handles** are hoverable/selectable — the raw crowd underneath is suppressed (the
+  positional sketch pick/drag handlers stand down) — and hovering a handle highlights its **exact
+  target** (the whole line/edge/face) out in the 3D view, not whatever a re-resolved pick at the
+  anchor would catch. **Clicking a handle selects that handle's exact target** (`scene_element_from_pick` for
   the selection-family tools) rather than re-resolving a pick at the redirected anchor, which would
   be ambiguous for an overlapping crowd or land on something outside the hitbox; for other tools
   the pointer is still **redirected** to the hovered handle's anchor so their own pick path runs.

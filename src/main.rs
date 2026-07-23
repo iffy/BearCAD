@@ -549,12 +549,89 @@ struct ExploderState {
     handles: Vec<ExploderHandle>,
     /// The handle currently under the cursor, if any.
     hovered: Option<usize>,
+    /// Loupe zoom multiplier, driven by the mouse wheel while the exploder is open (#551): scales
+    /// each loupe's magnification, disc size, and the ring radius together (the whole fan grows),
+    /// so scrolling zooms further into the crowd. 1.0 is the default fan.
+    zoom_mul: f32,
+}
+
+impl ExploderState {
+    /// The magnification a loupe currently applies to the hitbox (base `ZOOM` × the wheel zoom).
+    fn content_zoom(&self) -> f32 {
+        exploder::ZOOM * self.zoom_mul
+    }
+    /// A loupe disc's current radius (px) — scales with the wheel zoom.
+    fn loupe_radius(&self) -> f32 {
+        exploder::loupe_radius() * self.zoom_mul
+    }
+    /// A handle's centre before the viewport-fit shift: its base ring position pushed out from the
+    /// origin by the wheel zoom, so the fan expands in step with the growing loupes.
+    fn base_center(&self, h: &ExploderHandle) -> egui::Pos2 {
+        self.origin + (h.handle_pos - self.origin) * self.zoom_mul
+    }
+    /// Translation that slides the whole fan back inside the viewport once zooming would push a
+    /// loupe past an edge, so the loupes pack into the available space instead of clipping (#551).
+    fn fan_offset(&self, viewport: egui::Rect) -> egui::Vec2 {
+        if self.handles.is_empty() {
+            return egui::Vec2::ZERO;
+        }
+        let r = self.loupe_radius();
+        let (mut minx, mut maxx, mut miny, mut maxy) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+        for h in &self.handles {
+            let c = self.base_center(h);
+            minx = minx.min(c.x - r);
+            maxx = maxx.max(c.x + r);
+            miny = miny.min(c.y - r);
+            maxy = maxy.max(c.y + r);
+        }
+        let vp = viewport.shrink(exploder::VIEWPORT_MARGIN_PX);
+        let shift = |lo: f32, hi: f32, vlo: f32, vhi: f32| -> f32 {
+            if hi - lo >= vhi - vlo {
+                ((vlo + vhi) - (lo + hi)) * 0.5 // too big to fit: centre it
+            } else if lo < vlo {
+                vlo - lo
+            } else if hi > vhi {
+                vhi - hi
+            } else {
+                0.0
+            }
+        };
+        egui::vec2(
+            shift(minx, maxx, vp.min.x, vp.max.x),
+            shift(miny, maxy, vp.min.y, vp.max.y),
+        )
+    }
+    /// The largest wheel zoom that still lets the whole fan fit inside the viewport (the fan's
+    /// extent scales linearly with the zoom). Scrolling past this is clamped, so loupes never grow
+    /// off-screen — once the space is full, zoom stops (#551).
+    fn max_zoom_mul(&self, viewport: egui::Rect) -> f32 {
+        if self.handles.is_empty() {
+            return 6.0;
+        }
+        let base_loupe = exploder::loupe_radius();
+        let (mut minx, mut maxx, mut miny, mut maxy) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+        for h in &self.handles {
+            let d = h.handle_pos - self.origin;
+            minx = minx.min(d.x);
+            maxx = maxx.max(d.x);
+            miny = miny.min(d.y);
+            maxy = maxy.max(d.y);
+        }
+        // Extent at zoom 1.0; at zoom z it is z× this, so the fit zoom is avail / extent.
+        let span_x = (maxx - minx) + 2.0 * base_loupe;
+        let span_y = (maxy - miny) + 2.0 * base_loupe;
+        let avail = viewport.shrink(exploder::VIEWPORT_MARGIN_PX);
+        let zw = if span_x > 1e-3 { avail.width() / span_x } else { 6.0 };
+        let zh = if span_y > 1e-3 { avail.height() / span_y } else { 6.0 };
+        zw.min(zh).clamp(1.0, 6.0)
+    }
 }
 
 /// Selection-Exploder tuning (#551).
 mod exploder {
-    /// The magnification each handle-loupe applies to the hitbox (#551).
-    pub const ZOOM: f32 = 2.0;
+    /// The magnification each handle-loupe applies to the hitbox (#551). The loupe radius is
+    /// `ZOOM · hitbox_radius`, so a bigger zoom is also a physically bigger loupe.
+    pub const ZOOM: f32 = 4.0;
     /// Extra px around a handle that still counts as a hit.
     pub const HANDLE_HIT_PAD_PX: f32 = 3.0;
     /// The pick hitbox radius (px), touch-aware — the region each loupe magnifies.
@@ -575,6 +652,8 @@ mod exploder {
     pub fn min_ring() -> f32 {
         spacing()
     }
+    /// Keep the fan this far from the viewport edges when fitting/clamping it (#551).
+    pub const VIEWPORT_MARGIN_PX: f32 = 10.0;
 }
 
 /// Clip a screen-space segment to a disc, returning the visible sub-segment (or `None` if it
@@ -612,11 +691,40 @@ fn clip_segment_to_disc(
     Some((a + d * t0, a + d * t1))
 }
 
+/// Clip a convex screen polygon to a disc (approximated by `N` tangent half-planes), so a face can
+/// be *filled* inside a round loupe without its shading spilling past the frame (#551).
+fn clip_convex_to_disc(poly: &[egui::Pos2], center: egui::Pos2, r: f32) -> Vec<egui::Pos2> {
+    const N: usize = 40;
+    let mut out: Vec<egui::Pos2> = poly.to_vec();
+    for k in 0..N {
+        if out.len() < 3 {
+            return Vec::new();
+        }
+        let ang = k as f32 / N as f32 * std::f32::consts::TAU;
+        let normal = egui::vec2(ang.cos(), ang.sin());
+        let dist = |p: egui::Pos2| (p - center).dot(normal) - r;
+        let mut clipped: Vec<egui::Pos2> = Vec::with_capacity(out.len() + 1);
+        for i in 0..out.len() {
+            let cur = out[i];
+            let nxt = out[(i + 1) % out.len()];
+            let (dc, dn) = (dist(cur), dist(nxt));
+            if dc <= 0.0 {
+                clipped.push(cur);
+            }
+            if (dc <= 0.0) != (dn <= 0.0) {
+                let t = dc / (dc - dn);
+                clipped.push(cur + (nxt - cur) * t);
+            }
+        }
+        out = clipped;
+    }
+    out
+}
+
 /// Draw one pick target's geometry inside a Selection Exploder loupe (#551): world geometry is
 /// projected, magnified by the loupe transform, clipped to the loupe disc, and stroked in `color`.
-/// Points/vertices draw as a filled dot; lines/circles/edges as clipped segments; a face as its
-/// boundary. A faint dot at `anchor` guarantees every handle shows something even for kinds with
-/// no drawable silhouette here.
+/// Lines/circles/edges draw as clipped segments; a face as its boundary; only the highlighted
+/// vertex shows a dot (a line-endpoint vertex also gets a stub of its line for disambiguation).
 #[allow(clippy::too_many_arguments)]
 fn draw_pick_target_loupe(
     painter: &egui::Painter,
@@ -629,6 +737,7 @@ fn draw_pick_target_loupe(
     anchor: Vec3,
     color: egui::Color32,
     width: f32,
+    is_highlight: bool,
 ) {
     use construction::PickTargetKind as PK;
     let lp = |w: Vec3| project(w).map(loupe);
@@ -647,7 +756,62 @@ fn draw_pick_target_loupe(
         }
     };
     match kind {
+        // Only the highlighted vertex ever shows a dot — a loupe full of context dots would just be
+        // noise (#551). When the highlighted vertex is a line endpoint, also draw a stub of that
+        // line running up to it, so coincident endpoints of *different* lines are told apart by the
+        // direction their line leaves the vertex. Vertices that aren't on a line just get the dot.
         PK::Point(cp) => {
+            if !is_highlight {
+                return;
+            }
+            if let crate::model::ConstraintPoint::LineEndpoint { line, end } = cp {
+                if let Some(mut poly) = doc
+                    .lines
+                    .get(*line)
+                    .and_then(|l| crate::face::line_world_polyline(doc, l))
+                {
+                    if poly.len() >= 2 {
+                        if matches!(end, crate::model::LineEnd::End) {
+                            poly.reverse();
+                        }
+                        // The stub is a fixed on-screen length relative to the loupe (not a fraction
+                        // of the line), so every line-endpoint loupe shows the same-sized dash
+                        // regardless of how long its line is. Walk the projected polyline from the
+                        // vertex, in loupe pixels, until we've drawn `stub_len` px (following curves).
+                        let stub_len = radius * 0.7;
+                        let mut acc = 0.0;
+                        let mut prev: Option<egui::Pos2> = None;
+                        for w in &poly {
+                            let Some(cur) = lp(*w) else { break };
+                            if let Some(p) = prev {
+                                let seg_len = (cur - p).length();
+                                let (endp, done) = if acc + seg_len >= stub_len {
+                                    let t = if seg_len > 1e-4 {
+                                        (stub_len - acc) / seg_len
+                                    } else {
+                                        1.0
+                                    };
+                                    (p + (cur - p) * t, true)
+                                } else {
+                                    (cur, false)
+                                };
+                                if let Some((ca, cb)) = clip_segment_to_disc(p, endp, center, radius) {
+                                    painter.line_segment([ca, cb], egui::Stroke::new(width, color));
+                                }
+                                if done {
+                                    break;
+                                }
+                                acc += seg_len;
+                            }
+                            prev = Some(cur);
+                        }
+                        if let Some(&v) = poly.first() {
+                            dot(v, width + 1.5);
+                        }
+                        return;
+                    }
+                }
+            }
             if let Some(w) = construction::point_world_position(doc, cp.clone()) {
                 dot(w, width + 1.5);
             }
@@ -667,8 +831,32 @@ fn draw_pick_target_loupe(
             }
         }
         PK::BodyEdge { a, b, .. } => seg(*a, *b),
-        PK::BodyVertex { position, .. } => dot(*position, width + 1.5),
+        // Body vertices follow the same "highlighted dot only" rule as sketch points.
+        PK::BodyVertex { position, .. } => {
+            if is_highlight {
+                dot(*position, width + 1.5);
+            }
+        }
         PK::BodyFace { triangles, .. } => {
+            // Shade the face, not just its outline: fill the projected+magnified triangles in a
+            // translucent version of the colour (clipped to the loupe disc), then stroke the
+            // boundary on top. The highlighted face gets the blue/yellow fill; context faces stay
+            // outline-only so they don't muddy the loupe.
+            if is_highlight {
+                let fill = egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 92);
+                for tri in triangles {
+                    if let (Some(a), Some(b), Some(c)) = (lp(tri[0]), lp(tri[1]), lp(tri[2])) {
+                        let poly = clip_convex_to_disc(&[a, b, c], center, radius);
+                        if poly.len() >= 3 {
+                            painter.add(egui::Shape::convex_polygon(
+                                poly,
+                                fill,
+                                egui::Stroke::NONE,
+                            ));
+                        }
+                    }
+                }
+            }
             for (a, b) in construction::coplanar_face_boundary(triangles) {
                 seg(a, b);
             }
@@ -677,7 +865,11 @@ fn draw_pick_target_loupe(
             let (a, b) = construction::global_axis_segment(*axis);
             seg(a, b);
         }
-        PK::ConstructionPlane(_) | PK::Ground(_) => dot(anchor, width + 1.0),
+        PK::ConstructionPlane(_) | PK::Ground(_) => {
+            if is_highlight {
+                dot(anchor, width + 1.0);
+            }
+        }
     }
 }
 
@@ -14063,6 +14255,7 @@ impl App {
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         pointer_screen: Option<egui::Pos2>,
         occlusion: Option<&construction::PickOcclusion>,
+        viewport: egui::Rect,
         suppress: bool,
     ) -> (bool, Option<egui::Pos2>, bool) {
         if suppress {
@@ -14081,13 +14274,14 @@ impl App {
             }
             let hovered = pointer_screen.and_then(|pp| {
                 let ex = self.exploder.as_ref()?;
+                let hit_r = ex.loupe_radius() + exploder::HANDLE_HIT_PAD_PX;
+                let offset = ex.fan_offset(viewport);
                 ex.handles
                     .iter()
                     .enumerate()
                     .filter_map(|(i, h)| {
-                        let d = (pp - h.handle_pos).length();
-                        (d <= exploder::loupe_radius() + exploder::HANDLE_HIT_PAD_PX)
-                            .then_some((i, d))
+                        let d = (pp - (ex.base_center(h) + offset)).length();
+                        (d <= hit_r).then_some((i, d))
                     })
                     .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
                     .map(|(i, _)| i)
@@ -14130,6 +14324,7 @@ impl App {
                 origin: pp,
                 handles,
                 hovered: None,
+                zoom_mul: 1.0,
             });
             return (true, None, false);
         }
@@ -14155,6 +14350,7 @@ impl App {
         painter: &egui::Painter,
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         available_at: Option<egui::Pos2>,
+        viewport: egui::Rect,
     ) {
         let accent = construction::PICK_HOVER_RGBA;
         // The availability hint: a faint light-green borderless disc the size of the pick hitbox,
@@ -14185,19 +14381,31 @@ impl App {
                 egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 120)),
             );
         }
-        let r_loupe = exploder::loupe_radius();
+        let r_loupe = ex.loupe_radius();
+        let content_zoom = ex.content_zoom();
+        // One shift keeps the whole fan inside the viewport (computed once, applied to every loupe).
+        let fan_offset = ex.fan_offset(viewport);
+        // The in-loupe element (and border) read **blue** while idle, and turn the accent
+        // **yellow** the moment the loupe is hovered *or* its thing is selected — matching the
+        // element's own highlight out in the 3D view (hover highlight / selection colour).
+        let idle_blue = egui::Color32::from_rgb(96, 165, 250);
         for (i, h) in ex.handles.iter().enumerate() {
             let hot = ex.hovered == Some(i);
-            let center = h.handle_pos;
+            let selected = scene_element_from_pick(&h.target)
+                .is_some_and(|e| self.state.scene_selection.is_selected(e));
+            let active = hot || selected;
+            let element_color = if active { accent } else { idle_blue };
+            let center = ex.base_center(h) + fan_offset;
             // Leader line from the real thing to its loupe.
             if let Some(a) = project(h.anchor) {
-                let line = if hot {
-                    accent
+                let line = if active {
+                    egui::Color32::from_gray(210)
                 } else {
-                    egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 130)
+                    egui::Color32::from_gray(110)
                 };
                 painter.line_segment([a, center], egui::Stroke::new(1.0, line));
                 if hot {
+                    // The real thing lights up in the accent colour when its loupe is hovered.
                     painter.circle_filled(a, 3.5, accent);
                 }
             }
@@ -14209,8 +14417,9 @@ impl App {
                 egui::Color32::from_rgba_unmultiplied(20, 22, 28, 236),
             );
             // The magnifier transform: the pick hitbox (around the cursor at `ex.origin`) mapped
-            // ZOOM× into this loupe, so the loupe is a 2× view of exactly what the hitbox covers.
-            let loupe = |s: egui::Pos2| center + (s - ex.origin) * exploder::ZOOM;
+            // `content_zoom`× into this loupe, so the loupe is a magnified view of exactly what the
+            // hitbox covers (the wheel scales this while the exploder is open).
+            let loupe = |s: egui::Pos2| center + (s - ex.origin) * content_zoom;
             // The rest of the crowd draws dimmed for context; this handle's own thing draws on top
             // in the highlight colour, so it's unmistakable which one the loupe stands for.
             for (j, other) in ex.handles.iter().enumerate() {
@@ -14228,6 +14437,7 @@ impl App {
                     other.anchor,
                     egui::Color32::from_gray(115),
                     1.4,
+                    false,
                 );
             }
             draw_pick_target_loupe(
@@ -14239,16 +14449,23 @@ impl App {
                 &self.state.doc,
                 &h.target,
                 h.anchor,
-                accent,
+                element_color,
                 2.4,
+                true,
             );
             // A faint centre mark = the cursor's hitbox centre, for orientation.
             painter.circle_filled(center, 1.0, egui::Color32::from_gray(90));
-            // Loupe frame — brighter/thicker when hovered.
+            // Loupe frame: grey while idle, accent yellow once hovered or selected (thicker when
+            // hovered), so the border, the in-loupe element, and the real element all read the same.
+            let frame = if active {
+                accent
+            } else {
+                egui::Color32::from_gray(130)
+            };
             painter.circle_stroke(
                 center,
                 r_loupe,
-                egui::Stroke::new(if hot { 2.5 } else { 1.5 }, accent),
+                egui::Stroke::new(if hot { 2.5 } else { 1.5 }, frame),
             );
         }
     }
@@ -14312,6 +14529,20 @@ impl App {
             self.state.cam.pan(delta, viewport.height());
             if let Some(log) = &self.state.command_log {
                 log.borrow_mut().note_pan(delta);
+            }
+        }
+        // While the Selection Exploder is open (#551) the camera is frozen, so the wheel zooms the
+        // loupes instead: scrolling up magnifies further into the crowd (bigger loupes, wider fan),
+        // scrolling down backs out. Clamped so the fan stays usable.
+        if exploder_on && response.hovered() {
+            let scroll = ui.input(|i| i.raw_scroll_delta.y);
+            if scroll != 0.0 {
+                if let Some(ex) = self.exploder.as_mut() {
+                    // Cap the zoom where the fan just fills the viewport — scrolling past that does
+                    // nothing (the fan can't grow off-screen); the fan_offset packs it in meanwhile.
+                    let max = ex.max_zoom_mul(viewport);
+                    ex.zoom_mul = (ex.zoom_mul * (1.0 + scroll * 0.002)).clamp(0.4, max);
+                }
             }
         }
         if response.hovered() && !camera_frozen {
@@ -14874,6 +15105,7 @@ impl App {
             &project,
             pointer_screen,
             pick_occlusion,
+            viewport,
             // Off during any drag/gizmo, in-progress creation, or dim sub-state where picking is
             // already suspended.
             suppress_hover_highlight
@@ -16277,6 +16509,18 @@ impl App {
                 }
             }
         }
+        // The Selection Exploder (#551) owns the hover while open: light up the hovered handle's
+        // EXACT target — the whole line, edge, circle, or face — rather than whatever a pick
+        // re-resolved at the redirected anchor would land on (which for a line often just catches an
+        // endpoint). This wins over every tool-specific hover above.
+        if let Some(target) = self
+            .exploder
+            .as_ref()
+            .and_then(|e| e.hovered.and_then(|i| e.handles.get(i)))
+            .map(|h| h.target.clone())
+        {
+            hover_highlight = Some(gpu_viewport::ViewportHoverHighlight::PickTarget(target));
+        }
         // Chamfer/fillet tool: render the same push/pull gizmo the extrude tool uses, anchored
         // at the picked vertex and pointing along the inward bisector of its two lines. Shares
         // one gizmo slot between the 2D (sketch vertex) and 3D (extrusion edge, #77) cases,
@@ -16731,7 +16975,7 @@ impl App {
 
         // Selection Exploder overlay (#551): the faint availability hint, or the fanned-out
         // handles + leader lines + kind icons, drawn over the GPU scene.
-        self.draw_exploder(&painter, &project, exploder_available);
+        self.draw_exploder(&painter, &project, exploder_available, viewport);
         // Collapse the fan after this frame's pick landed (a non-Shift handle click, #551).
         if exploder_close_after {
             self.exploder = None;
