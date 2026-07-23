@@ -268,9 +268,16 @@ pub fn build_constraint_icon_hits(
 }
 
 pub fn pointer_over_constraint_icon(hits: &[ConstraintIconHit], pointer: Pos2) -> Option<usize> {
+    // Among every icon whose hitbox is under the cursor, pick the one whose centre is **closest**
+    // to the cursor (#569). Order-independent, so overlapping icons no longer flip-flop (flash)
+    // between frames the way `.rev().find` did when the graphics list re-ordered.
     hits.iter()
-        .rev()
-        .find(|hit| hit.rect.contains(pointer))
+        .filter(|hit| hit.rect.contains(pointer))
+        .min_by(|a, b| {
+            (a.rect.center() - pointer)
+                .length_sq()
+                .total_cmp(&(b.rect.center() - pointer).length_sq())
+        })
         .map(|hit| hit.constraint_index)
 }
 
@@ -442,5 +449,30 @@ mod tests {
             Some(3)
         );
         assert_eq!(pointer_over_constraint_icon(&hits, Pos2::new(0.0, 0.0)), None);
+    }
+
+    #[test]
+    fn constraint_icon_hit_picks_closest_center_when_overlapping() {
+        // Two overlapping icon hitboxes both contain the pointer. The result must be the icon
+        // whose centre is closest to the cursor, and it must NOT depend on list order (#569):
+        // reversing the hits yields the same answer, so hovering can't flash between them.
+        let near = ConstraintIconHit {
+            constraint_index: 1,
+            rect: Rect::from_center_size(Pos2::new(22.0, 20.0), egui::vec2(20.0, 20.0)),
+        };
+        let far = ConstraintIconHit {
+            constraint_index: 2,
+            rect: Rect::from_center_size(Pos2::new(28.0, 20.0), egui::vec2(20.0, 20.0)),
+        };
+        let pointer = Pos2::new(21.0, 20.0); // closer to `near`'s centre
+        assert_eq!(
+            pointer_over_constraint_icon(&[near, far], pointer),
+            Some(1)
+        );
+        // Order-independent: same winner regardless of which was pushed last.
+        assert_eq!(
+            pointer_over_constraint_icon(&[far, near], pointer),
+            Some(1)
+        );
     }
 }
