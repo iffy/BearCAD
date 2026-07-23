@@ -1823,8 +1823,10 @@ modeled on SolveSpace (https://solvespace.com).
     single-element and group loupes). On Space the flat crowd (`ExploderState::items`) is built into a
     grouping **tree** (`ExploderNode::Leaf` / `Group`) by `build_exploder_tree`: the **top level
     groups by element type** (#563) — all faces in one group, all edges in one, all vertices, all
-    lines, all circles (via `crowd_type_rank`); a type with a single member is a leaf. Each type
-    group is then subdivided **by proximity** (joined/touching things) with `build_spatial_tree`,
+    lines, all circles (via `crowd_type_rank`). Once **any** type forms a group (has > 1 member),
+    **every** type becomes a group — even a lone member (a group of 1) — so the top level reads as a
+    consistent set of one group-per-type (#567); only an all-distinct-singleton crowd shows bare
+    leaves. Each type group is then subdivided **by proximity** (joined/touching things) with `build_spatial_tree`,
     which partitions the screen anchors with a deterministic farthest-first `cluster_points` (no
     RNG/clock — both throw here); when clustering can't split the set into ≥ 2 non-trivial pieces
     (e.g. **coincident** stacked endpoints) it falls back to even `chunks`, which always shrinks the
