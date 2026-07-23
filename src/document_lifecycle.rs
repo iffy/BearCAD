@@ -52,9 +52,9 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
         // Geometry-keyed 3D sub-elements (#156): alive as long as their body is (an exact
         // edge/vertex existence check would need a mesh rebuild; a stale selection is
         // harmless because it simply stops matching anything).
-        SceneElement::BodyEdge { body, .. } | SceneElement::BodyVertex { body, .. } => {
-            body_alive(doc, body)
-        }
+        SceneElement::BodyEdge { body, .. }
+        | SceneElement::BodyVertex { body, .. }
+        | SceneElement::BodyFace { body, .. } => body_alive(doc, body),
         SceneElement::Component(index) => doc
             .components
             .get(index)
@@ -262,7 +262,8 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
         SceneElement::FaceEdge(_)
         | SceneElement::Origin
         | SceneElement::BodyEdge { .. }
-        | SceneElement::BodyVertex { .. } => {}
+        | SceneElement::BodyVertex { .. }
+        | SceneElement::BodyFace { .. } => {}
         SceneElement::RepeatOp(index) => {
             if let Some(op) = doc.repeat_ops.get_mut(index) {
                 if !op.deleted {

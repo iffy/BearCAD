@@ -2276,6 +2276,10 @@ pub fn selection_world_bounds(
             SceneElement::BodyVertex { p, .. } => {
                 extend(crate::hierarchy::dequantize_body_point(p));
             }
+            // A body face (#555): its centroid is the only stored point; enough to frame toward it.
+            SceneElement::BodyFace { centroid, .. } => {
+                extend(crate::hierarchy::dequantize_body_point(centroid));
+            }
             SceneElement::Sketch(_)
             | SceneElement::ConstructionPlane(_)
             | SceneElement::Constraint(_)

@@ -1679,6 +1679,19 @@ pub fn scene_element_from_pick(kind: &PickTargetKind) -> Option<SceneElement> {
             body: *body,
             p: crate::hierarchy::quantize_body_point(*position),
         }),
+        // A body face (#555/#557) is keyed by its quantized centroid + normal, so a face can be
+        // selected/highlighted directly rather than falling through to a positional edge pick.
+        // The centroid is the average of every triangle vertex (deterministic for a deterministic
+        // mesh), so two picks of the same face yield the same key.
+        PickTargetKind::BodyFace { body, triangles, normal } => {
+            let count = (triangles.len() * 3).max(1) as f32;
+            let centroid = triangles.iter().flat_map(|t| t.iter()).copied().sum::<Vec3>() / count;
+            Some(SceneElement::BodyFace {
+                body: *body,
+                centroid: crate::hierarchy::quantize_body_point(centroid),
+                normal: crate::hierarchy::quantize_body_point(*normal),
+            })
+        }
         _ => None,
     }
 }
@@ -2439,12 +2452,13 @@ pub struct CrowdCandidate {
     pub dist_px: f32,
 }
 
-/// A stable dedup key per crowd candidate (one handle per distinct thing).
+/// A stable dedup key per crowd candidate (one handle per distinct thing). A body face (#555)
+/// now maps to a `SceneElement::BodyFace` keyed by its quantized centroid+normal, so two distinct
+/// faces of the same body get two distinct keys (and two loupes) rather than collapsing to one.
 fn crowd_key(kind: &PickTargetKind) -> String {
     match scene_element_from_pick(kind) {
         Some(el) => format!("{el:?}"),
         None => match kind {
-            PickTargetKind::BodyFace { body, .. } => format!("face:{body}"),
             PickTargetKind::ConstructionPlane(i) => format!("plane:{i}"),
             other => format!("{other:?}"),
         },
@@ -2460,10 +2474,14 @@ pub fn collect_pick_candidates(
     screen: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     doc: &Document,
-    eye: Vec3,
+    // Retained for call-site symmetry with `resolve_pick_target`; the crowd no longer
+    // depth-orders faces by eye distance (it enumerates every near face, #556).
+    _eye: Vec3,
     occlusion: Option<&PickOcclusion>,
 ) -> Vec<CrowdCandidate> {
-    let visible = |p: Vec3| occlusion.is_none_or(|occ| !occ.occluded(p));
+    // The exploder exists to reach *buried* geometry, so — unlike `resolve_pick_target` — no
+    // occlusion gate here (#556): things behind a body still appear in the crowd. The `pickable`
+    // gate stays, so user-hidden and shadow geometry is still excluded.
     let pickable = |kind: &PickTargetKind| occlusion.is_none_or(|occ| occ.pickable(doc, kind));
     let point_r = crate::touch::hit(POINT_PICK_RADIUS_PX);
     let mut raw: Vec<(PickTargetKind, Vec3, f32)> = Vec::new();
@@ -2472,7 +2490,7 @@ pub fn collect_pick_candidates(
         let Some(sp) = project(world) else { return };
         let dist = (screen - sp).length();
         let kind = PickTargetKind::Point(cp);
-        if dist <= point_r && pickable(&kind) && visible(world) {
+        if dist <= point_r && pickable(&kind) {
             raw.push((kind, world, dist));
         }
     };
@@ -2532,7 +2550,7 @@ pub fn collect_pick_candidates(
     let push_edge = |raw: &mut Vec<(PickTargetKind, Vec3, f32)>, kind: PickTargetKind, a: Vec3, b: Vec3| {
         let Some(dist) = segment_pick_distance(screen, project, a, b) else { return };
         let anchor = segment_point_nearest_screen(screen, project, a, b);
-        if pickable(&kind) && visible(anchor) {
+        if pickable(&kind) {
             raw.push((kind, anchor, dist));
         }
     };
@@ -2572,7 +2590,7 @@ pub fn collect_pick_candidates(
                 let dist = (screen - sp).length();
                 if dist <= point_r {
                     let kind = PickTargetKind::BodyVertex { body: bi, position: p };
-                    if pickable(&kind) && visible(p) {
+                    if pickable(&kind) {
                         raw.push((kind, p, dist));
                     }
                 }
@@ -2580,17 +2598,12 @@ pub fn collect_pick_candidates(
         }
     }
 
-    // The body face under the cursor (#551): one candidate for whatever solid face the ray hits,
-    // so a face buried among a corner's edges/vertices can be exploded out and picked too.
-    if let Some(kind) = crate::face::pick_body_face(screen, project, doc, eye) {
-        if let PickTargetKind::BodyFace { triangles, .. } = &kind {
-            if pickable(&kind) {
-                let count = (triangles.len() * 3).max(1) as f32;
-                let centroid =
-                    triangles.iter().flat_map(|t| t.iter()).copied().sum::<Vec3>() / count;
-                // Sort faces after the sharp kinds (broad targets), but still in the crowd.
-                raw.push((kind.clone(), centroid, point_r));
-            }
+    // Every body face near the cursor (#555/#556): not just the nearest ray-hit face, but every
+    // face — front and back — whose projected area is within the pick radius, so a narrow face
+    // seen edge-on (a thin sliver between its two edges) and buried back faces both get loupes.
+    for (kind, centroid, dist) in crate::face::body_faces_near(screen, project, doc, point_r) {
+        if pickable(&kind) {
+            raw.push((kind, centroid, dist));
         }
     }
 
@@ -3502,6 +3515,110 @@ mod tests {
             additive: false,
         });
         assert!(state.scene_selection.is_selected(forward.unwrap()));
+    }
+
+    /// A 10x10x5 box (extrusion 0) as body 0, on the XY construction plane.
+    fn box_body_doc() -> Document {
+        use crate::model::{Body, BodySource, ExtrudeFace, Extrusion, FaceId};
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        let lines = add_line_rectangle(&mut doc, sketch, 0.0, 0.0, 10.0, 10.0, [false; 4]);
+        doc.extrusions.push(Extrusion {
+            sketch,
+            faces: vec![ExtrudeFace::Polygon(lines.to_vec())],
+            distance: 5.0,
+            target: None,
+            expression: String::new(),
+            symmetric: false,
+            name: None,
+            deleted: false,
+            edge_treatments: Vec::new(),
+        });
+        doc.bodies.push(Body {
+            source: BodySource::Extrusion(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        doc
+    }
+
+    /// #555/#557: a body face maps to a selectable `SceneElement::BodyFace`, keyed by quantized
+    /// centroid+normal — deterministic, so the same face picked twice yields equal keys.
+    #[test]
+    fn body_face_pick_becomes_selectable_element() {
+        use crate::hierarchy::SceneElement;
+        let triangles = vec![
+            [Vec3::new(0.0, 0.0, 5.0), Vec3::new(10.0, 0.0, 5.0), Vec3::new(10.0, 10.0, 5.0)],
+            [Vec3::new(0.0, 0.0, 5.0), Vec3::new(10.0, 10.0, 5.0), Vec3::new(0.0, 10.0, 5.0)],
+        ];
+        let normal = Vec3::Z;
+        let a = scene_element_from_pick(&PickTargetKind::BodyFace {
+            body: 3,
+            triangles: triangles.clone(),
+            normal,
+        });
+        assert!(matches!(a, Some(SceneElement::BodyFace { body: 3, .. })));
+        // Same face, triangles listed in a different order → same centroid/normal → equal key.
+        let mut reordered = triangles.clone();
+        reordered.reverse();
+        let b = scene_element_from_pick(&PickTargetKind::BodyFace {
+            body: 3,
+            triangles: reordered,
+            normal,
+        });
+        assert_eq!(a, b, "two picks of the same face must produce equal keys");
+        // A parallel face at a different height is a distinct key (centroid differs).
+        let lower: Vec<[Vec3; 3]> = triangles
+            .iter()
+            .map(|t| [t[0].with_z(0.0), t[1].with_z(0.0), t[2].with_z(0.0)])
+            .collect();
+        let c = scene_element_from_pick(&PickTargetKind::BodyFace {
+            body: 3,
+            triangles: lower,
+            normal: -Vec3::Z,
+        });
+        assert_ne!(a, c, "parallel faces at different depths must be distinct");
+    }
+
+    /// #556: the crowd includes every body face near the cursor — front and back — as distinct
+    /// candidates, not just the single nearest ray hit (and no occlusion gate drops buried ones).
+    #[test]
+    fn collect_pick_candidates_includes_multiple_distinct_faces() {
+        let doc = box_body_doc();
+        // Look straight down -Z: the top (z=5) and bottom (z=0) faces both project onto the same
+        // square, so the bottom face is directly behind the top. Both must appear.
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let cands = collect_pick_candidates(Pos2::new(5.0, 5.0), &project, &doc, Vec3::ZERO, None);
+        let faces: std::collections::HashSet<String> = cands
+            .iter()
+            .filter(|c| matches!(c.kind, PickTargetKind::BodyFace { .. }))
+            .map(|c| crowd_key(&c.kind))
+            .collect();
+        assert!(
+            faces.len() >= 2,
+            "the crowd must fan out multiple distinct faces, got {}: {faces:?}",
+            faces.len()
+        );
+    }
+
+    /// #555: a narrow face seen edge-on (its projected area a thin sliver / line between its two
+    /// edges) is caught by `body_faces_near` via edge distance, where a strict inside-triangle
+    /// ray hit would miss it. Looking down -Z, the x=0 side face collapses to the line x=0.
+    #[test]
+    fn body_faces_near_catches_edge_on_narrow_face() {
+        let doc = box_body_doc();
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        // Cursor on the projected line of the x=0 side face (which has zero projected area).
+        let near = crate::face::body_faces_near(Pos2::new(0.0, 5.0), &project, &doc, 12.0);
+        assert!(
+            near.iter().any(|(kind, _, _)| matches!(
+                kind,
+                PickTargetKind::BodyFace { normal, .. } if normal.x.abs() > 0.9
+            )),
+            "the edge-on x-facing side face must be reported: {:?}",
+            near.iter().map(|(k, _, _)| k).collect::<Vec<_>>()
+        );
     }
 
     #[test]

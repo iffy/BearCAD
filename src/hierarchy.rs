@@ -131,6 +131,17 @@ pub enum SceneElement {
     /// A corner of a body's solid mesh, selectable in 3D select mode (#156); quantized like
     /// [`SceneElement::BodyEdge`].
     BodyVertex { body: usize, p: [i32; 3] },
+    /// A planar face of a body's solid mesh, selectable in 3D select mode (#555/#557). A face
+    /// has no stable index, so — like [`SceneElement::BodyEdge`] — its identity is its quantized
+    /// geometry: the average of its triangle vertices (`centroid`) plus its `normal`, both
+    /// quantized via [`quantize_body_point`]. Deterministic mesh → deterministic key, so two
+    /// picks of the same face compare equal; a rebuild that moves the face simply drops the
+    /// (ephemeral, never persisted) selection.
+    BodyFace {
+        body: usize,
+        centroid: [i32; 3],
+        normal: [i32; 3],
+    },
     /// A tracing image (#163/#169).
     Image(usize),
     /// A boolean operation between bodies (Combine tool).
@@ -359,8 +370,10 @@ impl ElementVisibility {
                     SceneElement::Extrusion(extrusion.unwrap_or(usize::MAX)),
                 )
             }
-            // A body's own edge/vertex (#156) is visible exactly when its body is.
-            SceneElement::BodyEdge { body, .. } | SceneElement::BodyVertex { body, .. } => {
+            // A body's own edge/vertex/face (#156/#555) is visible exactly when its body is.
+            SceneElement::BodyEdge { body, .. }
+            | SceneElement::BodyVertex { body, .. }
+            | SceneElement::BodyFace { body, .. } => {
                 self.effective_visible(doc, SceneElement::Body(body))
             }
             SceneElement::Image(index) => self.is_visible(SceneElement::Image(index)),
@@ -1180,7 +1193,8 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
         | SceneElement::FaceEdge(_)
         | SceneElement::Origin
         | SceneElement::BodyEdge { .. }
-        | SceneElement::BodyVertex { .. } => return None,
+        | SceneElement::BodyVertex { .. }
+        | SceneElement::BodyFace { .. } => return None,
     })
 }
 
@@ -2108,8 +2122,10 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
         // A face's own edge isn't a hierarchy-pane node in its own right (it's a constraint
         // reference, not an independently listed element) — no parent to nest under.
         SceneElement::FaceEdge(_) | SceneElement::Origin => None,
-        // Body sub-elements (#156) likewise aren't pane nodes of their own.
-        SceneElement::BodyEdge { .. } | SceneElement::BodyVertex { .. } => None,
+        // Body sub-elements (#156/#555) likewise aren't pane nodes of their own.
+        SceneElement::BodyEdge { .. }
+        | SceneElement::BodyVertex { .. }
+        | SceneElement::BodyFace { .. } => None,
         // A tracing image nests under its host construction plane (#169).
         SceneElement::Image(index) => doc
             .tracing_images
@@ -2252,6 +2268,7 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
         | SceneElement::Origin
         | SceneElement::BodyEdge { .. }
         | SceneElement::BodyVertex { .. }
+        | SceneElement::BodyFace { .. }
         | SceneElement::SketchText(_)
         | SceneElement::Image(_) => {}
         SceneElement::BooleanOp(index) => {

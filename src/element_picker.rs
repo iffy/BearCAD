@@ -77,7 +77,8 @@ impl ElementKind {
             }
             SceneElement::FaceEdge(_) | SceneElement::BodyEdge { .. } => ElementKind::Edge,
             SceneElement::Constraint(_) => ElementKind::Constraint,
-            SceneElement::Body(_) => ElementKind::Body,
+            // A body face (#555) has no dedicated kind; the closest is the body/face icon.
+            SceneElement::Body(_) | SceneElement::BodyFace { .. } => ElementKind::Body,
             SceneElement::Component(_) => ElementKind::Operation,
             SceneElement::Extrusion(_)
             | SceneElement::BooleanOp(_)

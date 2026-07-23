@@ -880,6 +880,68 @@ pub fn pick_body_face(
     best.map(|(kind, _)| kind)
 }
 
+/// Every body face whose projected area is within `radius` px of the cursor (#555/#556) — front
+/// and back, not just the nearest ray-hit face [`pick_body_face`] returns. For each non-deleted,
+/// non-shadow body, each coplanar-triangle group (`solid_mesh_coplanar_faces`) is measured by the
+/// minimum screen distance from the cursor to its projected triangles: 0 when the cursor is inside
+/// any projected triangle, else the min distance to the projected triangle edges. This catches a
+/// narrow face seen edge-on — a thin projected sliver between its two edges — that no single-face
+/// ray hit would report. Returns each face's `PickTargetKind::BodyFace`, its world centroid (the
+/// exploder's connecting-line anchor), and that screen distance (for nearest-first ordering).
+pub fn body_faces_near(
+    screen: eframe::egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<eframe::egui::Pos2>,
+    doc: &Document,
+    radius: f32,
+) -> Vec<(crate::construction::PickTargetKind, Vec3, f32)> {
+    let mut out: Vec<(crate::construction::PickTargetKind, Vec3, f32)> = Vec::new();
+    for (bi, body) in doc.bodies.iter().enumerate() {
+        if body.deleted || body.shadow {
+            continue;
+        }
+        let Some(solid) = crate::extrude::body_solid_mesh(doc, bi) else {
+            continue;
+        };
+        for triangles in crate::gpu_viewport::solid_mesh_coplanar_faces(&solid) {
+            let mut dist = f32::MAX;
+            for tri in &triangles {
+                let (Some(a), Some(b), Some(c)) =
+                    (project(tri[0]), project(tri[1]), project(tri[2]))
+                else {
+                    continue;
+                };
+                if point_in_tri(screen, a, b, c) {
+                    dist = 0.0;
+                    break;
+                }
+                let edge = dist_point_to_segment_px(screen, a, b)
+                    .min(dist_point_to_segment_px(screen, b, c))
+                    .min(dist_point_to_segment_px(screen, c, a));
+                dist = dist.min(edge);
+            }
+            if dist > radius {
+                continue;
+            }
+            let count = (triangles.len() * 3).max(1) as f32;
+            let centroid =
+                triangles.iter().flat_map(|t| t.iter()).copied().sum::<Vec3>() / count;
+            let normal = (triangles[0][1] - triangles[0][0])
+                .cross(triangles[0][2] - triangles[0][0])
+                .normalize_or_zero();
+            out.push((
+                crate::construction::PickTargetKind::BodyFace {
+                    body: bi,
+                    triangles,
+                    normal,
+                },
+                centroid,
+                dist,
+            ));
+        }
+    }
+    out
+}
+
 /// Screen-space pick distance to an extrusion cap polygon (0 inside).
 fn cap_face_pick_distance(
     screen: eframe::egui::Pos2,

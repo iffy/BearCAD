@@ -96,6 +96,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::Origin => "origin",
         SceneElement::BodyEdge { .. } => "body_edge",
         SceneElement::BodyVertex { .. } => "body_vertex",
+        SceneElement::BodyFace { .. } => "face",
         SceneElement::Image(_) => "image",
         SceneElement::BooleanOp(_) => "boolean_op",
         SceneElement::MoveOp(_) => "move_op",
@@ -144,7 +145,8 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::FaceEdge(_)
         | SceneElement::Origin
         | SceneElement::BodyEdge { .. }
-        | SceneElement::BodyVertex { .. } => 0,
+        | SceneElement::BodyVertex { .. }
+        | SceneElement::BodyFace { .. } => 0,
     }
 }
 
@@ -1745,7 +1747,12 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                 entry.set("kind", element_kind_name(element.clone()))?;
                 // Point/FaceEdge selections have no flat (kind, index) mapping (they name a
                 // vertex/edge of another element); report just their kind and leave `index` nil.
-                if !matches!(element, SceneElement::Point(_) | SceneElement::FaceEdge(_)) {
+                if !matches!(
+                    element,
+                    SceneElement::Point(_)
+                        | SceneElement::FaceEdge(_)
+                        | SceneElement::BodyFace { .. }
+                ) {
                     entry.set("index", element_index(element))?;
                 }
                 out.set(i + 1, entry)?;

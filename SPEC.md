@@ -1756,12 +1756,14 @@ modeled on SolveSpace (https://solvespace.com).
   row highlights all of its entities, a construction plane its fill, and a body or
   extrusion a recolor in the hover color (#455). Drawn depth-test-disabled like other
   pick highlights (#153).
-- **3D body sub-element selection (#156):** outside sketch mode, the Select tool can select
-  a body's **edges and vertices** (the same feature edges/corners the hover highlight shows,
-  #144), not just sketch entities. Shift/⌘-click multi-selects them like any other element.
-  Their selection identity is the quantized geometry (not a stable topological name): if a
-  rebuild moves the edge, the selection simply drops — acceptable for ephemeral, never-
-  persisted selection state. Selected body edges/vertices draw depth-test-disabled like
+- **3D body sub-element selection (#156/#555):** outside sketch mode, the Select tool can select
+  a body's **edges, vertices, and faces** (the same feature edges/corners/faces the hover highlight
+  shows, #144), not just sketch entities. Shift/⌘-click multi-selects them like any other element.
+  Their selection identity is the quantized geometry (not a stable topological name): an edge/vertex
+  by its quantized endpoint(s), a **face** (`SceneElement::BodyFace`) by its quantized
+  centroid+normal; if a rebuild moves it the selection simply drops — acceptable for ephemeral,
+  never-persisted selection state. A selected face is re-found among the body's coplanar-face groups
+  by matching that key and shaded; selected body edges/vertices/faces draw depth-test-disabled like
   their hover highlights (#153).
 - **Selection Exploder (#551):** pressing **Space** fans the crowd of pickable things inside the
   cursor's hitbox out into spaced-apart **handles** arranged on a ring around it, so a tiny buried
@@ -1777,9 +1779,14 @@ modeled on SolveSpace (https://solvespace.com).
   apart by the direction their line leaves the vertex. Colours: the in-loupe element and its ring
   read **blue** while idle and turn the accent **yellow** the moment the loupe is hovered *or* its
   thing is selected, matching that element's own highlight out in the 3D view. The crowd spans
-  everything a tool might pick there: sketch points/lines/circles, body vertices/edges, and the body
-  face under the cursor (`construction::collect_pick_candidates` returns them as `PickTargetKind`s
-  with a world anchor). It activates **on demand**: over a crowd it fans several handles, over a
+  **everything inside the hitbox, front and back** — sketch points/lines/circles, body
+  vertices/edges, and **every body face near the cursor** (all of them, not just the nearest ray-hit
+  one, so a narrow face seen edge-on and faces buried behind others each get their own loupe, #555/
+  #556): `construction::collect_pick_candidates` returns them as `PickTargetKind`s with a world
+  anchor and, unlike normal picking, does **not** occlusion-filter (buried things are exactly what
+  the exploder is for), only respecting user hidden/shadow visibility. Faces are found by
+  `face::body_faces_near` (min screen distance to each coplanar group's projected triangles ≤ the
+  hitbox). It activates **on demand**: over a crowd it fans several handles, over a
   single thing just one, and over nothing it freezes the hitbox circle at the cursor with no
   handles. A faint **light-green** disc the size of the hitbox (`construction::EXPLODER_HINT_RGBA`,
   distinct from the yellow pick-hover) appears under the cursor when **two or more** things are

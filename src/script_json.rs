@@ -71,6 +71,7 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
         SceneElement::Origin => "origin",
         SceneElement::BodyEdge { .. } => "body_edge",
         SceneElement::BodyVertex { .. } => "body_vertex",
+        SceneElement::BodyFace { .. } => "body_face",
         SceneElement::Image(_) => "image",
         SceneElement::BooleanOp(_) => "boolean_op",
         SceneElement::MoveOp(_) => "move_op",
@@ -95,7 +96,8 @@ pub fn scene_element_full_kind_name(element: &SceneElement) -> &'static str {
 /// rather than a whole element (`Point`/`FaceEdge`).
 pub fn scene_element_selection_index(element: &SceneElement) -> Option<usize> {
     match element {
-        SceneElement::Point(_) | SceneElement::FaceEdge(_) => None,
+        // A body face (#555) names a sub-feature with no flat index, like Point/FaceEdge.
+        SceneElement::Point(_) | SceneElement::FaceEdge(_) | SceneElement::BodyFace { .. } => None,
         SceneElement::ConstructionPlane(i)
         | SceneElement::Sketch(i)
         | SceneElement::Line(i)
