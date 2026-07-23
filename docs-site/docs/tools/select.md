@@ -26,13 +26,16 @@ You can't select things hidden behind a body.
 ## Picking from a crowd — the Selection Exploder
 
 When a tiny vertex or edge is buried in a cluster of overlapping things, it's hard to click
-exactly the one you want. When your cursor is over **two or more** selectable things, a faint
-circle appears under it — press **Space** to *explode* them: each thing pops out to its own
-spaced-apart handle, joined by a thin line back to where it really is (with a little icon of
-its kind when the crowd is mixed). Now every handle is far enough apart that there's no
-guessing — hover one and its real thing lights up, click it to select. Hold **Shift** while
-clicking to keep the fan open and pick several. Press **Space** again, click empty space, or
-switch tools to dismiss it.
+exactly the one you want. Press **Space** and everything inside your cursor's pick radius pops
+out to its own spaced-apart handle, joined by a thin line back to where it really is (with a
+little icon of its kind when the crowd is mixed). Now every handle is far enough apart that
+there's no guessing — hover one and its real thing lights up, click it to select. Hold
+**Shift** while clicking to keep the fan open and pick several. Press **Space** again, click
+empty space, or switch tools to dismiss it.
+
+You can hit **Space** any time: over a crowd it fans out several handles, over a single thing
+just one, and over empty space it simply parks the hitbox circle there. A faint circle appears
+under the cursor whenever two or more things are stacked, hinting that exploding will help.
 
 ## Selection feeds the other tools
 

@@ -1750,11 +1750,14 @@ modeled on SolveSpace (https://solvespace.com).
   rebuild moves the edge, the selection simply drops — acceptable for ephemeral, never-
   persisted selection state. Selected body edges/vertices draw depth-test-disabled like
   their hover highlights (#153).
-- **Selection Exploder (#551):** when the cursor sits inside the pick hitbox of **two or more**
-  selectable things (crowded vertices/edges/lines), a faint borderless disc the size of the
-  hitbox appears under it — the hint that the exploder is available. Pressing **Space** fans that
-  crowd out into spaced-apart **handles** arranged on a ring around the cursor, each a small disc
-  joined by a 1-px leader line back to its thing; handles sit at least the hitbox distance apart
+- **Selection Exploder (#551):** pressing **Space** (with a selection tool active) fans the crowd
+  of selectable things inside the cursor's pick hitbox out into spaced-apart **handles** arranged
+  on a ring around it — each a small disc joined by a 1-px leader line back to its thing — so a
+  tiny buried vertex/edge/line can be picked unambiguously. It activates **on demand**: over a
+  crowd it fans several handles, over a single thing just one, and over nothing it simply freezes
+  the hitbox circle at the cursor with no handles. A faint borderless disc the size of the hitbox
+  still appears under the cursor when **two or more** things are there, as a hint that exploding
+  will help. Handles sit at least the hitbox distance apart
   (chord, not arc) so there's never ambiguity about which one a click means. When the crowd
   spans more than one kind, each handle carries its kind's icon. While exploded **only handles**
   are hoverable/selectable — the raw crowd underneath is suppressed — and hovering a handle

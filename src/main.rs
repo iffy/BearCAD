@@ -544,6 +544,8 @@ struct ExploderHandle {
 /// things, captured when the user pressed space. While set, only handles are hoverable/
 /// selectable — the raw crowd underneath is suppressed.
 struct ExploderState {
+    /// Where Space was pressed — the frozen hitbox centre, shown when the crowd was empty.
+    origin: egui::Pos2,
     handles: Vec<ExploderHandle>,
     /// Whether the crowd spans more than one kind, so handles show a per-kind icon.
     multi_kind: bool,
@@ -13993,25 +13995,29 @@ impl App {
             return (self.exploder.is_some(), None);
         }
 
-        // Inactive: detect a crowd, hint, and activate on space.
+        // Inactive: Space explodes whatever sits under the cursor — even nothing (the hitbox
+        // circle just freezes there) or a single thing (one handle). Otherwise, when a crowd sits
+        // here, show the faint availability hint.
         let Some(pp) = pointer_screen else {
             return (false, None);
         };
         let candidates =
             construction::collect_pick_candidates(pp, project, &self.state.doc, occlusion);
-        if candidates.len() < 2 {
-            return (false, None);
-        }
         if space {
             let handles = self.exploder_layout(pp, &candidates, project);
             let multi_kind = handles
                 .first()
                 .map(|first| handles.iter().any(|h| h.kind != first.kind))
                 .unwrap_or(false);
-            self.exploder = Some(ExploderState { handles, multi_kind, hovered: None });
+            self.exploder = Some(ExploderState {
+                origin: pp,
+                handles,
+                multi_kind,
+                hovered: None,
+            });
             return (true, None);
         }
-        (false, Some(pp))
+        (false, (candidates.len() >= 2).then_some(pp))
     }
 
     /// The scene element the hovered exploder handle points at (#551), so the real thing lights
@@ -14043,6 +14049,20 @@ impl App {
         let Some(ex) = self.exploder.as_ref() else {
             return;
         };
+        // An exploder activated over nothing (or after its crowd cleared) freezes the hitbox
+        // circle at the activation point, so it's clear it's on but found nothing to pick.
+        if ex.handles.is_empty() {
+            painter.circle_filled(
+                ex.origin,
+                crate::touch::hit(12.0),
+                egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 32),
+            );
+            painter.circle_stroke(
+                ex.origin,
+                crate::touch::hit(12.0),
+                egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 120)),
+            );
+        }
         for (i, h) in ex.handles.iter().enumerate() {
             let hot = ex.hovered == Some(i);
             // Leader line from the real thing to its handle.
