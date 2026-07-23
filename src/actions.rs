@@ -10641,6 +10641,12 @@ label_hidden: false,
                     self.status = draw_mode_status("Circle", cc.construction);
                     return ActionResult::Ok;
                 }
+                // The in-sketch Offset tool's Construction output toggles on the same `X` key (#591).
+                if let Some(co) = &mut self.creating_sketch_offset {
+                    co.construction = !co.construction;
+                    self.status = draw_mode_status("Offset", co.construction);
+                    return ActionResult::Ok;
+                }
                 if self.tool == Tool::Rectangle {
                     self.draw_construction = !self.draw_construction;
                     self.status = draw_mode_status("Rectangle", self.draw_construction);

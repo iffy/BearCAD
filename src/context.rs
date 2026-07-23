@@ -3087,8 +3087,8 @@ pub fn show_pane(
             });
         });
         let mut pending: Option<SketchOffsetEdit> = None;
-        ui.horizontal(|ui| {
-            ui.label("Distance");
+        // Two-column Distance row (#592): label left, value input right.
+        labeled_row(ui, "Distance", |ui| {
             let mut text = control.distance.clone();
             crate::expression_input::ValueInput::new(
                 "sketch_offset_distance",
@@ -3108,20 +3108,20 @@ pub fn show_pane(
                 .color(egui::Color32::from_gray(140))
                 .size(11.0),
         );
+        // Two-column Construction toggle with the shared `X` shortcut (#591).
         let mut construction = control.construction;
-        if ui.checkbox(&mut construction, "Construction output").changed() {
+        if checkbox_row(ui, "Construction", &mut construction, Some(shortcuts::TOGGLE_CONSTRUCTION)) {
             pending = Some(SketchOffsetEdit::Construction(construction));
         }
         if let Some(edit) = pending {
             on_sketch_offset_edit(edit);
         }
-        if ui
-            .add_enabled(
-                control.can_commit && controls_enabled,
-                egui::Button::new(if control.editing { "Apply changes" } else { "Offset" }),
-            )
-            .clicked()
-        {
+        // The blue primary button / Enter commits the offset (#590).
+        if primary_button(
+            ui,
+            control.can_commit && controls_enabled,
+            if control.editing { "Apply changes" } else { "Offset" },
+        ) {
             on_sketch_offset_edit(SketchOffsetEdit::Commit);
         }
     }

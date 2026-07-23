@@ -25,8 +25,8 @@ radius grows or shrinks. The copies land under an **Offset** element in the Elem
 pane and follow their sources as the sketch changes — the distance is an expression,
 so parameters work. **Edit offset** on the element changes anything later.
 
-Check **Construction output** to emit the copies as construction geometry — e.g. a
-guide line a fixed clearance from a wall.
+Toggle **Construction** (or press **X**) to emit the copies as construction geometry — e.g.
+a guide line a fixed clearance from a wall.
 
 ## Scripting
 
