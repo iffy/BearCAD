@@ -4474,6 +4474,37 @@ impl App {
         let Some(target) = resolve_pick_target(pp, project, None, &self.state.doc, None) else {
             return;
         };
+        // Clicking a body edge — e.g. the boundary of the body face this sketch sits on (#595) —
+        // projects it into the sketch as a construction line and adds that to the offset set, so a
+        // face's own outline (like a rectangle) can be offset without projecting it by hand first.
+        if let construction::PickTargetKind::BodyEdge { body, a, b } = target.kind {
+            let (qa, qb) = (
+                hierarchy::quantize_body_point(a),
+                hierarchy::quantize_body_point(b),
+            );
+            let (qa, qb) = if qa <= qb { (qa, qb) } else { (qb, qa) };
+            let source = model::ProjectionSource::BodyEdge { body, a: qa, b: qb };
+            self.state
+                .creating_sketch_offset
+                .get_or_insert_with(|| actions::CreatingSketchOffset::new(session.sketch));
+            let before = self.state.doc.lines.len();
+            self.state.apply(Action::ProjectSources { sources: vec![source] });
+            if self.state.doc.lines.len() > before {
+                let li = self.state.doc.lines.len() - 1;
+                if let Some(co) = self.state.creating_sketch_offset.as_mut() {
+                    if !co.line_targets.contains(&li) {
+                        co.line_targets.push(li);
+                    }
+                }
+            }
+            if let Some(co) = self.state.creating_sketch_offset.as_ref() {
+                let n = co.line_targets.len() + co.circle_targets.len();
+                self.state.status = format!(
+                    "Offset: {n} entities — drag the handle or type a distance, Enter commits"
+                );
+            }
+            return;
+        }
         let co = self
             .state
             .creating_sketch_offset

@@ -825,8 +825,12 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     (`rebuild_sketch_offset` from `recompute_document_geometry`) so they track source drags
     and parameter-driven distances. A **construction toggle** emits the copies as construction
     geometry. **GUI**: the Offset tool (toolbar icon; outside a sketch it clicks a face to
-    begin sketching, like the draw tools) toggles lines/circles into the pick set with
-    hover glow, previews the result as dashed ghosts, and sets the distance via an in-plane
+    begin sketching, like the draw tools — the tool **survives into that sketch** since it's a
+    sketch-edit tool, #594) toggles lines/circles into the pick set with hover glow. Clicking a
+    **body edge** — e.g. the boundary of the body face the sketch sits on — **projects it into the
+    sketch** as a construction line and adds that to the offset set (#595), so a face's own outline
+    (a rectangle, say) can be offset without projecting it by hand first. It previews the result as
+    dashed ghosts, and sets the distance via an in-plane
     **push-pull handle** (dragged along the offset normal, negative flips side) or the context
     pane's expression input with computed preview; Enter or the pane button commits; Esc
     clears the picks. Selecting a committed op offers **Edit offset**, which re-opens the

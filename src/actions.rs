@@ -185,6 +185,9 @@ impl Tool {
                 | Tool::Text
                 // Project only means anything inside a sketch (#140).
                 | Tool::Project
+                // Offset operates on sketch geometry (#594): clicking a face begins a sketch on it
+                // and the Offset tool must survive into that sketch, like the other draw tools.
+                | Tool::Offset
         )
     }
 }
@@ -3947,29 +3950,45 @@ fn create_implicit_extrude_sketch(
     if !matches!(face_id, FaceId::ExtrudeCap { .. } | FaceId::ExtrudeSide { .. }) {
         return Err("Not a body face".to_string());
     }
+    let sketch = doc.add_sketch(face_id.clone());
+    // Real (non-construction) geometry: this is the profile the body-face push/pull extrudes.
+    add_face_boundary_to_sketch(doc, sketch, &face_id, false)
+}
+
+/// Add a body face's own boundary into `sketch` as sketch geometry — a real circle for a circular
+/// cap (its exact radius, not a polygon approximation) or a closed line loop otherwise. When
+/// `construction` is set the geometry is emitted as reference/construction geometry (#595): begun
+/// automatically when you open a sketch on a body's face, so the face outline (e.g. a rectangle) is
+/// there to select, offset, dimension, or constrain against without extruding or cluttering.
+fn add_face_boundary_to_sketch(
+    doc: &mut Document,
+    sketch: SketchId,
+    face_id: &FaceId,
+    construction: bool,
+) -> Result<ExtrudeFace, String> {
     let frame = crate::face::sketch_frame(doc, face_id.clone())
         .ok_or_else(|| "Body face does not exist".to_string())?;
 
     // A circular cap keeps its exact circle, not a many-sided polygon approximation.
-    if let FaceId::ExtrudeCap { profile: ExtrudeFace::Circle(i), .. } = &face_id {
+    if let FaceId::ExtrudeCap { profile: ExtrudeFace::Circle(i), .. } = face_id {
         let radius = doc
             .circles
             .get(*i)
             .ok_or_else(|| "Source circle no longer exists".to_string())?
             .r;
-        let world_loop = crate::extrude::face_boundary_loop_world(doc, &face_id)
+        let world_loop = crate::extrude::face_boundary_loop_world(doc, face_id)
             .ok_or_else(|| "Body face has no boundary".to_string())?;
         let center_world =
             world_loop.iter().copied().sum::<Vec3>() / world_loop.len().max(1) as f32;
         let (cx, cy) = crate::face::world_to_local(&frame, center_world);
-        let sketch = doc.add_sketch(face_id);
-        doc.circles
-            .push(crate::model::Circle::from_local_center_radius(sketch, cx, cy, radius, 0.0));
+        let mut circle = crate::model::Circle::from_local_center_radius(sketch, cx, cy, radius, 0.0);
+        circle.construction = construction;
+        doc.circles.push(circle);
         doc.shape_order.push(ShapeKind::Circle);
         return Ok(ExtrudeFace::Circle(doc.circles.len() - 1));
     }
 
-    let world_loop = crate::extrude::face_boundary_loop_world(doc, &face_id)
+    let world_loop = crate::extrude::face_boundary_loop_world(doc, face_id)
         .ok_or_else(|| "Body face has no boundary".to_string())?;
     if world_loop.len() < 3 {
         return Err("Body face has no boundary".to_string());
@@ -3978,8 +3997,14 @@ fn create_implicit_extrude_sketch(
         .iter()
         .map(|&p| crate::face::world_to_local(&frame, p))
         .collect();
-    let sketch = doc.add_sketch(face_id);
     let lines = crate::construction::add_line_polygon(doc, sketch, &local_points);
+    if construction {
+        for &li in &lines {
+            if let Some(line) = doc.lines.get_mut(li) {
+                line.construction = true;
+            }
+        }
+    }
     Ok(ExtrudeFace::Polygon(lines))
 }
 
@@ -14570,6 +14595,20 @@ mod tests {
             viewport: None,
         });
         assert_eq!(state.tool, Tool::Rectangle);
+        assert!(state.sketch_session.is_some());
+    }
+
+    #[test]
+    fn begin_sketch_preserves_offset_tool() {
+        // #594: clicking a face with the Offset tool begins a sketch on it and the Offset tool must
+        // survive into that sketch (it operates on sketch geometry), not reset to Select.
+        let mut state = AppState::default();
+        state.apply(Action::SetTool(Tool::Offset));
+        state.apply(Action::BeginSketch {
+            face: FaceId::ConstructionPlane(0),
+            viewport: None,
+        });
+        assert_eq!(state.tool, Tool::Offset);
         assert!(state.sketch_session.is_some());
     }
 
