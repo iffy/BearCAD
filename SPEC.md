@@ -1820,14 +1820,18 @@ modeled on SolveSpace (https://solvespace.com).
     when clustering can't split the set into ≥ 2 non-trivial pieces (e.g. **coincident** stacked
     endpoints) it falls back to even `chunks`, which always shrinks the input so the recursion
     terminates. Groups recurse with a tighter arity of **4** (`exploder::GROUP_ARITY`) so a drilled
-    level (Back + ≤ 4) still totals ≤ 5. A **group loupe** previews all its members drawn in the idle
-    blue (none singled out) with a **count badge** and a **doubled frame** so it reads as "several
-    things". **Clicking a group loupe drills in** (`ExploderState::path` pushes its node index): the
-    other loupes hide and the group's members fan out as their own loupes at the new level (recursively
-    grouped if still too many), and a **back-arrow loupe** appears; clicking Back pops one level. Any
-    depth is supported. The current level's loupes and their ring/stagger/fit layout come from
-    `display_items` / `display_centers`. Only a hovered **leaf** loupe redirects the tool's pick, owns
-    the press, and sets the hover highlight (`ExploderState::hovered_leaf`); a hovered group or back
+    level (Back + ≤ 4) still totals ≤ 5. **Every loupe shows the whole crowd** dimmed for context,
+    with only its own thing(s) highlighted — a leaf highlights its one target, a **group loupe**
+    highlights all its members (idle blue). A group reads distinct via a **light-grey disc** (not a
+    dashed frame) and a **big count badge** (member count, bottom-right). **Clicking a group loupe
+    drills in** (`ExploderState::path` pushes its node index): the other loupes hide and the group's
+    members **spring out** of the clicked spot (a quick `DrillAnim` slide, `DRILL_ANIM_SECS`) as their
+    own loupes at the new level (recursively grouped if still too many), and a **back-arrow loupe**
+    appears; clicking Back pops one level. Any depth is supported. The current level's loupes and
+    their ring/stagger/fit layout come from `display_items` / `display_centers`. Only a hovered
+    **leaf** loupe redirects the tool's pick, owns the press, and sets the hover highlight
+    (`ExploderState::hovered_leaf`); a hovered **group** loupe instead lights up **all its members**
+    at once in the 3D view (`hovered_group_members` → the scene's `extra_pick_highlights`); a back
     loupe only navigates. Single-element loupes still select their element on click, unchanged.
 - **Element picker for the Select tool (#202/#213):** while the Select tool is active the
   context pane shows the unified **element picker** — a focusable, combo-box-style input that

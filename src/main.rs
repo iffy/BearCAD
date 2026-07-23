@@ -574,6 +574,14 @@ struct DisplayItem {
     node: Option<usize>,
 }
 
+/// A quick "loupes spring out of the group loupe" animation (#559): when a group is drilled into,
+/// the new level's loupes slide from the clicked group's position (`from`) to their fanned spots
+/// over [`exploder::DRILL_ANIM_SECS`].
+struct DrillAnim {
+    start: f64,
+    from: egui::Pos2,
+}
+
 /// Active Selection Exploder state (#551, #559): the fanned-out loupes for a crowd of selectable
 /// things, captured when the user pressed space, grouped hierarchically so each level shows at most
 /// [`exploder::MAX_LOUPES`] loupes. While set, only loupes are hoverable/selectable — the raw crowd
@@ -593,6 +601,8 @@ struct ExploderState {
     /// each loupe's magnification, disc size, and the ring radius together (the whole fan grows),
     /// so scrolling zooms further into the crowd. 1.0 is the default fan.
     zoom_mul: f32,
+    /// The in-progress drill-in animation (#559), if any.
+    drill_anim: Option<DrillAnim>,
 }
 
 impl ExploderState {
@@ -802,6 +812,21 @@ impl ExploderState {
         let it = items.get(self.hovered?)?;
         (it.kind == DisplayKind::Leaf).then(|| (it.target.clone().unwrap(), it.anchor))
     }
+
+    /// The pick targets of every member of the hovered GROUP loupe (#559), so hovering a group
+    /// lights the whole group up in the 3D view. Empty unless a group loupe is hovered.
+    fn hovered_group_members(&self) -> Vec<construction::PickTargetKind> {
+        let Some(h) = self.hovered else {
+            return Vec::new();
+        };
+        let items = self.display_items();
+        match items.get(h) {
+            Some(it) if it.kind == DisplayKind::Group => {
+                it.leaves.iter().map(|&li| self.items[li].target.clone()).collect()
+            }
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// Recursively collect the flat item-indices of every `Leaf` under a node (#559), in tree order.
@@ -981,6 +1006,8 @@ mod exploder {
     /// Children per group at a drilled-in level (#559): a drilled level shows a Back arrow plus up
     /// to this many, so it still totals ≤ `MAX_LOUPES`.
     pub const GROUP_ARITY: usize = 4;
+    /// Duration of the drill-in "loupes spring out of the group" animation (seconds, #559).
+    pub const DRILL_ANIM_SECS: f64 = 0.16;
 }
 
 /// Clip a screen-space segment to a disc, returning the visible sub-segment (or `None` if it
@@ -10024,6 +10051,7 @@ fn build_viewport_scene_input<'a>(
     revolve_arc_gizmo: Option<gpu_viewport::RevolveArcGizmo>,
     vertex_treatment_preview: Option<Vec<Vec3>>,
     hover_highlight: Option<gpu_viewport::ViewportHoverHighlight>,
+    extra_pick_highlights: Vec<construction::PickTargetKind>,
     dimension_labels: &'a [gpu_viewport::ViewportDimLabel],
     dim_label_view: Option<PlanarLabelView>,
     constraint_graphics: Option<&'a [constraint_viewport::ConstraintViewportGraphic]>,
@@ -10340,6 +10368,7 @@ fn build_viewport_scene_input<'a>(
         vertex_treatment_preview: vertex_treatment_preview
             .map(|points| gpu_viewport::VertexTreatmentPreviewGeom { points }),
         hover_highlight,
+        extra_pick_highlights,
         hover_color: construction::PICK_HOVER_RGBA,
         document_health,
         constraint_graphics,
@@ -14559,6 +14588,17 @@ impl App {
                 self.exploder = None;
                 return (false, None, false);
             }
+            // Expire the finished drill-in animation, and keep repainting while it runs (#559).
+            let now = ui.input(|i| i.time);
+            if let Some(ex) = self.exploder.as_mut() {
+                if ex.drill_anim.as_ref().is_some_and(|a| now - a.start >= exploder::DRILL_ANIM_SECS)
+                {
+                    ex.drill_anim = None;
+                }
+                if ex.drill_anim.is_some() {
+                    ui.ctx().request_repaint();
+                }
+            }
             let hovered = pointer_screen.and_then(|pp| {
                 let ex = self.exploder.as_ref()?;
                 let hit_r = ex.loupe_radius() + exploder::HANDLE_HIT_PAD_PX;
@@ -14605,11 +14645,18 @@ impl App {
                         }
                         return (true, None, false);
                     }
-                    // Group: drill in — its members become the next level's loupes; stay open.
+                    // Group: drill in — its members become the next level's loupes, springing out
+                    // of the clicked group's spot (#559); stay open.
                     Act::Group(node) => {
+                        let from = hovered.and_then(|h| {
+                            self.exploder
+                                .as_ref()
+                                .and_then(|ex| ex.display_centers(viewport, project).get(h).copied())
+                        });
                         if let Some(ex) = self.exploder.as_mut() {
                             ex.path.push(node);
                             ex.hovered = None;
+                            ex.drill_anim = from.map(|f| DrillAnim { start: now, from: f });
                         }
                         return (true, None, false);
                     }
@@ -14662,6 +14709,7 @@ impl App {
                 path: Vec::new(),
                 hovered: None,
                 zoom_mul: 1.0,
+                drill_anim: None,
             });
             return (true, None, false);
         }
@@ -14721,170 +14769,123 @@ impl App {
         }
         let r_loupe = ex.loupe_radius();
         let content_zoom = ex.content_zoom();
-        // The current drill level's loupes (Back + leaves + group loupes) and their packed centres
-        // (single ring while it fits, else staggered concentric rings).
+        // The current drill level's loupes (Back + leaves + group loupes) and their packed centres.
         let items = ex.display_items();
         let centers = ex.display_centers(viewport, project);
-        // The current level's single-element leaves, as display-list indices — a leaf loupe draws
-        // the *other* current-level leaves dimmed inside it for context.
-        let level_leaves: Vec<usize> = items
-            .iter()
-            .enumerate()
-            .filter(|(_, it)| it.kind == DisplayKind::Leaf)
-            .map(|(j, _)| j)
-            .collect();
-        // The in-loupe element (and border) read **blue** while idle, and turn the accent
-        // **yellow** the moment the loupe is hovered *or* its thing is selected — matching the
-        // element's own highlight out in the 3D view (hover highlight / selection colour).
+        // Drill-in animation (#559): the new level's loupes spring out of the clicked group's spot.
+        let now = painter.ctx().input(|i| i.time);
+        let anim = ex.drill_anim.as_ref().map(|a| {
+            let t = ((now - a.start) / exploder::DRILL_ANIM_SECS).clamp(0.0, 1.0) as f32;
+            (a.from, t * (2.0 - t)) // ease-out
+        });
+        if anim.is_some() {
+            painter.ctx().request_repaint();
+        }
         let idle_blue = egui::Color32::from_rgb(96, 165, 250);
         let dark_bg = egui::Color32::from_rgba_unmultiplied(20, 22, 28, 236);
+        // A group loupe reads distinct via a light-grey disc (rather than a dashed/doubled frame).
+        let group_bg = egui::Color32::from_rgba_unmultiplied(150, 154, 162, 240);
         for (i, it) in items.iter().enumerate() {
             let hot = ex.hovered == Some(i);
-            let center = centers[i];
+            // While the drill animation runs, every loupe slides out from the clicked group's spot.
+            let center = anim.map_or(centers[i], |(from, e)| from + (centers[i] - from) * e);
             // The magnifier transform: the pick hitbox (around the cursor at `ex.origin`) mapped
             // `content_zoom`× into this loupe, so a loupe magnifies exactly what the hitbox covers.
             let loupe = |s: egui::Pos2| center + (s - ex.origin) * content_zoom;
-            // Loupe background: a dark, mostly opaque disc so the magnified geometry reads clearly.
-            painter.circle_filled(center, r_loupe, dark_bg);
-            match it.kind {
-                DisplayKind::Leaf => {
-                    let target = it.target.as_ref().expect("leaf carries a target");
-                    let selected = scene_element_from_pick(target)
-                        .is_some_and(|e| self.state.scene_selection.is_selected(e));
-                    let active = hot || selected;
-                    let element_color = if active { accent } else { idle_blue };
-                    // Leader line back to the real thing — only for the hovered loupe (a line from
-                    // every loupe is clutter), grey with an accent dot where the thing really is.
-                    if hot {
-                        if let Some(a) = project(it.anchor) {
-                            painter.line_segment(
-                                [a, center],
-                                egui::Stroke::new(1.0, egui::Color32::from_gray(150)),
-                            );
-                            painter.circle_filled(a, 3.5, accent);
-                        }
-                    }
-                    // The rest of the current-level crowd draws dimmed for context; this leaf's own
-                    // thing draws on top in the highlight colour.
-                    for &j in &level_leaves {
-                        if j == i {
-                            continue;
-                        }
-                        let other = &items[j];
-                        draw_pick_target_loupe(
-                            painter,
-                            project,
-                            &loupe,
-                            center,
-                            r_loupe,
-                            &self.state.doc,
-                            other.target.as_ref().expect("leaf carries a target"),
-                            other.anchor,
-                            egui::Color32::from_gray(115),
-                            1.4,
-                            false,
-                        );
-                    }
-                    draw_pick_target_loupe(
-                        painter,
-                        project,
-                        &loupe,
-                        center,
-                        r_loupe,
-                        &self.state.doc,
-                        target,
-                        it.anchor,
-                        element_color,
-                        2.4,
-                        true,
-                    );
-                    // A faint centre mark = the cursor's hitbox centre, for orientation.
-                    painter.circle_filled(center, 1.0, egui::Color32::from_gray(90));
-                    // Frame: grey while idle, accent yellow once hovered or selected (thicker hot).
-                    let frame = if active { accent } else { egui::Color32::from_gray(72) };
-                    painter.circle_stroke(
-                        center,
-                        r_loupe,
-                        egui::Stroke::new(if hot { 2.5 } else { 1.5 }, frame),
+            let is_group = it.kind == DisplayKind::Group;
+            // Every loupe shows the WHOLE crowd dimmed for context; only this loupe's own things are
+            // highlighted (#559). On the light-grey group disc the context reads as a darker grey.
+            let (bg, context_color) = if is_group {
+                (group_bg, egui::Color32::from_gray(70))
+            } else {
+                (dark_bg, egui::Color32::from_gray(115))
+            };
+            painter.circle_filled(center, r_loupe, bg);
+            // Context: the full crowd, minus this loupe's own leaves (drawn highlighted below).
+            for (li, member) in ex.items.iter().enumerate() {
+                if it.leaves.contains(&li) {
+                    continue;
+                }
+                draw_pick_target_loupe(
+                    painter, project, &loupe, center, r_loupe, &self.state.doc,
+                    &member.target, member.anchor, context_color, 1.2, false,
+                );
+            }
+            // This loupe's own thing(s): a leaf's single target (accent when hovered/selected), a
+            // group's members (blue, accent when hovered). Back has none.
+            let selected = it.kind == DisplayKind::Leaf
+                && it.target.as_ref().is_some_and(|t| {
+                    scene_element_from_pick(t)
+                        .is_some_and(|e| self.state.scene_selection.is_selected(e))
+                });
+            let active = hot || selected;
+            let highlight = if active { accent } else { idle_blue };
+            for &li in &it.leaves {
+                let member = &ex.items[li];
+                draw_pick_target_loupe(
+                    painter, project, &loupe, center, r_loupe, &self.state.doc,
+                    &member.target, member.anchor, highlight, 2.4, true,
+                );
+            }
+            // A faint centre mark = the cursor's hitbox centre, for orientation.
+            painter.circle_filled(center, 1.0, egui::Color32::from_gray(90));
+            // Leader line back to the real thing — only for the hovered LEAF loupe, grey, no dot.
+            if it.kind == DisplayKind::Leaf && hot {
+                if let Some(a) = project(it.anchor) {
+                    painter.line_segment(
+                        [a, center],
+                        egui::Stroke::new(1.0, egui::Color32::from_gray(150)),
                     );
                 }
+            }
+            // Frame: grey while idle, accent yellow when hovered/selected (thicker when hovered).
+            let frame = if active { accent } else { egui::Color32::from_gray(72) };
+            painter.circle_stroke(
+                center,
+                r_loupe,
+                egui::Stroke::new(if hot { 2.5 } else { 1.5 }, frame),
+            );
+            match it.kind {
                 DisplayKind::Group => {
-                    // Preview every member of the group in idle blue (none singled out), so it reads
-                    // as "several things stacked" — clicking drills in to fan them out.
-                    for &li in &it.leaves {
-                        let member = &ex.items[li];
-                        draw_pick_target_loupe(
-                            painter,
-                            project,
-                            &loupe,
-                            center,
-                            r_loupe,
-                            &self.state.doc,
-                            &member.target,
-                            member.anchor,
-                            idle_blue,
-                            1.6,
-                            true,
-                        );
-                    }
-                    painter.circle_filled(center, 1.0, egui::Color32::from_gray(90));
-                    // A group reads distinct from a single loupe: a doubled frame (an inner ring
-                    // just inside the main one). Accent when hovered, else grey.
-                    let frame = if hot { accent } else { egui::Color32::from_gray(72) };
-                    painter.circle_stroke(
-                        center,
-                        r_loupe,
-                        egui::Stroke::new(if hot { 2.5 } else { 1.5 }, frame),
-                    );
-                    painter.circle_stroke(
-                        center,
-                        r_loupe - 3.5,
-                        egui::Stroke::new(1.2, egui::Color32::from_gray(if hot { 150 } else { 96 })),
-                    );
-                    // Count badge: a filled dark pill at the bottom-right with the member count.
-                    let count = it.leaves.len();
-                    let label = count.to_string();
-                    let badge_c = center + egui::vec2(r_loupe * 0.62, r_loupe * 0.62);
-                    let badge_w = 9.0 + 6.0 * label.len() as f32;
-                    let badge_rect = egui::Rect::from_center_size(badge_c, egui::vec2(badge_w, 15.0));
+                    // A big count badge (bottom-right) showing the number of things in the group.
+                    let label = it.leaves.len().to_string();
+                    let badge_c = center + egui::vec2(r_loupe * 0.66, r_loupe * 0.66);
+                    let bh = 24.0;
+                    let bw = (bh + 9.0 * (label.len() as f32 - 1.0)).max(bh);
+                    let rect = egui::Rect::from_center_size(badge_c, egui::vec2(bw, bh));
                     painter.rect_filled(
-                        badge_rect,
-                        7.0,
-                        egui::Color32::from_rgba_unmultiplied(12, 14, 18, 240),
+                        rect,
+                        bh * 0.5,
+                        egui::Color32::from_rgba_unmultiplied(12, 14, 18, 245),
                     );
                     painter.rect_stroke(
-                        badge_rect,
-                        7.0,
-                        egui::Stroke::new(1.0, if hot { accent } else { egui::Color32::from_gray(110) }),
+                        rect,
+                        bh * 0.5,
+                        egui::Stroke::new(
+                            1.5,
+                            if hot { accent } else { egui::Color32::from_gray(120) },
+                        ),
                         egui::StrokeKind::Outside,
                     );
                     painter.text(
                         badge_c,
                         egui::Align2::CENTER_CENTER,
                         label,
-                        egui::FontId::proportional(11.0),
-                        egui::Color32::from_gray(230),
+                        egui::FontId::proportional(16.0),
+                        egui::Color32::from_gray(235),
                     );
                 }
                 DisplayKind::Back => {
-                    // A clear left-pointing chevron: this goes up a level, it is not any geometry.
-                    let arrow = if hot { accent } else { egui::Color32::from_gray(200) };
+                    // A left-pointing arrow: this goes up a level, it is not any geometry.
+                    let arrow = if hot { accent } else { egui::Color32::from_gray(210) };
                     let a = r_loupe * 0.42;
                     let tip = center + egui::vec2(-a, 0.0);
-                    let up = center + egui::vec2(a * 0.55, -a);
-                    let down = center + egui::vec2(a * 0.55, a);
                     let stroke = egui::Stroke::new(3.0, arrow);
-                    painter.line_segment([up, tip], stroke);
-                    painter.line_segment([tip, down], stroke);
-                    // Shaft, so it reads as "back" rather than just a caret.
+                    painter.line_segment([center + egui::vec2(a * 0.55, -a), tip], stroke);
+                    painter.line_segment([tip, center + egui::vec2(a * 0.55, a)], stroke);
                     painter.line_segment([tip, center + egui::vec2(a, 0.0)], stroke);
-                    let frame = if hot { accent } else { egui::Color32::from_gray(72) };
-                    painter.circle_stroke(
-                        center,
-                        r_loupe,
-                        egui::Stroke::new(if hot { 2.5 } else { 1.5 }, frame),
-                    );
                 }
+                DisplayKind::Leaf => {}
             }
         }
     }
@@ -16928,8 +16929,8 @@ impl App {
             }
         }
         // The Selection Exploder (#551, #559) owns the hover while open: light up the hovered
-        // **leaf** loupe's EXACT target — the whole line, edge, circle, or face. A hovered group or
-        // back loupe highlights nothing (it navigates, it isn't a pick). Wins over every tool hover.
+        // **leaf** loupe's EXACT target — the whole line, edge, circle, or face. Wins over every
+        // tool hover. A hovered **group** loupe instead lights up ALL its members at once (#559).
         if let Some((target, _)) = self
             .exploder
             .as_ref()
@@ -16937,6 +16938,11 @@ impl App {
         {
             hover_highlight = Some(gpu_viewport::ViewportHoverHighlight::PickTarget(target));
         }
+        let exploder_group_highlight = self
+            .exploder
+            .as_ref()
+            .map(|e| e.hovered_group_members())
+            .unwrap_or_default();
         // Chamfer/fillet tool: render the same push/pull gizmo the extrude tool uses, anchored
         // at the picked vertex and pointing along the inward bisector of its two lines. Shares
         // one gizmo slot between the 2D (sketch vertex) and 3D (extrusion edge, #77) cases,
@@ -17286,6 +17292,7 @@ impl App {
             revolve_arc_gizmo,
             vertex_treatment_preview,
             hover_highlight,
+            exploder_group_highlight,
             &gpu_dim_labels,
             planar_label_view,
             Some(&constraint_graphics),
@@ -19471,6 +19478,7 @@ mod tests {
             None,
             None,
             None,
+            Vec::new(),
             &[],
             None,
             None,
@@ -19552,6 +19560,7 @@ mod tests {
             None,
             None,
             None,
+            Vec::new(),
             &[],
             None,
             None,
@@ -19647,6 +19656,7 @@ mod tests {
                 None,
                 None,
                 None,
+                Vec::new(),
                 &[],
                 None,
                 None,
@@ -19741,6 +19751,7 @@ mod tests {
             None,
             None,
             None,
+            Vec::new(),
             &[],
             None,
             None,
