@@ -1474,7 +1474,7 @@ pub fn resolve_pick_target(
         }
     }
 
-    if let Some((kind, a, b, label, dist)) = nearest_body_edge(screen, project, doc) {
+    if let Some((kind, a, b, label, dist)) = nearest_body_edge(screen, project, doc, occlusion) {
         if pickable(&kind) && visible(segment_point_nearest_screen(screen, project, a, b)) {
             consider(PickTarget {
                 kind,
@@ -2437,15 +2437,28 @@ fn nearest_body_edge(
     screen: egui::Pos2,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     doc: &Document,
+    occlusion: Option<&PickOcclusion>,
 ) -> Option<(PickTargetKind, Vec3, Vec3, String, f32)> {
-    let mut best: Option<(PickTargetKind, Vec3, Vec3, String, f32)> = None;
+    // Track visibility alongside the screen distance: when two edges overlap in screen space (a
+    // front and a back edge at the same cursor spot — e.g. the near and far top edges of a box seen
+    // near-on), a **visible** edge must win, even if a hidden one is marginally closer (#581).
+    // Otherwise the occluded back edge would be chosen and then rejected by the caller's visibility
+    // gate, silently dropping the whole edge pick so a body **face** wins and the Plane tool loses
+    // its angle/offset (hinge) reference.
+    let mut best: Option<(PickTargetKind, Vec3, Vec3, String, f32, bool)> = None;
 
     let mut consider = |kind: PickTargetKind, a: Vec3, b: Vec3| {
         let Some(dist) = segment_pick_distance(screen, project, a, b) else {
             return;
         };
-        if best.as_ref().is_none_or(|(_, _, _, _, d)| dist < *d) {
-            best = Some((kind, a, b, "Body edge".to_string(), dist));
+        let anchor = segment_point_nearest_screen(screen, project, a, b);
+        let visible = occlusion.is_none_or(|occ| !occ.occluded(anchor));
+        // A visible edge beats an occluded one; within the same visibility, nearer screen wins.
+        let better = best.as_ref().is_none_or(|(_, _, _, _, d, vis)| {
+            (visible, -dist) > (*vis, -*d)
+        });
+        if better {
+            best = Some((kind, a, b, "Body edge".to_string(), dist, visible));
         }
     };
 
@@ -2461,7 +2474,7 @@ fn nearest_body_edge(
         }
     }
 
-    best
+    best.map(|(kind, a, b, label, dist, _)| (kind, a, b, label, dist))
 }
 
 /// Nearest solid-mesh vertex (#144) of any 3D body within the point pick radius, for 3D
@@ -4072,6 +4085,34 @@ mod tests {
             "ground fallback, got {:?}",
             target.kind
         );
+    }
+
+    #[test]
+    fn plane_pick_returns_edge_axis_reference_with_occlusion() {
+        // #581: a body edge clicked with a real occlusion context must resolve to the edge with an
+        // Axis reference (angle+offset), not fall through to a Face. Box offset from the world axes
+        // so a world axis can't stand in for the edge.
+        let (lo, hi, top) = (20.0f32, 40.0f32, 20.0f32);
+        let c = [
+            Vec3::new(lo, lo, 0.0), Vec3::new(hi, lo, 0.0), Vec3::new(hi, hi, 0.0), Vec3::new(lo, hi, 0.0),
+            Vec3::new(lo, lo, top), Vec3::new(hi, lo, top), Vec3::new(hi, hi, top), Vec3::new(lo, hi, top),
+        ];
+        let quad = |a: usize, b: usize, d: usize, e: usize| vec![[c[a], c[b], c[d]], [c[a], c[d], c[e]]];
+        let mut triangles = Vec::new();
+        for face in [quad(0, 1, 2, 3), quad(4, 5, 6, 7), quad(0, 1, 5, 4), quad(1, 2, 6, 5), quad(2, 3, 7, 6), quad(3, 0, 4, 7)] {
+            triangles.extend(face);
+        }
+        let mut doc = Document::default();
+        doc.imported_meshes.push(crate::model::ImportedMesh { triangles, source_name: "box".to_string() });
+        doc.bodies.push(crate::model::Body { source: crate::model::BodySource::Imported(0), name: None, deleted: false, shadow: false });
+        let project = |p: Vec3| Some(egui::pos2(p.x, p.y));
+        let eye = Vec3::new(30.0, 30.0, 100.0);
+        let vis = crate::hierarchy::ElementVisibility::default();
+        let occ = PickOcclusion::new(&doc, &vis, eye);
+        // The top edge along X at y=20: midpoint (30,20,20) → screen (30,20).
+        let target = resolve_plane_pick_target(egui::pos2(30.0, 20.0), &project, Some(Vec3::new(30.0, 20.0, 0.0)), &doc, eye, Some(&occ)).expect("edge under cursor");
+        assert!(matches!(target.kind, PickTargetKind::BodyEdge { .. }), "expected body edge, got {:?}", target.kind);
+        assert!(matches!(target.reference, PlaneReference::Axis { .. }), "expected Axis reference, got {:?}", target.reference);
     }
 
     #[test]
