@@ -21,6 +21,8 @@ bearcad.exit_sketch()
 bearcad.revolve{ polygon = {0, 1, 2, 3}, axis = "y", angle = 270, name = "Ring" }
 
 bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
+-- Hide the ground grid too for a clean background (#579).
+bearcad.ui.ground("off")
 bearcad.ui.tool("dimension")
 bearcad.ui.view("corner", "front_right_top")
 bearcad.ui.wait(2)

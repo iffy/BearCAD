@@ -24,6 +24,8 @@ bearcad.set_visible({ kind = "sketch", index = 0 }, "hide")
 bearcad.set_visible({ kind = "sketch", index = 1 }, "hide")
 bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
 
+-- Hide the ground grid too for a clean background (#579).
+bearcad.ui.ground("off")
 bearcad.select{ kind = "body", index = 0 }
 -- The OS cursor parks mid-viewport; the Dimension tool has no pick hover, keeping the
 -- capture deterministic.

@@ -1872,7 +1872,11 @@ impl<'a> SceneMesh<'a> {
         // sketches still read against it), pushed slightly away from the camera with the
         // same bias the grid lines use so body bottoms resting on z = 0 never z-fight it.
         // The axis lines below still draw on top for orientation.
-        if cam.ground_display() == crate::camera::GroundDisplay::Solid {
+        // `None` hides the ground entirely (#579) — no solid fill and no grid lines; only the world
+        // axes below still draw for orientation.
+        if cam.ground_display() == crate::camera::GroundDisplay::None {
+            // nothing
+        } else if cam.ground_display() == crate::camera::GroundDisplay::Solid {
             let fill = sketch_ground_color(scale_color(palette.grid, 0.55), dim);
             let corners = [
                 Vec3::new(lo.x, lo.y, 0.0),

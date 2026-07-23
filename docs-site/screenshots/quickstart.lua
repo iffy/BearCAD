@@ -85,6 +85,8 @@ bearcad.exit_sketch()
 local loop = {0, 1, 2, 3, 4, 5}
 bearcad.extrude{ polygon = loop, distance = 40, name = "Bracket" }
 bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
+-- Hide the ground grid too for a clean background (#579).
+bearcad.ui.ground("off")
 bearcad.ui.tool("dimension")
 bearcad.ui.view("corner", "front_left_top")
 shot("quickstart-extrude.png")

@@ -203,16 +203,21 @@ pub enum GroundDisplay {
     #[default]
     Grid,
     Solid,
+    /// No ground plane at all — the world axes still draw for orientation, but the grid and solid
+    /// fill are hidden for a clean background (#579).
+    None,
 }
 
 /// All ground display modes, in the order they should list in the HUD popup.
-pub const GROUND_DISPLAYS: [GroundDisplay; 2] = [GroundDisplay::Grid, GroundDisplay::Solid];
+pub const GROUND_DISPLAYS: [GroundDisplay; 3] =
+    [GroundDisplay::Grid, GroundDisplay::Solid, GroundDisplay::None];
 
 impl GroundDisplay {
     pub fn from_name(name: &str) -> Option<Self> {
         match name.to_ascii_lowercase().as_str() {
             "grid" | "ground_grid" | "lines" => Some(Self::Grid),
             "solid" | "solid_ground" | "plane" => Some(Self::Solid),
+            "off" | "none" | "hidden" | "hide" => Some(Self::None),
             _ => None,
         }
     }
@@ -221,6 +226,7 @@ impl GroundDisplay {
         match self {
             Self::Grid => "grid",
             Self::Solid => "solid",
+            Self::None => "off",
         }
     }
 }

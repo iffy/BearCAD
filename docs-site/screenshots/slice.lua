@@ -26,6 +26,8 @@ bearcad.slice{ bodies = {0}, cutters = {{ kind = "construction_plane", index = 1
 bearcad.move_bodies{ bodies = {1}, z = 6 }
 
 bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
+-- Hide the ground grid too for a clean background (#579).
+bearcad.ui.ground("off")
 bearcad.set_visible({ kind = "construction_plane", index = 1 }, "hide")
 bearcad.ui.tool("dimension")
 bearcad.ui.view("corner", "front_left_top")

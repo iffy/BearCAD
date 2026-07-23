@@ -26,6 +26,8 @@ bearcad.extrude{ polygon = { 0, 1, 2, 3 }, distance = 20, name = "Block" }
 bearcad.exit_sketch()
 -- Hide the ground plane's display quad; it reads as a stray tan patch behind the body.
 bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
+-- Hide the ground grid too for a clean background (#579).
+bearcad.ui.ground("off")
 -- The OS cursor parks wherever the desktop left it (often mid-viewport) and would
 -- hover-highlight whatever face it sits on; the Dimension tool has no pick hover,
 -- keeping the capture deterministic.

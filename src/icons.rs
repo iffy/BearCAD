@@ -378,6 +378,7 @@ pub fn icon_for_ground_display(mode: crate::camera::GroundDisplay) -> IconId {
     match mode {
         crate::camera::GroundDisplay::Grid => IconId::GroundGrid,
         crate::camera::GroundDisplay::Solid => IconId::GroundSolid,
+        crate::camera::GroundDisplay::None => IconId::Hidden,
     }
 }
 

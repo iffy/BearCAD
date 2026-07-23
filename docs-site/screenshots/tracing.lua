@@ -34,6 +34,8 @@ bearcad.exit_sketch()
 
 -- Hide the ground plane's display quad; the image itself reads as the surface.
 bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
+-- Hide the ground grid too for a clean background (#579).
+bearcad.ui.ground("off")
 -- Park the cursor-independent Dimension tool for a deterministic capture.
 bearcad.ui.tool("dimension")
 bearcad.ui.view("top")

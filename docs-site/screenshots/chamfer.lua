@@ -28,6 +28,8 @@ end
 
 bearcad.exit_sketch()
 bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
+-- Hide the ground grid too for a clean background (#579).
+bearcad.ui.ground("off")
 bearcad.ui.tool("dimension")
 bearcad.ui.view("corner", "front_right_top")
 bearcad.ui.wait(2)

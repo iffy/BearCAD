@@ -32,6 +32,7 @@ bearcad.ui.view("edge", "front_top")    -- a view-bear edge
 bearcad.ui.view_home()
 bearcad.ui.toggle_projection()
 bearcad.ui.shading("solid_wireframe")   -- "wireframe" | "transparent" | "solid" | "solid_wireframe"
+bearcad.ui.ground("off")                -- ground plane: "grid" | "solid" | "off"
 ```
 
 Absolute camera control sets the pose **instantly** (no transition animation), which keeps

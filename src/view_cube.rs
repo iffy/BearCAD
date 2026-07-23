@@ -1263,6 +1263,7 @@ fn ground_display_tooltip(mode: crate::camera::GroundDisplay) -> &'static str {
     match mode {
         crate::camera::GroundDisplay::Grid => "Ground grid",
         crate::camera::GroundDisplay::Solid => "Solid ground",
+        crate::camera::GroundDisplay::None => "Ground off",
     }
 }
 

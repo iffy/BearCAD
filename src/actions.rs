@@ -6813,6 +6813,7 @@ impl AppState {
                 self.status = match mode {
                     crate::camera::GroundDisplay::Grid => "Ground: grid".to_string(),
                     crate::camera::GroundDisplay::Solid => "Ground: solid".to_string(),
+                    crate::camera::GroundDisplay::None => "Ground: off".to_string(),
                 };
                 ActionResult::Ok
             }

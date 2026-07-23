@@ -130,6 +130,8 @@ bearcad.clear_selection()
 bearcad.set_visible({ kind = "sketch", index = 1 }, "hide")
 bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
 
+-- Hide the ground grid too for a clean background (#579).
+bearcad.ui.ground("off")
 -- Orthographic top view, fixed framing.
 bearcad.ui.view("ortho")
 bearcad.ui.view("top")

@@ -23,6 +23,8 @@ bearcad.exit_sketch()
 bearcad.extrude{ polygon = {4, 5, 6, 7}, distance = 20, name = "Bite" }
 
 bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
+-- Hide the ground grid too for a clean background (#579).
+bearcad.ui.ground("off")
 bearcad.ui.tool("dimension")
 bearcad.ui.view("corner", "front_left_top")
 bearcad.ui.wait(2)

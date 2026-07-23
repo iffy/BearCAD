@@ -30,6 +30,8 @@ bearcad.exit_sketch()
 bearcad.sweep{ circle = 0, path = { 0, 1 }, name = "Tube" }
 
 bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
+-- Hide the ground grid too for a clean background (#579).
+bearcad.ui.ground("off")
 bearcad.set_visible({ kind = "construction_plane", index = 1 }, "hide")
 bearcad.ui.tool("dimension")
 bearcad.ui.view("corner", "front_right_top")
