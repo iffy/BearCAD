@@ -526,28 +526,68 @@ struct BezierHandleDrag {
     moved: bool,
 }
 
-/// One exploded selection handle (#551): a crowded selectable thing pulled out to a spaced-apart
-/// spot with a leader line back to it, so it can be picked without ambiguity.
+/// One exploded selection leaf (#551): a single crowded selectable thing. The exploder redirects
+/// the tool's pick to its anchor, so *any* tool selects it via its own normal path.
 #[derive(Clone)]
 struct ExploderHandle {
-    /// The pick target this handle stands for — the exploder redirects the tool's pick to its
-    /// anchor, so *any* tool selects it via its own normal path.
+    /// The pick target this leaf stands for.
     target: construction::PickTargetKind,
     /// World point the leader line attaches to, and where the tool re-picks (re-projected each
     /// frame for the leader; the redirect uses its projection).
     anchor: Vec3,
-    /// Fixed screen position of the handle, computed once when the crowd exploded.
-    handle_pos: egui::Pos2,
 }
 
-/// Active Selection Exploder state (#551): the fanned-out handles for a crowd of selectable
-/// things, captured when the user pressed space. While set, only handles are hoverable/
-/// selectable — the raw crowd underneath is suppressed.
+/// A node in the exploder grouping tree (#559). A `Leaf` is one crowd item; a `Group` clusters
+/// related/nearby items so a level never shows more than [`exploder::MAX_LOUPES`] loupes. Clicking
+/// a group loupe drills into it (its children become the next level's loupes).
+enum ExploderNode {
+    /// One crowd item, by its index into [`ExploderState::items`].
+    Leaf(usize),
+    /// A cluster of items, shown as one group loupe until drilled into.
+    Group(Vec<ExploderNode>),
+}
+
+/// What a slot in the current display level represents (#559).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DisplayKind {
+    /// The back-arrow loupe: pops one level of drill-in. Only present when drilled in.
+    Back,
+    /// A single-element loupe — selects its item on click.
+    Leaf,
+    /// A group loupe — drills into its members on click.
+    Group,
+}
+
+/// One loupe shown at the current drill level (#559): a flattened, drawable view of an
+/// [`ExploderNode`] (or the synthetic Back arrow), index-aligned with [`ExploderState::display_centers`].
+struct DisplayItem {
+    kind: DisplayKind,
+    /// World anchor used for angle-sorting and the leader line. Leaf → its own anchor; Group →
+    /// centroid of its members; Back → unused (`Vec3::ZERO`, it gets a fixed angle).
+    anchor: Vec3,
+    /// Flat item-indices of every leaf under this slot (one for a Leaf; all members for a Group;
+    /// empty for Back) — drives the group preview.
+    leaves: Vec<usize>,
+    /// The pick target — `Some` only for a Leaf (what gets selected/hover-highlighted).
+    target: Option<construction::PickTargetKind>,
+    /// For a Group, its index among the current level's nodes (what `path` pushes to drill in).
+    node: Option<usize>,
+}
+
+/// Active Selection Exploder state (#551, #559): the fanned-out loupes for a crowd of selectable
+/// things, captured when the user pressed space, grouped hierarchically so each level shows at most
+/// [`exploder::MAX_LOUPES`] loupes. While set, only loupes are hoverable/selectable — the raw crowd
+/// underneath is suppressed.
 struct ExploderState {
     /// Where Space was pressed — the frozen hitbox centre, shown when the crowd was empty.
     origin: egui::Pos2,
-    handles: Vec<ExploderHandle>,
-    /// The handle currently under the cursor, if any.
+    /// Every crowd leaf, flat. `ExploderNode::Leaf` indices point in here.
+    items: Vec<ExploderHandle>,
+    /// The root grouping level. Walked via `path` to find the current level's nodes.
+    tree: Vec<ExploderNode>,
+    /// The chain of drilled-into group indices (each into its level's node list). Empty = root.
+    path: Vec<usize>,
+    /// The loupe currently under the cursor — an index into the CURRENT display list.
     hovered: Option<usize>,
     /// Loupe zoom multiplier, driven by the mouse wheel while the exploder is open (#551): scales
     /// each loupe's magnification, disc size, and the ring radius together (the whole fan grows),
@@ -564,49 +604,142 @@ impl ExploderState {
     fn loupe_radius(&self) -> f32 {
         exploder::loupe_radius() * self.zoom_mul
     }
-    /// Every handle's on-screen loupe centre (index-aligned with `handles`), packed to fit the
-    /// viewport (#551). While the angle-coherent single ring still fits, that's used (each loupe
-    /// sits toward its real thing). Once the growing loupes would push that ring off-screen, they
-    /// **stagger** into concentric rings — a centre loupe plus rings filling outward, so some sit
-    /// closer to the cursor — and the whole cluster is shifted to stay inside the viewport. At full
-    /// zoom the rings fill the available space.
-    fn handle_centers(&self, viewport: egui::Rect) -> Vec<egui::Pos2> {
-        let n = self.handles.len();
-        let mut centers: Vec<egui::Pos2> = Vec::with_capacity(n);
-        if n == 0 {
-            return centers;
+    /// The nodes shown at the current drill level (#559): walk `tree` following `path`, stepping
+    /// into each drilled group's children. Stops early if a `path` entry isn't a `Group` (never
+    /// happens in practice, since only groups are pushed).
+    fn current_nodes(&self) -> &[ExploderNode] {
+        let mut nodes: &[ExploderNode] = &self.tree;
+        for &p in &self.path {
+            match nodes.get(p) {
+                Some(ExploderNode::Group(children)) => nodes = children,
+                _ => break,
+            }
         }
+        nodes
+    }
+
+    /// The loupes to show at the current drill level (#559): an optional Back arrow (when drilled
+    /// in), then one slot per current node — a `Leaf` becomes a single-element loupe, a `Group`
+    /// becomes a group loupe carrying the flat list of all leaf item-indices beneath it.
+    fn display_items(&self) -> Vec<DisplayItem> {
+        let mut out: Vec<DisplayItem> = Vec::new();
+        if !self.path.is_empty() {
+            out.push(DisplayItem {
+                kind: DisplayKind::Back,
+                anchor: Vec3::ZERO,
+                leaves: Vec::new(),
+                target: None,
+                node: None,
+            });
+        }
+        let nodes = self.current_nodes();
+        for (ni, node) in nodes.iter().enumerate() {
+            match node {
+                ExploderNode::Leaf(i) => {
+                    let h = &self.items[*i];
+                    out.push(DisplayItem {
+                        kind: DisplayKind::Leaf,
+                        anchor: h.anchor,
+                        leaves: vec![*i],
+                        target: Some(h.target.clone()),
+                        node: None,
+                    });
+                }
+                ExploderNode::Group(_) => {
+                    let mut leaves = Vec::new();
+                    leaf_indices(node, &mut leaves);
+                    let denom = leaves.len().max(1) as f32;
+                    let centroid = leaves
+                        .iter()
+                        .map(|&i| self.items[i].anchor)
+                        .fold(Vec3::ZERO, |a, b| a + b)
+                        / denom;
+                    out.push(DisplayItem {
+                        kind: DisplayKind::Group,
+                        anchor: centroid,
+                        leaves,
+                        target: None,
+                        node: Some(ni),
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// Every current display item's on-screen loupe centre (index-aligned with
+    /// [`Self::display_items`]), packed to fit the viewport (#551, #559). The items are angle-sorted
+    /// around the origin by their screen anchor (Back pinned to the top), placed on a single ring,
+    /// then — while that ring still fits — kept angle-coherent; once the growing loupes would push
+    /// it off-screen they **stagger** into concentric rings, and the whole cluster is shifted to
+    /// stay inside the viewport.
+    fn display_centers(
+        &self,
+        viewport: egui::Rect,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    ) -> Vec<egui::Pos2> {
+        use std::f32::consts::{FRAC_PI_2, PI, TAU};
+        let items = self.display_items();
+        let n = items.len();
+        if n == 0 {
+            return Vec::new();
+        }
+        // Angle of each item around the origin (Back is pinned to the top so it sits apart).
+        let angle_of = |it: &DisplayItem| -> f32 {
+            if it.kind == DisplayKind::Back {
+                -FRAC_PI_2
+            } else {
+                let sp = project(it.anchor).unwrap_or(self.origin);
+                let d = sp - self.origin;
+                d.y.atan2(d.x)
+            }
+        };
+        // Angle-sorted display order (used for ring slots and the stagger fill).
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|&a, &b| {
+            angle_of(&items[a])
+                .partial_cmp(&angle_of(&items[b]))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        // Ring radius so adjacent loupes are at least `spacing()` apart along the chord.
+        let nf = n.max(2) as f32;
+        let ring = (exploder::spacing() / (2.0 * (PI / nf).sin())).max(exploder::min_ring());
+        let base = angle_of(&items[order[0]]);
+        // Ring positions at zoom 1, index-aligned with `items`.
+        let mut ring_pos: Vec<egui::Pos2> = vec![self.origin; n];
+        for (slot, &idx) in order.iter().enumerate() {
+            let ang = base + slot as f32 * TAU / nf;
+            ring_pos[idx] = self.origin + egui::vec2(ang.cos(), ang.sin()) * ring;
+        }
+
+        let mut centers: Vec<egui::Pos2> = vec![self.origin; n];
         let base_r = self.loupe_radius();
         let vp = viewport.shrink(exploder::VIEWPORT_MARGIN_PX);
         let r_max = (vp.width().min(vp.height()) / 2.0 - base_r).max(base_r);
-        let ring_r = self
-            .handles
-            .iter()
-            .map(|h| (h.handle_pos - self.origin).length())
-            .fold(0.0_f32, f32::max)
-            * self.zoom_mul;
+        let ring_r = ring * self.zoom_mul;
         if ring_r + base_r <= r_max {
             // The single ring still fits: keep the angle-coherent layout (loupe toward its anchor).
-            for h in &self.handles {
-                centers.push(self.origin + (h.handle_pos - self.origin) * self.zoom_mul);
+            for i in 0..n {
+                centers[i] = self.origin + (ring_pos[i] - self.origin) * self.zoom_mul;
             }
         } else {
             // Stagger into concentric rings: a centre loupe, then rings of growing radius, each
-            // holding as many as fit without overlap, filled inner → outer.
+            // holding as many as fit without overlap, filled inner → outer in angle order.
             let spacing = 2.0 * base_r + exploder::GAP;
             let mut slots: Vec<(f32, f32)> = vec![(0.0, 0.0)]; // (radius, angle); centre first
             let mut k = 1usize;
             while slots.len() < n {
                 let r = k as f32 * spacing;
-                let cap = ((std::f32::consts::TAU * r / spacing).floor() as usize).max(1);
+                let cap = ((TAU * r / spacing).floor() as usize).max(1);
                 let take = cap.min(n - slots.len());
                 for j in 0..take {
-                    slots.push((r, std::f32::consts::TAU * j as f32 / take as f32));
+                    slots.push((r, TAU * j as f32 / take as f32));
                 }
                 k += 1;
             }
-            for (r, a) in slots.into_iter().take(n) {
-                centers.push(self.origin + egui::vec2(a.cos() * r, a.sin() * r));
+            for (slot_i, &idx) in order.iter().enumerate() {
+                let (r, a) = slots[slot_i];
+                centers[idx] = self.origin + egui::vec2(a.cos() * r, a.sin() * r);
             }
         }
         let offset = fit_offset(&centers, base_r, vp);
@@ -618,7 +751,7 @@ impl ExploderState {
     /// The largest wheel zoom whose concentric packing still holds every loupe inside the viewport.
     /// Scrolling past this does nothing — once the rings fill the space, zoom stops (#551).
     fn max_zoom_mul(&self, viewport: egui::Rect) -> f32 {
-        let n = self.handles.len();
+        let n = self.display_items().len();
         if n == 0 {
             return 6.0;
         }
@@ -654,6 +787,134 @@ impl ExploderState {
         }
         best
     }
+
+    /// The hovered display item's `(target, anchor)` IFF it is a single-element Leaf loupe (#559) —
+    /// `None` for a hovered Group or Back loupe (or nothing hovered). Only leaves redirect the
+    /// tool's pick, own the press, and set a hover highlight; groups/back only navigate.
+    fn hovered_leaf(
+        &self,
+        viewport: egui::Rect,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    ) -> Option<(construction::PickTargetKind, Vec3)> {
+        let _ = viewport; // display order is independent of layout; kept for call-site symmetry
+        let _ = project;
+        let items = self.display_items();
+        let it = items.get(self.hovered?)?;
+        (it.kind == DisplayKind::Leaf).then(|| (it.target.clone().unwrap(), it.anchor))
+    }
+}
+
+/// Recursively collect the flat item-indices of every `Leaf` under a node (#559), in tree order.
+/// Used to build a group loupe's preview and its centroid.
+fn leaf_indices(node: &ExploderNode, out: &mut Vec<usize>) {
+    match node {
+        ExploderNode::Leaf(i) => out.push(*i),
+        ExploderNode::Group(children) => {
+            for c in children {
+                leaf_indices(c, out);
+            }
+        }
+    }
+}
+
+/// Deterministically partition `points` into at most `k` non-empty spatial clusters (#559).
+///
+/// Uses farthest-first seeding — seed 0 first, then repeatedly the point farthest from all chosen
+/// seeds — followed by nearest-seed assignment. No RNG or clock (both throw in this app), so the
+/// result is a pure function of the input. Coincident points can't be separated: seeding stops once
+/// every remaining point sits on an existing seed, so this can return fewer than `k` clusters (even
+/// a single one), which the caller treats as "clustering made no progress" and falls back to even
+/// chunking. Returned clusters are lists of indices into `points`; empties are dropped.
+fn cluster_points(points: &[egui::Pos2], k: usize) -> Vec<Vec<usize>> {
+    let n = points.len();
+    if n == 0 || k == 0 {
+        return Vec::new();
+    }
+    if n <= k {
+        return (0..n).map(|i| vec![i]).collect();
+    }
+    let mut seeds: Vec<usize> = vec![0];
+    while seeds.len() < k {
+        let mut best: Option<usize> = None;
+        let mut best_d = -1.0_f32;
+        for i in 0..n {
+            if seeds.contains(&i) {
+                continue;
+            }
+            // Distance to the nearest existing seed.
+            let d = seeds
+                .iter()
+                .map(|&s| (points[i] - points[s]).length())
+                .fold(f32::MAX, f32::min);
+            if d > best_d {
+                best_d = d;
+                best = Some(i);
+            }
+        }
+        match best {
+            // A strictly-positive farthest distance means a genuinely separate point to seed;
+            // otherwise everything left coincides with a seed — stop (fewer clusters → fallback).
+            Some(b) if best_d > 0.0 => seeds.push(b),
+            _ => break,
+        }
+    }
+    let mut clusters: Vec<Vec<usize>> = vec![Vec::new(); seeds.len()];
+    for i in 0..n {
+        let (si, _) = seeds
+            .iter()
+            .enumerate()
+            .map(|(si, &s)| (si, (points[i] - points[s]).length()))
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap();
+        clusters[si].push(i);
+    }
+    clusters.retain(|c| !c.is_empty());
+    clusters
+}
+
+/// Build the exploder grouping tree (#559) from a set of item indices and their SCREEN anchors, so
+/// no level ever shows more than `max_children` loupes.
+///
+/// If the set already fits, every item is a `Leaf`. Otherwise it is spatially clustered into
+/// `≤ max_children` groups; a cluster of one becomes a `Leaf`, a cluster of many becomes a `Group`
+/// whose children are built recursively with the tighter [`exploder::GROUP_ARITY`] (a drilled level
+/// shows Back + those, staying ≤ [`exploder::MAX_LOUPES`]).
+///
+/// **Termination**: clustering only helps when it splits the set into ≥2 non-trivial pieces.
+/// Coincident points (a real case — stacked endpoints) can't be split spatially and yield a single
+/// cluster, so when fewer than two non-trivial clusters come back we fall back to even `chunks` of
+/// `ceil(len / max_children)`. Every chunk is strictly shorter than the input, so the recursion
+/// always shrinks and terminates.
+fn build_exploder_tree(idxs: &[usize], pts: &[egui::Pos2], max_children: usize) -> Vec<ExploderNode> {
+    if idxs.len() <= max_children {
+        return idxs.iter().map(|&i| ExploderNode::Leaf(i)).collect();
+    }
+    let local_pts: Vec<egui::Pos2> = idxs.iter().map(|&i| pts[i]).collect();
+    let clusters = cluster_points(&local_pts, max_children);
+    // Map local cluster indices back to the caller's global item indices.
+    let global: Vec<Vec<usize>> = clusters
+        .iter()
+        .map(|c| c.iter().map(|&l| idxs[l]).collect())
+        .collect();
+    let nontrivial = global.iter().filter(|c| c.len() >= 2).count();
+    let groups: Vec<Vec<usize>> = if global.len() < 2 || nontrivial < 2 {
+        // Clustering made no useful progress: split evenly so each chunk is shorter than the input
+        // (guaranteed termination) and the count stays ≤ max_children.
+        let chunk = idxs.len().div_ceil(max_children).max(1);
+        idxs.chunks(chunk).map(|c| c.to_vec()).collect()
+    } else {
+        global
+    };
+    groups
+        .iter()
+        .map(|g| {
+            if g.len() == 1 {
+                ExploderNode::Leaf(g[0])
+            } else {
+                ExploderNode::Group(build_exploder_tree(g, pts, exploder::GROUP_ARITY))
+            }
+        })
+        .collect()
 }
 
 /// Slide a set of loupe centres (each of radius `r`) so their bounding box sits inside `vp`,
@@ -714,6 +975,12 @@ mod exploder {
     }
     /// Keep the fan this far from the viewport edges when fitting/clamping it (#551).
     pub const VIEWPORT_MARGIN_PX: f32 = 10.0;
+    /// Most loupes a single level may show (#559). A crowd larger than this is clustered into
+    /// group loupes so the level never exceeds it.
+    pub const MAX_LOUPES: usize = 5;
+    /// Children per group at a drilled-in level (#559): a drilled level shows a Back arrow plus up
+    /// to this many, so it still totals ≤ `MAX_LOUPES`.
+    pub const GROUP_ARITY: usize = 4;
 }
 
 /// Clip a screen-space segment to a disc, returning the visible sub-segment (or `None` if it
@@ -14263,46 +14530,6 @@ impl App {
         }
     }
 
-    /// Fan a crowd of candidates out into spaced-apart handles around the cursor (#551), sorted
-    /// by each thing's screen direction so the leader lines splay without crossing and every
-    /// handle sits at least `SPACING_PX` from its neighbours.
-    fn exploder_layout(
-        &self,
-        origin: egui::Pos2,
-        candidates: &[construction::CrowdCandidate],
-        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
-    ) -> Vec<ExploderHandle> {
-        use std::f32::consts::TAU;
-        let mut items: Vec<(&construction::CrowdCandidate, f32)> = candidates
-            .iter()
-            .map(|c| {
-                let sp = project(c.anchor).unwrap_or(origin);
-                let d = sp - origin;
-                (c, d.y.atan2(d.x))
-            })
-            .collect();
-        items.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        let n = items.len().max(2) as f32;
-        // Ring radius so the straight-line distance (chord) between adjacent handles is at least
-        // SPACING_PX — chord = 2·R·sin(π/n), so R = SPACING / (2·sin(π/n)). The arc-length form
-        // under-spaces small crowds (chord < arc), which the spec's "no ambiguity" forbids.
-        let ring = (exploder::spacing() / (2.0 * (std::f32::consts::PI / n).sin()))
-            .max(exploder::min_ring());
-        let base = items.first().map(|(_, a)| *a).unwrap_or(0.0);
-        items
-            .iter()
-            .enumerate()
-            .map(|(i, (c, _))| {
-                let ang = base + i as f32 * TAU / n;
-                ExploderHandle {
-                    target: c.kind.clone(),
-                    anchor: c.anchor,
-                    handle_pos: origin + egui::vec2(ang.cos(), ang.sin()) * ring,
-                }
-            })
-            .collect()
-    }
-
     /// Advance the Selection Exploder (#551). Returns `(active, available_center, close_after)`:
     /// while `active`, the caller redirects the tool's pick to the hovered handle's anchor so
     /// *any* tool selects that thing via its own normal path; `available_center` (when inactive)
@@ -14335,7 +14562,7 @@ impl App {
             let hovered = pointer_screen.and_then(|pp| {
                 let ex = self.exploder.as_ref()?;
                 let hit_r = ex.loupe_radius() + exploder::HANDLE_HIT_PAD_PX;
-                ex.handle_centers(viewport)
+                ex.display_centers(viewport, project)
                     .iter()
                     .enumerate()
                     .filter_map(|(i, c)| {
@@ -14350,12 +14577,47 @@ impl App {
             }
             let mut close_after = false;
             if primary_pressed {
-                match hovered {
-                    // The tool picks the hovered handle's thing via the redirected pointer; then
-                    // collapse the fan — unless Shift holds it open for multi-select.
-                    Some(_) => close_after = !shift,
+                // Decide from the hovered display item's kind: Back navigates up, Group drills in,
+                // Leaf hands off to the tool (via the redirect), empty click dismisses.
+                enum Act {
+                    Back,
+                    Group(usize),
+                    Leaf,
+                    Dismiss,
+                }
+                let act = match hovered {
+                    None => Act::Dismiss,
+                    Some(i) => match self.exploder.as_ref().and_then(|ex| {
+                        ex.display_items().into_iter().nth(i).map(|it| (it.kind, it.node))
+                    }) {
+                        Some((DisplayKind::Back, _)) => Act::Back,
+                        Some((DisplayKind::Group, node)) => Act::Group(node.unwrap()),
+                        Some((DisplayKind::Leaf, _)) => Act::Leaf,
+                        None => Act::Dismiss,
+                    },
+                };
+                match act {
+                    // Back: pop a drill level and stay open (no select this frame).
+                    Act::Back => {
+                        if let Some(ex) = self.exploder.as_mut() {
+                            ex.path.pop();
+                            ex.hovered = None;
+                        }
+                        return (true, None, false);
+                    }
+                    // Group: drill in — its members become the next level's loupes; stay open.
+                    Act::Group(node) => {
+                        if let Some(ex) = self.exploder.as_mut() {
+                            ex.path.push(node);
+                            ex.hovered = None;
+                        }
+                        return (true, None, false);
+                    }
+                    // Leaf: the tool picks its thing via the redirected pointer; then collapse the
+                    // fan — unless Shift holds it open for multi-select.
+                    Act::Leaf => close_after = !shift,
                     // An empty click just dismisses the exploder.
-                    None => {
+                    Act::Dismiss => {
                         self.exploder = None;
                         return (false, None, false);
                     }
@@ -14378,10 +14640,26 @@ impl App {
             occlusion,
         );
         if space {
-            let handles = self.exploder_layout(pp, &candidates, project);
+            // Flatten the crowd into leaves, then cluster them into a ≤ MAX_LOUPES grouping tree by
+            // screen proximity (#559). Anchors that fail to project fall back to the origin.
+            let items: Vec<ExploderHandle> = candidates
+                .iter()
+                .map(|c| ExploderHandle {
+                    target: c.kind.clone(),
+                    anchor: c.anchor,
+                })
+                .collect();
+            let anchors_screen: Vec<egui::Pos2> = items
+                .iter()
+                .map(|h| project(h.anchor).unwrap_or(pp))
+                .collect();
+            let idxs: Vec<usize> = (0..items.len()).collect();
+            let tree = build_exploder_tree(&idxs, &anchors_screen, exploder::MAX_LOUPES);
             self.exploder = Some(ExploderState {
                 origin: pp,
-                handles,
+                items,
+                tree,
+                path: Vec::new(),
                 hovered: None,
                 zoom_mul: 1.0,
             });
@@ -14390,15 +14668,16 @@ impl App {
         (false, (candidates.len() >= 2).then_some(pp), false)
     }
 
-    /// The screen point the exploder redirects the active tool's pick to (#551) — the hovered
-    /// handle's real thing — or `None` (nothing pickable) when no handle is hovered.
+    /// The screen point the exploder redirects the active tool's pick to (#551, #559) — the hovered
+    /// **leaf** loupe's real thing — or `None` when a group/back loupe or nothing is hovered.
     fn exploder_pick_pointer(
         &self,
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        viewport: egui::Rect,
     ) -> Option<egui::Pos2> {
         let ex = self.exploder.as_ref()?;
-        let h = ex.handles.get(ex.hovered?)?;
-        project(h.anchor)
+        let (_, anchor) = ex.hovered_leaf(viewport, project)?;
+        project(anchor)
     }
 
     /// Draw the Selection Exploder overlay (#551): the faint availability hint, or the fanned-out
@@ -14428,7 +14707,7 @@ impl App {
         };
         // An exploder activated over nothing (or after its crowd cleared) freezes the hitbox
         // circle at the activation point, so it's clear it's on but found nothing to pick.
-        if ex.handles.is_empty() {
+        if ex.items.is_empty() {
             painter.circle_filled(
                 ex.origin,
                 crate::touch::hit(12.0),
@@ -14442,90 +14721,171 @@ impl App {
         }
         let r_loupe = ex.loupe_radius();
         let content_zoom = ex.content_zoom();
-        // Packed loupe centres (single ring while it fits, else staggered concentric rings).
-        let centers = ex.handle_centers(viewport);
+        // The current drill level's loupes (Back + leaves + group loupes) and their packed centres
+        // (single ring while it fits, else staggered concentric rings).
+        let items = ex.display_items();
+        let centers = ex.display_centers(viewport, project);
+        // The current level's single-element leaves, as display-list indices — a leaf loupe draws
+        // the *other* current-level leaves dimmed inside it for context.
+        let level_leaves: Vec<usize> = items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| it.kind == DisplayKind::Leaf)
+            .map(|(j, _)| j)
+            .collect();
         // The in-loupe element (and border) read **blue** while idle, and turn the accent
         // **yellow** the moment the loupe is hovered *or* its thing is selected — matching the
         // element's own highlight out in the 3D view (hover highlight / selection colour).
         let idle_blue = egui::Color32::from_rgb(96, 165, 250);
-        for (i, h) in ex.handles.iter().enumerate() {
+        let dark_bg = egui::Color32::from_rgba_unmultiplied(20, 22, 28, 236);
+        for (i, it) in items.iter().enumerate() {
             let hot = ex.hovered == Some(i);
-            let selected = scene_element_from_pick(&h.target)
-                .is_some_and(|e| self.state.scene_selection.is_selected(e));
-            let active = hot || selected;
-            let element_color = if active { accent } else { idle_blue };
             let center = centers[i];
-            // Leader line back to the real thing — only for the hovered loupe (a line from every
-            // loupe is too much clutter), drawn in grey with an accent dot where the thing really is.
-            if hot {
-                if let Some(a) = project(h.anchor) {
-                    painter.line_segment(
-                        [a, center],
-                        egui::Stroke::new(1.0, egui::Color32::from_gray(150)),
-                    );
-                    painter.circle_filled(a, 3.5, accent);
-                }
-            }
-            // Loupe background: a dark, mostly opaque disc so the magnified geometry reads clearly
-            // over the GPU scene behind it.
-            painter.circle_filled(
-                center,
-                r_loupe,
-                egui::Color32::from_rgba_unmultiplied(20, 22, 28, 236),
-            );
             // The magnifier transform: the pick hitbox (around the cursor at `ex.origin`) mapped
-            // `content_zoom`× into this loupe, so the loupe is a magnified view of exactly what the
-            // hitbox covers (the wheel scales this while the exploder is open).
+            // `content_zoom`× into this loupe, so a loupe magnifies exactly what the hitbox covers.
             let loupe = |s: egui::Pos2| center + (s - ex.origin) * content_zoom;
-            // The rest of the crowd draws dimmed for context; this handle's own thing draws on top
-            // in the highlight colour, so it's unmistakable which one the loupe stands for.
-            for (j, other) in ex.handles.iter().enumerate() {
-                if j == i {
-                    continue;
+            // Loupe background: a dark, mostly opaque disc so the magnified geometry reads clearly.
+            painter.circle_filled(center, r_loupe, dark_bg);
+            match it.kind {
+                DisplayKind::Leaf => {
+                    let target = it.target.as_ref().expect("leaf carries a target");
+                    let selected = scene_element_from_pick(target)
+                        .is_some_and(|e| self.state.scene_selection.is_selected(e));
+                    let active = hot || selected;
+                    let element_color = if active { accent } else { idle_blue };
+                    // Leader line back to the real thing — only for the hovered loupe (a line from
+                    // every loupe is clutter), grey with an accent dot where the thing really is.
+                    if hot {
+                        if let Some(a) = project(it.anchor) {
+                            painter.line_segment(
+                                [a, center],
+                                egui::Stroke::new(1.0, egui::Color32::from_gray(150)),
+                            );
+                            painter.circle_filled(a, 3.5, accent);
+                        }
+                    }
+                    // The rest of the current-level crowd draws dimmed for context; this leaf's own
+                    // thing draws on top in the highlight colour.
+                    for &j in &level_leaves {
+                        if j == i {
+                            continue;
+                        }
+                        let other = &items[j];
+                        draw_pick_target_loupe(
+                            painter,
+                            project,
+                            &loupe,
+                            center,
+                            r_loupe,
+                            &self.state.doc,
+                            other.target.as_ref().expect("leaf carries a target"),
+                            other.anchor,
+                            egui::Color32::from_gray(115),
+                            1.4,
+                            false,
+                        );
+                    }
+                    draw_pick_target_loupe(
+                        painter,
+                        project,
+                        &loupe,
+                        center,
+                        r_loupe,
+                        &self.state.doc,
+                        target,
+                        it.anchor,
+                        element_color,
+                        2.4,
+                        true,
+                    );
+                    // A faint centre mark = the cursor's hitbox centre, for orientation.
+                    painter.circle_filled(center, 1.0, egui::Color32::from_gray(90));
+                    // Frame: grey while idle, accent yellow once hovered or selected (thicker hot).
+                    let frame = if active { accent } else { egui::Color32::from_gray(72) };
+                    painter.circle_stroke(
+                        center,
+                        r_loupe,
+                        egui::Stroke::new(if hot { 2.5 } else { 1.5 }, frame),
+                    );
                 }
-                draw_pick_target_loupe(
-                    painter,
-                    project,
-                    &loupe,
-                    center,
-                    r_loupe,
-                    &self.state.doc,
-                    &other.target,
-                    other.anchor,
-                    egui::Color32::from_gray(115),
-                    1.4,
-                    false,
-                );
+                DisplayKind::Group => {
+                    // Preview every member of the group in idle blue (none singled out), so it reads
+                    // as "several things stacked" — clicking drills in to fan them out.
+                    for &li in &it.leaves {
+                        let member = &ex.items[li];
+                        draw_pick_target_loupe(
+                            painter,
+                            project,
+                            &loupe,
+                            center,
+                            r_loupe,
+                            &self.state.doc,
+                            &member.target,
+                            member.anchor,
+                            idle_blue,
+                            1.6,
+                            true,
+                        );
+                    }
+                    painter.circle_filled(center, 1.0, egui::Color32::from_gray(90));
+                    // A group reads distinct from a single loupe: a doubled frame (an inner ring
+                    // just inside the main one). Accent when hovered, else grey.
+                    let frame = if hot { accent } else { egui::Color32::from_gray(72) };
+                    painter.circle_stroke(
+                        center,
+                        r_loupe,
+                        egui::Stroke::new(if hot { 2.5 } else { 1.5 }, frame),
+                    );
+                    painter.circle_stroke(
+                        center,
+                        r_loupe - 3.5,
+                        egui::Stroke::new(1.2, egui::Color32::from_gray(if hot { 150 } else { 96 })),
+                    );
+                    // Count badge: a filled dark pill at the bottom-right with the member count.
+                    let count = it.leaves.len();
+                    let label = count.to_string();
+                    let badge_c = center + egui::vec2(r_loupe * 0.62, r_loupe * 0.62);
+                    let badge_w = 9.0 + 6.0 * label.len() as f32;
+                    let badge_rect = egui::Rect::from_center_size(badge_c, egui::vec2(badge_w, 15.0));
+                    painter.rect_filled(
+                        badge_rect,
+                        7.0,
+                        egui::Color32::from_rgba_unmultiplied(12, 14, 18, 240),
+                    );
+                    painter.rect_stroke(
+                        badge_rect,
+                        7.0,
+                        egui::Stroke::new(1.0, if hot { accent } else { egui::Color32::from_gray(110) }),
+                        egui::StrokeKind::Outside,
+                    );
+                    painter.text(
+                        badge_c,
+                        egui::Align2::CENTER_CENTER,
+                        label,
+                        egui::FontId::proportional(11.0),
+                        egui::Color32::from_gray(230),
+                    );
+                }
+                DisplayKind::Back => {
+                    // A clear left-pointing chevron: this goes up a level, it is not any geometry.
+                    let arrow = if hot { accent } else { egui::Color32::from_gray(200) };
+                    let a = r_loupe * 0.42;
+                    let tip = center + egui::vec2(-a, 0.0);
+                    let up = center + egui::vec2(a * 0.55, -a);
+                    let down = center + egui::vec2(a * 0.55, a);
+                    let stroke = egui::Stroke::new(3.0, arrow);
+                    painter.line_segment([up, tip], stroke);
+                    painter.line_segment([tip, down], stroke);
+                    // Shaft, so it reads as "back" rather than just a caret.
+                    painter.line_segment([tip, center + egui::vec2(a, 0.0)], stroke);
+                    let frame = if hot { accent } else { egui::Color32::from_gray(72) };
+                    painter.circle_stroke(
+                        center,
+                        r_loupe,
+                        egui::Stroke::new(if hot { 2.5 } else { 1.5 }, frame),
+                    );
+                }
             }
-            draw_pick_target_loupe(
-                painter,
-                project,
-                &loupe,
-                center,
-                r_loupe,
-                &self.state.doc,
-                &h.target,
-                h.anchor,
-                element_color,
-                2.4,
-                true,
-            );
-            // A faint centre mark = the cursor's hitbox centre, for orientation.
-            painter.circle_filled(center, 1.0, egui::Color32::from_gray(90));
-            // Loupe frame: grey while idle, accent yellow once hovered or selected (thicker when
-            // hovered), so the border, the in-loupe element, and the real element all read the same.
-            // The idle ring is deliberately darker/fainter than the dimmed context geometry inside
-            // the loupe (grey 115), so the frame never competes with the crowd it's showing (#558).
-            let frame = if active {
-                accent
-            } else {
-                egui::Color32::from_gray(72)
-            };
-            painter.circle_stroke(
-                center,
-                r_loupe,
-                egui::Stroke::new(if hot { 2.5 } else { 1.5 }, frame),
-            );
         }
     }
 
@@ -15179,7 +15539,7 @@ impl App {
         // Redirect the tool's pick/hover to the hovered handle's real thing (or nothing when no
         // handle is hovered). The exploder itself already hit-tested the real cursor above.
         if exploder_active {
-            pointer_screen = self.exploder_pick_pointer(&project);
+            pointer_screen = self.exploder_pick_pointer(&project, viewport);
         }
 
         // A click on a hovered handle selects that EXACT target (#551). Re-resolving a pick at the
@@ -15188,11 +15548,10 @@ impl App {
         // target directly and mark the press consumed so the normal pick path stands down.
         let mut exploder_owns_press = false;
         if exploder_active && ui.input(|i| i.pointer.primary_pressed()) {
-            if let Some(target) = self
+            if let Some((target, _)) = self
                 .exploder
                 .as_ref()
-                .and_then(|e| e.hovered.and_then(|i| e.handles.get(i)))
-                .map(|h| h.target.clone())
+                .and_then(|e| e.hovered_leaf(viewport, &project))
             {
                 if matches!(
                     self.state.tool,
@@ -16568,15 +16927,13 @@ impl App {
                 }
             }
         }
-        // The Selection Exploder (#551) owns the hover while open: light up the hovered handle's
-        // EXACT target — the whole line, edge, circle, or face — rather than whatever a pick
-        // re-resolved at the redirected anchor would land on (which for a line often just catches an
-        // endpoint). This wins over every tool-specific hover above.
-        if let Some(target) = self
+        // The Selection Exploder (#551, #559) owns the hover while open: light up the hovered
+        // **leaf** loupe's EXACT target — the whole line, edge, circle, or face. A hovered group or
+        // back loupe highlights nothing (it navigates, it isn't a pick). Wins over every tool hover.
+        if let Some((target, _)) = self
             .exploder
             .as_ref()
-            .and_then(|e| e.hovered.and_then(|i| e.handles.get(i)))
-            .map(|h| h.target.clone())
+            .and_then(|e| e.hovered_leaf(viewport, &project))
         {
             hover_highlight = Some(gpu_viewport::ViewportHoverHighlight::PickTarget(target));
         }
@@ -20264,5 +20621,96 @@ mod tests {
         egui::__run_test_ctx(|ctx| {
             assert!(!side_panel_resize_active(ctx));
         });
+    }
+
+    // ---- Selection Exploder hierarchical grouping (#559) ----
+
+    /// Walk a grouping tree collecting every leaf item-index (via the shipping `leaf_indices`).
+    fn tree_leaves(tree: &[ExploderNode]) -> Vec<usize> {
+        let mut out = Vec::new();
+        for n in tree {
+            leaf_indices(n, &mut out);
+        }
+        out
+    }
+
+    /// The maximum number of direct children of any `Group` anywhere in the tree.
+    fn max_group_arity(tree: &[ExploderNode]) -> usize {
+        let mut worst = 0;
+        for n in tree {
+            if let ExploderNode::Group(children) = n {
+                worst = worst.max(children.len());
+                worst = worst.max(max_group_arity(children));
+            }
+        }
+        worst
+    }
+
+    #[test]
+    fn cluster_points_partitions_into_at_most_k_nonempty_and_is_deterministic() {
+        // A spread-out grid of 9 points, k=4.
+        let mut pts = Vec::new();
+        for x in 0..3 {
+            for y in 0..3 {
+                pts.push(egui::pos2(x as f32 * 40.0, y as f32 * 40.0));
+            }
+        }
+        let a = cluster_points(&pts, 4);
+        let b = cluster_points(&pts, 4);
+        // Deterministic: identical partitions across runs.
+        assert_eq!(a, b, "cluster_points must be deterministic");
+        assert!(a.len() <= 4, "at most k clusters, got {}", a.len());
+        assert!(!a.is_empty(), "some clusters");
+        for c in &a {
+            assert!(!c.is_empty(), "no empty clusters");
+        }
+        // Every point assigned exactly once.
+        let mut all: Vec<usize> = a.iter().flatten().copied().collect();
+        all.sort_unstable();
+        assert_eq!(all, (0..pts.len()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn build_exploder_tree_respects_level_maxima_and_recovers_all_leaves() {
+        // 12 points scattered on a grid, MAX_LOUPES=5 / GROUP_ARITY=4.
+        let mut pts = Vec::new();
+        for i in 0..12u32 {
+            let x = (i % 4) as f32 * 50.0;
+            let y = (i / 4) as f32 * 50.0;
+            pts.push(egui::pos2(x, y));
+        }
+        let idxs: Vec<usize> = (0..12).collect();
+        let tree = build_exploder_tree(&idxs, &pts, exploder::MAX_LOUPES);
+        assert!(
+            tree.len() <= exploder::MAX_LOUPES,
+            "root shows at most MAX_LOUPES nodes, got {}",
+            tree.len()
+        );
+        assert!(
+            max_group_arity(&tree) <= exploder::GROUP_ARITY,
+            "no group exceeds GROUP_ARITY children, got {}",
+            max_group_arity(&tree)
+        );
+        let mut leaves = tree_leaves(&tree);
+        leaves.sort_unstable();
+        assert_eq!(leaves, idxs, "every input leaf is recovered exactly once");
+    }
+
+    #[test]
+    fn build_exploder_tree_terminates_on_coincident_points() {
+        // 20 identical points can't be split spatially — the even-chunk fallback must still make
+        // progress and terminate, yielding <= MAX_LOUPES roots and recovering all leaves.
+        let pts = vec![egui::pos2(7.0, 7.0); 20];
+        let idxs: Vec<usize> = (0..20).collect();
+        let tree = build_exploder_tree(&idxs, &pts, exploder::MAX_LOUPES);
+        assert!(
+            tree.len() <= exploder::MAX_LOUPES,
+            "coincident crowd still <= MAX_LOUPES roots, got {}",
+            tree.len()
+        );
+        assert!(max_group_arity(&tree) <= exploder::GROUP_ARITY);
+        let mut leaves = tree_leaves(&tree);
+        leaves.sort_unstable();
+        assert_eq!(leaves, idxs, "all coincident leaves recovered");
     }
 }

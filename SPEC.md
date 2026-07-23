@@ -1792,7 +1792,7 @@ modeled on SolveSpace (https://solvespace.com).
   distinct from the yellow pick-hover) appears under the cursor when **two or more** things are
   there, as a hint. Handles sit at least a loupe apart (chord, not arc) so there's never ambiguity
   about which one a click means. While exploded the camera is frozen, so the **mouse wheel zooms the
-  loupes** instead (`ExploderState::zoom_mul`, `handle_centers`): the fan grows, and while the
+  loupes** instead (`ExploderState::zoom_mul`, `display_centers`): the fan grows, and while the
   angle-coherent single ring still fits it just scales; once the growing loupes would push that ring
   off-screen they **stagger** into concentric rings — a centre loupe plus rings filling outward, so
   some sit closer to the cursor — and the whole cluster is **shifted** to stay inside the viewport
@@ -1811,6 +1811,24 @@ modeled on SolveSpace (https://solvespace.com).
   (`construction::collect_pick_candidates`) is the crowd-returning counterpart to
   `resolve_pick_target` (which keeps only the nearest). Suppressed only during a drag/gizmo, an
   in-progress draw, or a dimension sub-state. A keyboard trigger, so desktop-oriented.
+  - **Hierarchical loupe grouping (#559):** a level never shows more than **5 loupes**
+    (`exploder::MAX_LOUPES`). When the crowd is larger, related/nearby things are **clustered into
+    group loupes** so the level shows ≤ 5 (a mix of single-element and group loupes). On Space the
+    flat crowd (`ExploderState::items`) is built into a grouping **tree** (`ExploderNode::Leaf` /
+    `Group`) by `build_exploder_tree`, which spatially partitions the screen anchors with a
+    deterministic farthest-first `cluster_points` (no RNG/clock — both throw here) into ≤ 5 clusters;
+    when clustering can't split the set into ≥ 2 non-trivial pieces (e.g. **coincident** stacked
+    endpoints) it falls back to even `chunks`, which always shrinks the input so the recursion
+    terminates. Groups recurse with a tighter arity of **4** (`exploder::GROUP_ARITY`) so a drilled
+    level (Back + ≤ 4) still totals ≤ 5. A **group loupe** previews all its members drawn in the idle
+    blue (none singled out) with a **count badge** and a **doubled frame** so it reads as "several
+    things". **Clicking a group loupe drills in** (`ExploderState::path` pushes its node index): the
+    other loupes hide and the group's members fan out as their own loupes at the new level (recursively
+    grouped if still too many), and a **back-arrow loupe** appears; clicking Back pops one level. Any
+    depth is supported. The current level's loupes and their ring/stagger/fit layout come from
+    `display_items` / `display_centers`. Only a hovered **leaf** loupe redirects the tool's pick, owns
+    the press, and sets the hover highlight (`ExploderState::hovered_leaf`); a hovered group or back
+    loupe only navigates. Single-element loupes still select their element on click, unchanged.
 - **Element picker for the Select tool (#202/#213):** while the Select tool is active the
   context pane shows the unified **element picker** — a focusable, combo-box-style input that
   is the single, consistent way every tool gathers the elements it operates on. Collapsed it
