@@ -1008,6 +1008,47 @@ mod tests {
     }
 
     #[test]
+    fn parallel_to_origin_axis_makes_a_line_horizontal() {
+        // #577: constraining a line parallel to the sketch X axis replaces the Horizontal
+        // constraint. Selecting a line + the X origin axis and applying Parallel makes it
+        // horizontal (v0 == v1) — the general axis-based solution.
+        use crate::model::SketchAxis;
+        let (mut doc, sketch) = sketch_doc();
+        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 4.0));
+        doc.shape_order.push(ShapeKind::Line);
+
+        let mut sel = SceneSelection::default();
+        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        click_scene_selection(
+            &mut sel,
+            SceneElement::FaceEdge(ConstraintLine::OriginAxis(SketchAxis::X)),
+            true,
+        );
+        // Parallel is offered for a line + an axis (both count as lines).
+        let rows = constraint_pane_rows(&sel);
+        assert!(
+            rows.iter()
+                .any(|r| r.kind == GeometricConstraintType::Parallel && r.enabled),
+            "Parallel should be enabled for a line + axis selection"
+        );
+
+        add_geometric_constraint_from_selection(
+            &mut doc,
+            sketch,
+            GeometricConstraintType::Parallel,
+            &sel,
+        )
+        .unwrap();
+
+        let line = &doc.lines[0];
+        assert!(
+            (line.y1 - line.y0).abs() < EPS,
+            "line should be horizontal (parallel to X axis), got dy={}",
+            line.y1 - line.y0
+        );
+    }
+
+    #[test]
     fn empty_selection_shows_all_constraints_disabled() {
         let rows = constraint_pane_rows(&SceneSelection::default());
         assert_eq!(rows.len(), GeometricConstraintType::ALL.len());

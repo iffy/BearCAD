@@ -1139,33 +1139,45 @@ impl ViewportScene {
                 };
                 mesh.push_point_marker(frame.origin, color, size, input.cam, input.viewport, &vp);
 
-                // A selected origin axis highlights along its direction (#189) — push_selection
-                // can't draw it (it lacks the sketch frame), so it's handled here. The half-length
-                // tracks the visible viewport (scaled by zoom) so the highlight always spans the
-                // view without using an absolute extent large enough to fall outside clip space.
+                // The sketch's own axes (#577): the floating origin's two reference axes — X (u) and
+                // Y (v) — are drawn through the origin so the sketch frame is always visible and its
+                // orientation unambiguous (the camera no longer forces u-right/v-up). They're
+                // selectable in the constraint tool: a line constrained parallel to an axis replaces
+                // the old Horizontal/Vertical constraints. Faint in their axis colours normally,
+                // brighter when hovered, and the selection colour when selected. The half-length
+                // tracks the visible viewport (scaled by zoom) so an axis always spans the view.
                 use crate::model::{ConstraintLine, SketchAxis};
                 let aspect =
                     (input.viewport.width() / input.viewport.height().max(1.0)).max(0.01);
                 let (half_w, half_h) = input.cam.viewport_half_extents(aspect);
                 let axis_hl = half_w.hypot(half_h) * 2.5;
-                for (axis, dir) in [
-                    (SketchAxis::X, frame.u_axis),
-                    (SketchAxis::Y, frame.v_axis),
+                for (axis, dir, base) in [
+                    (SketchAxis::X, frame.u_axis, input.palette.x_axis),
+                    (SketchAxis::Y, frame.v_axis, input.palette.y_axis),
                 ] {
-                    if input
-                        .selection
-                        .is_selected(SceneElement::FaceEdge(ConstraintLine::OriginAxis(axis)))
-                    {
-                        mesh.push_line_segment(
-                            frame.origin - dir * axis_hl,
-                            frame.origin + dir * axis_hl,
-                            input.palette.dim_edge_highlight,
-                            3.0,
-                            input.cam,
-                            input.viewport,
-                            &vp,
-                        );
-                    }
+                    let el = SceneElement::FaceEdge(ConstraintLine::OriginAxis(axis));
+                    let selected = input.selection.is_selected(el.clone());
+                    let hovered = matches!(
+                        &input.hover_highlight,
+                        Some(ViewportHoverHighlight::Element(e)) if *e == el
+                    );
+                    let (color, width) = if selected {
+                        (input.palette.dim_edge_highlight, 3.0)
+                    } else if hovered {
+                        (input.hover_color, 2.5)
+                    } else {
+                        // Faint so the axes read as reference lines, not sketch geometry.
+                        (base.gamma_multiply(0.55), 1.5)
+                    };
+                    mesh.push_line_segment(
+                        frame.origin - dir * axis_hl,
+                        frame.origin + dir * axis_hl,
+                        color,
+                        width,
+                        input.cam,
+                        input.viewport,
+                        &vp,
+                    );
                 }
             }
         }

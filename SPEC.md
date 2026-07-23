@@ -259,7 +259,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   are also directly viewport-selectable in the constraint tool — not just reachable by snapping —
   so a point can be constrained coincident with the origin, or onto an axis, by clicking them. A
   selected origin brightens to the selection colour and a selected axis highlights along its full
-  length so the pick is visible.
+  length so the pick is visible. The **sketch's two axes are always drawn** while a sketch is open
+  (#577): the X (u) axis in the red axis colour and Y (v) axis in green, through the origin, faint
+  normally and brighter when hovered — the "floating origin" that makes the sketch frame's
+  orientation unambiguous now that the camera takes the shortest roll instead of forcing u-right.
+  Selecting a line **and** an axis and applying **Parallel** (or Perpendicular) constrains the line
+  parallel/perpendicular to that axis — the general, axis-based replacement for the old separate
+  Horizontal/Vertical constraints.
 - **Inference / extension snapping:** hovering a vertex while drawing arms its incident edges
   as extension guides; pulling away then snaps the point onto the **infinite extension** of
   those edges (within a perpendicular tolerance), with a dashed guide line from the edge to the
