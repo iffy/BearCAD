@@ -15,6 +15,11 @@ button is reachable here.
 - **↑/↓** move the highlight, **Enter** runs it, **Esc** closes.
 - The list is **context-pertinent**: e.g. **Exit Sketch** appears only inside a sketch,
   **Delete Selection** only with something selected.
+- **Every tool** is here — the sketch tools and the 3D ones (Extrude, Chamfer, Fillet, Revolve,
+  Sweep, Combine, Mirror, Slice, and the rest) — so you can switch tool without hunting the
+  toolbar.
+- **Explode Selection Under Cursor** opens the [Selection Exploder](/docs/selection-exploder)
+  right where your pointer is, the same as pressing **Space**.
 
 ## Scripting
 

@@ -26,6 +26,22 @@ pub enum PaletteCommandId {
     ToolDimension,
     ToolConstraint,
     ToolPlane,
+    ToolExtrude,
+    ToolChamfer,
+    ToolFillet,
+    ToolOffset,
+    ToolProject,
+    ToolLoft,
+    ToolRevolve,
+    ToolSweep,
+    ToolCombine,
+    ToolMove,
+    ToolMirror,
+    ToolRepeat,
+    ToolSlice,
+    ToolText,
+    /// Open the Selection Exploder at the cursor (#576) — the palette equivalent of pressing Space.
+    OpenExploder,
     ExitSketch,
     CommitRectangle,
     CommitLine,
@@ -69,6 +85,8 @@ pub enum PaletteOutcome {
     SaveFileAs,
     ExportSessionCommands,
     DocumentJson,
+    /// Open the Selection Exploder at the cursor (#576).
+    OpenExploder,
 }
 
 /// One invokable palette entry.
@@ -110,6 +128,21 @@ impl PaletteCommand {
             PaletteCommandId::ToolConstraint => {
                 PaletteOutcome::Action(Action::SetTool(Tool::Constraint))
             }
+            PaletteCommandId::ToolExtrude => PaletteOutcome::Action(Action::SetTool(Tool::Extrude)),
+            PaletteCommandId::ToolChamfer => PaletteOutcome::Action(Action::SetTool(Tool::Chamfer)),
+            PaletteCommandId::ToolFillet => PaletteOutcome::Action(Action::SetTool(Tool::Fillet)),
+            PaletteCommandId::ToolOffset => PaletteOutcome::Action(Action::SetTool(Tool::Offset)),
+            PaletteCommandId::ToolProject => PaletteOutcome::Action(Action::SetTool(Tool::Project)),
+            PaletteCommandId::ToolLoft => PaletteOutcome::Action(Action::SetTool(Tool::Loft)),
+            PaletteCommandId::ToolRevolve => PaletteOutcome::Action(Action::SetTool(Tool::Revolve)),
+            PaletteCommandId::ToolSweep => PaletteOutcome::Action(Action::SetTool(Tool::Sweep)),
+            PaletteCommandId::ToolCombine => PaletteOutcome::Action(Action::SetTool(Tool::Combine)),
+            PaletteCommandId::ToolMove => PaletteOutcome::Action(Action::SetTool(Tool::Move)),
+            PaletteCommandId::ToolMirror => PaletteOutcome::Action(Action::SetTool(Tool::Mirror)),
+            PaletteCommandId::ToolRepeat => PaletteOutcome::Action(Action::SetTool(Tool::Repeat)),
+            PaletteCommandId::ToolSlice => PaletteOutcome::Action(Action::SetTool(Tool::Slice)),
+            PaletteCommandId::ToolText => PaletteOutcome::Action(Action::SetTool(Tool::Text)),
+            PaletteCommandId::OpenExploder => PaletteOutcome::OpenExploder,
             PaletteCommandId::ToolPlane => {
                 PaletteOutcome::Action(Action::SetTool(Tool::ConstructionPlane))
             }
@@ -421,6 +454,81 @@ const BASE_COMMANDS: &[PaletteCommand] = &[
         "construction plane tool datum",
     ),
     PaletteCommand::new(
+        PaletteCommandId::ToolExtrude,
+        "Extrude Tool",
+        "extrude tool solid push pull height 3d",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::ToolChamfer,
+        "Chamfer Tool",
+        "chamfer tool bevel edge corner 3d",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::ToolFillet,
+        "Fillet Tool",
+        "fillet tool round edge corner radius 3d",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::ToolOffset,
+        "Offset Tool",
+        "offset tool parallel duplicate sketch",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::ToolProject,
+        "Project Tool",
+        "project tool edges reference sketch onto",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::ToolLoft,
+        "Loft Tool",
+        "loft tool blend profiles skin 3d",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::ToolRevolve,
+        "Revolve Tool",
+        "revolve tool lathe axis rotate 3d",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::ToolSweep,
+        "Sweep Tool",
+        "sweep tool profile path 3d",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::ToolCombine,
+        "Combine Tool",
+        "combine tool boolean union subtract intersect 3d",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::ToolMove,
+        "Move Tool",
+        "move tool translate transform body 3d",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::ToolMirror,
+        "Mirror Tool",
+        "mirror tool reflect symmetry plane 3d",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::ToolRepeat,
+        "Repeat Tool",
+        "repeat tool pattern array linear 3d",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::ToolSlice,
+        "Slice Tool",
+        "slice tool cut split plane 3d",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::ToolText,
+        "Text Tool",
+        "text tool label letters sketch",
+    ),
+    PaletteCommand::new(
+        PaletteCommandId::OpenExploder,
+        "Explode Selection Under Cursor",
+        "explode exploder selection crowd overlapping stacked disambiguate pick space loupe",
+    ),
+    PaletteCommand::new(
         PaletteCommandId::CancelOperation,
         "Cancel Operation",
         "cancel escape abort operation",
@@ -719,5 +827,28 @@ mod tests {
             cmd.outcome(),
             PaletteOutcome::Action(Action::SetStandardView(StandardView::Top))
         );
+    }
+
+    #[test]
+    fn palette_lists_the_3d_tools_and_the_exploder() {
+        // Every modeling tool the palette should reach is present (#576), including the exploder.
+        let cmds = commands_for_state(&AppState::default());
+        for (query, tool) in [
+            ("extrude", Tool::Extrude),
+            ("chamfer", Tool::Chamfer),
+            ("fillet", Tool::Fillet),
+            ("revolve", Tool::Revolve),
+            ("sweep", Tool::Sweep),
+            ("combine", Tool::Combine),
+            ("mirror", Tool::Mirror),
+            ("slice", Tool::Slice),
+        ] {
+            let cmd = best_match(query, &cmds)
+                .unwrap_or_else(|| panic!("palette should list a command matching {query:?}"));
+            assert_eq!(cmd.outcome(), PaletteOutcome::Action(Action::SetTool(tool)));
+        }
+        let exploder = best_match("explode", &cmds).expect("palette lists the exploder");
+        assert_eq!(exploder.id, PaletteCommandId::OpenExploder);
+        assert_eq!(exploder.outcome(), PaletteOutcome::OpenExploder);
     }
 }

@@ -1661,6 +1661,9 @@ struct App {
     rollback_marker: Option<hierarchy::RollbackMarker>,
     /// Active Selection Exploder (#551): `Some` while a crowd is fanned out into handles.
     exploder: Option<ExploderState>,
+    /// Set by the command palette's "Explode Selection Under Cursor" entry (#576); consumed by
+    /// `tick_exploder` on the next viewport frame to open the exploder like a Space press.
+    exploder_palette_request: bool,
     /// A selected calibration reference point (#424): `(image, point index)`; Delete
     /// removes it so a click can re-place it.
     selected_calibration_point: Option<(usize, usize)>,
@@ -2398,6 +2401,7 @@ impl App {
             collapsed_components: std::collections::HashSet::new(),
             rollback_marker: None,
             exploder: None,
+            exploder_palette_request: false,
             selected_calibration_point: None,
             calibration_point_drag: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -3105,6 +3109,9 @@ impl App {
             PaletteOutcome::SaveFileAs => self.save_as(),
             PaletteOutcome::ExportSessionCommands => self.export_session_commands(),
             PaletteOutcome::DocumentJson => self.open_json_dialog(),
+            // Trigger the exploder on the next viewport frame, at wherever the cursor then is — the
+            // palette equivalent of pressing Space (#576).
+            PaletteOutcome::OpenExploder => self.exploder_palette_request = true,
         }
         self.state.command_palette.close_palette();
     }
@@ -14893,11 +14900,14 @@ impl App {
         constraint_hits: &[crate::constraint_viewport::ConstraintIconHit],
         suppress: bool,
     ) -> (bool, Option<egui::Pos2>, bool) {
+        // Consume any pending palette request every frame so it never lingers (#576).
+        let palette_request = std::mem::take(&mut self.exploder_palette_request);
         if suppress {
             self.exploder = None;
             return (false, None, false);
         }
-        let space = ui.input(|i| i.key_pressed(egui::Key::Space));
+        // The palette's "Explode Selection Under Cursor" entry behaves exactly like a Space press.
+        let space = ui.input(|i| i.key_pressed(egui::Key::Space)) || palette_request;
         let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
         let shift = ui.input(|i| i.modifiers.shift);
 
