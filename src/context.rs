@@ -1774,11 +1774,13 @@ fn primary_button(ui: &mut egui::Ui, enabled: bool, tooltip: &str) -> bool {
             crate::icons::IconId::Confirm,
             16.0,
         ));
+        // Fill the whole right column (#598).
+        let w = ui.available_width().max(56.0);
         ui.add_enabled(
             enabled,
             egui::Button::image(img)
                 .fill(blue)
-                .min_size(egui::vec2(56.0, 22.0)),
+                .min_size(egui::vec2(w, 24.0)),
         )
         .on_hover_text(format!("{tooltip} (Enter)"))
         .clicked()
@@ -1838,26 +1840,14 @@ fn checkbox_row(
 ) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
+        // Left column: the clickable label.
         let resp = ui
             .allocate_ui_with_layout(
                 egui::vec2(FIELD_LABEL_W, 18.0),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
                     ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
-                    let r = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
-                    if let Some(hint) = shortcut {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(crate::shortcuts::format_shortcut(hint))
-                                    .weak()
-                                    .monospace()
-                                    .size(11.0),
-                            )
-                            .sense(egui::Sense::click()),
-                        ) | r
-                    } else {
-                        r
-                    }
+                    ui.add(egui::Label::new(label).sense(egui::Sense::click()))
                 },
             )
             .inner;
@@ -1865,8 +1855,17 @@ fn checkbox_row(
             *checked = !*checked;
             changed = true;
         }
+        // Right column: the checkbox, with the shortcut hint to its **right** (#597).
         if ui.checkbox(checked, "").changed() {
             changed = true;
+        }
+        if let Some(hint) = shortcut {
+            ui.add(egui::Label::new(
+                egui::RichText::new(crate::shortcuts::format_shortcut(hint))
+                    .weak()
+                    .monospace()
+                    .size(11.0),
+            ));
         }
     });
     changed
@@ -3103,11 +3102,6 @@ pub fn show_pane(
                 pending = Some(SketchOffsetEdit::Distance(text.clone()));
             }
         });
-        ui.label(
-            egui::RichText::new("Positive grows a closed loop or circle; negative shrinks")
-                .color(egui::Color32::from_gray(140))
-                .size(11.0),
-        );
         // Two-column Construction toggle with the shared `X` shortcut (#591).
         let mut construction = control.construction;
         if checkbox_row(ui, "Construction", &mut construction, Some(shortcuts::TOGGLE_CONSTRUCTION)) {
