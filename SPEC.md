@@ -1964,10 +1964,10 @@ modeled on SolveSpace (https://solvespace.com).
     (e.g. `line, line` for Parallel). Buttons are **enabled** only when the selection
     satisfies that constraint.
   - **Shortcuts (#401):** each type has a fixed **digit** shown left of its button, in pane
-    order — Parallel `1`, Perpendicular `2`, Equal `3`, Coincident `4`, Midpoint `5`. Pressing the
-    digit **while the Constraint tool is active** applies that constraint if it is currently
-    enabled; the digits do nothing on other tools, so they can't collide with global tool keys.
-    (Horizontal `6`/`7` were removed in #577 — see below.)
+    order — Parallel `1`, Perpendicular `2`, Equal `3`, Coincident `4`, Midpoint `5`, Parallel-to-X-
+    axis `6`, Parallel-to-Y-axis `7`. Pressing the digit **while the Constraint tool is active**
+    applies that constraint if it is currently enabled; the digits do nothing on other tools, so
+    they can't collide with global tool keys.
 - **Geometric types (v1):**
   - **Parallel** — `line`, `line`
   - **Perpendicular** — `line`, `line`
@@ -1979,9 +1979,15 @@ modeled on SolveSpace (https://solvespace.com).
     A `point`/`line` operand may be the sketch's own face's vertex/edge (#26/#27, see §3.1) — or
     the origin/origin axes — picked the same way as any other sketch point/line.
   - **Midpoint** — `point`, `line`
-  - **No separate Horizontal/Vertical (#577/#580):** those constraints were removed entirely in
-    favour of the general **parallel-to-axis** solution — select a line **and a sketch axis** and
-    apply **Parallel** (line runs along the axis) or **Perpendicular**. Because it refers to the
+  - **Parallel to X axis / Parallel to Y axis (#583)** — `line`: one-click buttons (keys `6`/`7`)
+    that constrain the single selected line parallel to the sketch's X or Y origin axis — the
+    convenience form of "make this horizontal/vertical". They author a `Parallel` constraint against
+    `OriginAxis(X)`/`OriginAxis(Y)` and show the horizontal/vertical badge glyph; the scripting names
+    `horizontal`/`vertical` map to them for back-compat.
+  - **No separate Horizontal/Vertical constraint *kind* (#577/#580):** the old standalone constraints
+    were removed entirely in favour of the general **parallel-to-axis** solution (the buttons above,
+    or select a line **and a sketch axis** and apply **Parallel**/**Perpendicular** directly).
+    Because it refers to the
     sketch's own X/Y axes rather than the screen, it is unambiguous on any plane at any angle, so the
     camera no longer has to force a u-right/v-up orientation. The `ConstraintKind::Horizontal`/
     `Vertical` variants are **gone**; documents that still contain the legacy `horizontal`/`vertical`

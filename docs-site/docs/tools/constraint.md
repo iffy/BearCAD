@@ -24,6 +24,11 @@ Select the geometry, then click a constraint button or press its number key:
 | Equal | two lines | `3` |
 | Coincident | two points; a point + a line, circle, or the origin; or two lines (made collinear) | `4` |
 | Midpoint | a point + a line | `5` |
+| Parallel to X axis | a line | `6` |
+| Parallel to Y axis | a line | `7` |
+
+The last two are the one-click way to make a line **horizontal** or **vertical** — they
+constrain the selected line parallel to the sketch's X or Y axis.
 
 Many constraints also happen automatically while drawing — snapping a line's end onto a
 point keeps them attached.

@@ -389,6 +389,8 @@ pub fn icon_for_constraint(kind: GeometricConstraintType) -> IconId {
         GeometricConstraintType::Equal => IconId::Equal,
         GeometricConstraintType::Coincident => IconId::Coincident,
         GeometricConstraintType::Midpoint => IconId::Midpoint,
+        GeometricConstraintType::AlongXAxis => IconId::Horizontal,
+        GeometricConstraintType::AlongYAxis => IconId::Vertical,
     }
 }
 

@@ -19,15 +19,23 @@ pub enum GeometricConstraintType {
     Equal,
     Coincident,
     Midpoint,
+    /// One-click "make this line parallel to the sketch **X axis**" (#583) — the convenience button
+    /// for the axis-based Horizontal: it constrains the single selected line `Parallel` to
+    /// `OriginAxis(X)`.
+    AlongXAxis,
+    /// One-click "make this line parallel to the sketch **Y axis**" (#583) — the axis-based Vertical.
+    AlongYAxis,
 }
 
 impl GeometricConstraintType {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::Parallel,
         Self::Perpendicular,
         Self::Equal,
         Self::Coincident,
         Self::Midpoint,
+        Self::AlongXAxis,
+        Self::AlongYAxis,
     ];
 
     pub fn label(self) -> &'static str {
@@ -37,13 +45,14 @@ impl GeometricConstraintType {
             Self::Equal => "Equal",
             Self::Coincident => "Coincident",
             Self::Midpoint => "Midpoint",
+            Self::AlongXAxis => "Parallel to X axis",
+            Self::AlongYAxis => "Parallel to Y axis",
         }
     }
 
-    /// Fixed context-pane shortcut (shown left of the constraint button): the digits 1–5 in the
+    /// Fixed context-pane shortcut (shown left of the constraint button): the digits 1–7 in the
     /// pane's display order, only active while the Constraint tool is (#401) — numbers can't collide
-    /// with the global tool keys the old mnemonic letters had to dodge. (Horizontal/Vertical were
-    /// removed in favour of constraining a line parallel to a sketch axis, #577.)
+    /// with the global tool keys the old mnemonic letters had to dodge.
     pub fn shortcut_label(self) -> &'static str {
         match self {
             Self::Parallel => "1",
@@ -51,6 +60,8 @@ impl GeometricConstraintType {
             Self::Equal => "3",
             Self::Coincident => "4",
             Self::Midpoint => "5",
+            Self::AlongXAxis => "6",
+            Self::AlongYAxis => "7",
         }
     }
 
@@ -61,6 +72,8 @@ impl GeometricConstraintType {
             '3' => Some(Self::Equal),
             '4' => Some(Self::Coincident),
             '5' => Some(Self::Midpoint),
+            '6' => Some(Self::AlongXAxis),
+            '7' => Some(Self::AlongYAxis),
             _ => None,
         }
     }
@@ -126,6 +139,7 @@ fn missing_for_kind(kind: GeometricConstraintType) -> Vec<&'static str> {
         }
         GeometricConstraintType::Coincident => vec!["point", "point, line, or circle"],
         GeometricConstraintType::Midpoint => vec!["point", "line"],
+        GeometricConstraintType::AlongXAxis | GeometricConstraintType::AlongYAxis => vec!["line"],
     }
 }
 
@@ -189,6 +203,10 @@ fn match_kind(
             ]
         }
         GeometricConstraintType::Midpoint => &[&[ConstraintRole::Point, ConstraintRole::Line][..]],
+        // The axis-parallel buttons act on a single selected line (#583).
+        GeometricConstraintType::AlongXAxis | GeometricConstraintType::AlongYAxis => {
+            &[&[ConstraintRole::Line][..]]
+        }
     };
 
     let mut best: Option<(bool, Vec<&'static str>)> = None;
@@ -418,10 +436,20 @@ fn build_constraint_kind(
         })
         .collect();
 
+    use crate::model::SketchAxis;
     match kind {
         GeometricConstraintType::Parallel => Ok(ConstraintKind::Parallel {
             line_a: lines[0].clone(),
             line_b: lines[1].clone(),
+        }),
+        // The one-click axis-parallel buttons (#583): the selected line parallel to the X/Y axis.
+        GeometricConstraintType::AlongXAxis => Ok(ConstraintKind::Parallel {
+            line_a: lines[0].clone(),
+            line_b: ConstraintLine::OriginAxis(SketchAxis::X),
+        }),
+        GeometricConstraintType::AlongYAxis => Ok(ConstraintKind::Parallel {
+            line_a: lines[0].clone(),
+            line_b: ConstraintLine::OriginAxis(SketchAxis::Y),
         }),
         GeometricConstraintType::Perpendicular => Ok(ConstraintKind::Perpendicular {
             line_a: lines[0].clone(),
@@ -1085,9 +1113,15 @@ mod tests {
             GeometricConstraintType::from_shortcut_key('5'),
             Some(GeometricConstraintType::Midpoint)
         );
-        // Horizontal/Vertical were removed (#577), so their old keys map to nothing now.
-        assert_eq!(GeometricConstraintType::from_shortcut_key('6'), None);
-        assert_eq!(GeometricConstraintType::from_shortcut_key('7'), None);
+        // Keys 6/7 drive the axis-parallel buttons (#583) — the axis-based Horizontal/Vertical.
+        assert_eq!(
+            GeometricConstraintType::from_shortcut_key('6'),
+            Some(GeometricConstraintType::AlongXAxis)
+        );
+        assert_eq!(
+            GeometricConstraintType::from_shortcut_key('7'),
+            Some(GeometricConstraintType::AlongYAxis)
+        );
         // No constraint uses a global tool key, so they never collide.
         for key in ['S', 'R', 'L', 'C', 'O', 'P', 'D', 'E', 'X', 'N'] {
             assert!(
@@ -1098,9 +1132,9 @@ mod tests {
     }
 
     #[test]
-    fn single_line_enables_no_constraint() {
-        // #577: with Horizontal/Vertical removed, a lone line no longer enables any constraint —
-        // making a line axis-aligned now needs the line *and* an axis (Parallel).
+    fn single_line_enables_only_the_axis_parallel_buttons() {
+        // #583: a lone line enables the one-click "parallel to X/Y axis" buttons (and nothing else),
+        // the axis-based replacement for Horizontal/Vertical.
         let (mut doc, sketch) = sketch_doc();
         doc.lines
             .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 5.0));
@@ -1108,9 +1142,44 @@ mod tests {
         click_scene_selection(&mut sel, SceneElement::Line(0), false);
         let rows = constraint_pane_rows(&sel);
         assert_eq!(rows.len(), GeometricConstraintType::ALL.len());
-        assert!(rows.iter().all(|row| !row.enabled));
-        assert_eq!(sole_enabled_constraint_type(&rows), None);
+        let by_kind: std::collections::HashMap<_, _> =
+            rows.iter().map(|row| (row.kind, row)).collect();
+        assert!(by_kind[&GeometricConstraintType::AlongXAxis].enabled);
+        assert!(by_kind[&GeometricConstraintType::AlongYAxis].enabled);
+        assert!(!by_kind[&GeometricConstraintType::Parallel].enabled);
+        assert!(!by_kind[&GeometricConstraintType::Coincident].enabled);
         let _ = doc;
+    }
+
+    #[test]
+    fn along_x_axis_button_makes_a_line_horizontal() {
+        // #583: selecting one line and pressing the "parallel to X axis" button constrains it
+        // parallel to the sketch X origin axis (i.e. horizontal).
+        use crate::model::SketchAxis;
+        let (mut doc, sketch) = sketch_doc();
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 4.0));
+        let mut sel = SceneSelection::default();
+        click_scene_selection(&mut sel, SceneElement::Line(0), false);
+        let id = add_geometric_constraint_from_selection(
+            &mut doc,
+            sketch,
+            GeometricConstraintType::AlongXAxis,
+            &sel,
+        )
+        .unwrap();
+        assert_eq!(
+            doc.constraints[id].kind,
+            ConstraintKind::Parallel {
+                line_a: ConstraintLine::Line(0),
+                line_b: ConstraintLine::OriginAxis(SketchAxis::X),
+            }
+        );
+        assert!(
+            (doc.lines[0].y1 - doc.lines[0].y0).abs() < EPS,
+            "line should be horizontal, dy={}",
+            doc.lines[0].y1 - doc.lines[0].y0
+        );
     }
 
     #[test]

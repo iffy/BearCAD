@@ -856,6 +856,9 @@ fn parse_geometric_constraint(name: &str) -> Option<GeometricConstraintType> {
         "equal" => Some(GeometricConstraintType::Equal),
         "coincident" => Some(GeometricConstraintType::Coincident),
         "midpoint" => Some(GeometricConstraintType::Midpoint),
+        // The axis-parallel buttons (#583); the legacy names map to them for script back-compat.
+        "horizontal" | "along_x" | "parallel_x" => Some(GeometricConstraintType::AlongXAxis),
+        "vertical" | "along_y" | "parallel_y" => Some(GeometricConstraintType::AlongYAxis),
         _ => None,
     }
 }
