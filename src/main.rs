@@ -7403,7 +7403,7 @@ impl eframe::App for App {
                 if self.state.sketch_session.is_some()
                     && icons::selectable_icon_button_at(
                         ui,
-                        icons::IconId::Projection,
+                        icons::IconId::Project,
                         self.state.tool == Tool::Project,
                         "Project — click an outside edge or body to reference it in this sketch (or select edges and press Y)",
                         TOOLBAR_ICON_SIZE,
