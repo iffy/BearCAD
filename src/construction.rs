@@ -39,6 +39,10 @@ pub const FACE_PICK_MARGIN_PX: f32 = 8.0;
 /// Visual highlight for a pickable target under the cursor.
 pub const PICK_HOVER_RGBA: egui::Color32 = egui::Color32::from_rgb(255, 210, 90);
 
+/// The Selection Exploder's availability hint (#551): a light green, distinct from the yellow
+/// pick-hover, that says "several things are stacked here — press Space to fan them out".
+pub const EXPLODER_HINT_RGBA: egui::Color32 = egui::Color32::from_rgb(140, 226, 150);
+
 /// Fill strength when highlighting a whole sketchable face on hover.
 pub const FACE_HOVER_FILL_MULTIPLIER: f32 = 0.38;
 

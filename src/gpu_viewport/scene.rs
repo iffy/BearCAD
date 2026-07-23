@@ -2949,16 +2949,16 @@ impl<'a> SceneMesh<'a> {
         cam: &Camera,
         viewport: UiRect,
         view_proj: &Mat4,
-        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        _project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     ) {
+        // Just the line — no endpoint discs: those big circles obscure the very edge being
+        // highlighted, making it hard to see what a click will pick.
         self.push_line_segment(a, b, color, 4.0, cam, viewport, view_proj);
-        for p in [a, b] {
-            push_screen_disc(self, p, 5.0, color, cam, viewport, view_proj, project);
-        }
     }
 
-    /// Hover highlight for a (possibly curved) polyline: the sampled path plus discs at its
-    /// two true endpoints only (not at every interior sample).
+    /// Hover highlight for a (possibly curved) polyline: the sampled path only. No discs at the
+    /// endpoints — they obscure the line they mark (a vertex highlight is drawn only for an actual
+    /// point pick).
     fn push_polyline_hover(
         &mut self,
         points: &[Vec3],
@@ -2966,15 +2966,10 @@ impl<'a> SceneMesh<'a> {
         cam: &Camera,
         viewport: UiRect,
         view_proj: &Mat4,
-        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        _project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     ) {
         for pair in points.windows(2) {
             self.push_line_segment(pair[0], pair[1], color, 4.0, cam, viewport, view_proj);
-        }
-        if let (Some(&a), Some(&b)) = (points.first(), points.last()) {
-            for p in [a, b] {
-                push_screen_disc(self, p, 5.0, color, cam, viewport, view_proj, project);
-            }
         }
     }
 

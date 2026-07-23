@@ -14068,12 +14068,15 @@ impl App {
         available_at: Option<egui::Pos2>,
     ) {
         let accent = construction::PICK_HOVER_RGBA;
-        // The availability hint: a faint borderless disc the size of the pick hitbox.
+        // The availability hint: a faint light-green borderless disc the size of the pick hitbox,
+        // deliberately a different hue from the yellow pick-hover so "a crowd is stacked here" reads
+        // as its own signal (#551).
+        let hint = construction::EXPLODER_HINT_RGBA;
         if let Some(center) = available_at {
             painter.circle_filled(
                 center,
                 crate::touch::hit(12.0),
-                egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 26),
+                egui::Color32::from_rgba_unmultiplied(hint.r(), hint.g(), hint.b(), 40),
             );
         }
         let Some(ex) = self.exploder.as_ref() else {
@@ -14616,7 +14619,11 @@ impl App {
             && !angle_gizmo_dragging
             && self.angle_gizmo_drag.is_none()
         {
-            if let Some(session) = sketch_session {
+            // While the Selection Exploder is open (#551) it owns the pointer: skip the positional
+            // sketch pick/drag handlers entirely, or they'd grab whatever geometry sits under the
+            // fanned-out handle (which is away from the real thing) — the exploder click below
+            // selects the chosen target directly instead.
+            if let Some(session) = sketch_session.filter(|_| self.exploder.is_none()) {
                 let allow_geometry_drag = matches!(
                     self.state.tool,
                     Tool::Select | Tool::Constraint
@@ -14769,6 +14776,32 @@ impl App {
             pointer_screen = self.exploder_pick_pointer(&project);
         }
 
+        // A click on a hovered handle selects that EXACT target (#551). Re-resolving a pick at the
+        // redirected anchor is ambiguous — the anchor can lie on a different overlapping element,
+        // or outside the original hitbox — so for the selection-family tools we apply the chosen
+        // target directly and mark the press consumed so the normal pick path stands down.
+        let mut exploder_owns_press = false;
+        if exploder_active && ui.input(|i| i.pointer.primary_pressed()) {
+            if let Some(target) = self
+                .exploder
+                .as_ref()
+                .and_then(|e| e.hovered.and_then(|i| e.handles.get(i)))
+                .map(|h| h.target.clone())
+            {
+                if matches!(
+                    self.state.tool,
+                    Tool::Select | Tool::Constraint | Tool::Dimension
+                ) {
+                    if let Some(element) = scene_element_from_pick(&target) {
+                        let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
+                        self.state
+                            .apply(Action::ClickSceneElement { element, additive });
+                        exploder_owns_press = true;
+                    }
+                }
+            }
+        }
+
         // Right-click a bezier handle to offer deleting it, a two-line vertex to offer
         // converting it to a smooth bezier joint, or a curved line to offer straightening it
         // back out (#54/#75).
@@ -14830,7 +14863,8 @@ impl App {
         if matches!(
             self.state.tool,
             Tool::Select | Tool::Constraint | Tool::Dimension
-        ) && self.state.editing_committed_dim.is_none()
+        ) && !exploder_owns_press
+            && self.state.editing_committed_dim.is_none()
             && self.state.placing_angle_dimension.is_none()
             && !over_committed_dim_label
             && self.dim_label_drag.is_none()
