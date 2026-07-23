@@ -14455,16 +14455,14 @@ impl App {
             let active = hot || selected;
             let element_color = if active { accent } else { idle_blue };
             let center = centers[i];
-            // Leader line from the real thing to its loupe.
-            if let Some(a) = project(h.anchor) {
-                let line = if active {
-                    egui::Color32::from_gray(210)
-                } else {
-                    egui::Color32::from_gray(110)
-                };
-                painter.line_segment([a, center], egui::Stroke::new(1.0, line));
-                if hot {
-                    // The real thing lights up in the accent colour when its loupe is hovered.
+            // Leader line back to the real thing — only for the hovered loupe (a line from every
+            // loupe is too much clutter), drawn in grey with an accent dot where the thing really is.
+            if hot {
+                if let Some(a) = project(h.anchor) {
+                    painter.line_segment(
+                        [a, center],
+                        egui::Stroke::new(1.0, egui::Color32::from_gray(150)),
+                    );
                     painter.circle_filled(a, 3.5, accent);
                 }
             }
