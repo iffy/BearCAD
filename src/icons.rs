@@ -394,13 +394,24 @@ pub fn icon_for_constraint(kind: GeometricConstraintType) -> IconId {
 pub fn icon_for_constraint_kind(kind: &ConstraintKind) -> IconId {
     match kind {
         ConstraintKind::Distance { .. } => IconId::Dimension,
-        ConstraintKind::Parallel { .. } => IconId::Parallel,
+        // A line constrained parallel to a sketch axis is the axis-based Horizontal/Vertical
+        // (#577/#580): show the horizontal/vertical glyph, which depicts exactly that; a plain
+        // line-to-line parallel keeps the parallel glyph.
+        ConstraintKind::Parallel { line_a, line_b } => {
+            let axis = |l: &crate::model::ConstraintLine| match l {
+                crate::model::ConstraintLine::OriginAxis(a) => Some(*a),
+                _ => None,
+            };
+            match axis(line_a).or_else(|| axis(line_b)) {
+                Some(crate::model::SketchAxis::X) => IconId::Horizontal,
+                Some(crate::model::SketchAxis::Y) => IconId::Vertical,
+                None => IconId::Parallel,
+            }
+        }
         ConstraintKind::Perpendicular { .. } => IconId::Perpendicular,
         ConstraintKind::Equal { .. } => IconId::Equal,
         ConstraintKind::Coincident { .. } => IconId::Coincident,
         ConstraintKind::Midpoint { .. } => IconId::Midpoint,
-        ConstraintKind::Horizontal { .. } => IconId::Horizontal,
-        ConstraintKind::Vertical { .. } => IconId::Vertical,
         ConstraintKind::Angle { .. } => IconId::Constraint,
         ConstraintKind::Tangent { .. } => IconId::Coincident,
     }

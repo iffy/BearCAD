@@ -541,30 +541,41 @@ impl<'a> Builder<'a> {
                 self.add_distance(doc_index, target, expression)?
             }
             ConstraintKind::Coincident { a, b } => self.add_coincident(doc_index, a, b)?,
-            ConstraintKind::Horizontal { line } => {
-                let e = self.ensure_line(line)?;
-                self.constraint(doc_index, SlvsConstraint {
-                    type_: SLVS_C_HORIZONTAL,
-                    entity_a: e,
-                    ..Default::default()
-                });
-            }
-            ConstraintKind::Vertical { line } => {
-                let e = self.ensure_line(line)?;
-                self.constraint(doc_index, SlvsConstraint {
-                    type_: SLVS_C_VERTICAL,
-                    entity_a: e,
-                    ..Default::default()
-                });
-            }
             ConstraintKind::Parallel { line_a, line_b } => {
-                let (a, b) = (self.ensure_line(line_a)?, self.ensure_line(line_b)?);
-                self.constraint(doc_index, SlvsConstraint {
-                    type_: SLVS_C_PARALLEL,
-                    entity_a: a,
-                    entity_b: b,
-                    ..Default::default()
-                });
+                // Parallel to a sketch axis is the axis-based Horizontal/Vertical (#577/#580): use
+                // SLVS's dedicated horizontal/vertical constraint on the movable line.
+                let axis_pair = match (line_a, line_b) {
+                    (ConstraintLine::OriginAxis(axis), other)
+                        if !matches!(other, ConstraintLine::OriginAxis(_)) =>
+                    {
+                        Some((other, *axis))
+                    }
+                    (other, ConstraintLine::OriginAxis(axis))
+                        if !matches!(other, ConstraintLine::OriginAxis(_)) =>
+                    {
+                        Some((other, *axis))
+                    }
+                    _ => None,
+                };
+                if let Some((movable, axis)) = axis_pair {
+                    let e = self.ensure_line(movable)?;
+                    self.constraint(doc_index, SlvsConstraint {
+                        type_: match axis {
+                            crate::model::SketchAxis::X => SLVS_C_HORIZONTAL,
+                            crate::model::SketchAxis::Y => SLVS_C_VERTICAL,
+                        },
+                        entity_a: e,
+                        ..Default::default()
+                    });
+                } else {
+                    let (a, b) = (self.ensure_line(line_a)?, self.ensure_line(line_b)?);
+                    self.constraint(doc_index, SlvsConstraint {
+                        type_: SLVS_C_PARALLEL,
+                        entity_a: a,
+                        entity_b: b,
+                        ..Default::default()
+                    });
+                }
             }
             ConstraintKind::Perpendicular { line_a, line_b } => {
                 let (a, b) = (self.ensure_line(line_a)?, self.ensure_line(line_b)?);
@@ -1093,7 +1104,6 @@ pub fn solve_sketch(
                     _ => {}
                 }
             }
-            _ => {}
         }
     }
     for c in held_centers {

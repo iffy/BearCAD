@@ -149,19 +149,6 @@ fn build_graphic(doc: &Document, index: usize) -> Option<ConstraintViewportGraph
                 }],
             })
         }
-        ConstraintKind::Horizontal { line } | ConstraintKind::Vertical { line } => {
-            let (a, b) = constraint_line_world_endpoints(doc, sketch, line)?;
-            Some(ConstraintViewportGraphic {
-                constraint_index: index,
-                connectors: vec![],
-                icons: vec![ConstraintIconPlacement {
-                    constraint_index: index,
-                    world: midpoint(a, b),
-                    icon,
-                    offset_toward: None,
-                }],
-            })
-        }
         // Tangent joints show through the handle rendering itself (#473), not a badge.
         ConstraintKind::Tangent { .. } => None,
         ConstraintKind::Angle {

@@ -829,8 +829,14 @@ pub enum DimensionTarget {
 }
 
 /// Kind of sketch constraint.
+///
+/// Horizontal/Vertical were removed (#577/#580) in favour of constraining a line **parallel to a
+/// sketch axis**. Documents that still contain the legacy `horizontal`/`vertical` tags load via
+/// [`ConstraintKindWire`], which maps them to `Parallel` against the X/Y origin axis; new documents
+/// never write those tags.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[serde(from = "ConstraintKindWire")]
 pub enum ConstraintKind {
     Distance { target: DistanceTarget },
     Parallel {
@@ -854,8 +860,6 @@ pub enum ConstraintKind {
         point: ConstraintPoint,
         line: ConstraintLine,
     },
-    Horizontal { line: ConstraintLine },
-    Vertical { line: ConstraintLine },
     Angle {
         line_a: ConstraintLine,
         line_b: ConstraintLine,
@@ -870,6 +874,56 @@ pub enum ConstraintKind {
         a: ConstraintPoint,
         b: ConstraintPoint,
     },
+}
+
+/// Deserialize-only mirror of [`ConstraintKind`] that still understands the legacy `horizontal`/
+/// `vertical` tags (#577/#580). Old documents load by mapping Horizontal → parallel to the sketch
+/// X axis and Vertical → parallel to the Y axis; every other kind passes through unchanged.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ConstraintKindWire {
+    Distance { target: DistanceTarget },
+    Parallel { line_a: ConstraintLine, line_b: ConstraintLine },
+    Perpendicular { line_a: ConstraintLine, line_b: ConstraintLine },
+    Equal { line_a: ConstraintLine, line_b: ConstraintLine },
+    Coincident { a: ConstraintEntity, b: ConstraintEntity },
+    Midpoint { point: ConstraintPoint, line: ConstraintLine },
+    Horizontal { line: ConstraintLine },
+    Vertical { line: ConstraintLine },
+    Angle {
+        line_a: ConstraintLine,
+        line_b: ConstraintLine,
+        #[serde(default = "default_constraint_sign")]
+        rotation_sign: ConstraintSign,
+    },
+    Tangent { a: ConstraintPoint, b: ConstraintPoint },
+}
+
+impl From<ConstraintKindWire> for ConstraintKind {
+    fn from(w: ConstraintKindWire) -> Self {
+        use ConstraintKindWire as W;
+        match w {
+            W::Distance { target } => ConstraintKind::Distance { target },
+            W::Parallel { line_a, line_b } => ConstraintKind::Parallel { line_a, line_b },
+            W::Perpendicular { line_a, line_b } => ConstraintKind::Perpendicular { line_a, line_b },
+            W::Equal { line_a, line_b } => ConstraintKind::Equal { line_a, line_b },
+            W::Coincident { a, b } => ConstraintKind::Coincident { a, b },
+            W::Midpoint { point, line } => ConstraintKind::Midpoint { point, line },
+            // Legacy Horizontal/Vertical → parallel to the X/Y sketch axis (#577/#580).
+            W::Horizontal { line } => ConstraintKind::Parallel {
+                line_a: line,
+                line_b: ConstraintLine::OriginAxis(SketchAxis::X),
+            },
+            W::Vertical { line } => ConstraintKind::Parallel {
+                line_a: line,
+                line_b: ConstraintLine::OriginAxis(SketchAxis::Y),
+            },
+            W::Angle { line_a, line_b, rotation_sign } => {
+                ConstraintKind::Angle { line_a, line_b, rotation_sign }
+            }
+            W::Tangent { a, b } => ConstraintKind::Tangent { a, b },
+        }
+    }
 }
 
 /// Point or line reference for coincident constraints.
@@ -3073,6 +3127,38 @@ pub fn effective_angle_unit(doc: &Document, sketch: SketchId) -> AngleUnit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_horizontal_vertical_constraints_migrate_to_axis_parallel() {
+        // #577/#580: old documents storing `horizontal`/`vertical` constraint tags load by mapping
+        // them to Parallel against the X/Y sketch axis.
+        let horizontal: ConstraintKind =
+            serde_json::from_str(r#"{"horizontal":{"line":{"line":3}}}"#).unwrap();
+        assert_eq!(
+            horizontal,
+            ConstraintKind::Parallel {
+                line_a: ConstraintLine::Line(3),
+                line_b: ConstraintLine::OriginAxis(SketchAxis::X),
+            }
+        );
+        let vertical: ConstraintKind =
+            serde_json::from_str(r#"{"vertical":{"line":{"line":7}}}"#).unwrap();
+        assert_eq!(
+            vertical,
+            ConstraintKind::Parallel {
+                line_a: ConstraintLine::Line(7),
+                line_b: ConstraintLine::OriginAxis(SketchAxis::Y),
+            }
+        );
+        // A normal constraint still round-trips unchanged.
+        let parallel = ConstraintKind::Parallel {
+            line_a: ConstraintLine::Line(0),
+            line_b: ConstraintLine::Line(1),
+        };
+        let json = serde_json::to_string(&parallel).unwrap();
+        assert!(!json.contains("horizontal") && !json.contains("vertical"));
+        assert_eq!(serde_json::from_str::<ConstraintKind>(&json).unwrap(), parallel);
+    }
 
     /// #257: the count/gap/distance UI mapping round-trips through `RepeatMode`, and each toggle
     /// combination picks the right mode.

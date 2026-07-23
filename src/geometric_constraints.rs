@@ -490,9 +490,6 @@ fn validate_constraint_kind(
             }
             Ok(())
         }
-        ConstraintKind::Horizontal { line } | ConstraintKind::Vertical { line } => {
-            validate_line_ref(doc, sketch, &line)
-        }
         ConstraintKind::Coincident { a, b } => {
             validate_entity_ref(doc, sketch, &a)?;
             validate_entity_ref(doc, sketch, &b)?;

@@ -1400,8 +1400,6 @@ fn constraint_kind_name(kind: &ConstraintKind) -> &'static str {
         ConstraintKind::Equal { .. } => "equal",
         ConstraintKind::Coincident { .. } => "coincident",
         ConstraintKind::Midpoint { .. } => "midpoint",
-        ConstraintKind::Horizontal { .. } => "horizontal",
-        ConstraintKind::Vertical { .. } => "vertical",
         ConstraintKind::Angle { .. } => "angle",
         ConstraintKind::Tangent { .. } => "tangent",
     }

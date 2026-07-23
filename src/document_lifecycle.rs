@@ -900,9 +900,6 @@ pub fn constraint_kind_applicable(doc: &Document, kind: &ConstraintKind) -> bool
         ConstraintKind::Midpoint { point, line } => {
             constraint_point_alive(doc, point) && constraint_line_alive(doc, line)
         }
-        ConstraintKind::Horizontal { line } | ConstraintKind::Vertical { line } => {
-            constraint_line_alive(doc, line)
-        }
         ConstraintKind::Angle {
             line_a,
             line_b,

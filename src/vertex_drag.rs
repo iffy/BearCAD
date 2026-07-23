@@ -558,27 +558,9 @@ fn project_drag_uv(
                     continue;
                 }
                 match &constraint.kind {
-                    ConstraintKind::Horizontal { line: constrained }
-                        if *constrained == line && other_fixed =>
-                    {
-                        let ((_x0, y0), (_x1, y1)) = line_uv_endpoints(doc, sketch, line.clone())?;
-                        projected_v = match end {
-                            LineEnd::Start => y1,
-                            LineEnd::End => y0,
-                        };
-                    }
-                    ConstraintKind::Vertical { line: constrained }
-                        if *constrained == line && other_fixed =>
-                    {
-                        let ((x0, _y0), (x1, _y1)) = line_uv_endpoints(doc, sketch, line.clone())?;
-                        projected_u = match end {
-                            LineEnd::Start => x1,
-                            LineEnd::End => x0,
-                        };
-                    }
                     // A line constrained **parallel to a sketch axis** (#577) is the axis-based
-                    // replacement for Horizontal/Vertical, so give it the same drag projection:
-                    // parallel to X freezes v (horizontal), parallel to Y freezes u (vertical).
+                    // replacement for Horizontal/Vertical, so its drag projection freezes the fixed
+                    // coordinate: parallel to X freezes v (horizontal), parallel to Y freezes u.
                     ConstraintKind::Parallel { line_a, line_b } if other_fixed => {
                         let axis_of = |l: &ConstraintLine| match l {
                             ConstraintLine::OriginAxis(a) => Some(*a),
@@ -1630,8 +1612,9 @@ mod tests {
         });
         doc.constraints.push(crate::model::Constraint {
             sketch,
-            kind: ConstraintKind::Horizontal {
-                line: ConstraintLine::Line(1),
+            kind: ConstraintKind::Parallel {
+                line_a: ConstraintLine::Line(1),
+                line_b: ConstraintLine::OriginAxis(crate::model::SketchAxis::X),
             },
             expression: String::new(),
             dim_offset: None,

@@ -2467,9 +2467,6 @@ fn constraint_kind_touches_element(kind: &ConstraintKind, element: &SceneElement
             constraint_point_touches_element(point, element)
                 || constraint_line_touches_element(line, element)
         }
-        ConstraintKind::Horizontal { line } | ConstraintKind::Vertical { line } => {
-            constraint_line_touches_element(line, element)
-        }
         ConstraintKind::Angle {
             line_a,
             line_b,

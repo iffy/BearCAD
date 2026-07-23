@@ -13,6 +13,24 @@ use crate::model::{
 use crate::value::{eval_angle_rad_in_doc, eval_length_mm_in_doc};
 use std::collections::{HashMap, HashSet};
 
+/// If exactly one of a Parallel constraint's two lines is a sketch **origin axis**, return the other
+/// (movable) line and that axis (#577/#580) — the axis-based Horizontal/Vertical. `None` when
+/// neither (or both) is an axis, so a plain line-to-line parallel takes the generic path.
+fn axis_parallel_pair(
+    line_a: &ConstraintLine,
+    line_b: &ConstraintLine,
+) -> Option<(ConstraintLine, crate::model::SketchAxis)> {
+    match (line_a, line_b) {
+        (ConstraintLine::OriginAxis(axis), other) if !matches!(other, ConstraintLine::OriginAxis(_)) => {
+            Some((other.clone(), *axis))
+        }
+        (other, ConstraintLine::OriginAxis(axis)) if !matches!(other, ConstraintLine::OriginAxis(_)) => {
+            Some((other.clone(), *axis))
+        }
+        _ => None,
+    }
+}
+
 /// Solver graph for one sketch, with stable point-variable mapping.
 pub struct SketchBridge {
     pub system: System,
@@ -124,41 +142,48 @@ impl SketchBridge {
             ConstraintKind::Distance { target } => {
                 self.add_distance_constraint(doc, constraint, target)?;
             }
-            ConstraintKind::Horizontal { line } => {
-                let ((x0, y0), (x1, y1)) = self.line_vars(doc, line)?;
-                self.system.add_equation(Equation::Horizontal {
-                    y0,
-                    y1,
-                    weight: DEFAULT_WEIGHT,
-                });
-                let _ = (x0, x1);
-            }
-            ConstraintKind::Vertical { line } => {
-                let ((x0, y0), (x1, y1)) = self.line_vars(doc, line)?;
-                self.system.add_equation(Equation::Vertical {
-                    x0,
-                    x1,
-                    weight: DEFAULT_WEIGHT,
-                });
-                let _ = (y0, y1);
-            }
             ConstraintKind::Parallel { line_a, line_b } => {
-                let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
-                self.hold_line(doc, reference.clone(), GAUGE_HOLD_WEIGHT)?;
-                let a = self.line_vars(doc, reference)?;
-                let b = self.line_vars(doc, movable)?;
-                let weight = self.direction_product_weight(a, b);
-                self.system.add_equation(Equation::Parallel {
-                    ax0: a.0.0,
-                    ay0: a.0.1,
-                    ax1: a.1.0,
-                    ay1: a.1.1,
-                    bx0: b.0.0,
-                    by0: b.0.1,
-                    bx1: b.1.0,
-                    by1: b.1.1,
-                    weight,
-                });
+                // Parallel to a sketch axis is the axis-based replacement for Horizontal/Vertical
+                // (#577/#580): emit the dedicated, more robust axis-aligned equation on the movable
+                // line rather than a generic parallel against the fixed axis.
+                if let Some((movable, axis)) = axis_parallel_pair(&line_a, &line_b) {
+                    let ((x0, y0), (x1, y1)) = self.line_vars(doc, movable)?;
+                    match axis {
+                        crate::model::SketchAxis::X => {
+                            self.system.add_equation(Equation::Horizontal {
+                                y0,
+                                y1,
+                                weight: DEFAULT_WEIGHT,
+                            });
+                            let _ = (x0, x1);
+                        }
+                        crate::model::SketchAxis::Y => {
+                            self.system.add_equation(Equation::Vertical {
+                                x0,
+                                x1,
+                                weight: DEFAULT_WEIGHT,
+                            });
+                            let _ = (y0, y1);
+                        }
+                    }
+                } else {
+                    let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
+                    self.hold_line(doc, reference.clone(), GAUGE_HOLD_WEIGHT)?;
+                    let a = self.line_vars(doc, reference)?;
+                    let b = self.line_vars(doc, movable)?;
+                    let weight = self.direction_product_weight(a, b);
+                    self.system.add_equation(Equation::Parallel {
+                        ax0: a.0.0,
+                        ay0: a.0.1,
+                        ax1: a.1.0,
+                        ay1: a.1.1,
+                        bx0: b.0.0,
+                        by0: b.0.1,
+                        bx1: b.1.0,
+                        by1: b.1.1,
+                        weight,
+                    });
+                }
             }
             ConstraintKind::Perpendicular { line_a, line_b } => {
                 let (reference, movable) = parallel_reference_and_movable(line_a, line_b);
@@ -941,8 +966,9 @@ mod tests {
                 end: LineEnd::Start,
             }),
         });
-        push(ConstraintKind::Horizontal {
-            line: crate::model::ConstraintLine::Line(0),
+        push(ConstraintKind::Parallel {
+            line_a: crate::model::ConstraintLine::Line(0),
+            line_b: crate::model::ConstraintLine::OriginAxis(crate::model::SketchAxis::X),
         });
         doc.constraints.push(Constraint {
             sketch,
@@ -1339,7 +1365,7 @@ mod tests {
             push(&mut doc, ConstraintKind::Coincident { a: end(i), b: start((i + 1) % 6) }, "");
         }
         let line = ConstraintLine::Line;
-        push(&mut doc, ConstraintKind::Horizontal { line: line(0) }, "");
+        push(&mut doc, ConstraintKind::Parallel { line_a: line(0), line_b: ConstraintLine::OriginAxis(crate::model::SketchAxis::X) }, "");
         push(&mut doc, ConstraintKind::Parallel { line_a: line(0), line_b: line(2) }, "");
         push(&mut doc, ConstraintKind::Parallel { line_a: line(3), line_b: line(5) }, "");
         push(&mut doc, ConstraintKind::Perpendicular { line_a: line(0), line_b: line(1) }, "");

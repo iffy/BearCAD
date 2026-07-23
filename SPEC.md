@@ -1979,15 +1979,17 @@ modeled on SolveSpace (https://solvespace.com).
     A `point`/`line` operand may be the sketch's own face's vertex/edge (#26/#27, see §3.1) — or
     the origin/origin axes — picked the same way as any other sketch point/line.
   - **Midpoint** — `point`, `line`
-  - **No separate Horizontal/Vertical (#577):** those authorable constraints were removed in favour
-    of the general **parallel-to-axis** solution — select a line **and a sketch axis** and apply
-    **Parallel** (line runs along the axis) or **Perpendicular**. Because it refers to the sketch's
-    own X/Y axes rather than the screen, it is unambiguous on any plane at any angle, so the camera
-    no longer has to force a u-right/v-up orientation. The `ConstraintKind::Horizontal`/`Vertical`
-    variants and their solver equations are **kept** so documents that already contain them still
-    load and solve; nothing creates new ones (the Rectangle tool now constrains its edges parallel
-    to the X/Y axes, and the vertex-drag projection treats a line parallel to X/Y the same way it
-    treated Horizontal/Vertical).
+  - **No separate Horizontal/Vertical (#577/#580):** those constraints were removed entirely in
+    favour of the general **parallel-to-axis** solution — select a line **and a sketch axis** and
+    apply **Parallel** (line runs along the axis) or **Perpendicular**. Because it refers to the
+    sketch's own X/Y axes rather than the screen, it is unambiguous on any plane at any angle, so the
+    camera no longer has to force a u-right/v-up orientation. The `ConstraintKind::Horizontal`/
+    `Vertical` variants are **gone**; documents that still contain the legacy `horizontal`/`vertical`
+    tags load via a serde `from` shim (`ConstraintKindWire`) that maps them to `Parallel` against the
+    X/Y origin axis, so old files keep working and are silently upgraded on save. The Rectangle tool
+    constrains its edges parallel to the X/Y axes, the sketch solver routes a line-parallel-to-axis
+    to its dedicated (robust) horizontal/vertical equation, and the vertex-drag projection and the
+    constraint badge icon both treat a line parallel to X/Y as horizontal/vertical.
 - **Redundant-constraint cleanup:** when a point already constrained coincident with a line
   is then constrained to a *specific* point on that same line (one of its endpoints, or its
   midpoint), the earlier generic point-on-line coincidence is removed in favor of the more
@@ -1996,7 +1998,8 @@ modeled on SolveSpace (https://solvespace.com).
   parallel` (uses current selection). Circle tool shortcut is **`O`** (`C` is constraint).
 
 ### 6.1 2D sketch constraints (full set)
-Coincident, point-on-entity, parallel, perpendicular, horizontal, vertical, tangent,
+Coincident, point-on-entity, parallel, perpendicular (horizontal/vertical are expressed as
+parallel/perpendicular to a sketch axis, #577/#580), tangent,
 equal, concentric, symmetric, midpoint, and dimensional constraints (distance, length,
 radius/diameter, angle). Dimensional constraints may be driven by parameters/expressions
 (§5), so parameters can drive sketch geometry.
