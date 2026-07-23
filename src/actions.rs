@@ -2430,6 +2430,9 @@ pub struct AppState {
     pub creating_circle: Option<CreatingCircle>,
     /// In-progress (or being-edited) extrusion: selected faces + live distance.
     pub creating_extrusion: Option<CreatingExtrusion>,
+    /// Sticky "Symmetric" preference for the Extrude tool (#587), so the toggle can be set before a
+    /// face is picked and carries into the extrusion once one is; new extrusions start from it.
+    pub pending_extrude_symmetric: bool,
     /// In-progress chamfer/fillet: picked vertex + live gizmo-driven amount.
     pub creating_vertex_treatment: Option<CreatingVertexTreatment>,
     /// In-progress 3D solid-edge chamfer/fillet (#77): picked extrusion edge + live
@@ -2592,6 +2595,7 @@ impl Default for AppState {
             creating_line: None,
             creating_circle: None,
             creating_extrusion: None,
+            pending_extrude_symmetric: false,
             creating_vertex_treatment: None,
             creating_edge_treatment: None,
             creating_loft: None,
@@ -7785,7 +7789,7 @@ impl AppState {
                                 .map(ExtrudeBodyMode::MergeInto)
                                 .unwrap_or(ExtrudeBodyMode::NewBody),
                             merge_candidate,
-                            symmetric: false,
+                            symmetric: self.pending_extrude_symmetric,
                         });
                     }
                 }
@@ -7828,7 +7832,7 @@ impl AppState {
                         .map(ExtrudeBodyMode::MergeInto)
                         .unwrap_or(ExtrudeBodyMode::NewBody),
                     merge_candidate,
-                    symmetric: false,
+                    symmetric: self.pending_extrude_symmetric,
                 });
                 ActionResult::Ok
             }
@@ -7852,7 +7856,7 @@ impl AppState {
                     body,
                     target,
                     expression: None,
-                    symmetric: false,
+                    symmetric: self.pending_extrude_symmetric,
                 })
             }
             Action::SetExtrudeDistance { distance } => {
@@ -7909,10 +7913,12 @@ impl AppState {
                 ActionResult::Ok
             }
             Action::SetExtrudeSymmetric { symmetric } => {
-                let Some(ce) = &mut self.creating_extrusion else {
-                    return ActionResult::Err("No extrusion in progress".to_string());
-                };
-                ce.symmetric = symmetric;
+                // Sticky even before a face is picked (#587): remember the preference so the next
+                // extrusion starts symmetric, and apply it to the in-progress one if there is one.
+                self.pending_extrude_symmetric = symmetric;
+                if let Some(ce) = &mut self.creating_extrusion {
+                    ce.symmetric = symmetric;
+                }
                 self.status = if symmetric {
                     "Extrude: symmetric".to_string()
                 } else {

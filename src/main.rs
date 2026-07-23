@@ -8001,16 +8001,23 @@ impl eframe::App for App {
                     .creating_extrusion
                     .as_ref()
                     .and_then(|ce| ce.merge_candidate),
-                extrude_body_mode: self
-                    .state
-                    .creating_extrusion
-                    .as_ref()
-                    .map(|ce| ce.body_mode),
-                extrude_symmetric: self
-                    .state
-                    .creating_extrusion
-                    .as_ref()
-                    .map(|ce| ce.symmetric),
+                // "Extrude into" and "Symmetric" show for the whole Extrude tool, even before a face
+                // is picked (#587): default to New body / the sticky symmetric preference until an
+                // extrusion is in progress. (Add/Cut stay disabled until a host body is known.)
+                extrude_body_mode: (self.state.tool == Tool::Extrude).then(|| {
+                    self.state
+                        .creating_extrusion
+                        .as_ref()
+                        .map(|ce| ce.body_mode)
+                        .unwrap_or(actions::ExtrudeBodyMode::NewBody)
+                }),
+                extrude_symmetric: (self.state.tool == Tool::Extrude).then(|| {
+                    self.state
+                        .creating_extrusion
+                        .as_ref()
+                        .map(|ce| ce.symmetric)
+                        .unwrap_or(self.state.pending_extrude_symmetric)
+                }),
                 // Extrude face element picker rows (#268): one per picked profile face.
                 extrude_faces: (self.state.tool == Tool::Extrude).then(|| {
                     self.state

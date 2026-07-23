@@ -504,9 +504,15 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     for one, `BodySource::Extrusions` for several; `BodySource::Solid { add, cut }` once some of
     its extrusions are subtracted rather than added — see §3.3). Extruding from a sketch on an
     existing body's face (a cap or side face) defaults to joining that body instead of creating a
-    new one; the context pane shows three (icon-labelled) choices while extruding or editing an
-    extrusion — **New body**, **Add to `<body>`**, and **Cut `<body>`** — to override the choice
-    (editing can also split a merged/cut extrusion back out into its own body). The **Cut** option
+    new one; the context pane shows three (icon-labelled) choices whenever the **Extrude tool** is
+    active — including *before* a face is picked (#587), defaulting to **New body** with Add/Cut
+    disabled until a host body is known — **New body**, **Add to `<body>`**, and **Cut `<body>`** — to
+    override the choice
+    (editing can also split a merged/cut extrusion back out into its own body). A **Symmetric**
+    toggle (extrude half the distance to each side of the sketch plane) sits alongside; like the
+    body-mode choice it shows for the whole Extrude tool and is **sticky** — set before a face is
+    picked, it's remembered (`AppState::pending_extrude_symmetric`) and seeds the next extrusion
+    (#587). The **Cut** option
     is only offered when the OCCT kernel is compiled in, since a non-kernel build can't perform
     the subtraction (see §3.3). **A cut must bite (#380):** committing a cut first checks
     (kernel builds, `extrude::cut_tool_bites`) that the tool solid actually overlaps the

@@ -4462,6 +4462,25 @@ mod tests {
         assert_eq!(control.target_rows, vec!["Plane 2".to_string()]);
     }
 
+    /// #587: "Extrude into" and "Symmetric" surface for the Extrude tool even before a face is
+    /// picked (no face picker rows yet), with Add/Cut disabled until a host body is known.
+    #[test]
+    fn extrude_body_and_symmetric_show_before_a_face() {
+        let doc = Document::default();
+        let selection = SceneSelection::default();
+        let content = context_pane_content(&ContextInput {
+            tool: Tool::Extrude,
+            extrude_body_mode: Some(crate::actions::ExtrudeBodyMode::NewBody),
+            extrude_symmetric: Some(false),
+            extrude_merge_candidate: None,
+            extrude_faces: Some(Vec::new()),
+            ..input(&doc, &selection)
+        });
+        let body = content.extrude_body.expect("Extrude-into control shows before a face");
+        assert_eq!(body.mode, crate::actions::ExtrudeBodyMode::NewBody);
+        assert!(body.merge_body.is_none(), "Add/Cut stay disabled with no host body");
+    }
+
     /// #157/#167: the selection picker surfaces whenever the input carries rows (the
     /// Chamfer/Fillet edge set), including an empty set (which renders the pick hint).
     #[test]
