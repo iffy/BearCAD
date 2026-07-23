@@ -1786,7 +1786,9 @@ modeled on SolveSpace (https://solvespace.com).
   anchor and, unlike normal picking, does **not** occlusion-filter (buried things are exactly what
   the exploder is for), only respecting user hidden/shadow visibility. Faces are found by
   `face::body_faces_near` (min screen distance to each coplanar group's projected triangles ≤ the
-  hitbox). It activates **on demand**: over a crowd it fans several handles, over a
+  hitbox). The crowd is then pruned to what the **active tool** can actually pick
+  (`exploder_tool_accepts`, #560) — e.g. the Extrude tool operates on faces, so it fans out only
+  faces, never a corner's edges/vertices it couldn't use. It activates **on demand**: over a crowd it fans several handles, over a
   single thing just one, and over nothing it freezes the hitbox circle at the cursor with no
   handles. A faint **light-green** disc the size of the hitbox (`construction::EXPLODER_HINT_RGBA`,
   distinct from the yellow pick-hover) appears under the cursor when **two or more** things are

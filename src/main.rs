@@ -829,6 +829,18 @@ impl ExploderState {
     }
 }
 
+/// Whether the active tool can pick a Selection-Exploder crowd candidate of this kind (#560): the
+/// crowd is pruned to this so it never fans out things the tool could never use. Most tools accept
+/// everything (their own pick path sorts it out); face-only tools are the exception.
+fn exploder_tool_accepts(tool: Tool, kind: &construction::PickTargetKind) -> bool {
+    use construction::PickTargetKind as K;
+    match tool {
+        // The Extrude tool operates on faces — don't offer a corner's edges or vertices too (#560).
+        Tool::Extrude => matches!(kind, K::BodyFace { .. }),
+        _ => true,
+    }
+}
+
 /// Recursively collect the flat item-indices of every `Leaf` under a node (#559), in tree order.
 /// Used to build a group loupe's preview and its centroid.
 fn leaf_indices(node: &ExploderNode, out: &mut Vec<usize>) {
@@ -14679,13 +14691,17 @@ impl App {
         let Some(pp) = pointer_screen else {
             return (false, None, false);
         };
-        let candidates = construction::collect_pick_candidates(
+        let mut candidates = construction::collect_pick_candidates(
             pp,
             project,
             &self.state.doc,
             self.state.cam.eye(),
             occlusion,
         );
+        // Only offer what the active tool can actually pick (#560): e.g. the Extrude tool operates
+        // on faces, so it must not fan out a corner's edges/vertices it could never use.
+        let tool = self.state.tool;
+        candidates.retain(|c| exploder_tool_accepts(tool, &c.kind));
         if space {
             // Flatten the crowd into leaves, then cluster them into a ≤ MAX_LOUPES grouping tree by
             // screen proximity (#559). Anchors that fail to project fall back to the origin.
@@ -20724,5 +20740,21 @@ mod tests {
         let mut leaves = tree_leaves(&tree);
         leaves.sort_unstable();
         assert_eq!(leaves, idxs, "all coincident leaves recovered");
+    }
+
+    #[test]
+    fn exploder_extrude_tool_accepts_only_faces() {
+        use construction::PickTargetKind as K;
+        let face = K::BodyFace { body: 0, triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]], normal: Vec3::Z };
+        let edge = K::BodyEdge { body: 0, a: Vec3::ZERO, b: Vec3::X };
+        let vertex = K::BodyVertex { body: 0, position: Vec3::ZERO };
+        // Extrude fans out faces only (#560).
+        assert!(exploder_tool_accepts(Tool::Extrude, &face));
+        assert!(!exploder_tool_accepts(Tool::Extrude, &edge));
+        assert!(!exploder_tool_accepts(Tool::Extrude, &vertex));
+        // Select accepts everything.
+        assert!(exploder_tool_accepts(Tool::Select, &edge));
+        assert!(exploder_tool_accepts(Tool::Select, &vertex));
+        assert!(exploder_tool_accepts(Tool::Select, &face));
     }
 }
