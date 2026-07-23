@@ -2188,8 +2188,8 @@ pub fn show_pane(
     if let Some(anchor) = content.rect_anchor {
         use crate::actions::RectAnchor;
         any_control = true;
-        ui.horizontal(|ui| {
-            ui.label("Anchor");
+        // Two-column "Anchor" row (#589): label left, the mode buttons in the right column.
+        labeled_row(ui, "Anchor", |ui| {
             for (value, icon, tooltip) in [
                 (RectAnchor::Corner, crate::icons::IconId::RectCorner, "Corner-anchored (R toggles)"),
                 (RectAnchor::Center, crate::icons::IconId::RectCenter, "Centre-anchored (R toggles)"),
@@ -2207,8 +2207,8 @@ pub fn show_pane(
     if let Some(anchor) = content.circle_anchor {
         use crate::actions::CircleAnchor;
         any_control = true;
-        ui.horizontal(|ui| {
-            ui.label("Anchor");
+        // Two-column "Anchor" row (#589), matching the Rectangle tool.
+        labeled_row(ui, "Anchor", |ui| {
             for (value, icon, tooltip) in [
                 (CircleAnchor::Center, crate::icons::IconId::CircleCenter, "Centre + radius (O toggles)"),
                 (CircleAnchor::Edge, crate::icons::IconId::CircleEdge, "Edge to opposite edge (O toggles)"),
