@@ -1750,6 +1750,20 @@ modeled on SolveSpace (https://solvespace.com).
   rebuild moves the edge, the selection simply drops — acceptable for ephemeral, never-
   persisted selection state. Selected body edges/vertices draw depth-test-disabled like
   their hover highlights (#153).
+- **Selection Exploder (#551):** when the cursor sits inside the pick hitbox of **two or more**
+  selectable things (crowded vertices/edges/lines), a faint borderless disc the size of the
+  hitbox appears under it — the hint that the exploder is available. Pressing **Space** fans that
+  crowd out into spaced-apart **handles** arranged on a ring around the cursor, each a small disc
+  joined by a 1-px leader line back to its thing; handles sit at least the hitbox distance apart
+  (chord, not arc) so there's never ambiguity about which one a click means. When the crowd
+  spans more than one kind, each handle carries its kind's icon. While exploded **only handles**
+  are hoverable/selectable — the raw crowd underneath is suppressed — and hovering a handle
+  lights up its real thing (and its leader). Clicking a handle selects that thing and collapses
+  the fan; holding **Shift** keeps it open for multi-select; pressing Space again, clicking empty
+  space, or switching to a non-selecting tool dismisses it. The enumerator
+  (`construction::collect_pick_candidates`) is the crowd-returning counterpart to
+  `resolve_pick_target` (which keeps only the nearest). Active for the Select and Constraint
+  tools; a keyboard trigger, so desktop-oriented.
 - **Element picker for the Select tool (#202/#213):** while the Select tool is active the
   context pane shows the unified **element picker** — a focusable, combo-box-style input that
   is the single, consistent way every tool gathers the elements it operates on. Collapsed it

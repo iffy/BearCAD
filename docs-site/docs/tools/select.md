@@ -23,6 +23,17 @@ pans, the wheel zooms, clicking picks.
 
 You can't select things hidden behind a body.
 
+## Picking from a crowd — the Selection Exploder
+
+When a tiny vertex or edge is buried in a cluster of overlapping things, it's hard to click
+exactly the one you want. When your cursor is over **two or more** selectable things, a faint
+circle appears under it — press **Space** to *explode* them: each thing pops out to its own
+spaced-apart handle, joined by a thin line back to where it really is (with a little icon of
+its kind when the crowd is mixed). Now every handle is far enough apart that there's no
+guessing — hover one and its real thing lights up, click it to select. Hold **Shift** while
+clicking to keep the fan open and pick several. Press **Space** again, click empty space, or
+switch tools to dismiss it.
+
 ## Selection feeds the other tools
 
 Most tools act on the selection: select two lines and Constraint's Parallel lights up;

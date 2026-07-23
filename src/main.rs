@@ -526,6 +526,44 @@ struct BezierHandleDrag {
     moved: bool,
 }
 
+/// One exploded selection handle (#551): a crowded selectable thing pulled out to a spaced-apart
+/// spot with a leader line back to it, so it can be picked without ambiguity.
+#[derive(Clone)]
+struct ExploderHandle {
+    /// The scene element a click on this handle selects.
+    element: hierarchy::SceneElement,
+    /// The kind, for the handle's icon when the crowd holds more than one kind.
+    kind: element_picker::ElementKind,
+    /// World point the leader line attaches to (re-projected each frame).
+    anchor: Vec3,
+    /// Fixed screen position of the handle, computed once when the crowd exploded.
+    handle_pos: egui::Pos2,
+}
+
+/// Active Selection Exploder state (#551): the fanned-out handles for a crowd of selectable
+/// things, captured when the user pressed space. While set, only handles are hoverable/
+/// selectable — the raw crowd underneath is suppressed.
+struct ExploderState {
+    handles: Vec<ExploderHandle>,
+    /// Whether the crowd spans more than one kind, so handles show a per-kind icon.
+    multi_kind: bool,
+    /// The handle currently under the cursor, if any.
+    hovered: Option<usize>,
+}
+
+/// Selection-Exploder tuning (#551).
+mod exploder {
+    /// Handle disc radius (px); a touch under the pick hitbox so handles read as distinct dots.
+    pub const HANDLE_RADIUS_PX: f32 = 11.0;
+    /// Extra px around a handle that still counts as a hit.
+    pub const HANDLE_HIT_PAD_PX: f32 = 3.0;
+    /// Minimum centre-to-centre spacing between handles — comfortably more than a handle
+    /// diameter so their hitboxes never overlap (no ambiguity, per the spec).
+    pub const SPACING_PX: f32 = 30.0;
+    /// The ring never collapses tighter than this, so a 2-3 item crowd still fans clearly.
+    pub const MIN_RING_PX: f32 = 46.0;
+}
+
 /// What the viewport's right-click context menu should offer (#54/#75).
 #[derive(Clone)]
 enum ViewportContextMenu {
@@ -672,6 +710,8 @@ struct App {
     /// suppressed in the viewport and faded in the Elements pane, so the model reads as it did
     /// just after that element. UI-only session state (not persisted).
     rollback_marker: Option<hierarchy::RollbackMarker>,
+    /// Active Selection Exploder (#551): `Some` while a crowd is fanned out into handles.
+    exploder: Option<ExploderState>,
     /// A selected calibration reference point (#424): `(image, point index)`; Delete
     /// removes it so a click can re-place it.
     selected_calibration_point: Option<(usize, usize)>,
@@ -1408,6 +1448,7 @@ impl App {
             graph_force: true,
             collapsed_components: std::collections::HashSet::new(),
             rollback_marker: None,
+            exploder: None,
             selected_calibration_point: None,
             calibration_point_drag: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -13846,6 +13887,195 @@ impl App {
         }
     }
 
+    /// Fan a crowd of candidates out into spaced-apart handles around the cursor (#551), sorted
+    /// by each thing's screen direction so the leader lines splay without crossing and every
+    /// handle sits at least `SPACING_PX` from its neighbours.
+    fn exploder_layout(
+        &self,
+        origin: egui::Pos2,
+        candidates: &[construction::CrowdCandidate],
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    ) -> Vec<ExploderHandle> {
+        use std::f32::consts::TAU;
+        let mut items: Vec<(&construction::CrowdCandidate, f32)> = candidates
+            .iter()
+            .map(|c| {
+                let sp = project(c.anchor).unwrap_or(origin);
+                let d = sp - origin;
+                (c, d.y.atan2(d.x))
+            })
+            .collect();
+        items.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        let n = items.len().max(2) as f32;
+        // Ring radius so the straight-line distance (chord) between adjacent handles is at least
+        // SPACING_PX — chord = 2·R·sin(π/n), so R = SPACING / (2·sin(π/n)). The arc-length form
+        // under-spaces small crowds (chord < arc), which the spec's "no ambiguity" forbids.
+        let ring = (exploder::SPACING_PX / (2.0 * (std::f32::consts::PI / n).sin()))
+            .max(exploder::MIN_RING_PX);
+        let base = items.first().map(|(_, a)| *a).unwrap_or(0.0);
+        items
+            .iter()
+            .enumerate()
+            .map(|(i, (c, _))| {
+                let ang = base + i as f32 * TAU / n;
+                ExploderHandle {
+                    element: c.element.clone(),
+                    kind: element_picker::ElementKind::of(&c.element),
+                    anchor: c.anchor,
+                    handle_pos: origin + egui::vec2(ang.cos(), ang.sin()) * ring,
+                }
+            })
+            .collect()
+    }
+
+    /// Advance the Selection Exploder (#551). Returns `(active, available_center)`: `active` is
+    /// true while a crowd is fanned out (the caller then suppresses normal picking), and when the
+    /// exploder is *not* active `available_center` is `Some` if a crowd sits under the cursor (the
+    /// caller draws the faint "press space" hint there). Owns hover + selection while active so
+    /// only the handles are pickable; space toggles it, a handle click selects (Shift keeps it
+    /// open for multi-select), and an empty click or a non-selecting tool dismisses it.
+    fn tick_exploder(
+        &mut self,
+        ui: &egui::Ui,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        pointer_screen: Option<egui::Pos2>,
+        occlusion: Option<&construction::PickOcclusion>,
+        suppress: bool,
+    ) -> (bool, Option<egui::Pos2>) {
+        let selecting = matches!(self.state.tool, Tool::Select | Tool::Constraint);
+        if suppress || !selecting {
+            self.exploder = None;
+            return (false, None);
+        }
+        let space = ui.input(|i| i.key_pressed(egui::Key::Space));
+        let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+        let shift = ui.input(|i| i.modifiers.shift);
+
+        // Active: own hover + selection over the handles only.
+        if self.exploder.is_some() {
+            if space {
+                self.exploder = None;
+                return (false, None);
+            }
+            let hovered = pointer_screen.and_then(|pp| {
+                let ex = self.exploder.as_ref()?;
+                ex.handles
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, h)| {
+                        let d = (pp - h.handle_pos).length();
+                        (d <= exploder::HANDLE_RADIUS_PX + exploder::HANDLE_HIT_PAD_PX)
+                            .then_some((i, d))
+                    })
+                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                    .map(|(i, _)| i)
+            });
+            if let Some(ex) = self.exploder.as_mut() {
+                ex.hovered = hovered;
+            }
+            if primary_pressed {
+                match hovered {
+                    Some(i) => {
+                        let element = self.exploder.as_ref().unwrap().handles[i].element.clone();
+                        self.state
+                            .apply(Action::ClickSceneElement { element, additive: shift });
+                        // Shift keeps the fan open for more picks; otherwise it collapses.
+                        if !shift {
+                            self.exploder = None;
+                        }
+                    }
+                    None => self.exploder = None,
+                }
+            }
+            return (self.exploder.is_some(), None);
+        }
+
+        // Inactive: detect a crowd, hint, and activate on space.
+        let Some(pp) = pointer_screen else {
+            return (false, None);
+        };
+        let candidates =
+            construction::collect_pick_candidates(pp, project, &self.state.doc, occlusion);
+        if candidates.len() < 2 {
+            return (false, None);
+        }
+        if space {
+            let handles = self.exploder_layout(pp, &candidates, project);
+            let multi_kind = handles
+                .first()
+                .map(|first| handles.iter().any(|h| h.kind != first.kind))
+                .unwrap_or(false);
+            self.exploder = Some(ExploderState { handles, multi_kind, hovered: None });
+            return (true, None);
+        }
+        (false, Some(pp))
+    }
+
+    /// The scene element the hovered exploder handle points at (#551), so the real thing lights
+    /// up while a handle is hovered.
+    fn exploder_hovered_element(&self) -> Option<hierarchy::SceneElement> {
+        let ex = self.exploder.as_ref()?;
+        ex.handles.get(ex.hovered?).map(|h| h.element.clone())
+    }
+
+    /// Draw the Selection Exploder overlay (#551): the faint availability hint, or the fanned-out
+    /// handles with their leader lines and per-kind icons. Painter-based, drawn late so it sits
+    /// over the GPU scene.
+    fn draw_exploder(
+        &self,
+        painter: &egui::Painter,
+        ctx: &egui::Context,
+        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+        available_at: Option<egui::Pos2>,
+    ) {
+        let accent = construction::PICK_HOVER_RGBA;
+        // The availability hint: a faint borderless disc the size of the pick hitbox.
+        if let Some(center) = available_at {
+            painter.circle_filled(
+                center,
+                crate::touch::hit(12.0),
+                egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 26),
+            );
+        }
+        let Some(ex) = self.exploder.as_ref() else {
+            return;
+        };
+        for (i, h) in ex.handles.iter().enumerate() {
+            let hot = ex.hovered == Some(i);
+            // Leader line from the real thing to its handle.
+            if let Some(a) = project(h.anchor) {
+                let line = if hot {
+                    accent
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 130)
+                };
+                painter.line_segment([a, h.handle_pos], egui::Stroke::new(1.0, line));
+                if hot {
+                    painter.circle_filled(a, 4.0, accent);
+                }
+            }
+            // Handle disc: brighter when hovered.
+            let fill = if hot { accent } else { egui::Color32::from_gray(55) };
+            painter.circle_filled(h.handle_pos, exploder::HANDLE_RADIUS_PX, fill);
+            painter.circle_stroke(
+                h.handle_pos,
+                exploder::HANDLE_RADIUS_PX,
+                egui::Stroke::new(1.5, accent),
+            );
+            // A per-kind icon inside the handle when the crowd mixes kinds.
+            if ex.multi_kind {
+                let s = exploder::HANDLE_RADIUS_PX * 1.35;
+                let rect = egui::Rect::from_center_size(h.handle_pos, egui::vec2(s, s));
+                let tint = if hot {
+                    egui::Color32::BLACK
+                } else {
+                    egui::Color32::from_gray(220)
+                };
+                crate::icons::paint_icon(painter, ctx, h.kind.icon(), rect, tint);
+            }
+        }
+    }
+
     fn draw_viewport(
         &mut self,
         ui: &mut egui::Ui,
@@ -14451,6 +14681,17 @@ impl App {
             self.bezier_handle_drag.is_some(),
         );
 
+        // Selection Exploder (#551): fan a crowd of overlapping candidates out into pickable
+        // handles on space. While active it owns hover + selection; when merely available it draws
+        // a faint hint under the cursor and leaves normal picking alone.
+        let (exploder_active, exploder_available) = self.tick_exploder(
+            ui,
+            &project,
+            pointer_screen,
+            pick_occlusion,
+            suppress_hover_highlight,
+        );
+
         // Right-click a bezier handle to offer deleting it, a two-line vertex to offer
         // converting it to a smooth bezier joint, or a curved line to offer straightening it
         // back out (#54/#75).
@@ -14525,6 +14766,8 @@ impl App {
             && self.state.line_drag_session.is_none()
             && self.bezier_handle_drag.is_none()
             && self.text_width_drag.is_none()
+            // While a crowd is exploded, only handles are pickable (#551).
+            && !exploder_active
         {
             if let Some(pp) = pointer_screen {
                 let gp = cam.ground_point(pp, viewport, &vp);
@@ -15690,6 +15933,13 @@ impl App {
             &project,
             pick_occlusion,
         );
+        // While a crowd is exploded (#551), only the hovered handle's real thing lights up — the
+        // raw crowd underneath is suppressed, so the normal pick hover is replaced entirely.
+        if exploder_active {
+            hover_highlight = self
+                .exploder_hovered_element()
+                .map(gpu_viewport::ViewportHoverHighlight::Element);
+        }
         // Elements-pane hover wins (#161): the mouse is over the pane, so no viewport pick
         // is active anyway; show the hovered row's element instead.
         if let Some(element) = self.pane_hovered_element.take() {
@@ -16261,6 +16511,10 @@ impl App {
         // Green-highlight the source geometry of a derived parameter whose name field is
         // focused (#536), so it's clear which geometry drives the value being renamed.
         self.draw_derived_source_highlight(&painter, &project, ui.ctx());
+
+        // Selection Exploder overlay (#551): the faint availability hint, or the fanned-out
+        // handles + leader lines + kind icons, drawn over the GPU scene.
+        self.draw_exploder(&painter, ui.ctx(), &project, exploder_available);
 
         if !constraint_graphics.is_empty() {
             if !gpu_drawn {

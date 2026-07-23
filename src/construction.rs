@@ -2423,6 +2423,172 @@ pub fn nearest_body_vertex(
     best
 }
 
+/// One selectable thing found in the crowd under the cursor, for the Selection Exploder (#551).
+pub struct CrowdCandidate {
+    /// The scene element a click on this candidate selects.
+    pub element: crate::hierarchy::SceneElement,
+    /// A world point the exploder's connecting line attaches to — the vertex itself, or the
+    /// point on an edge/line/circle nearest the cursor.
+    pub anchor: Vec3,
+    /// Pixel distance from the cursor to the candidate.
+    pub dist_px: f32,
+}
+
+/// Every directly-selectable thing whose pick hitbox the cursor is within (#551) — the "crowd"
+/// the Selection Exploder fans out. Unlike [`resolve_pick_target`], which keeps only the nearest,
+/// this returns all of them (deduped per scene element, keeping the nearest touch point). Covers
+/// the sharp kinds that map to a [`SceneElement`] — sketch points/lines/circles and body
+/// vertices/edges; faces, planes, axes, and ground are excluded (they aren't scene-selectable).
+pub fn collect_pick_candidates(
+    screen: egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    doc: &Document,
+    occlusion: Option<&PickOcclusion>,
+) -> Vec<CrowdCandidate> {
+    use crate::hierarchy::SceneElement;
+    let visible = |p: Vec3| occlusion.is_none_or(|occ| !occ.occluded(p));
+    let pickable = |kind: &PickTargetKind| occlusion.is_none_or(|occ| occ.pickable(doc, kind));
+    let point_r = crate::touch::hit(POINT_PICK_RADIUS_PX);
+    let mut raw: Vec<(SceneElement, Vec3, f32)> = Vec::new();
+
+    let push_point = |raw: &mut Vec<(SceneElement, Vec3, f32)>, cp: ConstraintPoint, world: Vec3| {
+        let Some(sp) = project(world) else { return };
+        let dist = (screen - sp).length();
+        if dist <= point_r
+            && pickable(&PickTargetKind::Point(cp.clone()))
+            && visible(world)
+        {
+            raw.push((SceneElement::Point(cp), world, dist));
+        }
+    };
+
+    // Sketch points: line endpoints, circle centres, text anchors, image calibration points.
+    for (li, line) in doc.lines.iter().enumerate() {
+        if line.deleted {
+            continue;
+        }
+        let Some((a, b)) = line_world_endpoints(doc, line) else {
+            continue;
+        };
+        push_point(&mut raw, ConstraintPoint::LineEndpoint { line: li, end: LineEnd::Start }, a);
+        push_point(&mut raw, ConstraintPoint::LineEndpoint { line: li, end: LineEnd::End }, b);
+    }
+    for (ci, circle) in doc.circles.iter().enumerate() {
+        if circle.deleted {
+            continue;
+        }
+        if let Some(center) = crate::face::circle_world_center(doc, circle) {
+            push_point(&mut raw, ConstraintPoint::CircleCenter(ci), center);
+        }
+    }
+    for (ti, text) in doc.sketch_texts.iter().enumerate() {
+        if text.deleted {
+            continue;
+        }
+        if let Some(frame) = crate::face::sketch_geometry_frame(doc, text.sketch) {
+            for anchor in crate::model::TextAnchor::ALL {
+                let (u, v) = crate::text::sketch_text_anchor_uv(text, anchor);
+                push_point(
+                    &mut raw,
+                    ConstraintPoint::TextAnchor { text: ti, anchor },
+                    crate::face::local_to_world(&frame, u, v),
+                );
+            }
+        }
+    }
+    for (ii, img) in doc.tracing_images.iter().enumerate() {
+        if img.deleted {
+            continue;
+        }
+        if let Some(frame) = crate::face::sketch_frame(doc, FaceId::ConstructionPlane(img.plane)) {
+            for index in 0..2 {
+                if let Some((u, v)) = crate::model::image_calibration_point_uv(img, index) {
+                    push_point(
+                        &mut raw,
+                        ConstraintPoint::ImageCalibrationPoint { image: ii, index },
+                        frame.origin + frame.u_axis * u + frame.v_axis * v,
+                    );
+                }
+            }
+        }
+    }
+
+    // Edges: sketch lines/circles and body mesh feature edges.
+    let push_edge = |raw: &mut Vec<(SceneElement, Vec3, f32)>, kind: PickTargetKind, a: Vec3, b: Vec3| {
+        let Some(dist) = segment_pick_distance(screen, project, a, b) else { return };
+        let anchor = segment_point_nearest_screen(screen, project, a, b);
+        if pickable(&kind) && visible(anchor) {
+            if let Some(element) = scene_element_from_pick(&kind) {
+                raw.push((element, anchor, dist));
+            }
+        }
+    };
+    for (li, line) in doc.lines.iter().enumerate() {
+        if line.deleted {
+            continue;
+        }
+        if let Some(points) = line_world_polyline(doc, line) {
+            for pair in points.windows(2) {
+                push_edge(&mut raw, PickTargetKind::Line(li), pair[0], pair[1]);
+            }
+        }
+    }
+    for (ci, circle) in doc.circles.iter().enumerate() {
+        if circle.deleted {
+            continue;
+        }
+        if let Some(pts) = crate::face::circle_world_perimeter(doc, circle, 32) {
+            for w in pts.windows(2) {
+                push_edge(&mut raw, PickTargetKind::Circle(ci), w[0], w[1]);
+            }
+        }
+    }
+    for (bi, body) in doc.bodies.iter().enumerate() {
+        if body.deleted || body.shadow {
+            continue;
+        }
+        let Some(solid) = crate::extrude::body_solid_mesh(doc, bi) else {
+            continue;
+        };
+        for (a, b) in crate::gpu_viewport::solid_mesh_unique_edges(&solid) {
+            push_edge(&mut raw, PickTargetKind::BodyEdge { body: bi, a, b }, a, b);
+        }
+        for tri in &solid.triangles {
+            for &p in tri {
+                let Some(sp) = project(p) else { continue };
+                let dist = (screen - sp).length();
+                if dist <= point_r {
+                    let kind = PickTargetKind::BodyVertex { body: bi, position: p };
+                    if pickable(&kind) && visible(p) {
+                        if let Some(element) = scene_element_from_pick(&kind) {
+                            raw.push((element, p, dist));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Dedupe per element, keeping the nearest touch, then order nearest-first.
+    let mut best: std::collections::HashMap<SceneElement, (Vec3, f32)> =
+        std::collections::HashMap::new();
+    for (el, anchor, dist) in raw {
+        best.entry(el)
+            .and_modify(|e| {
+                if dist < e.1 {
+                    *e = (anchor, dist);
+                }
+            })
+            .or_insert((anchor, dist));
+    }
+    let mut out: Vec<CrowdCandidate> = best
+        .into_iter()
+        .map(|(element, (anchor, dist_px))| CrowdCandidate { element, anchor, dist_px })
+        .collect();
+    out.sort_by(|a, b| a.dist_px.partial_cmp(&b.dist_px).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
 /// Boundary edges of a coplanar face group (#144): the edges of the group's triangles that belong
 /// to exactly one triangle. Interior edges (shared by two triangles, e.g. a quad's diagonal) are
 /// dropped, leaving the outline of the whole face for the hover highlight.
@@ -2818,6 +2984,49 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(target.kind, PickTargetKind::GlobalAxis(_)));
+    }
+
+    /// #551: unlike `resolve_pick_target` (which keeps only the nearest), `collect_pick_candidates`
+    /// returns the whole crowd within the hitbox — every endpoint and edge under the cursor — so
+    /// the Selection Exploder can fan them out. Deduped per element and ordered nearest-first.
+    #[test]
+    fn collect_pick_candidates_returns_the_whole_crowd() {
+        use crate::hierarchy::SceneElement;
+        use crate::model::{ConstraintPoint, Line, LineEnd};
+        let (mut doc, sketch) = doc_with_plane_sketch();
+        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0)); // line 0
+        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 10.0)); // line 1
+        // XY-plane sketch → world (x, y, 0); project drops z. The cursor sits on the shared corner.
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        let cands = collect_pick_candidates(Pos2::new(0.0, 0.0), &project, &doc, None);
+        let els: Vec<SceneElement> = cands.iter().map(|c| c.element.clone()).collect();
+        // Both segments and both coincident start endpoints are within the hitbox.
+        assert!(els.contains(&SceneElement::Line(0)), "{els:?}");
+        assert!(els.contains(&SceneElement::Line(1)), "{els:?}");
+        assert!(els.contains(&SceneElement::Point(ConstraintPoint::LineEndpoint {
+            line: 0,
+            end: LineEnd::Start
+        })));
+        assert!(els.contains(&SceneElement::Point(ConstraintPoint::LineEndpoint {
+            line: 1,
+            end: LineEnd::Start
+        })));
+        assert!(cands.len() >= 4, "a crowd, not just the nearest: {}", cands.len());
+        // No duplicates.
+        let mut seen = std::collections::HashSet::new();
+        assert!(cands.iter().all(|c| seen.insert(c.element.clone())), "deduped per element");
+        // Ordered nearest-first.
+        assert!(cands.windows(2).all(|w| w[0].dist_px <= w[1].dist_px));
+    }
+
+    /// #551: far from any geometry there is no crowd.
+    #[test]
+    fn collect_pick_candidates_empty_away_from_geometry() {
+        use crate::model::Line;
+        let (mut doc, sketch) = doc_with_plane_sketch();
+        doc.lines.push(Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+        let project = |w: Vec3| Some(Pos2::new(w.x, w.y));
+        assert!(collect_pick_candidates(Pos2::new(500.0, 500.0), &project, &doc, None).is_empty());
     }
 
     fn doc_with_plane_sketch() -> (Document, usize) {
