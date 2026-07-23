@@ -23,6 +23,7 @@ pub fn nameable_element(element: SceneElement) -> Option<SceneElement> {
         | SceneElement::SketchRepeatOp(_)
         | SceneElement::SketchOffsetOp(_)
         | SceneElement::SketchMirrorOp(_)
+        | SceneElement::SketchVertexTreatmentOp(_)
         | SceneElement::SketchSliceOp(_)
         | SceneElement::SketchText(_)
         | SceneElement::SliceOp(_)
@@ -120,6 +121,9 @@ pub fn element_name(doc: &Document, element: SceneElement) -> Option<&str> {
         SceneElement::SketchRepeatOp(index) => doc.sketch_repeat_ops.get(index)?.name.as_deref(),
         SceneElement::SketchOffsetOp(index) => doc.sketch_offset_ops.get(index)?.name.as_deref(),
         SceneElement::SketchMirrorOp(index) => doc.sketch_mirror_ops.get(index)?.name.as_deref(),
+        SceneElement::SketchVertexTreatmentOp(index) => {
+            doc.sketch_vertex_treatment_ops.get(index)?.name.as_deref()
+        }
         SceneElement::SketchSliceOp(index) => doc.sketch_slice_ops.get(index)?.name.as_deref(),
         SceneElement::SketchText(index) => doc.sketch_texts.get(index)?.name.as_deref(),
         SceneElement::SliceOp(index) => doc.slice_ops.get(index)?.name.as_deref(),
@@ -249,6 +253,13 @@ pub fn set_element_name(doc: &mut Document, element: SceneElement, name: String)
                 .sketch_mirror_ops
                 .get_mut(index)
                 .ok_or_else(|| format!("sketch mirror {index} not found"))?;
+            op.name = stored;
+        }
+        SceneElement::SketchVertexTreatmentOp(index) => {
+            let op = doc
+                .sketch_vertex_treatment_ops
+                .get_mut(index)
+                .ok_or_else(|| format!("sketch vertex treatment {index} not found"))?;
             op.name = stored;
         }
         SceneElement::SketchSliceOp(index) => {
@@ -387,6 +398,9 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
         HierarchyNode::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
         HierarchyNode::SketchOffsetOp(i) => format!("Offset {i}"),
         HierarchyNode::SketchMirrorOp(i) => format!("Sketch mirror {i}"),
+        HierarchyNode::SketchVertexTreatmentOp(i) => {
+            format!("{} {i}", sketch_vertex_treatment_label(doc, i))
+        }
         HierarchyNode::SketchSliceOp(i) => format!("Sketch slice {i}"),
         HierarchyNode::SketchText(i) => {
             // Show the string itself (first line, trimmed to keep rows compact).
@@ -488,6 +502,21 @@ pub fn default_node_label(doc: &Document, node: HierarchyNode) -> String {
 /// A short display label for a selected element, for the Select tool's selection picker
 /// (#202). A custom name wins; otherwise a compact type + index label. Kept index-safe (no
 /// direct slice indexing) so a stale selection can't panic the picker.
+/// The type word for an in-sketch chamfer/fillet op (#538), derived from its first corner's
+/// kind: "Chamfer" or "Fillet" (falling back to "Chamfer/Fillet" for an empty op).
+fn sketch_vertex_treatment_label(doc: &Document, index: usize) -> &'static str {
+    match doc
+        .sketch_vertex_treatment_ops
+        .get(index)
+        .and_then(|o| o.corners.first())
+        .map(|c| c.kind)
+    {
+        Some(crate::model::VertexTreatmentKind::Chamfer) => "Chamfer",
+        Some(crate::model::VertexTreatmentKind::Fillet) => "Fillet",
+        None => "Chamfer/Fillet",
+    }
+}
+
 pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
     if let Some(name) = element_name(doc, element.clone()) {
         return name.to_string();
@@ -520,6 +549,9 @@ pub fn scene_element_label(doc: &Document, element: &SceneElement) -> String {
         SceneElement::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
         SceneElement::SketchOffsetOp(i) => format!("Offset {i}"),
         SceneElement::SketchMirrorOp(i) => format!("Sketch mirror {i}"),
+        SceneElement::SketchVertexTreatmentOp(i) => {
+            format!("{} {i}", sketch_vertex_treatment_label(doc, *i))
+        }
         SceneElement::SketchSliceOp(i) => format!("Sketch slice {i}"),
         SceneElement::SketchText(i) => format!("Text {i}"),
         SceneElement::SliceOp(i) => format!("Slice {i}"),

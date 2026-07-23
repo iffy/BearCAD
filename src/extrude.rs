@@ -2286,6 +2286,7 @@ pub fn selection_world_bounds(
             | SceneElement::SketchRepeatOp(_)
             | SceneElement::SketchOffsetOp(_)
             | SceneElement::SketchMirrorOp(_)
+            | SceneElement::SketchVertexTreatmentOp(_)
             | SceneElement::SketchSliceOp(_)
             | SceneElement::SketchText(_)
             | SceneElement::Component(_)

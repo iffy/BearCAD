@@ -4527,6 +4527,7 @@ fn element_label(element: SceneElement) -> String {
         SceneElement::SketchRepeatOp(i) => format!("Sketch repeat {i}"),
         SceneElement::SketchOffsetOp(i) => format!("Sketch offset {i}"),
         SceneElement::SketchMirrorOp(i) => format!("Sketch mirror {i}"),
+        SceneElement::SketchVertexTreatmentOp(i) => format!("Sketch chamfer/fillet {i}"),
         SceneElement::SketchSliceOp(i) => format!("Sketch slice {i}"),
         SceneElement::SketchText(i) => format!("Text {i}"),
         SceneElement::SliceOp(i) => format!("Slice operation {i}"),
@@ -7208,12 +7209,17 @@ impl AppState {
                 let Some(sketch) = crate::construction::point_sketch(&self.doc, point.clone()) else {
                     return ActionResult::Err("Vertex no longer exists".to_string());
                 };
-                let Some(corner) = vertex_drag::treatment_corner(&self.doc, sketch, point) else {
+                // Resolve the two SOURCE edges meeting at this vertex (#538). The visible corner
+                // may be formed by an existing chamfer/fillet op's trimmed output lines (whose
+                // originals are shadowed); those outputs are filtered out so the corner is
+                // addressed on the underlying (shadow) source edges instead.
+                let Some((line1, end1, line2, end2)) =
+                    resolve_treatment_corner_sources(&self.doc, sketch, point)
+                else {
                     return ActionResult::Err(
                         "Vertex must join exactly two lines to chamfer/fillet".to_string(),
                     );
                 };
-                let vertex_drag::VertexTreatmentCorner { line1, end1, line2, end2, v, a, b } = corner;
                 for &li in &[line1, line2] {
                     if let Err(e) =
                         require_element_editable(&self.document_health, SceneElement::Line(li))
@@ -7222,119 +7228,135 @@ impl AppState {
                         return ActionResult::Err(e);
                     }
                 }
-                let Some(geom) = vertex_treatment_geometry(v, a, b, kind, amount) else {
+                // Degeneracy guard against the sources' full endpoints (the virtual sharp corner).
+                let (v, a) = match self.doc.lines.get(line1) {
+                    Some(l) => match end1 {
+                        LineEnd::Start => ((l.x0, l.y0), (l.x1, l.y1)),
+                        LineEnd::End => ((l.x1, l.y1), (l.x0, l.y0)),
+                    },
+                    None => return ActionResult::Err("Vertex no longer exists".to_string()),
+                };
+                let b = match self.doc.lines.get(line2) {
+                    Some(l) => match end2 {
+                        LineEnd::Start => (l.x1, l.y1),
+                        LineEnd::End => (l.x0, l.y0),
+                    },
+                    None => return ActionResult::Err("Vertex no longer exists".to_string()),
+                };
+                if vertex_treatment_geometry(v, a, b, kind, amount).is_none() {
                     let e = "Cannot treat this vertex: corner is degenerate".to_string();
                     self.status = e.clone();
                     return ActionResult::Err(e);
+                }
+
+                // The amount is stored as a formatted expression string so it can later be tied
+                // to a parameter through an edit; scripting/UI still pass a concrete `f32`.
+                let amount_expr = format!("{amount}");
+                let a_owner = live_vertex_treatment_owner(&self.doc, line1);
+                let b_owner = live_vertex_treatment_owner(&self.doc, line2);
+                let mk_corner =
+                    |a: usize, a_end, b: usize, b_end, amount: String| crate::model::SketchVertexTreatmentCorner {
+                        a,
+                        a_end,
+                        b,
+                        b_end,
+                        kind,
+                        amount,
+                    };
+
+                // MERGE so a connected treated region stays exactly one op (no cross-op shared
+                // edge, so each op's rebuild is self-contained): a fresh corner starts a new op;
+                // a corner touching one existing op joins it; a corner bridging two ops merges
+                // them (#538).
+                let op_index = match (a_owner, b_owner) {
+                    (None, None) => {
+                        let idx = self.doc.sketch_vertex_treatment_ops.len();
+                        self.doc.sketch_vertex_treatment_ops.push(
+                            crate::model::SketchVertexTreatmentOperation {
+                                sketch,
+                                line_targets: vec![line1, line2],
+                                corners: vec![mk_corner(0, end1, 1, end2, amount_expr)],
+                                line_outputs: Vec::new(),
+                                bridge_outputs: Vec::new(),
+                                constraint_outputs: Vec::new(),
+                                name: None,
+                                deleted: false,
+                            },
+                        );
+                        self.doc
+                            .shape_order
+                            .push(ShapeKind::SketchVertexTreatmentOperation);
+                        idx
+                    }
+                    (Some((oi, pa)), None) => {
+                        let op = &mut self.doc.sketch_vertex_treatment_ops[oi];
+                        let pb = op.line_targets.len();
+                        op.line_targets.push(line2);
+                        op.corners.push(mk_corner(pa, end1, pb, end2, amount_expr));
+                        oi
+                    }
+                    (None, Some((oi, pb))) => {
+                        let op = &mut self.doc.sketch_vertex_treatment_ops[oi];
+                        let pa = op.line_targets.len();
+                        op.line_targets.push(line1);
+                        op.corners.push(mk_corner(pa, end1, pb, end2, amount_expr));
+                        oi
+                    }
+                    (Some((oa, pa)), Some((ob, pb))) if oa == ob => {
+                        self.doc.sketch_vertex_treatment_ops[oa]
+                            .corners
+                            .push(mk_corner(pa, end1, pb, end2, amount_expr));
+                        oa
+                    }
+                    (Some((oa, pa)), Some((ob, pb))) => {
+                        // Fold op `ob`'s sources+corners into `oa` (remapping their source
+                        // indices by `oa`'s current length), then add the joining corner.
+                        let ob_op = self.doc.sketch_vertex_treatment_ops[ob].clone();
+                        let offset = self.doc.sketch_vertex_treatment_ops[oa].line_targets.len();
+                        {
+                            let a_op = &mut self.doc.sketch_vertex_treatment_ops[oa];
+                            a_op.line_targets.extend_from_slice(&ob_op.line_targets);
+                            for c in &ob_op.corners {
+                                a_op.corners.push(crate::model::SketchVertexTreatmentCorner {
+                                    a: c.a + offset,
+                                    a_end: c.a_end,
+                                    b: c.b + offset,
+                                    b_end: c.b_end,
+                                    kind: c.kind,
+                                    amount: c.amount.clone(),
+                                });
+                            }
+                            a_op.corners
+                                .push(mk_corner(pa, end1, pb + offset, end2, amount_expr));
+                        }
+                        // Tombstone ob's generated geometry and empty it. Its source edges now
+                        // belong to `oa` (whose rebuild re-shadows them), so they are NOT
+                        // un-shadowed here.
+                        for &out in ob_op.line_outputs.iter().chain(ob_op.bridge_outputs.iter()) {
+                            if let Some(l) = self.doc.lines.get_mut(out) {
+                                l.deleted = true;
+                            }
+                        }
+                        for &ci in &ob_op.constraint_outputs {
+                            if let Some(c) = self.doc.constraints.get_mut(ci) {
+                                c.deleted = true;
+                            }
+                        }
+                        let ob_mut = &mut self.doc.sketch_vertex_treatment_ops[ob];
+                        ob_mut.deleted = true;
+                        ob_mut.line_targets.clear();
+                        ob_mut.corners.clear();
+                        ob_mut.line_outputs.clear();
+                        ob_mut.bridge_outputs.clear();
+                        ob_mut.constraint_outputs.clear();
+                        oa
+                    }
                 };
 
-                let old_len1 = self.doc.lines.get(line1).map(|l| l.length()).unwrap_or(0.0);
-                let old_len2 = self.doc.lines.get(line2).map(|l| l.length()).unwrap_or(0.0);
-                if let Some(l1) = self.doc.lines.get_mut(line1) {
-                    match end1 {
-                        LineEnd::Start => (l1.x0, l1.y0) = geom.p1,
-                        LineEnd::End => (l1.x1, l1.y1) = geom.p1,
-                    }
-                }
-                if let Some(l2) = self.doc.lines.get_mut(line2) {
-                    match end2 {
-                        LineEnd::Start => (l2.x0, l2.y0) = geom.p2,
-                        LineEnd::End => (l2.x1, l2.y1) = geom.p2,
-                    }
-                }
-                // A trimmed line's LENGTH dimension still demands the pre-trim length; the
-                // next solve would drag the endpoint back and mangle the treated corner
-                // (the bug showed as a bracket bend collapsing one step later). Re-target
-                // the dims to the trimmed length — numeric expressions get the new number,
-                // parameter expressions stay symbolic as `(expr) - trim` so they keep
-                // following their parameters.
-                for (li, old_len) in [(line1, old_len1), (line2, old_len2)] {
-                    let new_len = self.doc.lines.get(li).map(|l| l.length()).unwrap_or(0.0);
-                    let trim = old_len - new_len;
-                    if trim <= 1e-4 {
-                        continue;
-                    }
-                    if let Some(constraint) = self.doc.constraints.iter_mut().find(|c| {
-                        !c.deleted
-                            && c.sketch == sketch
-                            && matches!(
-                                &c.kind,
-                                ConstraintKind::Distance {
-                                    target: DistanceTarget::LineLength(target_line),
-                                } if *target_line == li
-                            )
-                    }) {
-                        let expr = constraint.expression.trim();
-                        constraint.expression = if expr.parse::<f32>().is_ok() {
-                            format!("{:.3}", new_len)
-                        } else {
-                            format!("({expr}) - {trim:.3}")
-                        };
-                    }
-                }
-
-                // The two treated endpoints are no longer coincident — a new line now bridges
-                // them — so drop the constraint directly between them. Other constraints that
-                // may have referenced the old vertex position are intentionally left alone
-                // (documented limitation, see SPEC §3.1).
-                let p_a = ConstraintPoint::LineEndpoint { line: line1, end: end1 };
-                let p_b = ConstraintPoint::LineEndpoint { line: line2, end: end2 };
-                if let Some(idx) = self.doc.constraints.iter().position(|c| {
-                    !c.deleted
-                        && c.sketch == sketch
-                        && matches!(
-                            &c.kind,
-                            ConstraintKind::Coincident { a, b }
-                                if (*a == ConstraintEntity::Point(p_a.clone()) && *b == ConstraintEntity::Point(p_b.clone()))
-                                    || (*a == ConstraintEntity::Point(p_b.clone()) && *b == ConstraintEntity::Point(p_a.clone()))
-                        )
-                }) {
-                    // Mark deleted directly rather than via `tombstone_elements`: the
-                    // tombstone path also removes the constraint's shape_order entry, which
-                    // shrinks this action's net growth and would leave the undo group
-                    // covering only part of the gesture (the bridge line would survive the
-                    // first UndoLast).
-                    self.doc.constraints[idx].deleted = true;
-                }
-
-                let mut bridge =
-                    Line::from_local_endpoints(sketch, geom.p1.0, geom.p1.1, geom.p2.0, geom.p2.1);
-                bridge.bezier = geom.bezier;
-                // Nest the bridging line under the lower-index trimmed line in the Elements
-                // pane (#76): a chamfer/fillet corner is shared by two lines, so there's no
-                // single unambiguous "the" parent — `line1` (from `treatment_corner`'s
-                // `incident_two_lines`-derived ordering) is the deterministic, documented
-                // scope call. See `hierarchy::build_sketch_entry`.
-                bridge.chamfer_fillet_parent = Some(line1);
-                self.doc.lines.push(bridge);
-                self.doc.shape_order.push(ShapeKind::Line);
-                // Tie the bridge to the trimmed endpoints with Coincident constraints, so
-                // the treated profile stays a *closed loop* in the constraint graph — loop
-                // detection (closed_line_loops) walks Coincident chains, so without these a
-                // chamfered/filleted polygon silently stopped being a fillable, extrudable
-                // face, and the solver could pull the bridge away from its corner.
-                let bridge_line = self.doc.lines.len() - 1;
-                for (bridge_end, trimmed) in [
-                    (LineEnd::Start, p_a.clone()),
-                    (LineEnd::End, p_b.clone()),
-                ] {
-                    self.doc.constraints.push(crate::model::Constraint {
-                        sketch,
-                        kind: ConstraintKind::Coincident {
-                            a: ConstraintEntity::Point(ConstraintPoint::LineEndpoint {
-                                line: bridge_line,
-                                end: bridge_end,
-                            }),
-                            b: ConstraintEntity::Point(trimmed),
-                        },
-                        expression: String::new(),
-                        dim_offset: None,
-                        name: None,
-                        deleted: false,
-                    });
-                    self.doc.shape_order.push(ShapeKind::Constraint);
-                }
-
+                // Note: the source edges' virtual-corner coincidence is intentionally KEPT — the
+                // shadow sources still meet there, which is what anchors each source's dimension
+                // to the sharp corner. The visible loop is stitched by `rebuild`.
+                rebuild_sketch_vertex_treatment(&mut self.doc, op_index);
                 self.refresh_document_health();
                 self.status = match kind {
                     VertexTreatmentKind::Chamfer => "Added chamfer".to_string(),
@@ -12568,6 +12590,292 @@ pub fn rebuild_sketch_mirrors(doc: &mut crate::model::Document) {
     }
 }
 
+/// (Re)generate the visible geometry of an in-sketch chamfer/fillet op (#538). The op's source
+/// edges are **shadowed** and keep solving with their own dimensions (so a length dim keeps
+/// referencing the virtual sharp corner). Each rebuild reads the sources' current solved
+/// endpoints and regenerates, from scratch:
+///  - one **trimmed copy** per source edge (index-aligned with `line_targets`), with each treated
+///    end pulled back to that corner's truncation point and untreated ends left at the source's
+///    endpoint;
+///  - one **bridge** per corner (straight for chamfer, single-cubic-bezier arc for fillet);
+///  - **stitch coincidences** so the visible loop closes: each bridge end ties to the treated end
+///    of its edge's trimmed copy, and every untreated trimmed end ties to the shadow source's same
+///    endpoint (so the visible edge joins, through the shadow's existing neighbour coincidence,
+///    into the face loop — face detection keys vertices by coincidence group, spanning shadows).
+///
+/// The chamfer distance / fillet radius is a parametric expression evaluated each rebuild, so the
+/// bevel follows dimension and parameter edits. One op owns a whole connected treated region, so
+/// its rebuild is self-contained (adjacent corners share an edge, treated at both ends here).
+pub(crate) fn rebuild_sketch_vertex_treatment(
+    doc: &mut crate::model::Document,
+    op_index: usize,
+) -> bool {
+    use crate::model::{
+        Constraint, ConstraintEntity, ConstraintKind, ConstraintPoint, Line, LineEnd, ShapeKind,
+    };
+    use std::collections::HashMap;
+
+    let Some(op) = doc
+        .sketch_vertex_treatment_ops
+        .get(op_index)
+        .filter(|o| !o.deleted)
+        .cloned()
+    else {
+        return false;
+    };
+    let sketch = op.sketch;
+
+    // Reset any prior run: un-shadow the sources, tombstone old outputs + stitch constraints.
+    for &li in &op.line_targets {
+        if let Some(l) = doc.lines.get_mut(li) {
+            l.shadow = false;
+        }
+    }
+    for &out in op.line_outputs.iter().chain(op.bridge_outputs.iter()) {
+        if let Some(l) = doc.lines.get_mut(out) {
+            l.deleted = true;
+        }
+    }
+    for &ci in &op.constraint_outputs {
+        if let Some(c) = doc.constraints.get_mut(ci) {
+            c.deleted = true;
+        }
+    }
+    if op.line_targets.is_empty() || op.corners.is_empty() {
+        let entry = &mut doc.sketch_vertex_treatment_ops[op_index];
+        entry.line_outputs.clear();
+        entry.bridge_outputs.clear();
+        entry.constraint_outputs.clear();
+        return false;
+    }
+
+    let end_pt = |l: &Line, e: LineEnd| match e {
+        LineEnd::Start => (l.x0, l.y0),
+        LineEnd::End => (l.x1, l.y1),
+    };
+    let other_end = |e: LineEnd| match e {
+        LineEnd::Start => LineEnd::End,
+        LineEnd::End => LineEnd::Start,
+    };
+
+    // Per treated (source-position, end) the truncation point; and per corner the bridge geometry
+    // (or `None` if the corner is degenerate / evaluates to a non-positive amount, in which case it
+    // is skipped and its edges stay sharp).
+    let mut trims: HashMap<(usize, LineEnd), (f32, f32)> = HashMap::new();
+    let mut bridges: Vec<Option<((f32, f32), (f32, f32), Option<[(f32, f32); 2]>)>> =
+        Vec::with_capacity(op.corners.len());
+    for corner in &op.corners {
+        let (Some(&la), Some(&lb)) = (
+            op.line_targets.get(corner.a),
+            op.line_targets.get(corner.b),
+        ) else {
+            bridges.push(None);
+            continue;
+        };
+        let (Some(line_a), Some(line_b)) = (doc.lines.get(la), doc.lines.get(lb)) else {
+            bridges.push(None);
+            continue;
+        };
+        // Read the source edges' FULL (untrimmed) solved endpoints: the far endpoints only set the
+        // truncation *direction* and clamp, so using the shadow sources keeps the corner geometry
+        // referenced to the virtual sharp vertex even when both ends of an edge are treated.
+        let v = end_pt(line_a, corner.a_end);
+        let far_a = end_pt(line_a, other_end(corner.a_end));
+        let far_b = end_pt(line_b, other_end(corner.b_end));
+        let amount = crate::value::eval_length_mm_in_doc(&corner.amount, doc).unwrap_or(0.0);
+        match crate::model::vertex_treatment_geometry(v, far_a, far_b, corner.kind, amount) {
+            Some(geom) => {
+                trims.insert((corner.a, corner.a_end), geom.p1);
+                trims.insert((corner.b, corner.b_end), geom.p2);
+                bridges.push(Some((geom.p1, geom.p2, geom.bezier)));
+            }
+            None => bridges.push(None),
+        }
+    }
+
+    // Shadow the sources (excluded from face detection; still solved with their dimensions).
+    for &li in &op.line_targets {
+        if let Some(l) = doc.lines.get_mut(li) {
+            l.shadow = true;
+        }
+    }
+
+    // Trimmed copies, index-aligned with `line_targets` (reuse slots mirror-style).
+    let n = op.line_targets.len();
+    let mut line_outputs = op.line_outputs.clone();
+    while line_outputs.len() < n {
+        let seed = doc.lines[op.line_targets[line_outputs.len()]].clone();
+        line_outputs.push(doc.lines.len());
+        doc.lines.push(seed);
+        doc.shape_order.push(ShapeKind::Line);
+    }
+    for extra in line_outputs.split_off(n) {
+        if let Some(l) = doc.lines.get_mut(extra) {
+            l.deleted = true;
+        }
+    }
+    for (pos, &src_li) in op.line_targets.iter().enumerate() {
+        let out = line_outputs[pos];
+        let mut copy = doc.lines[src_li].clone();
+        copy.shadow = false;
+        copy.name = None;
+        copy.chamfer_fillet_parent = None;
+        copy.length_locked = false;
+        copy.length_expr = None;
+        copy.length_dim_offset = None;
+        copy.deleted = false;
+        if let Some(&p) = trims.get(&(pos, LineEnd::Start)) {
+            (copy.x0, copy.y0) = p;
+        }
+        if let Some(&p) = trims.get(&(pos, LineEnd::End)) {
+            (copy.x1, copy.y1) = p;
+        }
+        doc.lines[out] = copy;
+    }
+
+    // Bridges, index-aligned with `corners`.
+    let m = op.corners.len();
+    let mut bridge_outputs = op.bridge_outputs.clone();
+    while bridge_outputs.len() < m {
+        bridge_outputs.push(doc.lines.len());
+        doc.lines
+            .push(Line::from_local_endpoints(sketch, 0.0, 0.0, 0.0, 0.0));
+        doc.shape_order.push(ShapeKind::Line);
+    }
+    for extra in bridge_outputs.split_off(m) {
+        if let Some(l) = doc.lines.get_mut(extra) {
+            l.deleted = true;
+        }
+    }
+    for (ci, corner) in op.corners.iter().enumerate() {
+        let out = bridge_outputs[ci];
+        match bridges[ci] {
+            Some((p1, p2, bez)) => {
+                let construction = op
+                    .line_targets
+                    .get(corner.a)
+                    .and_then(|&s| doc.lines.get(s))
+                    .is_some_and(|l| l.construction);
+                let mut bridge = Line::from_local_endpoints(sketch, p1.0, p1.1, p2.0, p2.1);
+                bridge.bezier = bez;
+                bridge.construction = construction;
+                doc.lines[out] = bridge;
+            }
+            None => {
+                if let Some(l) = doc.lines.get_mut(out) {
+                    l.deleted = true;
+                }
+            }
+        }
+    }
+
+    // Stitch coincidences (regenerated fresh each rebuild).
+    let mut constraint_outputs: Vec<usize> = Vec::new();
+    let ep = |line: usize, end: LineEnd| ConstraintPoint::LineEndpoint { line, end };
+    let mut glue = |doc: &mut crate::model::Document, a: ConstraintPoint, b: ConstraintPoint| {
+        constraint_outputs.push(doc.constraints.len());
+        doc.constraints.push(Constraint {
+            sketch,
+            kind: ConstraintKind::Coincident {
+                a: ConstraintEntity::Point(a),
+                b: ConstraintEntity::Point(b),
+            },
+            expression: String::new(),
+            dim_offset: None,
+            name: None,
+            deleted: false,
+        });
+        doc.shape_order.push(ShapeKind::Constraint);
+    };
+    // Each bridge end joins the treated end of its edge's trimmed copy.
+    for (ci, corner) in op.corners.iter().enumerate() {
+        if bridges[ci].is_none() {
+            continue;
+        }
+        let bo = bridge_outputs[ci];
+        glue(doc, ep(bo, LineEnd::Start), ep(line_outputs[corner.a], corner.a_end));
+        glue(doc, ep(bo, LineEnd::End), ep(line_outputs[corner.b], corner.b_end));
+    }
+    // Each untreated trimmed end joins the shadow source's same endpoint, threading the visible
+    // edge into the face loop through the shadow's pre-existing neighbour coincidence.
+    for (pos, &src_li) in op.line_targets.iter().enumerate() {
+        for end in [LineEnd::Start, LineEnd::End] {
+            if !trims.contains_key(&(pos, end)) {
+                glue(doc, ep(line_outputs[pos], end), ep(src_li, end));
+            }
+        }
+    }
+
+    let entry = &mut doc.sketch_vertex_treatment_ops[op_index];
+    entry.line_outputs = line_outputs;
+    entry.bridge_outputs = bridge_outputs;
+    entry.constraint_outputs = constraint_outputs;
+    true
+}
+
+/// Re-run every live in-sketch chamfer/fillet op (#538) so its trimmed copies + bridges track the
+/// shadow sources' solved endpoints and the parametric amounts; called from
+/// `recompute_document_geometry` after the sketch has solved.
+pub fn rebuild_sketch_vertex_treatments(doc: &mut crate::model::Document) {
+    for i in 0..doc.sketch_vertex_treatment_ops.len() {
+        let _ = rebuild_sketch_vertex_treatment(doc, i);
+    }
+}
+
+/// The live chamfer/fillet op (#538) that owns `line` as a source edge, as `(op_index, position
+/// in that op's `line_targets`)`, or `None` if no live op sources it.
+fn live_vertex_treatment_owner(
+    doc: &crate::model::Document,
+    line: usize,
+) -> Option<(usize, usize)> {
+    doc.sketch_vertex_treatment_ops
+        .iter()
+        .enumerate()
+        .find_map(|(oi, op)| {
+            if op.deleted {
+                return None;
+            }
+            op.line_targets
+                .iter()
+                .position(|&t| t == line)
+                .map(|pos| (oi, pos))
+        })
+}
+
+/// The two **source** edges (each as `(line, end-at-vertex)`) meeting at `point`, resolving
+/// *through* any live chamfer/fillet op (#538): output lines (trimmed copies + bridges) are
+/// filtered out of the coincidence group so a corner picked on the visible beveled geometry maps
+/// back to the underlying shadow source edges. `None` unless exactly two distinct live source
+/// edges remain.
+fn resolve_treatment_corner_sources(
+    doc: &crate::model::Document,
+    sketch: crate::model::SketchId,
+    point: ConstraintPoint,
+) -> Option<(usize, LineEnd, usize, LineEnd)> {
+    let is_output = |line: usize| -> bool {
+        doc.sketch_vertex_treatment_ops.iter().any(|op| {
+            !op.deleted && (op.line_outputs.contains(&line) || op.bridge_outputs.contains(&line))
+        })
+    };
+    let mut endpoints: Vec<(usize, LineEnd)> =
+        crate::vertex_drag::coincident_group(doc, sketch, point)
+            .into_iter()
+            .filter_map(|p| match p {
+                ConstraintPoint::LineEndpoint { line, end } => Some((line, end)),
+                _ => None,
+            })
+            .filter(|&(line, _)| {
+                !is_output(line) && doc.lines.get(line).is_some_and(|l| !l.deleted)
+            })
+            .collect();
+    endpoints.sort_by_key(|&(line, end)| (line, matches!(end, LineEnd::End)));
+    endpoints.dedup();
+    match endpoints.as_slice() {
+        [(l1, e1), (l2, e2)] if l1 != l2 => Some((*l1, *e1, *l2, *e2)),
+        _ => None,
+    }
+}
+
 /// (Re)generate the offset copies of sketches repeated along an axis (#226) for repeat op
 /// `op_index`. Each copy rides a fresh construction plane parallel to the source's, translated by
 /// the instance offset, and carries copies of the source's lines/circles (plane-local coords
@@ -14499,8 +14807,12 @@ mod tests {
     /// A fillet/chamfer trim must re-target the trimmed lines' LENGTH dimensions:
     /// with stale dims, the next full solve dragged the endpoints back and mangled
     /// the treated corner (the Quickstart bracket's bend collapsed one step later).
+    ///
+    /// #538: under the parametric operation model the source edge is instead **shadowed** and kept
+    /// solving at its full length, so its length dimension is UNCHANGED (it references the virtual
+    /// sharp corner, standard CAD). The visible trim lives on the op's generated output.
     #[test]
-    fn vertex_treatment_retargets_length_dims_so_resolve_keeps_the_trim() {
+    fn chamfer_shadows_the_source_and_leaves_its_length_dimension_untouched() {
         let mut state = AppState::default();
         let sketch = begin_default_sketch(&mut state);
         // Two lines meeting at (10, 0), each with a numeric length dim (like typed input).
@@ -14537,13 +14849,18 @@ mod tests {
         });
         let result = state.apply(Action::CommitVertexTreatment {
             point: ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End },
-            kind: VertexTreatmentKind::Fillet,
+            kind: VertexTreatmentKind::Chamfer,
             amount: 3.0,
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
-        // Trimmed: line 0 now ends at x = 7.
-        assert!((state.doc.lines[0].x1 - 7.0).abs() < 1e-3);
-        // The length dims followed the trim.
+        // The source edge is shadowed and stays at its FULL length (virtual sharp corner intact).
+        assert!(state.doc.lines[0].shadow, "source line 0 becomes a shadow");
+        assert!(
+            (state.doc.lines[0].x1 - 10.0).abs() < 1e-3,
+            "source stays full length, got x1 = {}",
+            state.doc.lines[0].x1
+        );
+        // Its length dimension is unchanged — still the plain typed "10".
         let dim0 = state
             .doc
             .constraints
@@ -14556,18 +14873,67 @@ mod tests {
                     )
             })
             .expect("length dim");
+        assert_eq!(dim0.expression, "10", "the source's length dim must be untouched");
+        // A live op owns the treated corner; its output is the trimmed copy that lands at x = 7.
+        assert_eq!(state.doc.sketch_vertex_treatment_ops.len(), 1);
+        let op = &state.doc.sketch_vertex_treatment_ops[0];
+        assert_eq!(op.line_targets, vec![0, 1]);
+        assert_eq!(op.corners.len(), 1);
+        assert_eq!(op.line_outputs.len(), 2);
+        assert_eq!(op.bridge_outputs.len(), 1);
+        let trimmed0 = &state.doc.lines[op.line_outputs[0]];
+        assert!(!trimmed0.shadow, "the trimmed copy is visible geometry");
         assert!(
-            (dim0.expression.parse::<f32>().unwrap() - 7.0).abs() < 1e-2,
-            "dim should be ~7, got {}",
-            dim0.expression
+            (trimmed0.x1 - 7.0).abs() < 1e-3,
+            "trimmed output ends at x = 7, got {}",
+            trimmed0.x1
         );
-        // A full re-solve keeps the trim instead of restoring the old length.
-        crate::constraints::solve_document_constraints(&mut state.doc).unwrap();
-        assert!(
-            (state.doc.lines[0].x1 - 7.0).abs() < 1e-2,
-            "trim must survive a re-solve, got x1 = {}",
-            state.doc.lines[0].x1
-        );
+        // A full recompute keeps the source full-length and re-derives the same trim.
+        crate::parameters::recompute_document_geometry(&mut state.doc).unwrap();
+        assert!((state.doc.lines[0].x1 - 10.0).abs() < 1e-2, "source stays full after recompute");
+        let op = &state.doc.sketch_vertex_treatment_ops[0];
+        assert!((state.doc.lines[op.line_outputs[0]].x1 - 7.0).abs() < 1e-2);
+    }
+
+    /// #538 (parametric amount): a chamfer amount given as a parameter follows edits — changing the
+    /// parameter and recomputing moves the trim (the bridge endpoints shift).
+    #[test]
+    fn chamfer_amount_as_a_parameter_follows_edits_on_recompute() {
+        let mut state = AppState::default();
+        let (sketch, point) = two_coincident_lines_at_a_right_angle(&mut state);
+        state.apply(Action::AddParameter {
+            name: "cham".to_string(),
+            expression: "3".to_string(),
+        });
+        // Commit with a concrete amount, then retarget the op's corner to the parameter.
+        let result = state.apply(Action::CommitVertexTreatment {
+            point,
+            kind: VertexTreatmentKind::Chamfer,
+            amount: 3.0,
+        });
+        assert!(matches!(result, ActionResult::Ok), "{result:?}");
+        state.doc.sketch_vertex_treatment_ops[0].corners[0].amount = "cham".to_string();
+        let _ = sketch;
+
+        crate::parameters::recompute_document_geometry(&mut state.doc).unwrap();
+        let bridge_at = |s: &AppState| {
+            let op = &s.doc.sketch_vertex_treatment_ops[0];
+            let b = &s.doc.lines[op.bridge_outputs[0]];
+            (b.x0, b.y0, b.x1, b.y1)
+        };
+        let before = bridge_at(&state);
+        // Grow the parameter; the trim (and hence the bridge) must move.
+        state.apply(Action::CommitParameterExpression {
+            index: 0,
+            expression: "6".to_string(),
+        });
+        crate::parameters::recompute_document_geometry(&mut state.doc).unwrap();
+        let after = bridge_at(&state);
+        let moved = (before.0 - after.0).abs()
+            + (before.1 - after.1).abs()
+            + (before.2 - after.2).abs()
+            + (before.3 - after.3).abs();
+        assert!(moved > 1.0, "changing the parameter must move the bridge, moved = {moved}");
     }
 
     /// Loft (SPEC §3.5): toggling two circle sections and committing creates a loft plus
@@ -15498,10 +15864,15 @@ mod tests {
             amount: 3.0,
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
-        assert_eq!(state.doc.lines.len(), 3, "the fillet adds a bridge line");
+        // #538: two shadowed sources + two trimmed copies + one bridge.
+        assert_eq!(state.doc.lines.len(), 5, "the fillet adds trimmed copies + a bridge");
+        assert_eq!(state.doc.sketch_vertex_treatment_ops.len(), 1);
 
         state.apply(Action::UndoLast);
-        assert_eq!(state.doc.lines.len(), 2, "undo removes the bridge line");
+        // Checkpoint undo (#194) restores the pre-fillet snapshot exactly: the sources are back to
+        // their original (unshadowed) geometry and the op is gone.
+        assert_eq!(state.doc.lines.len(), 2, "undo removes the generated geometry");
+        assert!(state.doc.sketch_vertex_treatment_ops.is_empty());
         assert_eq!(state.doc.lines[0], l0, "line 0 restored to its pre-fillet geometry");
         assert_eq!(state.doc.lines[1], l1, "line 1 restored to its pre-fillet geometry");
     }
@@ -15665,22 +16036,20 @@ mod tests {
             amount: 3.0,
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
-        // Line 0's End truncated back from (10,0) toward (0,0) by 3mm.
-        assert!((state.doc.lines[0].x1 - 7.0).abs() < 1e-3);
-        assert!(state.doc.lines[0].y1.abs() < 1e-3);
-        // Line 1's Start truncated back from (10,0) toward (10,10) by 3mm.
-        assert!((state.doc.lines[1].x0 - 10.0).abs() < 1e-3);
-        assert!((state.doc.lines[1].y0 - 3.0).abs() < 1e-3);
-        // A new straight bridging line was appended, tied into the loop by two
-        // Coincident constraints (so the treated profile stays a closed loop).
-        assert_eq!(state.doc.lines.len(), 3);
-        assert!(!state.doc.lines[2].is_curved());
-        assert_eq!(
-            &state.doc.shape_order[state.doc.shape_order.len() - 3..],
-            &[ShapeKind::Line, ShapeKind::Constraint, ShapeKind::Constraint]
-        );
-        // Nests under line 0 (the lower-index trimmed line, #76).
-        assert_eq!(state.doc.lines[2].chamfer_fillet_parent, Some(0));
+        // #538: the sources are shadowed at full length; the trim lives on the op's outputs.
+        assert!(state.doc.lines[0].shadow && state.doc.lines[1].shadow);
+        assert!((state.doc.lines[0].x1 - 10.0).abs() < 1e-3, "source 0 stays full length");
+        let op = &state.doc.sketch_vertex_treatment_ops[0];
+        // Trimmed copy of line 0: End truncated back from (10,0) toward (0,0) by 3mm.
+        let t0 = &state.doc.lines[op.line_outputs[0]];
+        assert!((t0.x1 - 7.0).abs() < 1e-3 && t0.y1.abs() < 1e-3);
+        // Trimmed copy of line 1: Start truncated back from (10,0) toward (10,10) by 3mm.
+        let t1 = &state.doc.lines[op.line_outputs[1]];
+        assert!((t1.x0 - 10.0).abs() < 1e-3 && (t1.y0 - 3.0).abs() < 1e-3);
+        // The bridge is a straight line, tied into the loop by stitch coincidences.
+        assert_eq!(op.bridge_outputs.len(), 1);
+        assert!(!state.doc.lines[op.bridge_outputs[0]].is_curved());
+        assert!(!op.constraint_outputs.is_empty(), "stitch coincidences keep the loop closed");
     }
 
     #[test]
@@ -15693,41 +16062,120 @@ mod tests {
             amount: 3.0,
         });
         assert!(matches!(result, ActionResult::Ok), "{result:?}");
-        assert_eq!(state.doc.lines.len(), 3);
-        assert!(state.doc.lines[2].is_curved());
+        let op = &state.doc.sketch_vertex_treatment_ops[0];
+        assert!(state.doc.lines[op.bridge_outputs[0]].is_curved());
     }
 
+    /// #538: unlike the old in-place model, the two sources' virtual-corner coincidence is KEPT —
+    /// the shadow sources still meet at the sharp vertex, which is what anchors their dimensions.
     #[test]
-    fn commit_vertex_treatment_removes_the_treated_coincident_constraint() {
+    fn commit_vertex_treatment_keeps_the_virtual_corner_coincidence() {
         let mut state = AppState::default();
         let (sketch, point) = two_coincident_lines_at_a_right_angle(&mut state);
-        assert!(state
-            .doc
-            .constraints
-            .iter()
-            .any(|c| !c.deleted && c.sketch == sketch));
         state.apply(Action::CommitVertexTreatment {
             point,
             kind: VertexTreatmentKind::Chamfer,
             amount: 3.0,
         });
-        // The old vertex's own Coincident is tombstoned; what's live is exactly the
-        // two new constraints tying the bridge line (index 2) into the loop.
+        // The original coincidence between line 0's End and line 1's Start is still live.
+        let vertex_coincidence_live = state.doc.constraints.iter().any(|c| {
+            !c.deleted
+                && c.sketch == sketch
+                && matches!(
+                    &c.kind,
+                    ConstraintKind::Coincident { a, b }
+                        if [a, b].iter().all(|e| matches!(
+                            e,
+                            ConstraintEntity::Point(ConstraintPoint::LineEndpoint { line, .. })
+                                if *line == 0 || *line == 1
+                        ))
+                )
+        });
+        assert!(vertex_coincidence_live, "the virtual sharp-corner coincidence must be kept");
+    }
+
+    /// #538 (multi-corner merge): chamfering two *adjacent* corners of a rectangle — which share
+    /// the edge between them — must land in ONE op with two corners, the shared edge trimmed at
+    /// both ends, and the profile must still resolve into a closed, fillable face.
+    #[test]
+    fn chamfering_two_adjacent_rectangle_corners_merges_into_one_op_with_a_closed_face() {
+        let mut state = AppState::default();
+        let sketch = begin_default_sketch(&mut state);
+        // Lines 0 (bottom), 1 (right), 2 (top), 3 (left); line 1 is shared by the two corners.
+        crate::construction::add_line_rectangle(
+            &mut state.doc,
+            sketch,
+            0.0,
+            0.0,
+            30.0,
+            30.0,
+            [false; 4],
+        );
+        // Corner at (30,0): joins bottom (0) & right (1).
+        let r1 = state.apply(Action::CommitVertexTreatment {
+            point: ConstraintPoint::LineEndpoint { line: 0, end: LineEnd::End },
+            kind: VertexTreatmentKind::Chamfer,
+            amount: 5.0,
+        });
+        assert!(matches!(r1, ActionResult::Ok), "{r1:?}");
+        // Corner at (30,30): joins right (1) & top (2) — right already belongs to the op.
+        let r2 = state.apply(Action::CommitVertexTreatment {
+            point: ConstraintPoint::LineEndpoint { line: 1, end: LineEnd::End },
+            kind: VertexTreatmentKind::Chamfer,
+            amount: 5.0,
+        });
+        assert!(matches!(r2, ActionResult::Ok), "{r2:?}");
+
+        // Exactly one live op owns both corners over the three shared source edges.
         let live: Vec<_> = state
             .doc
-            .constraints
+            .sketch_vertex_treatment_ops
             .iter()
-            .filter(|c| !c.deleted && c.sketch == sketch)
+            .filter(|o| !o.deleted)
             .collect();
-        assert_eq!(live.len(), 2);
-        assert!(live.iter().all(|c| matches!(
-            &c.kind,
-            ConstraintKind::Coincident { a, b }
-                if [a, b].iter().any(|e| matches!(
-                    e,
-                    ConstraintEntity::Point(ConstraintPoint::LineEndpoint { line: 2, .. })
-                ))
-        )));
+        assert_eq!(live.len(), 1, "adjacent corners must merge into one op");
+        let op = live[0];
+        assert_eq!(op.corners.len(), 2);
+        assert_eq!(op.line_targets, vec![0, 1, 2]);
+        assert!(op.line_targets.iter().all(|&li| state.doc.lines[li].shadow));
+
+        // The shared edge (line 1) is trimmed at BOTH ends: its output moved off (30,0)-(30,30).
+        let shared_out = op.line_outputs[1];
+        let s = &state.doc.lines[shared_out];
+        assert!(s.y0 > 0.5, "shared edge trimmed at its start, y0 = {}", s.y0);
+        assert!(s.y1 < 29.5, "shared edge trimmed at its end, y1 = {}", s.y1);
+
+        // The visible profile still forms a closed loop (fillable/extrudable face).
+        let loops = crate::polygon::closed_line_loops(&state.doc, sketch);
+        assert!(!loops.is_empty(), "the chamfered rectangle must still form a closed face");
+    }
+
+    /// #538 (delete): deleting the op un-shadows every source edge (sharp corner restored) and
+    /// tombstones all generated trimmed copies + bridges.
+    #[test]
+    fn deleting_a_vertex_treatment_op_unshadows_sources_and_removes_outputs() {
+        let mut state = AppState::default();
+        let (_, point) = two_coincident_lines_at_a_right_angle(&mut state);
+        state.apply(Action::CommitVertexTreatment {
+            point,
+            kind: VertexTreatmentKind::Fillet,
+            amount: 3.0,
+        });
+        let op = state.doc.sketch_vertex_treatment_ops[0].clone();
+        assert!(state.doc.lines[0].shadow && state.doc.lines[1].shadow);
+
+        crate::document_lifecycle::tombstone_element(
+            &mut state.doc,
+            SceneElement::SketchVertexTreatmentOp(0),
+        );
+
+        assert!(state.doc.sketch_vertex_treatment_ops[0].deleted);
+        // Sources un-shadowed (live geometry, sharp corner back).
+        assert!(!state.doc.lines[0].shadow && !state.doc.lines[1].shadow);
+        // Every generated trimmed copy + bridge is tombstoned.
+        for out in op.line_outputs.iter().chain(op.bridge_outputs.iter()) {
+            assert!(state.doc.lines[*out].deleted, "output line {out} should be gone");
+        }
     }
 
     #[test]
@@ -15802,26 +16250,16 @@ mod tests {
             kind: VertexTreatmentKind::Chamfer,
             amount: 3.0,
         });
-        assert_eq!(state.doc.lines.len(), 3);
+        // #538: two shadowed sources + two trimmed copies + one bridge.
+        assert_eq!(state.doc.lines.len(), 5);
+        assert_eq!(state.doc.sketch_vertex_treatment_ops.len(), 1);
         let result = state.apply(Action::UndoLast);
         assert!(matches!(result, ActionResult::Ok));
-        // Undo is best-effort here: it pops the treatment's whole undo group (the
-        // bridging line plus its two loop-closing constraints), but doesn't restore
-        // the two truncated lines' original endpoints (documented limitation).
+        // Checkpoint undo (#194) restores the pre-treatment snapshot: the generated geometry and
+        // the op are gone, and the two sources are their original (unshadowed) selves.
         assert_eq!(state.doc.lines.len(), 2);
-        assert!(state
-            .doc
-            .constraints
-            .iter()
-            .filter(|c| !c.deleted)
-            .all(|c| !matches!(
-                &c.kind,
-                ConstraintKind::Coincident { a, b }
-                    if [a, b].iter().any(|e| matches!(
-                        e,
-                        ConstraintEntity::Point(ConstraintPoint::LineEndpoint { line: 2, .. })
-                    ))
-            )));
+        assert!(state.doc.sketch_vertex_treatment_ops.is_empty());
+        assert!(!state.doc.lines[0].shadow && !state.doc.lines[1].shadow);
     }
 
     fn box_extrusion_state() -> AppState {

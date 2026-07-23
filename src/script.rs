@@ -1542,6 +1542,11 @@ fn element_script_tokens(element: SceneElement) -> ElementScriptTokens {
             index: i,
             point: None,
         },
+        SceneElement::SketchVertexTreatmentOp(i) => ElementScriptTokens {
+            kind: "sketch_vertex_treatment_op",
+            index: i,
+            point: None,
+        },
         SceneElement::SketchRepeatOp(i) => ElementScriptTokens {
             kind: "sketch_repeat_op",
             index: i,

@@ -2845,6 +2845,7 @@ impl<'a> SceneMesh<'a> {
             | SceneElement::SketchRepeatOp(_)
             | SceneElement::SketchOffsetOp(_)
             | SceneElement::SketchMirrorOp(_)
+            | SceneElement::SketchVertexTreatmentOp(_)
             | SceneElement::SketchSliceOp(_)
             | SceneElement::SliceOp(_)
             | SceneElement::EdgeTreatmentOp(_)

@@ -352,24 +352,39 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     solve to stay a circular arc tangent to its neighbours, so constraint-driven reshaping
     (e.g. a parameter-driven angle change) keeps the bend smooth instead of folding it.
   - Scriptable via `bearcad.line{ x=, y=, x1=, y1=, bezier = { {cx0, cy0}, {cx1, cy1} } }`.
-- **Chamfer and fillet (#37/#38), 2D sketch vertices only:** both are tools ("push/pull" gizmo
-  + text-entry input, mirroring the extrude tool) that operate on a sketch vertex where exactly
-  two plain lines meet. Both truncate each line's endpoint back along itself and bridge the two
-  new endpoints with a new `Line`: a **chamfer** truncates by the typed distance and bridges with
-  a **straight** line; a **fillet** truncates by the tangent length implied by the requested
-  radius and bridges with a line whose `bezier` field is set to a **single-cubic-bezier
-  approximation of the circular arc** (accurate for realistic corner angles, not a true NURBS
-  arc) — this reuses the bezier-curve machinery above (rendering, hit-testing, extrusion
-  tessellation) for free, since a filleted corner is, to the rest of the app, just another curved
-  `Line`. The tangent length is clamped so it never cuts back past either adjacent line's own far
-  endpoint; a corner within ~1° of straight (0°/180°, i.e. parallel/anti-parallel edges) is
-  rejected as degenerate. On commit, the `Coincident` constraint directly between the two
-  treated endpoints is removed and the bridging line's two endpoints are tied to the trimmed
-  lines with fresh `Coincident` constraints — so a treated polygon **stays a closed loop**
-  (still a fillable, extrudable face; loop detection walks the constraint graph). The whole
-  gesture (bridge line + its two constraints) is one undo group. Other constraints that
-  happened to reference the old vertex position are **not** automatically fixed up (a known,
-  documented limitation; the resulting sketch may need manual re-constraining). This is specifically the **2D sketch-vertex** case;
+- **Chamfer and fillet (#37/#38/#538), 2D sketch vertices only — a parametric operation:** both
+  are tools ("push/pull" gizmo + text-entry input, mirroring the extrude tool) that operate on a
+  sketch vertex where exactly two plain lines meet. A commit creates (or extends) a
+  `SketchVertexTreatmentOperation` — a first-class parametric node in the Elements pane, alongside
+  in-sketch offset/mirror/slice — using a **shadow + replace** model (#538, standard CAD):
+  - The two source edges of a treated corner become **shadow** lines (`Line.shadow = true`): they
+    are kept and still solved with all their own constraints (dimensions included), but excluded
+    from face detection. Because a source keeps its full length, its length dimension is
+    **untouched** and references the **virtual sharp corner** where the untrimmed edges meet.
+  - On every geometry recompute (`rebuild_sketch_vertex_treatment`), the op reads the shadow
+    sources' solved endpoints and regenerates the visible geometry: one **trimmed copy** per source
+    edge (a `Line`, trimmed at each treated end) plus one **bridge** per corner, tied together with
+    fresh **stitch `Coincident` constraints** so the visible profile is a closed loop (still a
+    fillable, extrudable face; loop detection walks the constraint graph, keyed by coincidence
+    group across shadow endpoints). A **chamfer** bridges with a **straight** line; a **fillet**
+    bridges with a line whose `bezier` field is a **single-cubic-bezier approximation of the
+    circular arc** — reusing the bezier-curve machinery (rendering, hit-testing, extrusion
+    tessellation) for free.
+  - The chamfer distance / fillet radius is a **parametric expression string** (like a sketch
+    offset's distance), evaluated each rebuild, so the bevel follows dimension and parameter edits.
+  - One op owns a whole **connected treated region** (many corners), mirroring the 3D
+    `EdgeTreatmentOperation`. Because adjacent corners share an edge, treating a corner whose
+    edge(s) already belong to a live op **merges** the new corner into that op (merging two ops
+    into one when the two edges belong to different ops) — so no two ops ever share a source edge
+    and each op's rebuild is self-contained.
+  - The tangent length is clamped so it never cuts back past either adjacent line's own far
+    endpoint; a corner within ~1° of straight (0°/180°, i.e. parallel/anti-parallel edges) is
+    rejected as degenerate. The source edges' virtual-corner `Coincident` is **kept** (the shadow
+    sources still meet at the sharp vertex). Deleting the op un-shadows its source edges (sharp
+    corner restored) and removes the generated copies/bridges; undo restores the pre-commit
+    document. Other constraints that referenced the old vertex position are **not** automatically
+    fixed up (a known, documented limitation; the sketch may need manual re-constraining).
+  This is specifically the **2D sketch-vertex** case;
   the same Chamfer/Fillet tool also does a **3D solid-edge** mesh-bevel approximation on an
   extrusion's analytic side/cap edges when no sketch is open — see §3.4, which is *not* a true
   kernel-backed BREP fillet (BearCAD has no BREP/NURBS kernel — see §10). Scriptable via
@@ -381,13 +396,11 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     the bridge between them (straight for a chamfer, sampled from the fillet's bezier arc) — not
     just the gizmo arrow. It's recomputed every frame from the live drag amount, so pulling the
     handle further visibly grows the cut/round before you commit.
-  - **Elements pane nesting (#76):** the bridging `Line` a chamfer/fillet creates is nested under
-    the trimmed line it came from, instead of appearing as an ordinary flat sibling. Since a
-    corner is shared by two trimmed lines, the tie is broken deterministically by nesting under
-    whichever of the two has the lower index in `doc.lines` (recorded once at commit time via
-    `Line.chamfer_fillet_parent: Option<usize>`); if that parent line is later deleted, the
-    bridging line falls back to a top-level row rather than disappearing. Its default label is
-    also "Chamfer N"/"Fillet N" instead of the generic "Line N".
+  - **Elements pane nesting (#76/#538):** the op is its own row (default label "Chamfer N" /
+    "Fillet N", derived from its first corner's kind), with its generated trimmed copies and bridge
+    lines nested beneath it and its shadowed source edges dimmed under the sketch — exactly like the
+    in-sketch offset/mirror/slice operation nodes. (The legacy `Line.chamfer_fillet_parent` field is
+    retained for backward-compatible loading and the solve-time fillet-arc re-fit.)
   - **Document root row (#87):** the Elements pane's sole top-level row is a synthetic
     **Document** node (not individually selectable or hideable); every root construction
     plane, orphaned extrusion, and orphaned body (e.g. STL/STEP imports) nests under it

@@ -1967,6 +1967,50 @@ pub struct SketchSliceOperation {
     pub deleted: bool,
 }
 
+/// One treated corner owned by a [`SketchVertexTreatmentOperation`] (#538): the two edges that
+/// meet at a sketch vertex, addressed by their position in the op's `line_targets` and which end
+/// of each edge sits at the vertex, plus the chamfer/fillet kind and a parametric amount.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SketchVertexTreatmentCorner {
+    /// Index INTO the op's `line_targets` of the first edge, and which end meets the vertex.
+    pub a: usize,
+    pub a_end: LineEnd,
+    pub b: usize,
+    pub b_end: LineEnd,
+    pub kind: VertexTreatmentKind,
+    /// Chamfer distance / fillet radius expression (mm), parametric.
+    pub amount: String,
+}
+
+/// A 2D in-sketch chamfer/fillet as a parametric operation (#538): the source edges are
+/// shadowed and kept solving (so their dimensions stay, referencing the virtual sharp
+/// corner); the rebuild reads their solved endpoints and regenerates one trimmed copy per
+/// source edge plus one bridge per corner, stitched into a closed loop. One op owns a
+/// connected treated region (many corners), like the 3D [`EdgeTreatmentOperation`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SketchVertexTreatmentOperation {
+    pub sketch: SketchId,
+    /// Source edge indices (shadowed), deduped; corners reference these by position.
+    #[serde(default)]
+    pub line_targets: Vec<usize>,
+    #[serde(default)]
+    pub corners: Vec<SketchVertexTreatmentCorner>,
+    /// Generated trimmed copies, index-aligned with `line_targets` (output i is the trimmed
+    /// copy of source line_targets[i]). Regenerated each rebuild; reuse slots when possible.
+    #[serde(default)]
+    pub line_outputs: Vec<usize>,
+    /// Generated bridge lines, index-aligned with `corners`.
+    #[serde(default)]
+    pub bridge_outputs: Vec<usize>,
+    /// Generated stitch coincidence constraints; tombstoned+regenerated each rebuild.
+    #[serde(default)]
+    pub constraint_outputs: Vec<usize>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
 /// A text element placed in a sketch (#282). The glyph outlines are **baked** at create/edit time
 /// into `contours` (sketch-local mm, laid out from a baseline at the local origin, *before* the
 /// element's `origin`/`rotation` transform) and the source font is embedded (`font_bytes`, base64
@@ -2147,6 +2191,9 @@ pub enum ShapeKind {
     SketchOffsetOperation,
     /// A 2D in-sketch mirror (#523): its reflected lines/circles are separate entries.
     SketchMirrorOperation,
+    /// A 2D in-sketch chamfer/fillet (#538): its trimmed copies + bridge lines are separate
+    /// `Line` entries; the source edges are shadowed and kept.
+    SketchVertexTreatmentOperation,
     /// A sketch text element (#282): baked glyph outlines + embedded font.
     SketchText,
     /// An in-place edit of an existing construction plane (undo restores the prior planes).
@@ -2741,6 +2788,10 @@ pub struct Document {
     /// 2D in-sketch mirrors (#523): reflected sketch entities grouped under an op.
     #[serde(default)]
     pub sketch_mirror_ops: Vec<SketchMirrorOperation>,
+    /// 2D in-sketch chamfer/fillet operations (#538): shadowed source edges plus regenerated
+    /// trimmed copies + bridge lines, grouped under an op.
+    #[serde(default)]
+    pub sketch_vertex_treatment_ops: Vec<SketchVertexTreatmentOperation>,
     /// Sketch text elements (#282): baked glyph outlines + embedded font, per sketch.
     #[serde(default)]
     pub sketch_texts: Vec<SketchText>,
@@ -2935,6 +2986,7 @@ impl Default for Document {
             sketch_repeat_ops: Vec::new(),
             sketch_offset_ops: Vec::new(),
             sketch_mirror_ops: Vec::new(),
+            sketch_vertex_treatment_ops: Vec::new(),
             sketch_slice_ops: Vec::new(),
             sketch_texts: Vec::new(),
             drawings: Vec::new(),

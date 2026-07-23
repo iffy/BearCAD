@@ -35,6 +35,12 @@ undo like anything else.
 
 ## Good to know
 
+- **In a sketch, a chamfer/fillet is a parametric operation too.** Committing one creates a
+  **Chamfer/Fillet operation** in the Elements pane: the corner's two edges stay as faded inputs
+  (keeping their own dimensions, which still measure to the original sharp corner) while the
+  rounded/cut profile appears as the operation's output. Because the amount is an expression, the
+  bevel follows dimension and parameter edits, and deleting the operation restores the sharp
+  corner. Rounding two neighbouring corners of the same profile groups them under one operation.
 - The radius field takes expressions.
 - A radius that can't physically fit is rejected at commit rather than producing broken
   geometry.

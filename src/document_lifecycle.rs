@@ -83,6 +83,10 @@ pub fn element_alive(doc: &Document, element: SceneElement) -> bool {
             .sketch_mirror_ops
             .get(index)
             .is_some_and(|op| !op.deleted),
+        SceneElement::SketchVertexTreatmentOp(index) => doc
+            .sketch_vertex_treatment_ops
+            .get(index)
+            .is_some_and(|op| !op.deleted),
         SceneElement::SketchRepeatOp(index) => doc
             .sketch_repeat_ops
             .get(index)
@@ -355,6 +359,33 @@ pub fn tombstone_element(doc: &mut Document, element: SceneElement) -> bool {
                         }
                     }
                     // The reflected corner-coincidences go with it too (#547).
+                    for &ci in &op.constraint_outputs {
+                        if let Some(c) = doc.constraints.get_mut(ci) {
+                            c.deleted = true;
+                        }
+                    }
+                    changed = true;
+                }
+            }
+        }
+        SceneElement::SketchVertexTreatmentOp(index) => {
+            if let Some(op) = doc.sketch_vertex_treatment_ops.get_mut(index) {
+                if !op.deleted {
+                    op.deleted = true;
+                    // Deleting the chamfer/fillet (#538) un-shadows the source edges (they
+                    // become live geometry again, sharp corner restored) and tombstones the
+                    // generated trimmed copies, bridges, and stitch constraints.
+                    let op = doc.sketch_vertex_treatment_ops[index].clone();
+                    for &li in &op.line_targets {
+                        if let Some(l) = doc.lines.get_mut(li) {
+                            l.shadow = false;
+                        }
+                    }
+                    for &out in op.line_outputs.iter().chain(op.bridge_outputs.iter()) {
+                        if let Some(l) = doc.lines.get_mut(out) {
+                            l.deleted = true;
+                        }
+                    }
                     for &ci in &op.constraint_outputs {
                         if let Some(c) = doc.constraints.get_mut(ci) {
                             c.deleted = true;

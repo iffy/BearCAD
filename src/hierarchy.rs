@@ -54,6 +54,8 @@ pub enum HierarchyNode {
     SketchOffsetOp(usize),
     /// A 2D in-sketch mirror (#523); its reflected lines/circles nest under it.
     SketchMirrorOp(usize),
+    /// A 2D in-sketch chamfer/fillet (#538); its trimmed copies + bridge lines nest under it.
+    SketchVertexTreatmentOp(usize),
     /// A 2D in-sketch slice (#224/#229); its fragment lines nest under it.
     SketchSliceOp(usize),
     /// A sketch text element (#282/#286); nests under its sketch like a line.
@@ -144,6 +146,8 @@ pub enum SceneElement {
     SketchOffsetOp(usize),
     /// A 2D in-sketch mirror (#523); its reflected lines/circles nest under it.
     SketchMirrorOp(usize),
+    /// A 2D in-sketch chamfer/fillet (#538); its trimmed copies + bridge lines nest under it.
+    SketchVertexTreatmentOp(usize),
     /// A 2D in-sketch slice (#224/#229).
     SketchSliceOp(usize),
     /// A sketch text element (#282): selecting it selects the whole text.
@@ -208,6 +212,7 @@ pub fn scene_element_for_node(node: HierarchyNode) -> Option<SceneElement> {
         HierarchyNode::SketchRepeatOp(i) => SceneElement::SketchRepeatOp(i),
         HierarchyNode::SketchOffsetOp(i) => SceneElement::SketchOffsetOp(i),
         HierarchyNode::SketchMirrorOp(i) => SceneElement::SketchMirrorOp(i),
+        HierarchyNode::SketchVertexTreatmentOp(i) => SceneElement::SketchVertexTreatmentOp(i),
         HierarchyNode::SketchSliceOp(i) => SceneElement::SketchSliceOp(i),
         HierarchyNode::SketchText(i) => SceneElement::SketchText(i),
         HierarchyNode::SliceOp(i) => SceneElement::SliceOp(i),
@@ -368,6 +373,7 @@ impl ElementVisibility {
             SceneElement::SketchRepeatOp(_) => true,
             SceneElement::SketchOffsetOp(_) => true,
             SceneElement::SketchMirrorOp(_) => true,
+            SceneElement::SketchVertexTreatmentOp(_) => true,
             SceneElement::SketchSliceOp(_) => true,
             SceneElement::SketchText(index) => doc
                 .sketch_texts
@@ -720,6 +726,18 @@ pub fn graph_dependency_edges(doc: &Document) -> Vec<(HierarchyNode, HierarchyNo
         }
         for &ci in &op.circle_targets {
             edges.push((HierarchyNode::Circle(ci), HierarchyNode::SketchMirrorOp(oi)));
+        }
+    }
+    // An in-sketch chamfer/fillet consumes its (shadowed) source edges (#538).
+    for (oi, op) in doc.sketch_vertex_treatment_ops.iter().enumerate() {
+        if op.deleted {
+            continue;
+        }
+        for &li in &op.line_targets {
+            edges.push((
+                HierarchyNode::Line(li),
+                HierarchyNode::SketchVertexTreatmentOp(oi),
+            ));
         }
     }
     for (oi, op) in doc.sketch_slice_ops.iter().enumerate() {
@@ -1150,6 +1168,7 @@ pub fn hierarchy_node_for_element(element: &SceneElement) -> Option<HierarchyNod
         SceneElement::SketchRepeatOp(i) => HierarchyNode::SketchRepeatOp(*i),
         SceneElement::SketchOffsetOp(i) => HierarchyNode::SketchOffsetOp(*i),
         SceneElement::SketchMirrorOp(i) => HierarchyNode::SketchMirrorOp(*i),
+        SceneElement::SketchVertexTreatmentOp(i) => HierarchyNode::SketchVertexTreatmentOp(*i),
         SceneElement::SketchSliceOp(i) => HierarchyNode::SketchSliceOp(*i),
         SceneElement::SketchText(i) => HierarchyNode::SketchText(*i),
         SceneElement::SliceOp(i) => HierarchyNode::SliceOp(*i),
@@ -1485,6 +1504,24 @@ pub fn build_hierarchy(
         );
         roots.push(HierarchyEntry {
             node: HierarchyNode::SketchMirrorOp(oi),
+            children,
+        });
+    }
+    // 2D in-sketch chamfer/fillet (#538): the op with its trimmed copies + bridge lines nested
+    // beneath it (the shadowed source edges stay listed under the sketch, dimmed).
+    for (oi, op) in doc.sketch_vertex_treatment_ops.iter().enumerate() {
+        if op.deleted {
+            continue;
+        }
+        let children: Vec<HierarchyEntry> = op
+            .line_outputs
+            .iter()
+            .chain(op.bridge_outputs.iter())
+            .filter(|&&li| doc.lines.get(li).is_some_and(|l| !l.deleted))
+            .map(|&li| HierarchyEntry { node: HierarchyNode::Line(li), children: Vec::new() })
+            .collect();
+        roots.push(HierarchyEntry {
+            node: HierarchyNode::SketchVertexTreatmentOp(oi),
             children,
         });
     }
@@ -1846,6 +1883,7 @@ impl ElementFilter {
             | HierarchyNode::SketchRepeatOp(_)
             | HierarchyNode::SketchOffsetOp(_)
             | HierarchyNode::SketchMirrorOp(_)
+            | HierarchyNode::SketchVertexTreatmentOp(_)
             | HierarchyNode::SketchSliceOp(_)
             | HierarchyNode::SliceOp(_)
             | HierarchyNode::EdgeTreatmentOp(_)
@@ -2084,6 +2122,7 @@ fn parent_element(doc: &Document, element: SceneElement) -> Option<SceneElement>
         SceneElement::SketchRepeatOp(_) => None,
         SceneElement::SketchOffsetOp(_) => None,
         SceneElement::SketchMirrorOp(_) => None,
+        SceneElement::SketchVertexTreatmentOp(_) => None,
         SceneElement::SketchSliceOp(_) => None,
         // A sketch text nests under the sketch it lives in (#282).
         SceneElement::SketchText(index) => doc
@@ -2277,6 +2316,13 @@ fn collect_descendants(doc: &Document, element: SceneElement, out: &mut HashSet<
                 }
                 for &output in &op.circle_outputs {
                     out.insert(SceneElement::Circle(output));
+                }
+            }
+        }
+        SceneElement::SketchVertexTreatmentOp(index) => {
+            if let Some(op) = doc.sketch_vertex_treatment_ops.get(index) {
+                for &output in op.line_outputs.iter().chain(op.bridge_outputs.iter()) {
+                    out.insert(SceneElement::Line(output));
                 }
             }
         }
@@ -2623,6 +2669,17 @@ fn icon_for_hierarchy_node(doc: &Document, node: HierarchyNode) -> Option<IconId
         HierarchyNode::SketchRepeatOp(_) => IconId::Repeat,
         HierarchyNode::SketchOffsetOp(_) => IconId::Offset,
         HierarchyNode::SketchMirrorOp(_) => IconId::Mirror,
+        HierarchyNode::SketchVertexTreatmentOp(index) => {
+            match doc
+                .sketch_vertex_treatment_ops
+                .get(index)
+                .and_then(|o| o.corners.first())
+                .map(|c| c.kind)
+            {
+                Some(crate::model::VertexTreatmentKind::Fillet) => IconId::Fillet,
+                _ => IconId::Chamfer,
+            }
+        }
         HierarchyNode::SketchSliceOp(_) => IconId::Slice,
         HierarchyNode::SketchText(_) => IconId::Text,
         HierarchyNode::SliceOp(_) => IconId::Slice,
@@ -2744,6 +2801,9 @@ fn is_sketch_repeat_line_output(doc: &Document, li: usize) -> bool {
             .sketch_offset_ops
             .iter()
             .any(|op| !op.deleted && op.line_outputs.contains(&li))
+        || doc.sketch_vertex_treatment_ops.iter().any(|op| {
+            !op.deleted && (op.line_outputs.contains(&li) || op.bridge_outputs.contains(&li))
+        })
 }
 
 fn is_sketch_repeat_circle_output(doc: &Document, ci: usize) -> bool {

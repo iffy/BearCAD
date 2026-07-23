@@ -677,6 +677,8 @@ pub fn recompute_document_geometry(doc: &mut Document) -> Result<(), String> {
     crate::actions::rebuild_sketch_offsets(doc);
     // Mirror outputs track their sources and mirror line (#523).
     crate::actions::rebuild_sketch_mirrors(doc);
+    // Chamfer/fillet trimmed copies + bridges track the shadow sources and parametric amount (#538).
+    crate::actions::rebuild_sketch_vertex_treatments(doc);
     result
 }
 

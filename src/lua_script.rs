@@ -104,6 +104,7 @@ fn element_kind_name(element: SceneElement) -> &'static str {
         SceneElement::SketchRepeatOp(_) => "sketch_repeat_op",
         SceneElement::SketchOffsetOp(_) => "sketch_offset_op",
         SceneElement::SketchMirrorOp(_) => "sketch_mirror_op",
+        SceneElement::SketchVertexTreatmentOp(_) => "sketch_vertex_treatment_op",
         SceneElement::SketchSliceOp(_) => "sketch_slice_op",
         SceneElement::SketchText(_) => "sketch_text",
         SceneElement::SliceOp(_) => "slice_op",
@@ -131,6 +132,7 @@ fn element_index(element: SceneElement) -> usize {
         | SceneElement::SketchRepeatOp(i)
         | SceneElement::SketchOffsetOp(i)
         | SceneElement::SketchMirrorOp(i)
+        | SceneElement::SketchVertexTreatmentOp(i)
         | SceneElement::SketchSliceOp(i)
         | SceneElement::SketchText(i)
         | SceneElement::SliceOp(i)
@@ -161,6 +163,9 @@ pub fn scene_element_from_kind(kind: &str, index: usize) -> Option<SceneElement>
         "component" => Some(SceneElement::Component(index)),
         "sketch_offset_op" | "offset" => Some(SceneElement::SketchOffsetOp(index)),
         "sketch_mirror_op" => Some(SceneElement::SketchMirrorOp(index)),
+        "sketch_vertex_treatment_op" | "chamfer_op" | "fillet_op" => {
+            Some(SceneElement::SketchVertexTreatmentOp(index))
+        }
         "mirror_op" | "mirror" => Some(SceneElement::MirrorOp(index)),
         _ => None,
     }
@@ -4886,8 +4891,11 @@ mod tests {
             }
         "#,
         );
-        assert_eq!(state.doc.lines.len(), 3, "a bridging line should be added");
-        assert!(!state.doc.lines[2].is_curved(), "chamfer bridges with a straight line");
+        // #538: two sources shadowed + two trimmed copies + one bridge = 5 lines.
+        assert_eq!(state.doc.lines.len(), 5, "trimmed copies + a bridge should be added");
+        assert_eq!(state.doc.sketch_vertex_treatment_ops.len(), 1);
+        let bridge = state.doc.lines.last().unwrap();
+        assert!(!bridge.is_curved(), "chamfer bridges with a straight line");
     }
 
     #[test]
@@ -4900,8 +4908,10 @@ mod tests {
             }
         "#,
         );
-        assert_eq!(state.doc.lines.len(), 3, "a bridging line should be added");
-        assert!(state.doc.lines[2].is_curved(), "fillet bridges with a curved line");
+        // #538: two sources shadowed + two trimmed copies + one bridge = 5 lines.
+        assert_eq!(state.doc.lines.len(), 5, "trimmed copies + a bridge should be added");
+        let bridge = state.doc.lines.last().unwrap();
+        assert!(bridge.is_curved(), "fillet bridges with a curved line");
     }
 
     /// #110: a corner within ~1° of straight (SPEC §3.1) must be *rejected at commit*, not
@@ -5542,16 +5552,17 @@ mod tests {
     /// curved bridge is faceted.
     #[test]
     fn lua_extrude_cut_on_a_curved_profile_side_wall_subtracts_from_the_host() {
-        // Rect 0..3, fillet a corner -> bridge line 4 (curved); loop order [0,4,1,2,3].
-        // edge 2 addresses profile line 1 (a straight wall), not a curve facet.
+        // Rect 0..3, fillet a corner (#538): edges 0,1 are shadowed, their trimmed copies land at
+        // lines 4,5 and the curved bridge at line 6; the visible loop is [4,6,5,2,3].
+        // edge 2 addresses line 5 (a straight wall), not a curve facet.
         let state = run_lua(
             r#"
             bearcad.new()
             bearcad.rect{ x = 0, y = 0, width = 30, height = 30 }
             bearcad.fillet_vertex{ point = { kind = "line", index = 0, ["end"] = "end" }, radius = 5 }
-            bearcad.extrude{ polygon = {0, 4, 1, 2, 3}, distance = 10 }
+            bearcad.extrude{ polygon = {4, 6, 5, 2, 3}, distance = 10 }
             bearcad.begin_sketch{ kind = "extrude_side", extrusion = 0,
-                profile = "polygon", profile_lines = {0, 4, 1, 2, 3}, edge = 2 }
+                profile = "polygon", profile_lines = {4, 6, 5, 2, 3}, edge = 2 }
             bearcad.circle{ x = 5, y = 5, r = 2 }
             bearcad.exit_sketch()
             bearcad.extrude{ circle = 0, distance = -3, body = "cut" }
@@ -5574,10 +5585,11 @@ mod tests {
             bearcad.new()
             bearcad.rect{ x = 0, y = 0, width = 30, height = 30 }
             bearcad.fillet_vertex{ point = { kind = "line", index = 0, ["end"] = "end" }, radius = 5 }
-            bearcad.extrude{ polygon = {0, 4, 1, 2, 3}, distance = 10 }
+            bearcad.extrude{ polygon = {4, 6, 5, 2, 3}, distance = 10 }
         "#,
         );
-        let loop_lines = vec![0usize, 4, 1, 2, 3];
+        // #538: the shadowed sources' trimmed copies are lines 4,5; the curved bridge is line 6.
+        let loop_lines = vec![4usize, 6, 5, 2, 3];
         let profile = crate::model::ExtrudeFace::Polygon(loop_lines.clone());
         assert_eq!(crate::extrude::side_face_count(&profile), loop_lines.len());
         let frame = crate::face::sketch_geometry_frame(&state.doc, 0).unwrap();
