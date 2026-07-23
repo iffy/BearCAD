@@ -22,7 +22,7 @@ into printable pieces.
 Each target is cut independently. Each cutter divides whatever pieces the previous cuts
 produced — two crossing planes through a block give four fragments.
 
-**Extend cutters to infinity** (on by default) treats every cutter as an endless plane.
+**Infinite cut** (on by default) treats every cutter as an endless plane.
 Off, a finite face carves only its own footprint. A construction plane is always infinite.
 
 ## What you get

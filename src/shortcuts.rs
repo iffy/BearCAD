@@ -182,23 +182,6 @@ pub fn show_constraint_shortcut_left(ui: &mut Ui, hint: ShortcutHint, enabled: b
     ui.label(if enabled { text } else { text.weak() });
 }
 
-/// Checkbox with shortcut shown to the right of the label.
-pub fn checkbox_with_shortcut(
-    ui: &mut Ui,
-    checked: &mut bool,
-    label: &str,
-    shortcut: Option<ShortcutHint>,
-) -> egui::Response {
-    ui.horizontal(|ui| {
-        let response = ui.checkbox(checked, label);
-        if let Some(hint) = shortcut {
-            ui.label(shortcut_rich_text(hint));
-        }
-        response
-    })
-    .inner
-}
-
 /// One section of the app-wide shortcut list (#434), scoped to where its entries apply.
 pub struct ShortcutSection {
     pub title: &'static str,

@@ -1827,6 +1827,51 @@ fn labeled_row<R>(
     .inner
 }
 
+/// A two-column **checkbox row** (#588): `label` (with an optional keyboard-shortcut hint) in the
+/// left column, the checkbox in the right column. **Clicking either** the label or the box toggles
+/// it — the whole left column is a click target. Returns whether the value changed.
+fn checkbox_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    checked: &mut bool,
+    shortcut: Option<crate::shortcuts::ShortcutHint>,
+) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        let resp = ui
+            .allocate_ui_with_layout(
+                egui::vec2(FIELD_LABEL_W, 18.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.set_min_size(egui::vec2(FIELD_LABEL_W, 18.0));
+                    let r = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
+                    if let Some(hint) = shortcut {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(crate::shortcuts::format_shortcut(hint))
+                                    .weak()
+                                    .monospace()
+                                    .size(11.0),
+                            )
+                            .sense(egui::Sense::click()),
+                        ) | r
+                    } else {
+                        r
+                    }
+                },
+            )
+            .inner;
+        if resp.clicked() {
+            *checked = !*checked;
+            changed = true;
+        }
+        if ui.checkbox(checked, "").changed() {
+            changed = true;
+        }
+    });
+    changed
+}
+
 /// [`labeled_row`] for tall inputs (pickers, multiline text): the label top-aligns with the
 /// input, centred against its **first row** — 26 px, the height of an element picker's
 /// collapsed strip (frame margins + one text row), so the label lines up with the picker's
@@ -2119,14 +2164,7 @@ pub fn show_pane(
     if let Some(mut curve_mode) = content.curve_mode {
         any_control = true;
         ui.add_enabled_ui(controls_enabled, |ui| {
-            if shortcuts::checkbox_with_shortcut(
-                ui,
-                &mut curve_mode,
-                "Curve",
-                Some(shortcuts::TOGGLE_CURVE_MODE),
-            )
-            .changed()
-            {
+            if checkbox_row(ui, "Curve", &mut curve_mode, Some(shortcuts::TOGGLE_CURVE_MODE)) {
                 on_curve_mode_changed(curve_mode);
             }
         });
@@ -2135,14 +2173,12 @@ pub fn show_pane(
     if let Some(mut tangent_constraint) = content.tangent_constraint {
         any_control = true;
         ui.add_enabled_ui(controls_enabled, |ui| {
-            if shortcuts::checkbox_with_shortcut(
+            if checkbox_row(
                 ui,
-                &mut tangent_constraint,
                 "Tangent",
+                &mut tangent_constraint,
                 Some(shortcuts::TOGGLE_TANGENT_CONSTRAINT),
-            )
-            .changed()
-            {
+            ) {
                 on_tangent_constraint_changed(tangent_constraint);
             }
         });
@@ -2195,14 +2231,7 @@ pub fn show_pane(
         };
         let mut checked = control.value == TriState::On;
         ui.add_enabled_ui(controls_enabled, |ui| {
-            if shortcuts::checkbox_with_shortcut(
-                ui,
-                &mut checked,
-                label,
-                Some(shortcuts::TOGGLE_CONSTRUCTION),
-            )
-            .changed()
-            {
+            if checkbox_row(ui, label, &mut checked, Some(shortcuts::TOGGLE_CONSTRUCTION)) {
                 on_construction_changed(checked);
             }
         });
@@ -2218,7 +2247,7 @@ pub fn show_pane(
     if let Some(enabled) = content.snapping {
         any_control = true;
         let mut checked = enabled;
-        if ui.checkbox(&mut checked, "Snapping").changed() {
+        if checkbox_row(ui, "Snapping", &mut checked, None) {
             on_snapping_changed(checked);
         }
     }
@@ -2299,7 +2328,7 @@ pub fn show_pane(
         });
 
         let mut symmetric = control.symmetric;
-        if ui.checkbox(&mut symmetric, "Symmetric").changed() {
+        if checkbox_row(ui, "Symmetric", &mut symmetric, None) {
             on_revolve_edit(RevolveEdit::Symmetric(symmetric));
         }
         // A segmented icon group (#261): New body / Add to touching / Cut, one highlighted —
@@ -3238,11 +3267,7 @@ pub fn show_pane(
         }
         });
         let mut extend = control.extend_infinite;
-        if ui
-            .checkbox(&mut extend, "Extend cutters to infinity")
-            .on_hover_text("Off: a cutter only separates material within its own footprint")
-            .changed()
-        {
+        if checkbox_row(ui, "Infinite cut", &mut extend, None) {
             pending = Some(SliceEdit::ExtendInfinite(extend));
         }
         if let Some(edit) = pending {
@@ -3942,7 +3967,7 @@ pub fn show_pane(
             on_extrude_body_mode_changed(mode);
         }
         let mut symmetric = control.symmetric;
-        if ui.checkbox(&mut symmetric, "Symmetric").changed() {
+        if checkbox_row(ui, "Symmetric", &mut symmetric, None) {
             on_extrude_symmetric_changed(symmetric);
         }
         ui.add_space(4.0);
