@@ -1313,7 +1313,10 @@ outside the shape/undo DAG (undo is snapshot-based, §4.3).
   Scriptable: `bearcad.drawing_text{ drawing, text, x, y, wrap? }`. While the **Text** tool is
   active, the context pane belongs to placing/editing text: a projection that happens to still be
   selected does **not** show its view editor (#329), and the **Default units** section is hidden
-  (#330) — both reappear under the Select/Dimension tools.
+  (#330). The view editor reappears under the Select/Dimension tools. The **Default units** section
+  is now shown only for the selection/sketch-editing tools — it is suppressed under the modeling,
+  transform, dimension, and constraint tools (Extrude, Sweep, Loft, Revolve, Combine, Move, Mirror,
+  Slice, Repeat, Text, Dimension, Constraint), whose own context sections don't need it (#585).
 - **Variable interpolation in text (#338):** both drawing annotations and sketch text may embed
   `{expression}` fields that resolve against the document's parameters
   (`value::interpolate_text`). A field evaluates any length/angle expression — a bare parameter

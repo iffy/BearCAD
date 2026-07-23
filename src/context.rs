@@ -1071,10 +1071,25 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
     });
     let extrude_faces = input.extrude_faces.clone();
     let extrude = input.extrude.clone();
-    // The Repeat tool's own context is busy enough; its distances are plain lengths, so the
-    // Default-units section isn't shown while it's active (#257). The Text tool has nothing to do
-    // with the document's default units either, so it's suppressed there too (#330).
-    let units = (input.tool != Tool::Repeat && input.tool != Tool::Text)
+    // The Default-units section is only relevant to selection/sketch editing, not to the modeling,
+    // transform, dimension, or constraint tools whose own busy context sections don't need it
+    // (#257/#330/#585). It's suppressed while any of those tools is active.
+    let units_suppressed = matches!(
+        input.tool,
+        Tool::Repeat
+            | Tool::Text
+            | Tool::Extrude
+            | Tool::Sweep
+            | Tool::Loft
+            | Tool::Revolve
+            | Tool::Combine
+            | Tool::Move
+            | Tool::Mirror
+            | Tool::Slice
+            | Tool::Dimension
+            | Tool::Constraint
+    );
+    let units = (!units_suppressed)
         .then(|| units_control_from_selection(input.doc, input.selection))
         .flatten();
     let edge_picker = input
@@ -4347,7 +4362,8 @@ mod tests {
             label_text: String::new(),
             auto_label: "Body 0 — Front".to_string(),
         };
-        // Dimension tool: projection editor and units both present.
+        // Dimension tool: keeps the projection editor, but the Default-units section is now
+        // suppressed like the other modeling/transform tools (#585).
         let dim = context_pane_content(&ContextInput {
             tool: Tool::Dimension,
             in_drawing_workbench: true,
@@ -4355,7 +4371,7 @@ mod tests {
             ..input(&doc, &selection)
         });
         assert!(dim.drawing_view.is_some(), "Dimension tool keeps the projection editor");
-        assert!(dim.units.is_some(), "Dimension tool still shows units");
+        assert!(dim.units.is_none(), "Dimension tool no longer shows units (#585)");
         // Text tool: both suppressed.
         let text = context_pane_content(&ContextInput {
             tool: Tool::Text,
