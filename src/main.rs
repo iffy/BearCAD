@@ -1274,10 +1274,10 @@ mod exploder {
     pub const VIEWPORT_MARGIN_PX: f32 = 10.0;
     /// Most loupes a single level may show (#559). A crowd larger than this is clustered into
     /// group loupes so the level never exceeds it.
-    pub const MAX_LOUPES: usize = 5;
+    pub const MAX_LOUPES: usize = 12;
     /// Children per group at a drilled-in level (#559): a drilled level shows a Back arrow plus up
     /// to this many, so it still totals ≤ `MAX_LOUPES`.
-    pub const GROUP_ARITY: usize = 4;
+    pub const GROUP_ARITY: usize = 11;
     /// Duration of the drill-in "loupes spring out of the group" animation (seconds, #559).
     pub const DRILL_ANIM_SECS: f64 = 0.16;
 }
@@ -21248,20 +21248,23 @@ mod tests {
     #[test]
     fn build_exploder_tree_groups_top_level_by_type_then_spatially() {
         use construction::PickTargetKind as K;
-        // 12 things across 3 types (lines, edges, faces), 4 of each, scattered on a grid.
+        // Three types (lines, edges, faces), `MAX_LOUPES` of each, scattered on a grid — enough
+        // total (3 × MAX_LOUPES > MAX_LOUPES) to force grouping regardless of the cap.
+        let per = exploder::MAX_LOUPES;
+        let total = per * 3;
         let mut pts = Vec::new();
         let mut kinds = Vec::new();
-        for i in 0..12u32 {
-            pts.push(egui::pos2((i % 4) as f32 * 50.0, (i / 4) as f32 * 50.0));
-            kinds.push(match i / 4 {
-                0 => K::Line(i as usize),
+        for i in 0..total {
+            pts.push(egui::pos2((i % per) as f32 * 50.0, (i / per) as f32 * 50.0));
+            kinds.push(match i / per {
+                0 => K::Line(i),
                 1 => K::BodyEdge { body: 0, a: Vec3::ZERO, b: Vec3::X },
                 _ => K::BodyFace { body: 0, triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]], normal: Vec3::Z },
             });
         }
-        let idxs: Vec<usize> = (0..12).collect();
+        let idxs: Vec<usize> = (0..total).collect();
         let tree = build_exploder_tree(&idxs, &pts, &kinds);
-        // Top level: one node per type (3), each a group of 4 members (all the same type).
+        // Top level: one node per type (3), each a group of same-type members.
         assert_eq!(tree.len(), 3, "one top-level group per element type");
         for node in &tree {
             let mut ls = Vec::new();
@@ -21278,18 +21281,16 @@ mod tests {
     #[test]
     fn build_exploder_tree_leaves_single_member_types_as_leaves() {
         use construction::PickTargetKind as K;
-        // 5 lines (multi → a group) + 1 circle (single), 6 total so grouping kicks in (> MAX_LOUPES).
-        // The lines group, but the lone circle stays a bare leaf — never a group of one (#567).
-        let pts: Vec<egui::Pos2> = (0..6).map(|i| egui::pos2(i as f32 * 30.0, 0.0)).collect();
-        let kinds = vec![
-            K::Line(0),
-            K::Line(1),
-            K::Line(2),
-            K::Line(3),
-            K::Line(4),
-            K::Circle(0),
-        ];
-        let tree = build_exploder_tree(&[0, 1, 2, 3, 4, 5], &pts, &kinds);
+        // MAX_LOUPES lines (multi → a group) + 1 circle (single), so the total exceeds MAX_LOUPES
+        // and grouping kicks in. The lines group, but the lone circle stays a bare leaf — never a
+        // group of one (#567).
+        let n_lines = exploder::MAX_LOUPES;
+        let total = n_lines + 1;
+        let pts: Vec<egui::Pos2> = (0..total).map(|i| egui::pos2(i as f32 * 30.0, 0.0)).collect();
+        let mut kinds: Vec<K> = (0..n_lines).map(K::Line).collect();
+        kinds.push(K::Circle(0));
+        let idxs: Vec<usize> = (0..total).collect();
+        let tree = build_exploder_tree(&idxs, &pts, &kinds);
         assert_eq!(tree.len(), 2, "two type nodes (lines, circle)");
         let groups = tree.iter().filter(|n| matches!(n, ExploderNode::Group(_))).count();
         let leaves = tree.iter().filter(|n| matches!(n, ExploderNode::Leaf(_))).count();
