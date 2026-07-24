@@ -1646,6 +1646,10 @@ struct App {
     /// Last frame's live-bounds diagonal, so auto-zoom only reacts to actual growth
     /// or shrinkage (#463) rather than to a shape merely being small.
     auto_zoom_last_extent: Option<f32>,
+    /// Last observed committed-document diagonal, so auto-zoom also frames geometry
+    /// that appears via a commit (#624) — e.g. a 20 m extrusion confirmed from the
+    /// context pane — not just live previews.
+    auto_zoom_doc_extent: Option<f32>,
     /// The last `inputmode` applied to eframe's hidden text agent (web).
     #[cfg(target_arch = "wasm32")]
     agent_inputmode_none: Option<bool>,
@@ -1748,6 +1752,7 @@ impl App {
         let Some(viewport) = self.last_viewport else { return };
         let Some((min, max)) = self.auto_zoom_live_bounds() else {
             self.auto_zoom_last_extent = None;
+            self.tick_auto_zoom_committed(viewport);
             return;
         };
         let extent = (max - min).length();
@@ -1766,6 +1771,31 @@ impl App {
                 .is_some_and(|cr| cr.user_edited.iter().any(|e| *e));
         let (offscreen, too_small) = auto_zoom_screen_state(&self.state.cam, viewport, min, max);
         if auto_zoom_should_frame(offscreen, too_small, grew, shrank, deliberately_sized) {
+            let aspect = (viewport.width() / viewport.height().max(1.0)).max(0.1);
+            self.state
+                .cam
+                .frame_bounds_animated(min, max, aspect, 0.22);
+        }
+    }
+
+    /// Committed-geometry auto-zoom (#624): with no live preview in progress, watch the
+    /// document bounds themselves, so a commit that lands new geometry (e.g. an extrusion
+    /// confirmed straight from the context pane before any preview tick ran) still glides
+    /// the view out to fit — and an undo that shrinks the model glides back in.
+    fn tick_auto_zoom_committed(&mut self, viewport: egui::Rect) {
+        let Some((min, max)) = extrude::document_world_bounds(&self.state.doc) else {
+            self.auto_zoom_doc_extent = None;
+            return;
+        };
+        let extent = (max - min).length();
+        let (grew, shrank) = match self.auto_zoom_doc_extent {
+            Some(prev) => (extent > prev * 1.02 + 1e-3, extent < prev * 0.98 - 1e-3),
+            None => (false, false),
+        };
+        self.auto_zoom_doc_extent = Some(extent);
+        let (offscreen, too_small) = auto_zoom_screen_state(&self.state.cam, viewport, min, max);
+        // Committed geometry is always deliberately sized — the user confirmed it.
+        if auto_zoom_should_frame(offscreen, too_small, grew, shrank, true) {
             let aspect = (viewport.width() / viewport.height().max(1.0)).max(0.1);
             self.state
                 .cam
@@ -2397,6 +2427,7 @@ impl App {
             keypad_serves_focus: false,
             debug_focus_requested: false,
             auto_zoom_last_extent: None,
+            auto_zoom_doc_extent: None,
             #[cfg(target_arch = "wasm32")]
             agent_inputmode_none: None,
             gpu_viewport: gpu_viewport::install(cc),

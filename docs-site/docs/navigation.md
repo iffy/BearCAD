@@ -35,9 +35,11 @@ keypad** — digits, units, operators, and your parameter names as one-tap chips
 **Zoom to fit** (in the command palette and the View menu) frames your selection — or the
 whole model — in one step.
 
-**Auto-zoom** (the toggle next to Zoom to fit in the toolbar) keeps in-progress geometry
+**Auto-zoom** (the toggle next to Zoom to fit in the toolbar) keeps your geometry
 framed: type rectangle dimensions bigger than the view, or drag an extrusion past the
 edge, and the camera glides out to fit — shrink it back and the camera glides in.
+Committed results count too: confirm an extrusion taller than the view and the camera
+glides out to show the whole body; undo it and the view glides back in.
 Scripts: `bearcad.ui.auto_zoom(true)`.
 
 ## Keyboard shortcuts

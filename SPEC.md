@@ -2921,6 +2921,13 @@ zoom-to-fit; orientation untouched). Triggers only between animations (never fig
 in-flight glide) and stands down in FPS mode and the Drawing workbench. Decision logic is
 the pure `auto_zoom_should_frame` (unit-tested).
 
+With **no live preview** in progress, the same watch runs on the **committed document
+bounds** (#624): a commit that lands geometry off-screen — e.g. a 20 m extrusion
+confirmed straight from the context pane before any preview tick ran — still glides the
+view out to fit, and an undo that shrinks the model well inside glides back in.
+Committed geometry always counts as deliberately sized; growth/shrinkage is tracked via
+a separate document-bounds diagonal so panning away never snaps the camera back.
+
 ### 11.y Keyboard Shortcuts window (#434)
 
 **View → Keyboard Shortcuts** / **Help → Keyboard Shortcuts** (and the palette entry
