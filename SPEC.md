@@ -710,16 +710,29 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   same GPU preview-solid path as the extrude/repeat ghosts (`build_viewport_scene_input`, #603).
   **Enter** commits, creating an editable
   **mirror operation element** (`Document::mirror_ops`, `ShapeKind::MirrorOperation`) with one
-  reflected output body per input (`BodySource::Mirrored { op, target }`). Unlike Move, the
-  **originals are kept** — a mirror *adds* the reflection alongside the source, so inputs are
-  never shadowed; deleting the op removes only the reflections. The reflection is a Householder
+  output body per input (`BodySource::Mirrored { op, target }`). An **Output** row (#639) —
+  the same segmented New body / Join body / Cut icon group, label, and placement the Revolve
+  tool uses — chooses how each reflection lands (`model::MirrorMode`), and the hint line under
+  the commit button follows it:
+  - **New body** (default): the reflection is its own body and, unlike Move, the
+    **originals are kept** — a mirror *adds* alongside the source, so inputs are never
+    shadowed; deleting the op removes only the reflections.
+  - **Join** / **Cut**: the output is its source fused with (or minus) the reflection — there's
+    no body to pick, each reflection combines with **its own** source — and that source is
+    consumed into the output as a shadow body, the way Move and the edge treatments consume
+    theirs (`MirrorMode::consumes_input`, `set_mirror_input_shadows`; re-editing back to New
+    body releases it again). These are real kernel booleans, so the mesh path tessellates the
+    result instead of taking the cheap transform-only route.
+
+  The reflection is a Householder
   transform across the plane (`mirror_op_transform`, determinant −1): the BREP shape transforms
   through the kernel (`Shape::transformed`) so mirrored bodies chain into booleans and export as
   real BREP, and the mesh path reflects each triangle with **reversed winding** so normals stay
   outward. "Edit mirror" (double-click / the pane button, or a lone selected mirror op) re-opens
   the tool with its plane + bodies loaded; outputs grow/shrink with the target list (removed
-  ones tombstone). Scripting: `bearcad.mirror_bodies{ plane = <face>, bodies = {…}, name? }`
-  and `bearcad.edit_mirror{ index, plane, bodies }`. In the elements graph the plane's body and
+  ones tombstone). Scripting: `bearcad.mirror_bodies{ plane = <face>, bodies = {…},
+  output? = "new"|"join"|"cut", name? }` and `bearcad.edit_mirror{ index, plane, bodies,
+  output? }`; the default output stays implicit so existing scripts round-trip unchanged. In the elements graph the plane's body and
   every input body feed the Mirror node, and each reflected body nests beneath it.
   - **In a sketch (#528):** the Mirror tool reflects **sketch geometry** instead. The first
     click picks a **straight sketch line** as the mirror axis; further clicks toggle lines and

@@ -797,8 +797,9 @@ pub fn mirror_op_transform(doc: &Document, op: &crate::model::MirrorOperation) -
 }
 
 /// The BREP solid of one mirror-operation output: the input body's shape, reflected across
-/// the op's plane. The original input body is kept, so — unlike Move — a reflected output
-/// never shadows its source.
+/// the op's plane. In the default `NewBody` mode that reflection *is* the output and the input
+/// body is kept, so — unlike Move — the output never shadows its source. `Join`/`Cut` (#639)
+/// instead fuse or subtract the reflection against the source, and the source is shadowed.
 fn occt_mirrored_output_shape(
     doc: &Document,
     op_index: usize,
@@ -811,7 +812,12 @@ fn occt_mirrored_output_shape(
     }
     let shape = occt_body_shape(doc, input)?;
     let m = mirror_op_transform(doc, op)?;
-    shape.transformed(&mat4_to_rows_3x4(&m))
+    let reflected = shape.transformed(&mat4_to_rows_3x4(&m))?;
+    match op.mode {
+        crate::model::MirrorMode::NewBody => Some(reflected),
+        crate::model::MirrorMode::Join => shape.boolean(&reflected, crate::kernel::BoolOp::Fuse),
+        crate::model::MirrorMode::Cut => shape.boolean(&reflected, crate::kernel::BoolOp::Cut),
+    }
 }
 
 /// The axis-aligned offsets (mm along the axis direction) of a repeat's instances 1..N-1
@@ -2635,6 +2641,14 @@ fn body_solid_mesh_uncached(doc: &Document, body_index: usize) -> Option<SolidMe
         let &input = mr.targets.get(target)?;
         if input == body_index {
             return None;
+        }
+        // Join/Cut outputs are a real boolean against the source (#639), so they come from the
+        // kernel and tessellate — like Boolean and Slice outputs. A plain reflection stays on
+        // the cheap transform path so the lean build still mirrors.
+        if mr.mode.consumes_input() {
+            let shape = occt_mirrored_output_shape(doc, op, target)?;
+            let tris = shape.tessellate(OCCT_DEFLECTION as f64);
+            return (!tris.is_empty()).then_some(SolidMesh { triangles: tris });
         }
         let m = mirror_op_transform(doc, mr)?;
         let source = body_solid_mesh_uncached(doc, input)?;

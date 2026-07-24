@@ -297,12 +297,15 @@ pub enum Instruction {
     CreateMirrorOp {
         plane: FaceId,
         targets: Vec<usize>,
+        /// How the reflections land (#639).
+        mode: crate::model::MirrorMode,
     },
     /// Re-point an existing mirror operation (#523).
     EditMirrorOp {
         op: usize,
         plane: FaceId,
         targets: Vec<usize>,
+        mode: crate::model::MirrorMode,
     },
     /// Linear repeat of bodies along an axis (Repeat tool).
     CreateRepeatOp {
@@ -960,11 +963,11 @@ impl Instruction {
             Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle } => {
                 move_op_lua("bearcad.edit_move", Some(*op), targets, tx, ty, tz, *axis, angle)
             }
-            Instruction::CreateMirrorOp { plane, targets } => {
-                mirror_op_lua("bearcad.mirror_bodies", None, plane, targets)
+            Instruction::CreateMirrorOp { plane, targets, mode } => {
+                mirror_op_lua("bearcad.mirror_bodies", None, plane, targets, *mode)
             }
-            Instruction::EditMirrorOp { op, plane, targets } => {
-                mirror_op_lua("bearcad.edit_mirror", Some(*op), plane, targets)
+            Instruction::EditMirrorOp { op, plane, targets, mode } => {
+                mirror_op_lua("bearcad.edit_mirror", Some(*op), plane, targets, *mode)
             }
             Instruction::CreateRepeatOp { targets, axis, mode, count, spacing, length } => {
                 repeat_op_lua("bearcad.repeat_bodies", None, targets, *axis, *mode, count, spacing, length)
@@ -1672,14 +1675,16 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 angle: angle.clone(),
             })
         }
-        Action::CreateMirrorOperation { plane, targets } => Some(Instruction::CreateMirrorOp {
+        Action::CreateMirrorOperation { plane, targets, mode } => Some(Instruction::CreateMirrorOp {
             plane: plane.clone(),
             targets: targets.clone(),
+            mode: *mode,
         }),
-        Action::EditMirrorOperation { op, plane, targets } => Some(Instruction::EditMirrorOp {
+        Action::EditMirrorOperation { op, plane, targets, mode } => Some(Instruction::EditMirrorOp {
             op: *op,
             plane: plane.clone(),
             targets: targets.clone(),
+            mode: *mode,
         }),
         // The scripting Instruction DSL doesn't carry plane targets (#221), same as it omits
         // the Move op's plane/image targets — they replay as body-only operations.
@@ -2236,7 +2241,13 @@ fn move_op_lua(
 }
 
 /// Render a mirror-operation call (`bearcad.mirror_bodies{}` / `bearcad.edit_mirror{}`, #523).
-fn mirror_op_lua(call: &str, op: Option<usize>, plane: &FaceId, targets: &[usize]) -> String {
+fn mirror_op_lua(
+    call: &str,
+    op: Option<usize>,
+    plane: &FaceId,
+    targets: &[usize],
+    mode: crate::model::MirrorMode,
+) -> String {
     let mut parts = Vec::new();
     if let Some(op) = op {
         parts.push(format!("index = {op}"));
@@ -2246,7 +2257,21 @@ fn mirror_op_lua(call: &str, op: Option<usize>, plane: &FaceId, targets: &[usize
         "bodies = {{{}}}",
         targets.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
     ));
+    // The default mode stays implicit so existing scripts render unchanged (#639).
+    if let Some(name) = mirror_mode_script_name(mode) {
+        parts.push(format!("output = {name:?}"));
+    }
     format!("{call}{{ {} }}", parts.join(", "))
+}
+
+/// The `output = …` script name for a non-default [`crate::model::MirrorMode`] (#639).
+/// `None` for the default, which scripts leave out.
+pub fn mirror_mode_script_name(mode: crate::model::MirrorMode) -> Option<&'static str> {
+    match mode {
+        crate::model::MirrorMode::NewBody => None,
+        crate::model::MirrorMode::Join => Some("join"),
+        crate::model::MirrorMode::Cut => Some("cut"),
+    }
 }
 
 /// Render a repeat-operation call (`bearcad.repeat_bodies{}` / `bearcad.edit_repeat{}`).
@@ -4153,13 +4178,13 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::CreateMirrorOp { plane, targets } => {
-                let result = state.apply(Action::CreateMirrorOperation { plane, targets });
+            Instruction::CreateMirrorOp { plane, targets, mode } => {
+                let result = state.apply(Action::CreateMirrorOperation { plane, targets, mode });
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::EditMirrorOp { op, plane, targets } => {
-                let result = state.apply(Action::EditMirrorOperation { op, plane, targets });
+            Instruction::EditMirrorOp { op, plane, targets, mode } => {
+                let result = state.apply(Action::EditMirrorOperation { op, plane, targets, mode });
                 self.record_action_error(result);
                 StepResult::Continue
             }

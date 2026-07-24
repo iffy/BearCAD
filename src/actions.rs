@@ -965,6 +965,8 @@ pub struct CreatingMirror {
     /// The mirror plane; `None` until one is picked.
     pub plane: Option<crate::model::FaceId>,
     pub targets: Vec<usize>,
+    /// How the reflections land (#639): a new body each, or joined to / cut from its source.
+    pub mode: crate::model::MirrorMode,
     /// `Some(op)` while re-editing a committed operation.
     pub editing: Option<usize>,
 }
@@ -1847,12 +1849,15 @@ pub enum Action {
     CreateMirrorOperation {
         plane: crate::model::FaceId,
         targets: Vec<usize>,
+        /// How the reflections land (#639).
+        mode: crate::model::MirrorMode,
     },
     /// Re-point an existing mirror operation (#523).
     EditMirrorOperation {
         op: usize,
         plane: crate::model::FaceId,
         targets: Vec<usize>,
+        mode: crate::model::MirrorMode,
     },
     /// Commit the in-progress in-sketch mirror (#523/#528).
     CommitSketchMirror,
@@ -4334,6 +4339,17 @@ fn validate_move_inputs(
 /// Validation for creating/editing a mirror operation (#523): at least one target, each a
 /// live non-shadow body, no duplicates, and never the op's own reflected output (which would
 /// recurse). Unlike Move, mirror inputs are kept, so a target isn't consumed/shadowed.
+/// Mark (or clear) a mirror operation's input bodies as consumed (#639). `Join`/`Cut` fold the
+/// source into the reflected output, so — like Move — the input becomes a shadow body; the
+/// default `NewBody` mode leaves the originals standing.
+fn set_mirror_input_shadows(doc: &mut Document, targets: &[usize], shadow: bool) {
+    for &input in targets {
+        if let Some(body) = doc.bodies.get_mut(input) {
+            body.shadow = shadow;
+        }
+    }
+}
+
 fn validate_mirror_inputs(
     doc: &Document,
     targets: &[usize],
@@ -9831,10 +9847,12 @@ label_hidden: false,
                         op,
                         plane,
                         targets: cm.targets.clone(),
+                        mode: cm.mode,
                     }),
                     None => self.apply(Action::CreateMirrorOperation {
                         plane,
                         targets: cm.targets.clone(),
+                        mode: cm.mode,
                     }),
                 };
                 if matches!(result, ActionResult::Err(_)) {
@@ -9844,7 +9862,7 @@ label_hidden: false,
                 }
                 result
             }
-            Action::CreateMirrorOperation { plane, targets } => {
+            Action::CreateMirrorOperation { plane, targets, mode } => {
                 if let Err(e) = validate_mirror_inputs(&self.doc, &targets, None) {
                     self.status = e.clone();
                     return ActionResult::Err(e);
@@ -9853,6 +9871,7 @@ label_hidden: false,
                 self.doc.mirror_ops.push(crate::model::MirrorOperation {
                     plane,
                     targets: targets.clone(),
+                    mode,
                     outputs: Vec::new(),
                     name: None,
                     deleted: false,
@@ -9878,7 +9897,9 @@ label_hidden: false,
                     self.doc.shape_order.push(ShapeKind::Body);
                 }
                 self.doc.mirror_ops[op_index].outputs = outputs;
-                // Unlike Move, the input bodies stay (a mirror adds the reflection alongside).
+                // In the default mode the input bodies stay — a mirror adds the reflection
+                // alongside. Join/Cut fold the source into the output, so it's consumed (#639).
+                set_mirror_input_shadows(&mut self.doc, &targets, mode.consumes_input());
                 self.refresh_document_health();
                 self.status = format!(
                     "Mirrored {} bod{}",
@@ -9887,29 +9908,37 @@ label_hidden: false,
                 );
                 ActionResult::Ok
             }
-            Action::EditMirrorOperation { op, plane, targets } => {
+            Action::EditMirrorOperation { op, plane, targets, mode } => {
                 if self.doc.mirror_ops.get(op).filter(|o| !o.deleted).is_none() {
                     let e = format!("Mirror operation {op} not found");
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
+                let old = self.doc.mirror_ops[op].clone();
+                // Un-shadow the previous inputs *before* validating: in Join/Cut mode this op
+                // consumes its own inputs (#639), and re-picking them must not read as "already
+                // consumed by another operation".
+                set_mirror_input_shadows(&mut self.doc, &old.targets, false);
                 if let Err(e) = validate_mirror_inputs(&self.doc, &targets, Some(op)) {
+                    set_mirror_input_shadows(&mut self.doc, &old.targets, old.mode.consumes_input());
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
-                let old = self.doc.mirror_ops[op].clone();
                 {
                     let entry = &mut self.doc.mirror_ops[op];
                     entry.plane = plane;
                     entry.targets = targets.clone();
+                    entry.mode = mode;
                 }
                 if crate::extrude::mirror_op_transform(&self.doc, &self.doc.mirror_ops[op]).is_none()
                 {
-                    self.doc.mirror_ops[op] = old;
+                    self.doc.mirror_ops[op] = old.clone();
+                    set_mirror_input_shadows(&mut self.doc, &old.targets, old.mode.consumes_input());
                     let e = "Mirror plane isn't a valid planar face".to_string();
                     self.status = e.clone();
                     return ActionResult::Err(e);
                 }
+                set_mirror_input_shadows(&mut self.doc, &targets, mode.consumes_input());
                 // Grow/shrink outputs to match the new target list (tombstoning removed ones
                 // keeps later body indices stable).
                 let have = self.doc.mirror_ops[op].outputs.len();
@@ -13491,6 +13520,7 @@ mod tests {
         let r = state.apply(Action::CreateMirrorOperation {
             plane: FaceId::ConstructionPlane(0),
             targets: vec![body],
+            mode: crate::model::MirrorMode::NewBody,
         });
         assert!(matches!(r, ActionResult::Ok), "mirror should succeed: {r:?}");
         assert_eq!(state.doc.mirror_ops.len(), 1);
@@ -13513,12 +13543,75 @@ mod tests {
             op: 0,
             plane: FaceId::ConstructionPlane(0),
             targets: vec![body],
+            mode: crate::model::MirrorMode::NewBody,
         });
         assert!(state.doc.bodies.get(out).is_some_and(|b| !b.deleted));
 
         // Deleting the op removes the reflection but keeps the source.
         state.apply(Action::DeleteElement { element: SceneElement::MirrorOp(0) });
         assert!(state.doc.bodies[out].deleted, "reflection removed");
+        assert!(!state.doc.bodies[body].deleted, "source kept");
+    }
+
+    /// #639: the Mirror tool's Output modes. `Join` fuses each reflection into its own source
+    /// (so the output spans both halves and the source is consumed), `Cut` subtracts it, and
+    /// switching back to `NewBody` releases the source again.
+    #[test]
+    fn mirror_output_modes_join_and_cut_against_the_source() {
+        use crate::hierarchy::SceneElement;
+        use crate::model::{FaceId, MirrorMode};
+        // A box extruded z in [0, 5]. Mirrored across the XY plane its reflection is
+        // z in [-5, 0], so a Join spans [-5, 5]. (Join/Cut are kernel booleans, so this
+        // needs a real BREP body, not an imported mesh.)
+        let mut state = box_extrusion_state();
+        let body = 0;
+
+        let r = state.apply(Action::CreateMirrorOperation {
+            plane: FaceId::ConstructionPlane(0),
+            targets: vec![body],
+            mode: MirrorMode::Join,
+        });
+        assert!(matches!(r, ActionResult::Ok), "join mirror should succeed: {r:?}");
+        assert_eq!(state.doc.mirror_ops[0].mode, MirrorMode::Join);
+        // Join consumes its input, like Move does.
+        assert!(state.doc.bodies[body].shadow, "the source is consumed by a Join");
+
+        let out = state.doc.mirror_ops[0].outputs[0];
+        let mesh = crate::extrude::body_solid_mesh(&state.doc, out).expect("joined mesh");
+        let (min, max) = mesh.bounds().expect("bounds");
+        assert!(
+            min.z < -4.9 && max.z > 4.9,
+            "a joined mirror spans both halves, got {min:?}..{max:?}"
+        );
+
+        // Re-editing back to NewBody releases the source and restores a lone reflection.
+        let r = state.apply(Action::EditMirrorOperation {
+            op: 0,
+            plane: FaceId::ConstructionPlane(0),
+            targets: vec![body],
+            mode: MirrorMode::NewBody,
+        });
+        assert!(matches!(r, ActionResult::Ok), "re-edit should succeed: {r:?}");
+        assert!(!state.doc.bodies[body].shadow, "NewBody releases the source");
+        let mesh = crate::extrude::body_solid_mesh(&state.doc, out).expect("reflected mesh");
+        let (min, max) = mesh.bounds().expect("bounds");
+        assert!(
+            max.z < 0.01 && min.z < -4.9,
+            "a plain reflection sits below the plane, got {min:?}..{max:?}"
+        );
+
+        // Cut consumes the source too.
+        state.apply(Action::EditMirrorOperation {
+            op: 0,
+            plane: FaceId::ConstructionPlane(0),
+            targets: vec![body],
+            mode: MirrorMode::Cut,
+        });
+        assert!(state.doc.bodies[body].shadow, "the source is consumed by a Cut");
+        assert_eq!(state.doc.mirror_ops[0].mode, MirrorMode::Cut);
+
+        // Deleting the op still keeps the source.
+        state.apply(Action::DeleteElement { element: SceneElement::MirrorOp(0) });
         assert!(!state.doc.bodies[body].deleted, "source kept");
     }
 

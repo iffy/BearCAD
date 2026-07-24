@@ -894,11 +894,24 @@ fn parse_sketch_mirror_op_args(
 }
 
 /// Parse a `bearcad.mirror_bodies`/`edit_mirror` table into `(plane_face, bodies)` (#523).
-fn parse_mirror_op_args(opts: &Table) -> mlua::Result<(FaceId, Vec<usize>)> {
+fn parse_mirror_op_args(
+    opts: &Table,
+) -> mlua::Result<(FaceId, Vec<usize>, crate::model::MirrorMode)> {
     let plane_table: Table = opts.get("plane")?;
     let plane = parse_face_id_table(plane_table)?;
     let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
-    Ok((plane, targets))
+    // `output` mirrors the pane's Output row (#639); omitted means a new body each.
+    let mode = match opts.get::<Option<String>>("output")?.as_deref() {
+        None | Some("new") | Some("new_body") => crate::model::MirrorMode::NewBody,
+        Some("join") | Some("add") | Some("combine") => crate::model::MirrorMode::Join,
+        Some("cut") => crate::model::MirrorMode::Cut,
+        Some(other) => {
+            return Err(mlua::Error::external(format!(
+                "unknown mirror output '{other}' (new|join|cut)"
+            )))
+        }
+    };
+    Ok((plane, targets, mode))
 }
 
 fn parse_geometric_constraint(name: &str) -> Option<GeometricConstraintType> {
@@ -3428,10 +3441,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "mirror_bodies",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            check_keys(&opts, "mirror_bodies", &["plane", "bodies", "name"])?;
-            let (plane, targets) = parse_mirror_op_args(&opts)?;
+            check_keys(&opts, "mirror_bodies", &["plane", "bodies", "output", "name"])?;
+            let (plane, targets, mode) = parse_mirror_op_args(&opts)?;
             unsafe {
-                tick.exec(Instruction::CreateMirrorOp { plane, targets })?;
+                tick.exec(Instruction::CreateMirrorOp { plane, targets, mode })?;
             }
             let element = SceneElement::MirrorOp(unsafe {
                 tick.state().doc.mirror_ops.len().saturating_sub(1)
@@ -3445,11 +3458,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "edit_mirror",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            check_keys(&opts, "edit_mirror", &["index", "plane", "bodies"])?;
+            check_keys(&opts, "edit_mirror", &["index", "plane", "bodies", "output"])?;
             let op: usize = opts.get("index")?;
-            let (plane, targets) = parse_mirror_op_args(&opts)?;
+            let (plane, targets, mode) = parse_mirror_op_args(&opts)?;
             unsafe {
-                tick.exec(Instruction::EditMirrorOp { op, plane, targets })?;
+                tick.exec(Instruction::EditMirrorOp { op, plane, targets, mode })?;
             }
             Ok(())
         })?,
@@ -6090,6 +6103,40 @@ mod tests {
         );
         assert_eq!(state.doc.repeat_ops.len(), 1);
         assert_eq!(state.doc.drawings[0].views.len(), 1);
+    }
+
+    /// #639: `mirror_bodies{ output = }` picks how the reflections land. `join` fuses each
+    /// into its own source and consumes it; the default keeps the original alongside.
+    #[test]
+    fn lua_mirror_output_mode() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 20, height = 20 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 6 }
+            bearcad.mirror_bodies{
+                plane = { kind = "construction_plane", index = 0 },
+                bodies = {0}, output = "join",
+            }
+            "#,
+        );
+        assert_eq!(state.doc.mirror_ops[0].mode, crate::model::MirrorMode::Join);
+        assert!(state.doc.bodies[0].shadow, "a join consumes its source");
+        let out = state.doc.mirror_ops[0].outputs[0];
+        let (min, max) = crate::extrude::body_solid_mesh(&state.doc, out)
+            .and_then(|m| m.bounds())
+            .expect("joined mesh");
+        assert!(min.z < -5.9 && max.z > 5.9, "spans both halves, got {min:?}..{max:?}");
+        // An unknown output name is a clear error, named in the message.
+        run_lua(
+            r#"
+            local ok, err = pcall(function()
+                bearcad.mirror_bodies{ plane = { kind = "construction_plane", index = 0 },
+                                       bodies = {0}, output = "sideways" }
+            end)
+            assert(not ok, "unknown output should error")
+            assert(tostring(err):find("sideways"), tostring(err))
+            "#,
+        );
     }
 
     /// #647: body geometry is derivable — an edge's length and the distance between two mesh

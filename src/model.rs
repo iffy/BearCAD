@@ -1628,15 +1628,44 @@ pub struct MoveOperation {
     pub deleted: bool,
 }
 
+/// How a [`MirrorOperation`]'s reflections land (#639), the Mirror pane's **Output** row —
+/// the same New body / Join / Cut choice the Revolve tool offers, but each reflection combines
+/// with **its own source body** (there's nothing else to pick): the half-model → whole-model
+/// case for `Join`, and a mirrored pocket for `Cut`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MirrorMode {
+    /// Each reflection is its own body and the originals stay (the pre-#639 behavior).
+    #[default]
+    NewBody,
+    /// Each output is its source fused with the reflection; the source is consumed (shadowed).
+    Join,
+    /// Each output is its source with the reflection subtracted; the source is consumed.
+    Cut,
+}
+
+impl MirrorMode {
+    /// Whether this mode consumes its input body into the output (shadowing it), the way Move
+    /// and the edge treatments do.
+    pub fn consumes_input(self) -> bool {
+        !matches!(self, MirrorMode::NewBody)
+    }
+}
+
 /// A mirror operation (Mirror tool, #523): reflects each input body across a mirror plane,
-/// producing one reflected output body per input while keeping the originals. The mirror
-/// plane is a `FaceId` — a construction plane or a planar body face.
+/// producing one output body per input. In the default `NewBody` mode the reflection is a
+/// body of its own and the originals stay; `Join`/`Cut` fuse or subtract it against its own
+/// source instead (#639). The mirror plane is a `FaceId` — a construction plane or a planar
+/// body face.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MirrorOperation {
     /// The mirror plane: a construction plane or a planar body face.
     pub plane: FaceId,
     /// Input body indices, one reflected output per entry (same order).
     pub targets: Vec<usize>,
+    /// How each reflection lands (#639).
+    #[serde(default)]
+    pub mode: MirrorMode,
     /// Output body indices, matching `targets` order.
     #[serde(default)]
     pub outputs: Vec<usize>,

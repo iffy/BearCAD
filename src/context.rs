@@ -271,6 +271,8 @@ pub struct MirrorControl {
     pub plane: Option<SceneElement>,
     /// Picked bodies to mirror (rendered through the unified element picker).
     pub targets: Vec<usize>,
+    /// How each reflection lands (#639): its own body, or joined to / cut from its source.
+    pub mode: crate::model::MirrorMode,
     pub editing: bool,
     pub can_commit: bool,
 }
@@ -280,6 +282,8 @@ pub struct MirrorControl {
 /// `PickerTarget::MirrorTargets`), so this only covers the commit button.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MirrorEdit {
+    /// Output-row click (#639): New body / Join / Cut.
+    Mode(crate::model::MirrorMode),
     Commit,
 }
 
@@ -3080,6 +3084,35 @@ pub fn show_pane(
         // the Bodies picker, and the button read as one contiguous block (#602).
         // The mirror plane and the bodies to mirror both render above through the unified
         // element pickers (see `tool_pickers`: `MirrorPlane` then `MirrorTargets`, #566).
+        // Output row (#639): the same segmented icon group, labels, and placement the Revolve
+        // tool uses — New body / Join body / Cut — so the two panes read alike.
+        let mode = control.mode;
+        labeled_row(ui, "Output", |ui| {
+            for (value, icon, tooltip) in [
+                (
+                    crate::model::MirrorMode::NewBody,
+                    crate::icons::IconId::NewBody,
+                    "New body",
+                ),
+                (
+                    crate::model::MirrorMode::Join,
+                    crate::icons::IconId::AddToBody,
+                    "Join body",
+                ),
+                (
+                    crate::model::MirrorMode::Cut,
+                    crate::icons::IconId::CutBody,
+                    "Cut",
+                ),
+            ] {
+                if crate::icons::selectable_icon_button(ui, icon, mode == value, tooltip)
+                    .clicked()
+                    && mode != value
+                {
+                    on_mirror_edit(MirrorEdit::Mode(value));
+                }
+            }
+        });
         ui.add_space(2.0);
         if primary_button(
             ui,
@@ -3089,9 +3122,19 @@ pub fn show_pane(
             on_mirror_edit(MirrorEdit::Commit);
         }
         ui.label(
-            egui::RichText::new("The originals stay; each reflection is a new body")
-                .color(egui::Color32::from_gray(140))
-                .size(11.0),
+            egui::RichText::new(match control.mode {
+                crate::model::MirrorMode::NewBody => {
+                    "The originals stay; each reflection is a new body"
+                }
+                crate::model::MirrorMode::Join => {
+                    "Each reflection fuses into its own source body"
+                }
+                crate::model::MirrorMode::Cut => {
+                    "Each reflection is subtracted from its own source body"
+                }
+            })
+            .color(egui::Color32::from_gray(140))
+            .size(11.0),
         );
     }
 

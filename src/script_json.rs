@@ -389,13 +389,13 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, axis, angle })
         }
         "mirror_bodies" => {
-            let (plane, targets) = mirror_op_args(o)?;
-            Ok(Instruction::CreateMirrorOp { plane, targets })
+            let (plane, targets, mode) = mirror_op_args(o)?;
+            Ok(Instruction::CreateMirrorOp { plane, targets, mode })
         }
         "edit_mirror" => {
             let op = req_usize(o, "index", "edit_mirror")?;
-            let (plane, targets) = mirror_op_args(o)?;
-            Ok(Instruction::EditMirrorOp { op, plane, targets })
+            let (plane, targets, mode) = mirror_op_args(o)?;
+            Ok(Instruction::EditMirrorOp { op, plane, targets, mode })
         }
         "repeat_bodies" => {
             let (targets, axis, mode, count, spacing, length) = repeat_op_args(o)?;
@@ -1116,12 +1116,22 @@ fn slice_op_args(o: &Map<String, Value>) -> Result<(Vec<usize>, Vec<FaceId>, boo
 
 /// `mirror_bodies`/`edit_mirror` shared arguments (#523): the mirror plane (a face spec) and
 /// the target bodies.
-fn mirror_op_args(o: &Map<String, Value>) -> Result<(FaceId, Vec<usize>), String> {
+fn mirror_op_args(
+    o: &Map<String, Value>,
+) -> Result<(FaceId, Vec<usize>, crate::model::MirrorMode), String> {
+    use crate::model::MirrorMode;
     let plane = match o.get("plane") {
         Some(v) if !v.is_null() => face_id_from_json(v)?,
         _ => return Err("mirror `plane` (a face spec) is required".into()),
     };
-    Ok((plane, usize_list(o, "bodies")?))
+    // `output` mirrors the pane's Output row (#639); omitted means a new body each.
+    let mode = match o.get("output").and_then(Value::as_str) {
+        None | Some("new") | Some("new_body") => MirrorMode::NewBody,
+        Some("join") | Some("add") | Some("combine") => MirrorMode::Join,
+        Some("cut") => MirrorMode::Cut,
+        Some(other) => return Err(format!("unknown mirror output '{other}' (new|join|cut)")),
+    };
+    Ok((plane, usize_list(o, "bodies")?, mode))
 }
 
 /// A rotation/revolve axis from `"x"`/`"y"`/`"z"` or an object `{ line = i }`.
@@ -1134,10 +1144,32 @@ fn revolve_axis_from_value(v: &Value) -> Result<RevolveAxis, String> {
             other => Err(format!("unknown axis '{other}' (x|y|z or {{line = i}})")),
         },
         Value::Object(t) => {
-            let line = req_usize(t, "line", "axis")?;
-            Ok(RevolveAxis::Line(line))
+            if t.contains_key("line") {
+                return Ok(RevolveAxis::Line(req_usize(t, "line", "axis")?));
+            }
+            // A body feature edge (#643), by the body plus the edge's world endpoints in mm.
+            let body = req_usize(t, "body", "axis")?;
+            let point = |key: &str| -> Result<glam::Vec3, String> {
+                let v = t
+                    .get(key)
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| format!("axis `{key}` must be [x, y, z]"))?;
+                if v.len() != 3 {
+                    return Err(format!("axis `{key}` must be [x, y, z]"));
+                }
+                let n = |i: usize| -> Result<f32, String> {
+                    v[i].as_f64()
+                        .map(|f| f as f32)
+                        .ok_or_else(|| format!("axis `{key}` must be numbers"))
+                };
+                Ok(glam::Vec3::new(n(0)?, n(1)?, n(2)?))
+            };
+            Ok(RevolveAxis::BodyEdge { body, a: point("from")?, b: point("to")? })
         }
-        _ => Err("axis must be \"x\"|\"y\"|\"z\" or {line = i}".into()),
+        _ => Err(
+            "axis must be \"x\"|\"y\"|\"z\", {line = i}, or {body = i, from = [x,y,z], to = [x,y,z]}"
+                .into(),
+        ),
     }
 }
 
@@ -1919,6 +1951,7 @@ mod tests {
             Ok(Instruction::CreateMirrorOp {
                 plane: FaceId::ConstructionPlane(0),
                 targets: vec![0, 1],
+                mode: crate::model::MirrorMode::NewBody,
             })
         );
         assert_eq!(
@@ -1930,6 +1963,7 @@ mod tests {
                 op: 2,
                 plane: FaceId::ConstructionPlane(1),
                 targets: vec![3],
+                mode: crate::model::MirrorMode::NewBody,
             })
         );
         // A missing plane is an error.

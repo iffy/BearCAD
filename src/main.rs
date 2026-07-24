@@ -5826,6 +5826,7 @@ impl App {
                     self.state.creating_mirror = Some(actions::CreatingMirror {
                         plane: Some(existing.plane),
                         targets: existing.targets,
+                        mode: existing.mode,
                         editing: Some(op),
                     });
                     self.state.apply(Action::SetTool(Tool::Mirror));
@@ -8371,6 +8372,7 @@ impl eframe::App for App {
                             mirror_plane_scene_element(&self.state.doc, &face)
                         }),
                         targets: cm.map(|c| c.targets.clone()).unwrap_or_default(),
+                        mode: cm.map(|c| c.mode).unwrap_or_default(),
                         editing: cm.map(|c| c.editing.is_some()).unwrap_or(false),
                         can_commit: cm.map(|c| c.can_commit()).unwrap_or(false),
                     }
@@ -9229,6 +9231,12 @@ impl eframe::App for App {
                 match edit {
                     context::MirrorEdit::Commit => {
                         self.state.apply(Action::CommitMirror);
+                    }
+                    context::MirrorEdit::Mode(mode) => {
+                        self.state
+                            .creating_mirror
+                            .get_or_insert_with(actions::CreatingMirror::default)
+                            .mode = mode;
                     }
                 }
             }
@@ -11195,6 +11203,10 @@ fn build_viewport_scene_input<'a>(
             let probe = model::MirrorOperation {
                 plane,
                 targets: cm.targets.clone(),
+                // The ghost previews the *reflection* itself in every mode (#639) — that's
+                // the piece the user is placing; the boolean against the source happens on
+                // commit.
+                mode: model::MirrorMode::NewBody,
                 outputs: Vec::new(),
                 name: None,
                 deleted: false,
