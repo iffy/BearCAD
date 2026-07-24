@@ -1092,7 +1092,14 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     extrusion gets a ghost — the preview mechanism shows one extrusion at a time).
   - Scriptable via `bearcad.chamfer_edge{ extrusion =, edge = {...}, distance = }` and
     `bearcad.fillet_edge{ extrusion =, edge = {...}, radius = }`, where `edge` is `{ kind =
-    "vertical", face =, edge = }` or `{ kind = "cap", face =, edge =, top = }`.
+    "vertical", face =, edge = }` or `{ kind = "cap", face =, edge =, top = }`. A whole set goes
+    in one call as `edges = { {...}, {...} }` (#672) — each entry either a bare edge spec covered
+    by the top-level `extrusion`, or `{ extrusion =, edge = {...} }` to name its own. This is not
+    a convenience: **one call is one operation**, and an operation bevels its target extrusion's
+    *own* body, so N single-edge calls would each round the same sharp input and leave N
+    overlapping outputs that render as an untreated block. `Instruction::EdgeTreatment` therefore
+    carries the whole `edges` list, and an interactive multi-edge commit records as **one** script
+    call (rendered with the singular `edge =` when the set holds exactly one).
   - **Elements-pane node + edit-after-the-fact (#192/#259/#531):** each committed chamfer/fillet
     is its own selectable operation row (`HierarchyNode::EdgeTreatmentOp`, chamfer/fillet icon,
     "Chamfer/Fillet N" label) with its beveled output body nested under it and its shadowed input

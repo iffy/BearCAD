@@ -189,6 +189,43 @@ bearcad.chamfer_vertex{ point = corner, distance = 3 }
 bearcad.fillet_vertex{ point = corner, radius = 3 }
 ```
 
+On a solid, `chamfer_edge`/`fillet_edge` take an analytic edge of an extrusion — a vertical
+edge between two side walls, or a cap edge where a side wall meets the top or base:
+
+```lua
+bearcad.fillet_edge{
+  extrusion = 0,
+  edge = { kind = "vertical", face = 0, edge = 2 },
+  radius = 8,
+}
+bearcad.chamfer_edge{
+  extrusion = 0,
+  edge = { kind = "cap", face = 0, edge = 1, top = true },
+  distance = 3,
+}
+```
+
+Rounding several edges at once takes **one call** with `edges`, matching what a Shift+click
+multi-edge commit does in the app:
+
+```lua
+bearcad.fillet_edge{
+  extrusion = 0,
+  edges = {
+    { kind = "vertical", face = 0, edge = 0 },
+    { kind = "vertical", face = 0, edge = 1 },
+    { kind = "vertical", face = 0, edge = 2 },
+    { kind = "vertical", face = 0, edge = 3 },
+  },
+  radius = 8,
+}
+```
+
+One call is one operation, and an operation bevels the body its extrusion built. Four
+separate one-edge calls would each round that same sharp box and leave four bodies sitting
+on top of each other, so keep a set in a single call. An entry may name its own
+`extrusion = i, edge = {...}` to span several extrusions in the one operation.
+
 ## Constraints and parameters
 
 ```lua

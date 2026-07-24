@@ -1555,16 +1555,11 @@ pub enum Action {
     /// same face (a vertex miter — this mesh-bevel approximation doesn't attempt to blend
     /// three-or-more bevels together). Atomic and declarative: usable directly from Lua
     /// (`bearcad.chamfer_edge`/`fillet_edge`) as well as from the interactive gizmo tool.
-    /// Apply one chamfer/fillet amount to a whole set of edges as a single undo group
-    /// (#166); each entry commits via [`Action::CommitEdgeTreatment`] internally.
+    /// Apply one chamfer/fillet amount to a whole set of edges (#166) as a single operation —
+    /// not one operation per edge, which would each bevel the same sharp input body and leave
+    /// the outputs overlapping (#672).
     CommitEdgeTreatments {
         edges: Vec<(usize, ExtrusionEdgeRef)>,
-        kind: VertexTreatmentKind,
-        amount: f32,
-    },
-    CommitEdgeTreatment {
-        extrusion: usize,
-        edge: ExtrusionEdgeRef,
         kind: VertexTreatmentKind,
         amount: f32,
     },
@@ -7516,10 +7511,6 @@ impl AppState {
             }
             Action::CommitEdgeTreatments { edges, kind, amount } => {
                 self.commit_edge_treatment_op(edges, kind, amount)
-            }
-            Action::CommitEdgeTreatment { extrusion, edge, kind, amount } => {
-                // Single-edge entry point (scripting): one edge → a one-edge operation.
-                self.commit_edge_treatment_op(vec![(extrusion, edge)], kind, amount)
             }
             Action::EditEdgeTreatment { extrusion, index } => {
                 let Some(treatment) = self
@@ -18893,9 +18884,8 @@ mod tests {
     fn undo_reverts_a_single_edge_treatment() {
         let mut state = box_extrusion_state();
         let edge = crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
-        state.apply(Action::CommitEdgeTreatment {
-            extrusion: 0,
-            edge,
+        state.apply(Action::CommitEdgeTreatments {
+            edges: vec![(0, edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.0,
         });
@@ -18953,9 +18943,8 @@ mod tests {
             .unwrap()
             .triangles
             .len();
-        let result = state.apply(Action::CommitEdgeTreatment {
-            extrusion: 0,
-            edge,
+        let result = state.apply(Action::CommitEdgeTreatments {
+            edges: vec![(0, edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.0,
         });
@@ -18977,9 +18966,8 @@ mod tests {
     fn commit_edge_treatment_fillets_a_cap_edge() {
         let mut state = box_extrusion_state();
         let edge = crate::model::ExtrusionEdgeRef::Cap { face: 0, edge: 1, top: true };
-        let result = state.apply(Action::CommitEdgeTreatment {
-            extrusion: 0,
-            edge,
+        let result = state.apply(Action::CommitEdgeTreatments {
+            edges: vec![(0, edge)],
             kind: VertexTreatmentKind::Fillet,
             amount: 1.5,
         });
@@ -18994,9 +18982,8 @@ mod tests {
     fn edit_edge_treatment_reopens_the_gizmo() {
         let mut state = box_extrusion_state();
         let edge = crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
-        state.apply(Action::CommitEdgeTreatment {
-            extrusion: 0,
-            edge,
+        state.apply(Action::CommitEdgeTreatments {
+            edges: vec![(0, edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 3.0,
         });
@@ -19015,9 +19002,8 @@ mod tests {
         assert!(cet.pending_focus);
 
         // Committing a new amount rebuilds the operation (the old one stays tombstoned).
-        state.apply(Action::CommitEdgeTreatment {
-            extrusion: 0,
-            edge,
+        state.apply(Action::CommitEdgeTreatments {
+            edges: vec![(0, edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 1.5,
         });
@@ -19037,16 +19023,14 @@ mod tests {
     fn commit_edge_treatment_re_editing_replaces_rather_than_stacks() {
         let mut state = box_extrusion_state();
         let edge = crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
-        state.apply(Action::CommitEdgeTreatment {
-            extrusion: 0,
-            edge,
+        state.apply(Action::CommitEdgeTreatments {
+            edges: vec![(0, edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 1.0,
         });
         state.apply(Action::EditEdgeTreatmentOp { op: 0 });
-        state.apply(Action::CommitEdgeTreatment {
-            extrusion: 0,
-            edge,
+        state.apply(Action::CommitEdgeTreatments {
+            edges: vec![(0, edge)],
             kind: VertexTreatmentKind::Fillet,
             amount: 2.5,
         });
@@ -19088,17 +19072,15 @@ mod tests {
     #[test]
     fn commit_edge_treatment_rejects_nonpositive_amount_and_out_of_range_edge() {
         let mut state = box_extrusion_state();
-        let bad_amount = state.apply(Action::CommitEdgeTreatment {
-            extrusion: 0,
-            edge: crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 },
+        let bad_amount = state.apply(Action::CommitEdgeTreatments {
+            edges: vec![(0, crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],
             kind: VertexTreatmentKind::Chamfer,
             amount: 0.0,
         });
         assert!(matches!(bad_amount, ActionResult::Err(_)));
 
-        let out_of_range = state.apply(Action::CommitEdgeTreatment {
-            extrusion: 0,
-            edge: crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 99 },
+        let out_of_range = state.apply(Action::CommitEdgeTreatments {
+            edges: vec![(0, crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 99 })],
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.0,
         });
@@ -19113,9 +19095,8 @@ mod tests {
     #[test]
     fn commit_edge_treatment_rejects_a_kernel_infeasible_amount() {
         let mut state = box_extrusion_state();
-        let result = state.apply(Action::CommitEdgeTreatment {
-            extrusion: 0,
-            edge: crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 },
+        let result = state.apply(Action::CommitEdgeTreatments {
+            edges: vec![(0, crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],
             kind: VertexTreatmentKind::Fillet,
             amount: 500.0,
         });
@@ -19210,9 +19191,8 @@ mod tests {
         // Any later document mutation re-asserts the warning while the state persists. (A
         // valid chamfer on a far edge commits fine: the kernel trial only rejects when the
         // *base* shape builds, and this document's base is already kernel-infeasible.)
-        let result = reopened.apply(Action::CommitEdgeTreatment {
-            extrusion: 0,
-            edge: crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 2 },
+        let result = reopened.apply(Action::CommitEdgeTreatments {
+            edges: vec![(0, crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 2 })],
             kind: VertexTreatmentKind::Chamfer,
             amount: 1.0,
         });
@@ -19243,9 +19223,8 @@ mod tests {
             target: None,
             symmetric: false,
         });
-        let result = state.apply(Action::CommitEdgeTreatment {
-            extrusion: 0,
-            edge: crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 },
+        let result = state.apply(Action::CommitEdgeTreatments {
+            edges: vec![(0, crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 })],
             kind: VertexTreatmentKind::Chamfer,
             amount: 1.0,
         });

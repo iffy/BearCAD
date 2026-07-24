@@ -16,18 +16,22 @@ bearcad.ui.pane("parameters", "hide")
 bearcad.rect{ x = 0, y = 0, width = 80, height = 50, name = "Base" }
 bearcad.extrude{ polygon = { 0, 1, 2, 3 }, distance = 20, name = "Block" }
 
--- Cut the two long top edges flat (opposite edges — bevels meeting at a shared
--- corner aren't supported).
-for _, edge in ipairs({0, 2}) do
-  bearcad.chamfer_edge{
-    extrusion = 0,
-    edge = { kind = "cap", face = 0, edge = edge, top = true },
-    distance = 6,
-  }
-end
+-- Cut the two long top edges flat in one operation (opposite edges — bevels meeting at
+-- a shared corner aren't supported). One call per edge would give two operations each
+-- cutting the *same* sharp box, and the overlapping outputs would hide both (#672).
+bearcad.chamfer_edge{
+  extrusion = 0,
+  edges = {
+    { kind = "cap", face = 0, edge = 0, top = true },
+    { kind = "cap", face = 0, edge = 2, top = true },
+  },
+  distance = 6,
+}
 
 bearcad.exit_sketch()
 bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
+-- The source sketch too: its rectangle sits outside the beveled body and reads as a stray outline.
+bearcad.set_visible({ kind = "sketch", index = 0 }, "hide")
 -- Hide the ground grid too for a clean background (#579).
 bearcad.ui.ground("off")
 bearcad.ui.tool("dimension")

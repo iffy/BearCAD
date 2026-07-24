@@ -21,18 +21,25 @@ bearcad.ui.pane("parameters", "hide")
 bearcad.rect{ x = 0, y = 0, width = 80, height = 50, name = "Base" }
 bearcad.extrude{ polygon = { 0, 1, 2, 3 }, distance = 20, name = "Block" }
 
--- Round each of the four vertical edges of the box (edges 0-3 of face 0).
-for edge = 0, 3 do
-  bearcad.fillet_edge{
-    extrusion = 0,
-    edge = { kind = "vertical", face = 0, edge = edge },
-    radius = 8,
-  }
-end
+-- Round all four vertical edges of the box in one operation (edges 0-3 of face 0).
+-- One call per edge would give four operations each rounding the *same* sharp box, and
+-- the overlapping outputs would render as an unfilleted block (#672).
+bearcad.fillet_edge{
+  extrusion = 0,
+  edges = {
+    { kind = "vertical", face = 0, edge = 0 },
+    { kind = "vertical", face = 0, edge = 1 },
+    { kind = "vertical", face = 0, edge = 2 },
+    { kind = "vertical", face = 0, edge = 3 },
+  },
+  radius = 8,
+}
 
 bearcad.exit_sketch()
 -- Hide the ground plane's display quad; it reads as a stray tan patch behind the body.
 bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
+-- The source sketch too: its rectangle sits outside the rounded body and reads as a stray outline.
+bearcad.set_visible({ kind = "sketch", index = 0 }, "hide")
 -- Hide the ground grid too for a clean background (#579).
 bearcad.ui.ground("off")
 -- The OS cursor parks wherever the desktop left it (often mid-viewport) and would

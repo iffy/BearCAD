@@ -606,6 +606,43 @@ fn parse_extrusion_edge_table(table: Table) -> mlua::Result<ExtrusionEdgeRef> {
     }
 }
 
+/// Parses the edge argument of `bearcad.chamfer_edge`/`fillet_edge`: either a single
+/// `edge = { ... }` alongside a top-level `extrusion`, or `edges = { {...}, ... }` — a whole set
+/// treated by one operation (#672). Each entry of `edges` may name its own `extrusion`, falling
+/// back to the top-level one. The plural form matters: two one-edge operations each bevel the
+/// extrusion's own body, so their outputs overlap instead of compounding.
+fn parse_extrusion_edge_set(opts: &Table) -> mlua::Result<Vec<(usize, ExtrusionEdgeRef)>> {
+    let default_extrusion: Option<usize> = opts.get("extrusion")?;
+    if let Some(list) = opts.get::<Option<Vec<Table>>>("edges")? {
+        if list.is_empty() {
+            return Err(mlua::Error::external("`edges` must name at least one edge"));
+        }
+        return list
+            .into_iter()
+            .map(|entry| {
+                // An entry is either { extrusion = i, edge = {...} } or the edge table itself,
+                // whose own `edge` field is an index — so the shape, not the key, decides.
+                let wrapped = match entry.get::<Value>("edge")? {
+                    Value::Table(inner) => Some(inner),
+                    _ => None,
+                };
+                let (extrusion, edge_table) = match wrapped {
+                    Some(inner) => (entry.get::<Option<usize>>("extrusion")?, inner),
+                    None => (None, entry),
+                };
+                let extrusion = extrusion.or(default_extrusion).ok_or_else(|| {
+                    mlua::Error::external("each `edges` entry needs an `extrusion`")
+                })?;
+                Ok((extrusion, parse_extrusion_edge_table(edge_table)?))
+            })
+            .collect();
+    }
+    let extrusion = default_extrusion
+        .ok_or_else(|| mlua::Error::external("chamfer_edge/fillet_edge requires an `extrusion`"))?;
+    let edge_table: Table = opts.get("edge")?;
+    Ok(vec![(extrusion, parse_extrusion_edge_table(edge_table)?)])
+}
+
 /// Parses `bearcad.combine{}`/`bearcad.edit_boolean{}` arguments: the op kind, the A and
 /// B input body lists, and the keep-B flag.
 fn parse_boolean_op_args(
@@ -4126,14 +4163,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "chamfer_edge",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let extrusion: usize = opts.get("extrusion")?;
-            let edge_table: Table = opts.get("edge")?;
-            let edge = parse_extrusion_edge_table(edge_table)?;
+            let edges = parse_extrusion_edge_set(&opts)?;
             let distance: f32 = opts.get("distance")?;
             unsafe {
                 tick.exec(Instruction::EdgeTreatment {
-                    extrusion,
-                    edge,
+                    edges,
                     kind: VertexTreatmentKind::Chamfer,
                     amount: distance,
                 })?;
@@ -4146,14 +4180,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "fillet_edge",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let extrusion: usize = opts.get("extrusion")?;
-            let edge_table: Table = opts.get("edge")?;
-            let edge = parse_extrusion_edge_table(edge_table)?;
+            let edges = parse_extrusion_edge_set(&opts)?;
             let radius: f32 = opts.get("radius")?;
             unsafe {
                 tick.exec(Instruction::EdgeTreatment {
-                    extrusion,
-                    edge,
+                    edges,
                     kind: VertexTreatmentKind::Fillet,
                     amount: radius,
                 })?;
@@ -5270,6 +5301,36 @@ mod tests {
         assert_ne!(mesh.triangles.len(), 12);
     }
 
+    /// #672: `edges = { ... }` treats the whole set in ONE operation. Four separate one-edge
+    /// calls would each bevel the extrusion's own sharp body, leaving four overlapping outputs
+    /// that read as an unfilleted box.
+    #[test]
+    fn lua_fillet_edge_treats_an_edge_set_as_one_operation() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ x = 0, y = 0, width = 80, height = 50 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 20 }
+            bearcad.fillet_edge{
+                extrusion = 0,
+                edges = {
+                    { kind = "vertical", face = 0, edge = 0 },
+                    { kind = "vertical", face = 0, edge = 1 },
+                    { kind = "vertical", face = 0, edge = 2 },
+                    { kind = "vertical", face = 0, edge = 3 },
+                },
+                radius = 8,
+            }
+        "#,
+        );
+        assert_eq!(state.doc.edge_treatment_ops.len(), 1, "one operation, not one per edge");
+        assert_eq!(state.doc.edge_treatment_ops[0].edges.len(), 4);
+        // One output body, and it carries all four rounds (far more than the box's 12 triangles).
+        assert_eq!(state.doc.edge_treatment_ops[0].outputs.len(), 1);
+        let output = state.doc.edge_treatment_ops[0].outputs[0];
+        let mesh = crate::extrude::body_solid_mesh(&state.doc, output).unwrap();
+        assert!(mesh.triangles.len() > 12, "{} triangles", mesh.triangles.len());
+    }
+
     #[test]
     fn lua_fillet_edge_bevels_a_cap_edge_with_a_faceted_arc() {
         let state = run_lua(
@@ -5328,9 +5389,8 @@ mod tests {
         );
         let edge = crate::model::ExtrusionEdgeRef::Vertical { face: 0, edge: 0 };
         assert_eq!(
-            state.apply(crate::actions::Action::CommitEdgeTreatment {
-                extrusion: 0,
-                edge,
+            state.apply(crate::actions::Action::CommitEdgeTreatments {
+                edges: vec![(0, edge)],
                 kind: VertexTreatmentKind::Fillet,
                 amount: 2.75,
             }),

@@ -4262,7 +4262,7 @@ pub fn extrusion_edge_anchor(doc: &Document, extrusion: usize, edge: ExtrusionEd
 /// Whether `kind`/`amount` would actually produce a non-degenerate bevel at `edge` right now —
 /// i.e. [`corner_bevel_3d`] succeeds at every vertex the edge touches. Used to give a precise
 /// "corner is degenerate" rejection (mirroring [`crate::model::vertex_treatment_geometry`]'s
-/// own failure mode for the 2D case) before [`crate::actions::Action::CommitEdgeTreatment`]
+/// own failure mode for the 2D case) before [`crate::actions::Action::CommitEdgeTreatments`]
 /// stores the treatment, rather than relying on the mesh builder's silent per-treatment
 /// fallback (which never panics, but also never reports *why* an edge didn't visibly change).
 pub fn edge_treatment_would_bevel(
@@ -4350,7 +4350,7 @@ pub fn edge_treatment_would_bevel(
 /// existing treatment of the same edge, so re-dragging an already-treated edge updates it in
 /// place rather than stacking a duplicate). Used both for the live interactive preview (a ghost
 /// extrusion fed straight into `extrusion_mesh`, never touching `doc` until commit) and by
-/// [`crate::actions::Action::CommitEdgeTreatment`] to build the value it stores.
+/// [`crate::actions::Action::CommitEdgeTreatments`] to build the value it stores.
 pub fn extrusion_with_edge_treatment(
     doc: &Document,
     extrusion: usize,

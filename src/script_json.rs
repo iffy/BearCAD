@@ -537,17 +537,13 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             })
         }
         "chamfer_edge" | "fillet_edge" => {
-            let edge = extrusion_edge_from_json(
-                o.get("edge").ok_or_else(|| format!("{name} requires an `edge`"))?,
-            )?;
             let (kind, amount_key) = if name == "chamfer_edge" {
                 (VertexTreatmentKind::Chamfer, "distance")
             } else {
                 (VertexTreatmentKind::Fillet, "radius")
             };
             Ok(Instruction::EdgeTreatment {
-                extrusion: req_usize(o, "extrusion", name)?,
-                edge,
+                edges: extrusion_edge_set_from_json(o, name)?,
                 kind,
                 amount: req_f32(o, amount_key, name)?,
             })
@@ -990,6 +986,43 @@ fn extrusion_edge_from_json(v: &Value) -> Result<ExtrusionEdgeRef, String> {
             "unknown extrusion edge kind '{other}' (expected 'vertical' or 'cap')"
         )),
     }
+}
+
+/// The edge argument of a `chamfer_edge`/`fillet_edge` object: either a single `edge` beside a
+/// top-level `extrusion`, or an `edges` array treated by one operation (#672). An `edges` entry
+/// is `{ "extrusion": i, "edge": {...} }`, or the edge object itself when the top-level
+/// `extrusion` covers it.
+fn extrusion_edge_set_from_json(
+    o: &serde_json::Map<String, Value>,
+    name: &str,
+) -> Result<Vec<(usize, ExtrusionEdgeRef)>, String> {
+    let default_extrusion = opt_usize(o, "extrusion")?;
+    if let Some(list) = o.get("edges") {
+        let list = list.as_array().ok_or_else(|| format!("{name} `edges` must be an array"))?;
+        if list.is_empty() {
+            return Err(format!("{name} `edges` must name at least one edge"));
+        }
+        return list
+            .iter()
+            .map(|entry| {
+                let obj = entry.as_object().ok_or("edge spec must be an object")?;
+                // `edge` is an object in the wrapped form and an index in the bare edge spec,
+                // whose own `edge` field numbers the edge — so the shape, not the key, decides.
+                let (extrusion, edge_value) = match obj.get("edge").filter(|v| v.is_object()) {
+                    Some(inner) => (opt_usize(obj, "extrusion")?, inner),
+                    None => (None, entry),
+                };
+                let extrusion = extrusion
+                    .or(default_extrusion)
+                    .ok_or_else(|| format!("{name} `edges` entry requires an `extrusion`"))?;
+                Ok((extrusion, extrusion_edge_from_json(edge_value)?))
+            })
+            .collect();
+    }
+    let edge = extrusion_edge_from_json(
+        o.get("edge").ok_or_else(|| format!("{name} requires an `edge`"))?,
+    )?;
+    Ok(vec![(req_usize(o, "extrusion", name)?, edge)])
 }
 
 /// A distance-constraint target from a `{ kind, index }` object (mirrors
@@ -2432,8 +2465,7 @@ mod tests {
                 &json!({ "extrusion": 0, "edge": { "kind": "vertical", "face": 0, "edge": 2 }, "radius": 1.5 })
             ),
             Ok(Instruction::EdgeTreatment {
-                extrusion: 0,
-                edge: ExtrusionEdgeRef::Vertical { face: 0, edge: 2 },
+                edges: vec![(0, ExtrusionEdgeRef::Vertical { face: 0, edge: 2 })],
                 kind: VertexTreatmentKind::Fillet,
                 amount: 1.5,
             })
@@ -2444,12 +2476,30 @@ mod tests {
                 &json!({ "extrusion": 1, "edge": { "kind": "cap", "face": 0, "edge": 3, "top": true }, "distance": 2 })
             ),
             Ok(Instruction::EdgeTreatment {
-                extrusion: 1,
-                edge: ExtrusionEdgeRef::Cap { face: 0, edge: 3, top: true },
+                edges: vec![(1, ExtrusionEdgeRef::Cap { face: 0, edge: 3, top: true })],
                 kind: VertexTreatmentKind::Chamfer,
                 amount: 2.0,
             })
         );
+        // The plural form (#672): one call, one operation over the whole set.
+        assert_eq!(
+            instruction_from_json(
+                "fillet_edge",
+                &json!({ "extrusion": 0, "edges": [
+                    { "kind": "vertical", "face": 0, "edge": 0 },
+                    { "extrusion": 1, "edge": { "kind": "vertical", "face": 0, "edge": 2 } }
+                ], "radius": 8 })
+            ),
+            Ok(Instruction::EdgeTreatment {
+                edges: vec![
+                    (0, ExtrusionEdgeRef::Vertical { face: 0, edge: 0 }),
+                    (1, ExtrusionEdgeRef::Vertical { face: 0, edge: 2 }),
+                ],
+                kind: VertexTreatmentKind::Fillet,
+                amount: 8.0,
+            })
+        );
+        assert!(instruction_from_json("fillet_edge", &json!({ "edges": [], "radius": 1 })).is_err());
         assert!(instruction_from_json("chamfer_vertex", &json!({ "distance": 2 })).is_err());
     }
 

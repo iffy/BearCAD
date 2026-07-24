@@ -447,13 +447,16 @@ pub enum Instruction {
         /// parameter keeps the bevel following that parameter (#538/#554).
         amount: String,
     },
-    /// Chamfer or fillet an analytic edge of an extrusion's 3D solid (#77) — a mesh-bevel
+    /// Chamfer or fillet analytic edges of extrusions' 3D solids (#77) — a mesh-bevel
     /// approximation scoped to the vertical and side/cap edges of a `Rect`/`Polygon`-profiled
     /// extrusion (see `crate::model::ExtrusionEdgeRef`, SPEC §3.4). `amount` is the chamfer
     /// distance or fillet radius depending on `kind`.
+    ///
+    /// `edges` is the whole set treated by *one* operation (#672). Treating four edges is not
+    /// the same as four one-edge operations: each operation bevels the extrusion's own body, so
+    /// a second one would start over from the sharp box and the two outputs would overlap.
     EdgeTreatment {
-        extrusion: usize,
-        edge: crate::model::ExtrusionEdgeRef,
+        edges: Vec<(usize, crate::model::ExtrusionEdgeRef)>,
         kind: VertexTreatmentKind,
         amount: f32,
     },
@@ -1168,15 +1171,29 @@ impl Instruction {
                     constraint_point_lua_ref(point)
                 )
             }
-            Instruction::EdgeTreatment { extrusion, edge, kind, amount } => {
+            Instruction::EdgeTreatment { edges, kind, amount } => {
                 let (fname, amount_key) = match kind {
                     VertexTreatmentKind::Chamfer => ("chamfer_edge", "distance"),
                     VertexTreatmentKind::Fillet => ("fillet_edge", "radius"),
                 };
-                format!(
-                    "bearcad.{fname}{{ extrusion = {extrusion}, edge = {}, {amount_key} = {amount} }}",
-                    extrusion_edge_lua_ref(*edge)
-                )
+                // One edge keeps the singular, readable form; a set spells out `edges`.
+                match edges.as_slice() {
+                    [(extrusion, edge)] => format!(
+                        "bearcad.{fname}{{ extrusion = {extrusion}, edge = {}, {amount_key} = {amount} }}",
+                        extrusion_edge_lua_ref(*edge)
+                    ),
+                    many => {
+                        let list = many
+                            .iter()
+                            .map(|(extrusion, edge)| {
+                                let e = extrusion_edge_lua_ref(*edge);
+                                format!("{{ extrusion = {extrusion}, edge = {e} }}")
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("bearcad.{fname}{{ edges = {{ {list} }}, {amount_key} = {amount} }}")
+                    }
+                }
             }
             Instruction::SetLineLength { value } => {
                 format!("bearcad.set_dim(\"length\", {value:?})")
@@ -2018,14 +2035,11 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
             })
         }
         Action::ZoomToFit => Some(Instruction::ZoomFit),
-        Action::CommitEdgeTreatment { extrusion, edge, kind, amount } => {
-            Some(Instruction::EdgeTreatment {
-                extrusion: *extrusion,
-                edge: *edge,
-                kind: *kind,
-                amount: *amount,
-            })
-        }
+        Action::CommitEdgeTreatments { edges, kind, amount } => Some(Instruction::EdgeTreatment {
+            edges: edges.clone(),
+            kind: *kind,
+            amount: *amount,
+        }),
         _ => None,
     }
 }
@@ -2171,24 +2185,20 @@ pub fn instruction_for_new_sweep(doc: &crate::model::Document) -> Option<Instruc
     })
 }
 
-/// Command-log instructions for a just-committed edge-treatment operation (#531): one
-/// `chamfer_edge`/`fillet_edge` per treated edge on the last operation (an interactive
-/// multi-edge commit records as several single-edge script calls).
+/// Command-log instructions for a just-committed edge-treatment operation (#531): a single
+/// `chamfer_edge`/`fillet_edge` call carrying every treated edge, so replaying the log rebuilds
+/// the one operation the user committed rather than one operation per edge (#672).
 pub fn instructions_for_new_edge_treatment_op(
     doc: &crate::model::Document,
 ) -> Vec<Instruction> {
     let Some(op) = doc.edge_treatment_ops.last() else {
         return Vec::new();
     };
-    op.edges
-        .iter()
-        .map(|te| Instruction::EdgeTreatment {
-            extrusion: te.extrusion,
-            edge: te.edge,
-            kind: op.kind,
-            amount: op.amount,
-        })
-        .collect()
+    vec![Instruction::EdgeTreatment {
+        edges: op.edges.iter().map(|te| (te.extrusion, te.edge)).collect(),
+        kind: op.kind,
+        amount: op.amount,
+    }]
 }
 
 /// Render a boolean-operation call (`bearcad.combine{}` / `bearcad.edit_boolean{}`).
@@ -4202,9 +4212,8 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::EdgeTreatment { extrusion, edge, kind, amount } => {
-                let result =
-                    state.apply(Action::CommitEdgeTreatment { extrusion, edge, kind, amount });
+            Instruction::EdgeTreatment { edges, kind, amount } => {
+                let result = state.apply(Action::CommitEdgeTreatments { edges, kind, amount });
                 self.record_action_error(result);
                 StepResult::Continue
             }
@@ -5552,8 +5561,7 @@ mod tests {
         use crate::model::ExtrusionEdgeRef;
         let edge = ExtrusionEdgeRef::Vertical { face: 0, edge: 2 };
         let chamfer = Instruction::EdgeTreatment {
-            extrusion: 1,
-            edge,
+            edges: vec![(1, edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 3.0,
         };
@@ -5563,14 +5571,28 @@ mod tests {
         );
         let cap_edge = ExtrusionEdgeRef::Cap { face: 1, edge: 3, top: true };
         let fillet = Instruction::EdgeTreatment {
-            extrusion: 0,
-            edge: cap_edge,
+            edges: vec![(0, cap_edge)],
             kind: VertexTreatmentKind::Fillet,
             amount: 1.5,
         };
         assert_eq!(
             fillet.as_lua(),
             "bearcad.fillet_edge{ extrusion = 0, edge = { kind = \"cap\", face = 1, edge = 3, top = true }, radius = 1.5 }"
+        );
+        // A whole set (#672) renders as the plural `edges` list — one call, one operation.
+        let set = Instruction::EdgeTreatment {
+            edges: vec![(0, edge), (0, cap_edge)],
+            kind: VertexTreatmentKind::Fillet,
+            amount: 8.0,
+        };
+        assert_eq!(
+            set.as_lua(),
+            concat!(
+                "bearcad.fillet_edge{ edges = ",
+                "{ { extrusion = 0, edge = { kind = \"vertical\", face = 0, edge = 2 } }, ",
+                "{ extrusion = 0, edge = { kind = \"cap\", face = 1, edge = 3, top = true } } }, ",
+                "radius = 8 }"
+            )
         );
     }
 
@@ -5579,17 +5601,15 @@ mod tests {
         use crate::model::ExtrusionEdgeRef;
         let doc = crate::model::Document::default();
         let edge = ExtrusionEdgeRef::Cap { face: 0, edge: 1, top: false };
-        let action = Action::CommitEdgeTreatment {
-            extrusion: 2,
-            edge,
+        let action = Action::CommitEdgeTreatments {
+            edges: vec![(2, edge)],
             kind: VertexTreatmentKind::Chamfer,
             amount: 2.5,
         };
         assert_eq!(
             instruction_from_action(&action, &doc),
             Some(Instruction::EdgeTreatment {
-                extrusion: 2,
-                edge,
+                edges: vec![(2, edge)],
                 kind: VertexTreatmentKind::Chamfer,
                 amount: 2.5,
             })
