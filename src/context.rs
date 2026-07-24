@@ -247,12 +247,12 @@ pub struct MoveControl {
     /// Whether the Bodies picker is the focused one (#658) — false while any of the tool's
     /// other pickers is armed.
     pub bodies_focused: bool,
-    /// The picked source point's label, if any (#649), and whether its picker is armed.
-    pub source_point_rows: Vec<String>,
-    pub source_point_focused: bool,
-    /// The picked target point's label, if any (#650), and whether its picker is armed.
-    pub target_point_rows: Vec<String>,
-    pub target_point_focused: bool,
+    /// **Start point A** (#668): the picked point's label, if any, and whether its picker is armed.
+    pub start_a_rows: Vec<String>,
+    pub start_a_focused: bool,
+    /// **End point A** (#668): the picked point's label, if any, and whether its picker is armed.
+    pub end_a_rows: Vec<String>,
+    pub end_a_focused: bool,
     pub tx: String,
     pub ty: String,
     pub tz: String,
@@ -269,11 +269,11 @@ pub enum MoveEdit {
     /// Translate dropdown (#648).
     TranslateMode(crate::model::MoveTranslateMode),
     /// Arm / clear the source-point picker (#649).
-    SourcePointFocus,
-    ClearSourcePoint,
+    StartAFocus,
+    ClearStartA,
     /// Arm / clear the target-point picker (#650).
-    TargetPointFocus,
-    ClearTargetPoint,
+    EndAFocus,
+    ClearEndA,
     Commit,
 }
 
@@ -3050,8 +3050,8 @@ pub fn show_pane(
                 pending = Some(MoveEdit::TranslateMode(mode));
             }
         }
-        // The source point is picked in both modes (#649): it's the handle a snap moves *from*,
-        // and it's what the rotation point defaults to.
+        // Start point A is picked in both modes (#649/#668): it's the handle a snap moves
+        // *from*.
         let mut picker_row = |ui: &mut egui::Ui,
                               label: &str,
                               id: &'static str,
@@ -3078,24 +3078,24 @@ pub fn show_pane(
         };
         picker_row(
             ui,
-            "Source point",
-            "move_source_point",
-            &control.source_point_rows,
-            control.source_point_focused,
-            MoveEdit::SourcePointFocus,
-            MoveEdit::ClearSourcePoint,
+            "Start point A",
+            "move_start_point_a",
+            &control.start_a_rows,
+            control.start_a_focused,
+            MoveEdit::StartAFocus,
+            MoveEdit::ClearStartA,
         );
-        // Snap (#650): a target point on stationary geometry; the offset is derived from the
-        // pair, so there are no X/Y/Z fields.
+        // Snap (#650/#668): end point A on stationary geometry; the offset is derived from
+        // the pair, so there are no X/Y/Z fields.
         if control.translate_mode == crate::model::MoveTranslateMode::Snap {
             picker_row(
                 ui,
-                "Target point",
-                "move_target_point",
-                &control.target_point_rows,
-                control.target_point_focused,
-                MoveEdit::TargetPointFocus,
-                MoveEdit::ClearTargetPoint,
+                "End point A",
+                "move_end_point_a",
+                &control.end_a_rows,
+                control.end_a_focused,
+                MoveEdit::EndAFocus,
+                MoveEdit::ClearEndA,
             );
         }
         drop(picker_row);
@@ -5322,10 +5322,10 @@ mod tests {
             move_op: Some(MoveControl {
                 translate_mode: crate::model::MoveTranslateMode::Free,
                 bodies_focused: true,
-                source_point_rows: Vec::new(),
-                source_point_focused: false,
-                target_point_rows: Vec::new(),
-                target_point_focused: false,
+                start_a_rows: Vec::new(),
+                start_a_focused: false,
+                end_a_rows: Vec::new(),
+                end_a_focused: false,
                 targets: vec![1, 4],
                 tx: String::new(),
                 ty: String::new(),

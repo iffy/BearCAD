@@ -430,10 +430,10 @@ struct AngleGizmoDrag {
 enum MoveFocus {
     /// The bodies being moved.
     Bodies,
-    /// A point on one of the **moving** bodies (#649).
-    SourcePoint,
-    /// A point on **stationary** geometry the source lands on (#650).
-    TargetPoint,
+    /// **Start point A**: a point on one of the **moving** bodies (#649/#668).
+    StartPointA,
+    /// **End point A**: the point on stationary geometry that start A lands on (#650/#668).
+    EndPointA,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -5787,11 +5787,11 @@ impl App {
         };
         let focus = self.move_focus();
         // Point pick (#649/#650/#651): the focused picker takes a body corner or edge midpoint
-        // instead of toggling a body. The source point must sit on a moving body and the
+        // instead of toggling a body. Start point A must sit on a moving body and end point A
         // target on a stationary one; the rotation point may be either.
         if let Some((side, what)) = match focus {
-            MoveFocus::SourcePoint => Some((Some(true), "source")),
-            MoveFocus::TargetPoint => Some((Some(false), "target")),
+            MoveFocus::StartPointA => Some((Some(true), "start")),
+            MoveFocus::EndPointA => Some((Some(false), "end")),
             _ => None,
         } {
             match self.pick_move_point(pp, project, pick_occlusion, side) {
@@ -5799,8 +5799,8 @@ impl App {
                     let label = self.move_point_label(&point);
                     if let Some(cm) = self.state.creating_move.as_mut() {
                         match focus {
-                            MoveFocus::SourcePoint => cm.source_point = Some(point),
-                            _ => cm.target_point = Some(point),
+                            MoveFocus::StartPointA => cm.start_point_a = Some(point),
+                            _ => cm.end_point_a = Some(point),
                         }
                     }
                     self.release_satisfied_move_focus();
@@ -5877,8 +5877,8 @@ impl App {
                     self.state.creating_move = Some(actions::CreatingMove {
                         targets: existing.targets,
                         translate_mode: existing.translate_mode,
-                        source_point: existing.source_point,
-                        target_point: existing.target_point,
+                        start_point_a: existing.start_point_a,
+                        end_point_a: existing.end_point_a,
                         plane_targets: existing.plane_targets,
                         image_targets: existing.image_targets,
                         tx: existing.tx,
@@ -6489,9 +6489,8 @@ impl App {
 
     /// Which Move picker the next viewport click feeds (#656). A picker the user focused by
     /// hand wins; otherwise the tool **steps through** its pickers on its own — bodies, then
-    /// the source point, then whatever the chosen Snap modes still need — so picking one thing
-    /// arms the next without a trip to the pane. The rotation point isn't in the chain: it
-    /// already reads "Source point" and only needs visiting to override that.
+    /// start point A, then end point A when snapping — so picking one thing arms the next
+    /// without a trip to the pane.
     fn move_focus(&self) -> MoveFocus {
         move_focus_for(self.state.creating_move.as_ref(), self.move_focus_override)
     }
@@ -8666,16 +8665,16 @@ impl eframe::App for App {
                         targets: cm.map(|c| c.targets.clone()).unwrap_or_default(),
                         translate_mode: cm.map(|c| c.translate_mode).unwrap_or_default(),
                         bodies_focused: move_focus == MoveFocus::Bodies,
-                        source_point_rows: cm
-                            .and_then(|c| c.source_point)
+                        start_a_rows: cm
+                            .and_then(|c| c.start_point_a)
                             .map(|p| vec![self.move_point_label(&p)])
                             .unwrap_or_default(),
-                        source_point_focused: move_focus == MoveFocus::SourcePoint,
-                        target_point_rows: cm
-                            .and_then(|c| c.target_point)
+                        start_a_focused: move_focus == MoveFocus::StartPointA,
+                        end_a_rows: cm
+                            .and_then(|c| c.end_point_a)
                             .map(|p| vec![self.move_point_label(&p)])
                             .unwrap_or_default(),
-                        target_point_focused: move_focus == MoveFocus::TargetPoint,
+                        end_a_focused: move_focus == MoveFocus::EndPointA,
                         tx: cm.map(|c| c.tx.clone()).unwrap_or_default(),
                         ty: cm.map(|c| c.ty.clone()).unwrap_or_default(),
                         tz: cm.map(|c| c.tz.clone()).unwrap_or_default(),
@@ -9507,14 +9506,14 @@ impl eframe::App for App {
                 // Clicking a picker overrides the automatic step-through (#656); clearing one
                 // or committing hands the chain back.
                 match edit {
-                    context::MoveEdit::SourcePointFocus => {
-                        self.move_focus_override = Some(MoveFocus::SourcePoint)
+                    context::MoveEdit::StartAFocus => {
+                        self.move_focus_override = Some(MoveFocus::StartPointA)
                     }
-                    context::MoveEdit::TargetPointFocus => {
-                        self.move_focus_override = Some(MoveFocus::TargetPoint)
+                    context::MoveEdit::EndAFocus => {
+                        self.move_focus_override = Some(MoveFocus::EndPointA)
                     }
-                    context::MoveEdit::ClearSourcePoint
-                    | context::MoveEdit::ClearTargetPoint
+                    context::MoveEdit::ClearStartA
+                    | context::MoveEdit::ClearEndA
                     | context::MoveEdit::Commit => self.move_focus_override = None,
                     _ => {}
                 }
@@ -9532,10 +9531,10 @@ impl eframe::App for App {
                             context::MoveEdit::Ty(v) => cm.ty = v,
                             context::MoveEdit::Tz(v) => cm.tz = v,
                             context::MoveEdit::TranslateMode(m) => cm.translate_mode = m,
-                            context::MoveEdit::ClearSourcePoint => cm.source_point = None,
-                            context::MoveEdit::ClearTargetPoint => cm.target_point = None,
-                            context::MoveEdit::SourcePointFocus
-                            | context::MoveEdit::TargetPointFocus => {}
+                            context::MoveEdit::ClearStartA => cm.start_point_a = None,
+                            context::MoveEdit::ClearEndA => cm.end_point_a = None,
+                            context::MoveEdit::StartAFocus
+                            | context::MoveEdit::EndAFocus => {}
                             context::MoveEdit::Commit => unreachable!(),
                         }
                     }
@@ -10991,6 +10990,18 @@ fn repeat_axis_from_pick(
     }
 }
 
+/// The Move tool's start-A → end-A connector (#668): the world segment the translation spans,
+/// once both points are picked and both still resolve against their bodies' live meshes.
+fn move_snap_connector(
+    doc: &model::Document,
+    cm: &actions::CreatingMove,
+) -> Option<(Vec3, Vec3)> {
+    Some((
+        extrude::move_point_world(doc, &cm.start_point_a?)?,
+        extrude::move_point_world(doc, &cm.end_point_a?)?,
+    ))
+}
+
 /// The Move picker a viewport click feeds (#656): the hand-picked `override` when there is
 /// one, else the first step the tool still needs. See [`App::move_focus`].
 fn move_focus_for(
@@ -11006,11 +11017,11 @@ fn move_focus_for(
     if cm.targets.is_empty() {
         return MoveFocus::Bodies;
     }
-    if cm.source_point.is_none() {
-        return MoveFocus::SourcePoint;
+    if cm.start_point_a.is_none() {
+        return MoveFocus::StartPointA;
     }
-    if cm.translate_mode == model::MoveTranslateMode::Snap && cm.target_point.is_none() {
-        return MoveFocus::TargetPoint;
+    if cm.translate_mode == model::MoveTranslateMode::Snap && cm.end_point_a.is_none() {
+        return MoveFocus::EndPointA;
     }
     MoveFocus::Bodies
 }
@@ -11020,8 +11031,8 @@ fn move_focus_for(
 fn move_focus_satisfied(cm: &actions::CreatingMove, focus: MoveFocus) -> bool {
     match focus {
         MoveFocus::Bodies => false,
-        MoveFocus::SourcePoint => cm.source_point.is_some(),
-        MoveFocus::TargetPoint => cm.target_point.is_some(),
+        MoveFocus::StartPointA => cm.start_point_a.is_some(),
+        MoveFocus::EndPointA => cm.end_point_a.is_some(),
     }
 }
 
@@ -11317,9 +11328,10 @@ fn build_viewport_scene_input<'a>(
     vertex_treatment_preview: Option<Vec<Vec3>>,
     hover_highlight: Option<gpu_viewport::ViewportHoverHighlight>,
     extra_pick_highlights: Vec<construction::PickTargetKind>,
-    // Marks with a colour of their own (#660): the Move tool's green source point and red
-    // target point.
+    // Marks with a colour of their own (#660): the Move tool's green start point A and red
+    // end point A, plus the connector between them (#668).
     colored_pick_highlights: Vec<(construction::PickTargetKind, egui::Color32)>,
+    colored_segments: Vec<(Vec3, Vec3, egui::Color32)>,
     parameter_highlight_elements: Vec<SceneElement>,
     dimension_labels: &'a [gpu_viewport::ViewportDimLabel],
     dim_label_view: Option<PlanarLabelView>,
@@ -11632,8 +11644,8 @@ fn build_viewport_scene_input<'a>(
         let probe = model::MoveOperation {
             targets: cm.targets.clone(),
             translate_mode: cm.translate_mode,
-            source_point: cm.source_point,
-            target_point: cm.target_point,
+            start_point_a: cm.start_point_a,
+            end_point_a: cm.end_point_a,
             plane_targets: Vec::new(),
             image_targets: Vec::new(),
             tx: cm.tx.clone(),
@@ -11720,6 +11732,7 @@ fn build_viewport_scene_input<'a>(
         hover_highlight,
         extra_pick_highlights,
         colored_pick_highlights,
+        colored_segments,
         parameter_highlight_elements,
         hover_color: construction::PICK_HOVER_RGBA,
         document_health,
@@ -18337,7 +18350,7 @@ impl App {
             sketch_session,
             match self.move_focus() {
                 MoveFocus::Bodies => MovePickHover::Bodies,
-                MoveFocus::SourcePoint | MoveFocus::TargetPoint => MovePickHover::Point,
+                MoveFocus::StartPointA | MoveFocus::EndPointA => MovePickHover::Point,
             },
             repeat_axis_pick_active(self.state.creating_repeat.as_ref()),
             self.state.creating_plane.is_some(),
@@ -18564,6 +18577,16 @@ impl App {
             .as_ref()
             .map(|e| e.hovered_group_members())
             .unwrap_or_default();
+        // The start-A → end-A connector (#668): the translation drawn as a vector, in the
+        // same green→red pair the two point marks use (the line takes the end colour).
+        let move_connector: Vec<(Vec3, Vec3, egui::Color32)> = self
+            .state
+            .creating_move
+            .as_ref()
+            .filter(|_| self.state.tool == Tool::Move && self.state.sketch_session.is_none())
+            .and_then(|cm| move_snap_connector(&self.state.doc, cm))
+            .map(|(a, b)| vec![(a, b, theme::MOVE_END_POINT)])
+            .unwrap_or_default();
         // Move tool (#660): mark the picked points — source green ("go"), target red ("stop"),
         // and the rotation point in the pivot's own colour when it's been set apart from them.
         let move_point_marks: Vec<(construction::PickTargetKind, egui::Color32)> = self
@@ -18573,8 +18596,8 @@ impl App {
             .filter(|_| self.state.tool == Tool::Move && self.state.sketch_session.is_none())
             .map(|cm| {
                 [
-                    (cm.source_point, theme::MOVE_SOURCE_POINT),
-                    (cm.target_point, theme::MOVE_TARGET_POINT),
+                    (cm.start_point_a, theme::MOVE_START_POINT),
+                    (cm.end_point_a, theme::MOVE_END_POINT),
                 ]
                 .into_iter()
                 .filter_map(|(point, color)| {
@@ -18810,7 +18833,7 @@ impl App {
                 .state
                 .creating_move
                 .as_ref()
-                .filter(|cm| cm.source_point.is_some())
+                .filter(|cm| cm.start_point_a.is_some())
             {
                 for &bi in &cm.targets {
                     if !faded_bodies.contains(&bi) {
@@ -18945,6 +18968,7 @@ impl App {
             hover_highlight,
             exploder_group_highlight,
             move_point_marks,
+            move_connector,
             {
                 // Hovering a Parameters-pane row (or focusing its name/value cell)
                 // green-glows everything that parameter drives in the viewport (#620).
@@ -21170,6 +21194,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
             &[],
             None,
             None,
@@ -21256,6 +21281,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
             &[],
             None,
             None,
@@ -21330,6 +21356,7 @@ mod tests {
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
                 &[],
                 None,
                 None,
@@ -21348,20 +21375,62 @@ mod tests {
         let picking = actions::CreatingMove {
             targets: vec![0],
             translate_mode: MoveTranslateMode::Snap,
-            source_point: Some(MovePointRef::Vertex { body: 0, p: q(glam::Vec3::ZERO) }),
+            start_point_a: Some(MovePointRef::Vertex { body: 0, p: q(glam::Vec3::ZERO) }),
             ..Default::default()
         };
         assert_eq!(ghosts(Some(&picking)), 0, "an identity move has nothing to preview");
 
         // Both points picked: one ghost, at the destination.
         let snapped = actions::CreatingMove {
-            target_point: Some(MovePointRef::Vertex {
+            end_point_a: Some(MovePointRef::Vertex {
                 body: 0,
                 p: q(glam::Vec3::new(10.0, 0.0, 0.0)),
             }),
             ..picking
         };
         assert_eq!(ghosts(Some(&snapped)), 1, "the snapped destination ghosts");
+    }
+
+    /// #668: once both A points are picked, a connector spans them — the translation drawn as
+    /// a vector. Either point missing (or no longer resolving) draws nothing.
+    #[test]
+    fn move_snap_connector_spans_the_a_points() {
+        use super::move_snap_connector;
+        use crate::model::MovePointRef;
+        let q = crate::hierarchy::quantize_body_point;
+        let corner = glam::Vec3::new(10.0, 0.0, 0.0);
+
+        let mut doc = crate::model::Document::default();
+        doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles: vec![[glam::Vec3::ZERO, corner, glam::Vec3::new(0.0, 10.0, 0.0)]],
+            source_name: "tri".to_string(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+
+        let start = MovePointRef::Vertex { body: 0, p: q(glam::Vec3::ZERO) };
+        let end = MovePointRef::Vertex { body: 0, p: q(corner) };
+        let half = actions::CreatingMove { start_point_a: Some(start), ..Default::default() };
+        assert_eq!(move_snap_connector(&doc, &half), None, "one point isn't a vector");
+
+        let both = actions::CreatingMove { end_point_a: Some(end), ..half };
+        let (a, b) = move_snap_connector(&doc, &both).expect("both points resolve");
+        assert!((a - glam::Vec3::ZERO).length() < 1e-3, "starts at start A, got {a:?}");
+        assert!((b - corner).length() < 1e-3, "ends at end A, got {b:?}");
+
+        // A point that no longer resolves draws nothing rather than a wrong line.
+        let gone = actions::CreatingMove {
+            end_point_a: Some(MovePointRef::Vertex { body: 0, p: [9999; 3] }),
+            ..both
+        };
+        assert_eq!(move_snap_connector(&doc, &gone), None);
+
+        // The two marks are visibly different colours — go and stop.
+        assert_ne!(crate::theme::MOVE_START_POINT, crate::theme::MOVE_END_POINT);
     }
 
     /// #180: drawing-view projection axes are orthonormal and orient as expected — a Front
@@ -21447,6 +21516,7 @@ mod tests {
                 None,
                 None,
                 None,
+                Vec::new(),
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
@@ -21546,6 +21616,7 @@ mod tests {
             None,
             None,
             None,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -22321,12 +22392,12 @@ mod tests {
         assert_eq!(focus(&cm), MoveFocus::Bodies, "no bodies picked yet");
 
         cm.targets.push(0);
-        assert_eq!(focus(&cm), MoveFocus::SourcePoint, "a body arms the source point");
+        assert_eq!(focus(&cm), MoveFocus::StartPointA, "a body arms the source point");
 
-        cm.source_point = Some(point(0));
-        assert_eq!(focus(&cm), MoveFocus::TargetPoint);
+        cm.start_point_a = Some(point(0));
+        assert_eq!(focus(&cm), MoveFocus::EndPointA);
 
-        cm.target_point = Some(point(1));
+        cm.end_point_a = Some(point(1));
         assert_eq!(focus(&cm), MoveFocus::Bodies, "everything picked");
 
         // Free translate has no target point to pick.
@@ -22335,22 +22406,22 @@ mod tests {
             translate_mode: MoveTranslateMode::Free,
             ..Default::default()
         };
-        assert_eq!(focus(&free), MoveFocus::SourcePoint);
-        free.source_point = Some(point(0));
+        assert_eq!(focus(&free), MoveFocus::StartPointA);
+        free.start_point_a = Some(point(0));
         assert_eq!(focus(&free), MoveFocus::Bodies);
 
         // A hand-picked focus wins until it's satisfied, then hands the chain back (#658).
-        let held = Some(MoveFocus::TargetPoint);
+        let held = Some(MoveFocus::EndPointA);
         let mut partial = actions::CreatingMove {
             targets: vec![0],
             translate_mode: MoveTranslateMode::Snap,
-            source_point: Some(point(0)),
+            start_point_a: Some(point(0)),
             ..Default::default()
         };
-        assert_eq!(move_focus_for(Some(&partial), held), MoveFocus::TargetPoint);
-        assert!(!move_focus_satisfied(&partial, MoveFocus::TargetPoint), "still unset");
-        partial.target_point = Some(point(1));
-        assert!(move_focus_satisfied(&partial, MoveFocus::TargetPoint));
+        assert_eq!(move_focus_for(Some(&partial), held), MoveFocus::EndPointA);
+        assert!(!move_focus_satisfied(&partial, MoveFocus::EndPointA), "still unset");
+        partial.end_point_a = Some(point(1));
+        assert!(move_focus_satisfied(&partial, MoveFocus::EndPointA));
         assert_eq!(move_focus_for(Some(&partial), None), MoveFocus::Bodies);
     }
 

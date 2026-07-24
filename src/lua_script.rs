@@ -697,9 +697,9 @@ fn parse_move_op_args(
     let (tx, ty, tz) = (expr("x")?, expr("y")?, expr("z")?);
     // Naming both points makes the translation a **snap** (#648/#649/#650): the move lands
     // `from` exactly on `to`, and x/y/z are ignored.
-    let source_point = parse_move_point(opts.get::<Value>("from")?, "from")?;
-    let target_point = parse_move_point(opts.get::<Value>("to")?, "to")?;
-    Ok((targets, tx, ty, tz, source_point, target_point))
+    let start_point_a = parse_move_point(opts.get::<Value>("from")?, "from")?;
+    let end_point_a = parse_move_point(opts.get::<Value>("to")?, "to")?;
+    Ok((targets, tx, ty, tz, start_point_a, end_point_a))
 }
 
 /// A [`crate::model::MovePointRef`] from a `{ body = i, vertex = {x,y,z} }` or
@@ -3477,10 +3477,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "move_bodies",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let (targets, tx, ty, tz, source_point, target_point) = parse_move_op_args(&opts)?;
+            let (targets, tx, ty, tz, start_point_a, end_point_a) = parse_move_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::CreateMoveOp {
-                    targets, tx, ty, tz, source_point, target_point,
+                    targets, tx, ty, tz, start_point_a, end_point_a,
                 })?;
             }
             let element = SceneElement::MoveOp(unsafe {
@@ -3496,10 +3496,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let op: usize = opts.get("index")?;
-            let (targets, tx, ty, tz, source_point, target_point) = parse_move_op_args(&opts)?;
+            let (targets, tx, ty, tz, start_point_a, end_point_a) = parse_move_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::EditMoveOp {
-                    op, targets, tx, ty, tz, source_point, target_point,
+                    op, targets, tx, ty, tz, start_point_a, end_point_a,
                 })?;
             }
             Ok(())
@@ -6177,7 +6177,7 @@ mod tests {
     /// #648/#649/#650: naming both points makes a move a **snap** — the picked source corner
     /// lands exactly on the picked target corner, and x/y/z are ignored.
     #[test]
-    fn lua_move_snaps_a_source_point_onto_a_target_point() {
+    fn lua_move_snaps_a_start_point_a_onto_a_end_point_a() {
         let state = run_lua(
             r#"
             -- Two 10x10x5 boxes: A at the origin, B 40mm along +X.

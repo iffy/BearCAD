@@ -380,13 +380,13 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             Ok(Instruction::EditBooleanOp { op, kind, a, b, keep_b })
         }
         "move_bodies" => {
-            let (targets, tx, ty, tz, source_point, target_point) = move_op_args(o)?;
-            Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, source_point, target_point })
+            let (targets, tx, ty, tz, start_point_a, end_point_a) = move_op_args(o)?;
+            Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, start_point_a, end_point_a })
         }
         "edit_move" => {
             let op = req_usize(o, "index", "edit_move")?;
-            let (targets, tx, ty, tz, source_point, target_point) = move_op_args(o)?;
-            Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, source_point, target_point })
+            let (targets, tx, ty, tz, start_point_a, end_point_a) = move_op_args(o)?;
+            Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, start_point_a, end_point_a })
         }
         "mirror_bodies" => {
             let (plane, targets, mode) = mirror_op_args(o)?;
@@ -2036,8 +2036,8 @@ mod tests {
                 &json!({ "bodies": [0], "x": 10, "y": "w/2" })
             ),
             Ok(Instruction::CreateMoveOp {
-                source_point: None,
-                target_point: None,
+                start_point_a: None,
+                end_point_a: None,
                 targets: vec![0],
                 tx: "10".into(),
                 ty: "w/2".into(),
@@ -2048,8 +2048,8 @@ mod tests {
         assert_eq!(
             instruction_from_json("edit_move", &json!({ "index": 1, "bodies": [0], "z": 5 })),
             Ok(Instruction::EditMoveOp {
-                source_point: None,
-                target_point: None,
+                start_point_a: None,
+                end_point_a: None,
                 op: 1,
                 targets: vec![0],
                 tx: String::new(),

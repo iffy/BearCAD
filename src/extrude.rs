@@ -675,12 +675,12 @@ pub fn move_point_world(doc: &Document, point: &crate::model::MovePointRef) -> O
 }
 
 /// A move's translation vector (#648/#650): in `Snap` mode the offset that lands the source
-/// point on the target point, otherwise the `tx`/`ty`/`tz` expressions. A snap with either
+/// start point A on end point A, otherwise the `tx`/`ty`/`tz` expressions. A snap with either
 /// point missing or unresolvable contributes no translation, so the op stays valid while the
 /// user is still picking.
 pub fn move_op_translation(doc: &Document, op: &crate::model::MoveOperation) -> Option<Vec3> {
     if op.has_snap_translation() {
-        let (source, target) = (op.source_point.as_ref()?, op.target_point.as_ref()?);
+        let (source, target) = (op.start_point_a.as_ref()?, op.end_point_a.as_ref()?);
         // Points that no longer resolve contribute nothing rather than killing the op — the
         // same forgiveness a repeat's dead length target gets.
         if let (Some(from), Some(to)) = (move_point_world(doc, source), move_point_world(doc, target))
@@ -4584,8 +4584,8 @@ mod tests {
         let base = MoveOperation {
             targets: Vec::new(),
             translate_mode: MoveTranslateMode::Snap,
-            source_point: None,
-            target_point: None,
+            start_point_a: None,
+            end_point_a: None,
             plane_targets: Vec::new(),
             image_targets: Vec::new(),
             tx: "7".to_string(),
@@ -4603,7 +4603,7 @@ mod tests {
         );
         // One point isn't enough either.
         let half = MoveOperation {
-            source_point: Some(MovePointRef::Vertex { body: 0, p: [0; 3] }),
+            start_point_a: Some(MovePointRef::Vertex { body: 0, p: [0; 3] }),
             ..base.clone()
         };
         assert!(!half.has_snap_translation());
@@ -4611,7 +4611,7 @@ mod tests {
         // With both, the snap takes over — and points that no longer resolve contribute
         // nothing rather than killing the op.
         let full = MoveOperation {
-            target_point: Some(MovePointRef::Vertex { body: 1, p: [100, 0, 0] }),
+            end_point_a: Some(MovePointRef::Vertex { body: 1, p: [100, 0, 0] }),
             ..half
         };
         assert!(full.has_snap_translation());
@@ -4710,8 +4710,8 @@ mod tests {
         });
         doc.move_ops.push(crate::model::MoveOperation {
             translate_mode: Default::default(),
-            source_point: None,
-            target_point: None,
+            start_point_a: None,
+            end_point_a: None,
             targets: vec![2],
             plane_targets: Vec::new(),
             image_targets: Vec::new(),
@@ -4752,8 +4752,8 @@ mod tests {
         });
         doc.move_ops.push(crate::model::MoveOperation {
             translate_mode: Default::default(),
-            source_point: None,
-            target_point: None,
+            start_point_a: None,
+            end_point_a: None,
             targets: vec![0],
             plane_targets: Vec::new(),
             image_targets: Vec::new(),
@@ -5288,8 +5288,8 @@ mod tests {
         });
         doc.move_ops.push(MoveOperation {
             translate_mode: Default::default(),
-            source_point: None,
-            target_point: None,
+            start_point_a: None,
+            end_point_a: None,
             targets: vec![0],
             plane_targets: Vec::new(),
             image_targets: Vec::new(),

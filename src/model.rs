@@ -1628,8 +1628,8 @@ impl MoveOperation {
     /// the points are being picked and gizmo drags keep working.
     pub fn has_snap_translation(&self) -> bool {
         self.translate_mode == MoveTranslateMode::Snap
-            && self.source_point.is_some()
-            && self.target_point.is_some()
+            && self.start_point_a.is_some()
+            && self.end_point_a.is_some()
     }
 }
 
@@ -1656,12 +1656,12 @@ pub struct MoveOperation {
     pub translate_mode: MoveTranslateMode,
     /// The point on the moving bodies that a snap translation moves **from** (#649).
     #[serde(default)]
-    pub source_point: Option<MovePointRef>,
+    pub start_point_a: Option<MovePointRef>,
     /// The point on the stationary geometry that a snap translation moves the source point
     /// **onto** (#650). With both set, the translation is `target - source` and the `tx`/`ty`/
     /// `tz` expressions are ignored.
     #[serde(default)]
-    pub target_point: Option<MovePointRef>,
+    pub end_point_a: Option<MovePointRef>,
     /// Construction planes moved by this op (#217): transformed in place at recompute, so
     /// sketches/images anchored to them follow. No output bodies — the plane itself moves.
     #[serde(default)]

@@ -18,19 +18,20 @@ Move slides whole bodies to a new place, producing moved copies.
 1. Pick the **Move** tool and click one or more bodies. Re-clicking removes one.
    Pressing **M** again switches between the two Translate modes.
 2. Choose how to **Translate**:
-   - **Snap** (the default) — pick a **Source point** on a moving body, then a **Target
-     point** on something that isn't moving, and the bodies slide so the first lands on the
+   - **Snap** (the default) — pick a **Start point A** on a moving body, then an **End point
+     A** on something that isn't moving, and the bodies slide so the first lands on the
      second. Either point can be a corner or the midpoint of an edge.
    - **Free** — type the **X / Y / Z** amounts, or drag the coloured arrows (each has a value
      box beside its handle). They're expressions, so the move stays parametric.
 3. Press **Enter**.
 
-The tool moves you along as you go: pick a body and it's ready for the source point, pick that
-and it's ready for the target, and so on. Click any picker to jump back to it.
+The tool moves you along as you go: pick a body and it's ready for the start point, pick that
+and it's ready for the end point. Click any picker to jump back to it.
 
-Once a source point is picked the moving bodies go translucent, so you can see the gizmos and
-the target you're aiming at through them. The source point marks **green** and the target
-**red** — go and stop — and a ghost shows where the bodies will land before you commit.
+Once a start point is picked the moving bodies go translucent, so you can see the gizmos and
+what you're aiming at through them. Start point A marks **green** and end point A **red** — go
+and stop — with a line drawn between them, and a ghost shows where the bodies will land before
+you commit.
 
 The inputs become [shadow bodies](/docs/tools/combine#shadow-bodies) and each gains a
 moved copy — a real body for further operations. **Edit move** changes anything later;

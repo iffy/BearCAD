@@ -948,8 +948,8 @@ pub struct CreatingMove {
     /// Snap (default) or free translation (#648).
     pub translate_mode: crate::model::MoveTranslateMode,
     /// The picked point on the moving bodies (#649) and the point it snaps onto (#650).
-    pub source_point: Option<crate::model::MovePointRef>,
-    pub target_point: Option<crate::model::MovePointRef>,
+    pub start_point_a: Option<crate::model::MovePointRef>,
+    pub end_point_a: Option<crate::model::MovePointRef>,
     /// Construction planes being moved (#217).
     pub plane_targets: Vec<usize>,
     /// Tracing images being moved (#217).
@@ -1857,8 +1857,8 @@ pub enum Action {
         /// How the translation is specified (#648) and, in Snap mode, the two points it
         /// snaps between (#649/#650).
         translate_mode: crate::model::MoveTranslateMode,
-        source_point: Option<crate::model::MovePointRef>,
-        target_point: Option<crate::model::MovePointRef>,
+        start_point_a: Option<crate::model::MovePointRef>,
+        end_point_a: Option<crate::model::MovePointRef>,
         targets: Vec<usize>,
         #[allow(dead_code)]
         plane_targets: Vec<usize>,
@@ -1872,8 +1872,8 @@ pub enum Action {
     EditMoveOperation {
         op: usize,
         translate_mode: crate::model::MoveTranslateMode,
-        source_point: Option<crate::model::MovePointRef>,
-        target_point: Option<crate::model::MovePointRef>,
+        start_point_a: Option<crate::model::MovePointRef>,
+        end_point_a: Option<crate::model::MovePointRef>,
         targets: Vec<usize>,
         #[allow(dead_code)]
         plane_targets: Vec<usize>,
@@ -9681,8 +9681,8 @@ label_hidden: false,
                     Some(op) => self.apply(Action::EditMoveOperation {
                         op,
                         translate_mode: cm.translate_mode,
-                        source_point: cm.source_point,
-                        target_point: cm.target_point,
+                        start_point_a: cm.start_point_a,
+                        end_point_a: cm.end_point_a,
                         targets: cm.targets.clone(),
                         plane_targets: cm.plane_targets.clone(),
                         image_targets: cm.image_targets.clone(),
@@ -9703,8 +9703,8 @@ label_hidden: false,
                                     // Coalescing only ever folds free translations (see
                                     // `coalescible_move_op`), so the folded op is free too.
                                     translate_mode: crate::model::MoveTranslateMode::Free,
-                                    source_point: None,
-                                    target_point: None,
+                                    start_point_a: None,
+                                    end_point_a: None,
                                     targets: self.doc.move_ops[op].targets.clone(),
                                     plane_targets: self.doc.move_ops[op].plane_targets.clone(),
                                     image_targets: self.doc.move_ops[op].image_targets.clone(),
@@ -9715,8 +9715,8 @@ label_hidden: false,
                             }
                             None => self.apply(Action::CreateMoveOperation {
                                 translate_mode: cm.translate_mode,
-                                source_point: cm.source_point,
-                                target_point: cm.target_point,
+                                start_point_a: cm.start_point_a,
+                                end_point_a: cm.end_point_a,
                                 targets: cm.targets.clone(),
                                 plane_targets: cm.plane_targets.clone(),
                                 image_targets: cm.image_targets.clone(),
@@ -9734,7 +9734,7 @@ label_hidden: false,
                 }
                 result
             }
-            Action::CreateMoveOperation { translate_mode, source_point, target_point, targets, plane_targets, image_targets, tx, ty, tz } => {
+            Action::CreateMoveOperation { translate_mode, start_point_a, end_point_a, targets, plane_targets, image_targets, tx, ty, tz } => {
                 if targets.is_empty() && plane_targets.is_empty() && image_targets.is_empty() {
                     let e = "Pick at least one body, plane, or image to move".to_string();
                     self.status = e.clone();
@@ -9750,8 +9750,8 @@ label_hidden: false,
                 self.doc.move_ops.push(crate::model::MoveOperation {
                     targets: targets.clone(),
                     translate_mode,
-                    source_point,
-                    target_point,
+                    start_point_a,
+                    end_point_a,
                     plane_targets: plane_targets.clone(),
                     image_targets: image_targets.clone(),
                     tx,                    ty,                    tz,
@@ -9795,7 +9795,7 @@ label_hidden: false,
                 self.status = move_status(targets.len(), plane_targets.len(), image_targets.len());
                 ActionResult::Ok
             }
-            Action::EditMoveOperation { op, translate_mode, source_point, target_point, targets, plane_targets, image_targets, tx, ty, tz } => {
+            Action::EditMoveOperation { op, translate_mode, start_point_a, end_point_a, targets, plane_targets, image_targets, tx, ty, tz } => {
                 if self.doc.move_ops.get(op).filter(|o| !o.deleted).is_none() {
                     let e = format!("Move operation {op} not found");
                     self.status = e.clone();
@@ -9817,8 +9817,8 @@ label_hidden: false,
                     let entry = &mut self.doc.move_ops[op];
                     entry.targets = targets.clone();
                     entry.translate_mode = translate_mode;
-                    entry.source_point = source_point;
-                    entry.target_point = target_point;
+                    entry.start_point_a = start_point_a;
+                    entry.end_point_a = end_point_a;
                     entry.plane_targets = plane_targets.clone();
                     entry.image_targets = image_targets.clone();
                     entry.tx = tx;
@@ -11653,7 +11653,7 @@ fn coalescible_move_op(doc: &Document, cm: &CreatingMove) -> Option<usize> {
     }
     // Only expression-driven translations compose (#648): a resolved snap's offset comes from
     // its two picked points, not from expressions `compose_move_values` could add up.
-    if cm.source_point.is_some() && cm.target_point.is_some() {
+    if cm.start_point_a.is_some() && cm.end_point_a.is_some() {
         return None;
     }
     doc.move_ops.iter().position(|op| {
@@ -13990,8 +13990,8 @@ mod tests {
         let base = state.doc.construction_planes[0].origin;
         let result = state.apply(Action::CreateMoveOperation {
             translate_mode: crate::model::MoveTranslateMode::Free,
-            source_point: None,
-            target_point: None,
+            start_point_a: None,
+            end_point_a: None,
             targets: vec![],
             plane_targets: vec![0],
             image_targets: vec![],
@@ -14011,8 +14011,8 @@ mod tests {
         let op = state.doc.move_ops.len() - 1;
         state.apply(Action::EditMoveOperation {
             translate_mode: crate::model::MoveTranslateMode::Free,
-            source_point: None,
-            target_point: None,
+            start_point_a: None,
+            end_point_a: None,
             op,
             targets: vec![],
             plane_targets: vec![0],
@@ -14033,8 +14033,8 @@ mod tests {
         let move_plane = |state: &mut AppState, tz: &str| {
             state.creating_move = Some(CreatingMove {
                 translate_mode: Default::default(),
-                source_point: None,
-                target_point: None,
+                start_point_a: None,
+                end_point_a: None,
                 plane_targets: vec![0],
                 tz: tz.to_string(),
                 ..Default::default()
@@ -14081,8 +14081,8 @@ mod tests {
         // image's plane-local x, and a world-Z move (out of plane) doesn't touch the origin.
         let result = state.apply(Action::CreateMoveOperation {
             translate_mode: crate::model::MoveTranslateMode::Free,
-            source_point: None,
-            target_point: None,
+            start_point_a: None,
+            end_point_a: None,
             targets: vec![],
             plane_targets: vec![],
             image_targets: vec![0],
@@ -14103,8 +14103,8 @@ mod tests {
         // Editing the op back to zero returns the image home (still targeted, base kept).
         state.apply(Action::EditMoveOperation {
             translate_mode: crate::model::MoveTranslateMode::Free,
-            source_point: None,
-            target_point: None,
+            start_point_a: None,
+            end_point_a: None,
             op,
             targets: vec![],
             plane_targets: vec![],
@@ -14118,8 +14118,8 @@ mod tests {
         // Dropping the image from the op restores its authored base and forgets it.
         state.apply(Action::EditMoveOperation {
             translate_mode: crate::model::MoveTranslateMode::Free,
-            source_point: None,
-            target_point: None,
+            start_point_a: None,
+            end_point_a: None,
             op,
             targets: vec![],
             plane_targets: vec![0],
@@ -14152,8 +14152,8 @@ mod tests {
         let move_image = |state: &mut AppState, tx: &str| {
             state.creating_move = Some(CreatingMove {
                 translate_mode: Default::default(),
-                source_point: None,
-                target_point: None,
+                start_point_a: None,
+                end_point_a: None,
                 image_targets: vec![0],
                 tx: tx.to_string(),
                 ..Default::default()
@@ -14314,8 +14314,8 @@ mod tests {
         let mut state = AppState::default();
         state.creating_move = Some(CreatingMove {
             translate_mode: Default::default(),
-            source_point: None,
-            target_point: None,
+            start_point_a: None,
+            end_point_a: None,
             targets: vec![],
             plane_targets: vec![],
             image_targets: vec![],
@@ -16632,8 +16632,8 @@ mod tests {
         let mut state = two_box_state(false);
         let result = state.apply(Action::CreateMoveOperation {
             translate_mode: crate::model::MoveTranslateMode::Free,
-            source_point: None,
-            target_point: None,
+            start_point_a: None,
+            end_point_a: None,
             targets: vec![0, 1],
             plane_targets: vec![],
             image_targets: vec![],
@@ -16671,8 +16671,8 @@ mod tests {
         let mut state = two_box_state(false);
         state.apply(Action::CreateMoveOperation {
             translate_mode: crate::model::MoveTranslateMode::Free,
-            source_point: None,
-            target_point: None,
+            start_point_a: None,
+            end_point_a: None,
             targets: vec![0],
             plane_targets: vec![],
             image_targets: vec![],
@@ -16683,8 +16683,8 @@ mod tests {
         assert_eq!(state.doc.move_ops[0].outputs.len(), 1);
         let result = state.apply(Action::EditMoveOperation {
             translate_mode: crate::model::MoveTranslateMode::Free,
-            source_point: None,
-            target_point: None,
+            start_point_a: None,
+            end_point_a: None,
             op: 0,
             targets: vec![0, 1],
             plane_targets: vec![],
@@ -16708,8 +16708,8 @@ mod tests {
         });
         let result = state.apply(Action::CreateMoveOperation {
             translate_mode: crate::model::MoveTranslateMode::Free,
-            source_point: None,
-            target_point: None,
+            start_point_a: None,
+            end_point_a: None,
             targets: vec![0],
             plane_targets: vec![],
             image_targets: vec![],
@@ -17669,8 +17669,8 @@ mod tests {
         // Move the source plane +5 along X; the instance should sit at 5 + 10 = 15.
         let result = state.apply(Action::CreateMoveOperation {
             translate_mode: crate::model::MoveTranslateMode::Free,
-            source_point: None,
-            target_point: None,
+            start_point_a: None,
+            end_point_a: None,
             targets: Vec::new(),
             plane_targets: vec![0],
             image_targets: Vec::new(),

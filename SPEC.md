@@ -652,22 +652,24 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   **Translate mode (#648, `model::MoveTranslateMode`):** a pane dropdown picks **Snap** (the
   default) or **Free**. Free is the classic behaviour — typed/dragged X/Y/Z. Snap instead
   derives the offset from two picked points:
-  - A **Source point** picker (#649) takes a corner, or the midpoint of a feature edge, on one
-    of the **moving** bodies (`model::MovePointRef`, keyed like `SceneElement::BodyVertex`/
+  - A **Start point A** picker (#649/#668) takes a corner, or the midpoint of a feature edge,
+    on one of the **moving** bodies (`model::MovePointRef`, keyed like `SceneElement::BodyVertex`/
     `BodyEdge` and resolved against the live mesh). While one is set the moving bodies render
     **translucent** (they join `faded_bodies`) so the gizmos and points stay visible through
     the solid.
-  - A **Target point** picker (#650) takes the same kinds of point on a body that **isn't**
-    moving; the translation is then `target - source`, and the X/Y/Z fields and drag arrows are
-    hidden.
+  - An **End point A** picker (#650/#668) takes the same kinds of point on a body that
+    **isn't** moving; the translation is then `end - start`, and the X/Y/Z fields and drag
+    arrows are hidden. With both picked a **connector** is drawn between them
+    (`move_snap_connector` → `ViewportSceneInput::colored_segments`), so the translation reads
+    as a vector.
 
   **Live preview and point marks (#660):** an in-progress move **ghosts** each picked body at
   its destination through the same translucent preview-solid path the Mirror and Repeat
   previews use (`repeat_ghosts`), so a snap translation shows where it lands before commit; a
   move that resolves to the identity draws nothing. The picked points are marked in the
-  viewport in colours of their own (`ViewportSceneInput::colored_pick_highlights`): the
-  **source point green** and the **target point red** — go and stop, so the direction of the
-  snap reads at a glance.
+  viewport in colours of their own (`ViewportSceneInput::colored_pick_highlights`): **start
+  point A green** and **end point A red** — go and stop, so the direction of the snap reads at
+  a glance.
 
   **One focused picker, stepping through (#656/#658/#659):** exactly one Move picker is armed
   at a time — it's the one the pane rings and the one the viewport hover-highlights, so what
@@ -677,7 +679,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   (`move_focus_satisfied`), then it resumes. While a point picker is armed the hover shows body
   corners and edges instead of whole bodies.
 
-  A Snap move with either point still unpicked — or with no bodies at all, as for a plane or
+  A Snap move with either A point still unpicked — or with no bodies at all, as for a plane or
   image move — falls back to its `tx`/`ty`/`tz` expressions
   (`MoveOperation::has_snap_translation`), so the tool stays usable mid-pick and gizmo drags
   keep working; only a *resolved* snap is excluded from move coalescing. Committing creates an editable **move

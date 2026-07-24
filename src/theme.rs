@@ -39,8 +39,8 @@ pub const LOCKED_ACCENT: Color32 = Color32::from_rgb(90, 220, 130);
 pub const UNLOCKED_GRAY: Color32 = Color32::from_gray(130);
 /// The Move tool's picked-point marks (#660): the source point reads **go** and the target
 /// **stop**, so the direction of the snap is obvious at a glance.
-pub const MOVE_SOURCE_POINT: Color32 = Color32::from_rgb(90, 220, 130);
-pub const MOVE_TARGET_POINT: Color32 = Color32::from_rgb(230, 80, 80);
+pub const MOVE_START_POINT: Color32 = Color32::from_rgb(90, 220, 130);
+pub const MOVE_END_POINT: Color32 = Color32::from_rgb(230, 80, 80);
 /// Input-like control background (matches text inputs' `extreme_bg_color`).
 pub const INPUT_BG: Color32 = Color32::from_gray(18);
 /// Resting outline for an input-like control.
