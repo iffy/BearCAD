@@ -24,12 +24,16 @@ bearcad.line{ x = 0, y = 0, x1 = -34, y1 = 18 }
 bearcad.line{ x = 0, y = 0, x1 = -20, y1 = -30 }
 bearcad.circle{ x = 0, y = -13, r = 13 }
 
-bearcad.clear_selection()
 bearcad.ui.tool("select")
 bearcad.ui.view("top")
 bearcad.ui.wait(5)
 bearcad.ui.zoom_fit()
 bearcad.ui.wait(2)
+
+-- Two of the spokes picked out of the crowd (#666), so the shot shows what the
+-- exploder is for: reaching one specific thing in a stack and selecting it.
+bearcad.select({ kind = "line", index = 1 })
+bearcad.select({ kind = "line", index = 2 }, true)
 
 -- Park the cursor on the stacked corner and explode it.
 bearcad.ui.move_ground(0, 0)
