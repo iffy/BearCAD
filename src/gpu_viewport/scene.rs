@@ -2589,7 +2589,7 @@ impl<'a> SceneMesh<'a> {
                         ref profile,
                         edge,
                     } => crate::extrude::revolve_side_geom(doc, revolution, profile, edge as usize)
-                        .map(|(poly, _)| poly),
+                        .map(|(poly, _, _)| poly),
                     _ => None,
                 };
                 if let Some(poly) = poly {
@@ -2800,7 +2800,7 @@ impl<'a> SceneMesh<'a> {
                         ref profile,
                         edge,
                     } => crate::extrude::revolve_side_geom(doc, revolution, profile, edge as usize)
-                        .map(|(poly, _)| poly),
+                        .map(|(poly, _, _)| poly),
                     _ => None,
                 };
                 if let Some(poly) = poly {
@@ -3103,6 +3103,20 @@ impl<'a> SceneMesh<'a> {
             // A constraint's hover highlight is its badge glowing in the 2D annotation overlay
             // (#568), not a world-geometry marker — nothing to push into the 3D scene here.
             PickTargetKind::Constraint(_) => {}
+            // An analytic sketchable face (#625): same fill + border a face-picking tool's own
+            // hover uses.
+            PickTargetKind::SketchFace(face) => {
+                self.push_sketch_face_hover(doc, face.clone(), color, FACE_HOVER_FILL_MULTIPLIER, cam);
+                self.push_sketch_face_hover_border(
+                    doc,
+                    face.clone(),
+                    color,
+                    2.0,
+                    cam,
+                    viewport,
+                    view_proj,
+                );
+            }
         }
     }
 

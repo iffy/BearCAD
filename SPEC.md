@@ -472,10 +472,13 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
     selected** (#437) — every face pick re-focuses it — so an amount like `4ft` can be typed
     immediately, replacing the default. The extrusion (and its body) nests under the sketch it was built from.
   - **Push/pull a bare body face directly (#122):** the Extrude tool also accepts a click
-    directly on an existing body's own cap or side wall (an `ExtrudeCap`/`ExtrudeSide`), no
-    separate sketch needed — "drag a face straight off a solid," like many CAD tools. This
+    directly on an existing body's own cap or side wall (an `ExtrudeCap`/`ExtrudeSide`), or a
+    **revolved body's flat face** (`RevolveCap`/`RevolveSide`, #625), no separate sketch
+    needed — "drag a face straight off a solid," like many CAD tools. This
     creates an implicit sketch hosted on that exact face and mirrors its boundary into it (a
-    circular cap gets a real circle, not a tessellated approximation), then starts a fresh
+    circular cap gets a real circle, not a tessellated approximation; a full-sweep revolve
+    side — a complete washer — gets two real circles combined by difference, since a
+    boundary line loop can't carry its hole), then starts a fresh
     single-face extrusion from it — a body face is never grouped with other faces into one
     multi-face extrusion, unlike coplanar sketch profiles. Sketching on an existing body's
     face merges into that body by default (§3.2's `body?` choice, #32), so pushing/pulling a
@@ -1855,7 +1858,15 @@ modeled on SolveSpace (https://solvespace.com).
   then pruned to what the **active tool** can actually pick (`exploder_tool_accepts`, #560) — e.g. the
   Extrude tool operates on faces, so it fans out only faces, never a corner's edges/vertices it
   couldn't use; constraint badges are offered only to the element-selecting tools (Select/Constraint/
-  Dimension), which apply the pick as a `SceneElement::Constraint`. It activates **on demand**: over a crowd it fans several handles, over a
+  Dimension), which apply the pick as a `SceneElement::Constraint`. The crowd also carries
+  **analytic sketchable faces** (`PickTargetKind::SketchFace`, exploder-only like `Constraint`,
+  #625): every `face::pick_sketch_face` candidate near the cursor — sketch profiles,
+  extrusion caps/side walls, revolve flat faces, construction planes — via
+  `face::sketch_faces_near`. The Extrude tool fans **exactly these** (minus construction
+  planes) instead of raw mesh facet groups, so its fan matches its own pick path: the sketch
+  profile buried under a body appears, a curved surface it can't use doesn't. A revolve side's
+  crowd anchor is the unrotated edge midpoint — always on the face, unlike a full washer's
+  boundary centroid, which sits in its hole. It activates **on demand**: over a crowd it fans several handles, over a
   single thing just one, and over nothing it freezes the hitbox circle at the cursor with no
   handles. A faint **light-green** disc the size of the hitbox (`construction::EXPLODER_HINT_RGBA`,
   distinct from the yellow pick-hover) appears under the cursor when **two or more** things are

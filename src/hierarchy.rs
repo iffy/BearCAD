@@ -431,7 +431,7 @@ fn point_effective_visible(
     }
 }
 
-fn face_element(face: FaceId) -> SceneElement {
+pub fn face_element(face: FaceId) -> SceneElement {
     match face {
         FaceId::ConstructionPlane(i) => SceneElement::ConstructionPlane(i),
         FaceId::Circle(i) => SceneElement::Circle(i),

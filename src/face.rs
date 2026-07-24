@@ -166,7 +166,7 @@ pub fn sketch_frame(doc: &Document, face: FaceId) -> Option<SketchFrame> {
             ref profile,
             edge,
         } => crate::extrude::revolve_side_geom(doc, revolution, profile, edge as usize)
-            .map(|(_, frame)| frame),
+            .map(|(_, frame, _)| frame),
     }
 }
 
@@ -866,7 +866,7 @@ pub fn pick_sketch_face(
                 }
             }
             for edge in 0..crate::extrude::revolve_side_count(profile) {
-                let Some((poly, _)) = crate::extrude::revolve_side_geom(doc, ri, profile, edge)
+                let Some((poly, _, _)) = crate::extrude::revolve_side_geom(doc, ri, profile, edge)
                 else {
                     continue;
                 };
@@ -895,6 +895,129 @@ pub fn pick_sketch_face(
     }
 
     best.map(|(face, _, _)| face)
+}
+
+/// Every sketchable analytic face within `radius` px of the cursor (#625): the same
+/// candidates [`pick_sketch_face`] chooses among — sketch profiles (circles and closed
+/// line loops), extrusion caps/side walls, revolve flat faces, and construction planes —
+/// but **all** of them, not just the best, and with no occlusion preference, for the
+/// Selection Exploder crowd. Returns `(face, world centroid, screen distance)` triples.
+pub fn sketch_faces_near(
+    screen: eframe::egui::Pos2,
+    project: &impl Fn(Vec3) -> Option<eframe::egui::Pos2>,
+    doc: &Document,
+    radius: f32,
+) -> Vec<(FaceId, Vec3, f32)> {
+    let mut out: Vec<(FaceId, Vec3, f32)> = Vec::new();
+    let mut push = |face: FaceId, centroid: Vec3, dist: f32| {
+        if dist <= radius {
+            out.push((face, centroid, dist));
+        }
+    };
+
+    for (i, circle) in doc.circles.iter().enumerate() {
+        if let Some((dist, c)) = circle_face_pick_distance(screen, doc, circle, project) {
+            push(FaceId::Circle(i), c, dist);
+        }
+    }
+    for sketch in 0..doc.sketches.len() {
+        for lines in crate::polygon::closed_line_loops(doc, sketch) {
+            if let Some((poly, _)) = crate::extrude::face_profile_world(
+                doc,
+                &crate::model::ExtrudeFace::Polygon(lines.clone()),
+            ) {
+                if let Some((dist, c)) = polygon_face_pick_distance(screen, project, &poly) {
+                    push(FaceId::Polygon(lines), c, dist);
+                }
+            }
+        }
+    }
+    for (ei, extrusion) in doc.extrusions.iter().enumerate() {
+        if extrusion.deleted {
+            continue;
+        }
+        for profile in &extrusion.faces {
+            for top in [true, false] {
+                if let Some((dist, c)) =
+                    cap_face_pick_distance(screen, project, doc, ei, profile.clone(), top)
+                {
+                    push(
+                        FaceId::ExtrudeCap {
+                            extrusion: ei,
+                            profile: profile.clone(),
+                            top,
+                        },
+                        c,
+                        dist,
+                    );
+                }
+            }
+            for edge in 0..crate::extrude::side_face_count(profile) {
+                if let Some((dist, c)) =
+                    side_face_pick_distance(screen, project, doc, ei, profile.clone(), edge)
+                {
+                    push(
+                        FaceId::ExtrudeSide {
+                            extrusion: ei,
+                            profile: profile.clone(),
+                            edge: edge as u8,
+                        },
+                        c,
+                        dist,
+                    );
+                }
+            }
+        }
+    }
+    for (ri, rev) in doc.revolutions.iter().enumerate() {
+        if rev.deleted {
+            continue;
+        }
+        for profile in &rev.faces {
+            for end in [false, true] {
+                if let Some((poly, _)) =
+                    crate::extrude::revolve_cap_polygon_world(doc, ri, profile, end)
+                {
+                    if let Some((dist, c)) = polygon_face_pick_distance(screen, project, &poly) {
+                        push(
+                            FaceId::RevolveCap {
+                                revolution: ri,
+                                profile: profile.clone(),
+                                end,
+                            },
+                            c,
+                            dist,
+                        );
+                    }
+                }
+            }
+            for edge in 0..crate::extrude::revolve_side_count(profile) {
+                if let Some((poly, _, anchor)) = crate::extrude::revolve_side_geom(doc, ri, profile, edge)
+                {
+                    if let Some((dist, _)) = polygon_face_pick_distance(screen, project, &poly) {
+                        // The on-face anchor, not the boundary centroid — a full washer's
+                        // centroid sits in its hole, where a redirected pick would miss.
+                        push(
+                            FaceId::RevolveSide {
+                                revolution: ri,
+                                profile: profile.clone(),
+                                edge: edge as u8,
+                            },
+                            anchor,
+                            dist,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    for (i, plane) in doc.construction_planes.iter().enumerate() {
+        let corners = crate::construction::plane_corners(plane, crate::construction::PLANE_DISPLAY_HALF);
+        if let Some((dist, c)) = quad_face_pick_distance(screen, project, corners) {
+            push(FaceId::ConstructionPlane(i), c, dist);
+        }
+    }
+    out
 }
 
 /// Nearest planar body face (#144) under the cursor across all 3D bodies, for 3D hover/selection.

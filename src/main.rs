@@ -1035,13 +1035,21 @@ impl ExploderState {
 fn exploder_tool_accepts(tool: Tool, kind: &construction::PickTargetKind) -> bool {
     use construction::PickTargetKind as K;
     match tool {
-        // The Extrude tool operates on faces — don't offer a corner's edges or vertices too (#560).
-        Tool::Extrude => matches!(kind, K::BodyFace { .. }),
+        // The Extrude tool operates on faces — don't offer a corner's edges or vertices too
+        // (#560). It fans the **analytic** faces its own pick path accepts (#625): sketch
+        // profiles, body caps/side walls, and revolve flat faces — never raw mesh facet
+        // groups (which include curved surfaces it can't use) and never construction planes.
+        Tool::Extrude => {
+            matches!(kind, K::SketchFace(face) if !matches!(face, FaceId::ConstructionPlane(_)))
+        }
         // A constraint badge can only be *selected*, so only the tools that act on a picked scene
         // element accept one from the fan (#568); every other tool ignores it.
         _ if matches!(kind, K::Constraint(_)) => {
             matches!(tool, Tool::Select | Tool::Constraint | Tool::Dimension)
         }
+        // Analytic face candidates exist for the face-picking tools; everything else keeps its
+        // own kinds (a Select fan already offers the same face as a `BodyFace`).
+        _ if matches!(kind, K::SketchFace(_)) => false,
         _ => true,
     }
 }
@@ -1164,7 +1172,7 @@ fn build_spatial_tree(idxs: &[usize], pts: &[egui::Pos2], max_children: usize) -
 fn crowd_type_rank(kind: &construction::PickTargetKind) -> u8 {
     use construction::PickTargetKind as K;
     match kind {
-        K::BodyFace { .. } => 0,
+        K::BodyFace { .. } | K::SketchFace(_) => 0,
         // Edges: sketch line segments and body feature edges are one "edges" group — a sketch line
         // and a shape edge are the same kind of thing for the exploder's grouping.
         K::BodyEdge { .. } | K::Line(_) => 1,
@@ -1495,6 +1503,15 @@ fn draw_pick_target_loupe(
         PK::ConstructionPlane(_) | PK::Ground(_) => {
             if is_highlight {
                 dot(anchor, width + 1.0);
+            }
+        }
+        // An analytic face (#625): its boundary loop, outline-only (matching a context
+        // `BodyFace`); the highlighted loupe draws it thicker.
+        PK::SketchFace(face) => {
+            if let Some(pts) = construction::sketch_face_boundary_world(doc, face) {
+                for i in 0..pts.len() {
+                    seg(pts[i], pts[(i + 1) % pts.len()]);
+                }
             }
         }
         // A constraint has no world geometry to magnify — its visual *is* its badge (#568). Draw
@@ -12203,7 +12220,10 @@ fn pick_extrude_body_face(
     eye: Vec3,
 ) -> Option<FaceId> {
     match pick_sketch_face(pp, project, doc, eye)? {
-        face_id @ (FaceId::ExtrudeCap { .. } | FaceId::ExtrudeSide { .. }) => Some(face_id),
+        face_id @ (FaceId::ExtrudeCap { .. }
+        | FaceId::ExtrudeSide { .. }
+        | FaceId::RevolveCap { .. }
+        | FaceId::RevolveSide { .. }) => Some(face_id),
         _ => None,
     }
 }
@@ -13472,7 +13492,7 @@ fn draw_face_highlight(
             ref profile,
             edge,
         } => {
-            if let Some((poly, _)) = extrude::revolve_side_geom(doc, revolution, profile, edge as usize)
+            if let Some((poly, _, _)) = extrude::revolve_side_geom(doc, revolution, profile, edge as usize)
             {
                 draw_polygon_face_highlight(painter, project, &poly, color);
             }
@@ -21635,14 +21655,22 @@ mod tests {
         let face = K::BodyFace { body: 0, triangles: vec![[Vec3::ZERO, Vec3::X, Vec3::Y]], normal: Vec3::Z };
         let edge = K::BodyEdge { body: 0, a: Vec3::ZERO, b: Vec3::X };
         let vertex = K::BodyVertex { body: 0, position: Vec3::ZERO };
-        // Extrude fans out faces only (#560).
-        assert!(exploder_tool_accepts(Tool::Extrude, &face));
+        let sketch_face = K::SketchFace(FaceId::Polygon(vec![0, 1, 2, 3]));
+        let plane_face = K::SketchFace(FaceId::ConstructionPlane(0));
+        // Extrude fans out only the analytic faces its own pick path accepts (#560/#625):
+        // sketch profiles and body/revolve flat faces — not mesh facet groups (which
+        // include curved surfaces), not planes, and never edges or vertices.
+        assert!(exploder_tool_accepts(Tool::Extrude, &sketch_face));
+        assert!(!exploder_tool_accepts(Tool::Extrude, &plane_face));
+        assert!(!exploder_tool_accepts(Tool::Extrude, &face));
         assert!(!exploder_tool_accepts(Tool::Extrude, &edge));
         assert!(!exploder_tool_accepts(Tool::Extrude, &vertex));
-        // Select accepts everything.
+        // Select accepts everything it can already pick; the analytic-face kind is
+        // extrude-only (the same face reaches Select as a `BodyFace`).
         assert!(exploder_tool_accepts(Tool::Select, &edge));
         assert!(exploder_tool_accepts(Tool::Select, &vertex));
         assert!(exploder_tool_accepts(Tool::Select, &face));
+        assert!(!exploder_tool_accepts(Tool::Select, &sketch_face));
     }
 
     #[test]

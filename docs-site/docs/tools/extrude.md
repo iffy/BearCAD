@@ -26,6 +26,8 @@ Nothing commits until you press **Enter** or the **Extrude** button, so you can 
 adjusting the distance or target first.
 
 - With two **concentric circles**, click between them to extrude just the **ring**.
+- Click any **flat face of a solid** — an extrusion's cap or side wall, or a revolved
+  body's flat end — to pull it straight out or push it in, no separate sketch needed.
 - Double-click a finished extrusion (or right-click → **Edit**) to change its faces or
   depth later.
 - Typing a digit jumps straight into the distance field.

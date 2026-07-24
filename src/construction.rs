@@ -113,7 +113,8 @@ pub fn plane_anchor_source_from_pick(kind: &PickTargetKind) -> PlaneAnchorSource
         | PickTargetKind::Circle(_) => PlaneAnchorSource::Axis,
         PickTargetKind::BodyFace { .. }
         | PickTargetKind::ConstructionPlane(_)
-        | PickTargetKind::Ground(_) => PlaneAnchorSource::Face,
+        | PickTargetKind::Ground(_)
+        | PickTargetKind::SketchFace(_) => PlaneAnchorSource::Face,
         // A constraint badge is never a plane anchor (it only reaches the exploder, #568); classify
         // it as a point so the arm is total.
         PickTargetKind::Constraint(_) => PlaneAnchorSource::Point,
@@ -740,6 +741,15 @@ pub fn sketch_from_pick_target(doc: &Document, kind: PickTargetKind) -> Option<S
         // A constraint's own sketch — though a constraint is never used as a plane reference (it
         // only reaches the exploder, #568), so this is here just to keep the match total.
         PickTargetKind::Constraint(index) => doc.constraints.get(index).map(|c| c.sketch),
+        // A profile face's own sketch; body/revolve faces belong to no sketch (like the
+        // body kinds below).
+        PickTargetKind::SketchFace(face) => match face {
+            crate::model::FaceId::Circle(i) => doc.circles.get(i).map(|c| c.sketch),
+            crate::model::FaceId::Polygon(lines) => {
+                doc.lines.get(*lines.first()?).map(|l| l.sketch)
+            }
+            _ => None,
+        },
         PickTargetKind::BodyEdge { .. }
         | PickTargetKind::BodyFace { .. }
         | PickTargetKind::BodyVertex { .. }
@@ -1231,6 +1241,12 @@ pub enum PickTargetKind {
     /// crowd (never by `resolve_pick_target`), letting a constraint icon buried under overlapping
     /// geometry be fanned out and selected like anything else.
     Constraint(usize),
+    /// An analytic sketchable face (#625) — exactly what `face::pick_sketch_face` picks: a
+    /// sketch profile (circle/polygon), a body cap/side wall, or a revolve's flat face. Like
+    /// `Constraint`, this is only ever produced for the Selection Exploder crowd, so tools
+    /// that pick faces (e.g. Extrude) fan out the same faces their own pick path accepts,
+    /// rather than raw mesh facet groups.
+    SketchFace(crate::model::FaceId),
 }
 
 /// A resolved pick target with its plane reference and screen-space distance.
@@ -1336,6 +1352,11 @@ impl PickOcclusion {
             // constraints anyway, #568).
             PickTargetKind::Constraint(i) => {
                 vis.effective_visible(doc, SceneElement::Constraint(*i))
+            }
+            // An analytic face is pickable when the element that hosts/produces it is
+            // visible — the same owner mapping sketches on it would depend on (#625).
+            PickTargetKind::SketchFace(face) => {
+                vis.effective_visible(doc, crate::hierarchy::face_element(face.clone()))
             }
             PickTargetKind::GlobalAxis(_) | PickTargetKind::Ground(_) => true,
         }
@@ -1746,6 +1767,28 @@ pub fn scene_element_from_pick(kind: &PickTargetKind) -> Option<SceneElement> {
     }
 }
 
+/// World boundary loop of an analytic sketchable face (#625), for the exploder's highlights
+/// and loupe previews: a circle profile's perimeter, a polygon profile's loop, a plane's
+/// display quad, or a body/revolve face's analytic boundary.
+pub fn sketch_face_boundary_world(doc: &Document, face: &FaceId) -> Option<Vec<Vec3>> {
+    match face {
+        FaceId::Circle(i) => doc
+            .circles
+            .get(*i)
+            .and_then(|c| crate::face::circle_world_perimeter(doc, c, 48)),
+        FaceId::Polygon(lines) => crate::extrude::face_profile_world(
+            doc,
+            &crate::model::ExtrudeFace::Polygon(lines.clone()),
+        )
+        .map(|(p, _)| p),
+        FaceId::ConstructionPlane(i) => doc
+            .construction_planes
+            .get(*i)
+            .map(|p| plane_corners(p, PLANE_DISPLAY_HALF).to_vec()),
+        _ => crate::extrude::face_boundary_loop_world(doc, face),
+    }
+}
+
 /// Draw a hover highlight for a pickable target.
 pub fn draw_pick_highlight(
     painter: &egui::Painter,
@@ -1827,6 +1870,14 @@ pub fn draw_pick_highlight(
         // driven separately via `draw_constraint_icons`'s hovered set — nothing to draw in the
         // world-geometry layer here.
         PickTargetKind::Constraint(_) => {}
+        // An analytic face (#625): outline its boundary loop.
+        PickTargetKind::SketchFace(face) => {
+            if let Some(pts) = sketch_face_boundary_world(doc, &face) {
+                for i in 0..pts.len() {
+                    draw_segment_highlight(painter, project, pts[i], pts[(i + 1) % pts.len()], color);
+                }
+            }
+        }
     }
 }
 
@@ -2669,6 +2720,17 @@ pub fn collect_pick_candidates(
     // face — front and back — whose projected area is within the pick radius, so a narrow face
     // seen edge-on (a thin sliver between its two edges) and buried back faces both get loupes.
     for (kind, centroid, dist) in crate::face::body_faces_near(screen, project, doc, point_r) {
+        if pickable(&kind) {
+            raw.push((kind, centroid, dist));
+        }
+    }
+
+    // Analytic sketchable faces (#625): the faces the face-picking tools (Extrude, Sketch, …)
+    // actually operate on — sketch profiles, extrusion caps/side walls, revolve flat faces —
+    // offered alongside the mesh facet groups above so `exploder_tool_accepts` can hand each
+    // tool the kind its own pick path accepts.
+    for (face, centroid, dist) in crate::face::sketch_faces_near(screen, project, doc, point_r) {
+        let kind = PickTargetKind::SketchFace(face);
         if pickable(&kind) {
             raw.push((kind, centroid, dist));
         }

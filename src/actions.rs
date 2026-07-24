@@ -3947,10 +3947,48 @@ fn create_implicit_extrude_sketch(
     doc: &mut Document,
     face_id: FaceId,
 ) -> Result<ExtrudeFace, String> {
-    if !matches!(face_id, FaceId::ExtrudeCap { .. } | FaceId::ExtrudeSide { .. }) {
+    if !matches!(
+        face_id,
+        FaceId::ExtrudeCap { .. }
+            | FaceId::ExtrudeSide { .. }
+            | FaceId::RevolveCap { .. }
+            | FaceId::RevolveSide { .. }
+    ) {
         return Err("Not a body face".to_string());
     }
     let sketch = doc.add_sketch(face_id.clone());
+    // A full-sweep revolve side is a complete washer (#625) — a boundary line loop can't
+    // carry its hole, so mirror it as real circles (combined by difference when the inner
+    // radius is nonzero). The face's frame origin sits on the axis, so both circles are
+    // centred at local (0, 0).
+    if let FaceId::RevolveSide {
+        revolution,
+        ref profile,
+        edge,
+    } = face_id
+    {
+        if let Some((r_in, r_out)) =
+            crate::extrude::revolve_side_annulus(doc, revolution, profile, edge as usize)
+        {
+            doc.circles
+                .push(crate::model::Circle::from_local_center_radius(sketch, 0.0, 0.0, r_out, 0.0));
+            doc.shape_order.push(ShapeKind::Circle);
+            let outer = doc.circles.len() - 1;
+            if r_in > 0.01 {
+                doc.circles.push(crate::model::Circle::from_local_center_radius(
+                    sketch, 0.0, 0.0, r_in, 0.0,
+                ));
+                doc.shape_order.push(ShapeKind::Circle);
+                let inner = doc.circles.len() - 1;
+                return Ok(ExtrudeFace::Boolean {
+                    op: crate::model::BooleanOp::Difference,
+                    a: Box::new(ExtrudeFace::Circle(outer)),
+                    b: Box::new(ExtrudeFace::Circle(inner)),
+                });
+            }
+            return Ok(ExtrudeFace::Circle(outer));
+        }
+    }
     // Real (non-construction) geometry: this is the profile the body-face push/pull extrudes.
     add_face_boundary_to_sketch(doc, sketch, &face_id, false)
 }

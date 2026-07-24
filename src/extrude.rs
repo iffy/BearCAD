@@ -1503,15 +1503,16 @@ pub fn revolve_side_count(profile: &ExtrudeFace) -> usize {
 /// The flat washer/annular-sector face swept by one polygon-profile `edge` of a revolve
 /// (#621), when that edge's endpoints share an axis coordinate — the sweep then stays in
 /// the perpendicular plane there (e.g. the flat ends of a revolved ring). Returns the
-/// boundary polygon (world) and the face's sketch frame, whose normal points out of the
-/// solid (away from the profile along the axis) and whose origin sits on the axis. `None`
-/// for edges that sweep curved surfaces.
+/// boundary polygon (world), the face's sketch frame — normal pointing out of the solid
+/// (away from the profile along the axis), origin on the axis — and a point guaranteed to
+/// lie **on** the face (the unrotated edge's midpoint; a full washer's boundary centroid
+/// sits in its hole, #625). `None` for edges that sweep curved surfaces.
 pub fn revolve_side_geom(
     doc: &Document,
     revolution: usize,
     profile: &ExtrudeFace,
     edge: usize,
-) -> Option<(Vec<Vec3>, SketchFrame)> {
+) -> Option<(Vec<Vec3>, SketchFrame, Vec3)> {
     let rev = doc.revolutions.get(revolution)?;
     if rev.deleted || !rev.faces.contains(profile) {
         return None;
@@ -1570,7 +1571,34 @@ pub fn revolve_side_geom(
         poly.extend(arc(b, true));
         poly
     };
-    Some((boundary, frame))
+    Some((boundary, frame, (a + b) * 0.5))
+}
+
+/// Inner/outer radii of a full-sweep revolve side's washer (#625): `Some` only when the
+/// swept region is a complete annulus (sweep ≥ 360°), which a boundary line loop can't
+/// represent — the rim polygon would fill the hole — so callers mirror it into a sketch
+/// as real circles instead. Radii are measured from the axis in the face's plane.
+pub fn revolve_side_annulus(
+    doc: &Document,
+    revolution: usize,
+    profile: &ExtrudeFace,
+    edge: usize,
+) -> Option<(f32, f32)> {
+    let rev = doc.revolutions.get(revolution)?;
+    if revolve_effective_angle(rev) < 359.99 {
+        return None;
+    }
+    let (origin, dir) = revolve_axis_world(doc, rev)?;
+    let (pts, _) = face_profile_world(doc, profile)?;
+    let n = pts.len();
+    if edge >= n {
+        return None;
+    }
+    let (a, b) = (pts[edge], pts[(edge + 1) % n]);
+    let ta = (a - origin).dot(dir);
+    let center = origin + dir * ta;
+    let (ra, rb) = ((a - center).length(), (b - center).length());
+    Some((ra.min(rb), ra.max(rb)))
 }
 
 /// Hand-rolled lathe mesh for a revolution (the no-kernel fallback and the live ghost
@@ -3588,7 +3616,7 @@ pub fn face_boundary_loop_world(doc: &Document, face: &FaceId) -> Option<Vec<Vec
             revolution,
             profile,
             edge,
-        } => revolve_side_geom(doc, *revolution, profile, *edge as usize).map(|(poly, _)| poly),
+        } => revolve_side_geom(doc, *revolution, profile, *edge as usize).map(|(poly, _, _)| poly),
         FaceId::Circle(_)
         | FaceId::Polygon(_)
         | FaceId::ConstructionPlane(_) => None,
@@ -5374,7 +5402,7 @@ mod tests {
         // Exactly the two constant-height rect edges sweep flat sides; their frames'
         // normals run along the axis, pointing away from the profile.
         let flats: Vec<(usize, SketchFrame)> = (0..revolve_side_count(&profile))
-            .filter_map(|e| revolve_side_geom(&doc, 0, &profile, e).map(|(_, f)| (e, f)))
+            .filter_map(|e| revolve_side_geom(&doc, 0, &profile, e).map(|(_, f, _)| (e, f)))
             .collect();
         assert_eq!(flats.len(), 2, "two axis-perpendicular edges sweep flat sides");
         for (_, frame) in &flats {
