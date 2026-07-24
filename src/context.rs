@@ -855,6 +855,9 @@ pub struct ExtrudeControl {
     pub target_focused: bool,
     /// Whether an extrusion is currently committable (at least one profile face picked).
     pub can_commit: bool,
+    /// Whether an extrusion is actually in progress (a face is picked). When false the Distance and
+    /// "Up to" rows are hidden but the (disabled) primary button still shows (#601).
+    pub has_extrusion: bool,
 }
 
 /// Edits driven by the Extrude tool's context section (#584).
@@ -3859,44 +3862,48 @@ pub fn show_pane(
 
     if let Some(control) = &content.extrude {
         any_control = true;
-        // Distance value input mirroring the 3D field (#584). Shows empty ("null") while an
-        // extrude-to target drives the depth; typing here clears the target.
-        labeled_row(ui, "Distance", |ui| {
-            ui.add_enabled_ui(controls_enabled, |ui| {
-                let mut text = control.distance.clone();
-                let resp = crate::expression_input::ValueInput::new(
-                    "extrude_distance",
-                    crate::expression_input::ValueKind::Length,
-                )
-                .width(90.0)
-                .show(ui, &mut text, doc);
-                if resp.changed() {
-                    on_extrude_edit(ExtrudeEdit::Distance(text));
+        // The Distance and "Up to" rows only appear once an extrusion is in progress; the primary
+        // button shows for the whole tool, disabled until a face is picked (#601).
+        if control.has_extrusion {
+            // Distance value input mirroring the 3D field (#584). Shows empty ("null") while an
+            // extrude-to target drives the depth; typing here clears the target.
+            labeled_row(ui, "Distance", |ui| {
+                ui.add_enabled_ui(controls_enabled, |ui| {
+                    let mut text = control.distance.clone();
+                    let resp = crate::expression_input::ValueInput::new(
+                        "extrude_distance",
+                        crate::expression_input::ValueKind::Length,
+                    )
+                    .width(90.0)
+                    .show(ui, &mut text, doc);
+                    if resp.changed() {
+                        on_extrude_edit(ExtrudeEdit::Distance(text));
+                    }
+                });
+            });
+            // Extrude-to target picker (#584): a plane or face to extrude up to. Focus it, then
+            // click a plane/face in the viewport — or drag the gizmo onto one, which fills this in.
+            labeled_row_top(ui, "Up to", |ui| {
+                if let Some(event) = crate::element_picker::show_labeled(
+                    ui,
+                    "extrude_target",
+                    control.target_focused,
+                    true,
+                    crate::icons::IconId::Plane,
+                    &control.target_rows,
+                ) {
+                    match event {
+                        crate::element_picker::PickerEvent::Focus => {
+                            on_extrude_edit(ExtrudeEdit::TargetFocus)
+                        }
+                        crate::element_picker::PickerEvent::Remove(_)
+                        | crate::element_picker::PickerEvent::Clear => {
+                            on_extrude_edit(ExtrudeEdit::ClearTarget)
+                        }
+                    }
                 }
             });
-        });
-        // Extrude-to target picker (#584): a plane or face to extrude up to. Focus it, then click a
-        // plane/face in the viewport — or drag the gizmo onto one, which fills this in.
-        labeled_row_top(ui, "Up to", |ui| {
-            if let Some(event) = crate::element_picker::show_labeled(
-                ui,
-                "extrude_target",
-                control.target_focused,
-                true,
-                crate::icons::IconId::Plane,
-                &control.target_rows,
-            ) {
-                match event {
-                    crate::element_picker::PickerEvent::Focus => {
-                        on_extrude_edit(ExtrudeEdit::TargetFocus)
-                    }
-                    crate::element_picker::PickerEvent::Remove(_)
-                    | crate::element_picker::PickerEvent::Clear => {
-                        on_extrude_edit(ExtrudeEdit::ClearTarget)
-                    }
-                }
-            }
-        });
+        }
         if primary_button(ui, controls_enabled && control.can_commit, "Extrude") {
             on_extrude_edit(ExtrudeEdit::Commit);
         }
@@ -4492,6 +4499,7 @@ mod tests {
                 target_rows: Vec::new(),
                 target_focused: false,
                 can_commit: true,
+                has_extrusion: true,
             }),
             ..input(&doc, &selection)
         });
@@ -4508,6 +4516,7 @@ mod tests {
                 target_rows: vec!["Plane 2".to_string()],
                 target_focused: false,
                 can_commit: true,
+                has_extrusion: true,
             }),
             ..input(&doc, &selection)
         });

@@ -8071,24 +8071,26 @@ impl eframe::App for App {
                         })
                         .unwrap_or_default()
                 }),
-                // Extrude tool distance/target/commit controls (#584).
-                extrude: (self.state.tool == Tool::Extrude)
-                    .then(|| self.state.creating_extrusion.as_ref())
-                    .flatten()
-                    .map(|ce| {
-                        let has_target = ce.target.is_some();
-                        context::ExtrudeControl {
-                            // Null (empty) while an extrude-to target drives the depth (#584).
-                            distance: if has_target { String::new() } else { ce.text.clone() },
-                            target_rows: ce
-                                .target
-                                .as_ref()
-                                .map(|t| vec![extrude_target_label(&self.state.doc, t)])
-                                .unwrap_or_default(),
-                            target_focused: self.extrude_target_pick,
-                            can_commit: !ce.faces.is_empty(),
-                        }
-                    }),
+                // Extrude tool distance/target/commit controls (#584). Present for the whole tool so
+                // the primary button shows even before a face is picked (#601).
+                extrude: (self.state.tool == Tool::Extrude).then(|| {
+                    let ce = self.state.creating_extrusion.as_ref();
+                    let has_target = ce.is_some_and(|ce| ce.target.is_some());
+                    context::ExtrudeControl {
+                        // Null (empty) while an extrude-to target drives the depth (#584).
+                        distance: match ce {
+                            Some(ce) if !has_target => ce.text.clone(),
+                            _ => String::new(),
+                        },
+                        target_rows: ce
+                            .and_then(|ce| ce.target.as_ref())
+                            .map(|t| vec![extrude_target_label(&self.state.doc, t)])
+                            .unwrap_or_default(),
+                        target_focused: self.extrude_target_pick,
+                        can_commit: ce.is_some_and(|ce| !ce.faces.is_empty()),
+                        has_extrusion: ce.is_some_and(|ce| !ce.faces.is_empty()),
+                    }
+                }),
                 // #157/#167: the Chamfer/Fillet selection picker — rows for the in-progress
                 // edge set (empty rows still show the picker with its pick hint).
                 edge_treatment_rows: (matches!(self.state.tool, Tool::Chamfer | Tool::Fillet)
