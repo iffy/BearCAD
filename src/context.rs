@@ -3281,13 +3281,6 @@ pub fn show_pane(
                         }
                     }
                 });
-                ui.label(
-                    egui::RichText::new(
-                        "Pick a face and one of its edges on a moving body, then the same on                          something that isn't moving — it rotates only, never translates",
-                    )
-                    .color(egui::Color32::from_gray(140))
-                    .size(11.0),
-                );
             }
         }
         if let Some(edit) = pending {
