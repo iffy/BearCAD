@@ -1376,9 +1376,53 @@ fn fan_reach(doc: &model::Document, kind: &construction::PickTargetKind, anchor:
                 sum / n as f32
             }
         }
-        // A vertex, the ground, a plane, an axis, a constraint icon: the anchor is all there is.
+        // A line-endpoint vertex is drawn with a short leg of its line running up to it, which is
+        // how coincident endpoints of different lines are told apart — so aim its loupe the way
+        // that leg points, at the leg's own centre. Following the polyline keeps a curved line's
+        // leg honest: it leaves the vertex along the local tangent, not toward the far end.
+        PK::Point(crate::model::ConstraintPoint::LineEndpoint { line, end }) => doc
+            .lines
+            .get(*line)
+            .and_then(|l| crate::face::line_world_polyline(doc, l))
+            .and_then(|poly| line_leg_center(poly, *end))
+            .unwrap_or(anchor),
+        // Any other vertex, the ground, a plane, an axis, a constraint icon: the loupe draws a
+        // bare dot with no direction to it, so the anchor is all there is.
         _ => anchor,
     }
+}
+
+/// The centre of the short leg drawn from a line-endpoint vertex inside its loupe (#673) — the
+/// point half of [`LEG_FRACTION`] of the way along the line from that end, following the
+/// polyline so a curve's leg reads as its local tangent.
+///
+/// The drawn leg is a fixed *screen* length, which nothing here can know; a fraction of the line
+/// is the scale-free stand-in, and only the direction from the vertex is ever used.
+fn line_leg_center(poly: Vec<Vec3>, end: crate::model::LineEnd) -> Option<Vec3> {
+    /// How much of the line the leg is taken to cover.
+    const LEG_FRACTION: f32 = 0.25;
+    let mut poly = poly;
+    if poly.len() < 2 {
+        return None;
+    }
+    if matches!(end, crate::model::LineEnd::End) {
+        poly.reverse();
+    }
+    let total: f32 = poly.windows(2).map(|w| (w[1] - w[0]).length()).sum();
+    if total <= 1e-6 {
+        return None;
+    }
+    let target = total * LEG_FRACTION / 2.0;
+    let mut acc = 0.0;
+    for w in poly.windows(2) {
+        let seg = (w[1] - w[0]).length();
+        if acc + seg >= target {
+            let t = if seg > 1e-6 { (target - acc) / seg } else { 1.0 };
+            return Some(w[0] + (w[1] - w[0]) * t);
+        }
+        acc += seg;
+    }
+    poly.last().copied()
 }
 
 /// Place the Selection Exploder's loupes around its ring (#570/#671).
@@ -23410,6 +23454,26 @@ mod tests {
         assert_eq!(anim.ghosts.len(), 2);
         // The group we returned into forms in place.
         assert_eq!(anim.from[0], ex.display_centers(vp, &project)[0]);
+    }
+
+    /// #673: a line-endpoint vertex has no extent of its own, but its loupe draws a short leg of
+    /// its line — so the fan aims at that leg's centre, taken along the line from that end.
+    #[test]
+    fn line_leg_center_sits_a_short_way_along_the_line_from_its_end() {
+        use crate::model::LineEnd;
+        let poly = vec![Vec3::ZERO, Vec3::new(4.0, 0.0, 0.0), Vec3::new(8.0, 0.0, 0.0)];
+        // An eighth of the way in (half of LEG_FRACTION) from whichever end is asked for.
+        let start = line_leg_center(poly.clone(), LineEnd::Start).unwrap();
+        assert!((start.x - 1.0).abs() < 1e-4, "{start:?}");
+        let end = line_leg_center(poly.clone(), LineEnd::End).unwrap();
+        assert!((end.x - 7.0).abs() < 1e-4, "{end:?}");
+        // A bent line's leg follows the local tangent rather than pointing at the far end.
+        let bent = vec![Vec3::ZERO, Vec3::new(0.0, 8.0, 0.0), Vec3::new(8.0, 8.0, 0.0)];
+        let leg = line_leg_center(bent, LineEnd::Start).unwrap();
+        assert!(leg.x.abs() < 1e-4 && leg.y > 0.0, "{leg:?}");
+        // Degenerate inputs have no direction to give.
+        assert!(line_leg_center(vec![Vec3::ZERO], LineEnd::Start).is_none());
+        assert!(line_leg_center(vec![Vec3::ZERO, Vec3::ZERO], LineEnd::Start).is_none());
     }
 
     /// #671: loupes sit as near their element's direction as the no-overlap rule allows —

@@ -2025,8 +2025,11 @@ modeled on SolveSpace (https://solvespace.com).
   every direction reads the same. Each handle therefore also captures a **reach** (`fan_reach`,
   #671): a point further along the element — a line's far endpoint, a circle's centre, a face's
   centroid — and `display_centers` falls back to it whenever the anchor projects within
-  `DEGENERATE_PX` of the origin. A vertex *is* the crowd point and keeps its anchor; a group loupe
-  averages its members' reaches. While exploded the camera is
+  `DEGENERATE_PX` of the origin. A **line-endpoint vertex** has no extent of its own but its loupe
+  draws a short leg of its line, so it reaches for that leg's centre (`line_leg_center`, #673):
+  the point half of `LEG_FRACTION` along the line from that end, walked along the polyline so a
+  curve's leg reads as its local tangent rather than pointing at the far end. Any other vertex
+  draws a bare dot and keeps its anchor; a group loupe averages its members' reaches. While exploded the camera is
   frozen, so the **mouse wheel zooms the loupes** instead (`ExploderState::zoom_mul`,
   `display_centers`): the fan grows, and while the angle-coherent single ring still fits it just
   scales; once the growing loupes would push that ring off-screen they **stagger** into concentric
