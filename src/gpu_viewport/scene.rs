@@ -2310,18 +2310,18 @@ impl<'a> SceneMesh<'a> {
                 }
                 // Selected 3D body sub-elements (#156): drawn depth-test-disabled like their
                 // hover highlights (#153), so a concave joint can't bury the selection mark.
-                SceneElement::BodyEdge { a, b, .. } => {
+                // A selected edge draws its whole tangent-continuous curve (#626).
+                SceneElement::BodyEdge { body, a, b } => {
+                    let wa = crate::hierarchy::dequantize_body_point(a);
+                    let wb = crate::hierarchy::dequantize_body_point(b);
+                    let chain = crate::extrude::body_solid_mesh(doc, body)
+                        .map(|s| body_edge_curve_chain(&s, wa, wb))
+                        .unwrap_or_else(|| vec![(wa, wb)]);
                     let restore = self.index_layer;
                     self.set_index_layer(MeshIndexLayer::Wireframe);
-                    self.push_line_segment(
-                        crate::hierarchy::dequantize_body_point(a),
-                        crate::hierarchy::dequantize_body_point(b),
-                        color,
-                        4.0,
-                        cam,
-                        viewport,
-                        view_proj,
-                    );
+                    for (sa, sb) in chain {
+                        self.push_line_segment(sa, sb, color, 4.0, cam, viewport, view_proj);
+                    }
                     self.set_index_layer(restore);
                 }
                 SceneElement::BodyVertex { p, .. } => {
@@ -2913,16 +2913,16 @@ impl<'a> SceneMesh<'a> {
                     self.push_segment_hover(a, b, color, cam, viewport, view_proj, &project);
                 }
             }
-            SceneElement::BodyEdge { a, b, .. } => {
-                self.push_segment_hover(
-                    crate::hierarchy::dequantize_body_point(a),
-                    crate::hierarchy::dequantize_body_point(b),
-                    color,
-                    cam,
-                    viewport,
-                    view_proj,
-                    &project,
-                );
+            SceneElement::BodyEdge { body, a, b } => {
+                let wa = crate::hierarchy::dequantize_body_point(a);
+                let wb = crate::hierarchy::dequantize_body_point(b);
+                // The whole tangent-continuous curve, not just the identity facet (#626).
+                let chain = crate::extrude::body_solid_mesh(doc, body)
+                    .map(|s| body_edge_curve_chain(&s, wa, wb))
+                    .unwrap_or_else(|| vec![(wa, wb)]);
+                for (sa, sb) in chain {
+                    self.push_segment_hover(sa, sb, color, cam, viewport, view_proj, &project);
+                }
             }
             SceneElement::BodyVertex { p, .. } => {
                 push_screen_disc(
@@ -3061,8 +3061,14 @@ impl<'a> SceneMesh<'a> {
                     self.push_segment_hover_ring(doc, circle, color, cam, viewport, view_proj);
                 }
             }
-            PickTargetKind::BodyEdge { a, b, .. } => {
-                self.push_segment_hover(*a, *b, color, cam, viewport, view_proj, project);
+            PickTargetKind::BodyEdge { body, a, b } => {
+                // The whole tangent-continuous curve, not just the picked facet (#626).
+                let chain = crate::extrude::body_solid_mesh(doc, *body)
+                    .map(|s| body_edge_curve_chain(&s, *a, *b))
+                    .unwrap_or_else(|| vec![(*a, *b)]);
+                for (sa, sb) in chain {
+                    self.push_segment_hover(sa, sb, color, cam, viewport, view_proj, project);
+                }
             }
             PickTargetKind::BodyFace {
                 triangles, normal, ..
@@ -3320,6 +3326,98 @@ pub fn solid_mesh_unique_edges(solid: &crate::extrude::SolidMesh) -> Vec<(Vec3, 
         .filter(|(_, _, normals)| is_feature_edge(normals))
         .map(|(a, b, _)| (a, b))
         .collect()
+}
+
+/// Turn threshold for chaining feature segments into one smooth "curve edge" (#626):
+/// consecutive segments whose directions differ by less than this continue the same curve
+/// (a tessellated circle at `CIRCLE_SEGMENTS` = 48 turns 7.5° per facet); sharper turns are
+/// real corners and break the chain.
+const CURVE_CHAIN_COS_THRESHOLD: f32 = 0.866_025; // cos(30°)
+
+/// Partition a solid's feature edges into maximal tangent-continuous chains (#626): at every
+/// vertex where **exactly two** feature segments meet at a shallow angle — the tessellation
+/// of a smooth curve, like a revolve's circular rim — the segments join one chain; corners,
+/// junctions of 3+ edges, and chain ends stay boundaries. A straight or curved edge thus
+/// becomes **one** chain of segments, so picking any facet can select the whole curve.
+pub fn solid_mesh_edge_chains(solid: &crate::extrude::SolidMesh) -> Vec<Vec<(Vec3, Vec3)>> {
+    let edges = solid_mesh_unique_edges(solid);
+    let n = edges.len();
+    let mut adj: std::collections::HashMap<(i64, i64, i64), Vec<(usize, bool)>> =
+        std::collections::HashMap::new();
+    for (i, (a, b)) in edges.iter().enumerate() {
+        adj.entry(quantize_vertex(*a)).or_default().push((i, true));
+        adj.entry(quantize_vertex(*b)).or_default().push((i, false));
+    }
+    // Union-find with path halving; union at every smooth 2-edge vertex.
+    let mut parent: Vec<usize> = (0..n).collect();
+    let find = |parent: &mut Vec<usize>, mut i: usize| -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    };
+    for incident in adj.values() {
+        let [(i, i_starts_here), (j, j_starts_here)] = incident[..] else {
+            continue;
+        };
+        // Direction of each edge pointing *away* from the shared vertex; a smooth
+        // continuation means the two away-directions are nearly opposite.
+        let away = |e: usize, starts_here: bool| {
+            let (a, b) = edges[e];
+            (if starts_here { b - a } else { a - b }).normalize_or_zero()
+        };
+        if away(i, i_starts_here).dot(away(j, j_starts_here)) <= -CURVE_CHAIN_COS_THRESHOLD {
+            let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+            if ri != rj {
+                parent[ri] = rj;
+            }
+        }
+    }
+    let mut by_root: std::collections::HashMap<usize, Vec<(Vec3, Vec3)>> =
+        std::collections::HashMap::new();
+    for i in 0..n {
+        let r = find(&mut parent, i);
+        by_root.entry(r).or_default().push(edges[i]);
+    }
+    by_root.into_values().collect()
+}
+
+/// The canonical identity segment of a chain (#626): the lexicographically smallest
+/// quantized segment, so every facet of one curve maps to the same selection element.
+pub fn chain_canonical_segment(chain: &[(Vec3, Vec3)]) -> (Vec3, Vec3) {
+    let key = |&(a, b): &(Vec3, Vec3)| {
+        let (qa, qb) = (quantize_vertex(a), quantize_vertex(b));
+        if qa <= qb { (qa, qb) } else { (qb, qa) }
+    };
+    *chain
+        .iter()
+        .min_by_key(|seg| key(seg))
+        .expect("chains are never empty")
+}
+
+/// The full tangent-continuous chain through segment `(a, b)` (#626) — the segments a
+/// highlight should draw when that curve is hovered or selected. Endpoints are matched by
+/// proximity, not exact keys: a selected edge's geometry round-trips through
+/// `hierarchy::quantize_body_point` (0.01 world units), so the dequantized points can sit
+/// up to half that step off the mesh's true vertices. Falls back to the lone segment when
+/// nothing matches (e.g. stale selection geometry after a rebuild).
+pub fn body_edge_curve_chain(
+    solid: &crate::extrude::SolidMesh,
+    a: Vec3,
+    b: Vec3,
+) -> Vec<(Vec3, Vec3)> {
+    const EPS_SQ: f32 = 0.006 * 0.006;
+    let near = |p: Vec3, q: Vec3| (p - q).length_squared() <= EPS_SQ;
+    for chain in solid_mesh_edge_chains(solid) {
+        let hit = chain
+            .iter()
+            .any(|&(x, y)| (near(x, a) && near(y, b)) || (near(x, b) && near(y, a)));
+        if hit {
+            return chain;
+        }
+    }
+    vec![(a, b)]
 }
 
 /// View-dependent **silhouette** edges of a solid mesh for an orthographic projection along

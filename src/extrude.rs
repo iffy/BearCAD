@@ -5416,6 +5416,46 @@ mod tests {
         assert!(revolve_side_geom(&doc, 0, &profile, flats[0].0).is_some());
     }
 
+    /// #626: the tessellated rims of a full revolve chain into whole curves — each circular
+    /// rim is ONE chain, so picking any facet selects the entire circle.
+    #[test]
+    fn revolve_rim_segments_chain_into_whole_curves() {
+        let (mut doc, sketch) = sketch_doc();
+        let profile = rect_profile(&mut doc, sketch, 10.0, 0.0, 10.0, 10.0);
+        doc.revolutions.push(test_revolution(
+            sketch,
+            vec![profile],
+            360.0,
+            false,
+            crate::model::RevolveMode::NewBody,
+        ));
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Revolve(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        let solid = body_solid_mesh(&doc, 0).expect("mesh");
+        let chains = crate::gpu_viewport::solid_mesh_edge_chains(&solid);
+        // The ring's only feature edges are its 4 circular rims (inner/outer × both flat
+        // ends) — each must gather into a single many-segment chain.
+        assert_eq!(chains.len(), 4, "expected 4 rim chains, got {}", chains.len());
+        for chain in &chains {
+            assert!(chain.len() >= 8, "a rim chain should span many facets");
+        }
+        // Any single facet expands back to its whole rim, and every facet of a chain maps
+        // to the same canonical identity segment.
+        let (a, b) = chains[0][0];
+        let expanded = crate::gpu_viewport::body_edge_curve_chain(&solid, a, b);
+        assert_eq!(expanded.len(), chains[0].len());
+        let canon = crate::gpu_viewport::chain_canonical_segment(&chains[0]);
+        let (a2, b2) = chains[0][chains[0].len() / 2];
+        let canon2 = crate::gpu_viewport::chain_canonical_segment(
+            &crate::gpu_viewport::body_edge_curve_chain(&solid, a2, b2),
+        );
+        assert_eq!(canon, canon2);
+    }
+
     /// #263: revolving the concentric-ring (annulus) face 360° about the Y axis makes a hollow
     /// tube-torus — outer torus minus inner torus. By Pappus, volume = 2π·d·π·(R² − r²) with
     /// d the centre's distance from the axis.

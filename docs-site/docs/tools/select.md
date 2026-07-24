@@ -17,7 +17,9 @@ pans, the wheel zooms, clicking picks.
 
 - **Sketch points** — endpoints, corners, circle centers. Points win over the edges they
   sit on.
-- **Lines and edges** — in sketches and on bodies.
+- **Lines and edges** — in sketches and on bodies. A smooth curved edge — like the
+  circular rim of a revolved body — picks as **one whole curve**: click anywhere along it
+  and the entire curve highlights and selects as a single edge.
 - **Faces** — of bodies and construction planes.
 - **Whole bodies** — in the viewport or the Elements pane.
 

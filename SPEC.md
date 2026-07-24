@@ -1828,6 +1828,15 @@ modeled on SolveSpace (https://solvespace.com).
   their hover highlights (#153). `resolve_pick_target` offers a face as a **priority-1** candidate
   (below edges/vertices at priority 0, via `PickOcclusion::eye`), so clicking near an edge still
   picks the edge and clicking a face **interior** selects the face (#565).
+  **Curved edges select as whole curves (#626):** feature segments are partitioned into maximal
+  tangent-continuous chains (`solid_mesh_edge_chains`: at every vertex where exactly two feature
+  segments meet under a 30° turn — a smooth curve's tessellation — they join one chain; corners
+  and junctions break it). Every segment of a chain carries the chain's **canonical segment**
+  (its lexicographically-smallest quantized member) as its pick identity, so clicking any facet
+  of a revolve's circular rim selects the *whole* circle as one edge; hover, selection, and
+  loupe previews all draw the full chain (`body_edge_curve_chain`, endpoint-matched by proximity
+  since selection geometry round-trips the coarser `quantize_body_point`). The exploder crowd
+  dedupes a curve's facets into a single candidate the same way.
 - **Selection Exploder (#551):** pressing **Space** fans the crowd of pickable things inside the
   cursor's hitbox out into spaced-apart **handles** arranged on a ring around it, so a tiny buried
   vertex/edge/line/face can be picked unambiguously. Each handle is a round **loupe** — `ZOOM ·

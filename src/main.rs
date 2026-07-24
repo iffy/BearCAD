@@ -1465,7 +1465,16 @@ fn draw_pick_target_loupe(
                 }
             }
         }
-        PK::BodyEdge { a, b, .. } => seg(*a, *b),
+        // The whole curve the segment belongs to (#626), so a loupe magnifying one facet of
+        // a circular rim still shows the curve running through it.
+        PK::BodyEdge { body, a, b } => {
+            let chain = extrude::body_solid_mesh(doc, *body)
+                .map(|s| gpu_viewport::body_edge_curve_chain(&s, *a, *b))
+                .unwrap_or_else(|| vec![(*a, *b)]);
+            for (sa, sb) in chain {
+                seg(sa, sb);
+            }
+        }
         // Body vertices follow the same "highlighted dot only" rule as sketch points.
         PK::BodyVertex { position, .. } => {
             if is_highlight {

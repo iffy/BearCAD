@@ -1816,8 +1816,14 @@ pub fn draw_pick_highlight(
                 draw_circle_highlight(painter, project, doc, circle, color);
             }
         }
-        PickTargetKind::BodyEdge { a, b, .. } => {
-            draw_segment_highlight(painter, project, a, b, color);
+        PickTargetKind::BodyEdge { body, a, b } => {
+            // The whole tangent-continuous curve, not just the picked facet (#626).
+            let chain = crate::extrude::body_solid_mesh(doc, body)
+                .map(|s| crate::gpu_viewport::body_edge_curve_chain(&s, a, b))
+                .unwrap_or_else(|| vec![(a, b)]);
+            for (sa, sb) in chain {
+                draw_segment_highlight(painter, project, sa, sb, color);
+            }
         }
         PickTargetKind::BodyFace { triangles, .. } => {
             let fill = color.gamma_multiply(FACE_HOVER_FILL_MULTIPLIER);
@@ -2520,8 +2526,14 @@ fn nearest_body_edge(
         let Some(solid) = crate::extrude::body_solid_mesh(doc, bi) else {
             continue;
         };
-        for (a, b) in crate::gpu_viewport::solid_mesh_unique_edges(&solid) {
-            consider(PickTargetKind::BodyEdge { body: bi, a, b }, a, b);
+        // Segments of one smooth chain all carry the chain's canonical segment as their
+        // pick identity (#626), so clicking any facet of a curved rim selects the whole
+        // curve; the hovered segment itself still provides the axis anchor geometry.
+        for chain in crate::gpu_viewport::solid_mesh_edge_chains(&solid) {
+            let (ca, cb) = crate::gpu_viewport::chain_canonical_segment(&chain);
+            for (a, b) in chain {
+                consider(PickTargetKind::BodyEdge { body: bi, a: ca, b: cb }, a, b);
+            }
         }
     }
 
@@ -2699,8 +2711,13 @@ pub fn collect_pick_candidates(
         let Some(solid) = crate::extrude::body_solid_mesh(doc, bi) else {
             continue;
         };
-        for (a, b) in crate::gpu_viewport::solid_mesh_unique_edges(&solid) {
-            push_edge(&mut raw, PickTargetKind::BodyEdge { body: bi, a, b }, a, b);
+        // Chain-canonical identity (#626): the exploder's crowd then dedupes every facet of
+        // one curve into a single candidate (the whole curve), keyed like selection.
+        for chain in crate::gpu_viewport::solid_mesh_edge_chains(&solid) {
+            let (ca, cb) = crate::gpu_viewport::chain_canonical_segment(&chain);
+            for (a, b) in chain {
+                push_edge(&mut raw, PickTargetKind::BodyEdge { body: bi, a: ca, b: cb }, a, b);
+            }
         }
         for tri in &solid.triangles {
             for &p in tri {

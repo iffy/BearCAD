@@ -7,7 +7,8 @@ mod scene;
 pub use dim_labels::{build_planar_label_mesh, ViewportDimLabel};
 pub use renderer::paint_viewport;
 pub use scene::{
-    fill_color, sketch_ground_color, solid_mesh_coplanar_faces, solid_mesh_silhouette_edges,
+    body_edge_curve_chain, chain_canonical_segment, fill_color, sketch_ground_color,
+    solid_mesh_coplanar_faces, solid_mesh_edge_chains, solid_mesh_silhouette_edges,
     solid_mesh_unique_edges,
     PreviewRect, ViewportHoverHighlight, BODY_SILHOUETTE_COLOR, SOLID_FILL, SOLID_FILL_SELECTED,
     ViewportPalette, ViewportExtrudeGizmo, MoveRotationGizmo, RevolveArcGizmo, ViewportPlaneGizmo, ViewportPlanePreview,
