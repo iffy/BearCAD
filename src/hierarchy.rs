@@ -956,6 +956,14 @@ pub struct GraphLayout {
     /// The node currently being dragged, if any (#622): the layering enforcement treats it
     /// as authoritative, pushing *other* nodes out of the way instead of snapping it back.
     active_drag: Option<HierarchyNode>,
+    /// Whether the simulation has come to rest (#661). A settled layout **stops stepping**
+    /// until something actually disturbs it — a node appearing or leaving, a drag, or the
+    /// force toggle coming back on. Without this the sim advanced on every repaint the pane
+    /// happened to get, so merely clicking a node (which repaints for selection, hover, and
+    /// the tooltip) walked the whole graph to a new position.
+    settled: bool,
+    /// Whether the force layout was running last frame, so switching it back on unsettles.
+    was_running: bool,
 }
 
 /// One node's live physics state in [`GraphLayout`]: current position and velocity.
@@ -1135,18 +1143,33 @@ impl GraphLayout {
         run_physics: bool,
     ) -> f32 {
         let present: HashSet<HierarchyNode> = positions.iter().map(|p| p.node).collect();
+        let before = self.nodes.len();
         self.nodes.retain(|node, _| present.contains(node));
         let depth_of: HashMap<HierarchyNode, usize> =
             positions.iter().map(|p| (p.node, p.depth)).collect();
+        let mut added = false;
         for p in positions {
-            self.nodes.entry(p.node).or_insert_with(|| GraphNodeState {
-                pos: egui::vec2(seed_x(p.node, width), p.depth as f32 * LAYER_HEIGHT),
-                vel: egui::Vec2::ZERO,
+            self.nodes.entry(p.node).or_insert_with(|| {
+                added = true;
+                GraphNodeState {
+                    pos: egui::vec2(seed_x(p.node, width), p.depth as f32 * LAYER_HEIGHT),
+                    vel: egui::Vec2::ZERO,
+                }
             });
         }
+        // A changed node set, a drag, or the force layout coming back on wakes the sim (#661).
+        if added || before != self.nodes.len() || self.active_drag.is_some() || (run_physics && !self.was_running) {
+            self.settled = false;
+        }
+        self.was_running = run_physics;
         // Force layout off (#525): keep nodes synced (new ones seeded, gone ones dropped) but
         // freeze them in place — no stepping — so a busy graph holds still.
         if !run_physics {
+            return 0.0;
+        }
+        // Settled (#661): hold still until something disturbs it, so a repaint the pane gets
+        // for an unrelated reason — a click, a hover, a tooltip — can't walk the layout.
+        if self.settled {
             return 0.0;
         }
         let edges: Vec<(HierarchyNode, HierarchyNode)> = positions
@@ -1158,6 +1181,12 @@ impl GraphLayout {
             kinetic = step_graph_layout(&mut self.nodes, &edges, &depth_of, width, dt);
         }
         kinetic
+    }
+
+    /// Whether the simulation has come to rest, so the caller can stop asking for repaints
+    /// and the layout holds still (#661).
+    fn mark_settled(&mut self) {
+        self.settled = true;
     }
 
     /// The user's drag offset for a node (#451), zero if never dragged.
@@ -3611,6 +3640,9 @@ fn show_graph_view(
         graph_layout.sync_and_step(&positions, available_width, SUBSTEPS, DT, force_enabled);
     if kinetic > SETTLE_KE {
         ui.ctx().request_repaint();
+    } else {
+        // Come to rest: freeze here until something disturbs the graph (#661).
+        graph_layout.mark_settled();
     }
 
     // Measure each node's label, then spread each depth band horizontally so no two labels
@@ -4687,6 +4719,56 @@ mod tests {
         enforce_graph_layering(&mut ys, &edges, None, 30.0, f32::NEG_INFINITY);
         assert!(ys[&b] >= ys[&a] + 30.0);
         assert!(ys[&c] >= ys[&b] + 30.0);
+    }
+
+    /// #661: once the force layout settles it **stops stepping**, so a repaint the pane gets
+    /// for an unrelated reason — a click, a hover, a tooltip — can't walk the graph to a new
+    /// position. A changed node set or a drag wakes it again.
+    #[test]
+    fn settled_graph_layout_holds_still_across_repaints() {
+        let node = |i| GraphNodePosition {
+            node: HierarchyNode::Body(i),
+            depth: i,
+            column: 0,
+            row: 0,
+            parent: (i > 0).then(|| HierarchyNode::Body(i - 1)),
+        };
+        let positions: Vec<_> = (0..4).map(node).collect();
+        let mut layout = GraphLayout::default();
+        // Run it to rest, the way the pane does.
+        let mut steps = 0;
+        loop {
+            let kinetic = layout.sync_and_step(&positions, 400.0, 4, 1.0 / 60.0, true);
+            if kinetic <= 0.05 {
+                layout.mark_settled();
+                break;
+            }
+            steps += 1;
+            assert!(steps < 10_000, "layout should settle");
+        }
+        let resting: Vec<_> = positions
+            .iter()
+            .map(|p| layout.pos_of(p.node).expect("seeded"))
+            .collect();
+
+        // Repaints while settled change nothing at all.
+        for _ in 0..50 {
+            assert_eq!(
+                layout.sync_and_step(&positions, 400.0, 4, 1.0 / 60.0, true),
+                0.0,
+                "a settled layout reports no motion"
+            );
+        }
+        for (p, before) in positions.iter().zip(&resting) {
+            assert_eq!(layout.pos_of(p.node), Some(*before), "{:?} held still", p.node);
+        }
+
+        // A new node wakes it.
+        let grown: Vec<_> = (0..5).map(node).collect();
+        assert!(
+            layout.sync_and_step(&grown, 400.0, 4, 1.0 / 60.0, true) > 0.0,
+            "a new node wakes the simulation"
+        );
     }
 
     /// #638: dragging a node up shoves its inputs up ahead of it, but only until the
