@@ -8876,15 +8876,6 @@ impl eframe::App for App {
                             .unwrap_or_default(),
                         rotate_align_focused: self.move_align_pick,
                         rotate_orientation: cm.map(|c| c.rotate_orientation).unwrap_or(0),
-                        snap_offset: cm.and_then(|c| {
-                            let (from, to) = (c.source_point?, c.target_point?);
-                            let a = extrude::move_point_world(&self.state.doc, &from)?;
-                            let b = extrude::move_point_world(&self.state.doc, &to)?;
-                            let d = b - a;
-                            let unit = self.state.doc.default_length_unit;
-                            let f = |v: f32| crate::value::format_length_display_in(v, unit);
-                            Some(format!("{}, {}, {}", f(d.x), f(d.y), f(d.z)))
-                        }),
                         tx: cm.map(|c| c.tx.clone()).unwrap_or_default(),
                         ty: cm.map(|c| c.ty.clone()).unwrap_or_default(),
                         tz: cm.map(|c| c.tz.clone()).unwrap_or_default(),
@@ -8970,7 +8961,6 @@ impl eframe::App for App {
                         gap_is_offset: cr.map(|c| c.gap_is_offset).unwrap_or(false),
                         distance_is_end: cr.map(|c| c.distance_is_end).unwrap_or(true),
                         computed_value,
-                        preview_instances: preview,
                         editing: cr.map(|c| c.editing.is_some()).unwrap_or(false),
                         can_commit: cr
                             .map(|c| !c.targets.is_empty() || !c.plane_targets.is_empty() || !c.sketch_targets.is_empty() || !c.extrusion_targets.is_empty())

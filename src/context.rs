@@ -267,9 +267,6 @@ pub struct MoveControl {
     pub rotate_align_focused: Option<bool>,
     /// Which of the four orientations the alignment is set to (#653), 0..=3.
     pub rotate_orientation: u8,
-    /// The snap translation the two points work out to, formatted (#650) — shown instead of
-    /// the X/Y/Z fields while snapping.
-    pub snap_offset: Option<String>,
     pub tx: String,
     pub ty: String,
     pub tz: String,
@@ -371,8 +368,6 @@ pub struct RepeatControl {
     /// Formatted value of the computed variable, shown read-only in its field (`None` if it
     /// doesn't evaluate).
     pub computed_value: Option<String>,
-    /// Live instance count the current configuration produces (`None` = doesn't evaluate).
-    pub preview_instances: Option<usize>,
     pub editing: bool,
     pub can_commit: bool,
 }
@@ -3131,16 +3126,6 @@ pub fn show_pane(
         }
         drop(picker_row);
         if control.translate_mode == crate::model::MoveTranslateMode::Snap {
-            ui.label(
-                egui::RichText::new(match &control.snap_offset {
-                    Some(offset) => format!("Moves {offset}"),
-                    None => {
-                        "Pick a point on the moving bodies, then where it should land".to_string()
-                    }
-                })
-                .color(egui::Color32::from_gray(140))
-                .size(11.0),
-            );
         }
         {
             let mut field = |ui: &mut egui::Ui,
@@ -3311,11 +3296,6 @@ pub fn show_pane(
         ) {
             on_move_edit(MoveEdit::Commit);
         }
-        ui.label(
-            egui::RichText::new("Inputs become shadow bodies; the moved copies are new bodies")
-                .color(egui::Color32::from_gray(140))
-                .size(11.0),
-        );
     }
 
     if let Some(op) = content.move_edit_start {
@@ -3324,11 +3304,6 @@ pub fn show_pane(
         if ui.button("Edit move").clicked() {
             on_move_edit_start(op);
         }
-        ui.label(
-            egui::RichText::new("Re-open the Move tool to change this operation")
-                .color(egui::Color32::from_gray(140))
-                .size(11.0),
-        );
     }
 
     if let Some(control) = &content.mirror_op {
@@ -3374,21 +3349,6 @@ pub fn show_pane(
         ) {
             on_mirror_edit(MirrorEdit::Commit);
         }
-        ui.label(
-            egui::RichText::new(match control.mode {
-                crate::model::MirrorMode::NewBody => {
-                    "The originals stay; each reflection is a new body"
-                }
-                crate::model::MirrorMode::Join => {
-                    "Each reflection fuses into its own source body"
-                }
-                crate::model::MirrorMode::Cut => {
-                    "Each reflection is subtracted from its own source body"
-                }
-            })
-            .color(egui::Color32::from_gray(140))
-            .size(11.0),
-        );
     }
 
     if let Some(op) = content.mirror_edit_start {
@@ -3397,11 +3357,6 @@ pub fn show_pane(
         if ui.button("Edit mirror").clicked() {
             on_mirror_edit_start(op);
         }
-        ui.label(
-            egui::RichText::new("Re-open the Mirror tool to change this operation")
-                .color(egui::Color32::from_gray(140))
-                .size(11.0),
-        );
     }
 
     if let Some(control) = &content.repeat_op {
@@ -3629,15 +3584,6 @@ pub fn show_pane(
                 });
             }
         });
-        // The Count field already shows the instance count (#446); only surface the
-        // can't-evaluate case.
-        if control.preview_instances.is_none() {
-            ui.label(
-                egui::RichText::new("Configuration doesn't evaluate yet")
-                    .color(egui::Color32::from_gray(140))
-                    .size(11.0),
-            );
-        }
         if let Some(edit) = pending {
             on_repeat_edit(edit);
         }
@@ -3900,11 +3846,6 @@ pub fn show_pane(
         if ui.button("Edit mirror").clicked() {
             on_sketch_mirror_edit(SketchMirrorEdit::EditStart(op));
         }
-        ui.label(
-            egui::RichText::new("Re-open the Mirror tool to change this operation")
-                .color(egui::Color32::from_gray(140))
-                .size(11.0),
-        );
     }
 
     if let Some(op) = content.repeat_edit_start {
@@ -5547,7 +5488,6 @@ mod tests {
                 source_point_focused: false,
                 target_point_rows: Vec::new(),
                 target_point_focused: false,
-                snap_offset: None,
                 targets: vec![1, 4],
                 tx: String::new(),
                 ty: String::new(),
@@ -5592,7 +5532,6 @@ mod tests {
                 gap_is_offset: false,
                 distance_is_end: true,
                 computed_value: None,
-                preview_instances: Some(3),
                 editing: false,
                 can_commit: true,
             }),
@@ -5628,7 +5567,6 @@ mod tests {
             gap_is_offset: false,
             distance_is_end: true,
             computed_value: None,
-            preview_instances: Some(3),
             editing: false,
             can_commit: true,
         };
