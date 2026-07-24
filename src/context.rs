@@ -1239,13 +1239,17 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             !b.picking_b,
         ));
         if two_sided {
-            tool_pickers.push(body_tool_picker(
+            // No divider between the two sides and the mode/Do controls below — the Combine
+            // pickers and the section read as one contiguous block (#606).
+            let mut side_b = body_tool_picker(
                 "Side B",
                 PickerTarget::CombineB,
                 &b.b,
                     (b.kind == crate::model::BooleanOpKind::Cut).then_some(crate::theme::CUT_ACCENT),
                 b.picking_b,
-            ));
+            );
+            side_b.separator_above = false;
+            tool_pickers.push(side_b);
         }
     }
     let calibrate_image = input.calibrate_image;
@@ -2551,15 +2555,16 @@ pub fn show_pane(
 
     if let Some(control) = &content.boolean_op {
         any_control = true;
-        ui.separator();
-        section_label(
-            ui,
-            if control.editing { "Edit boolean operation" } else { "Combine" },
-        );
+        // No divider between the Bodies picker above and this section — the pickers, the mode
+        // row, and the Do button read as one contiguous Combine block (#606).
+        if control.editing {
+            ui.separator();
+            section_label(ui, "Edit boolean operation");
+        }
         // A segmented icon group (#267): two-circle boolean icons with kept regions solid and
-        // removed regions faint red.
+        // removed regions faint red — in the right column under a "Mode" label (#606).
         let kind = control.kind;
-        ui.horizontal(|ui| {
+        labeled_row(ui, "Mode", |ui| {
             for (value, icon) in [
                 (crate::model::BooleanOpKind::Combine, crate::icons::IconId::BooleanUnion),
                 (crate::model::BooleanOpKind::Cut, crate::icons::IconId::BooleanCut),
@@ -2601,11 +2606,6 @@ pub fn show_pane(
         ) {
             on_boolean_edit(BooleanEdit::Commit);
         }
-        ui.label(
-            egui::RichText::new("Inputs become shadow bodies; the result is one or more new bodies")
-                .color(egui::Color32::from_gray(140))
-                .size(11.0),
-        );
     }
 
     if let Some(op) = content.boolean_edit_start {
