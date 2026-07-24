@@ -6560,7 +6560,10 @@ impl App {
                         || !c.sketch_targets.is_empty()
                         || !c.extrusion_targets.is_empty()
                 })
-            && !ui.ctx().wants_keyboard_input()
+            // Enter still commits from the tool's own value fields (#655) — typing a
+            // distance and pressing Enter is the whole point of them holding focus.
+            && (!ui.ctx().wants_keyboard_input()
+                || context::repeat_value_field_focused(ui.ctx()))
         {
             self.state.apply(Action::CommitRepeat);
             return;
@@ -6778,16 +6781,13 @@ impl App {
                 start_distance: distance,
             });
             // Grabbing the handle hands Distance to the gizmo: it becomes one of the two set
-            // variables (#257), and any typed-in focus is released so the dragged value isn't
-            // appended to.
+            // variables (#257) and takes the pane's focus (#655), so the ring sits on the value
+            // being dragged instead of the Bodies picker and typing lands there afterwards.
             if let Some(cr) = self.state.creating_repeat.as_mut() {
                 cr.touch_var(model::RepeatVar::Distance);
             }
-            ui.ctx().memory_mut(|m| {
-                for label in ["Distance"] {
-                    m.surrender_focus(egui::Id::new(("repeat_var_field", label)));
-                }
-            });
+            ui.ctx()
+                .memory_mut(|m| m.request_focus(context::repeat_value_field_id("Distance")));
             return true;
         }
         // Following: track the cursor every frame, no button required.

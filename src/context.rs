@@ -748,7 +748,7 @@ pub fn tool_uses_snapping(tool: Tool) -> bool {
 
 /// The egui id of one of the Repeat section's value fields — the same id
 /// [`crate::expression_input::ValueInput`] is built with when the row renders.
-fn repeat_value_field_id(label: &str) -> egui::Id {
+pub fn repeat_value_field_id(label: &str) -> egui::Id {
     egui::Id::new(("repeat_var_field", label))
 }
 

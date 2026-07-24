@@ -825,7 +825,10 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   grab and drag): one click grabs it, it then follows the cursor writing **Distance** live
   (which also makes Distance one of the two *set* variables), and the next click releases it.
   It shows the computed span while Distance is the computed variable, so the handle always sits
-  at the real end of the pattern. **Esc** drops the in-progress repeat (clearing
+  at the real end of the pattern. Grabbing it also **focuses the Distance field** (#655), so the
+  pane's ring follows the value being dragged rather than staying on the Bodies picker and a
+  precise value can be typed straight after; **Enter** still commits from any of the tool's
+  value fields. **Esc** drops the in-progress repeat (clearing
   the ghost previews, #450). **Selection seeding (#439):** activating the tool seeds its
   targets from the current selection (bodies/planes/sketches), the axis starts **unset**
   (`CreatingRepeat::axis: Option` — commit refuses without one), and exactly one picker reads
