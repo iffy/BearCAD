@@ -134,7 +134,9 @@ fn length_expression_text_edit_frame(ui: &egui::Ui, id: Id, invalid: bool) -> Fr
             visuals.extreme_bg_color
         })
         .stroke(stroke)
-        .inner_margin(Margin::symmetric(4, 2))
+        // Match the element picker's vertical padding (4px) so value inputs and
+        // element pickers are the same height when stacked in a tool pane (#599).
+        .inner_margin(Margin::symmetric(4, 4))
         .corner_radius(widget.corner_radius)
 }
 
