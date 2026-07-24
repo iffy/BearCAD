@@ -17,8 +17,8 @@ use eframe::egui;
 use glam::{Quat, Vec3};
 /// Shared stroke/fill colour for all construction geometry.
 pub const CONSTRUCTION_RGBA: egui::Color32 = egui::Color32::from_rgb(230, 120, 40);
-/// Brighter yellow fill for construction planes (semi-transparent in the viewport).
-pub const PLANE_FILL_RGBA: egui::Color32 = egui::Color32::from_rgb(241, 196, 15);
+/// Pale yellow (#ffffc5) fill for construction planes (semi-transparent in the viewport, #628).
+pub const PLANE_FILL_RGBA: egui::Color32 = egui::Color32::from_rgb(0xff, 0xff, 0xc5);
 
 /// Screen-space dash and gap lengths for construction line strokes (pixels).
 pub const CONSTRUCTION_DASH_LENGTH_PX: f32 = 6.0;

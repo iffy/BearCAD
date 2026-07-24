@@ -103,7 +103,7 @@ pub const SOLID_FILL_OPACITY: f32 = 0.25;
 /// Fill opacity for all-construction sketch shapes (rectangles, circles).
 pub const CONSTRUCTION_FILL_OPACITY: f32 = 0.18;
 /// Default semi-transparent fill for construction planes.
-pub const DEFAULT_CONSTRUCTION_PLANE_OPACITY: f32 = 0.30;
+pub const DEFAULT_CONSTRUCTION_PLANE_OPACITY: f32 = 0.18;
 /// Lift plane fills slightly toward the camera so they win over the ground grid.
 pub const PLANE_FILL_DEPTH_BIAS: f32 = 0.02;
 /// Base depth lift for sketch shape fills toward the camera.
