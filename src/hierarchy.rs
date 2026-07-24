@@ -303,6 +303,25 @@ impl ElementVisibility {
             .all(|c| self.is_visible(SceneElement::Component(c)))
     }
 
+    /// What a construction plane inherits from its ancestors, ignoring its own hidden flag
+    /// (#667) — the part sketches drawn on it still follow.
+    fn plane_inherited_visible(&self, doc: &Document, index: usize) -> bool {
+        let Some(plane) = doc.construction_planes.get(index) else {
+            return true;
+        };
+        if let Some(c) = owning_component(doc, &SceneElement::ConstructionPlane(index)) {
+            if !self.component_chain_visible(doc, c) {
+                return false;
+            }
+        }
+        match plane.parent {
+            ConstructionPlaneParent::Root => true,
+            ConstructionPlaneParent::Sketch(sketch) => {
+                self.effective_visible(doc, SceneElement::Sketch(sketch))
+            }
+        }
+    }
+
     pub fn effective_visible(&self, doc: &Document, element: SceneElement) -> bool {
         if !self.is_visible(element.clone()) {
             return false;
@@ -331,9 +350,18 @@ impl ElementVisibility {
                     }
                 })
                 .unwrap_or(true),
-            SceneElement::Sketch(sketch) => doc
-                .sketch_face(sketch)
-                .is_some_and(|face| self.effective_visible(doc, face_element(face))),
+            // A sketch follows the thing it's drawn on — except that hiding a **construction
+            // plane** doesn't hide sketches on it (#667). Hiding a plane puts its display quad
+            // away; the geometry sketched on it isn't part of the plane and stays. Only the
+            // plane's *own* flag is skipped, not what it inherits — a plane anchored to a
+            // hidden sketch is still gone, and so is anything sketched on it. A body face is
+            // different again: hide the body and the face isn't there, so its sketches go too.
+            SceneElement::Sketch(sketch) => doc.sketch_face(sketch).is_some_and(|face| {
+                match face {
+                    FaceId::ConstructionPlane(i) => self.plane_inherited_visible(doc, i),
+                    other => self.effective_visible(doc, face_element(other)),
+                }
+            }),
             SceneElement::Line(index) => doc.lines.get(index).is_some_and(|line| {
                 self.effective_visible(doc, SceneElement::Sketch(line.sketch))
             }),
@@ -4936,6 +4964,65 @@ mod tests {
         assert!(visibility.effective_visible(&doc, SceneElement::Body(0)));
         visibility.set_visible(SceneElement::Body(0), false);
         assert!(!visibility.effective_visible(&doc, SceneElement::Body(0)));
+    }
+
+    /// #667: hiding a construction plane hides the plane itself, **not** the sketches drawn on
+    /// it — you're putting the plane's display quad away, not the geometry. Sketches on a body
+    /// face still follow that body, which genuinely stops existing when it's hidden.
+    #[test]
+    fn hiding_a_construction_plane_keeps_its_sketches_visible() {
+        use crate::model::FaceId;
+        let mut doc = Document::default();
+        let sketch = doc.add_sketch(FaceId::ConstructionPlane(0));
+        doc.lines
+            .push(crate::model::Line::from_local_endpoints(sketch, 0.0, 0.0, 10.0, 0.0));
+
+        let mut visibility = ElementVisibility::default();
+        assert!(visibility.effective_visible(&doc, SceneElement::Sketch(sketch)));
+        visibility.set_visible(SceneElement::ConstructionPlane(0), false);
+        assert!(
+            !visibility.effective_visible(&doc, SceneElement::ConstructionPlane(0)),
+            "the plane itself goes away"
+        );
+        assert!(
+            visibility.effective_visible(&doc, SceneElement::Sketch(sketch)),
+            "its sketch stays"
+        );
+        assert!(
+            visibility.effective_visible(&doc, SceneElement::Line(0)),
+            "and so does the geometry in it"
+        );
+        // Hiding the sketch itself still works.
+        visibility.set_visible(SceneElement::Sketch(sketch), false);
+        assert!(!visibility.effective_visible(&doc, SceneElement::Sketch(sketch)));
+        assert!(!visibility.effective_visible(&doc, SceneElement::Line(0)));
+    }
+
+    /// #667: only the plane's **own** hidden flag is skipped. A plane anchored to a sketch
+    /// still disappears with that sketch, and so does anything drawn on it — otherwise hiding
+    /// a sketch would stop hiding its descendants.
+    #[test]
+    fn a_plane_anchored_to_a_hidden_sketch_takes_its_sketches_with_it() {
+        use crate::model::{ConstructionPlaneParent, FaceId};
+        let mut doc = Document::default();
+        let base = doc.add_sketch(FaceId::ConstructionPlane(0));
+        // A plane anchored to that sketch, with a second sketch drawn on it.
+        let mut plane = doc.construction_planes[0].clone();
+        plane.parent = ConstructionPlaneParent::Sketch(base);
+        doc.construction_planes.push(plane);
+        let on_top = doc.add_sketch(FaceId::ConstructionPlane(1));
+
+        let mut visibility = ElementVisibility::default();
+        assert!(visibility.effective_visible(&doc, SceneElement::Sketch(on_top)));
+
+        // Hiding the anchored plane itself leaves the sketch on it alone (#667).
+        visibility.set_visible(SceneElement::ConstructionPlane(1), false);
+        assert!(visibility.effective_visible(&doc, SceneElement::Sketch(on_top)));
+
+        // Hiding the sketch the plane hangs off takes the whole chain with it.
+        visibility.set_visible(SceneElement::Sketch(base), false);
+        assert!(!visibility.effective_visible(&doc, SceneElement::ConstructionPlane(1)));
+        assert!(!visibility.effective_visible(&doc, SceneElement::Sketch(on_top)));
     }
 
     /// #266: a boolean operation's shadow input bodies feed it as dependency edges in the graph.

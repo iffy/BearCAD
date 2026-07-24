@@ -25,6 +25,10 @@ bearcad.line{ x = 0, y = 0, x1 = -20, y1 = -30 }
 bearcad.circle{ x = 0, y = -13, r = 13 }
 
 bearcad.ui.tool("select")
+-- A clean background (#667): the ground plane's quad and the grid both away. The
+-- sketch drawn on that plane stays visible.
+bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
+bearcad.ui.ground("off")
 bearcad.ui.view("top")
 bearcad.ui.wait(5)
 bearcad.ui.zoom_fit()

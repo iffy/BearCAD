@@ -16,6 +16,10 @@ bearcad.ui.pane("parameters", "hide")
 bearcad.text{ text = "The Text tool bakes real glyph outlines", x = 0, y = 0, size = 8, wrap = 80 }
 bearcad.select{ kind = "sketch_text", index = 0 }
 
+-- A clean background (#667): the ground plane's quad and the grid both away. The
+-- sketch drawn on that plane stays visible.
+bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
+bearcad.ui.ground("off")
 bearcad.ui.view("top")
 bearcad.ui.wait(2)
 -- Frame the text itself (zoom-to-fit would frame the whole ground quad).

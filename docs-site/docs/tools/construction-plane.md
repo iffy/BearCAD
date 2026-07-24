@@ -30,3 +30,5 @@ press that button or **Enter** — clicking in the scene just positions the gizm
 
 Planes never render as solid and never appear in exports; they exist only to hold sketches.
 Their handles stay visible and grabbable even when a body is in front of them.
+
+Hiding a plane puts the plane away, not the work — sketches drawn on it stay visible.

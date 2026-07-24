@@ -38,6 +38,10 @@ bearcad.clear_selection()
 bearcad.ui.tool("constraint")
 bearcad.select{ kind = "line", index = 0 }
 bearcad.select({ kind = "line", index = 2 }, true)
+-- A clean background (#667): the ground plane's quad and the grid both away. The
+-- sketch drawn on that plane stays visible.
+bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
+bearcad.ui.ground("off")
 bearcad.ui.view("top")
 bearcad.ui.wait(2)
 bearcad.ui.zoom_fit()

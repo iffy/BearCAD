@@ -89,6 +89,12 @@ Grouping never changes geometry.
   through `hierarchy::owning_component` (a body via its producing op/extrusion, an
   extrusion or image via its sketch's host plane) and every ancestor component must be
   visible (`ElementVisibility::effective_visible`).
+- **Hiding a construction plane keeps its sketches (#667):** a plane's hidden flag puts its
+  own display quad away and nothing else — geometry sketched on it isn't part of the plane, so
+  it stays. Only the plane's *own* flag is skipped: a plane anchored to a hidden sketch is
+  still gone, and so is anything drawn on it (`plane_inherited_visible`). Sketches on a **body
+  face** still follow that body — hide the body and the face isn't there to draw on. This is
+  what lets the doc screenshots capture a sketch against a clean background.
 - **Units:** each component may override length/angle units; contents inherit sketch
   override → component chain → document default (`effective_length_unit`,
   `effective_component_length_unit`). The context pane shows **Component units** pickers

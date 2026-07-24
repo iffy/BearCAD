@@ -21,6 +21,10 @@ bearcad.circle{ x = 41, y = 25, r = 4, name = "Hole" }
 
 bearcad.clear_selection()
 bearcad.ui.tool("dimension")
+-- A clean background (#667): the ground plane's quad and the grid both away. The
+-- sketch drawn on that plane stays visible.
+bearcad.set_visible({ kind = "construction_plane", index = 0 }, "hide")
+bearcad.ui.ground("off")
 bearcad.ui.view("top")
 bearcad.ui.wait(2)
 bearcad.ui.zoom_fit()
