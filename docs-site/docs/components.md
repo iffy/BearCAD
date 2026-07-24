@@ -42,6 +42,10 @@ turn it off to freeze the layout so it holds still while you read it or drag nod
 place. The **type filter** at the bottom of the pane applies to both the list and the
 graph, so hiding a category (say, sketches) thins out either view the same way.
 
+**Right-click any node** for the same context menu its list row offers — edit the
+element, add it to a drawing, export a body, move it to a component, roll back to it, or
+delete it.
+
 ## Rolling back
 
 Right-click any element in the Elements pane and open the **Rollback** submenu:

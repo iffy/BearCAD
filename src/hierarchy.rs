@@ -3267,6 +3267,21 @@ pub fn show_pane(
                 on_delete_element,
                 highlight_elements,
                 rolled_back,
+                active_drawing,
+                on_edit_sketch,
+                on_edit_plane,
+                on_import_image_on_plane,
+                on_edit_extrusion,
+                on_edit_edge_treatment,
+                on_edit_edge_treatment_op,
+                on_edit_operation,
+                on_add_to_drawing,
+                on_export_body,
+                on_export_body_step,
+                on_move_to_component,
+                on_set_rollback,
+                on_edit_drawing,
+                on_rename_drawing,
             );
         }
     }
@@ -3412,6 +3427,7 @@ fn convex_hull(points: &mut Vec<egui::Pos2>) -> Vec<egui::Pos2> {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn show_graph_view(
     ui: &mut egui::Ui,
     doc: &Document,
@@ -3427,6 +3443,22 @@ fn show_graph_view(
     on_delete_element: &mut impl FnMut(SceneElement),
     highlight_elements: &HashSet<SceneElement>,
     rolled_back: &HashSet<SceneElement>,
+    // The full row context menus work on graph nodes too (#623).
+    active_drawing: Option<usize>,
+    on_edit_sketch: &mut impl FnMut(SketchId),
+    on_edit_plane: &mut impl FnMut(usize),
+    on_import_image_on_plane: &mut impl FnMut(usize),
+    on_edit_extrusion: &mut impl FnMut(usize),
+    on_edit_edge_treatment: &mut impl FnMut(usize, usize),
+    on_edit_edge_treatment_op: &mut impl FnMut(usize),
+    on_edit_operation: &mut impl FnMut(SceneElement),
+    on_add_to_drawing: &mut impl FnMut(SceneElement),
+    on_export_body: &mut impl FnMut(usize),
+    on_export_body_step: &mut impl FnMut(usize),
+    on_move_to_component: &mut impl FnMut(SceneElement, Option<usize>),
+    on_set_rollback: &mut impl FnMut(Option<RollbackMarker>),
+    on_edit_drawing: &mut impl FnMut(usize),
+    on_rename_drawing: &mut impl FnMut(usize, String),
 ) {
     let positions = graph_node_positions(tree);
     if positions.is_empty() {
@@ -3661,12 +3693,52 @@ fn show_graph_view(
                         let additive = ui.input(|i| additive_click_modifiers(&i.modifiers));
                         on_click_element(element.clone(), additive);
                     }
+                    // The same context menu the List/Tree row shows (#623).
                     response.context_menu(|ui| {
-                        if ui.button("Delete").clicked() {
-                            on_delete_element(element.clone());
-                            ui.close();
-                        }
+                        element_context_menu(
+                            ui,
+                            doc,
+                            position.node,
+                            &element,
+                            active_drawing,
+                            on_edit_sketch,
+                            on_edit_plane,
+                            on_import_image_on_plane,
+                            on_edit_extrusion,
+                            on_edit_edge_treatment_op,
+                            on_edit_operation,
+                            on_add_to_drawing,
+                            on_export_body,
+                            on_export_body_step,
+                            on_move_to_component,
+                            on_set_rollback,
+                            on_delete_element,
+                        );
                     });
+                } else {
+                    // Display-only leaves keep their row menus in the graph too (#623).
+                    match position.node {
+                        HierarchyNode::Drawing(index) => {
+                            response.context_menu(|ui| {
+                                drawing_context_menu(ui, doc, index, on_edit_drawing, on_rename_drawing);
+                            });
+                        }
+                        HierarchyNode::EdgeTreatment { extrusion, index } => {
+                            if let Some(treatment) = edge_treatment_at(doc, extrusion, index) {
+                                let noun = match treatment.kind {
+                                    crate::model::VertexTreatmentKind::Chamfer => "chamfer",
+                                    crate::model::VertexTreatmentKind::Fillet => "fillet",
+                                };
+                                response.context_menu(|ui| {
+                                    if ui.button(format!("Edit {noun}")).clicked() {
+                                        on_edit_edge_treatment(extrusion, index);
+                                        ui.close();
+                                    }
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
                 }
 
                 // Each node draws as its element's icon (#152) — the same icon the List/Tree
@@ -4055,31 +4127,8 @@ fn show_row(
             if response.clicked() {
                 on_edit_drawing(index);
             }
-            response.context_menu(|ui| {
-                if ui.button("Edit drawing").clicked() {
-                    on_edit_drawing(index);
-                    ui.close();
-                }
-                // Rename (#255): an inline field seeded from the current name, held in egui temp
-                // memory while the menu is open.
-                ui.separator();
-                ui.label("Rename");
-                let id = ui.make_persistent_id(("rename_drawing", index));
-                let current = doc
-                    .drawings
-                    .get(index)
-                    .and_then(|d| d.name.clone())
-                    .unwrap_or_default();
-                let mut text = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or(current);
-                let resp = ui.text_edit_singleline(&mut text);
-                let commit = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                ui.data_mut(|d| d.insert_temp(id, text.clone()));
-                if commit || ui.button("Apply name").clicked() {
-                    on_rename_drawing(index, text);
-                    ui.data_mut(|d| d.remove::<String>(id));
-                    ui.close();
-                }
-            });
+            response
+                .context_menu(|ui| drawing_context_menu(ui, doc, index, on_edit_drawing, on_rename_drawing));
         });
         return;
     }
@@ -4245,121 +4294,198 @@ fn show_row(
             }
         }
         // One context menu per element row: any node-specific actions, then a universal Delete
-        // so any element can be deleted from the pane (#253).
+        // so any element can be deleted from the pane (#253). Shared with the Graph view (#623).
         response.context_menu(|ui| {
-            match node {
-                HierarchyNode::Sketch(sketch) => {
-                    if ui.button("Edit sketch").clicked() {
-                        on_edit_sketch(sketch);
-                        ui.close();
-                    }
-                    // In the Drawing workbench, add this sketch as a projection (#278).
-                    if active_drawing.is_some() && ui.button("Add to drawing").clicked() {
-                        on_add_to_drawing(SceneElement::Sketch(sketch));
-                        ui.close();
-                    }
-                }
-                HierarchyNode::ConstructionPlane(index) => {
-                    if ui.button("Edit plane").clicked() {
-                        on_edit_plane(index);
-                        ui.close();
-                    }
-                    if ui.button("Import image on this plane…").clicked() {
-                        on_import_image_on_plane(index);
-                        ui.close();
-                    }
-                }
-                HierarchyNode::Extrusion(index) => {
-                    if ui.button("Edit extrusion").clicked() {
-                        on_edit_extrusion(index);
-                        ui.close();
-                    }
-                }
-                HierarchyNode::EdgeTreatmentOp(index) => {
-                    let noun = match doc.edge_treatment_ops.get(index).map(|o| o.kind) {
-                        Some(crate::model::VertexTreatmentKind::Fillet) => "fillet",
-                        _ => "chamfer",
-                    };
-                    if ui.button(format!("Edit {noun}")).clicked() {
-                        on_edit_edge_treatment_op(index);
-                        ui.close();
-                    }
-                }
-                HierarchyNode::Body(index) => {
-                    // In the Drawing workbench, add this body as a view of the open drawing (#274).
-                    if active_drawing.is_some() && ui.button("Add to drawing").clicked() {
-                        on_add_to_drawing(SceneElement::Body(index));
-                        ui.close();
-                    }
-                    if ui.button("Export STL…").clicked() {
-                        on_export_body(index);
-                        ui.close();
-                    }
-                    if ui.button("Export STEP…").clicked() {
-                        on_export_body_step(index);
-                        ui.close();
-                    }
-                }
-                // Every other operation edits the universal way: right-click → "Edit" (#546).
-                node if node_editable_operation(node).is_some() => {
-                    if ui.button("Edit").clicked() {
-                        on_edit_operation(element.clone());
-                        ui.close();
-                    }
-                }
-                _ => {}
+            element_context_menu(
+                ui,
+                doc,
+                node,
+                &element,
+                active_drawing,
+                on_edit_sketch,
+                on_edit_plane,
+                on_import_image_on_plane,
+                on_edit_extrusion,
+                on_edit_edge_treatment_op,
+                on_edit_operation,
+                on_add_to_drawing,
+                on_export_body,
+                on_export_body_step,
+                on_move_to_component,
+                on_set_rollback,
+                on_delete_element,
+            );
+        });
+    });
+}
+
+/// A technical drawing's context menu (#180/#255), shared by the List/Tree row and the
+/// Graph view's node (#623): Edit drawing, plus the inline rename field (seeded from the
+/// current name, held in egui temp memory while the menu is open).
+fn drawing_context_menu(
+    ui: &mut egui::Ui,
+    doc: &Document,
+    index: usize,
+    on_edit_drawing: &mut impl FnMut(usize),
+    on_rename_drawing: &mut impl FnMut(usize, String),
+) {
+    if ui.button("Edit drawing").clicked() {
+        on_edit_drawing(index);
+        ui.close();
+    }
+    ui.separator();
+    ui.label("Rename");
+    let id = ui.make_persistent_id(("rename_drawing", index));
+    let current = doc
+        .drawings
+        .get(index)
+        .and_then(|d| d.name.clone())
+        .unwrap_or_default();
+    let mut text = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or(current);
+    let resp = ui.text_edit_singleline(&mut text);
+    let commit = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    ui.data_mut(|d| d.insert_temp(id, text.clone()));
+    if commit || ui.button("Apply name").clicked() {
+        on_rename_drawing(index, text);
+        ui.data_mut(|d| d.remove::<String>(id));
+        ui.close();
+    }
+}
+
+/// The element context menu shared by the List/Tree rows and the Graph view's nodes (#623):
+/// node-specific actions (edit entries, drawing/export extras), Move-to-component (#423),
+/// Rollback (#545), and the universal Delete (#253).
+#[allow(clippy::too_many_arguments)]
+fn element_context_menu(
+    ui: &mut egui::Ui,
+    doc: &Document,
+    node: HierarchyNode,
+    element: &SceneElement,
+    active_drawing: Option<usize>,
+    on_edit_sketch: &mut impl FnMut(SketchId),
+    on_edit_plane: &mut impl FnMut(usize),
+    on_import_image_on_plane: &mut impl FnMut(usize),
+    on_edit_extrusion: &mut impl FnMut(usize),
+    on_edit_edge_treatment_op: &mut impl FnMut(usize),
+    on_edit_operation: &mut impl FnMut(SceneElement),
+    on_add_to_drawing: &mut impl FnMut(SceneElement),
+    on_export_body: &mut impl FnMut(usize),
+    on_export_body_step: &mut impl FnMut(usize),
+    on_move_to_component: &mut impl FnMut(SceneElement, Option<usize>),
+    on_set_rollback: &mut impl FnMut(Option<RollbackMarker>),
+    on_delete_element: &mut impl FnMut(SceneElement),
+) {
+    match node {
+        HierarchyNode::Sketch(sketch) => {
+            if ui.button("Edit sketch").clicked() {
+                on_edit_sketch(sketch);
+                ui.close();
             }
-            // Move to component (#423): every top-level row can be filed into a component
-            // (or back to the document root) from its context menu; dragging works too.
-            if component_member_node(node)
-                && doc.components.iter().any(|c| !c.deleted)
-            {
-                ui.menu_button("Move to", |ui| {
-                    if ui.button("Document").clicked() {
-                        on_move_to_component(element.clone(), None);
-                        ui.close();
-                    }
-                    for (ci, c) in doc.components.iter().enumerate() {
-                        if c.deleted {
-                            continue;
-                        }
-                        if ui
-                            .button(node_label(doc, HierarchyNode::Component(ci)))
-                            .clicked()
-                        {
-                            on_move_to_component(element.clone(), Some(ci));
-                            ui.close();
-                        }
-                    }
-                });
+            // In the Drawing workbench, add this sketch as a projection (#278).
+            if active_drawing.is_some() && ui.button("Add to drawing").clicked() {
+                on_add_to_drawing(SceneElement::Sketch(sketch));
+                ui.close();
             }
-            // Timeline rollback (#545): roll the model back relative to this element — to just
-            // after it (keeping it, hiding its dependents) or to just before it (hiding it too).
-            // Only elements that are graph nodes can be rollback points.
-            if hierarchy_node_for_element(&element).is_some() {
-                ui.menu_button("Rollback", |ui| {
-                    if ui.button("Rollback to here").clicked() {
-                        on_set_rollback(Some(RollbackMarker {
-                            element: element.clone(),
-                            inclusive: false,
-                        }));
-                        ui.close();
-                    }
-                    if ui.button("Rollback to just before here").clicked() {
-                        on_set_rollback(Some(RollbackMarker {
-                            element: element.clone(),
-                            inclusive: true,
-                        }));
-                        ui.close();
-                    }
-                });
+        }
+        HierarchyNode::ConstructionPlane(index) => {
+            if ui.button("Edit plane").clicked() {
+                on_edit_plane(index);
+                ui.close();
             }
-            if ui.button("Delete").clicked() {
-                on_delete_element(element.clone());
+            if ui.button("Import image on this plane…").clicked() {
+                on_import_image_on_plane(index);
+                ui.close();
+            }
+        }
+        HierarchyNode::Extrusion(index) => {
+            if ui.button("Edit extrusion").clicked() {
+                on_edit_extrusion(index);
+                ui.close();
+            }
+        }
+        HierarchyNode::EdgeTreatmentOp(index) => {
+            let noun = match doc.edge_treatment_ops.get(index).map(|o| o.kind) {
+                Some(crate::model::VertexTreatmentKind::Fillet) => "fillet",
+                _ => "chamfer",
+            };
+            if ui.button(format!("Edit {noun}")).clicked() {
+                on_edit_edge_treatment_op(index);
+                ui.close();
+            }
+        }
+        HierarchyNode::Body(index) => {
+            // In the Drawing workbench, add this body as a view of the open drawing (#274).
+            if active_drawing.is_some() && ui.button("Add to drawing").clicked() {
+                on_add_to_drawing(SceneElement::Body(index));
+                ui.close();
+            }
+            if ui.button("Export STL…").clicked() {
+                on_export_body(index);
+                ui.close();
+            }
+            if ui.button("Export STEP…").clicked() {
+                on_export_body_step(index);
+                ui.close();
+            }
+        }
+        // Every other operation edits the universal way: right-click → "Edit" (#546).
+        node if node_editable_operation(node).is_some() => {
+            if ui.button("Edit").clicked() {
+                on_edit_operation(element.clone());
+                ui.close();
+            }
+        }
+        _ => {}
+    }
+    // Move to component (#423): every top-level row can be filed into a component
+    // (or back to the document root) from its context menu; dragging works too.
+    if component_member_node(node)
+        && doc.components.iter().any(|c| !c.deleted)
+    {
+        ui.menu_button("Move to", |ui| {
+            if ui.button("Document").clicked() {
+                on_move_to_component(element.clone(), None);
+                ui.close();
+            }
+            for (ci, c) in doc.components.iter().enumerate() {
+                if c.deleted {
+                    continue;
+                }
+                if ui
+                    .button(node_label(doc, HierarchyNode::Component(ci)))
+                    .clicked()
+                {
+                    on_move_to_component(element.clone(), Some(ci));
+                    ui.close();
+                }
+            }
+        });
+    }
+    // Timeline rollback (#545): roll the model back relative to this element — to just
+    // after it (keeping it, hiding its dependents) or to just before it (hiding it too).
+    // Only elements that are graph nodes can be rollback points.
+    if hierarchy_node_for_element(element).is_some() {
+        ui.menu_button("Rollback", |ui| {
+            if ui.button("Rollback to here").clicked() {
+                on_set_rollback(Some(RollbackMarker {
+                    element: element.clone(),
+                    inclusive: false,
+                }));
+                ui.close();
+            }
+            if ui.button("Rollback to just before here").clicked() {
+                on_set_rollback(Some(RollbackMarker {
+                    element: element.clone(),
+                    inclusive: true,
+                }));
                 ui.close();
             }
         });
-    });
+    }
+    if ui.button("Delete").clicked() {
+        on_delete_element(element.clone());
+        ui.close();
+    }
 }
 
 /// Whether a hierarchy node is a top-level kind a component can hold (#423).
