@@ -1634,6 +1634,9 @@ struct App {
     /// Armed by the context pane's extrude-to target picker (#584): while true, the next viewport
     /// click on a plane/face sets the extrusion's target instead of toggling a profile face.
     extrude_target_pick: bool,
+    /// Armed by focusing the Repeat pane's "Distance to" picker (#645): the next viewport
+    /// click on a plane/face/vertex sets the repeat's length target.
+    repeat_target_pick: bool,
     vertex_treatment_gizmo_drag: Option<VertexTreatmentGizmoDrag>,
     /// Push/pull gizmo drag state for the 3D edge chamfer/fillet tool (#77); parallel to
     /// `vertex_treatment_gizmo_drag`.
@@ -2436,6 +2439,7 @@ impl App {
             repeat_gizmo_drag: None,
             pending_extrude_target: None,
             extrude_target_pick: false,
+            repeat_target_pick: false,
             vertex_treatment_gizmo_drag: None,
             edge_treatment_gizmo_drag: None,
             revolve_gizmo_drag: None,
@@ -5849,6 +5853,7 @@ impl App {
                         count: existing.count,
                         spacing: existing.spacing,
                         length: existing.length,
+                        length_target: existing.length_target,
                         gap_is_offset,
                         distance_is_end,
                         var_mru: computed.as_mru(),
@@ -6350,6 +6355,35 @@ impl App {
         let Some(pp) = pointer_screen else {
             return;
         };
+        // Distance-target pick mode (#645), armed by focusing the pane's "Distance to" picker:
+        // this click takes a plane/face/vertex as what the pattern runs out to, and Distance
+        // becomes one of the two set variables so the fill actually reads it.
+        if self.repeat_target_pick {
+            self.repeat_target_pick = false;
+            let anchor = self.state.creating_repeat.as_ref().and_then(|cr| {
+                extrude::repeat_gizmo_anchor(&self.state.doc, &cr.targets, cr.axis?)
+            });
+            if let Some((anchor, dir)) = anchor {
+                if let Some((target, _)) = pick_extrude_target(
+                    pp,
+                    project,
+                    &self.state.doc,
+                    anchor,
+                    dir,
+                    &[],
+                    cam.eye(),
+                    None,
+                ) {
+                    if let Some(cr) = self.state.creating_repeat.as_mut() {
+                        cr.length_target = Some(target);
+                        cr.touch_var(model::RepeatVar::Distance);
+                    }
+                    self.state.status =
+                        "Repeat: distance measured to the picked target".to_string();
+                }
+            }
+            return;
+        }
         let gp = cam.ground_point(pp, viewport, vp);
         let Some(target) = resolve_pick_target(pp, project, gp, &self.state.doc, pick_occlusion)
         else {
@@ -6472,7 +6506,20 @@ impl App {
     /// The distance the gizmo shows: the Distance field when the user owns it, otherwise the
     /// value the other two variables compute (#257) — so the handle sits at the real span
     /// either way.
+    /// The along-axis distance the repeat's picked length target works out to (#645), measured
+    /// from the pattern's start plane. `None` when no target is picked or it can't resolve.
+    fn repeat_length_target_distance(&self, cr: &actions::CreatingRepeat) -> Option<f32> {
+        let target = cr.length_target.as_ref()?;
+        let (anchor, dir) =
+            extrude::repeat_gizmo_anchor(&self.state.doc, &cr.targets, cr.axis?)?;
+        extrude::target_distance(&self.state.doc, anchor, dir, target).map(f32::abs)
+    }
+
     fn repeat_display_distance(&self, cr: &actions::CreatingRepeat) -> Option<f32> {
+        // A picked target governs the distance outright (#645) — including what the gizmo shows.
+        if let Some(d) = self.repeat_length_target_distance(cr) {
+            return Some(d);
+        }
         if cr.computed_var() != model::RepeatVar::Distance {
             return crate::value::computed_length_in_doc(&cr.length, &self.state.doc);
         }
@@ -8543,6 +8590,18 @@ impl eframe::App for App {
                         sketch_targets: cr.map(|c| c.sketch_targets.clone()).unwrap_or_default(),
                         extrusion_targets: cr.map(|c| c.extrusion_targets.clone()).unwrap_or_default(),
                         value_field_focused: context::repeat_value_field_focused(ctx),
+                        length_target_rows: cr
+                            .and_then(|c| c.length_target.as_ref())
+                            .map(|t| vec![extrude_target_label(&self.state.doc, t)])
+                            .unwrap_or_default(),
+                        length_target_focused: self.repeat_target_pick,
+                        length_target_value: cr.and_then(|c| {
+                            let d = self.repeat_length_target_distance(c)?;
+                            Some(crate::value::format_length_display_in(
+                                d,
+                                self.state.doc.default_length_unit,
+                            ))
+                        }),
                         axis_label: cr
                             .and_then(|c| c.axis)
                             .map(|a| names::revolve_axis_label(&self.state.doc, a)),
@@ -9338,6 +9397,15 @@ impl eframe::App for App {
                 self.begin_operation_edit(hierarchy::SceneElement::MirrorOp(op));
             }
             if let Some(edit) = repeat_edit {
+                // Arming/disarming the distance-target picker is App state, not repeat state
+                // (#645); committing or clearing the target disarms it.
+                match edit {
+                    context::RepeatEdit::LengthTargetFocus => self.repeat_target_pick = true,
+                    context::RepeatEdit::ClearLengthTarget | context::RepeatEdit::Commit => {
+                        self.repeat_target_pick = false
+                    }
+                    _ => {}
+                }
                 match edit {
                     context::RepeatEdit::Commit => {
                         self.state.apply(Action::CommitRepeat);
@@ -9350,6 +9418,9 @@ impl eframe::App for App {
                         use model::RepeatVar;
                         match edit {
                             context::RepeatEdit::ClearAxis => cr.axis = None,
+                            // #645: arming the picker is UI state, handled after this block.
+                            context::RepeatEdit::LengthTargetFocus => {}
+                            context::RepeatEdit::ClearLengthTarget => cr.length_target = None,
                             context::RepeatEdit::SetComputed(v) => cr.set_computed(v),
                             context::RepeatEdit::Count(v) => {
                                 cr.count = v;

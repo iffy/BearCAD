@@ -797,9 +797,14 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   be **bound to a target's extended plane** (`RepeatOperation::length_target`, an
   `ExtrudeTarget` like an extrusion's "up to face" #126): `L` is then the along-axis distance
   from the pattern start to that plane and follows the face if it moves, overriding the `length`
-  expression (#186). Scripting:
-  `bearcad.repeat_bodies{ bodies, axis, mode, count?, spacing?, length?, name? }` /
-  `bearcad.edit_repeat{ index, … }`.
+  expression (#186). The pane exposes that as a **"Distance to" element picker** (#645), the
+  Repeat tool's version of the Extrude tool's "Up to": focus it and the next viewport click
+  takes a construction plane, a face, or a vertex (`pick_extrude_target`, shared with Extrude);
+  Distance becomes one of the two *set* variables so the fill reads it, its field goes read-only
+  showing the measured length, and the distance gizmo (#644) follows the target. The picker's ✕
+  hands Distance back to its expression. Scripting:
+  `bearcad.repeat_bodies{ bodies, axis, mode, count?, spacing?, length?, to?, name? }` /
+  `bearcad.edit_repeat{ index, … }`, where `to` is the same target table Extrude's `to` takes.
   - **Repeating construction planes (#221):** a repeat can also target construction planes
     (`RepeatOperation::plane_targets`), picked from the Elements pane / viewport with the tool
     active. Each further instance is a generated `ConstructionPlane` carrying a

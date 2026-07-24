@@ -315,6 +315,8 @@ pub enum Instruction {
         count: String,
         spacing: String,
         length: String,
+        /// A face/plane/vertex the fill length is measured to, overriding `length` (#645).
+        length_target: Option<crate::model::ExtrudeTarget>,
     },
     /// Re-point an existing repeat operation.
     EditRepeatOp {
@@ -325,6 +327,7 @@ pub enum Instruction {
         count: String,
         spacing: String,
         length: String,
+        length_target: Option<crate::model::ExtrudeTarget>,
     },
     /// Slice bodies with planar cutters (Slice tool).
     CreateSliceOp {
@@ -969,11 +972,11 @@ impl Instruction {
             Instruction::EditMirrorOp { op, plane, targets, mode } => {
                 mirror_op_lua("bearcad.edit_mirror", Some(*op), plane, targets, *mode)
             }
-            Instruction::CreateRepeatOp { targets, axis, mode, count, spacing, length } => {
-                repeat_op_lua("bearcad.repeat_bodies", None, targets, *axis, *mode, count, spacing, length)
+            Instruction::CreateRepeatOp { targets, axis, mode, count, spacing, length, length_target } => {
+                repeat_op_lua("bearcad.repeat_bodies", None, targets, *axis, *mode, count, spacing, length, length_target.as_ref())
             }
-            Instruction::EditRepeatOp { op, targets, axis, mode, count, spacing, length } => {
-                repeat_op_lua("bearcad.edit_repeat", Some(*op), targets, *axis, *mode, count, spacing, length)
+            Instruction::EditRepeatOp { op, targets, axis, mode, count, spacing, length, length_target } => {
+                repeat_op_lua("bearcad.edit_repeat", Some(*op), targets, *axis, *mode, count, spacing, length, length_target.as_ref())
             }
             Instruction::CreateSliceOp { targets, cutters, extend_infinite } => {
                 slice_op_lua("bearcad.slice", None, targets, cutters, *extend_infinite)
@@ -1688,7 +1691,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
         }),
         // The scripting Instruction DSL doesn't carry plane targets (#221), same as it omits
         // the Move op's plane/image targets — they replay as body-only operations.
-        Action::CreateRepeatOperation { targets, plane_targets: _, extrusion_targets: _, sketch_targets: _, axis, mode, count, spacing, length } => {
+        Action::CreateRepeatOperation { targets, plane_targets: _, extrusion_targets: _, sketch_targets: _, axis, mode, count, spacing, length, length_target } => {
             Some(Instruction::CreateRepeatOp {
                 targets: targets.clone(),
                 axis: *axis,
@@ -1696,9 +1699,10 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 count: count.clone(),
                 spacing: spacing.clone(),
                 length: length.clone(),
+                length_target: length_target.clone(),
             })
         }
-        Action::EditRepeatOperation { op, targets, plane_targets: _, extrusion_targets: _, sketch_targets: _, axis, mode, count, spacing, length } => {
+        Action::EditRepeatOperation { op, targets, plane_targets: _, extrusion_targets: _, sketch_targets: _, axis, mode, count, spacing, length, length_target } => {
             Some(Instruction::EditRepeatOp {
                 op: *op,
                 targets: targets.clone(),
@@ -1707,6 +1711,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 count: count.clone(),
                 spacing: spacing.clone(),
                 length: length.clone(),
+                length_target: length_target.clone(),
             })
         }
         Action::CreateSliceOperation { targets, cutters, extend_infinite } => {
@@ -2285,6 +2290,7 @@ fn repeat_op_lua(
     count: &str,
     spacing: &str,
     length: &str,
+    length_target: Option<&crate::model::ExtrudeTarget>,
 ) -> String {
     let mut parts = Vec::new();
     if let Some(op) = op {
@@ -2306,6 +2312,10 @@ fn repeat_op_lua(
         crate::model::RepeatMode::FillGapSpan => "fill_gap_span",
         crate::model::RepeatMode::FillPitchSpan => "fill_pitch_span",
     }));
+    // A picked length target (#645) replaces the fill-length expression.
+    if let Some(target) = length_target {
+        parts.push(format!("to = {}", extrude_target_lua_table(target)));
+    }
     for (name, value) in [("count", count), ("spacing", spacing), ("length", length)] {
         if !value.trim().is_empty() {
             parts.push(format!("{name} = \"{value}\""));
@@ -4188,7 +4198,7 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::CreateRepeatOp { targets, axis, mode, count, spacing, length } => {
+            Instruction::CreateRepeatOp { targets, axis, mode, count, spacing, length, length_target } => {
                 let result = state.apply(Action::CreateRepeatOperation {
                     targets,
                     plane_targets: Vec::new(),
@@ -4199,11 +4209,12 @@ impl ScriptRunner {
                     count,
                     spacing,
                     length,
+                    length_target,
                 });
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::EditRepeatOp { op, targets, axis, mode, count, spacing, length } => {
+            Instruction::EditRepeatOp { op, targets, axis, mode, count, spacing, length, length_target } => {
                 let result = state.apply(Action::EditRepeatOperation {
                     op,
                     targets,
@@ -4215,6 +4226,7 @@ impl ScriptRunner {
                     count,
                     spacing,
                     length,
+                    length_target,
                 });
                 self.record_action_error(result);
                 StepResult::Continue

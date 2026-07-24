@@ -398,13 +398,13 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             Ok(Instruction::EditMirrorOp { op, plane, targets, mode })
         }
         "repeat_bodies" => {
-            let (targets, axis, mode, count, spacing, length) = repeat_op_args(o)?;
-            Ok(Instruction::CreateRepeatOp { targets, axis, mode, count, spacing, length })
+            let (targets, axis, mode, count, spacing, length, length_target) = repeat_op_args(o)?;
+            Ok(Instruction::CreateRepeatOp { targets, axis, mode, count, spacing, length, length_target })
         }
         "edit_repeat" => {
             let op = req_usize(o, "index", "edit_repeat")?;
-            let (targets, axis, mode, count, spacing, length) = repeat_op_args(o)?;
-            Ok(Instruction::EditRepeatOp { op, targets, axis, mode, count, spacing, length })
+            let (targets, axis, mode, count, spacing, length, length_target) = repeat_op_args(o)?;
+            Ok(Instruction::EditRepeatOp { op, targets, axis, mode, count, spacing, length, length_target })
         }
         "slice" => {
             let (targets, cutters, extend_infinite) = slice_op_args(o)?;
@@ -1072,9 +1072,13 @@ fn move_op_args(
 
 /// `repeat_bodies`/`edit_repeat` shared arguments: target bodies, axis (default X), mode
 /// (default "count_gap"), and count/spacing/length expression fields.
+#[allow(clippy::type_complexity)]
 fn repeat_op_args(
     o: &Map<String, Value>,
-) -> Result<(Vec<usize>, RevolveAxis, RepeatMode, String, String, String), String> {
+) -> Result<
+    (Vec<usize>, RevolveAxis, RepeatMode, String, String, String, Option<ExtrudeTarget>),
+    String,
+> {
     let targets = usize_list(o, "bodies")?;
     let axis = match o.get("axis") {
         None | Some(Value::Null) => RevolveAxis::X,
@@ -1094,6 +1098,8 @@ fn repeat_op_args(
         expr_arg(o, "count")?,
         expr_arg(o, "spacing")?,
         expr_arg(o, "length")?,
+        // `to` picks a face/plane/vertex the fill length is measured to (#645).
+        extrude_target_opt(o)?,
     ))
 }
 
@@ -2012,6 +2018,7 @@ mod tests {
                 count: "5".into(),
                 spacing: "20".into(),
                 length: String::new(),
+                length_target: None,
             })
         );
         assert_eq!(
@@ -2026,6 +2033,7 @@ mod tests {
                 count: String::new(),
                 spacing: "12".into(),
                 length: "100".into(),
+                length_target: None,
             })
         );
         assert!(instruction_from_json("repeat_bodies", &json!({ "mode": "nope" })).is_err());

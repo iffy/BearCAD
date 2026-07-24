@@ -300,6 +300,14 @@ pub struct RepeatControl {
     pub extrusion_targets: Vec<usize>,
     /// Picked axis label; `None` until an axis is picked (#439).
     pub axis_label: Option<String>,
+    /// Label of the picked distance target (#645), if any — the face/plane/vertex the fill
+    /// length is measured to. Empty means the Distance expression governs.
+    pub length_target_rows: Vec<String>,
+    /// Whether the distance-target picker is armed (the next viewport click sets it, #645).
+    pub length_target_focused: bool,
+    /// The distance the picked target works out to, formatted — shown read-only in the
+    /// Distance field while a target is set (#645).
+    pub length_target_value: Option<String>,
     /// Whether one of the section's value fields (Count / Offset / Distance) holds keyboard
     /// focus (#646). While it does, neither element picker reads as focused — the pane's
     /// focus ring belongs where the keyboard is, not on a picker the user isn't using.
@@ -414,6 +422,10 @@ pub enum SketchMirrorEdit {
 pub enum RepeatEdit {
     /// Clear the picked axis (#439): the picker's ✕ empties it instead of resetting to X.
     ClearAxis,
+    /// Arm the distance-target picker (#645): the next viewport click sets it.
+    LengthTargetFocus,
+    /// Clear the picked distance target, handing Distance back to its expression (#645).
+    ClearLengthTarget,
     /// Grey-lock click (#443/#642): make this variable the computed one, freeing whichever
     /// was computed before to be edited.
     SetComputed(crate::model::RepeatVar),
@@ -3262,7 +3274,22 @@ pub fn show_pane(
                     // Both states render at the same width (#641) so the column of inputs
                     // doesn't jump as the computed one moves between rows.
                     const VAR_FIELD_W: f32 = 110.0;
-                    if computed {
+                    // A picked distance target (#645) drives the Distance value, so its field
+                    // reads back the derived length instead of an expression.
+                    let target_driven = var == RepeatVar::Distance
+                        && !control.length_target_rows.is_empty();
+                    if target_driven {
+                        let shown = control
+                            .length_target_value
+                            .clone()
+                            .unwrap_or_else(|| "—".to_string());
+                        ui.add_enabled(
+                            false,
+                            egui::TextEdit::singleline(&mut shown.clone())
+                                .desired_width(VAR_FIELD_W),
+                        )
+                        .on_hover_text("Measured to the picked target");
+                    } else if computed {
                         let shown = control.computed_value.clone().unwrap_or_else(|| "—".to_string());
                         ui.add_enabled(
                             false,
@@ -3341,6 +3368,26 @@ pub fn show_pane(
                 &RepeatEdit::Distance,
             );
         }
+        // Distance-target picker (#645): a face, construction plane, or vertex the pattern
+        // runs out to, so the distance follows that geometry instead of a typed number —
+        // the Repeat tool's version of the Extrude tool's "Up to" picker. Focus it, then
+        // click the target in the viewport; the ✕ hands Distance back to its expression.
+        labeled_row_top(ui, "Distance to", |ui| {
+            if let Some(event) = crate::element_picker::show_labeled(
+                ui,
+                "repeat_length_target",
+                control.length_target_focused,
+                true,
+                crate::icons::IconId::Plane,
+                &control.length_target_rows,
+            ) {
+                pending = Some(match event {
+                    crate::element_picker::PickerEvent::Focus => RepeatEdit::LengthTargetFocus,
+                    crate::element_picker::PickerEvent::Remove(_)
+                    | crate::element_picker::PickerEvent::Clear => RepeatEdit::ClearLengthTarget,
+                });
+            }
+        });
         // The Count field already shows the instance count (#446); only surface the
         // can't-evaluate case.
         if control.preview_instances.is_none() {
@@ -5280,6 +5327,9 @@ mod tests {
                 extrusion_targets: Vec::new(),
                 axis_label: Some("the X axis".to_string()),
                 value_field_focused: false,
+                length_target_rows: Vec::new(),
+                length_target_focused: false,
+                length_target_value: None,
                 mode: crate::model::RepeatMode::CountGap,
                 count: "3".to_string(),
                 spacing: String::new(),
@@ -5313,6 +5363,9 @@ mod tests {
             extrusion_targets: Vec::new(),
             axis_label: axis_label.map(str::to_string),
             value_field_focused,
+            length_target_rows: Vec::new(),
+            length_target_focused: false,
+            length_target_value: None,
             mode: crate::model::RepeatMode::CountGap,
             count: "3".to_string(),
             spacing: String::new(),

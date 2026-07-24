@@ -594,6 +594,9 @@ pub struct CreatingRepeat {
     pub count: String,
     pub spacing: String,
     pub length: String,
+    /// A picked face/plane/vertex the fill length is measured to (#645), overriding the
+    /// `length` expression so the pattern follows that geometry.
+    pub length_target: Option<crate::model::ExtrudeTarget>,
     /// The count/gap/distance UI's toggles + which variable is computed (#257). `mode` is
     /// derived from these on every edit via [`crate::model::RepeatMode::from_repeat_ui`].
     pub gap_is_offset: bool,
@@ -617,6 +620,7 @@ impl Default for CreatingRepeat {
             count: "3".to_string(),
             spacing: "10".to_string(),
             length: String::new(),
+            length_target: None,
             gap_is_offset: false,
             distance_is_end: true,
             // Count + gap are the two set fields; distance is computed (matches CountGap).
@@ -1888,6 +1892,8 @@ pub enum Action {
         count: String,
         spacing: String,
         length: String,
+        /// A face/plane/vertex the fill length is measured to, overriding `length` (#645).
+        length_target: Option<crate::model::ExtrudeTarget>,
     },
     /// Re-point an existing repeat operation.
     EditRepeatOperation {
@@ -1901,6 +1907,7 @@ pub enum Action {
         count: String,
         spacing: String,
         length: String,
+        length_target: Option<crate::model::ExtrudeTarget>,
     },
     /// Create a 2D in-sketch linear repeat (#222): duplicate the given sketch entities along the
     /// plane-local direction `(dir_u, dir_v)`, grouped under a `SketchRepeatOperation`.
@@ -8837,6 +8844,7 @@ label_hidden: false,
                         count: cr.count.clone(),
                         spacing: cr.spacing.clone(),
                         length: cr.length.clone(),
+                        length_target: cr.length_target.clone(),
                     }),
                     None => self.apply(Action::CreateRepeatOperation {
                         targets: cr.targets.clone(),
@@ -8848,6 +8856,7 @@ label_hidden: false,
                         count: cr.count.clone(),
                         spacing: cr.spacing.clone(),
                         length: cr.length.clone(),
+                        length_target: cr.length_target.clone(),
                     }),
                 };
                 if matches!(result, ActionResult::Err(_)) {
@@ -8857,7 +8866,7 @@ label_hidden: false,
                 }
                 result
             }
-            Action::CreateRepeatOperation { targets, plane_targets, extrusion_targets, sketch_targets, axis, mode, count, spacing, length } => {
+            Action::CreateRepeatOperation { targets, plane_targets, extrusion_targets, sketch_targets, axis, mode, count, spacing, length, length_target } => {
                 if let Err(e) = validate_repeat_inputs(&self.doc, &targets, &plane_targets, &extrusion_targets, &sketch_targets) {
                     self.status = e.clone();
                     return ActionResult::Err(e);
@@ -8873,7 +8882,7 @@ label_hidden: false,
                     count,
                     spacing,
                     length,
-                    length_target: None,
+                    length_target,
                     outputs: Vec::new(),
                     plane_outputs: Vec::new(),
                     sketch_plane_outputs: Vec::new(),
@@ -8945,7 +8954,7 @@ label_hidden: false,
                 );
                 ActionResult::Ok
             }
-            Action::EditRepeatOperation { op, targets, plane_targets, extrusion_targets, sketch_targets, axis, mode, count, spacing, length } => {
+            Action::EditRepeatOperation { op, targets, plane_targets, extrusion_targets, sketch_targets, axis, mode, count, spacing, length, length_target } => {
                 if self.doc.repeat_ops.get(op).filter(|o| !o.deleted).is_none() {
                     let e = format!("Repeat operation {op} not found");
                     self.status = e.clone();
@@ -8967,6 +8976,7 @@ label_hidden: false,
                     entry.count = count;
                     entry.spacing = spacing;
                     entry.length = length;
+                    entry.length_target = length_target;
                 }
                 let Some(offsets) =
                     crate::extrude::repeat_offsets(&self.doc, &self.doc.repeat_ops[op])
@@ -16731,6 +16741,7 @@ mod tests {
             count: "3".to_string(),
             spacing: "5".to_string(),
             length: String::new(),
+            length_target: None,
         });
         assert!(matches!(result, ActionResult::Ok));
         let op = state.doc.repeat_ops[0].clone();
@@ -16771,6 +16782,7 @@ mod tests {
             count: String::new(),
             spacing: "40".to_string(),
             length: "100".to_string(),
+            length_target: None,
         });
         assert!(matches!(result, ActionResult::Ok));
         let op = state.doc.repeat_ops[0].clone();
@@ -16795,6 +16807,7 @@ mod tests {
             count: "2".to_string(),
             spacing: "5".to_string(),
             length: String::new(),
+            length_target: None,
         });
         assert_eq!(state.doc.repeat_ops[0].outputs.len(), 1);
         let result = state.apply(Action::EditRepeatOperation {
@@ -16808,6 +16821,7 @@ mod tests {
             count: "5".to_string(),
             spacing: "5".to_string(),
             length: String::new(),
+            length_target: None,
         });
         assert!(matches!(result, ActionResult::Ok));
         assert_eq!(state.doc.repeat_ops[0].outputs.len(), 4);
@@ -16831,6 +16845,7 @@ mod tests {
             count: "n".to_string(),
             spacing: "5".to_string(),
             length: String::new(),
+            length_target: None,
         });
         let op = state.doc.repeat_ops[0].clone();
         assert_eq!(op.outputs.len(), 3);
@@ -17611,6 +17626,7 @@ mod tests {
             count: "3".to_string(),
             spacing: "10".to_string(),
             length: String::new(),
+            length_target: None,
         });
         assert!(matches!(result, ActionResult::Ok));
         let op = state.doc.repeat_ops[0].clone();
@@ -17649,6 +17665,7 @@ mod tests {
             count: "2".to_string(),
             spacing: "10".to_string(),
             length: String::new(),
+            length_target: None,
         });
         let inst_idx = state.doc.repeat_ops[0].plane_outputs[0];
         assert!((state.doc.construction_planes[inst_idx].origin.x - 10.0).abs() < 1e-3);
@@ -17685,6 +17702,7 @@ mod tests {
             count: "2".to_string(),
             spacing: "10".to_string(),
             length: String::new(),
+            length_target: None,
         });
         assert_eq!(state.doc.repeat_ops[0].plane_outputs.len(), 1);
         let result = state.apply(Action::EditRepeatOperation {
@@ -17698,6 +17716,7 @@ mod tests {
             count: "4".to_string(),
             spacing: "10".to_string(),
             length: String::new(),
+            length_target: None,
         });
         assert!(matches!(result, ActionResult::Ok));
         let op = state.doc.repeat_ops[0].clone();

@@ -713,6 +713,7 @@ fn parse_repeat_op_args(
     String,
     String,
     String,
+    Option<crate::model::ExtrudeTarget>,
 )> {
     let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
     let axis = match opts.get::<Value>("axis")? {
@@ -750,7 +751,18 @@ fn parse_repeat_op_args(
         (s, g) if s.is_empty() => g,
         (s, _) => s,
     };
-    Ok((targets, axis, mode, expr("count")?, spacing, expr("length")?))
+    // `to = {...}` picks a face/plane/vertex the fill length is measured to (#645), the same
+    // table shape the Extrude tool's "up to" takes.
+    let length_target = match opts.get::<Value>("to")? {
+        Value::Nil => None,
+        Value::Table(t) => Some(parse_extrude_target_table(&t)?),
+        _ => {
+            return Err(mlua::Error::external(
+                "repeat `to` must be a target table, e.g. {plane = i} or {face = …}",
+            ))
+        }
+    };
+    Ok((targets, axis, mode, expr("count")?, spacing, expr("length")?, length_target))
 }
 
 /// Parses `bearcad.offset_sketch{}`/`bearcad.edit_sketch_offset{}` arguments: the host
@@ -3065,9 +3077,10 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "repeat_bodies",
-                &["bodies", "axis", "mode", "count", "spacing", "gap", "length", "name"],
+                &["bodies", "axis", "mode", "count", "spacing", "gap", "length", "to", "name"],
             )?;
-            let (targets, axis, mode, count, spacing, length) = parse_repeat_op_args(&opts)?;
+            let (targets, axis, mode, count, spacing, length, length_target) =
+                parse_repeat_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::CreateRepeatOp {
                     targets,
@@ -3076,6 +3089,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     count,
                     spacing,
                     length,
+                    length_target,
                 })?;
             }
             let element = SceneElement::RepeatOp(unsafe {
@@ -3093,10 +3107,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
             check_keys(
                 &opts,
                 "edit_repeat",
-                &["index", "bodies", "axis", "mode", "count", "spacing", "gap", "length"],
+                &["index", "bodies", "axis", "mode", "count", "spacing", "gap", "length", "to"],
             )?;
             let op: usize = opts.get("index")?;
-            let (targets, axis, mode, count, spacing, length) = parse_repeat_op_args(&opts)?;
+            let (targets, axis, mode, count, spacing, length, length_target) =
+                parse_repeat_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::EditRepeatOp {
                     op,
@@ -3106,6 +3121,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     count,
                     spacing,
                     length,
+                    length_target,
                 })?;
             }
             Ok(())
@@ -3294,7 +3310,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let cuts: Vec<usize> = opts.get::<Option<Vec<usize>>>("cuts")?.unwrap_or_default();
-            let (_targets, axis, mode, count, spacing, length) = parse_repeat_op_args(&opts)?;
+            let (_targets, axis, mode, count, spacing, length, length_target) =
+                parse_repeat_op_args(&opts)?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::CreateRepeatOperation {
                     targets: Vec::new(),
@@ -3306,6 +3323,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     count,
                     spacing,
                     length,
+                    length_target,
                 })
             };
             if let crate::actions::ActionResult::Err(e) = result {
@@ -3323,7 +3341,8 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let sketches: Vec<usize> = opts.get::<Option<Vec<usize>>>("sketches")?.unwrap_or_default();
-            let (_targets, axis, mode, count, spacing, length) = parse_repeat_op_args(&opts)?;
+            let (_targets, axis, mode, count, spacing, length, length_target) =
+                parse_repeat_op_args(&opts)?;
             let result = unsafe {
                 tick.state().apply(crate::actions::Action::CreateRepeatOperation {
                     targets: Vec::new(),
@@ -3335,6 +3354,7 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
                     count,
                     spacing,
                     length,
+                    length_target,
                 })
             };
             if let crate::actions::ActionResult::Err(e) = result {
@@ -6103,6 +6123,35 @@ mod tests {
         );
         assert_eq!(state.doc.repeat_ops.len(), 1);
         assert_eq!(state.doc.drawings[0].views.len(), 1);
+    }
+
+    /// #645: `repeat_bodies{ to = }` measures the fill length to a picked plane instead of a
+    /// typed number, and the pattern follows that plane when it moves.
+    #[test]
+    fn lua_repeat_distance_to_a_plane() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            -- A wall 40mm out along +X, then fill up to it at a 10mm pitch.
+            bearcad.plane{ origin = {40, 0, 0}, normal = {1, 0, 0} }
+            bearcad.repeat_bodies{
+                bodies = {0}, axis = "x", mode = "fill_pitch", spacing = 10,
+                to = { plane = 1 },
+            }
+            "#,
+        );
+        let op = &state.doc.repeat_ops[0];
+        assert!(op.length_target.is_some(), "the plane target is stored");
+        let offsets = crate::extrude::repeat_offsets(&state.doc, op).expect("offsets");
+        assert!(
+            !offsets.is_empty(),
+            "the target-derived length produced instances"
+        );
+        assert!(
+            offsets.last().copied().unwrap_or(0.0) <= 40.0 + 1e-3,
+            "the pattern stops at the wall, got {offsets:?}"
+        );
     }
 
     /// #639: `mirror_bodies{ output = }` picks how the reflections land. `join` fuses each

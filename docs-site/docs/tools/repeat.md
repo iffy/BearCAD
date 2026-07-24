@@ -25,6 +25,10 @@ wall, teeth on a rack.
 A **distance handle** sits on the pattern along the axis: click it to grab, move the mouse to
 drag the distance out, click again to drop it.
 
+Or measure the distance to something instead of typing it: focus the **Distance to** picker,
+then click a construction plane, a face, or a vertex. The pattern runs out to it and follows
+it if it moves. The picker's **✕** hands Distance back to the number.
+
 Count, Offset and Distance are interlinked: two are yours to set and the third is computed.
 A **green lock** marks the computed one; click a grey lock to move it there. Clicking the
 **Offset** or **Distance** label (or its icon) switches how that value is measured.
@@ -104,3 +108,11 @@ bearcad.edit_repeat{ index = 0, bodies = {0}, axis = "x", mode = "count_gap", co
 `axis` is `"x"`/`"y"`/`"z"`, a sketch line (`{ line = 0 }`), or a body edge given by its world
 endpoints (`{ body = 0, from = {0, 0, 0}, to = {20, 0, 0} }`) — the same three the picker takes.
 Revolve and Move accept all three too.
+
+`to` measures the fill length to a plane, face, or vertex instead of taking `length` — the same
+target table [Extrude](./extrude.md) uses:
+
+```lua
+bearcad.repeat_bodies{ bodies = {0}, axis = "x", mode = "fill_pitch", spacing = 10,
+                       to = { plane = 1 } }
+```
