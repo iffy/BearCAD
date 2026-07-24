@@ -2006,11 +2006,20 @@ modeled on SolveSpace (https://solvespace.com).
   handles. A faint **light-green** disc the size of the hitbox (`construction::EXPLODER_HINT_RGBA`,
   distinct from the yellow pick-hover) appears under the cursor when **two or more** things are
   there, as a hint. Handles sit at least a loupe apart (chord, not arc) so there's never ambiguity
-  about which one a click means. The evenly-spaced ring is **rotated to align each slot with the
-  direction of the element it stands for** (#570): `display_centers` picks the ring orientation
-  (`base`) as the circular mean of every item's (preferred angle − slot angle), so the fan reflects
-  where the elements actually are rather than an arbitrary origin, while keeping the overlap-free even
-  spacing (the same `base` orients the staggered concentric rings). While exploded the camera is
+  about which one a click means. Each loupe sits **on its own element's direction** (#570/#671):
+  `display_centers` widens the ring past the just-fits radius by `exploder::RING_SLACK` so an even
+  fan isn't the only arrangement that fits, then `fan_angles` starts every loupe at its element's
+  own angle and pushes neighbours apart only where their discs would touch (Gauss-Seidel
+  separation, wrap included). A bunched crowd therefore stays bunched on its side of the cursor
+  instead of fanning evenly around the whole circle; the resulting `base` angle also orients the
+  staggered concentric rings.
+  An item's direction comes from its **anchor**, the spot on it nearest the cursor — but a crowd is
+  by definition things stacked *at one point*, so those anchors all collapse onto the cursor and
+  every direction reads the same. Each handle therefore also captures a **reach** (`fan_reach`,
+  #671): a point further along the element — a line's far endpoint, a circle's centre, a face's
+  centroid — and `display_centers` falls back to it whenever the anchor projects within
+  `DEGENERATE_PX` of the origin. A vertex *is* the crowd point and keeps its anchor; a group loupe
+  averages its members' reaches. While exploded the camera is
   frozen, so the **mouse wheel zooms the loupes** instead (`ExploderState::zoom_mul`,
   `display_centers`): the fan grows, and while the angle-coherent single ring still fits it just
   scales; once the growing loupes would push that ring off-screen they **stagger** into concentric

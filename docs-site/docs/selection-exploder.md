@@ -16,6 +16,11 @@ highlighted in blue and the rest dimmed behind it, joined by a thin line back to
 really is. Coincident line ends are told apart by a short stub along each line; faces are
 shaded.
 
+A loupe sits on the side its element runs off to — the line heading up-left gets a loupe
+up-left — so you can aim at the one you want before you read it. Loupes only slide apart
+where they would otherwise overlap, which keeps a crowd that all leans one way fanned out
+on that side.
+
 - **Hover** a handle to light it and its real thing yellow.
 - **Click** to select it; hold **Shift** to keep the fan open and pick several in a row.
 - **Scroll** to zoom the loupes in.

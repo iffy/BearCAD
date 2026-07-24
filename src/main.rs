@@ -546,6 +546,9 @@ struct ExploderHandle {
     /// World point the leader line attaches to, and where the tool re-picks (re-projected each
     /// frame for the leader; the redirect uses its projection).
     anchor: Vec3,
+    /// A point further along the element (#671), captured with the crowd. Used for the fan
+    /// direction when every anchor collapses onto the crowd point — see [`fan_reach`].
+    reach: Vec3,
 }
 
 /// A node in the exploder grouping tree (#559). A `Leaf` is one crowd item; a `Group` clusters
@@ -576,6 +579,10 @@ struct DisplayItem {
     /// World anchor used for angle-sorting and the leader line. Leaf → its own anchor; Group →
     /// centroid of its members; Back → unused (`Vec3::ZERO`, it gets a fixed angle).
     anchor: Vec3,
+    /// A point further along the element (#671), used for the fan direction when the anchor
+    /// sits on the crowd point and so can't distinguish this item from its neighbours.
+    /// `None` for Back and for items with nothing further to reach for.
+    reach: Option<Vec3>,
     /// Flat item-indices of every leaf under this slot (one for a Leaf; all members for a Group;
     /// empty for Back) — drives the group preview.
     leaves: Vec<usize>,
@@ -692,6 +699,7 @@ impl ExploderState {
                         out.push(DisplayItem {
                             kind: DisplayKind::Leaf,
                             anchor: h.anchor,
+                            reach: Some(h.reach),
                             leaves: vec![*i],
                             target: Some(h.target.clone()),
                             node: None,
@@ -708,9 +716,15 @@ impl ExploderState {
                             .map(|&i| self.items[i].anchor)
                             .fold(Vec3::ZERO, |a, b| a + b)
                             / denom;
+                        let reach = leaves
+                            .iter()
+                            .map(|&i| self.items[i].reach)
+                            .fold(Vec3::ZERO, |a, b| a + b)
+                            / denom;
                         out.push(DisplayItem {
                             kind: DisplayKind::Group,
                             anchor: centroid,
+                            reach: Some(reach),
                             leaves,
                             target: None,
                             node: None,
@@ -733,6 +747,7 @@ impl ExploderState {
                 out.push(DisplayItem {
                     kind: DisplayKind::Back,
                     anchor: Vec3::ZERO,
+                    reach: None,
                     leaves: Vec::new(),
                     target: None,
                     node: None,
@@ -749,6 +764,7 @@ impl ExploderState {
                     out.push(DisplayItem {
                         kind: DisplayKind::Leaf,
                         anchor: h.anchor,
+                        reach: Some(h.reach),
                         leaves: vec![*i],
                         target: Some(h.target.clone()),
                         node: None,
@@ -765,9 +781,15 @@ impl ExploderState {
                         .map(|&i| self.items[i].anchor)
                         .fold(Vec3::ZERO, |a, b| a + b)
                         / denom;
+                    let reach = leaves
+                        .iter()
+                        .map(|&i| self.items[i].reach)
+                        .fold(Vec3::ZERO, |a, b| a + b)
+                        / denom;
                     out.push(DisplayItem {
                         kind: DisplayKind::Group,
                         anchor: centroid,
+                        reach: Some(reach),
                         leaves,
                         target: None,
                         node: Some(ni),
@@ -798,14 +820,21 @@ impl ExploderState {
             return Vec::new();
         }
         // Angle of each item around the origin (Back is pinned to the top so it sits apart).
+        // The anchor is the spot nearest the cursor, which in a crowd is the crowd point
+        // itself — so when it lands on the origin, reach further along the element for a
+        // direction that actually distinguishes it (#671).
+        const DEGENERATE_PX: f32 = 2.0;
         let angle_of = |it: &DisplayItem| -> f32 {
             if it.kind == DisplayKind::Back {
-                -FRAC_PI_2
-            } else {
-                let sp = project(it.anchor).unwrap_or(self.origin);
-                let d = sp - self.origin;
-                d.y.atan2(d.x)
+                return -FRAC_PI_2;
             }
+            let mut d = project(it.anchor).unwrap_or(self.origin) - self.origin;
+            if d.length() < DEGENERATE_PX {
+                if let Some(reach) = it.reach {
+                    d = project(reach).unwrap_or(self.origin) - self.origin;
+                }
+            }
+            d.y.atan2(d.x)
         };
         // Angle-sorted display order (used for ring slots and the stagger fill).
         let mut order: Vec<usize> = (0..n).collect();
@@ -814,29 +843,25 @@ impl ExploderState {
                 .partial_cmp(&angle_of(&items[b]))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        // Ring radius so adjacent loupes are at least `spacing()` apart along the chord.
+        // Ring radius so adjacent loupes are at least `spacing()` apart along the chord — then
+        // widened (#671) so the even fan isn't the *only* arrangement that fits. That slack is
+        // what lets each loupe sit on its own element's side.
         let nf = n.max(2) as f32;
-        let ring = (exploder::spacing() / (2.0 * (PI / nf).sin())).max(exploder::min_ring());
-        // Orient the evenly-spaced ring so each slot lands as close as possible to the direction of
-        // the element it stands for (#570): the loupes keep their overlap-free even spacing, but the
-        // whole ring is rotated to the circular mean of every item's (preferred angle − slot angle),
-        // so the arrangement reflects where the elements actually are instead of an arbitrary origin.
-        let slot_angle = |slot: usize| slot as f32 * TAU / nf;
-        let (mut sx, mut sy) = (0.0f32, 0.0f32);
-        for (slot, &idx) in order.iter().enumerate() {
-            let delta = angle_of(&items[idx]) - slot_angle(slot);
-            sx += delta.cos();
-            sy += delta.sin();
-        }
-        let base = if sx == 0.0 && sy == 0.0 {
-            angle_of(&items[order[0]])
-        } else {
-            sy.atan2(sx)
-        };
+        let tight = (exploder::spacing() / (2.0 * (PI / nf).sin())).max(exploder::min_ring());
+        let ring = tight * exploder::RING_SLACK;
+        // The smallest angle two loupes may be apart on this ring without their discs touching.
+        let half_chord = (exploder::spacing() / (2.0 * ring)).clamp(-1.0, 1.0);
+        let min_gap = 2.0 * half_chord.asin();
+        // Each loupe goes on its element's own direction, pushed aside only where a neighbour
+        // would collide (#570/#671) — so a bunched crowd stays bunched near its elements rather
+        // than fanning evenly around the whole circle.
+        let sorted: Vec<f32> = order.iter().map(|&idx| angle_of(&items[idx])).collect();
+        let placed = fan_angles(&sorted, min_gap);
+        let base = placed.first().copied().unwrap_or(0.0);
         // Ring positions at zoom 1, index-aligned with `items`.
         let mut ring_pos: Vec<egui::Pos2> = vec![self.origin; n];
         for (slot, &idx) in order.iter().enumerate() {
-            let ang = base + slot_angle(slot);
+            let ang = placed[slot];
             ring_pos[idx] = self.origin + egui::vec2(ang.cos(), ang.sin()) * ring;
         }
 
@@ -1290,6 +1315,11 @@ mod exploder {
     pub fn min_ring() -> f32 {
         spacing()
     }
+    /// How much wider than the tightest fitting ring the fan is drawn (#671). The tight ring
+    /// leaves exactly enough room for an *even* fan and no more, so every loupe would have to
+    /// sit at its evenly-spaced slot whatever direction its element is in. A little slack buys
+    /// the freedom to put each loupe on its element's own side.
+    pub const RING_SLACK: f32 = 1.35;
     /// Keep the fan this far from the viewport edges when fitting/clamping it (#551).
     pub const VIEWPORT_MARGIN_PX: f32 = 10.0;
     /// Most loupes a single level may show (#559). A crowd larger than this is clustered into
@@ -1300,6 +1330,125 @@ mod exploder {
     pub const GROUP_ARITY: usize = 11;
     /// Duration of the drill-in "loupes spring out of the group" animation (seconds, #559).
     pub const DRILL_ANIM_SECS: f64 = 0.16;
+}
+
+/// A second world point on a crowd item, further along it than its anchor (#671) — what the
+/// exploder aims a loupe at when the anchors alone can't tell the elements apart.
+///
+/// A handle's anchor is the spot on its element nearest the cursor, which is normally a fine
+/// direction. But a crowd is by definition things stacked *at one point*: spokes meeting at a
+/// vertex, a circle passing through it. Every anchor then collapses onto the cursor and every
+/// direction reads the same, so the fan can't reflect where anything is. Reaching along the
+/// element — to a line's far end, a circle's centre, a face's middle — recovers a direction.
+/// Items with nothing further to reach for (a vertex *is* the point) keep their anchor.
+fn fan_reach(doc: &model::Document, kind: &construction::PickTargetKind, anchor: Vec3) -> Vec3 {
+    use construction::PickTargetKind as PK;
+    // Of two ends, the one further from the anchor says which way the element runs.
+    let further = |a: Vec3, b: Vec3| {
+        if (a - anchor).length_squared() >= (b - anchor).length_squared() {
+            a
+        } else {
+            b
+        }
+    };
+    match kind {
+        PK::Line(li) => doc
+            .lines
+            .get(*li)
+            .and_then(|line| crate::face::line_world_endpoints(doc, line))
+            .map(|(a, b)| further(a, b))
+            .unwrap_or(anchor),
+        PK::Circle(ci) => doc
+            .circles
+            .get(*ci)
+            .and_then(|c| crate::face::circle_world_diameter_endpoints(doc, c))
+            // The centre: a crowd point on the rim then points inward, at the circle itself.
+            .map(|(a, b)| (a + b) * 0.5)
+            .unwrap_or(anchor),
+        PK::BodyEdge { a, b, .. } => further(*a, *b),
+        PK::BodyFace { triangles, .. } => {
+            let (sum, n) = triangles.iter().flatten().fold((Vec3::ZERO, 0u32), |(s, n), p| {
+                (s + *p, n + 1)
+            });
+            if n == 0 {
+                anchor
+            } else {
+                sum / n as f32
+            }
+        }
+        // A vertex, the ground, a plane, an axis, a constraint icon: the anchor is all there is.
+        _ => anchor,
+    }
+}
+
+/// Place the Selection Exploder's loupes around its ring (#570/#671).
+///
+/// `preferred` holds each item's own direction — the angle its element actually lies in —
+/// **sorted ascending**, and `min_gap` the smallest angular separation two loupes may have
+/// without their discs touching. Each loupe starts on its element's direction and is only
+/// pushed off it where a neighbour would collide, so a loupe always sits on the side its
+/// element is on, and a bunched crowd stays bunched instead of being fanned evenly around the
+/// whole circle.
+///
+/// Returns angles in the same order as `preferred`, strictly increasing and spanning less than
+/// a full turn. When `n * min_gap` reaches a full turn there's no slack left and the result is
+/// the even fan, which is what the old layout always produced.
+fn fan_angles(preferred: &[f32], min_gap: f32) -> Vec<f32> {
+    use std::f32::consts::TAU;
+    let n = preferred.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    if n == 1 {
+        return vec![preferred[0]];
+    }
+    // Unwrap the (sorted) preferred angles into one increasing turn starting at the first.
+    let base = preferred[0];
+    let mut x: Vec<f32> = preferred
+        .iter()
+        .map(|a| {
+            let mut d = a - base;
+            while d < 0.0 {
+                d += TAU;
+            }
+            while d >= TAU {
+                d -= TAU;
+            }
+            d
+        })
+        .collect();
+    // No slack: the even fan is the only arrangement that fits.
+    let gap = min_gap.min(TAU / n as f32);
+    if TAU - gap * n as f32 <= 1e-4 {
+        return (0..n).map(|i| base + i as f32 * TAU / n as f32).collect();
+    }
+    // Gauss-Seidel separation: repeatedly push any pair closer than `gap` apart, including the
+    // wrap-around pair. Starting from the sorted preferred angles, this keeps their order and
+    // moves each the least it can. Fixed iteration count, so the layout is deterministic.
+    for _ in 0..64 {
+        let mut moved = false;
+        for i in 0..n {
+            let j = (i + 1) % n;
+            // The last→first gap closes across the wrap.
+            let span = if j == 0 { x[j] + TAU - x[i] } else { x[j] - x[i] };
+            if span < gap - 1e-5 {
+                let push = (gap - span) / 2.0;
+                x[i] -= push;
+                if j == 0 {
+                    x[0] += push;
+                } else {
+                    x[j] += push;
+                }
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    // Separation only ever widens gaps, so `x` stays increasing and spans at most one turn
+    // (the wrap constraint holds the ends apart); mapping straight back is enough.
+    x.iter().map(|d| base + d).collect()
 }
 
 /// Clip a screen-space segment to a disc, returning the visible sub-segment (or `None` if it
@@ -16303,6 +16452,7 @@ impl App {
                 .map(|c| ExploderHandle {
                     target: c.kind.clone(),
                     anchor: c.anchor,
+                    reach: fan_reach(&self.state.doc, &c.kind, c.anchor),
                 })
                 .collect();
             let anchors_screen: Vec<egui::Pos2> = items
@@ -23202,6 +23352,7 @@ mod tests {
             .map(|i| ExploderHandle {
                 target: construction::PickTargetKind::Ground(Vec3::new(i as f32, 0.0, 0.0)),
                 anchor: Vec3::new((i as f32 - 2.5) * 40.0, ((i % 2) as f32 - 0.5) * 60.0, 0.0),
+                reach: Vec3::ZERO,
             })
             .collect();
         let tree = vec![
@@ -23261,6 +23412,77 @@ mod tests {
         assert_eq!(anim.from[0], ex.display_centers(vp, &project)[0]);
     }
 
+    /// #671: loupes sit as near their element's direction as the no-overlap rule allows —
+    /// they're pulled to their preferred angle and only pushed apart where they'd collide,
+    /// instead of being spread evenly regardless of where the elements are.
+    #[test]
+    fn fan_angles_track_preferred_directions() {
+        use super::fan_angles;
+        use std::f32::consts::TAU;
+        let wrap = |a: f32| {
+            let mut d = a % TAU;
+            if d > std::f32::consts::PI {
+                d -= TAU;
+            }
+            if d < -std::f32::consts::PI {
+                d += TAU;
+            }
+            d
+        };
+
+        // Well-spread elements: everyone gets very nearly exactly their own direction.
+        let preferred = vec![0.0, TAU / 3.0, 2.0 * TAU / 3.0];
+        let out = fan_angles(&preferred, TAU / 12.0);
+        for (got, want) in out.iter().zip(&preferred) {
+            assert!(
+                wrap(got - want).abs() < 1e-3,
+                "spread elements shouldn't move: {got} vs {want}"
+            );
+        }
+
+        // Three elements bunched within 10°: they separate to the minimum gap but stay
+        // clustered around where they actually are, rather than spreading over the circle.
+        let bunched = vec![0.9, 1.0, 1.1];
+        let gap = TAU / 12.0;
+        let out = fan_angles(&bunched, gap);
+        for (i, &a) in out.iter().enumerate() {
+            assert!(
+                wrap(a - bunched[i]).abs() < gap,
+                "loupe {i} drifted more than one gap from its element: {a} vs {}",
+                bunched[i]
+            );
+        }
+        // …and they really are separated.
+        for i in 0..out.len() {
+            for j in (i + 1)..out.len() {
+                assert!(
+                    wrap(out[i] - out[j]).abs() >= gap - 1e-3,
+                    "loupes {i}/{j} overlap: {} vs {}",
+                    out[i],
+                    out[j]
+                );
+            }
+        }
+
+        // Cyclic order is preserved, so a loupe never jumps across the fan.
+        let mixed = vec![-2.0, -0.5, 0.3, 1.4, 2.8];
+        let out = fan_angles(&mixed, TAU / 8.0);
+        for i in 0..out.len() - 1 {
+            assert!(out[i] < out[i + 1], "order broke at {i}: {out:?}");
+        }
+
+        // Fully saturated (n * gap == TAU): it falls back to even spacing without blowing up.
+        let saturated = vec![0.1, 0.2, 0.3, 0.4];
+        let out = fan_angles(&saturated, TAU / 4.0);
+        for i in 0..out.len() {
+            let j = (i + 1) % out.len();
+            assert!(
+                (wrap(out[j] - out[i]).abs() - TAU / 4.0).abs() < 1e-2,
+                "saturated fan should be evenly spaced, got {out:?}"
+            );
+        }
+    }
+
     #[test]
     fn loupes_are_placed_toward_their_elements() {
         // Three leaves whose elements sit at clear, well-separated directions (0°, 120°, 240°).
@@ -23279,6 +23501,7 @@ mod tests {
                 target: construction::PickTargetKind::Ground(Vec3::new(i as f32, 0.0, 0.0)),
                 // Element world point far out in its own direction.
                 anchor: Vec3::new(dirs[i].x * 100.0, dirs[i].y * 100.0, 0.0),
+                reach: Vec3::ZERO,
             })
             .collect();
         let tree = vec![
@@ -23302,12 +23525,83 @@ mod tests {
             // The element's screen direction (y flipped to match `project`).
             let want = egui::vec2(dirs[i].x, -dirs[i].y);
             let got = (centers[i] - origin).normalized();
+            // Well-separated elements leave slack for an exact match, not just the right side
+            // of the fan (#671).
             assert!(
-                got.dot(want) > 0.3,
-                "loupe {i} should sit toward its element (dot {})",
+                got.dot(want) > 0.99,
+                "loupe {i} should sit on its element's direction (dot {})",
                 got.dot(want)
             );
         }
+    }
+
+    /// #671: a crowd whose elements bunch to one side keeps its loupes on that side. The old
+    /// even fan spread them right round the circle, so a loupe for something up and to the
+    /// left could end up bottom-right.
+    #[test]
+    fn bunched_elements_keep_their_loupes_on_the_same_side() {
+        use std::f32::consts::TAU;
+        let origin = egui::pos2(400.0, 300.0);
+        // Five elements all within ~40° of each other, up and to the right.
+        let dirs: Vec<egui::Vec2> = (0..5)
+            .map(|i| {
+                let a = 0.6 + i as f32 * 0.17;
+                egui::vec2(a.cos(), a.sin())
+            })
+            .collect();
+        let items: Vec<ExploderHandle> = (0..5)
+            .map(|i| ExploderHandle {
+                target: construction::PickTargetKind::Ground(Vec3::new(i as f32, 0.0, 0.0)),
+                anchor: Vec3::new(dirs[i].x * 100.0, dirs[i].y * 100.0, 0.0),
+                reach: Vec3::ZERO,
+            })
+            .collect();
+        let tree: Vec<ExploderNode> = (0..5).map(ExploderNode::Leaf).collect();
+        let ex = ExploderState {
+            origin,
+            items,
+            tree,
+            path: Vec::new(),
+            hovered: None,
+            zoom_mul: 1.0,
+            drill_anim: None,
+        };
+        let vp = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 900.0));
+        let project = |w: Vec3| Some(egui::pos2(400.0 + w.x, 300.0 - w.y));
+        let centers = ex.display_centers(vp, &project);
+
+        // Every loupe stays on its element's side; none is flung to the opposite one.
+        for i in 0..5 {
+            let want = egui::vec2(dirs[i].x, -dirs[i].y);
+            let got = (centers[i] - origin).normalized();
+            assert!(
+                got.dot(want) > 0.0,
+                "loupe {i} ended up away from its element (dot {})",
+                got.dot(want)
+            );
+        }
+        // And the fan really is a fan, not a full circle: the loupes span well under a turn.
+        let angles: Vec<f32> = centers
+            .iter()
+            .map(|c| {
+                let d = *c - origin;
+                d.y.atan2(d.x)
+            })
+            .collect();
+        let spread = angles
+            .iter()
+            .flat_map(|a| angles.iter().map(move |b| {
+                let mut d = (a - b).abs() % TAU;
+                if d > TAU / 2.0 {
+                    d = TAU - d;
+                }
+                d
+            }))
+            .fold(0.0f32, f32::max);
+        assert!(
+            spread < TAU / 2.0,
+            "bunched elements should stay a fan, spread {spread}"
+        );
     }
 
     #[test]
