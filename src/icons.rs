@@ -20,6 +20,7 @@ pub enum IconId {
     Dimension,
     Constraint,
     Plane,
+    Face,
     Parallel,
     Perpendicular,
     Equal,
@@ -114,7 +115,7 @@ pub enum IconId {
 
 impl IconId {
     #[cfg(test)]
-    pub const ALL: [Self; 75] = [
+    pub const ALL: [Self; 76] = [
         Self::Select,
         Self::Rectangle,
         Self::Line,
@@ -122,6 +123,7 @@ impl IconId {
         Self::Dimension,
         Self::Constraint,
         Self::Plane,
+        Self::Face,
         Self::Parallel,
         Self::Perpendicular,
         Self::Equal,
@@ -201,6 +203,7 @@ impl IconId {
             Self::Dimension => include_str!("assets/icons/dimension.svg"),
             Self::Constraint => include_str!("assets/icons/constraint.svg"),
             Self::Plane => include_str!("assets/icons/plane.svg"),
+            Self::Face => include_str!("assets/icons/face.svg"),
             Self::Parallel => include_str!("assets/icons/parallel.svg"),
             Self::Perpendicular => include_str!("assets/icons/perpendicular.svg"),
             Self::Equal => include_str!("assets/icons/equal.svg"),
@@ -284,6 +287,7 @@ impl IconId {
             Self::Dimension => "Dimension",
             Self::Constraint => "Constraint",
             Self::Plane => "Plane",
+            Self::Face => "Face",
             Self::Parallel => "Parallel",
             Self::Perpendicular => "Perpendicular",
             Self::Equal => "Equal",

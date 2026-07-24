@@ -5874,10 +5874,10 @@ impl App {
             return;
         }
 
-        // Highlight the chosen mirror plane, and ghost each reflected body across it.
+        // Highlight the chosen mirror plane. Each reflected body previews as a translucent GPU
+        // ghost solid built in `build_viewport_scene_input` (#603), like extrude/repeat.
         if let Some(plane) = self.state.creating_mirror.as_ref().and_then(|c| c.plane.clone()) {
-            draw_face_highlight(painter, project, &self.state.doc, plane.clone(), col::PREVIEW);
-            self.draw_mirror_ghosts(painter, project, &plane);
+            draw_face_highlight(painter, project, &self.state.doc, plane, col::PREVIEW);
         }
 
         if !ui.input(|i| i.pointer.primary_pressed()) {
@@ -5922,46 +5922,6 @@ impl App {
             cm.targets.push(bi);
         }
         self.state.status = format!("Mirror: {} body(ies) picked", cm.targets.len());
-    }
-
-    /// Draw a translucent ghost of each in-progress mirror reflection (#523): every picked
-    /// body's mesh, reflected across the plane, filled faintly so the result previews before
-    /// commit (like the Repeat tool's ghosts).
-    fn draw_mirror_ghosts(
-        &self,
-        painter: &egui::Painter,
-        project: &impl Fn(Vec3) -> Option<egui::Pos2>,
-        plane: &model::FaceId,
-    ) {
-        let Some(cm) = self.state.creating_mirror.as_ref() else { return };
-        if cm.targets.is_empty() {
-            return;
-        }
-        let probe = model::MirrorOperation {
-            plane: plane.clone(),
-            targets: cm.targets.clone(),
-            outputs: Vec::new(),
-            name: None,
-            deleted: false,
-        };
-        let Some(m) = crate::extrude::mirror_op_transform(&self.state.doc, &probe) else {
-            return;
-        };
-        let fill = col::PREVIEW.gamma_multiply(0.18);
-        for &bi in &cm.targets {
-            let Some(mesh) = crate::extrude::body_solid_mesh(&self.state.doc, bi) else {
-                continue;
-            };
-            for tri in &mesh.triangles {
-                let pts: Option<Vec<egui::Pos2>> = tri
-                    .iter()
-                    .map(|&p| project(m.transform_point3(p)))
-                    .collect();
-                if let Some(pts) = pts {
-                    painter.add(egui::Shape::convex_polygon(pts, fill, egui::Stroke::NONE));
-                }
-            }
-        }
     }
 
     /// In-sketch Mirror (#523/#528): the first click picks a straight sketch line as the
@@ -10521,6 +10481,7 @@ fn build_viewport_scene_input<'a>(
     highlighted_bezier_handles: Vec<(usize, bool)>,
     creating_loft: Option<&actions::CreatingLoft>,
     creating_repeat: Option<&actions::CreatingRepeat>,
+    creating_mirror: Option<&actions::CreatingMirror>,
     pending_extrude_target: Option<model::ExtrudeTarget>,
     plane_gizmo: Option<gpu_viewport::ViewportPlaneGizmo>,
     extrude_gizmo: Option<gpu_viewport::ViewportExtrudeGizmo>,
@@ -10795,6 +10756,41 @@ fn build_viewport_scene_input<'a>(
             (!ghosts.is_empty()).then_some(ghosts)
         })
         .unwrap_or_default();
+
+    // Mirror-tool preview (#603): once a plane and at least one body are picked, ghost each
+    // reflection through the same translucent preview-solid path as the Repeat tool's copies,
+    // so it previews live before commit like extrude and repeat.
+    let mut repeat_ghosts = repeat_ghosts;
+    if let Some(cm) = creating_mirror.filter(|c| c.plane.is_some() && !c.targets.is_empty()) {
+        if let Some(plane) = cm.plane.clone() {
+            let probe = model::MirrorOperation {
+                plane,
+                targets: cm.targets.clone(),
+                outputs: Vec::new(),
+                name: None,
+                deleted: false,
+            };
+            if let Some(m) = extrude::mirror_op_transform(doc, &probe) {
+                for &bi in &cm.targets {
+                    if let Some(base) = extrude::body_solid_mesh(doc, bi) {
+                        repeat_ghosts.push(extrude::SolidMesh {
+                            triangles: base
+                                .triangles
+                                .iter()
+                                .map(|[a, b, c]| {
+                                    [
+                                        m.transform_point3(*a),
+                                        m.transform_point3(*b),
+                                        m.transform_point3(*c),
+                                    ]
+                                })
+                                .collect(),
+                        });
+                    }
+                }
+            }
+        }
+    }
 
     gpu_viewport::ViewportSceneInput {
         doc,
@@ -17591,6 +17587,45 @@ impl App {
                 }
             }
         }
+        // Mirror tool (#604/#605): outside a sketch, hover-highlight exactly what a click would
+        // pick — a construction plane or flat body face while the mirror plane is still unset,
+        // then a whole body once the plane is chosen and clicks add to the reflected set.
+        if self.state.tool == Tool::Mirror
+            && self.state.sketch_session.is_none()
+            && !suppress_hover_highlight
+        {
+            let plane_picked = self
+                .state
+                .creating_mirror
+                .as_ref()
+                .is_some_and(|c| c.plane.is_some());
+            hover_highlight = pointer_screen.and_then(|pp| {
+                if plane_picked {
+                    // Picking bodies: glow the whole body under the cursor (#605), via the same
+                    // edge/vertex/face → owning-body resolution the click path uses.
+                    let gp = cam.ground_point(pp, viewport, &vp);
+                    let body = resolve_pick_target(pp, &project, gp, doc, pick_occlusion)
+                        .as_ref()
+                        .and_then(|t| body_index_from_pick(&t.kind))
+                        .or_else(|| {
+                            crate::face::pick_body_face(pp, &project, doc, cam.eye())
+                                .filter(|kind| {
+                                    pick_occlusion.is_none_or(|occ| occ.pickable(doc, kind))
+                                })
+                                .as_ref()
+                                .and_then(body_index_from_pick)
+                        });
+                    body.map(|bi| {
+                        gpu_viewport::ViewportHoverHighlight::Element(SceneElement::Body(bi))
+                    })
+                } else {
+                    // Picking the mirror plane: glow the construction plane or flat face a click
+                    // sets as the plane (#604) — the same target `handle_mirror_tool` picks.
+                    pick_sketch_face(pp, &project, doc, cam.eye())
+                        .map(gpu_viewport::ViewportHoverHighlight::SketchFace)
+                }
+            });
+        }
         // Revolve tool (#303): hover the profile face under the cursor, same affordance as
         // the Extrude tool — clicking it picks the profile. Anything else keeps the generic
         // hover (lines still light up for the axis pick). The Sweep tool shares the
@@ -17995,6 +18030,7 @@ impl App {
             highlighted_bezier_handles,
             self.state.creating_loft.as_ref(),
             self.state.creating_repeat.as_ref(),
+            self.state.creating_mirror.as_ref(),
             self.pending_extrude_target.clone(),
             plane_gizmo,
             extrude_gizmo,
@@ -20201,6 +20237,7 @@ mod tests {
             Vec::new(),
             None,
             None,
+            None,
             pending.clone(),
             None,
             None,
@@ -20283,6 +20320,7 @@ mod tests {
             Vec::new(),
             None,
             state.creating_repeat.as_ref(),
+            None,
             None,
             None,
             None,
@@ -20383,6 +20421,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 Vec::new(),
                 None,
                 None,
@@ -20472,6 +20511,7 @@ mod tests {
             None,
             None,
             Vec::new(),
+            None,
             None,
             None,
             None,

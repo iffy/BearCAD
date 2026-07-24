@@ -677,10 +677,16 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   the same planar-face pick sketching uses); subsequent clicks toggle **bodies** into the
   reflected set. The context pane shows **both** the plane and the bodies through the unified
   element picker: a single-pick **Mirror plane** picker accepting planes or flat faces
-  (`ElementKind::Plane`/`ElementKind::Face`, `PickerTarget::MirrorPlane`) sits above the bodies
-  picker, each with the standard **✕**-to-clear rows. The plane picker is the focused one until a
-  plane is set, then focus moves to the bodies picker. A translucent **ghost** of each reflection
-  previews live before commit (`draw_mirror_ghosts`). **Enter** commits, creating an editable
+  (`ElementKind::Plane`/`ElementKind::Face`, `PickerTarget::MirrorPlane`, whose empty state shows
+  the dedicated plane and **face** glyphs — `IconId::Face`, not the body icon) sits above the
+  bodies picker, each with the standard **✕**-to-clear rows. The Mirror plane picker, the Bodies
+  picker, and the Do button read as **one contiguous block** — no dividers between them (#602).
+  The plane picker is the focused one until a plane is set, then focus moves to the bodies picker.
+  While picking, the viewport **hover-highlights** exactly what a click would take: the plane or
+  flat face under the cursor before a plane is set, then the whole body afterwards (#604/#605).
+  A translucent **ghost** of each reflection previews live before commit, rendered through the
+  same GPU preview-solid path as the extrude/repeat ghosts (`build_viewport_scene_input`, #603).
+  **Enter** commits, creating an editable
   **mirror operation element** (`Document::mirror_ops`, `ShapeKind::MirrorOperation`) with one
   reflected output body per input (`BodySource::Mirrored { op, target }`). Unlike Move, the
   **originals are kept** — a mirror *adds* the reflection alongside the source, so inputs are

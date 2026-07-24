@@ -909,6 +909,9 @@ pub struct ToolPickerView {
     pub heading: &'static str,
     pub picker: ElementPicker,
     pub target: PickerTarget,
+    /// Whether to draw a divider above this picker. Tools whose pickers form one contiguous
+    /// block with the following controls (e.g. Mirror, #602) suppress the inner dividers.
+    pub separator_above: bool,
 }
 
 /// Which tool-owned set a [`ToolPickerView`]'s removals apply to. Grows as tools migrate onto
@@ -1058,6 +1061,7 @@ fn body_tool_picker(
         heading,
         picker,
         target,
+        separator_above: true,
     }
 }
 
@@ -1190,16 +1194,20 @@ pub fn context_pane_content(input: &ContextInput<'_>) -> ContextPaneContent {
             heading: "Mirror plane",
             picker: plane_picker,
             target: PickerTarget::MirrorPlane,
+            separator_above: true,
         });
         // Secondary picker: the bodies picker reads as focused only once a mirror plane is
-        // chosen — the plane is the first pick (#523).
-        tool_pickers.push(body_tool_picker(
+        // chosen — the plane is the first pick (#523). No divider between the plane picker,
+        // the bodies picker, and the Do button — they read as one Mirror block (#602).
+        let mut bodies = body_tool_picker(
             "Bodies",
             PickerTarget::MirrorTargets,
             &m.targets,
             None,
             m.plane.is_some(),
-        ));
+        );
+        bodies.separator_above = false;
+        tool_pickers.push(bodies);
     }
     if let Some(r) = input.repeat_op.as_ref() {
         // Only one Repeat picker reads as focused (#439): the axis while it's unset and
@@ -2258,7 +2266,9 @@ pub fn show_pane(
     // its parameter controls — the picked set is the tool's primary input.
     for view in &content.tool_pickers {
         any_control = true;
-        ui.separator();
+        if view.separator_above {
+            ui.separator();
+        }
         labeled_row_top(ui, view.heading, |ui| {
         ui.add_enabled_ui(controls_enabled, |ui| {
             if let Some(event) = crate::element_picker::show(ui, &view.picker, doc, view.heading) {
@@ -2695,8 +2705,8 @@ pub fn show_pane(
 
     if let Some(control) = &content.mirror_op {
         any_control = true;
-        ui.separator();
-        section_label(ui, if control.editing { "Edit mirror" } else { "Mirror" });
+        // No divider between the pickers above and this Do button — the Mirror plane picker,
+        // the Bodies picker, and the button read as one contiguous block (#602).
         // The mirror plane and the bodies to mirror both render above through the unified
         // element pickers (see `tool_pickers`: `MirrorPlane` then `MirrorTargets`, #566).
         ui.add_space(2.0);

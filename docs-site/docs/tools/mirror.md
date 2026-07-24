@@ -13,10 +13,11 @@ the originals.
 ## How to use it
 
 1. Pick the **Mirror** tool.
-2. Click a **construction plane** or a **flat face** to set the mirror plane. (Use the
-   **✕** next to the plane in the context pane to pick a different one.)
-3. Click one or more **bodies** to reflect. Re-clicking removes one. A translucent ghost
-   previews each reflection as you go.
+2. Click a **construction plane** or a **flat face** to set the mirror plane — the plane or
+   face under the cursor highlights as you hover. (Use the **✕** next to the plane in the
+   context pane to pick a different one.)
+3. Click one or more **bodies** to reflect — each body highlights on hover. Re-clicking
+   removes one. A translucent ghost previews each reflection as you go.
 4. Press **Enter**.
 
 Each picked body gains a reflected copy — a real body you can use in further operations.

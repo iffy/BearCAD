@@ -115,8 +115,7 @@ impl ElementKind {
             // No dedicated point glyph; the coincident icon reads as "a point".
             ElementKind::Vertex => IconId::Coincident,
             ElementKind::Edge => IconId::Line,
-            // No dedicated face glyph; the body icon reads as "a surface of a body".
-            ElementKind::Face => IconId::Body,
+            ElementKind::Face => IconId::Face,
             ElementKind::Constraint => IconId::Constraint,
             ElementKind::Body => IconId::Body,
             ElementKind::Operation => IconId::Gear,
