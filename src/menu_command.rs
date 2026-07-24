@@ -39,6 +39,9 @@ pub enum MenuCommand {
     /// Open the Keyboard Shortcuts window (View/Help menus, #434).
     ShowShortcuts,
     SetPaneVisible { pane: Pane, visible: bool },
+    /// Open the DEV → Report issue window (#627): dev-build-only filing of an issue (with
+    /// optional screenshot/document-JSON attachments) into the local todoer db.
+    ReportIssue,
 }
 
 impl MenuCommand {
@@ -73,6 +76,8 @@ impl MenuCommand {
             MenuCommand::SetPaneVisible { pane, visible } => {
                 Some(Action::SetPaneVisible { pane, visible })
             }
+            // Opens the report window; handled in the app frame loop (#627).
+            MenuCommand::ReportIssue => None,
         }
     }
 }

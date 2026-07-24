@@ -1731,6 +1731,9 @@ struct App {
     params_visible_before_drawing: bool,
     /// A drawing popped out into its own OS window (#276), so it can sit beside the 3D view.
     drawing_window: Option<usize>,
+    /// The DEV → Report issue window (#627), dev builds only: files an issue (with optional
+    /// screenshot/document-JSON attachments) into the repo's local todoer db.
+    report_issue: Option<ReportIssueWindow>,
     /// Set just before closing on an uncaught script error with `--exit` (#125), so
     /// `run_app` can translate it into a non-zero process exit code after the eframe
     /// event loop returns — a script failure must fail the process, not just the UI.
@@ -2483,6 +2486,7 @@ impl App {
             drawing_view_drag: None,
             params_visible_before_drawing: false,
             drawing_window: None,
+            report_issue: None,
             script_failed,
             last_window_title: None,
             showing_quit_prompt: false,
@@ -3127,6 +3131,11 @@ impl App {
             MenuCommand::ShowShortcuts => {
                 self.shortcuts_open = true;
             }
+            // DEV → Report issue (#627): open (or re-focus) the report window.
+            MenuCommand::ReportIssue => match &mut self.report_issue {
+                Some(window) => window.focus = true,
+                None => self.report_issue = Some(ReportIssueWindow::open()),
+            },
             MenuCommand::InstallCli => {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
@@ -3663,6 +3672,63 @@ impl App {
                     runner.done = true;
                     self.state.status = format!("Script error: {}", runner.error.as_deref().unwrap_or(""));
                 }
+            }
+        } else if let Some(window) = &mut self.report_issue {
+            // A DEV report waiting on the main window's screenshot (#627).
+            if let (Some(pending), Some(image)) = (window.pending.take(), screenshots.first()) {
+                let image = (**image).clone();
+                self.finish_issue_report(pending.text, pending.include_json, Some(image));
+            }
+        }
+    }
+
+    /// Finish a DEV report submission (#627): write the optional attachments to temp
+    /// files, run `todoer add`, and surface the outcome in the report window — which
+    /// stays open, cleared and re-focused, so another report can follow.
+    fn finish_issue_report(
+        &mut self,
+        text: String,
+        include_json: bool,
+        screenshot: Option<egui::ColorImage>,
+    ) {
+        let dir = std::env::temp_dir();
+        let fail = |window: &mut Option<ReportIssueWindow>, msg: String| {
+            if let Some(w) = window {
+                w.last_result = Some(msg);
+            }
+        };
+        let mut png_path = None;
+        if let Some(image) = screenshot {
+            let path = dir.join("bearcad_report_screenshot.png");
+            match script::save_screenshot(&path.to_string_lossy(), &image) {
+                Ok(()) => png_path = Some(path),
+                Err(e) => {
+                    return fail(&mut self.report_issue, format!("Screenshot failed: {e}"));
+                }
+            }
+        }
+        let mut json_path = None;
+        if include_json {
+            let path = dir.join("bearcad_report_document.json");
+            let write = crate::storage::to_json_bytes(&self.state.doc)
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| std::fs::write(&path, bytes).map_err(|e| e.to_string()));
+            match write {
+                Ok(()) => json_path = Some(path),
+                Err(e) => {
+                    return fail(&mut self.report_issue, format!("Document JSON failed: {e}"));
+                }
+            }
+        }
+        let result = file_todoer_issue(&text, png_path.as_deref(), json_path.as_deref());
+        if let Some(w) = &mut self.report_issue {
+            match result {
+                Ok(msg) => {
+                    w.last_result = Some(msg);
+                    w.text.clear();
+                    w.focus = true;
+                }
+                Err(e) => w.last_result = Some(format!("Filing failed: {e}")),
             }
         }
     }
@@ -9853,6 +9919,82 @@ impl eframe::App for App {
             }
         }
 
+        // DEV → Report issue window (#627): its own OS window (reachable only through the
+        // debug-build DEV menu) with a focused description textarea, attachment checkboxes
+        // (screenshot + document JSON, both on by default), and a Submit that files the
+        // issue into the repo's local todoer db — staying open for the next report.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.report_issue.is_some() {
+            let builder = egui::ViewportBuilder::default()
+                .with_title("Report issue")
+                .with_inner_size([480.0, 380.0]);
+            let mut close = false;
+            let mut submit: Option<(String, bool, bool)> = None;
+            {
+                let window = self.report_issue.as_mut().expect("checked above");
+                ctx.show_viewport_immediate(
+                    egui::ViewportId::from_hash_of("report_issue"),
+                    builder,
+                    |vctx, _class| {
+                        theme::apply(vctx);
+                        egui::CentralPanel::default().show(vctx, |ui| {
+                            ui.label("Describe the issue:");
+                            let response = ui.add_sized(
+                                [ui.available_width(), 200.0],
+                                egui::TextEdit::multiline(&mut window.text),
+                            );
+                            if window.focus {
+                                response.request_focus();
+                                window.focus = false;
+                            }
+                            ui.add_space(4.0);
+                            ui.checkbox(
+                                &mut window.include_screenshot,
+                                "Include a screenshot of the current window",
+                            );
+                            ui.checkbox(&mut window.include_json, "Include the document JSON");
+                            ui.add_space(4.0);
+                            let can_submit =
+                                !window.text.trim().is_empty() && window.pending.is_none();
+                            if ui.add_enabled(can_submit, egui::Button::new("Submit")).clicked() {
+                                submit = Some((
+                                    window.text.trim().to_string(),
+                                    window.include_screenshot,
+                                    window.include_json,
+                                ));
+                            }
+                            if window.pending.is_some() {
+                                ui.label("Capturing screenshot…");
+                            } else if let Some(result) = &window.last_result {
+                                ui.label(result.clone());
+                            }
+                        });
+                        if vctx.input(|i| i.viewport().close_requested()) {
+                            close = true;
+                        }
+                    },
+                );
+            }
+            if let Some((text, with_screenshot, include_json)) = submit {
+                if with_screenshot {
+                    if let Some(window) = &mut self.report_issue {
+                        window.pending = Some(PendingIssueReport { text, include_json });
+                        window.last_result = None;
+                    }
+                    // Capture the MAIN window, not the report window.
+                    ctx.send_viewport_cmd_to(
+                        egui::ViewportId::ROOT,
+                        egui::ViewportCommand::Screenshot(egui::UserData::default()),
+                    );
+                } else {
+                    self.finish_issue_report(text, include_json, None);
+                }
+            }
+            if close {
+                self.report_issue = None;
+            }
+        }
+
         // macOS ImageIO SIGBUS guard (#533): the private resize cursors winit sets for a
         // pane-resize hover are decoded through ImageIO, which bus-errors on some macOS setups
         // (the same corruption `app_icon` sidesteps for the window icon). Remap them to the
@@ -9887,6 +10029,67 @@ impl eframe::App for App {
 /// is active.
 fn keyboard_shortcuts_suppressed(ctx: &egui::Context) -> bool {
     ctx.wants_keyboard_input()
+}
+
+/// The DEV → Report issue window's state (#627): the description text, the attachment
+/// checkboxes (both on by default), one-shot textarea focus, an in-flight submission
+/// waiting on the main window's screenshot, and feedback from the last filing — the
+/// window stays open after a submit so another report can follow.
+struct ReportIssueWindow {
+    text: String,
+    include_screenshot: bool,
+    include_json: bool,
+    /// Focus the textarea on the next frame (initial open and after each submit).
+    focus: bool,
+    /// A submitted report waiting for the main window's screenshot to arrive.
+    pending: Option<PendingIssueReport>,
+    last_result: Option<String>,
+}
+
+impl ReportIssueWindow {
+    fn open() -> Self {
+        Self {
+            text: String::new(),
+            include_screenshot: true,
+            include_json: true,
+            focus: true,
+            pending: None,
+            last_result: None,
+        }
+    }
+}
+
+/// A report waiting on the screenshot round-trip (#627): the submitted text plus whether
+/// the document JSON should be attached alongside the captured image.
+struct PendingIssueReport {
+    text: String,
+    include_json: bool,
+}
+
+/// File an issue into the repo's local todoer db via the `todoer` CLI (#627): the text's
+/// first line becomes the title, the full text the body, with optional PNG/JSON
+/// attachments. Returns todoer's own confirmation line.
+fn file_todoer_issue(
+    text: &str,
+    screenshot_png: Option<&std::path::Path>,
+    document_json: Option<&std::path::Path>,
+) -> Result<String, String> {
+    let title: String = text.lines().next().unwrap_or("(no title)").chars().take(120).collect();
+    let mut cmd = std::process::Command::new("todoer");
+    cmd.arg("add").arg(&title).arg("-b").arg(text);
+    if let Some(png) = screenshot_png {
+        cmd.arg("--attachment").arg(png);
+    }
+    if let Some(json) = document_json {
+        cmd.arg("--attachment").arg(json);
+    }
+    let output = cmd.output().map_err(|e| format!("could not run todoer: {e}"))?;
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok(if stdout.is_empty() { "Issue filed".to_string() } else { stdout })
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
 }
 
 /// What to do once a script/REPL run has finished, decided independent of the live `egui`

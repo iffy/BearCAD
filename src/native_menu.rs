@@ -42,6 +42,8 @@ pub struct MenuIds {
     pub zoom_to_fit: MenuId,
     pub shortcuts_view: MenuId,
     pub shortcuts_help: MenuId,
+    /// DEV → Report issue (#627); the DEV menu only appears in debug builds.
+    pub report_issue: MenuId,
     pub pane_checks: Vec<(Pane, MenuId)>,
 }
 
@@ -142,6 +144,9 @@ pub fn command_for_id(
     }
     if ids.zoom_to_fit == id {
         return Some(MenuCommand::ZoomToFit);
+    }
+    if ids.report_issue == id {
+        return Some(MenuCommand::ReportIssue);
     }
     for &(pane, ref check_id) in &ids.pane_checks {
         if check_id == id {
@@ -352,6 +357,15 @@ impl NativeMenu {
 
         menu.append_items(&[&file_menu, &edit_menu, &cad_menu, &view_menu, &help_menu])?;
 
+        // DEV menu (#627), debug builds (`cargo run`) only: developer utilities like filing
+        // an issue straight into the repo's local todoer db.
+        let report_issue = MenuItem::with_id("report_issue", "Report issue…", true, None);
+        if cfg!(debug_assertions) {
+            let dev_menu = Submenu::new("DEV", true);
+            dev_menu.append(&report_issue)?;
+            menu.append(&dev_menu)?;
+        }
+
         attach_to_platform(&menu, cc)?;
 
         #[cfg(target_os = "macos")]
@@ -382,6 +396,7 @@ impl NativeMenu {
             zoom_to_fit: zoom_to_fit.id().clone(),
             shortcuts_view: shortcuts_view.id().clone(),
             shortcuts_help: shortcuts_help.id().clone(),
+            report_issue: report_issue.id().clone(),
             pane_checks: pane_ids,
         };
 
@@ -488,6 +503,7 @@ mod tests {
             zoom_to_fit: MenuId::new("zoom_to_fit"),
             shortcuts_view: MenuId::new("shortcuts_view"),
             shortcuts_help: MenuId::new("shortcuts_help"),
+            report_issue: MenuId::new("report_issue"),
             pane_checks: vec![(Pane::ViewCube, pane_menu_id.clone())],
         };
         (ids, pane_menu_id)
