@@ -21,6 +21,11 @@ Move slides whole bodies to a new place, producing moved copies.
    - **Snap** (the default) — pick a **Start point A** on a moving body, then an **End point
      A** on something that isn't moving, and the bodies slide so the first lands on the
      second. Either point can be a corner or the midpoint of an edge.
+     To **turn** the bodies as well, pick a second pair: **Start point B** on a moving body
+     and **End point B** on something that isn't. The bodies then rotate about end point A
+     until start B lands on end B. End point B has to be somewhere start B can actually reach
+     — the same distance from end point A as start B is from start point A — so picks off that
+     sphere are refused.
    - **Free** — type the **X / Y / Z** amounts, or drag the coloured arrows (each has a value
      box beside its handle). They're expressions, so the move stays parametric.
 3. Press **Enter**.
@@ -51,6 +56,13 @@ bearcad.move_bodies{ bodies = {0},
 bearcad.move_bodies{ bodies = {0},
   from = { body = 0, edge = { {0, 0, 0}, {10, 0, 0} } },
   to   = { body = 1, edge = { {40, 0, 0}, {50, 0, 0} } } }
+
+-- A second pair turns it too: start B swings onto end B about end A.
+bearcad.move_bodies{ bodies = {0},
+  from   = { body = 0, vertex = {0, 0, 0} },
+  to     = { body = 0, vertex = {0, 0, 0} },
+  from_b = { body = 0, vertex = {10, 0, 0} },
+  to_b   = { body = 0, vertex = {0, 10, 0} } }
 ```
 
 Points are millimetre coordinates on the body's mesh — they only need to land on the corner or

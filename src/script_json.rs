@@ -380,13 +380,15 @@ pub fn instruction_from_json(name: &str, args: &Value) -> Result<Instruction, St
             Ok(Instruction::EditBooleanOp { op, kind, a, b, keep_b })
         }
         "move_bodies" => {
-            let (targets, tx, ty, tz, start_point_a, end_point_a) = move_op_args(o)?;
-            Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, start_point_a, end_point_a })
+            let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b) =
+                move_op_args(o)?;
+            Ok(Instruction::CreateMoveOp { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b })
         }
         "edit_move" => {
             let op = req_usize(o, "index", "edit_move")?;
-            let (targets, tx, ty, tz, start_point_a, end_point_a) = move_op_args(o)?;
-            Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, start_point_a, end_point_a })
+            let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b) =
+                move_op_args(o)?;
+            Ok(Instruction::EditMoveOp { op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b })
         }
         "mirror_bodies" => {
             let (plane, targets, mode) = mirror_op_args(o)?;
@@ -1063,6 +1065,8 @@ fn move_op_args(
         String,
         Option<crate::model::MovePointRef>,
         Option<crate::model::MovePointRef>,
+        Option<crate::model::MovePointRef>,
+        Option<crate::model::MovePointRef>,
     ),
     String,
 > {
@@ -1075,6 +1079,9 @@ fn move_op_args(
         // Naming both points makes the translation a snap (#648/#649/#650).
         move_point_from_json(o.get("from"), "from")?,
         move_point_from_json(o.get("to"), "to")?,
+        // The optional B pair (#669) adds the rotation.
+        move_point_from_json(o.get("from_b"), "from_b")?,
+        move_point_from_json(o.get("to_b"), "to_b")?,
     ))
 }
 
@@ -2038,6 +2045,8 @@ mod tests {
             Ok(Instruction::CreateMoveOp {
                 start_point_a: None,
                 end_point_a: None,
+                start_point_b: None,
+                end_point_b: None,
                 targets: vec![0],
                 tx: "10".into(),
                 ty: "w/2".into(),
@@ -2050,6 +2059,8 @@ mod tests {
             Ok(Instruction::EditMoveOp {
                 start_point_a: None,
                 end_point_a: None,
+                start_point_b: None,
+                end_point_b: None,
                 op: 1,
                 targets: vec![0],
                 tx: String::new(),

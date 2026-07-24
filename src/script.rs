@@ -284,6 +284,9 @@ pub enum Instruction {
         /// `target` and the tx/ty/tz expressions are ignored.
         start_point_a: Option<crate::model::MovePointRef>,
         end_point_a: Option<crate::model::MovePointRef>,
+        /// The optional B pair (#669), which adds the rotation.
+        start_point_b: Option<crate::model::MovePointRef>,
+        end_point_b: Option<crate::model::MovePointRef>,
     },
     /// Re-point an existing move operation.
     EditMoveOp {
@@ -294,6 +297,9 @@ pub enum Instruction {
         tz: String,
         start_point_a: Option<crate::model::MovePointRef>,
         end_point_a: Option<crate::model::MovePointRef>,
+        /// The optional B pair (#669), which adds the rotation.
+        start_point_b: Option<crate::model::MovePointRef>,
+        end_point_b: Option<crate::model::MovePointRef>,
     },
     /// Mirror bodies across a plane/face (Mirror tool, #523).
     CreateMirrorOp {
@@ -962,11 +968,11 @@ impl Instruction {
             Instruction::EditBooleanOp { op, kind, a, b, keep_b } => {
                 boolean_op_lua("bearcad.edit_boolean", Some(*op), *kind, a, b, *keep_b)
             }
-            Instruction::CreateMoveOp { targets, tx, ty, tz, start_point_a, end_point_a } => {
-                move_op_lua("bearcad.move_bodies", None, targets, tx, ty, tz, start_point_a, end_point_a)
+            Instruction::CreateMoveOp { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b } => {
+                move_op_lua("bearcad.move_bodies", None, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b)
             }
-            Instruction::EditMoveOp { op, targets, tx, ty, tz, start_point_a, end_point_a } => {
-                move_op_lua("bearcad.edit_move", Some(*op), targets, tx, ty, tz, start_point_a, end_point_a)
+            Instruction::EditMoveOp { op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b } => {
+                move_op_lua("bearcad.edit_move", Some(*op), targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b)
             }
             Instruction::CreateMirrorOp { plane, targets, mode } => {
                 mirror_op_lua("bearcad.mirror_bodies", None, plane, targets, *mode)
@@ -1659,7 +1665,7 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 keep_b: *keep_b,
             })
         }
-        Action::CreateMoveOperation { targets, tx, ty, tz, start_point_a, end_point_a, .. } => {
+        Action::CreateMoveOperation { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, .. } => {
             Some(Instruction::CreateMoveOp {
                 targets: targets.clone(),
                 tx: tx.clone(),
@@ -1667,9 +1673,11 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 tz: tz.clone(),
                 start_point_a: *start_point_a,
                 end_point_a: *end_point_a,
+                start_point_b: *start_point_b,
+                end_point_b: *end_point_b,
             })
         }
-        Action::EditMoveOperation { op, targets, tx, ty, tz, start_point_a, end_point_a, .. } => {
+        Action::EditMoveOperation { op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b, .. } => {
             Some(Instruction::EditMoveOp {
                 op: *op,
                 targets: targets.clone(),
@@ -1678,6 +1686,8 @@ pub fn instruction_from_action(action: &Action, doc: &crate::model::Document) ->
                 tz: tz.clone(),
                 start_point_a: *start_point_a,
                 end_point_a: *end_point_a,
+                start_point_b: *start_point_b,
+                end_point_b: *end_point_b,
             })
         }
         Action::CreateMirrorOperation { plane, targets, mode } => Some(Instruction::CreateMirrorOp {
@@ -2224,6 +2234,8 @@ fn move_op_lua(
     tz: &str,
     start_point_a: &Option<crate::model::MovePointRef>,
     end_point_a: &Option<crate::model::MovePointRef>,
+    start_point_b: &Option<crate::model::MovePointRef>,
+    end_point_b: &Option<crate::model::MovePointRef>,
 ) -> String {
     let mut parts = Vec::new();
     if let Some(op) = op {
@@ -2235,9 +2247,14 @@ fn move_op_lua(
     ));
     // Naming both points makes it a snap translation (#648); the x/y/z components below are
     // then ignored, so they're left out.
-    if let (Some(source), Some(target)) = (start_point_a, end_point_a) {
-        parts.push(format!("from = {}", move_point_lua(source)));
-        parts.push(format!("to = {}", move_point_lua(target)));
+    if let (Some(start), Some(end)) = (start_point_a, end_point_a) {
+        parts.push(format!("from = {}", move_point_lua(start)));
+        parts.push(format!("to = {}", move_point_lua(end)));
+    }
+    // The optional B pair (#669) adds the rotation.
+    if let (Some(start), Some(end)) = (start_point_b, end_point_b) {
+        parts.push(format!("from_b = {}", move_point_lua(start)));
+        parts.push(format!("to_b = {}", move_point_lua(end)));
     }
     for (name, value) in [("x", tx), ("y", ty), ("z", tz)] {
         if !value.trim().is_empty() {
@@ -4197,11 +4214,13 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::CreateMoveOp { targets, tx, ty, tz, start_point_a, end_point_a } => {
+            Instruction::CreateMoveOp { targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b } => {
                 let result = state.apply(Action::CreateMoveOperation {
                     translate_mode: move_translate_mode(&start_point_a, &end_point_a),
                     start_point_a,
                     end_point_a,
+                    start_point_b,
+                    end_point_b,
                     targets,
                     plane_targets: Vec::new(),
                     image_targets: Vec::new(),
@@ -4212,12 +4231,14 @@ impl ScriptRunner {
                 self.record_action_error(result);
                 StepResult::Continue
             }
-            Instruction::EditMoveOp { op, targets, tx, ty, tz, start_point_a, end_point_a } => {
+            Instruction::EditMoveOp { op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b } => {
                 let result = state.apply(Action::EditMoveOperation {
                     op,
                     translate_mode: move_translate_mode(&start_point_a, &end_point_a),
                     start_point_a,
                     end_point_a,
+                    start_point_b,
+                    end_point_b,
                     targets,
                     plane_targets: Vec::new(),
                     image_targets: Vec::new(),

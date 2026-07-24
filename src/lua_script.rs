@@ -679,6 +679,8 @@ fn parse_move_op_args(
     String,
     Option<crate::model::MovePointRef>,
     Option<crate::model::MovePointRef>,
+    Option<crate::model::MovePointRef>,
+    Option<crate::model::MovePointRef>,
 )> {
     let targets: Vec<usize> = opts.get::<Option<Vec<usize>>>("bodies")?.unwrap_or_default();
     let expr = |key: &str| -> mlua::Result<String> {
@@ -699,7 +701,10 @@ fn parse_move_op_args(
     // `from` exactly on `to`, and x/y/z are ignored.
     let start_point_a = parse_move_point(opts.get::<Value>("from")?, "from")?;
     let end_point_a = parse_move_point(opts.get::<Value>("to")?, "to")?;
-    Ok((targets, tx, ty, tz, start_point_a, end_point_a))
+    // The optional B pair (#669) adds the rotation about end point A.
+    let start_point_b = parse_move_point(opts.get::<Value>("from_b")?, "from_b")?;
+    let end_point_b = parse_move_point(opts.get::<Value>("to_b")?, "to_b")?;
+    Ok((targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b))
 }
 
 /// A [`crate::model::MovePointRef`] from a `{ body = i, vertex = {x,y,z} }` or
@@ -3477,10 +3482,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         "move_bodies",
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
-            let (targets, tx, ty, tz, start_point_a, end_point_a) = parse_move_op_args(&opts)?;
+            let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b) =
+                parse_move_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::CreateMoveOp {
-                    targets, tx, ty, tz, start_point_a, end_point_a,
+                    targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
                 })?;
             }
             let element = SceneElement::MoveOp(unsafe {
@@ -3496,10 +3502,11 @@ pub fn register_api(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, opts: Table| {
             let tick = lua.app_data_ref::<ScriptTickData>().unwrap();
             let op: usize = opts.get("index")?;
-            let (targets, tx, ty, tz, start_point_a, end_point_a) = parse_move_op_args(&opts)?;
+            let (targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b) =
+                parse_move_op_args(&opts)?;
             unsafe {
                 tick.exec(Instruction::EditMoveOp {
-                    op, targets, tx, ty, tz, start_point_a, end_point_a,
+                    op, targets, tx, ty, tz, start_point_a, end_point_a, start_point_b, end_point_b,
                 })?;
             }
             Ok(())
@@ -6220,6 +6227,46 @@ mod tests {
             free.doc.move_ops[0].translate_mode,
             crate::model::MoveTranslateMode::Free
         );
+    }
+
+    /// #669: `from_b`/`to_b` add the rotation — the bodies turn about end point A so start
+    /// point B lands on end point B.
+    #[test]
+    fn lua_move_b_pair_adds_the_rotation() {
+        let state = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            -- No translation (A start = A end), then a quarter turn: the corner at
+            -- (10, 0, 0) swings onto (0, 10, 0), both 10 from the pivot.
+            bearcad.move_bodies{
+                bodies = {0},
+                from   = { body = 0, vertex = {0, 0, 0} },
+                to     = { body = 0, vertex = {0, 0, 0} },
+                from_b = { body = 0, vertex = {10, 0, 0} },
+                to_b   = { body = 0, vertex = {0, 10, 0} },
+            }
+            "#,
+        );
+        let op = &state.doc.move_ops[0];
+        assert!(op.has_snap_rotation(), "both B points make it rotate");
+        let m = crate::extrude::move_op_transform(&state.doc, op).expect("transform");
+        let landed = m.transform_point3(glam::Vec3::new(10.0, 0.0, 0.0));
+        assert!(
+            (landed - glam::Vec3::new(0.0, 10.0, 0.0)).length() < 1e-2,
+            "start B lands on end B, got {landed:?}"
+        );
+        // Naming only the A pair leaves it a pure translation.
+        let translate_only = run_lua(
+            r#"
+            bearcad.rect{ width = 10, height = 10 }
+            bearcad.extrude{ polygon = {0, 1, 2, 3}, distance = 5 }
+            bearcad.move_bodies{ bodies = {0},
+                from = { body = 0, vertex = {0, 0, 0} },
+                to   = { body = 0, vertex = {0, 0, 0} } }
+            "#,
+        );
+        assert!(!translate_only.doc.move_ops[0].has_snap_rotation());
     }
 
     /// #649/#650: an **edge midpoint** works as either point too.

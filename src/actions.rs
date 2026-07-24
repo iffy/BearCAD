@@ -947,9 +947,12 @@ pub struct CreatingMove {
     pub targets: Vec<usize>,
     /// Snap (default) or free translation (#648).
     pub translate_mode: crate::model::MoveTranslateMode,
-    /// The picked point on the moving bodies (#649) and the point it snaps onto (#650).
+    /// The picked point on the moving bodies (#649/#668) and the point it snaps onto (#650).
     pub start_point_a: Option<crate::model::MovePointRef>,
     pub end_point_a: Option<crate::model::MovePointRef>,
+    /// The optional second pair (#669), which adds the rotation.
+    pub start_point_b: Option<crate::model::MovePointRef>,
+    pub end_point_b: Option<crate::model::MovePointRef>,
     /// Construction planes being moved (#217).
     pub plane_targets: Vec<usize>,
     /// Tracing images being moved (#217).
@@ -1859,6 +1862,9 @@ pub enum Action {
         translate_mode: crate::model::MoveTranslateMode,
         start_point_a: Option<crate::model::MovePointRef>,
         end_point_a: Option<crate::model::MovePointRef>,
+        /// The optional B pair (#669), which adds the rotation.
+        start_point_b: Option<crate::model::MovePointRef>,
+        end_point_b: Option<crate::model::MovePointRef>,
         targets: Vec<usize>,
         #[allow(dead_code)]
         plane_targets: Vec<usize>,
@@ -1874,6 +1880,9 @@ pub enum Action {
         translate_mode: crate::model::MoveTranslateMode,
         start_point_a: Option<crate::model::MovePointRef>,
         end_point_a: Option<crate::model::MovePointRef>,
+        /// The optional B pair (#669), which adds the rotation.
+        start_point_b: Option<crate::model::MovePointRef>,
+        end_point_b: Option<crate::model::MovePointRef>,
         targets: Vec<usize>,
         #[allow(dead_code)]
         plane_targets: Vec<usize>,
@@ -9683,6 +9692,8 @@ label_hidden: false,
                         translate_mode: cm.translate_mode,
                         start_point_a: cm.start_point_a,
                         end_point_a: cm.end_point_a,
+                        start_point_b: cm.start_point_b,
+                        end_point_b: cm.end_point_b,
                         targets: cm.targets.clone(),
                         plane_targets: cm.plane_targets.clone(),
                         image_targets: cm.image_targets.clone(),
@@ -9705,6 +9716,8 @@ label_hidden: false,
                                     translate_mode: crate::model::MoveTranslateMode::Free,
                                     start_point_a: None,
                                     end_point_a: None,
+                                    start_point_b: None,
+                                    end_point_b: None,
                                     targets: self.doc.move_ops[op].targets.clone(),
                                     plane_targets: self.doc.move_ops[op].plane_targets.clone(),
                                     image_targets: self.doc.move_ops[op].image_targets.clone(),
@@ -9717,6 +9730,8 @@ label_hidden: false,
                                 translate_mode: cm.translate_mode,
                                 start_point_a: cm.start_point_a,
                                 end_point_a: cm.end_point_a,
+                                start_point_b: cm.start_point_b,
+                                end_point_b: cm.end_point_b,
                                 targets: cm.targets.clone(),
                                 plane_targets: cm.plane_targets.clone(),
                                 image_targets: cm.image_targets.clone(),
@@ -9734,7 +9749,7 @@ label_hidden: false,
                 }
                 result
             }
-            Action::CreateMoveOperation { translate_mode, start_point_a, end_point_a, targets, plane_targets, image_targets, tx, ty, tz } => {
+            Action::CreateMoveOperation { translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, targets, plane_targets, image_targets, tx, ty, tz } => {
                 if targets.is_empty() && plane_targets.is_empty() && image_targets.is_empty() {
                     let e = "Pick at least one body, plane, or image to move".to_string();
                     self.status = e.clone();
@@ -9752,6 +9767,8 @@ label_hidden: false,
                     translate_mode,
                     start_point_a,
                     end_point_a,
+                    start_point_b,
+                    end_point_b,
                     plane_targets: plane_targets.clone(),
                     image_targets: image_targets.clone(),
                     tx,                    ty,                    tz,
@@ -9795,7 +9812,7 @@ label_hidden: false,
                 self.status = move_status(targets.len(), plane_targets.len(), image_targets.len());
                 ActionResult::Ok
             }
-            Action::EditMoveOperation { op, translate_mode, start_point_a, end_point_a, targets, plane_targets, image_targets, tx, ty, tz } => {
+            Action::EditMoveOperation { op, translate_mode, start_point_a, end_point_a, start_point_b, end_point_b, targets, plane_targets, image_targets, tx, ty, tz } => {
                 if self.doc.move_ops.get(op).filter(|o| !o.deleted).is_none() {
                     let e = format!("Move operation {op} not found");
                     self.status = e.clone();
@@ -9819,6 +9836,8 @@ label_hidden: false,
                     entry.translate_mode = translate_mode;
                     entry.start_point_a = start_point_a;
                     entry.end_point_a = end_point_a;
+                    entry.start_point_b = start_point_b;
+                    entry.end_point_b = end_point_b;
                     entry.plane_targets = plane_targets.clone();
                     entry.image_targets = image_targets.clone();
                     entry.tx = tx;
@@ -13992,6 +14011,8 @@ mod tests {
             translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
             end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
             targets: vec![],
             plane_targets: vec![0],
             image_targets: vec![],
@@ -14013,6 +14034,8 @@ mod tests {
             translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
             end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
             op,
             targets: vec![],
             plane_targets: vec![0],
@@ -14035,6 +14058,8 @@ mod tests {
                 translate_mode: Default::default(),
                 start_point_a: None,
                 end_point_a: None,
+                start_point_b: None,
+                end_point_b: None,
                 plane_targets: vec![0],
                 tz: tz.to_string(),
                 ..Default::default()
@@ -14083,6 +14108,8 @@ mod tests {
             translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
             end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
             targets: vec![],
             plane_targets: vec![],
             image_targets: vec![0],
@@ -14105,6 +14132,8 @@ mod tests {
             translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
             end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
             op,
             targets: vec![],
             plane_targets: vec![],
@@ -14120,6 +14149,8 @@ mod tests {
             translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
             end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
             op,
             targets: vec![],
             plane_targets: vec![0],
@@ -14154,6 +14185,8 @@ mod tests {
                 translate_mode: Default::default(),
                 start_point_a: None,
                 end_point_a: None,
+                start_point_b: None,
+                end_point_b: None,
                 image_targets: vec![0],
                 tx: tx.to_string(),
                 ..Default::default()
@@ -14316,6 +14349,8 @@ mod tests {
             translate_mode: Default::default(),
             start_point_a: None,
             end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
             targets: vec![],
             plane_targets: vec![],
             image_targets: vec![],
@@ -16634,6 +16669,8 @@ mod tests {
             translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
             end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
             targets: vec![0, 1],
             plane_targets: vec![],
             image_targets: vec![],
@@ -16673,6 +16710,8 @@ mod tests {
             translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
             end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
             targets: vec![0],
             plane_targets: vec![],
             image_targets: vec![],
@@ -16685,6 +16724,8 @@ mod tests {
             translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
             end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
             op: 0,
             targets: vec![0, 1],
             plane_targets: vec![],
@@ -16710,6 +16751,8 @@ mod tests {
             translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
             end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
             targets: vec![0],
             plane_targets: vec![],
             image_targets: vec![],
@@ -17671,6 +17714,8 @@ mod tests {
             translate_mode: crate::model::MoveTranslateMode::Free,
             start_point_a: None,
             end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
             targets: Vec::new(),
             plane_targets: vec![0],
             image_targets: Vec::new(),

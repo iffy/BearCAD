@@ -679,6 +679,17 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   (`move_focus_satisfied`), then it resumes. While a point picker is armed the hover shows body
   corners and edges instead of whole bodies.
 
+  - An optional **second pair (#669)**, **Start point B** on the moving bodies and **End point
+    B** on stationary geometry, adds the **rotation**: after the A translation lands start A on
+    end A, the bodies turn **about end point A** by the shortest rotation taking start B's
+    direction onto end B's (`extrude::move_snap_rotation`). End B is confined to the
+    **constraint sphere** centred on end point A with radius `|startA - startB|`
+    (`snap_rotation_radius`) — a turn about end A can only swing start B around that sphere, so
+    an off-sphere pick is refused (`snap_rotation_reachable`, ±0.05 mm for the quantisation).
+    Re-picking start B resizes the sphere and clears end B; clearing start B clears end B too.
+    The pair is opt-in, so the focus chain only walks into End point B once Start point B is
+    picked.
+
   A Snap move with either A point still unpicked — or with no bodies at all, as for a plane or
   image move — falls back to its `tx`/`ty`/`tz` expressions
   (`MoveOperation::has_snap_translation`), so the tool stays usable mid-pick and gizmo drags
@@ -698,7 +709,7 @@ All geometry is B-rep via OCCT. The following operations are **in scope for v1**
   `bearcad.move_bodies{ bodies = {…}, x?, y?, z?, from?, to?, name? }` and
   `bearcad.edit_move{ index, … }`; naming both `from` and `to` makes it a snap translation
   (`{ body = i, vertex = {x,y,z} }` or `{ body = i, edge = {{x,y,z}, {x,y,z}} }`, millimetres
-  on the body's mesh). **Moving construction planes (#217):** a Move op can also
+  on the body's mesh); `from_b`/`to_b` add the optional B pair, and so the rotation. **Moving construction planes (#217):** a Move op can also
   target a construction plane (`MoveOperation::plane_targets`) — at recompute the plane's frame
   is its base definition composed with the move, so everything anchored to it (sketches,
   images) follows, since that geometry is stored plane-local and projected through the plane

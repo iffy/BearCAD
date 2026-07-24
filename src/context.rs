@@ -253,6 +253,11 @@ pub struct MoveControl {
     /// **End point A** (#668): the picked point's label, if any, and whether its picker is armed.
     pub end_a_rows: Vec<String>,
     pub end_a_focused: bool,
+    /// The optional **B pair** (#669), which adds the rotation.
+    pub start_b_rows: Vec<String>,
+    pub start_b_focused: bool,
+    pub end_b_rows: Vec<String>,
+    pub end_b_focused: bool,
     pub tx: String,
     pub ty: String,
     pub tz: String,
@@ -274,6 +279,11 @@ pub enum MoveEdit {
     /// Arm / clear the target-point picker (#650).
     EndAFocus,
     ClearEndA,
+    /// Arm / clear the optional B-pair pickers (#669).
+    StartBFocus,
+    ClearStartB,
+    EndBFocus,
+    ClearEndB,
     Commit,
 }
 
@@ -3086,7 +3096,8 @@ pub fn show_pane(
             MoveEdit::ClearStartA,
         );
         // Snap (#650/#668): end point A on stationary geometry; the offset is derived from
-        // the pair, so there are no X/Y/Z fields.
+        // the pair, so there are no X/Y/Z fields. The optional B pair below it adds the
+        // rotation (#669) — start B on a moving body, end B on the constraint sphere.
         if control.translate_mode == crate::model::MoveTranslateMode::Snap {
             picker_row(
                 ui,
@@ -3096,6 +3107,24 @@ pub fn show_pane(
                 control.end_a_focused,
                 MoveEdit::EndAFocus,
                 MoveEdit::ClearEndA,
+            );
+            picker_row(
+                ui,
+                "Start point B",
+                "move_start_point_b",
+                &control.start_b_rows,
+                control.start_b_focused,
+                MoveEdit::StartBFocus,
+                MoveEdit::ClearStartB,
+            );
+            picker_row(
+                ui,
+                "End point B",
+                "move_end_point_b",
+                &control.end_b_rows,
+                control.end_b_focused,
+                MoveEdit::EndBFocus,
+                MoveEdit::ClearEndB,
             );
         }
         drop(picker_row);
@@ -5326,6 +5355,10 @@ mod tests {
                 start_a_focused: false,
                 end_a_rows: Vec::new(),
                 end_a_focused: false,
+                start_b_rows: Vec::new(),
+                start_b_focused: false,
+                end_b_rows: Vec::new(),
+                end_b_focused: false,
                 targets: vec![1, 4],
                 tx: String::new(),
                 ty: String::new(),

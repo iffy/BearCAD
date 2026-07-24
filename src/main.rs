@@ -434,6 +434,10 @@ enum MoveFocus {
     StartPointA,
     /// **End point A**: the point on stationary geometry that start A lands on (#650/#668).
     EndPointA,
+    /// **Start point B**: a second point on the moving bodies (#669).
+    StartPointB,
+    /// **End point B**: where start B should end up, on the constraint sphere (#669).
+    EndPointB,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -5790,17 +5794,49 @@ impl App {
         // instead of toggling a body. Start point A must sit on a moving body and end point A
         // target on a stationary one; the rotation point may be either.
         if let Some((side, what)) = match focus {
-            MoveFocus::StartPointA => Some((Some(true), "start")),
-            MoveFocus::EndPointA => Some((Some(false), "end")),
+            MoveFocus::StartPointA => Some((Some(true), "start A")),
+            MoveFocus::EndPointA => Some((Some(false), "end A")),
+            MoveFocus::StartPointB => Some((Some(true), "start B")),
+            MoveFocus::EndPointB => Some((Some(false), "end B")),
             _ => None,
         } {
-            match self.pick_move_point(pp, project, pick_occlusion, side) {
+            // End point B is confined to the constraint sphere (#669): a rotation about end
+            // point A can only swing start B around it, so an off-sphere pick is unreachable
+            // and is refused rather than silently producing a wrong turn.
+            let reachable = |app: &Self, point: &model::MovePointRef| {
+                if focus != MoveFocus::EndPointB {
+                    return true;
+                }
+                let Some(cm) = app.state.creating_move.as_ref() else {
+                    return false;
+                };
+                extrude::move_point_world(&app.state.doc, point).is_some_and(|world| {
+                    extrude::snap_rotation_reachable(
+                        &app.state.doc,
+                        cm.start_point_a.as_ref(),
+                        cm.start_point_b.as_ref(),
+                        cm.end_point_a.as_ref(),
+                        world,
+                    )
+                })
+            };
+            match self
+                .pick_move_point(pp, project, pick_occlusion, side)
+                .filter(|point| reachable(self, point))
+            {
                 Some(point) => {
                     let label = self.move_point_label(&point);
                     if let Some(cm) = self.state.creating_move.as_mut() {
                         match focus {
                             MoveFocus::StartPointA => cm.start_point_a = Some(point),
-                            _ => cm.end_point_a = Some(point),
+                            MoveFocus::EndPointA => cm.end_point_a = Some(point),
+                            MoveFocus::StartPointB => {
+                                // A new start B resizes the sphere, so any end B that was
+                                // valid against the old one no longer is (#669).
+                                cm.start_point_b = Some(point);
+                                cm.end_point_b = None;
+                            }
+                            _ => cm.end_point_b = Some(point),
                         }
                     }
                     self.release_satisfied_move_focus();
@@ -5809,12 +5845,18 @@ impl App {
                 // Missing the allowed geometry leaves the picker armed, so the user can try
                 // again without re-focusing it.
                 None => {
-                    self.state.status = match side {
-                        Some(true) => "Pick a corner or edge on a body being moved".to_string(),
-                        Some(false) => {
+                    self.state.status = match (focus, side) {
+                        (MoveFocus::EndPointB, _) => {
+                            "End point B has to sit on the sphere start point B can reach"
+                                .to_string()
+                        }
+                        (_, Some(true)) => {
+                            "Pick a corner or edge on a body being moved".to_string()
+                        }
+                        (_, Some(false)) => {
                             "Pick a corner or edge on a body that isn't moving".to_string()
                         }
-                        None => "Pick a corner or edge on any body".to_string(),
+                        (_, None) => "Pick a corner or edge on any body".to_string(),
                     };
                 }
             }
@@ -5879,6 +5921,8 @@ impl App {
                         translate_mode: existing.translate_mode,
                         start_point_a: existing.start_point_a,
                         end_point_a: existing.end_point_a,
+                        start_point_b: None,
+                        end_point_b: None,
                         plane_targets: existing.plane_targets,
                         image_targets: existing.image_targets,
                         tx: existing.tx,
@@ -8675,6 +8719,16 @@ impl eframe::App for App {
                             .map(|p| vec![self.move_point_label(&p)])
                             .unwrap_or_default(),
                         end_a_focused: move_focus == MoveFocus::EndPointA,
+                        start_b_rows: cm
+                            .and_then(|c| c.start_point_b)
+                            .map(|p| vec![self.move_point_label(&p)])
+                            .unwrap_or_default(),
+                        start_b_focused: move_focus == MoveFocus::StartPointB,
+                        end_b_rows: cm
+                            .and_then(|c| c.end_point_b)
+                            .map(|p| vec![self.move_point_label(&p)])
+                            .unwrap_or_default(),
+                        end_b_focused: move_focus == MoveFocus::EndPointB,
                         tx: cm.map(|c| c.tx.clone()).unwrap_or_default(),
                         ty: cm.map(|c| c.ty.clone()).unwrap_or_default(),
                         tz: cm.map(|c| c.tz.clone()).unwrap_or_default(),
@@ -9512,8 +9566,16 @@ impl eframe::App for App {
                     context::MoveEdit::EndAFocus => {
                         self.move_focus_override = Some(MoveFocus::EndPointA)
                     }
+                    context::MoveEdit::StartBFocus => {
+                        self.move_focus_override = Some(MoveFocus::StartPointB)
+                    }
+                    context::MoveEdit::EndBFocus => {
+                        self.move_focus_override = Some(MoveFocus::EndPointB)
+                    }
                     context::MoveEdit::ClearStartA
                     | context::MoveEdit::ClearEndA
+                    | context::MoveEdit::ClearStartB
+                    | context::MoveEdit::ClearEndB
                     | context::MoveEdit::Commit => self.move_focus_override = None,
                     _ => {}
                 }
@@ -9533,8 +9595,17 @@ impl eframe::App for App {
                             context::MoveEdit::TranslateMode(m) => cm.translate_mode = m,
                             context::MoveEdit::ClearStartA => cm.start_point_a = None,
                             context::MoveEdit::ClearEndA => cm.end_point_a = None,
+                            // Dropping start B drops end B with it — end B is only meaningful
+                            // against the sphere start B sizes (#669).
+                            context::MoveEdit::ClearStartB => {
+                                cm.start_point_b = None;
+                                cm.end_point_b = None;
+                            }
+                            context::MoveEdit::ClearEndB => cm.end_point_b = None,
                             context::MoveEdit::StartAFocus
-                            | context::MoveEdit::EndAFocus => {}
+                            | context::MoveEdit::EndAFocus
+                            | context::MoveEdit::StartBFocus
+                            | context::MoveEdit::EndBFocus => {}
                             context::MoveEdit::Commit => unreachable!(),
                         }
                     }
@@ -11023,6 +11094,14 @@ fn move_focus_for(
     if cm.translate_mode == model::MoveTranslateMode::Snap && cm.end_point_a.is_none() {
         return MoveFocus::EndPointA;
     }
+    // The B pair is optional (#669), so the chain only walks into it once start B is picked —
+    // choosing start B is what opts into the rotation, and end B is then what's missing.
+    if cm.translate_mode == model::MoveTranslateMode::Snap
+        && cm.start_point_b.is_some()
+        && cm.end_point_b.is_none()
+    {
+        return MoveFocus::EndPointB;
+    }
     MoveFocus::Bodies
 }
 
@@ -11033,6 +11112,8 @@ fn move_focus_satisfied(cm: &actions::CreatingMove, focus: MoveFocus) -> bool {
         MoveFocus::Bodies => false,
         MoveFocus::StartPointA => cm.start_point_a.is_some(),
         MoveFocus::EndPointA => cm.end_point_a.is_some(),
+        MoveFocus::StartPointB => cm.start_point_b.is_some(),
+        MoveFocus::EndPointB => cm.end_point_b.is_some(),
     }
 }
 
@@ -11646,6 +11727,8 @@ fn build_viewport_scene_input<'a>(
             translate_mode: cm.translate_mode,
             start_point_a: cm.start_point_a,
             end_point_a: cm.end_point_a,
+            start_point_b: None,
+            end_point_b: None,
             plane_targets: Vec::new(),
             image_targets: Vec::new(),
             tx: cm.tx.clone(),
@@ -18350,7 +18433,10 @@ impl App {
             sketch_session,
             match self.move_focus() {
                 MoveFocus::Bodies => MovePickHover::Bodies,
-                MoveFocus::StartPointA | MoveFocus::EndPointA => MovePickHover::Point,
+                MoveFocus::StartPointA
+                | MoveFocus::EndPointA
+                | MoveFocus::StartPointB
+                | MoveFocus::EndPointB => MovePickHover::Point,
             },
             repeat_axis_pick_active(self.state.creating_repeat.as_ref()),
             self.state.creating_plane.is_some(),
@@ -21383,7 +21469,7 @@ mod tests {
         // Both points picked: one ghost, at the destination.
         let snapped = actions::CreatingMove {
             end_point_a: Some(MovePointRef::Vertex {
-                body: 0,
+                            body: 0,
                 p: q(glam::Vec3::new(10.0, 0.0, 0.0)),
             }),
             ..picking
@@ -21425,6 +21511,8 @@ mod tests {
         // A point that no longer resolves draws nothing rather than a wrong line.
         let gone = actions::CreatingMove {
             end_point_a: Some(MovePointRef::Vertex { body: 0, p: [9999; 3] }),
+            start_point_b: None,
+            end_point_b: None,
             ..both
         };
         assert_eq!(move_snap_connector(&doc, &gone), None);
@@ -22398,6 +22486,12 @@ mod tests {
         assert_eq!(focus(&cm), MoveFocus::EndPointA);
 
         cm.end_point_a = Some(point(1));
+        assert_eq!(focus(&cm), MoveFocus::Bodies, "the B pair is opt-in, so the chain rests");
+
+        // Picking start B opts into the rotation, and end B is then what's missing (#669).
+        cm.start_point_b = Some(point(0));
+        assert_eq!(focus(&cm), MoveFocus::EndPointB);
+        cm.end_point_b = Some(point(1));
         assert_eq!(focus(&cm), MoveFocus::Bodies, "everything picked");
 
         // Free translate has no target point to pick.

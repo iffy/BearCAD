@@ -702,8 +702,97 @@ pub fn move_op_translation(doc: &Document, op: &crate::model::MoveOperation) -> 
     ))
 }
 
+/// The radius end point B is confined to (#669): the distance from start A to start B. The
+/// rotation about end point A can only swing start B around a sphere of that radius, so any
+/// end B off it is unreachable. `None` until both start points are picked and resolve.
+pub fn snap_rotation_radius(
+    doc: &Document,
+    start_a: Option<&crate::model::MovePointRef>,
+    start_b: Option<&crate::model::MovePointRef>,
+) -> Option<f32> {
+    let a = move_point_world(doc, start_a?)?;
+    let b = move_point_world(doc, start_b?)?;
+    Some((b - a).length())
+}
+
+/// Whether a candidate end point B is reachable (#669): it must sit on the constraint sphere
+/// centred on end point A with [`snap_rotation_radius`], within a tolerance that forgives the
+/// 0.01 mm quantisation the picked points carry.
+pub fn snap_rotation_reachable(
+    doc: &Document,
+    cm_start_a: Option<&crate::model::MovePointRef>,
+    cm_start_b: Option<&crate::model::MovePointRef>,
+    end_a: Option<&crate::model::MovePointRef>,
+    candidate: Vec3,
+) -> bool {
+    let (Some(radius), Some(pivot)) = (
+        snap_rotation_radius(doc, cm_start_a, cm_start_b),
+        end_a.and_then(|p| move_point_world(doc, p)),
+    ) else {
+        return false;
+    };
+    ((candidate - pivot).length() - radius).abs() <= SNAP_ROTATION_TOLERANCE_MM
+}
+
+/// How far off the constraint sphere an end-point-B pick may sit and still count (#669).
+pub const SNAP_ROTATION_TOLERANCE_MM: f32 = 0.05;
+
+/// The rotation the optional B pair asks for (#669): after the A translation has landed start
+/// point A on end point A, turn the bodies **about end point A** so that the moved start point
+/// B points at end point B.
+///
+/// The turn is the shortest one taking the direction `endA → movedStartB` to
+/// `endA → endB` — a single rotation about their common perpendicular. Only the *direction*
+/// matters: end point B is constrained to the sphere of radius `|startA - startB|` about end
+/// point A (#669), so a valid pick already sits at the right distance and the rotation alone
+/// lands start B on it.
+pub fn move_snap_rotation(
+    doc: &Document,
+    op: &crate::model::MoveOperation,
+) -> Option<glam::Mat3> {
+    if !op.has_snap_rotation() {
+        return None;
+    }
+    let translation = move_op_translation(doc, op)?;
+    let pivot = move_point_world(doc, op.end_point_a.as_ref()?)?;
+    // Start B rides along with the translation before it turns.
+    let moved_start_b = move_point_world(doc, op.start_point_b.as_ref()?)? + translation;
+    let target_b = move_point_world(doc, op.end_point_b.as_ref()?)?;
+    let from = (moved_start_b - pivot).normalize_or_zero();
+    let to = (target_b - pivot).normalize_or_zero();
+    if from.length_squared() < 0.5 || to.length_squared() < 0.5 {
+        return None;
+    }
+    let dot = from.dot(to).clamp(-1.0, 1.0);
+    // Already aligned: no turn. Exactly opposed: any perpendicular axis is a half turn, so
+    // pick a stable one rather than leaving the cross product degenerate.
+    if dot > 1.0 - 1e-9 {
+        return Some(glam::Mat3::IDENTITY);
+    }
+    let axis = if dot < -1.0 + 1e-9 {
+        from.any_orthonormal_vector()
+    } else {
+        from.cross(to).normalize_or_zero()
+    };
+    if axis.length_squared() < 0.5 {
+        return Some(glam::Mat3::IDENTITY);
+    }
+    Some(glam::Mat3::from_axis_angle(axis, dot.acos()))
+}
+
 pub fn move_op_transform(doc: &Document, op: &crate::model::MoveOperation) -> Option<glam::Mat4> {
-    Some(glam::Mat4::from_translation(move_op_translation(doc, op)?))
+    let translation = glam::Mat4::from_translation(move_op_translation(doc, op)?);
+    // The B pair adds a rotation about end point A, applied after the translation (#669).
+    let Some(rot) = move_snap_rotation(doc, op) else {
+        return Some(translation);
+    };
+    let pivot = move_point_world(doc, op.end_point_a.as_ref()?)?;
+    Some(
+        glam::Mat4::from_translation(pivot)
+            * glam::Mat4::from_mat3(rot)
+            * glam::Mat4::from_translation(-pivot)
+            * translation,
+    )
 }
 
 /// Resolve a rotation/revolve axis to world origin + unit direction.
@@ -4574,6 +4663,86 @@ mod tests {
     use super::*;
     use crate::model::{Circle, Document, FaceId, Line};
 
+    /// #669: the optional B pair turns the bodies about end point A so that start B lands on
+    /// end B, and end B is confined to the sphere start B can actually reach.
+    #[test]
+    fn snap_b_pair_rotates_start_b_onto_end_b() {
+        use crate::hierarchy::quantize_body_point as q;
+        use crate::model::{MoveOperation, MovePointRef, MoveTranslateMode};
+        // One triangle body with corners at the origin, +10X and +10Y.
+        let mut doc = Document::default();
+        let (o, x, y) = (
+            Vec3::ZERO,
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::new(0.0, 10.0, 0.0),
+        );
+        doc.imported_meshes.push(crate::model::ImportedMesh {
+            triangles: vec![[o, x, y]],
+            source_name: "tri".to_string(),
+        });
+        doc.bodies.push(crate::model::Body {
+            source: crate::model::BodySource::Imported(0),
+            name: None,
+            deleted: false,
+            shadow: false,
+        });
+        let vertex = |p: Vec3| Some(MovePointRef::Vertex { body: 0, p: q(p) });
+
+        // Start A = origin, end A = origin: no translation, so the rotation stands alone.
+        // Start B = +10X; end B = +10Y is exactly 10 from the pivot, so it's reachable.
+        let op = MoveOperation {
+            targets: vec![0],
+            translate_mode: MoveTranslateMode::Snap,
+            start_point_a: vertex(o),
+            end_point_a: vertex(o),
+            start_point_b: vertex(x),
+            end_point_b: vertex(y),
+            plane_targets: Vec::new(),
+            image_targets: Vec::new(),
+            tx: String::new(),
+            ty: String::new(),
+            tz: String::new(),
+            outputs: Vec::new(),
+            name: None,
+            deleted: false,
+        };
+        assert!(op.has_snap_rotation());
+        let m = move_op_transform(&doc, &op).expect("transform");
+        let landed = m.transform_point3(x);
+        assert!(
+            (landed - y).length() < 1e-3,
+            "start B should land on end B, got {landed:?}"
+        );
+        // The pivot (end point A) doesn't move.
+        let held = m.transform_point3(o);
+        assert!(held.length() < 1e-3, "the pivot holds, got {held:?}");
+
+        // Without the B pair it's a pure translation — no turn.
+        let translate_only = MoveOperation { start_point_b: None, end_point_b: None, ..op.clone() };
+        assert!(!translate_only.has_snap_rotation());
+        let m = move_op_transform(&doc, &translate_only).expect("transform");
+        assert!((m.transform_point3(x) - x).length() < 1e-3, "nothing turns");
+
+        // The constraint sphere: radius = |startA - startB| = 10 about end point A.
+        assert_eq!(
+            snap_rotation_radius(&doc, op.start_point_a.as_ref(), op.start_point_b.as_ref()),
+            Some(10.0)
+        );
+        let reachable = |p: Vec3| {
+            snap_rotation_reachable(
+                &doc,
+                op.start_point_a.as_ref(),
+                op.start_point_b.as_ref(),
+                op.end_point_a.as_ref(),
+                p,
+            )
+        };
+        assert!(reachable(y), "10 from the pivot is on the sphere");
+        assert!(reachable(Vec3::new(0.0, 0.0, 10.0)), "any direction, same radius");
+        assert!(!reachable(Vec3::new(0.0, 40.0, 0.0)), "too far to reach");
+        assert!(!reachable(Vec3::new(0.0, 2.0, 0.0)), "too close to reach");
+    }
+
     /// #648/#650: a Snap move only overrides the X/Y/Z expressions once **both** points are
     /// picked — while one is missing (or there are no bodies at all, as for a plane or image
     /// move) the expressions still drive it, so the tool stays usable mid-pick.
@@ -4586,6 +4755,8 @@ mod tests {
             translate_mode: MoveTranslateMode::Snap,
             start_point_a: None,
             end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
             plane_targets: Vec::new(),
             image_targets: Vec::new(),
             tx: "7".to_string(),
@@ -4612,6 +4783,8 @@ mod tests {
         // nothing rather than killing the op.
         let full = MoveOperation {
             end_point_a: Some(MovePointRef::Vertex { body: 1, p: [100, 0, 0] }),
+            start_point_b: None,
+            end_point_b: None,
             ..half
         };
         assert!(full.has_snap_translation());
@@ -4712,6 +4885,8 @@ mod tests {
             translate_mode: Default::default(),
             start_point_a: None,
             end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
             targets: vec![2],
             plane_targets: Vec::new(),
             image_targets: Vec::new(),
@@ -4754,6 +4929,8 @@ mod tests {
             translate_mode: Default::default(),
             start_point_a: None,
             end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
             targets: vec![0],
             plane_targets: Vec::new(),
             image_targets: Vec::new(),
@@ -5290,6 +5467,8 @@ mod tests {
             translate_mode: Default::default(),
             start_point_a: None,
             end_point_a: None,
+            start_point_b: None,
+            end_point_b: None,
             targets: vec![0],
             plane_targets: Vec::new(),
             image_targets: Vec::new(),

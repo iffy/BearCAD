@@ -1631,6 +1631,15 @@ impl MoveOperation {
             && self.start_point_a.is_some()
             && self.end_point_a.is_some()
     }
+
+    /// Whether the optional B pair is complete, so the move rotates as well as translates
+    /// (#669). Only meaningful alongside a resolved A pair — B turns *about* end point A.
+    pub fn has_snap_rotation(&self) -> bool {
+        self.has_snap_translation()
+            && self.start_point_b.is_some()
+            && self.end_point_b.is_some()
+    }
+
 }
 
 impl MovePointRef {
@@ -1654,14 +1663,21 @@ pub struct MoveOperation {
     /// How the translation is specified (#648).
     #[serde(default)]
     pub translate_mode: MoveTranslateMode,
-    /// The point on the moving bodies that a snap translation moves **from** (#649).
+    /// The point on the moving bodies that a snap translation moves **from** (#649/#668).
     #[serde(default)]
     pub start_point_a: Option<MovePointRef>,
-    /// The point on the stationary geometry that a snap translation moves the source point
-    /// **onto** (#650). With both set, the translation is `target - source` and the `tx`/`ty`/
-    /// `tz` expressions are ignored.
+    /// The point on the stationary geometry that a snap translation moves start point A
+    /// **onto** (#650/#668). With both set, the translation is `end - start` and the `tx`/
+    /// `ty`/`tz` expressions are ignored.
     #[serde(default)]
     pub end_point_a: Option<MovePointRef>,
+    /// The optional second pair (#669): another point on the **moving** bodies and where it
+    /// should end up. The A pair fixes the translation; B then fixes the **rotation** about
+    /// end point A that brings start B as near end B as it can. Both must be set to rotate.
+    #[serde(default)]
+    pub start_point_b: Option<MovePointRef>,
+    #[serde(default)]
+    pub end_point_b: Option<MovePointRef>,
     /// Construction planes moved by this op (#217): transformed in place at recompute, so
     /// sketches/images anchored to them follow. No output bodies — the plane itself moves.
     #[serde(default)]
