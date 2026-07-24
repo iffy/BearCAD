@@ -17650,6 +17650,27 @@ impl App {
                         ))
                     }
                 })
+                .or_else(|| {
+                    // Axis / path pick (#615): with no profile face under the cursor, glow the
+                    // sketch line or — for Revolve — the global origin axis a click would set as
+                    // the revolve axis (or add to the sweep path), matching the click targets in
+                    // `handle_revolve_tool`/`handle_sweep_tool`.
+                    if suppress_hover_highlight {
+                        return None;
+                    }
+                    let pp = pointer_screen?;
+                    let gp = cam.ground_point(pp, viewport, &vp);
+                    let target = resolve_pick_target(pp, &project, gp, doc, pick_occlusion)?;
+                    let pickable = match &target.kind {
+                        construction::PickTargetKind::Line(_) => true,
+                        construction::PickTargetKind::GlobalAxis(_) => {
+                            self.state.tool == Tool::Revolve
+                        }
+                        _ => false,
+                    };
+                    pickable
+                        .then_some(gpu_viewport::ViewportHoverHighlight::PickTarget(target.kind))
+                })
                 .or(hover_highlight);
         }
         // Chamfer/fillet tool (#144): before an edge is picked, highlight the treatable edge
