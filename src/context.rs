@@ -273,7 +273,6 @@ pub struct MoveControl {
     pub tx: String,
     pub ty: String,
     pub tz: String,
-    pub axis_label: Option<String>,
     pub editing: bool,
     pub can_commit: bool,
 }
@@ -284,7 +283,6 @@ pub enum MoveEdit {
     Tx(String),
     Ty(String),
     Tz(String),
-    Axis(Option<crate::model::RevolveAxis>),
     /// Translate dropdown (#648).
     TranslateMode(crate::model::MoveTranslateMode),
     /// Arm / clear the source-point picker (#649).
@@ -3302,29 +3300,6 @@ pub fn show_pane(
                 );
             }
         }
-        ui.horizontal(|ui| {
-            ui.label("Axis");
-            for (axis, label) in [
-                (crate::model::RevolveAxis::X, "X"),
-                (crate::model::RevolveAxis::Y, "Y"),
-                (crate::model::RevolveAxis::Z, "Z"),
-            ] {
-                if ui.small_button(label).clicked() {
-                    pending = Some(MoveEdit::Axis(Some(axis)));
-                }
-            }
-            if ui.small_button("None").clicked() {
-                pending = Some(MoveEdit::Axis(None));
-            }
-        });
-        ui.label(
-            egui::RichText::new(match &control.axis_label {
-                Some(label) => format!("Rotating around {label} — or click a line"),
-                None => "No rotation — pick an axis or click a line".to_string(),
-            })
-            .color(egui::Color32::from_gray(140))
-            .size(11.0),
-        );
         if let Some(edit) = pending {
             on_move_edit(edit);
         }
@@ -5577,7 +5552,6 @@ mod tests {
                 tx: String::new(),
                 ty: String::new(),
                 tz: String::new(),
-                axis_label: None,
                 editing: false,
                 can_commit: true,
             }),

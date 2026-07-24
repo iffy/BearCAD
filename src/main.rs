@@ -8888,9 +8888,6 @@ impl eframe::App for App {
                         tx: cm.map(|c| c.tx.clone()).unwrap_or_default(),
                         ty: cm.map(|c| c.ty.clone()).unwrap_or_default(),
                         tz: cm.map(|c| c.tz.clone()).unwrap_or_default(),
-                        axis_label: cm
-                            .and_then(|c| c.axis)
-                            .map(|a| names::revolve_axis_label(&self.state.doc, a)),
                         editing: cm.map(|c| c.editing.is_some()).unwrap_or(false),
                         can_commit: cm
                             .map(|c| !c.targets.is_empty() || !c.plane_targets.is_empty() || !c.image_targets.is_empty())
@@ -9768,7 +9765,6 @@ impl eframe::App for App {
                             context::MoveEdit::Tx(v) => cm.tx = v,
                             context::MoveEdit::Ty(v) => cm.ty = v,
                             context::MoveEdit::Tz(v) => cm.tz = v,
-                            context::MoveEdit::Axis(a) => cm.axis = a,
                             context::MoveEdit::TranslateMode(m) => cm.translate_mode = m,
                             context::MoveEdit::ClearSourcePoint => cm.source_point = None,
                             context::MoveEdit::ClearTargetPoint => cm.target_point = None,
