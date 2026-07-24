@@ -1691,6 +1691,12 @@ is the source of truth for the model; geometry is derived from it (see §4.4).
 - When a parameter's name or value field is focused in the Parameters pane, the Elements
   pane highlights every element that uses that parameter (the dimensions referencing it and
   the geometry they drive), dimming the rest.
+- **Hovering a parameter's row** (any cell) or focusing its name/value field also
+  **green-glows those users in the 3D viewport** (#620,
+  `ParametersPaneState::hovered_name` → `elements_using_parameter` →
+  `ViewportSceneInput::parameter_highlight_elements`, drawn in `PARAMETER_HIGHLIGHT`):
+  dimension badges, the constrained lines/points, and any extrusion whose distance
+  expression references the parameter (outlined as a green wireframe of its own mesh).
 - Each parameter row has a muted-red **✕** delete button (`Action::DeleteParameter`, #270).
 
 #### 5.1.1 Inline parameter creation

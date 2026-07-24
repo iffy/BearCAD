@@ -11,7 +11,9 @@ the value and everything built on it rebuilds.
 ## The Parameters pane
 
 The **Parameters** pane lists every parameter. While a row's field is focused, the
-Elements pane highlights everything that uses that parameter.
+Elements pane highlights everything that uses that parameter — and hovering a row (or
+focusing its fields) also **glows those users green in the 3D view**: the dimensions
+referencing it, the geometry they drive, and any body whose extrude distance uses it.
 
 ## Expressions
 

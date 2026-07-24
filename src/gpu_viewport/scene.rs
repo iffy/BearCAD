@@ -109,6 +109,9 @@ pub const PLANE_FILL_DEPTH_BIAS: f32 = 0.02;
 /// Base depth lift for sketch shape fills toward the camera.
 /// Base fill color for extruded solid bodies (shaded per triangle).
 pub const SOLID_FILL: Color32 = Color32::from_rgb(150, 168, 196);
+/// Green glow for the dimensions/geometry driven by the parameter hovered or focused in
+/// the Parameters pane (#620).
+pub const PARAMETER_HIGHLIGHT: Color32 = Color32::from_rgb(90, 220, 130);
 /// Ghost fill for a shadow body (a boolean operation's consumed input) while it's hovered
 /// or selected in the Elements pane — the only time shadows render at all.
 pub const SHADOW_BODY_FILL: Color32 = Color32::from_rgb(120, 140, 170);
@@ -555,6 +558,10 @@ pub struct ViewportSceneInput<'a> {
     /// Extra pick targets to hover-highlight in `hover_color` all at once (#559): every member of a
     /// hovered Selection-Exploder group loupe, so the whole group lights up in the 3D view.
     pub extra_pick_highlights: Vec<crate::construction::PickTargetKind>,
+    /// Elements using the parameter hovered/focused in the Parameters pane (#620) — its
+    /// dimensions, driven geometry, and expression consumers — each drawn in the green
+    /// [`PARAMETER_HIGHLIGHT`] color.
+    pub parameter_highlight_elements: Vec<SceneElement>,
     pub hover_color: Color32,
     pub document_health: &'a DocumentHealth,
     pub constraint_graphics: Option<&'a [ConstraintViewportGraphic]>,
@@ -1436,6 +1443,41 @@ impl ViewportScene {
                 input.viewport,
                 &vp,
             );
+        }
+        // Everything using the hovered/focused parameter glows green (#620).
+        for element in &input.parameter_highlight_elements {
+            match element {
+                // The sub-body recolor tint washes out against a solid fill; outline the
+                // driven extrusion's own mesh in green so it always reads.
+                SceneElement::Extrusion(ei) => {
+                    if let Some(m) = input
+                        .doc
+                        .extrusions
+                        .get(*ei)
+                        .filter(|e| !e.deleted)
+                        .and_then(|e| crate::extrude::extrusion_mesh(input.doc, e))
+                    {
+                        mesh.set_index_layer(MeshIndexLayer::Wireframe);
+                        mesh.push_solid_wireframe(
+                            &m,
+                            PARAMETER_HIGHLIGHT,
+                            input.cam,
+                            input.viewport,
+                            &vp,
+                        );
+                        mesh.set_index_layer(MeshIndexLayer::Overlay);
+                    }
+                }
+                _ => mesh.push_hover_highlight(
+                    input.doc,
+                    &ViewportHoverHighlight::Element(element.clone()),
+                    PARAMETER_HIGHLIGHT,
+                    &body_meshes,
+                    input.cam,
+                    input.viewport,
+                    &vp,
+                ),
+            }
         }
 
         if input.dim_label_view.is_some() {
@@ -4414,6 +4456,7 @@ mod tests {
             vertex_treatment_preview: None,
             hover_highlight: None,
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
             constraint_graphics: None,
@@ -4911,6 +4954,7 @@ mod tests {
             vertex_treatment_preview: None,
             hover_highlight: None,
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
             constraint_graphics: None,
@@ -4957,6 +5001,7 @@ mod tests {
             vertex_treatment_preview: None,
             hover_highlight: None,
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
             constraint_graphics: None,
@@ -5043,6 +5088,7 @@ mod tests {
             vertex_treatment_preview: None,
             hover_highlight: None,
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: crate::construction::PICK_HOVER_RGBA,
             document_health: &DocumentHealth::default(),
             constraint_graphics: None,
@@ -5086,6 +5132,7 @@ mod tests {
                 FaceId::ConstructionPlane(0),
             )),
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: crate::construction::PICK_HOVER_RGBA,
             document_health: &DocumentHealth::default(),
             constraint_graphics: None,
@@ -5144,6 +5191,7 @@ mod tests {
                 vertex_treatment_preview: None,
                 hover_highlight: hover,
                 extra_pick_highlights: Vec::new(),
+                parameter_highlight_elements: Vec::new(),
                 hover_color: crate::construction::PICK_HOVER_RGBA,
                 document_health: &DocumentHealth::default(),
                 constraint_graphics: None,
@@ -5212,6 +5260,7 @@ mod tests {
             vertex_treatment_preview: None,
             hover_highlight: None,
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
             constraint_graphics: None,
@@ -5265,6 +5314,7 @@ mod tests {
             vertex_treatment_preview: None,
             hover_highlight: None,
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
             constraint_graphics: None,
@@ -5317,6 +5367,7 @@ mod tests {
             vertex_treatment_preview: None,
             hover_highlight: None,
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
             constraint_graphics: None,
@@ -5400,6 +5451,7 @@ mod tests {
             vertex_treatment_preview: None,
             hover_highlight: None,
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
             constraint_graphics: None,
@@ -5462,6 +5514,7 @@ mod tests {
             vertex_treatment_preview: None,
             hover_highlight: None,
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
             constraint_graphics: None,
@@ -5634,6 +5687,7 @@ mod tests {
                 vertex_treatment_preview: None,
                 hover_highlight: None,
                 extra_pick_highlights: Vec::new(),
+                parameter_highlight_elements: Vec::new(),
                 hover_color: Color32::WHITE,
                 document_health: &DocumentHealth::default(),
                 constraint_graphics: None,
@@ -5817,6 +5871,7 @@ mod tests {
             vertex_treatment_preview: None,
             hover_highlight: None,
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
             constraint_graphics: None,
@@ -5952,6 +6007,7 @@ mod tests {
                 0, 1, 2, 3,
             ]))),
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: crate::construction::PICK_HOVER_RGBA,
             document_health: &DocumentHealth::default(),
             constraint_graphics: None,
@@ -6067,6 +6123,7 @@ mod tests {
             vertex_treatment_preview: None,
             hover_highlight: None,
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
             constraint_graphics: None,
@@ -6130,6 +6187,7 @@ mod tests {
             vertex_treatment_preview: None,
             hover_highlight: None,
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
             constraint_graphics: None,
@@ -6302,6 +6360,7 @@ mod tests {
             vertex_treatment_preview: None,
             hover_highlight: None,
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
             constraint_graphics: None,
@@ -6343,6 +6402,7 @@ mod tests {
             vertex_treatment_preview: None,
             hover_highlight: None,
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
             constraint_graphics: None,
@@ -6428,6 +6488,7 @@ mod tests {
                 vertex_treatment_preview: None,
                 hover_highlight: hover,
                 extra_pick_highlights: Vec::new(),
+                parameter_highlight_elements: Vec::new(),
                 hover_color: crate::construction::PICK_HOVER_RGBA,
                 document_health: &DocumentHealth::default(),
                 constraint_graphics: None,
@@ -6517,6 +6578,7 @@ mod tests {
                 vertex_treatment_preview: None,
                 hover_highlight: None,
                 extra_pick_highlights: Vec::new(),
+                parameter_highlight_elements: Vec::new(),
                 hover_color: Color32::WHITE,
                 document_health: &DocumentHealth::default(),
                 constraint_graphics: None,
@@ -6588,6 +6650,7 @@ mod tests {
                 vertex_treatment_preview: None,
                 hover_highlight: None,
                 extra_pick_highlights: Vec::new(),
+                parameter_highlight_elements: Vec::new(),
                 hover_color: Color32::WHITE,
                 document_health: &DocumentHealth::default(),
                 constraint_graphics: None,
@@ -6678,6 +6741,7 @@ mod tests {
             vertex_treatment_preview: None,
             hover_highlight: None,
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
             constraint_graphics: None,
@@ -6719,6 +6783,7 @@ mod tests {
             vertex_treatment_preview: None,
             hover_highlight: None,
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
             constraint_graphics: Some(&graphics),
@@ -6905,6 +6970,7 @@ mod tests {
             vertex_treatment_preview: None,
             hover_highlight: None,
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
             constraint_graphics: None,
@@ -6950,6 +7016,7 @@ mod tests {
             vertex_treatment_preview: None,
             hover_highlight: None,
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
             constraint_graphics: None,
@@ -7060,6 +7127,7 @@ mod tests {
             vertex_treatment_preview: None,
             hover_highlight: None,
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
             constraint_graphics: None,
@@ -7103,6 +7171,7 @@ mod tests {
             vertex_treatment_preview: None,
             hover_highlight: None,
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
             constraint_graphics: None,
@@ -7144,6 +7213,7 @@ mod tests {
             vertex_treatment_preview: None,
             hover_highlight: None,
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
             document_health: &DocumentHealth::default(),
             constraint_graphics: None,
@@ -7239,6 +7309,7 @@ mod perf_probe {
                 vertex_treatment_preview: None,
                 hover_highlight: None,
                 extra_pick_highlights: Vec::new(),
+                parameter_highlight_elements: Vec::new(),
                 hover_color: Color32::WHITE,
                 document_health: &crate::document_health::DocumentHealth::default(),
                 constraint_graphics: None,
@@ -7327,6 +7398,7 @@ mod cut_preview_tests {
             vertex_treatment_preview: None,
             hover_highlight: None,
             extra_pick_highlights: Vec::new(),
+            parameter_highlight_elements: Vec::new(),
             hover_color: Color32::WHITE,
             document_health: &crate::document_health::DocumentHealth::default(),
             constraint_graphics: None,

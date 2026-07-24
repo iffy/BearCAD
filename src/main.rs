@@ -8025,6 +8025,9 @@ impl eframe::App for App {
             }) {
                 self.state.apply(Action::SetPaneVisible { pane: Pane::Parameters, visible: false });
             }
+        } else {
+            // No pane, no hover (#620) — never leave a stale row-hover highlight behind.
+            self.state.parameters_pane.hovered_name = None;
         }
 
         if self.state.panes.is_visible(Pane::Context) {
@@ -10614,6 +10617,7 @@ fn build_viewport_scene_input<'a>(
     vertex_treatment_preview: Option<Vec<Vec3>>,
     hover_highlight: Option<gpu_viewport::ViewportHoverHighlight>,
     extra_pick_highlights: Vec<construction::PickTargetKind>,
+    parameter_highlight_elements: Vec<SceneElement>,
     dimension_labels: &'a [gpu_viewport::ViewportDimLabel],
     dim_label_view: Option<PlanarLabelView>,
     constraint_graphics: Option<&'a [constraint_viewport::ConstraintViewportGraphic]>,
@@ -10966,6 +10970,7 @@ fn build_viewport_scene_input<'a>(
             .map(|points| gpu_viewport::VertexTreatmentPreviewGeom { points }),
         hover_highlight,
         extra_pick_highlights,
+        parameter_highlight_elements,
         hover_color: construction::PICK_HOVER_RGBA,
         document_health,
         constraint_graphics,
@@ -18145,6 +18150,21 @@ impl App {
             vertex_treatment_preview,
             hover_highlight,
             exploder_group_highlight,
+            {
+                // Hovering a Parameters-pane row (or focusing its name/value cell)
+                // green-glows everything that parameter drives in the viewport (#620).
+                self.state
+                    .parameters_pane
+                    .hovered_name
+                    .clone()
+                    .or_else(|| parameters::focused_parameter_name(ui.ctx(), doc))
+                    .map(|name| {
+                        parameters::elements_using_parameter(doc, &name)
+                            .into_iter()
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            },
             &gpu_dim_labels,
             planar_label_view,
             Some(&constraint_graphics),
@@ -20352,6 +20372,7 @@ mod tests {
             None,
             None,
             Vec::new(),
+            Vec::new(),
             &[],
             None,
             None,
@@ -20434,6 +20455,7 @@ mod tests {
             None,
             None,
             None,
+            Vec::new(),
             Vec::new(),
             &[],
             None,
@@ -20532,6 +20554,7 @@ mod tests {
                 None,
                 None,
                 Vec::new(),
+            Vec::new(),
                 &[],
                 None,
                 None,
@@ -20627,6 +20650,7 @@ mod tests {
             None,
             None,
             None,
+            Vec::new(),
             Vec::new(),
             &[],
             None,

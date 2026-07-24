@@ -218,6 +218,14 @@ pub fn elements_using_parameter(
             _ => {}
         }
     }
+    // Extrusions whose distance expression references the parameter (#620).
+    for (ei, ext) in doc.extrusions.iter().enumerate() {
+        if !ext.deleted
+            && !parameter_names_referenced_in_expression(&ext.expression, &known).is_empty()
+        {
+            elements.insert(SceneElement::Extrusion(ei));
+        }
+    }
     elements
 }
 
@@ -259,6 +267,9 @@ pub struct ParametersPaneState {
     /// Whether the new-parameter name field has focus (mirrored each frame for the
     /// tutorial's "tap the name box" predicate).
     pub new_name_focused: bool,
+    /// Name of the parameter whose row the pointer is over, mirrored each frame (#620):
+    /// the viewport highlights everything that parameter drives in green.
+    pub hovered_name: Option<String>,
 }
 
 /// Whether the new-parameter row has enough input to attempt a commit.
@@ -1052,6 +1063,9 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
     // A row's ✕ delete button queues here and is applied after the grid, so the loop keeps its
     // borrow of `app` (#270).
     let mut delete_index: Option<usize> = None;
+    // Row-hover tracking (#620): re-derived every frame; queued here (like `delete_index`)
+    // so the row loop keeps its borrow of `app`.
+    let mut hovered_name: Option<String> = None;
 
     ScrollArea::vertical().show(ui, |ui| {
         Grid::new("parameters_table")
@@ -1109,7 +1123,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                         Some(ParameterEditCell::Value(i)) if i == index
                     );
 
-                    ui.horizontal(|ui| {
+                    let name_cell = ui.horizontal(|ui| {
                         if editing_name {
                             let response = ui.add(
                                 TextEdit::singleline(&mut app.parameters_pane.draft)
@@ -1158,7 +1172,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                         }
                     });
 
-                    ui.horizontal(|ui| {
+                    let value_cell = ui.horizontal(|ui| {
                         if editing_value {
                             let param_ctx = ParameterExpressionContext {
                                 param_name: param_name.clone(),
@@ -1214,7 +1228,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                             );
                         }
                     });
-                    ui.horizontal(|ui| {
+                    let extras_cell = ui.horizontal(|ui| {
                         // Delete button (#270): a muted-red ✕ that removes the parameter.
                         let remove = ui.add(
                             egui::ImageButton::new(crate::icons::sized_texture(
@@ -1249,6 +1263,13 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
                             );
                         }
                     });
+                    // Pointer over any of the row's cells marks the parameter hovered (#620).
+                    if name_cell.response.contains_pointer()
+                        || value_cell.response.contains_pointer()
+                        || extras_cell.response.contains_pointer()
+                    {
+                        hovered_name = Some(param_name.clone());
+                    }
                     ui.end_row();
                 }
 
@@ -1357,6 +1378,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut AppState) {
     if let Some(index) = delete_index {
         apply_parameter_action(app, Action::DeleteParameter { index });
     }
+    app.parameters_pane.hovered_name = hovered_name;
 
     // Derived parameter from the selection (#432): when the selection measures something
     // (a line, two points, two parallel lines, two same-plane lines), show the value it
